@@ -9,6 +9,7 @@ use super::super::authz;
 use super::super::scope::{context_error, resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use crate::error::{AppError, AxumAppError};
+use crate::protocol::core::CoreEvent;
 use codegg_core::context::ProjectContext;
 use codegg_core::identity::ProjectId;
 use codegg_core::project_catalog::{ProjectCatalog, ProjectCatalogRecord, RegisterLocalProject};
@@ -313,6 +314,20 @@ pub async fn delete_project(
         .delete_project(&project_id, request.expected_session_count)
         .await
         .map_err(|e| context_error("project_delete_failed", e.to_string()))?;
+    // Mirror the daemon handler's post-commit cleanup when this server runs
+    // against a live daemon: without it, destroyed sessions keep running
+    // turns, park permission/question waiters with no UI target, and no
+    // `ProjectDeleted` event reaches WS/TUI clients. Daemon-less servers
+    // have no runtimes or event bus, so there is nothing to clean up.
+    if let Some(daemon) = &state.daemon {
+        daemon
+            .note_project_destroyed(
+                &project_id,
+                &result.deleted_session_ids,
+                result.deleted_session_count(),
+            )
+            .await;
+    }
     emit_project_lifecycle_audit(
         &state.pool,
         &principal,
@@ -405,6 +420,30 @@ pub async fn update_project(
         )
         .await
         .map_err(|e| context_error("project_update_failed", e.to_string()))?;
+    // Mirror the daemon handler's post-commit cleanup when this server runs
+    // against a live daemon: rebound runtimes hold a stale root, so their
+    // turns are cancelled and evicted and `ProjectUpdated` is published.
+    // Daemon-less servers have no runtimes or event bus to update.
+    if let Some(daemon) = &state.daemon {
+        let project =
+            codegg_core::protocol_conversions::project_catalog_record_to_dto(&result.project);
+        let event = CoreEvent::ProjectUpdated {
+            project,
+            workspace: crate::protocol::dto::ProjectWorkspaceSummaryDto {
+                workspace_id: workspace.id.to_string(),
+                display_name: workspace.display_name.clone(),
+                canonical_root: Some(workspace.canonical_root.to_string_lossy().into_owned()),
+            },
+            previous_display_name: current.display_name.clone(),
+            previous_root: old_workspaces
+                .first()
+                .map(|w| w.canonical_root.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        daemon
+            .note_project_rebound(&project_id, &result.rebound_session_ids, event)
+            .await;
+    }
     let provenance = codegg_core::authorization::audit_provenance(&decision);
     let old_root = old_workspaces
         .first()

@@ -10,6 +10,64 @@ use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 use super::daemon::CoreDaemon;
 
 impl CoreDaemon {
+    /// Post-commit cleanup shared by the daemon `ProjectDelete` handler and
+    /// the HTTP `DELETE /api/projects/{id}` route. Runs only after
+    /// `ProjectCatalog::delete_project` commits: resolves parked
+    /// permission/question waiters for the deleted sessions, cancels their
+    /// live turns, evicts their runtimes, and publishes
+    /// `CoreEvent::ProjectDeleted` so WS/TUI clients refresh instead of
+    /// going stale.
+    pub async fn note_project_destroyed(
+        &self,
+        project_id: &codegg_core::identity::ProjectId,
+        deleted_session_ids: &[String],
+        deleted_session_count: usize,
+    ) {
+        for session_id in deleted_session_ids {
+            crate::bus::PermissionRegistry::cancel_session(session_id);
+            crate::bus::QuestionRegistry::cancel_session(session_id);
+            if let Some(runtime) = self.sessions.get(session_id).map(|runtime| runtime.clone()) {
+                if let Some(active_turn) = runtime.active_turn.read().await.as_ref() {
+                    let _ = active_turn.cancel_tx.send(true);
+                }
+                self.sessions.remove(session_id);
+            }
+        }
+        self.event_log
+            .publish(
+                Some(project_id.to_string()),
+                None,
+                CoreEvent::ProjectDeleted {
+                    project_id: project_id.to_string(),
+                    deleted_session_count,
+                },
+            )
+            .await;
+    }
+
+    /// Post-commit cleanup shared by the daemon `ProjectUpdate` handler and
+    /// the HTTP `PATCH /api/projects/{id}` route. Cancels live turns and
+    /// evicts rebound runtimes (their stored root is stale), then publishes
+    /// the caller-built `CoreEvent::ProjectUpdated`.
+    pub async fn note_project_rebound(
+        &self,
+        project_id: &codegg_core::identity::ProjectId,
+        rebound_session_ids: &[String],
+        event: CoreEvent,
+    ) {
+        for session_id in rebound_session_ids {
+            if let Some(runtime) = self.sessions.get(session_id).map(|runtime| runtime.clone()) {
+                if let Some(active_turn) = runtime.active_turn.read().await.as_ref() {
+                    let _ = active_turn.cancel_tx.send(true);
+                }
+                self.sessions.remove(session_id);
+            }
+        }
+        self.event_log
+            .publish(Some(project_id.to_string()), None, event)
+            .await;
+    }
+
     pub(crate) async fn handle_projects_request(
         &self,
         request: CoreRequest,
@@ -364,19 +422,12 @@ impl CoreDaemon {
                 {
                     Ok(result) => {
                         let deleted_session_count = result.deleted_session_count();
-                        for session_id in &result.deleted_session_ids {
-                            crate::bus::PermissionRegistry::cancel_session(session_id);
-                            crate::bus::QuestionRegistry::cancel_session(session_id);
-                            if let Some(runtime) =
-                                self.sessions.get(session_id).map(|runtime| runtime.clone())
-                            {
-                                if let Some(active_turn) = runtime.active_turn.read().await.as_ref()
-                                {
-                                    let _ = active_turn.cancel_tx.send(true);
-                                }
-                                self.sessions.remove(session_id);
-                            }
-                        }
+                        self.note_project_destroyed(
+                            &project_id,
+                            &result.deleted_session_ids,
+                            deleted_session_count,
+                        )
+                        .await;
                         let provenance =
                             codegg_core::authorization::audit_provenance(&authz_decision);
                         let audit = codegg_core::audit::AuditEventBuilder::new(
@@ -394,16 +445,6 @@ impl CoreDaemon {
                         .with_metadata("decision.id", provenance.decision_id())
                         .with_metadata("decision.outcome", "allow");
                         self.audit_emitter().emit(audit).await;
-                        self.event_log
-                            .publish(
-                                Some(project_id.to_string()),
-                                None,
-                                CoreEvent::ProjectDeleted {
-                                    project_id: project_id.to_string(),
-                                    deleted_session_count,
-                                },
-                            )
-                            .await;
                         Ok(CoreResponse::ProjectDeleted {
                             project_id: project_id.to_string(),
                             deleted_session_count,
@@ -486,16 +527,6 @@ impl CoreDaemon {
                         return Ok(Self::project_catalog_error("project update failed", &error))
                     }
                 };
-                for session_id in &result.rebound_session_ids {
-                    if let Some(runtime) =
-                        self.sessions.get(session_id).map(|runtime| runtime.clone())
-                    {
-                        if let Some(active_turn) = runtime.active_turn.read().await.as_ref() {
-                            let _ = active_turn.cancel_tx.send(true);
-                        }
-                        self.sessions.remove(session_id);
-                    }
-                }
                 let project = codegg_core::protocol_conversions::project_catalog_record_to_dto(
                     &result.project,
                 );
@@ -533,8 +564,7 @@ impl CoreDaemon {
                     previous_display_name: current.display_name.clone(),
                     previous_root: previous_root.clone(),
                 };
-                self.event_log
-                    .publish(Some(project_id.to_string()), None, event.clone())
+                self.note_project_rebound(&project_id, &result.rebound_session_ids, event)
                     .await;
                 Ok(CoreResponse::ProjectUpdated {
                     project,
@@ -829,5 +859,170 @@ impl CoreDaemon {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Corrective regression: the HTTP destroy/update routes share these
+    /// post-commit hooks with the daemon handlers. A route that skips them
+    /// leaves live turns running, parks permission/question waiters with no
+    /// UI target, and publishes no event, so WS/TUI clients go stale.
+    async fn post_commit_daemon() -> CoreDaemon {
+        CoreDaemon::new(None, None, None)
+    }
+
+    async fn live_turn(
+        daemon: &CoreDaemon,
+        session_id: &str,
+    ) -> tokio::sync::watch::Receiver<bool> {
+        let workspace_id = codegg_core::workspace::WorkspaceId::new();
+        let root = std::path::PathBuf::from("/tmp/codegg-post-commit-test");
+        let runtime = daemon.sessions.get_or_create(
+            session_id,
+            workspace_id,
+            root.clone(),
+            "test-project".to_string(),
+            root,
+        );
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        *runtime.active_turn.write().await = Some(crate::core::session_runtime::TurnHandle {
+            turn_id: format!("{session_id}-turn"),
+            cancel_tx,
+            steer_tx: None,
+            started_at: chrono::Utc::now(),
+            asset_pin: None,
+            controller_principal: None,
+            controller_client: None,
+            controller_revision: 0,
+        });
+        cancel_rx
+    }
+
+    fn park_waiters(
+        session_id: &str,
+    ) -> (
+        tokio::sync::oneshot::Receiver<codegg_core::bus::PermissionDecision>,
+        tokio::sync::oneshot::Receiver<String>,
+    ) {
+        // Payload types mirror the registry waiter halves; the assertions
+        // below only observe the closed sender, never a delivered value.
+        let (perm_tx, perm_rx) = tokio::sync::oneshot::channel();
+        let (q_tx, q_rx) = tokio::sync::oneshot::channel();
+        crate::bus::PermissionRegistry::register_with_session(
+            session_id.to_string(),
+            None,
+            format!("{session_id}-perm"),
+            perm_tx,
+        );
+        crate::bus::QuestionRegistry::register_with_session(
+            session_id.to_string(),
+            None,
+            format!("{session_id}-question"),
+            q_tx,
+        );
+        (perm_rx, q_rx)
+    }
+
+    #[tokio::test]
+    async fn note_project_destroyed_cancels_evicts_closes_waiters_and_publishes() {
+        let daemon = post_commit_daemon().await;
+        let doomed = format!("doomed-{}", uuid::Uuid::new_v4());
+        let spared = format!("spared-{}", uuid::Uuid::new_v4());
+        let mut cancel_rx = live_turn(&daemon, &doomed).await;
+        let spared_cancel_rx = live_turn(&daemon, &spared).await;
+        let (mut perm_rx, mut q_rx) = park_waiters(&doomed);
+        let (mut spared_perm_rx, mut spared_q_rx) = park_waiters(&spared);
+        let mut events = daemon.event_log.subscribe();
+
+        let project_id = codegg_core::identity::ProjectId::new();
+        daemon
+            .note_project_destroyed(&project_id, &[doomed.clone()], 1)
+            .await;
+
+        // Live turn cancelled, runtime evicted, parked waiters resolved.
+        assert!(cancel_rx.changed().await.is_ok());
+        assert!(*cancel_rx.borrow());
+        assert!(daemon.sessions.get(&doomed).is_none());
+        assert_eq!(
+            perm_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        assert_eq!(
+            q_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        // Event published with the confirmed count.
+        let envelope = events.recv().await.expect("ProjectDeleted event");
+        assert!(
+            matches!(
+                &envelope.payload,
+                CoreEvent::ProjectDeleted {
+                    project_id: got,
+                    deleted_session_count: 1,
+                } if got == &project_id.to_string()
+            ),
+            "expected ProjectDeleted, got {:?}",
+            envelope.payload
+        );
+        // Unrelated session untouched: turn live, runtime kept, waiters parked.
+        assert!(!spared_cancel_rx.has_changed().unwrap_or(true));
+        assert!(daemon.sessions.get(&spared).is_some());
+        assert!(spared_perm_rx.try_recv().is_err());
+        assert!(spared_q_rx.try_recv().is_err());
+        crate::bus::PermissionRegistry::cancel_session(&spared);
+        crate::bus::QuestionRegistry::cancel_session(&spared);
+    }
+
+    #[tokio::test]
+    async fn note_project_rebound_cancels_evicts_and_publishes_update() {
+        let daemon = post_commit_daemon().await;
+        let rebound = format!("rebound-{}", uuid::Uuid::new_v4());
+        let mut cancel_rx = live_turn(&daemon, &rebound).await;
+        let mut events = daemon.event_log.subscribe();
+
+        let project_id = codegg_core::identity::ProjectId::new();
+        let event = CoreEvent::ProjectUpdated {
+            project: crate::protocol::dto::ProjectSummaryDto {
+                project_id: project_id.to_string(),
+                display_name: "renamed".to_string(),
+                lifecycle: "active".to_string(),
+                description: None,
+                tags: Vec::new(),
+                time_last_opened_at: None,
+                registration_source: "test".to_string(),
+                archived_at: None,
+                created_at: 0,
+                updated_at: 0,
+            },
+            workspace: crate::protocol::dto::ProjectWorkspaceSummaryDto {
+                workspace_id: "ws".to_string(),
+                display_name: "ws".to_string(),
+                canonical_root: Some("/tmp/new".to_string()),
+            },
+            previous_display_name: "old".to_string(),
+            previous_root: "/tmp/old".to_string(),
+        };
+        daemon
+            .note_project_rebound(&project_id, &[rebound.clone()], event)
+            .await;
+
+        assert!(cancel_rx.changed().await.is_ok());
+        assert!(*cancel_rx.borrow());
+        assert!(daemon.sessions.get(&rebound).is_none());
+        let envelope = events.recv().await.expect("ProjectUpdated event");
+        assert!(
+            matches!(
+                &envelope.payload,
+                CoreEvent::ProjectUpdated {
+                    previous_display_name,
+                    ..
+                } if previous_display_name == "old"
+            ),
+            "expected ProjectUpdated, got {:?}",
+            envelope.payload
+        );
     }
 }
