@@ -705,7 +705,7 @@ mod tests {
 
     #[tokio::test]
     async fn constrained_python_route_refuses_before_scheduler_submission() {
-        let tool = PythonScriptTool::new();
+        let tool = PythonScriptTool::new().with_workspace_root(std::env::temp_dir());
         let error = tool
             .execute_structured(
                 json!({"code": "print('must not run')"}),
@@ -718,7 +718,7 @@ mod tests {
 
     #[tokio::test]
     async fn readonly_python_transform_is_refused_before_scheduler_submission() {
-        let tool = PythonScriptTool::new();
+        let tool = PythonScriptTool::new().with_workspace_root(std::env::temp_dir());
         let mut context = constrained_context();
         let authorization = context
             .execution_authorization
