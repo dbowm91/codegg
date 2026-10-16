@@ -1,7 +1,7 @@
 # Managed Agent Scratch M003 — Permission Guidance, Safe Reclamation and Cross-Platform Qualification
 
-Status: blocked — M002 strict closure required
-Repository baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (revalidate after M001 and M002).
+Status: active — M002 strict closure recorded; M003 is now eligible
+Repository baseline: `2e0aa549233dff1ef0caeb759690738161e7f80d` (M002 implementation accepted; revalidated on 2026-10-16).
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 26–29; `plans/001-terminology-and-domain-model.md` §§5–8; `plans/002-long-term-roadmap.md` Phase 19.
 Applicable ADRs: ADR-0001, ADR-0002, accepted ADR-0028. Respect current explicit Deny and approval precedence.

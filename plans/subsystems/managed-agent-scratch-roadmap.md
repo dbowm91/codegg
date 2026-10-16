@@ -1,6 +1,6 @@
 # Managed Agent Scratch Spaces Roadmap
 
-Status: active planning — M001 closed; M002 active; M003 blocked on M002.
+Status: active planning — M001–M002 closed; M003 active.
 
 Planning baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (main inspected 2026-10-16).
 
@@ -77,10 +77,10 @@ accepted authorization boundaries [interface/closed]
 M001 — private managed session scratch, prompt/env, safe lifecycle [closed]
        |
        v
-M002 — delegated private scratch + explicit shared ScratchId grants [active: M001 closed]
+M002 — delegated private scratch + explicit shared ScratchId grants [closed]
        |
        v
-M003 — actionable permission hints, cleanup hardening/qualification [blocked: M002]
+M003 — actionable permission hints, cleanup hardening/qualification [active: M002 closed]
 ```
 
 M001 is an end-to-end single-agent vertical slice, not merely a directory allocation type. M002 is a separate durable delegation contract with direct-parent and ownership checks. M003 qualifies security/restart/diagnostic behavior and closes the workstream; correctness blockers found earlier must be corrected *in that milestone*, not deferred as polish.
@@ -96,13 +96,14 @@ Exit: one session uses the **same** scratch across two independent managed shell
 
 ### M002 — Delegated scratch and explicitly shared resources
 
-Class: capability. Status: **active; M001 closed**.
+Class: capability. Status: **closed**.
 Plan: `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md`.
-Exit: two child runs get distinct private roots, a parent can create/grant one shared scratch resource by ID to selected children, unauthorized children cannot obtain tool/OS grants, and background job lifetime prevents premature cleanup. No implicit cross-session sharing.
+Closure: `plans/closure/managed-agent-scratch/002-status.md` (implementation `2e0aa549`).
+Exit: two child runs get distinct private roots, a parent can create/grant one shared scratch resource by ID to selected children, unauthorized children cannot obtain tool/OS grants, and background job leases prevent premature cleanup. No implicit cross-session sharing. Linux/Windows native scratch containment remains unqualified; M003 records available platform evidence.
 
 ### M003 — Permission recovery, cleanup and cross-platform qualification
 
-Class: polish / invariant hardening. Status: **blocked on M002 closure**.
+Class: polish / invariant hardening. Status: **active; M002 closed**.
 Plan: `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md`.
 Exit: structured path denial / approval-needed results suggest authorized scratch but never rewrite a required path, explicit operator Deny remains authoritative, garbage collection is demonstrably safe under crash/race/symlink cases, Linux/macOS/Windows support claims are evidence-qualified.
 
@@ -137,5 +138,5 @@ All three milestones have accepted `plans/closure/managed-agent-scratch/00N-stat
 | Milestone | Status | Plan | Closure | Blocker |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/managed-agent-scratch/001-private-session-scratch-and-launch-wiring.md` | `plans/closure/managed-agent-scratch/001-status.md` | none |
-| M002 | active | `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md` | — | M001 strict closure recorded |
-| M003 | blocked | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | — | M002 strict closure |
+| M002 | closed | `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md` | `plans/closure/managed-agent-scratch/002-status.md` | none |
+| M003 | active | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | — | M002 strict closure recorded; eligible |
