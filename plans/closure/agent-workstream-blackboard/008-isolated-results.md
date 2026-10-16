@@ -190,12 +190,17 @@ successfully invoked `wait_group`; both returned without an authorization
 error and observed the two child runs still running. This verifies that a
 live group can be observed across turns on the corrected daemon.
 
-At the latest evidence check, both child runs remained `running`, and neither
-had produced a terminal result. The captured usage rows are session scoped and
-include parent follow-up turns, so they cannot be attributed to child
-progress. This retry remains pending/incomplete and is excluded from S1
-success and performance denominators. Do not claim an effectiveness result.
-Continue with bounded same-session waits and inspect child results, worktree
-diffs, and frozen evaluators before classifying the trial. M008 remains active;
-the S2/S3 and remaining acceptance strata are still open, and S4 remains gated
-on M005.
+After roughly ten minutes, both child runs still lacked terminal results or
+journal progress beyond `safe_boundary: before_provider_turn`; the managed
+worktrees contained no edits. The group was cancelled through
+`task.cancel_group`. Its children remained `cancelling` while the provider
+calls unwound, so the isolated daemon was stopped and restarted; scheduler
+recovery then marked both children `interrupted` and returned both clean
+worktrees to `ready`. The captured usage rows are session scoped and include
+parent follow-up turns, so they cannot be attributed to child progress.
+
+This retry is classified incomplete and excluded from S1 success and
+performance denominators. It provides live evidence for same-session group
+continuation and normal cancellation, but no child completion or effectiveness
+result. M008 remains active; S2/S3 and the remaining acceptance strata remain
+open, and S4 remains gated on M005.
