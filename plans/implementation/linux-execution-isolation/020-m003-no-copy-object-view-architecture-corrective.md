@@ -68,13 +68,17 @@ host.
 
 The candidate was direct Bubblewrap launch with a read-only repository bind
 and a private tmpfs overlay on `.git/objects/info`; it did not use CodeGG's
-trusted helper or status/ack protocol. On 20 warm `git status --porcelain`
-samples, the packed shape measured 14.94 ms p95 versus 12.20 ms direct (1.22x);
-the fragmented shape measured 14.87 ms versus 11.85 ms (1.25x). On 20 warm
-`git log -n 1` samples, packed measured 4.19 ms p95 versus 1.67 ms direct,
-and fragmented measured 4.23 ms versus 1.58 ms direct. These status values
-meet C010's warm absolute/ratio bounds on this host; the short log command
-shows the fixed namespace-start overhead more clearly.
+trusted helper or status/ack protocol. On 100 warm `git status --porcelain`
+samples, packed measured median/p95/max 13.44/14.55/15.49 ms versus direct
+11.13/12.37/13.78 ms (p95 1.18x); fragmented measured 13.15/13.62/14.42 ms
+versus direct 10.91/11.45/12.43 ms (p95 1.19x). On 100 warm `git log -n 1`
+samples, packed measured 3.45/4.01/4.26 ms versus direct 1.28/1.44/1.70 ms
+(p95 2.79x); fragmented measured 3.62/4.48/5.19 ms versus direct
+1.32/1.66/1.90 ms (p95 2.70x). Status meets C010's warm absolute/ratio bounds
+on this host. The tiny log operation exceeds the 2x relative ratio because of
+fixed namespace-start overhead, though its additive p95 cost is under 3 ms.
+The helper handshake may add further latency, and the all-operation impact
+still needs an explicit admission interpretation.
 
 For comparison, the existing private-copy path's 20-sample warm preparation
 p95 was 0.049 ms packed / 0.048 ms fragmented. Warm end-to-end status p95 was
