@@ -1960,7 +1960,7 @@ mod tests {
         let service = InteractiveProcessService::new(test_admission(2));
         let host_pid = std::process::id();
         let script = format!(
-            "import os,pathlib,signal,struct,termios,fcntl,time; host={host_pid}; marker=pathlib.Path({:?}); assert all(os.isatty(fd) for fd in (0,1,2)); assert os.tcgetpgrp(0)>0; assert not os.path.exists(f'/proc/{{host}}/environ'); marker.write_text('ok'); print('M004_PTY_READY', flush=True); seen=[]; signal.signal(signal.SIGWINCH, lambda *_: seen.append(struct.unpack('HHHH', fcntl.ioctl(0,termios.TIOCGWINSZ,bytes(8)))[:2])); deadline=time.monotonic()+10;\nwhile not seen and time.monotonic()<deadline: time.sleep(.01)\nassert seen and seen[-1]==(33,111),seen; print('M004_PTY_RESIZED', flush=True)",
+            "import os,pathlib,signal,struct,termios,fcntl,time; host={host_pid}; marker=pathlib.Path({:?}); tty=[os.isatty(fd) for fd in (0,1,2)]; assert all(tty), f'isatty(0,1,2)={{tty}}'; foreground=os.tcgetpgrp(0); assert foreground>0, f'tcgetpgrp(0)={{foreground}}'; host_proc=os.path.exists(f'/proc/{{host}}/environ'); assert not host_proc, f'host proc environ visible for pid {{host}}'; marker.write_text('ok'); print('M004_PTY_READY', flush=True); seen=[]; signal.signal(signal.SIGWINCH, lambda *_: seen.append(struct.unpack('HHHH', fcntl.ioctl(0,termios.TIOCGWINSZ,bytes(8)))[:2])); deadline=time.monotonic()+10;\nwhile not seen and time.monotonic()<deadline: time.sleep(.01)\nassert seen and seen[-1]==(33,111),seen; print('M004_PTY_RESIZED', flush=True)",
             marker.to_string_lossy()
         );
         let mut spawn = SpawnSpec::new(vec![
