@@ -72,7 +72,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use crate::tui::app::state::ChatState;
 use crate::tui::app::TuiMsg;
 use crate::tui::components::sidebar::SidebarWidget;
-use crate::tui::input::InputAction;
+use crate::tui::input::{InputAction, InputMode};
 use crate::tui::theme::Theme;
 
 /// Paint `widget` into `buf` at `area`, bridging `Component::render`'s
@@ -878,6 +878,12 @@ pub struct PanelHints<'a> {
     pub focused: bool,
     /// Daemon project id the chat panel is bound to, if any.
     pub chat_project: Option<&'a str>,
+    /// The app's current mode.
+    ///
+    /// A panel whose Insert means something other than "type into the composer"
+    /// has to say so on the hint line, or the user is reading a mode they are
+    /// not actually in.
+    pub input_mode: InputMode,
 }
 
 pub trait SidePanel {
@@ -913,6 +919,25 @@ pub trait SidePanel {
     /// own: the Terminal panel claims these keys only while its PTY view is
     /// focused, which lives on the controller rather than on the panel.
     fn owns_exit_key(&self, _key: KeyEvent, _ctx: &PanelCtx<'_>) -> bool {
+        false
+    }
+
+    /// Whether this panel wants the keyboard in **Insert** mode.
+    ///
+    /// The host's rule is "a focused panel owns keys in Normal mode, and the
+    /// composer owns them in Insert mode" (`App::on_key`). That rule is right
+    /// for every panel that renders its *own* text field, where Insert means
+    /// "type into that field" and the composer's draft is the right target.
+    ///
+    /// A panel that fronts something other than itself — a live PTY — needs
+    /// the opposite: Insert must reach the process, or a user who docked the
+    /// terminal with `Shift+L` and typed got their keystrokes into a composer
+    /// they could not see. Opting in here is what makes "INS types into the
+    /// terminal" true on both surfaces.
+    ///
+    /// Only the *focused* panel is ever asked, so this cannot be used to take
+    /// keys from an unrelated surface.
+    fn claims_insert_keys(&self, _ctx: &PanelCtx<'_>) -> bool {
         false
     }
 
@@ -1289,6 +1314,10 @@ impl SidePanelHost {
         self.hosted.iter_mut().find(|panel| panel.id() == id)
     }
 
+    fn hosted(&self, id: SidePanelId) -> Option<&hosted::HostPanel> {
+        self.hosted.iter().find(|panel| panel.id() == id)
+    }
+
     /// Whether a hosted panel currently has a real box adopted into it, as
     /// opposed to the placeholder it shows when nothing has been docked.
     ///
@@ -1371,13 +1400,18 @@ impl SidePanelHost {
         self.chat.cursor()
     }
 
-    pub fn composer_hints(&self, chat_project: Option<&str>) -> Option<String> {
+    pub fn composer_hints(
+        &self,
+        chat_project: Option<&str>,
+        input_mode: InputMode,
+    ) -> Option<String> {
         if !self.is_focused() {
             return None;
         }
         let hints = PanelHints {
             focused: true,
             chat_project,
+            input_mode,
         };
         // Read-only dispatch: a hint must not require an exclusive borrow of
         // the panel, or the composer row could not ask for it during render.
@@ -1445,6 +1479,18 @@ impl SidePanelHost {
         self.terminal.handle()
     }
 
+    /// The terminal handle shown by the panel docked at `placement`.
+    ///
+    /// Placement-scoped rather than global because a mouse event names the
+    /// column it landed in. The Session panel is not a terminal and answers
+    /// `None`, which is what keeps a wheel over it on its own scroll path.
+    pub fn terminal_handle_at(&self, placement: PanelPlacement) -> Option<&str> {
+        if self.panel_at(placement) != SidePanelId::Terminal {
+            return None;
+        }
+        self.terminal.handle()
+    }
+
     /// Adopt `handle` in the terminal panel. Called after a terminal is
     /// created or attached so docking `/terminal` shows something.
     pub fn show_terminal(&mut self, handle: Option<&str>) {
@@ -1490,6 +1536,30 @@ impl SidePanelHost {
     fn panel(&mut self) -> &mut dyn SidePanel {
         let id = self.active();
         self.panel_by_id_mut(id)
+    }
+
+    /// Read-only twin of [`Self::panel`].
+    ///
+    /// Queries that only *ask* a panel something must not need exclusive
+    /// access to it: `claims_insert_keys` is consulted on the hot key path
+    /// while a `PanelCtx` holds the other borrows, and taking `&mut` here would
+    /// force every such query to be sequenced around unrelated state.
+    fn panel_ref(&self) -> &dyn SidePanel {
+        self.panel_by_id(self.active())
+    }
+
+    fn panel_by_id(&self, id: SidePanelId) -> &dyn SidePanel {
+        match id {
+            SidePanelId::Session => &self.session,
+            SidePanelId::Agents => &self.agents,
+            SidePanelId::Chat => &self.chat,
+            SidePanelId::Terminal => &self.terminal,
+            SidePanelId::Help => &self.help,
+            other => self
+                .hosted(other)
+                .expect("every non-bespoke panel is constructed from SidePanelId::ALL")
+                as &dyn SidePanel,
+        }
     }
 
     /// The panel instance for `id`.
@@ -1565,6 +1635,23 @@ impl SidePanelHost {
         true
     }
 
+    /// Point the gestures at `placement` *and* take the keyboard, which is
+    /// what a click on that column means.
+    ///
+    /// One step rather than `select_placement` followed by `focus`, because
+    /// `select_placement` deliberately hands focus back — doing that and then
+    /// re-taking it here is the same operation written twice, and the two can
+    /// drift. Refuses when the placement holds no panel, so a click in a gap
+    /// between columns leaves the keyboard where it was.
+    pub fn focus_at(&mut self, placement: PanelPlacement) -> bool {
+        if !self.is_visible_at(placement) {
+            self.focused = false;
+            return false;
+        }
+        self.selected = placement;
+        self.focus()
+    }
+
     /// Return keyboard focus to the composer.
     pub fn blur(&mut self) {
         self.focused = false;
@@ -1612,6 +1699,15 @@ impl SidePanelHost {
             .copied()
             .filter(|placement| self.is_visible_at(*placement))
             .collect()
+    }
+
+    /// Whether the focused panel takes the keyboard in Insert mode.
+    ///
+    /// See [`SidePanel::claims_insert_keys`]. The answer is *scoped to Insert*,
+    /// so the host keeps its ordinary Normal-mode contract for every panel that
+    /// has not opted in.
+    pub fn claims_insert_keys(&self, ctx: &mut PanelCtx<'_>) -> bool {
+        self.focused && self.panel_ref().claims_insert_keys(ctx)
     }
 
     /// Route one key while the host holds focus.

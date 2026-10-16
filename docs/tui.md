@@ -394,19 +394,35 @@ your login shell (`$SHELL`, falling back to `sh`) — you do not have to name a
 command first. `/terminal-create <command> [args...]` is still there when you
 want to run a specific program instead.
 
-The terminal starts in viewing mode; press `i` to focus it. While focused, a
-literal `Esc` is sent to the program (for example, Vim). Press `Esc` **twice**
-to return keyboard focus to the TUI, or `Ctrl-]` if your keyboard has that
-chord. Press `Esc` while viewing to close and detach. The
-screen interprets VT cursor movement, erase, SGR colors, and alternate-screen
+The box opens **already taking your keys**, so you can type straight away.
+
+There are two modes, and each key means exactly one thing:
+
+- **INS** — the process owns the keyboard. Everything you type, plus `Enter`,
+  `Backspace`, `Tab`, the arrow keys and `Ctrl-C`/`Ctrl-D`, goes to the
+  terminal. The cursor is drawn where the shell is accepting the next
+  character. Press `Esc` to stop typing and read.
+- **NOR** — the reader owns the keyboard. `hjkl` and the arrows move, `Ctrl+u`
+  and `Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x` selects
+  whole lines, `d` deletes the selection, `space+y` copies it, `C` clears the
+  screen, `D` folds in diagnostics. Press `i` or `Enter` to start typing again.
+  Press `Esc` to close and detach — or to drop an armed selection first.
+
+If you are running a full-screen program that needs its own escape (Vim, less,
+tmux), press `Ctrl+]` to send it a real `Esc` byte and stay in INS. `Esc` itself
+is the mode key and never reaches the child.
+
+The screen interprets VT cursor movement, erase, SGR colors, and alternate-screen
 control in bounded local state; child escape sequences are not written to the
 outer terminal. Resizing the TUI resizes the PTY to the usable dialog viewport.
 
 `/terminal` then `Shift+L` moves it into the side panel, where it behaves the
-same way: `i` takes the keyboard, `Esc Esc` gives it back. If the process behind
-the panel has exited, `i` starts a fresh shell instead — the panel never leaves
-you staring at a dead one. `/terminal-clear` wipes the local scrollback and
-screen while the process keeps running.
+same way. You can also **click** a panel column to focus it, **drag** across one
+to select its text and copy it with `Ctrl+C`, and **scroll** the wheel over one
+to move that column's own content. If the process behind the panel has exited,
+`i` starts a fresh shell instead — the panel never leaves you staring at a dead
+one. `/terminal-clear` wipes the local scrollback and screen while the process
+keeps running.
 
 The box opens with one header line — the command, the link state, and whether
 it is taking your keys. Press `D` while viewing to fold in the full diagnostics

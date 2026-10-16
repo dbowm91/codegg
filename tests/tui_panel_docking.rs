@@ -1544,11 +1544,13 @@ async fn a_docked_terminal_panel_accepts_typing_after_i() {
     );
 }
 
-/// `Esc Esc` is the exit a Mac keyboard can actually send. Regression: the only
-/// documented exit was `Ctrl-]`, which a US Mac layout cannot type — so `i`
-/// left the user stuck in a TUI that looked frozen.
+/// One `Esc` leaves insert on any keyboard.
+///
+/// The exit used to require two of them because a single `Esc` was forwarded
+/// to the child. That made "where do my keys go" depend on a hidden latch,
+/// and it is the specific reason the docked panel read as unusable.
 #[tokio::test(flavor = "current_thread")]
-async fn esc_esc_leaves_the_docked_terminal_panel() {
+async fn a_single_esc_leaves_the_docked_terminal_panel() {
     let mut app = test_app();
     app.ui_state.sidebar_visible = true;
     attach_terminal(&mut app, "t-esc", &["$ "]);
@@ -1557,17 +1559,57 @@ async fn esc_esc_leaves_the_docked_terminal_panel() {
     app.on_key(plain('i'));
     assert!(app.interactive_terminals.is_focused("t-esc"));
 
-    // One Esc still belongs to the program under it.
-    app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(
-        app.interactive_terminals.is_focused("t-esc"),
-        "a lone Esc is forwarded to the PTY, not consumed as an exit"
-    );
-
-    // The second one is the user asking to get out.
     app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         !app.interactive_terminals.is_focused("t-esc"),
-        "Esc Esc must hand the keyboard back"
+        "one Esc must hand the keyboard back, on a keyboard with no `]` key"
+    );
+}
+
+/// `q` is a character, not an exit.
+///
+/// The panel used to claim `q` alongside `Esc` while the PTY was focused, so
+/// a shell could never receive the most common letter in most commands.
+#[tokio::test(flavor = "current_thread")]
+async fn q_is_typed_into_the_shell_rather_than_leaving_the_panel() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-q", &["$ "]);
+    focus_terminal_panel(&mut app);
+
+    app.on_key(plain('i'));
+    app.on_key(plain('q'));
+
+    assert!(
+        app.interactive_terminals.is_focused("t-q"),
+        "`q` is program input in INS; only Esc leaves"
+    );
+}
+
+/// The reported failure: dock the terminal with `Shift+L`, be in Insert, and
+/// type. Every keystroke has to reach the process — not a composer the user
+/// is not looking at.
+#[tokio::test(flavor = "current_thread")]
+async fn insert_mode_typing_reaches_the_docked_shell() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.input_mode = InputMode::Insert;
+    attach_terminal(&mut app, "t-ins", &["$ "]);
+    focus_terminal_panel(&mut app);
+
+    // `i` takes the PTY, which is what makes the panel claim Insert.
+    app.on_key(plain('i'));
+    assert!(app.interactive_terminals.is_focused("t-ins"));
+
+    for c in "echo hi".chars() {
+        app.on_key(plain(c));
+    }
+
+    assert!(
+        app.messages_state
+            .toasts
+            .iter()
+            .any(|toast| toast.message.contains("terminal input dropped")),
+        "Insert-mode keystrokes must be routed as PTY input, not eaten by the composer"
     );
 }
