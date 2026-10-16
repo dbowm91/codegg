@@ -22,7 +22,7 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
-## Linux/command identity migrations (2026-10-14 and 2026-10-15)
+## Linux/command identity migrations (2026-10-14 through 2026-10-16)
 
 C004 archived the exact pre-migration Linux and command ADR records under
 `plans/archive/linux-command-adr-id-aliases/` and recorded source Git blob IDs,
@@ -31,11 +31,14 @@ SHA-256 digests, and the identity mapping in
 isolation was assigned ADR-0031 (accepted 2026-10-14); command syntax authority was
 ADR-0032 (accepted, unchanged). On reconciliation with current main, ADR-0031 was
 already the accepted authenticated idle-continuation decision. The Linux decision
-therefore retains its substance and accepted status under canonical ADR-0033;
+therefore retained its substance and accepted status under canonical ADR-0033
+until current main accepted the separate project identity decision as ADR-0033
+on 2026-10-16. The Linux decision now retains its substance and accepted
+status under ADR-0035;
 idle continuation keeps ADR-0031, and command syntax then kept ADR-0032. A later
 mainline acceptance assigned ADR-0032 to agent-workstream coordination, so command
-syntax now keeps its substance and accepted status as ADR-0034. No decision's
-substance or disposition changed. ADR-0033 acceptance selects the Linux
+syntax keeps its substance and accepted status as ADR-0034. No decision's
+substance or disposition changed. ADR-0035 acceptance selects the Linux
 architecture but does not register or enable a production backend; native
 qualification and rollout gates remain in the Linux roadmap. The concurrent
 Windows identity migration reserves ADR-0029/ADR-0030; Windows ADR-0027 and
@@ -44,8 +47,10 @@ interpreted by subsystem and path. The 2026-10-15 rename preserves the Linux ADR
 decision and accepted date while resolving the cross-branch identity collision.
 
 `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`
-records the migration contract and
-`plans/closure/linux-execution-isolation/012-status.md` records its evidence.
+records the original migration contract and
+`plans/closure/linux-execution-isolation/012-status.md` records its historical
+evidence. The 2026-10-16 collision correction and current canonical mapping are
+recorded in `plans/adrs/linux-command-adr-id-migration.md`.
 
 ## Status lifecycle
 
@@ -166,8 +171,9 @@ references. Linux/command historical aliases and fingerprints are recorded in
 - ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
 - ADR-0031 — **accepted** authenticated idle continuation and delegated turn admission (current-main decision).
 - ADR-0032 — **accepted** daemon-owned agent workstream coordination and explicit shared-checkout mutation; production shared writes remain gated on M005.
-- ADR-0033 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
+- ADR-0033 — **accepted** directory-tied project identity and client working directory.
 - ADR-0034 — **accepted** command syntax is advisory and execution authority is enforced; both identity migrations preserved this decision's substance and accepted status.
+- ADR-0035 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
 
 ## ADR-0032 workstream coordination (2026-10-15)

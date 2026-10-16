@@ -34,7 +34,7 @@ IDs 0029/0030 were reserved by the concurrent Windows identity migration; the ne
 
 ## 3. Production implementation evidence
 
-No runtime, storage, protocol, or backend code changed. ADR-0033 still selects no production backend until separate maintainer acceptance and native proof. ADR-0032 preserves the already-accepted command classification and execution-authority contract.
+No runtime, storage, protocol, or backend code changed. ADR-0035 still selects no production backend until separate maintainer acceptance and native proof. ADR-0032 preserves the already-accepted command classification and execution-authority contract.
 
 ## 4. Verification executed
 
@@ -54,7 +54,7 @@ All commands passed locally. `scripts/verify.sh quick` reported `Quick verificat
 ## 5. Invariant review
 
 - No authority ceiling, explicit deny, sandbox default, requested capability, or obtained-capability claim changed.
-- Linux ADR-0033 remains proposed; no namespace or mount backend was registered.
+- Linux ADR-0035 remains proposed; no namespace or mount backend was registered.
 - Command ADR-0032 remains accepted; its content was not substantively revised.
 - Windows ADR-0027/0028 references continue to mean Windows decisions on this branch.
 
@@ -96,12 +96,12 @@ C004 is closed. C005 remains eligible and may proceed. At the C004 review date, 
 ## Current identity corrections (2026-10-15 and 2026-10-16)
 
 Current main had accepted authenticated idle continuation as ADR-0031. The
-Linux decision remains accepted with unchanged substance as ADR-0033; command
+Linux decision remains accepted with unchanged substance as ADR-0035; command
 authority was ADR-0032 at that correction point. This later canonical-ID
 correction does not alter the historical C004 baseline or its evidence.
 
 On 2026-10-16, current main introduced the accepted agent-workstream ADR-0032.
 Command authority therefore keeps its accepted status and unchanged substance
-under ADR-0034; Linux remains ADR-0033 and idle continuation remains ADR-0031.
+under ADR-0034; Linux remains ADR-0035 and idle continuation remains ADR-0031.
 See `plans/adrs/linux-command-adr-id-migration.md` and the current canonical
 command ADR at `plans/adrs/ADR-0034-command-syntax-and-execution-authority.md`.

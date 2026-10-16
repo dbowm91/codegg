@@ -91,7 +91,7 @@ Added `research/linux-execution-isolation/c007-baseline-and-denial-fixture-matri
 
 ## 11. Roadmap disposition
 
-C007's fixture-design and legacy-baseline slice is conditionally closed. The full C007/M004/M005 enforcement matrix remains blocked until real backend implementation and positive-controlled denial evidence exist. C008 and command M004 are independent; C006 remains blocked on ADR-0033 disposition and positive protected-mount evidence.
+C007's fixture-design and legacy-baseline slice is conditionally closed. The full C007/M004/M005 enforcement matrix remains blocked until real backend implementation and positive-controlled denial evidence exist. C008 and command M004 are independent; C006 remains blocked on ADR-0035 disposition and positive protected-mount evidence.
 
 ## 12. Registry updates
 

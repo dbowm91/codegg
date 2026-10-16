@@ -5,7 +5,7 @@ Primary class: capability
 Repository baseline: reconciled feature branch at `81e857326b3d53a9ab2b606a0e9db736f43bc429`, 2026-10-15.
 Source: `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8.
-Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033.
+Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0035.
 Target closure record: `plans/closure/linux-execution-isolation/005-status.md`.
 
 Current limitation: this plan is active for a private, opt-in Bubblewrap

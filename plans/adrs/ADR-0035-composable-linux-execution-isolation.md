@@ -1,4 +1,4 @@
-# ADR-0033: Composable Linux Execution Isolation and Obtained-Capability Authority
+# ADR-0035: Composable Linux Execution Isolation and Obtained-Capability Authority
 
 Status: accepted
 
@@ -17,7 +17,7 @@ Related specification sections:
 Affected subsystem roadmaps:
 - `plans/subsystems/linux-execution-isolation-roadmap.md`
 
-Related ADRs: ADR-0001 (execution authority), ADR-0002 (worktree isolation), ADR-0004 (sandbox and approvals), ADR-0016 (platform-owned launch). Complements these decisions; does not supersede or silently reinterpret them. The existing Windows ADR-0019, ADR-0020 and ADR-0021 numbers on `work/windows-native-sandbox-foundation` are reserved for that line. Canonical identity ADR-0033 was assigned after current-main reconciliation because ADR-0031 is the accepted idle-continuation decision on main.
+Related ADRs: ADR-0001 (execution authority), ADR-0002 (worktree isolation), ADR-0004 (sandbox and approvals), ADR-0016 (platform-owned launch). Complements these decisions; does not supersede or silently reinterpret them. The existing Windows ADR-0019, ADR-0020 and ADR-0021 numbers on `work/windows-native-sandbox-foundation` are reserved for that line. Canonical identity ADR-0035 was assigned after current-main reconciliation because ADR-0031 is the accepted idle-continuation decision on main.
 
 ## Context
 

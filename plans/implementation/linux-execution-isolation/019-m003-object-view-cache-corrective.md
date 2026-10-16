@@ -5,7 +5,7 @@ Repository baseline: `4cd4068a` (current reconciled Linux isolation branch)
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` §8.
-Applicable ADRs: accepted ADR-0033 and ADR-0034; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
+Applicable ADRs: accepted ADR-0035 and ADR-0034; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
 Primary class: capability / polish / security invariant
 
 ## 1. Objective

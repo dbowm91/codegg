@@ -73,13 +73,16 @@ def self_test() -> list[str]:
             "ADR-0030-windows-broad-read-profile-renumbered.md",
             "ADR-0031-authenticated-idle-continuation-delegated-turn-admission.md",
             "ADR-0032-command-syntax-and-execution-authority.md",
-            "ADR-0033-composable-linux-execution-isolation.md",
+            "ADR-0033-directory-tied-project-identity-and-client-working-directory.md",
+            "ADR-0034-command-syntax-and-execution-authority.md",
+            "ADR-0035-composable-linux-execution-isolation.md",
         ]
         for name in merged_names:
             (adrs / name).write_text(f"# {name}\n", encoding="utf-8")
         (root / "plans/active.md").write_text(
             "See `plans/adrs/ADR-0021-native-editor-completion-read-and-local-edit.md` and "
-            "`plans/adrs/ADR-0033-composable-linux-execution-isolation.md`.\n",
+            "`plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`, "
+            "and `plans/adrs/ADR-0035-composable-linux-execution-isolation.md`.\n",
             encoding="utf-8",
         )
         (root / "plans/archive/windows-adr-id-aliases").mkdir(parents=True)
