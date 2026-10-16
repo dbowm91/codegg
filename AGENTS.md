@@ -99,7 +99,12 @@ change-triggered (`ls scripts/check_*` for the full list):
   `check_scheduler_bypass.py`; daemon path handling needs `check_daemon_cwd_usage.py`
   (no `std::env::current_dir()` in workspace-bound daemon code — thread `ExecutionContext`)
 - `assets/agents/*.toml` or `assets/prompts/` → `python3 scripts/generate_builtin_agents.py`
-  to regenerate `src/agent/builtins/generated.rs` (never edit it); `--check` in CI
+  to regenerate `src/agent/builtins/generated.rs` (never edit it); `--check` in CI.
+  That generator owns `src/agent/builtins/mod.rs` **outright** — it rewrites the
+  whole file. `assets/subagent-names/*.toml` is separate: regenerate it with
+  `python3 scripts/generate_subagent_names.py` into
+  `src/agent/subagent_names/generated.rs`, whose sibling `mod.rs` is hand-written
+  and must not be handed to the builtins generator.
 - Git risk/policy → `check_git_forbidden_patterns.py`; storage layout →
   `check_project_catalog_invariants.py` (`STORAGE_LAYOUT_VERSION` must track the
   highest migration in `crates/codegg-core/src/session/schema.rs`); adding or

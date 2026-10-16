@@ -96,6 +96,9 @@ jobs:
       - name: Validate agent TOML schema
         run: python3 scripts/generate_builtin_agents.py --check
 
+      - name: Validate subagent name TOML schema
+        run: python3 scripts/generate_subagent_names.py --check
+
       - name: codegg-core boundary guard
         run: ./scripts/check-core-boundary.sh
 
