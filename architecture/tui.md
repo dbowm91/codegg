@@ -3197,13 +3197,18 @@ why `scripts/check_tui_editor_text_authority.py` stays green and
 non-vacuous: that guard's `SCANNED_FILES` list is fixed at the five editor
 modules, and this feature does not widen it.
 
-**Bounded on every axis.** The walk caps depth (12), total entries (4096),
-and per-entry name length, and records which bound stopped it so the pane can
-render a truncation notice instead of presenting a partial tree as complete.
-An unreadable subdirectory is skipped rather than treated as fatal, so a
-permission-denied folder cannot blank the tree. Only the rows that fit the
-pane are materialized, so per-frame cost is a function of the viewport
-rather than of the workspace.
+**Bounded on every axis.** The walk caps the embedded depth window (3), total
+entries (4096), and per-entry name length, and records which bound stopped it
+so the pane can render a truncation notice instead of presenting a partial
+tree as complete. The depth figure is a *window*, not a navigation limit —
+one listing is scoped, and `l` re-walks a selected directory as a new root
+against the same budget, so a three-level embed bounds a response rather than
+a workspace. See "Depth is a window, not a navigation limit" under the C004
+walk budget below for why the window is what keeps every top-level row
+inside the 512 KiB wire cap. An unreadable subdirectory is skipped rather
+than treated as fatal, so a permission-denied folder cannot blank the tree.
+Only the rows that fit the pane are materialized, so per-frame cost is a
+function of the viewport rather than of the workspace.
 
 **Symlinks are never followed**, at any depth, including directory
 symlinks. The test is on the raw entry, because `canonicalize` resolves a
@@ -3227,6 +3232,35 @@ enumeration on the listing path. The tab's `workspace_root` remains only
 fencing state (which workspace the pane believes it shows). There is no
 `current_dir()` read and no path-as-identity, so
 `scripts/check_tui_project_authority.py` holds by construction.
+
+**The session's own root survives the restore.** `tab.workspace_root` is
+mutable state, and the tab manifest is *user*-scoped
+(`default_tui_state_root`), not workspace-scoped — so it can legitimately
+name a project from an earlier session. `apply_restore_plan` clears every tab
+before installing restored ones, which meant launching `codegg` in a git
+worktree could silently activate a tab rooted in whatever checkout the
+previous session used, with nothing on screen saying so. Because that root
+anchors every relative path in the session (tools, `@` completions, the file
+tree), it is the same failure class as a tool reading the daemon's launch
+directory: the session gets retargeted into a tree the user never opened.
+
+`restore::LaunchBinding::capture` snapshots the root, identities, model, and
+agent off the active tab **before** the plan clears the container — whatever
+the session was actually anchored to, including a daemon-canonicalized form
+that differs from the frontend's launch directory.
+`restore::preserve_launch_binding` then either leaves an agreeing restore
+untouched (keeping the plan's heavy session load), focuses an already-restored
+tab for that root, or re-establishes the tab — and drops the heavy load in the
+latter two cases, because it targets a session the user is no longer looking
+at. The disagreement is reported as a restore diagnostic plus a warning toast
+naming the root that was preserved. Reporting rather than silently correcting
+is deliberate: the user may have meant to resume the older project, and
+discarding their restored tabs would be the opposite mistake — what is never
+acceptable is the two disagreeing invisibly. A `None` root is compat mode
+(the launch directory could not be canonicalized) and preserves nothing. Reporting rather than silently
+correcting is deliberate: the user may have meant to resume the older project,
+and discarding their restored tabs would be the opposite mistake — what is
+never acceptable is the two disagreeing invisibly.
 
 **Focus and layout.** The layout split degrades to the full-width editor on a
 narrow terminal rather than producing a degenerate pane. While the tree is
@@ -4410,6 +4444,25 @@ Iterator `Err`s are counted via `account_one_entry` (C004): the old
 `entries.flatten()` silently dropped errors without counting work or checking
 cancellation, letting an error flood bypass both bounds. `TreeListing`
 carries the examined count as result metadata.
+
+**Depth is a window, not a navigation limit.** `MAX_LISTING_DEPTH` is 3,
+single-sourced into the TUI as `MAX_TREE_DEPTH`. One listing is scoped:
+`WorkspaceDirectoryList` carries a `prefix`, and `l` re-walks the selected
+directory as a new root, so a three-level embed bounds one response rather
+than the workspace. It was 12, and the deep embed made the *wrong* budget
+bind. The wire enforcer keeps the longest **top-level prefix** that fits
+512 KiB, so one directory with a deep subtree monopolises the budget and
+every sibling root is trimmed away — measured on a 75,956-entry repository
+at depth 12, that left exactly **one** root node, and `/files` rendered a
+single unselectable row with no second row to move to. Raising
+`MAX_TREE_NODES` does not fix it (65,536 nodes still yielded 4 roots): the
+binding constraint was bytes, not node count. At depth 3 the same repository
+retains all 37 roots in 290 KiB. `LISTING_IGNORED_DIRS` also gained
+`.codegg` — this application's own per-project runtime state, 21,482 entries
+in a CodeGG checkout and, being second alphabetically, a consumer of the
+entire retained-node budget before any source directory was walked. The other
+walkers here (`python_script::snapshot`, `python_script::executor`,
+`research::sources::local_repo`) already skipped it; the list had drifted.
 
 C004 single-flight admission (`src/tui/file_tree_coordinator.rs`): at most
 one blocking scan executes (global cap 1, preferred per plan), with at most

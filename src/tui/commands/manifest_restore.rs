@@ -24,7 +24,8 @@
 
 use crate::tui::app::state::manifest::{ManifestLoadOutcome, TuiWorkspaceManifest};
 use crate::tui::app::state::restore::{
-    apply_restore_plan, CatalogEntry, DaemonLookupSnapshot, ProjectDetailSnapshot, RestorePlan,
+    apply_restore_plan, preserve_launch_binding, CatalogEntry, DaemonLookupSnapshot, LaunchBinding,
+    LaunchBindingOutcome, ProjectDetailSnapshot, RestorePlan,
 };
 use crate::tui::app::App;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -233,6 +234,24 @@ fn spawn_restore_project_gets(
     }
 }
 
+/// Surface a restore that disagreed with the launch directory.
+///
+/// A warning, never a silent correction: the user may have *meant* to resume
+/// the older project, and silently discarding their restored tabs would be the
+/// opposite mistake. What is never acceptable is the two disagreeing invisibly.
+fn record_launch_override(app: &mut App, root: &std::path::Path) {
+    let message = format!(
+        "restored tabs did not include the directory you launched in ({}); kept the launch workspace instead",
+        root.display()
+    );
+    tracing::info!(
+        target: "codegg::tui::manifest",
+        "launch workspace root not present in restore plan; launch binding preserved"
+    );
+    app.ui_state.diagnostics.record_restore_diagnostic(&message);
+    app.messages_state.toasts.warning(&message);
+}
+
 /// Apply a [`RestorePlan`] to the TUI. The plan's pending heavy
 /// load is routed through the existing view-switch coordinator so
 /// the heavy session view is loaded exactly once.
@@ -254,7 +273,30 @@ fn apply_plan(app: &mut App, plan: RestorePlan) {
     }
 
     // Materialize lightweight tabs.
+    //
+    // Captured *before* the plan runs: `apply_restore_plan` calls
+    // `clear_for_restore`, so the launch binding this process established is
+    // gone by the time it returns. `preserve_launch_binding` puts it back if
+    // the restore left the session pointing at a different directory.
+    let launch_binding = LaunchBinding::capture(&app.project_tabs);
+
     let heavy_target = apply_restore_plan(&mut app.project_tabs, &plan);
+    let (outcome, heavy_target) =
+        preserve_launch_binding(&mut app.project_tabs, launch_binding, heavy_target);
+    if outcome != LaunchBindingOutcome::Unchanged {
+        // Read the root back off the tab the guard just focused or rebuilt, not
+        // off `launch_workspace_root`: the guard acts on the root the session
+        // actually held, which the daemon may have canonicalized differently
+        // from the frontend's launch directory. Naming the other one would make
+        // the diagnostic describe a path nothing was anchored to.
+        let preserved = app
+            .project_tabs
+            .active()
+            .and_then(|tab| tab.workspace_root.clone());
+        if let Some(root) = preserved {
+            record_launch_override(app, &root);
+        }
+    }
     // The restored tab carries the user's persisted `provider/model` choice;
     // adopt it as the active model so the next catalog refresh cannot decide
     // the session's model on the frontend's behalf.

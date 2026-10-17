@@ -15190,6 +15190,11 @@ fn index_files_recursive(
         ".cargo",
         "dist",
         "build",
+        // Mirrors `directory_listing::LISTING_IGNORED_DIRS`. Kept in step on
+        // purpose: the file tree and the `@` completions describe the same
+        // workspace, so a directory offered by one and hidden by the other
+        // reads as a bug in whichever one the user is looking at.
+        ".codegg",
     ];
 
     if let Ok(entries) = std::fs::read_dir(current_dir) {
