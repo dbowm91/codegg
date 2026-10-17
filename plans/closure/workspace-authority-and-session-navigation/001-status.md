@@ -224,7 +224,7 @@ exit after revert: 0
 | Check | Result |
 |---|---|
 | `tests/workspace_root_execution_authority.rs` | **6 passed** (failed for the diagnosed reason at baseline, §3) |
-| `cargo test -p codegg --lib` | **6379 passed; 3 failed; 4 ignored** — all 3 failures pre-existing, reproduced at clean HEAD (§5) |
+| `cargo test -p codegg --lib` | **6384 passed; 3 failed; 4 ignored** — all 3 failures pre-existing, reproduced at clean HEAD (§5). The pre-rebase run on the original base was 6379 passed / 3 failed; the delta is upstream `main` tests added by two other workstreams. |
 | `agent_loop_harness` (C001, regression-checked) | **58 passed** |
 | `subagent` | **22 passed** |
 | `tool_program_runtime` | **7 passed** |
@@ -250,3 +250,25 @@ pre-existing by running them in a clean worktree at `b77c8156`.
 
 No hosted CI run. No native cross-platform qualification. No merge-readiness
 claim beyond the local evidence above.
+## 11. Merge note
+
+Both milestones were committed on a fork branch and **rebased onto `main`
+immediately before pushing**, because two other workstreams pushed to `main`
+while this work was in progress (`27726f7e3`, `b4f4b916f`, `5a7381432`, then
+`18bcfa3d9`, `f8286a284`). One of those sessions had independently created the
+same planning files and pushed their pre-execution versions (`Status: proposed`,
+W001 `ready`).
+
+The rebase produced `add/add` conflicts on four planning files — the same paths,
+created in two worktrees. Resolution, recorded because it is a judgement:
+
+- **Plan and addendum files → my versions.** They record execution and closure;
+  the upstream copies record `proposed`/`ready`. Mine strictly supersede.
+- **`plans/registry.md` → both sides.** Upstream's newer TUI-panel row
+  (`M001 closed and committed on main`) was kept because it is the other
+  workstream's truth and I did not write it; my two milestone status cells were
+  taken from mine. All 6 upstream rows for the other workstreams survive.
+
+Production code merged with no conflicts. Verification in §9 was re-run on the
+rebased tree — `verify.sh quick` exit 0, guard clean, `cargo test -p codegg
+--lib` 6384/3 as above.
