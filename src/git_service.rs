@@ -874,9 +874,45 @@ impl GitExecutionService {
         let env = GitEnvPolicy::default();
 
         let output = tokio::time::timeout(timeout, async {
-            let mut cmd = env
-                .apply(&argv_owned, &root)
-                .map_err(GitServiceError::Policy)?;
+            let mut cmd = match env.apply(&argv_owned, &root) {
+                Ok(command) => command,
+                Err(error) => {
+                    #[cfg(test)]
+                    {
+                        let git_dir = root.join(".git");
+                        let object_dir = git_dir.join("objects");
+                        let object_entries = std::fs::read_dir(&object_dir)
+                            .map(|entries| {
+                                entries
+                                    .filter_map(Result::ok)
+                                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_else(|error| vec![format!("<read error: {error}>")]);
+                        let raw_repo_probe = std::process::Command::new("git")
+                            .args(["rev-parse", "--git-dir", "--show-toplevel", "--show-object-format"])
+                            .current_dir(&root)
+                            .output()
+                            .map(|output| {
+                                format!(
+                                    "status={} stdout={} stderr={}",
+                                    output.status,
+                                    String::from_utf8_lossy(&output.stdout).trim(),
+                                    String::from_utf8_lossy(&output.stderr).trim()
+                                )
+                            })
+                            .unwrap_or_else(|error| format!("<spawn error: {error}>") );
+                        eprintln!(
+                            "Git policy rejected argv={argv_owned:?}: {error:?}; root={}; .git={:?}; objects={:?}; alternates={:?}; entries={object_entries:?}; raw_repo_probe={raw_repo_probe}",
+                            root.display(),
+                            std::fs::symlink_metadata(&git_dir),
+                            std::fs::symlink_metadata(&object_dir),
+                            std::fs::symlink_metadata(object_dir.join("info/alternates")),
+                        );
+                    }
+                    return Err(GitServiceError::Policy(error));
+                }
+            };
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
