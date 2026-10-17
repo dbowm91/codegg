@@ -53,6 +53,7 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
             session_id,
             None,
             None,
+            None,
             Some("Core unavailable — check daemon status with /doctor".to_string()),
             false,
             true,
@@ -77,6 +78,7 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
                     session_id,
                     subscription_id: None,
                     cursor: None,
+                    projection: None,
                     error: Some("Core unavailable".to_string()),
                     unauthorized: false,
                     unsupported: true,
@@ -105,6 +107,7 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
                     session_id,
                     subscription_id: None,
                     cursor: None,
+                    projection: None,
                     error: None,
                     unauthorized: false,
                     unsupported: true,
@@ -130,6 +133,8 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
                 Ok(CoreResponse::ProjectionSubscribed {
                     subscription_id,
                     cursor,
+                    descriptor,
+                    snapshot,
                     ..
                 }) => Some(TuiCommand::ObserveSubscribed {
                     request_id,
@@ -137,6 +142,7 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
                     session_id,
                     subscription_id: Some(subscription_id),
                     cursor: Some(cursor),
+                    projection: Some((descriptor, snapshot)),
                     error: None,
                     unauthorized: false,
                     unsupported: false,
@@ -150,6 +156,7 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
                         session_id,
                         subscription_id: None,
                         cursor: None,
+                        projection: None,
                         error: Some(format!("{code}: {message}")),
                         unauthorized,
                         unsupported: false,
@@ -162,6 +169,7 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
                     session_id,
                     subscription_id: None,
                     cursor: None,
+                    projection: None,
                     error: Some(format!("Unexpected core response: {other:?}")),
                     unauthorized: false,
                     unsupported: false,
@@ -173,6 +181,7 @@ pub(crate) fn start_observe(app: &mut App, project_id: String, session_id: Strin
                     session_id,
                     subscription_id: None,
                     cursor: None,
+                    projection: None,
                     error: Some(format!("Observe subscribe failed: {e}")),
                     unauthorized: false,
                     unsupported: false,
@@ -194,6 +203,10 @@ pub(crate) fn apply_observe_subscribed(
     session_id: String,
     subscription_id: Option<codegg_protocol::projection::replay::ProjectionSubscriptionId>,
     cursor: Option<codegg_protocol::projection::replay::ProjectionCursor>,
+    projection: Option<(
+        codegg_protocol::projection::replay::ProjectionStreamDescriptor,
+        codegg_protocol::projection::replay::ProjectionSnapshotBundle,
+    )>,
     error: Option<String>,
     unauthorized: bool,
     unsupported: bool,
@@ -228,10 +241,13 @@ pub(crate) fn apply_observe_subscribed(
             request_id,
             &project_id,
             &session_id,
-            sub,
+            sub.clone(),
             cur,
             reconnect_epoch,
         ) {
+            if let Some((descriptor, snapshot)) = projection {
+                install_observed_snapshot(app, &session_id, sub, descriptor, snapshot);
+            }
             if let Some(banner) = app.observer.banner_line() {
                 app.messages_state
                     .toasts
@@ -247,6 +263,48 @@ pub(crate) fn apply_observe_subscribed(
         app.messages_state
             .toasts
             .warning(&format!("Observe failed: {err}"));
+    }
+}
+
+/// Install the snapshot the daemon returned alongside the subscription.
+///
+/// The daemon sends authoritative state at subscribe time. Without this the
+/// projection controller stays empty until some live event happens to
+/// arrive, so every derived surface — the working-strip status, the `Shift+T`
+/// overlay, the sidebar subagent list — has nothing to read and reports a
+/// busy session as idle. This is the daemon-socket counterpart of the
+/// WS-attach replay install; both must seed the controller or the frontend
+/// only ever knows what changed after it attached.
+fn install_observed_snapshot(
+    app: &mut App,
+    session_id: &str,
+    subscription_id: codegg_protocol::projection::replay::ProjectionSubscriptionId,
+    descriptor: codegg_protocol::projection::replay::ProjectionStreamDescriptor,
+    bundle: codegg_protocol::projection::replay::ProjectionSnapshotBundle,
+) {
+    let Some(workspace_id) = descriptor.workspace_id.clone() else {
+        tracing::warn!(%session_id, "observed projection descriptor lacks workspace identity");
+        return;
+    };
+    let initial = crate::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+        session_id,
+        &descriptor.project_id,
+        &workspace_id,
+    );
+    let outcome = app.projection_client.controller_mut().install_replay(
+        subscription_id,
+        descriptor,
+        Vec::new(),
+        Some(bundle),
+        initial,
+    );
+    if let crate::protocol::projection::controller::ControllerSubscribeOutcome::Failed { reason } =
+        outcome
+    {
+        tracing::warn!(%reason, "observed projection snapshot installation failed");
+        app.messages_state
+            .toasts
+            .error("Session projection snapshot could not be installed");
     }
 }
 

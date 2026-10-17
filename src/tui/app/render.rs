@@ -1650,6 +1650,12 @@ impl App {
         // user walked away from clears itself instead of waiting to be
         // overwritten by whatever they type next.
         crate::tui::commands::turn_control::expire_pending_stop_armed(self);
+        // The status row reads `ui_state.subagents`, which the sidebar render
+        // path also fills. Syncing here as well is what makes the row
+        // independent of the panel being drawn: a layout that hides the
+        // sidebar used to leave the count at zero and report a busy session
+        // as idle.
+        self.sync_subagent_rows_from_projection();
         let Some(area) = chunk else {
             self.ui_state.working_area = None;
             self.ui_state.subagents.hits.clear();
@@ -2526,6 +2532,25 @@ impl App {
     /// a row rather than being hidden, because the agent tree is the
     /// authoritative record that the task was dispatched.
     ///
+    /// Refresh the shared subagent rows from the active projection snapshot.
+    ///
+    /// This is the one place the working strip's count and the sidebar's list
+    /// are both written from, so they cannot disagree. It is deliberately
+    /// independent of whether the session panel is being drawn this frame:
+    /// row 0 of the strip reports `awaiting N tasks` from this vector, and a
+    /// hidden sidebar must not turn that into `idle`.
+    ///
+    /// A snapshot that has not arrived yet is not evidence of emptiness, so
+    /// the rows are left alone rather than cleared.
+    fn sync_subagent_rows_from_projection(&mut self) {
+        let Some((_, snapshot)) = self.projection_client.active_snapshot() else {
+            return;
+        };
+        if let Some(rows) = Self::sync_subagents_from_snapshot(snapshot) {
+            self.ui_state.subagents.set_rows(rows);
+        }
+    }
+
     /// Returns `None` when there is no snapshot to read at all, which is not
     /// the same as an empty tree: the caller keeps the rows it already has
     /// rather than blanking the strip mid-turn.

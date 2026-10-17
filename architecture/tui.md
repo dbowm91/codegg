@@ -620,6 +620,21 @@ is indistinguishable from a hung session. It is now **derived** at row 0 from
 point: an event can be dropped, coalesced, or simply not wired, and the wait is
 exactly the window in which that goes unnoticed.
 
+**Both inputs to that count are projection-derived, so the daemon-attached TUI
+depends on the projection actually reaching the controller.** It now does:
+`ProjectionSubscribed`'s snapshot is installed rather than discarded, live
+envelopes are consumed from `CoreEvent::ProjectionStreamEvent`, and
+`active_snapshot()` does not require a project tab that this frontend never
+switches. See `architecture/projection.md` "Daemon-attached seeding and live
+delivery" — when that chain is broken every derived status reads `idle`, which is
+indistinguishable from a healthy idle session.
+
+`ui_state.subagents` is written from **two** render paths — the session panel
+(so the sidebar list and the strip agree on one vector) and `render_working_strip`
+itself. The strip's copy is what makes row 0 independent of the sidebar being
+drawn: the strip is the main buffer's only status surface, so a layout that hides
+the panel must not turn "waiting on 3 subagents" back into `idle`.
+
 **Working strip** (`render_working_strip`). The main buffer's **single status
 surface**, and row 0 is **reserved unconditionally** — it reads `idle` when
 nothing is running and nothing is delegated, and `awaiting N task[s]` (with the

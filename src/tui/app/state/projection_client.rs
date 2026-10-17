@@ -481,8 +481,23 @@ impl ProjectionClientState {
     /// Returns `(stream_id, snapshot)` when the controller holds a
     /// snapshot for the active tab.
     pub fn active_snapshot(&self) -> Option<(ProjectionStreamId, &SessionProjectionSnapshot)> {
-        let tab_id = self.active_tab_id.as_deref()?;
         let snaps = self.controller.snapshots();
+        let Some(tab_id) = self.active_tab_id.as_deref() else {
+            // The daemon-attached TUI has no project tab switch to key on:
+            // its subscription is established per session, not per tab, so
+            // `active_tab_id` legitimately stays `None`. Bailing out here
+            // made every derived status read "no snapshot" and so report
+            // idle while real subagents and jobs were in flight. With
+            // exactly one live subscription there is no ambiguity about
+            // which session this is, so answer. Two or more streams means
+            // we genuinely cannot tell which one is on screen, and
+            // returning an arbitrary one would attribute another
+            // session's jobs to this screen — stay silent instead.
+            return match snaps.len() {
+                1 => snaps.iter().next().map(|(id, snap)| (id.clone(), snap)),
+                _ => None,
+            };
+        };
         for (stream_id, snap) in snaps {
             if stream_id.as_str().ends_with(tab_id) {
                 return Some((stream_id.clone(), snap));
@@ -764,5 +779,91 @@ mod tests {
         assert!(state.cache_artifact_handle("tab-1", handle_entry("art-1")));
         state.on_reconnect();
         assert!(state.artifact_handles("tab-1").is_empty());
+    }
+
+    /// Build a descriptor for a session stream. Stream ids accept only
+    /// alphanumerics, `-` and `_`, so the tab suffix is `stream-<tab>`.
+    fn descriptor(tab: &str) -> codegg_protocol::projection::replay::ProjectionStreamDescriptor {
+        codegg_protocol::projection::replay::ProjectionStreamDescriptor {
+            stream_id: stream_id(tab),
+            kind: codegg_protocol::projection::replay::ProjectionStreamKind::Session,
+            project_id: "proj".into(),
+            workspace_id: Some("ws".into()),
+            session_id: Some("sess".into()),
+            projection_version: 1,
+            retention_floor_seq: 0,
+            high_water_seq: 0,
+            latest_checkpoint_seq: None,
+        }
+    }
+
+    fn stream_id(tab: &str) -> codegg_protocol::projection::replay::ProjectionStreamId {
+        codegg_protocol::projection::replay::ProjectionStreamId::new(format!("stream-{tab}"))
+            .expect("valid stream id")
+    }
+
+    fn snapshot_for() -> SessionProjectionSnapshot {
+        SessionProjectionSnapshot::empty("sess", "proj", "ws")
+    }
+
+    fn subscription(n: &str) -> codegg_protocol::projection::replay::ProjectionSubscriptionId {
+        codegg_protocol::projection::replay::ProjectionSubscriptionId::new(format!("sub-{n}"))
+    }
+
+    /// The daemon-attached TUI never switches a project tab, so
+    /// `active_tab_id` stays `None`. That must not read as "no snapshot":
+    /// every derived status surface calls this, and a `None` here is what
+    /// made a session with live subagents report `idle`.
+    #[test]
+    fn a_single_subscription_is_readable_without_an_active_tab() {
+        let mut state = ProjectionClientState::new();
+        assert!(state.active_tab_id().is_none());
+        state.controller_mut().install_subscription(
+            subscription("1"),
+            descriptor("sess"),
+            snapshot_for(),
+        );
+        assert!(state.active_snapshot().is_some());
+    }
+
+    /// With two streams and no active tab there is genuinely no way to tell
+    /// which one is on screen. Returning an arbitrary one would attribute
+    /// another session's jobs to this screen, so stay silent instead.
+    #[test]
+    fn ambiguous_streams_stay_silent_without_an_active_tab() {
+        let mut state = ProjectionClientState::new();
+        state.controller_mut().install_subscription(
+            subscription("1"),
+            descriptor("a"),
+            snapshot_for(),
+        );
+        state.controller_mut().install_subscription(
+            subscription("2"),
+            descriptor("b"),
+            snapshot_for(),
+        );
+        assert!(state.active_tab_id().is_none());
+        assert!(state.active_snapshot().is_none());
+    }
+
+    /// An explicitly active tab still wins, so tab switching keeps working.
+    #[test]
+    fn an_active_tab_still_selects_its_own_stream() {
+        let mut state = ProjectionClientState::new();
+        state.controller_mut().install_subscription(
+            subscription("1"),
+            descriptor("alpha"),
+            snapshot_for(),
+        );
+        state.controller_mut().install_subscription(
+            subscription("2"),
+            descriptor("beta"),
+            snapshot_for(),
+        );
+        state.set_active_tab(Some("beta".into()));
+        let (resolved, _) = state
+            .active_snapshot()
+            .expect("active tab resolves a stream");
+        assert!(resolved.as_str().ends_with("beta"), "{resolved}");
     }
 }
