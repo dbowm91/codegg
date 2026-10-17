@@ -964,11 +964,16 @@ impl App {
         let cursor = presentation.cursor_byte;
         let mode = presentation.mode;
         let focus = self.editor_state.buffer_focused(self.ui_state.input_mode);
-        let pending = presentation
-            .pending_command
-            .get(..crate::tui::editor::MAX_EDITOR_PENDING_COMMAND)
-            .unwrap_or("")
-            .to_string();
+        // Hoisted like the search fields below: `EditorPrefix` is `Copy`, and
+        // reading it here rather than inside the widget literal ends the
+        // shared borrow of `session` before the tree pane is painted.
+        let pending_prefix = presentation.pending_prefix;
+        // `EditorPrefix` and `FindNote` are `Copy`, and reading them here
+        // rather than inside the widget literal ends the shared borrow of
+        // `session` before the tree pane is painted. `FindNote::label`
+        // allocates, so it is done once per frame here instead of per banner
+        // line inside the widget.
+        let find_note = presentation.find_note.label();
         let command_active = presentation.command_active;
         let command_line = presentation.command_line.clone();
         let command_selection = presentation.command_selection;
@@ -1000,9 +1005,10 @@ impl App {
                 path: &path,
                 status: status.label(),
                 notice: notice.as_deref(),
+                find_note: &find_note,
                 mode,
                 buffer_focused: focus,
-                pending_command: &pending,
+                pending_prefix,
                 command_active,
                 command_line: &command_line,
                 command_selection,
@@ -1650,6 +1656,12 @@ impl App {
         // user walked away from clears itself instead of waiting to be
         // overwritten by whatever they type next.
         crate::tui::commands::turn_control::expire_pending_stop_armed(self);
+        // The status row reads `ui_state.subagents`, which the sidebar render
+        // path also fills. Syncing here as well is what makes the row
+        // independent of the panel being drawn: a layout that hides the
+        // sidebar used to leave the count at zero and report a busy session
+        // as idle.
+        self.sync_subagent_rows_from_projection();
         let Some(area) = chunk else {
             self.ui_state.working_area = None;
             self.ui_state.subagents.hits.clear();
@@ -2526,6 +2538,25 @@ impl App {
     /// a row rather than being hidden, because the agent tree is the
     /// authoritative record that the task was dispatched.
     ///
+    /// Refresh the shared subagent rows from the active projection snapshot.
+    ///
+    /// This is the one place the working strip's count and the sidebar's list
+    /// are both written from, so they cannot disagree. It is deliberately
+    /// independent of whether the session panel is being drawn this frame:
+    /// row 0 of the strip reports `awaiting N tasks` from this vector, and a
+    /// hidden sidebar must not turn that into `idle`.
+    ///
+    /// A snapshot that has not arrived yet is not evidence of emptiness, so
+    /// the rows are left alone rather than cleared.
+    fn sync_subagent_rows_from_projection(&mut self) {
+        let Some((_, snapshot)) = self.projection_client.active_snapshot() else {
+            return;
+        };
+        if let Some(rows) = Self::sync_subagents_from_snapshot(snapshot) {
+            self.ui_state.subagents.set_rows(rows);
+        }
+    }
+
     /// Returns `None` when there is no snapshot to read at all, which is not
     /// the same as an empty tree: the caller keeps the rows it already has
     /// rather than blanking the strip mid-turn.

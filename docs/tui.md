@@ -691,14 +691,66 @@ Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
 `v` selects by character, `x` selects the whole line (press again for one
 more), `d` deletes the selection, and `space y` copies it — the same keys
 `/terminal` uses in its viewing mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`,
-where typing goes into the file and `Esc` returns. In `NOR` anything the
-buffer does not claim types into the input box at the bottom, so you can talk
-to the agent without leaving the file. `Esc` never closes the editor; `:q`
-does.
+where typing goes into the file and `Esc` returns. `u`/`U` undo and redo, the
+Helix pair. In `NOR` anything the buffer does not claim types into the input
+box at the bottom, so you can talk to the agent without leaving the file. `Esc`
+never closes the editor; `:q` does.
+
+Three chords work in either mode, because they are round trips rather than
+verbs: `Ctrl+S` saves, `Ctrl+R` resyncs the replica after a transport failure,
+and `R` — `NOR` only — reloads from disk and throws the local draft away. Each
+chord has exactly one owner. In particular `U` is redo and `Ctrl+R` is resync;
+they are not two spellings of the same thing.
 
 The cursor is a block in `NOR` and a thin bar in `INS`, so you can always see
 where you are. `Ctrl+d` pages down and continues to the end of the file when a
 half-page would land past it.
+
+### Multi-key gestures
+
+`gg` (buffer start) and `space y` (copy the selection) each take two keys. While
+the first one is held, the status row shows which one: `g` or `space`. The
+indicator is there because a prefix that shows nothing is a prefix you cannot
+predict.
+
+The two gestures finish differently, on purpose. After `g`, any key belongs to
+the chord — `g j` does nothing, because `g j` is not a gesture. After `space`,
+an unmapped key is just a normal-mode key: `space j` moves down. `[` and `]`
+are Helix's unimpaired prefixes; they show their indicator too, and any key
+after them still does what it normally does. A prefix never survives leaving
+the editor, opening a different file, reloading, or moving focus to the file
+tree.
+
+### Finding a character
+
+| Key | What it does |
+|---|---|
+| `f` + char | jump to the next occurrence of that character |
+| `F` + char | jump to the previous occurrence |
+| `t` + char | as `f` |
+| `T` + char | as `F` |
+| `Alt` + `.` | repeat the last find |
+
+These search the whole file, not just the line the cursor is on — `f` jumps
+across line breaks. The cursor lands on the character itself, and the scan
+starts strictly past the cursor, so `f x` while already sitting on an `x` finds
+the *next* one.
+
+`f`, `F`, `t` and `T` show their indicator while waiting, so you can see that
+the editor is waiting for a character rather than having dropped the keypress.
+`:`, `/` and any non-character key are not swallowed: they still open the
+command line, open the search line, or do their normal job. In `INS` a
+printable is always text, never a search target.
+
+Search covers a bounded window from the cursor. If the character is not in the
+window the status row says so — `no 'z' within the 2 MiB scan bound` — rather
+than reporting it as absent, which is a different fact and needs a different
+response.
+
+`Alt` + `.` repeats the last find, and any other movement replaces it: after
+`f x`, then `j`, then `Alt` + `.` there is nothing to repeat. With no find
+recorded it does nothing at all and the keystroke stays available to the
+composer.
 
 ### Searching inside the file
 

@@ -9,12 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Helix's character-finding motions (`f`, `F`, `t`, `T`, and `Alt` + `.`) are
+  available in `NOR`.** Each of the first four arms the shared pending-prefix
+  grammar and waits for a character; the status row shows which one is armed,
+  and the cursor lands on the target. The scan crosses line boundaries — unlike
+  vi — and starts strictly past the cursor, so `f x` while already on an `x`
+  finds the next one. Multi-byte characters work: `f é` finds `é` rather than
+  walking past it.
+- **A find that did not land now says why.** The status row distinguishes "no
+  such character that way" (`no 'z' in that direction`) from "the character is
+  past the scan bound" (`no 'z' within the 2 MiB scan bound`). Both leave the
+  cursor where it was, and they need different answers from you. A find that
+  landed stays silent.
+- **Helix's unimpaired `[`/`]` prefixes are now part of the editor's key
+  grammar.** Pressing `[` or `]` in `NOR` arms the prefix and shows it in the
+  status row; any following key disarms it and is then resolved normally, so
+  `[` followed by a letter still reaches the composer instead of being eaten.
+  The leaves themselves (`[d`, `]d`, `[p`, …) are not bound yet.
+- **A pending `space` prefix is now visible.** `space y` previously armed a
+  `bool` with nowhere to render to, so pressing `space` looked like nothing
+  had happened. Every pending prefix now renders a distinct label in the status
+  row (`g`, `space`, `[`, `]`).
+- New `scripts/check_tui_editor_prefix_state.py` fails the build if the deleted
+  prefix mechanisms reappear, and — the part a fixed name list cannot express —
+  if `TuiDocumentPresentation` ever declares a second prefix field, which is
+  how a new grammar regresses into needing its own flag.
 - New `documentation` skill (`.opencode/skills/documentation/SKILL.md`) covering
   the repo's doc surface: the authority order from source through `architecture/`
   to `README.md`, the verify-before-you-assert discipline, the untagged-enum
   config trap that silently discards a whole config file, and the content that is
   deliberately frozen (`docs/validation/`, `plans/closure/`, archived rounds) and
   must not be "refreshed". Registered in the `AGENTS.md` skills index.
+
+### Changed
+
+- **The pending prefix machine now also carries data, not just commands.** `f`,
+  `F`, `t` and `T` are arms of the same `EditorPrefix` grammar as `g` and
+  `space`, and disarm at the same points — but their next key is a *target
+  character* rather than a leaf glyph. No new field was added to do it.
+- **The TUI editor's multi-key gestures run on one typed state machine.** The
+  `pending_command: String` (the `g` of `gg`) and the separate
+  `yank_prefix_pending: bool` (the `space` of `space y`) are both gone,
+  replaced by `TuiDocumentPresentation::pending_prefix: EditorPrefix`. Both
+  fields are deleted rather than bypassed, along with the `bounded_pending`
+  string clamp and the byte-truncation of the pending label in the renderer.
+  `gg` and `space y` keep the different unmatched-key behavior they already
+  had — `g j` is consumed by the chord, `space j` retries as an ordinary
+  verb — because they are different kinds of gesture, not one mechanism
+  implemented twice. Adding a grammar now adds a leaf rather than a field.
 
 ### Fixed
 
@@ -35,6 +77,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classified before the slot is claimed and the bytes go back on the queue. A
   resize refused after draining its size is re-armed the same way, and typed
   keys reach the composer either way.
+- **A `space` prefix survived a reload and yanked in the wrong buffer.**
+  Reconciliation (`resync`, `reload_from_disk`, `close`) disarmed
+  `pending_command` via `clear_history`, but the `space` flag lived on the same
+  presentation and was only cleared when a document was opened — so a `space`
+  typed before a reload was still armed against the reloaded buffer. Every
+  disarm point now clears both: opening a document, any reconciliation,
+  leaving the editor route, and moving focus to the file tree.
+- **The TUI editor had undo but no reachable redo.** `handle_normal_key`
+  declared `(CONTROL, Char('r')) => editor_redo`, but `editor_buffer_key`
+  resolves the mode-independent chords *before* dispatching on mode and had
+  already claimed `Ctrl+R` for resync, so the redo arm was dead code. Normal
+  mode offered `u` and nothing for redo, and the three tests covering redo
+  called `editor_redo(&mut state)` directly rather than pressing a key, so the
+  suite stayed green. Redo is now `U`, which is Helix's own chord (`u`/`U`;
+  Helix binds `Ctrl+r` in *Insert* mode only); `Ctrl+R` stays resync in both
+  modes, so neither chord has two owners. New
+  `scripts/check_tui_editor_key_authority.py` fails the build when a mode table
+  re-declares a chord an earlier dispatch stage already owns, and the
+  dispatch-path tests now drive every Normal-mode binding through
+  `editor_buffer_key` and assert its observable effect.
+- **A dead `Char('d')` alternative in the editor's `D` arm.** `(m, Char('D')) |
+  (m, Char('d')) if m == shift || m == none` followed `(m, Char('d')) if m ==
+  none` (delete the held selection), so the `Char('d')` alternative could
+  never match. The capital's two terminal encodings are still both accepted.
 - **Subcommand diagnostics were written to stdout, breaking machine-readable
   output.** `src/main.rs` installed `tracing_subscriber::fmt()` with no writer
   for ordinary subcommands, and `tracing-subscriber` defaults to stdout. A

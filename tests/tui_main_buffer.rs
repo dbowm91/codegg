@@ -555,6 +555,108 @@ fn an_actually_idle_session_still_reads_idle() {
     );
 }
 
+/// Seed the projection controller the way the daemon-attached path does: one
+/// session subscription holding an authoritative snapshot with a live job.
+fn seed_projection_with_live_job(app: &mut App) {
+    use codegg::protocol::projection::dto::JobProjection;
+    use codegg::protocol::projection::replay::{
+        ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+        ProjectionSubscriptionId,
+    };
+    use codegg::protocol::projection::snapshot::SessionProjectionSnapshot;
+
+    let mut snapshot = SessionProjectionSnapshot::empty("sess", "proj", "ws");
+    snapshot.jobs.push_back(JobProjection {
+        job_id: "job-1".into(),
+        workspace_id: "ws".into(),
+        kind: "subagent".into(),
+        state: "running".into(),
+        summary: "map the subsystem".into(),
+        session_id: Some("sess".into()),
+        turn_id: None,
+        active_attempt_id: None,
+        error_class: None,
+        updated_at: 0,
+    });
+    let descriptor = ProjectionStreamDescriptor {
+        stream_id: ProjectionStreamId::new("stream-sess").expect("valid stream id"),
+        kind: ProjectionStreamKind::Session,
+        project_id: "proj".into(),
+        workspace_id: Some("ws".into()),
+        session_id: Some("sess".into()),
+        projection_version: 1,
+        retention_floor_seq: 0,
+        high_water_seq: 0,
+        latest_checkpoint_seq: None,
+    };
+    app.projection_client.controller_mut().install_subscription(
+        ProjectionSubscriptionId::new("sub-1"),
+        descriptor,
+        snapshot,
+    );
+}
+
+/// Regression: a live job must reach the status row through the projection.
+///
+/// Every other test here sets `ui_state.subagents` directly, which is exactly
+/// how the original tests passed while the real daemon-attached TUI showed
+/// `idle`: nothing in production ever put rows there. The daemon-attached
+/// frontend subscribes per session and never switches a project tab, so
+/// `active_tab_id` is `None` — and `active_snapshot` used to bail out on
+/// exactly that, reporting "no snapshot" for a session with a job running.
+#[test]
+fn a_live_job_in_the_projection_reaches_the_status_row() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    seed_projection_with_live_job(&mut app);
+
+    // The daemon-attached TUI has no active tab; the single subscription is
+    // unambiguous, so the status surfaces must still see it.
+    assert_eq!(
+        app.projection_client.active_tab_id(),
+        None,
+        "precondition: the daemon-socket path never sets a tab"
+    );
+    assert_eq!(
+        app.awaiting_task_counts(),
+        (0, 1),
+        "one live job must be counted straight from the projection"
+    );
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.contains("awaiting 1 task"),
+        "a session waiting on a job must name the wait: {strip}"
+    );
+    assert!(
+        strip.contains("1 job"),
+        "the row must break the wait down by kind: {strip}"
+    );
+}
+
+/// Regression: the projection must reach the status row without the sidebar.
+///
+/// `ui_state.subagents` was previously written only from the session-panel
+/// render path, so a layout that does not draw the panel left the count at
+/// zero. Row 0 is the strip's own status surface and must not depend on some
+/// other widget being visible.
+#[test]
+fn the_status_row_counts_live_work_without_the_sidebar() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    seed_projection_with_live_job(&mut app);
+
+    // No panel draw happens here; the render pass alone must establish the
+    // job count that row 0 reads.
+    let _ = render_to_buffer(&mut app, 100, 30);
+    assert_eq!(
+        app.awaiting_task_counts().1,
+        1,
+        "the job count must survive a render that never draws the panel"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3. Subagent buffer
 // ---------------------------------------------------------------------------

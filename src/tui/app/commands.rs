@@ -1138,6 +1138,14 @@ pub enum TuiCommand {
         session_id: String,
         subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
         cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        /// Authoritative snapshot returned by the daemon with the
+        /// subscription. Discarding it leaves the projection controller
+        /// empty until a live event happens to arrive, which is why
+        /// derived status surfaces had nothing to read.
+        projection: Option<(
+            crate::protocol::projection::replay::ProjectionStreamDescriptor,
+            crate::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
         error: Option<String>,
         unauthorized: bool,
         unsupported: bool,

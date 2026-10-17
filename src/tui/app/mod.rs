@@ -143,6 +143,16 @@ pub const MAX_TODO_STRIP_TASKS: usize = 9;
 /// never silently wrong.
 pub const MAX_WORKING_STRIP_SUBAGENTS: usize = 6;
 
+/// Tab key used for projection cursors and per-tab summaries when the TUI
+/// has no project tab to attribute a subscription to.
+///
+/// The daemon-attached frontend subscribes per session and never switches a
+/// project tab, so `projection_client.active_tab_id()` is legitimately
+/// `None`. Cursor bookkeeping still needs a stable key; it is never matched
+/// against a stream id, and `active_snapshot` resolves the stream from the
+/// controller directly.
+pub const DEFAULT_PROJECTION_TAB: &str = "default";
+
 /// Maximum serialized size of a `UiNode` body included in a remote
 /// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
 /// default. Bodies that exceed this limit are omitted so the snapshot
@@ -1941,6 +1951,24 @@ impl App {
         }
         use crate::protocol::core::CoreEvent as E;
         match event {
+            E::ProjectionStreamEvent {
+                subscription_id,
+                stream_id: _,
+                envelope,
+            } => {
+                // The daemon forwards live projection envelopes on this
+                // event. It had no arm here, so every one fell through to
+                // `_ => false` and was discarded: the projection controller
+                // only ever learned what happened before it attached, which
+                // is why subagent and job status never appeared live.
+                let tab_id = self
+                    .projection_client
+                    .active_tab_id()
+                    .unwrap_or(DEFAULT_PROJECTION_TAB)
+                    .to_string();
+                let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                true
+            }
             E::TurnStarted { turn_id, .. } => {
                 self.messages_state.messages.finalize_streaming();
                 // The daemon mints this id and `TurnCancel` rejects a
@@ -3305,7 +3333,7 @@ impl App {
                 let tab_id = self
                     .projection_client
                     .active_tab_id()
-                    .unwrap_or("default")
+                    .unwrap_or(DEFAULT_PROJECTION_TAB)
                     .to_string();
                 let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
             }
@@ -12541,6 +12569,10 @@ impl App {
         session_id: String,
         subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
         cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        projection: Option<(
+            crate::protocol::projection::replay::ProjectionStreamDescriptor,
+            crate::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
         error: Option<String>,
         unauthorized: bool,
         unsupported: bool,
@@ -12553,6 +12585,7 @@ impl App {
             session_id,
             subscription_id,
             cursor,
+            projection,
             error,
             unauthorized,
             unsupported,

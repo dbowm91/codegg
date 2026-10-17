@@ -53,10 +53,10 @@ deleted rather than fixed.
   require the frontend to own undo/redo as inverse transactions, bounded
   by `MAX_EDITOR_UNDO_DEPTH` / `MAX_EDITOR_UNDO_BYTES`. Bounded reversible
   history is not a second authoritative buffer.
-- A `String` field that is not named like text, such as
-  `pending_command` (a two-byte command prefix) or `path`. The name-based
-  rule is what makes a retained `text: String` a finding; a bare `String`
-  is not proof of anything.
+- A `String` field that is not named like text, such as `command_line` (a
+  bounded command name) or `path`. The name-based rule is what makes a
+  retained `text: String` a finding; a bare `String` is not proof of
+  anything.
 - Test modules. `#[cfg(test)]` bodies may build fixtures. Brace depth is
   tracked so only the module body is exempt, never the rest of the file.
 
@@ -128,9 +128,12 @@ TEXT_CONTAINER_TYPES: list[str] = ["Vec<String>", "Vec<Line>", "Vec<Line<'static
 
 # Field names that would only make sense for a retained copy of the text.
 # Rejected with any type: a field named `text` in the editor presentation
-# layer is a finding whatever its annotation. `pending_command` is
-# deliberately not here — it is a bounded command prefix, not text, and is
-# capped by `MAX_EDITOR_PENDING_COMMAND`.
+# layer is a finding whatever its annotation. The pending prefix is
+# deliberately not a concern here — M002 replaced the `pending_command`
+# `String` with `EditorPrefix`, a `Copy` enum whose `display()` returns a
+# closed set of `&'static str`, so there is no longer any prefix *text* on
+# the presentation to accumulate. `command_line` remains a bounded command
+# name, not text, and is capped by `MAX_EDITOR_COMMAND_LINE`.
 TEXT_FIELD_NAMES: list[str] = [
     "text",
     "content",
