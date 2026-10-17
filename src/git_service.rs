@@ -16,6 +16,51 @@ use tokio::io::AsyncReadExt;
 use crate::git_mutations::GitEnvPolicy;
 use crate::git_network_policy::redact_url_credentials_in_text;
 
+#[cfg(test)]
+fn git_test_policy_diagnostic(root: &Path) -> String {
+    let git_dir = root.join(".git");
+    let object_dir = git_dir.join("objects");
+    let object_entries = std::fs::read_dir(&object_dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|error| vec![format!("<read error: {error}>")]);
+    let raw_repo_probe = std::process::Command::new("git")
+        .args([
+            "rev-parse",
+            "--git-dir",
+            "--show-toplevel",
+            "--show-object-format",
+        ])
+        .current_dir(root)
+        .output()
+        .map(|output| {
+            format!(
+                "status={} stdout={} stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout).trim(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        })
+        .unwrap_or_else(|error| format!("<spawn error: {error}>"));
+    let disk_probe = std::process::Command::new("df")
+        .args(["-h"])
+        .arg(root)
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_else(|error| format!("<spawn error: {error}>"));
+    format!(
+        "root={}; .git={:?}; objects={:?}; alternates={:?}; entries={object_entries:?}; raw_repo_probe={raw_repo_probe}; disk={disk_probe}",
+        root.display(),
+        std::fs::symlink_metadata(&git_dir),
+        std::fs::symlink_metadata(&object_dir),
+        std::fs::symlink_metadata(object_dir.join("info/alternates")),
+    )
+}
+
 /// The result of executing a git operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitExecutionResult {
@@ -574,7 +619,10 @@ impl GitExecutionService {
             ),
             Err(error) => {
                 #[cfg(test)]
-                eprintln!("structured changed-files extraction failed: {error:?}");
+                eprintln!(
+                    "structured changed-files extraction failed: {error:?}; {}",
+                    git_test_policy_diagnostic(repository_root)
+                );
                 tracing::warn!(%error, "failed to parse structured changed files");
                 None
             }
@@ -879,35 +927,9 @@ impl GitExecutionService {
                 Err(error) => {
                     #[cfg(test)]
                     {
-                        let git_dir = root.join(".git");
-                        let object_dir = git_dir.join("objects");
-                        let object_entries = std::fs::read_dir(&object_dir)
-                            .map(|entries| {
-                                entries
-                                    .filter_map(Result::ok)
-                                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_else(|error| vec![format!("<read error: {error}>")]);
-                        let raw_repo_probe = std::process::Command::new("git")
-                            .args(["rev-parse", "--git-dir", "--show-toplevel", "--show-object-format"])
-                            .current_dir(&root)
-                            .output()
-                            .map(|output| {
-                                format!(
-                                    "status={} stdout={} stderr={}",
-                                    output.status,
-                                    String::from_utf8_lossy(&output.stdout).trim(),
-                                    String::from_utf8_lossy(&output.stderr).trim()
-                                )
-                            })
-                            .unwrap_or_else(|error| format!("<spawn error: {error}>") );
                         eprintln!(
-                            "Git policy rejected argv={argv_owned:?}: {error:?}; root={}; .git={:?}; objects={:?}; alternates={:?}; entries={object_entries:?}; raw_repo_probe={raw_repo_probe}",
-                            root.display(),
-                            std::fs::symlink_metadata(&git_dir),
-                            std::fs::symlink_metadata(&object_dir),
-                            std::fs::symlink_metadata(object_dir.join("info/alternates")),
+                            "Git policy rejected argv={argv_owned:?}: {error:?}; {}",
+                            git_test_policy_diagnostic(&root)
                         );
                     }
                     return Err(GitServiceError::Policy(error));
