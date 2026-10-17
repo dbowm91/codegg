@@ -903,11 +903,15 @@ impl ToolRegistry {
             None => crate::tool::git_read::GitQueryTool::default(),
         });
 
-        if sandbox_profile.requires_filesystem_containment() {
-            // The daemon-wide LSP service is not yet keyed by accepted
-            // sandbox profile. A constrained turn must neither create an
-            // LSP child through its legacy FullHost launcher nor reuse a
-            // client another turn created under FullHost.
+        let scoped_m004_lsp = options.lsp_service.as_ref().filter(|service| {
+            workspace_root.as_ref().is_some_and(|root| {
+                crate::lsp::m004::service_is_scoped_for(service, sandbox_profile, root)
+            })
+        });
+        if sandbox_profile.requires_filesystem_containment() && scoped_m004_lsp.is_none() {
+            // Never attach the daemon-wide FullHost client map to a
+            // constrained turn. Only the daemon-created scope for this exact
+            // profile and canonical workspace can enable LSP.
             let reason = "LSP process isolation is unavailable for constrained profiles";
             registry.register(crate::tool::disabled::DisabledTool::new(
                 "lsp",
@@ -933,11 +937,17 @@ impl ToolRegistry {
             // M003: one shared service for the model-facing `lsp` tool and
             // the hidden program-only `lsp_read` adapter so both observe
             // identical server state.
-            let lsp_service_shared = options.lsp_service.unwrap_or_else(|| {
-                crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
-                    crate::config::schema::LspConfig::default(),
-                ))
-            });
+            let lsp_service_shared = if sandbox_profile.requires_filesystem_containment() {
+                scoped_m004_lsp
+                    .expect("constrained branch checked M004 LSP scope")
+                    .clone()
+            } else {
+                options.lsp_service.unwrap_or_else(|| {
+                    crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+                        crate::config::schema::LspConfig::default(),
+                    ))
+                })
+            };
             let lsp_preview_registry = options.lsp_preview_registry.unwrap_or_else(|| {
                 Arc::new(parking_lot::Mutex::new(
                     egglsp::preview_registry::PreviewArtifactRegistry::new(),
@@ -1724,6 +1734,33 @@ mod lsp_profile_isolation_tests {
         assert!(registry.contains("lsp_read"));
         assert_eq!(registry.lsp_service_identity(), Some(expected_identity));
         assert!(registry.lsp_preview_registry().is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn constrained_profile_binds_only_its_daemon_owned_m004_lsp_scope() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().canonicalize().unwrap();
+        let scope = crate::lsp::m004::M004LspServiceScope::new(
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            root.clone(),
+            egglsp::config::LspConfig::default(),
+        )
+        .unwrap();
+        let service = scope.service();
+        let expected_identity = Arc::as_ptr(&service) as usize;
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            sandbox_profile: Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
+            workspace_root: Some(root),
+            lsp_service: Some(service),
+            ..ToolRegistryOptions::default()
+        });
+
+        assert!(registry.contains("lsp"));
+        assert!(registry.contains("lsp_read"));
+        assert_eq!(registry.lsp_service_identity(), Some(expected_identity));
+        assert!(registry.lsp_preview_registry().is_some());
+        scope.shutdown().await;
     }
 }
 

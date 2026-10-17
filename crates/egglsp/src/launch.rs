@@ -74,6 +74,9 @@ pub struct LspProcess {
     pub stdout: Option<tokio::process::ChildStdout>,
     pub stderr: Option<BufReader<tokio::process::ChildStderr>>,
     pub child: tokio::process::Child,
+    /// Private helper status monitor retained by contained launchers until
+    /// the authoritative process runtime has reaped the child.
+    pub status_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
 }
 
 /// Process owner used by an `LspService` for every initial launch and restart.
@@ -184,6 +187,7 @@ async fn spawn_server_impl(
         stdout: Some(stdout),
         stderr: Some(stderr_reader),
         child,
+        status_task: None,
     })
 }
 

@@ -250,7 +250,12 @@ reason = "External formatters use ManagedProcessService blocking adapter; schedu
 [[site]]
 path = "crates/egglsp/src/launch.rs"
 owner = "interactive"
-reason = "LSP server launch is a long-lived user-controlled service"
+reason = "FullHost LSP keeps the interactive service owner; constrained Linux turns inject the daemon-owned per-turn M004 launcher and retain helper receipt ownership through the egglsp process runtime"
+
+[[site]]
+path = "src/lsp/m004.rs"
+owner = "interactive"
+reason = "Daemon-owned per-turn constrained LSP service routes initial and restart launches through the required M004 managed-process helper; native fixture subprocess probe is test-only"
 
 [[site]]
 path = "crates/egggit/src/"

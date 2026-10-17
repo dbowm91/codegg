@@ -209,9 +209,12 @@ passed M004 host-PID/proc and proc-content invisibility, signal, abstract/pathna
 socket, descriptor, seccomp, ptrace/process_vm denial, detached-session descendant
 cancellation, and Rustup/rustc probes, plus protected-mount and trusted-Git
 regressions. The runner relaxed its ephemeral unprivileged-userns AppArmor
-sysctl. Broader Cargo/compiler support, cross-session isolation, PTY service
-routing, and other host configurations remain unqualified. The process tier is
-not production-admitted while those M004 and M003 gates remain open.
+sysctl. Later exact-head qualification added Cargo workspace compatibility,
+offline-network probes, concurrent namespace separation, and C013 constrained
+PTY routing with descendant cleanup and restricted-userns refusal. M004's
+remaining production-owner gate is the constrained duplex LSP service and its
+exact-host qualification. This does not change C010's no-admission decision
+for the general M003 protected-mount backend.
 
 The interactive PTY owner now has an internal long-lived M004 launch path:
 `ManagedProcessService` retains the helper setup receipt/ack protocol while
@@ -225,9 +228,13 @@ bootstrap to establish a PID-namespace-visible foreground process group before
 execing the requested target in place. After exact-host owner qualification,
 the daemon routes the principal-resolved constrained profile through this
 owner. Unsupported setup fails before target start, handle creation, or success
-audit; there is no direct-spawn fallback. This work does not admit M003 or
-claim offline networking. Constrained LSP remains disabled until its distinct
-duplex process owner is qualified.
+audit; there is no direct-spawn fallback. This work does not change M003's
+no-admission decision or claim offline networking. Constrained LSP uses a
+separate daemon-owned per-turn service bound to the resolved profile and
+canonical workspace. Initial starts and restarts use the M004 helper; the
+`egglsp` runtime retains its private status receipt through child exit while
+preserving JSON-RPC pipes. Failure to construct or launch this scope keeps the
+constrained LSP tools unavailable.
 
 ADR-0035 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
@@ -280,10 +287,9 @@ leased worktree. Guard: `scripts/check_sandbox_policy_wiring.py`.
 Interactive PTY creation resolves the transport-bound principal's persisted
 sandbox preference in the daemon; the create DTO cannot select a profile.
 `FullHost` keeps the established PTY route. `ReadOnly` and `WorkspaceWrite`
-refuse before scheduler admission and spawn until PTY launch is owned by the
-qualified M004 helper. Preference lookup failure also refuses. This records
-the requested authority at the PTY boundary without claiming that the current
-PTY child is contained.
+use the qualified M004 helper; preference lookup or helper setup failure
+refuses before spawn. The hosted C013 probes cover positive routing,
+descendant cleanup, and restricted-userns refusal-before-target.
 
 The Linux offline-network candidate is internal and explicit: it composes
 M004 process/IPC isolation with Bubblewrap `--unshare-net` before target exec.
