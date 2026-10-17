@@ -1,6 +1,8 @@
 # Linux Execution Isolation M004 — Constrained PTY Launch Ownership
 
-Status: active
+Status: closed
+Archived after C013 closure; current disposition is recorded in
+`plans/closure/linux-execution-isolation/021-status.md`.
 Repository baseline: `c997586a9aba4df4f7acb8e30239a5e6bc8dc87b`
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
@@ -14,24 +16,26 @@ Primary class: capability
 Route daemon-authorized constrained PTY launches through a supervised M004
 owner that applies the qualified Linux process/IPC boundary for the complete
 child lifetime, while preserving the existing FullHost behavior and scheduler
-ownership. Keep constrained launch refused until this path has exact-hosted
-positive and negative qualification.
+ownership. This bounded PTY-owner slice is complete with exact-source hosted
+positive and negative qualification. M004 remains active for contained LSP
+ownership and broader supported-host qualification.
 
 ## 2. Why this milestone is ready
 
 M004's Bubblewrap process/IPC mechanism has exact-head hosted denial,
 cancellation, concurrency, ordinary-tool, and restricted-user-namespace
-refusal evidence. The daemon already resolves PTY profile from the
-transport-bound principal preference. Constrained creation already refuses
-before admission and spawn. C012 rejected a no-writer lease and retained
-private Git snapshots; this plan does not alter M003 or enable trusted Git.
+refusal evidence. The daemon resolves PTY profile from the transport-bound
+principal preference, and constrained PTY routing now reaches the supervised
+owner. C012 rejected a no-writer lease and retained private Git snapshots;
+this plan does not alter M003 or enable trusted Git.
 
 ## 3. Current implementation evidence
 
 - `src/core/daemon.rs` resolves the profile and passes it to
   `InteractiveProcessProtocol`; preference lookup failure refuses creation.
-- `src/interactive_process_attach.rs` rejects constrained profiles before
-  calling the service, while FullHost continues through the current route.
+- `src/interactive_process_attach.rs` transfers the resolved constrained
+  profile into the internal spawn specification and launches through the
+  supervised M004 owner; FullHost continues through the existing route.
 - `src/interactive_process.rs::spawn_unix_child` owns direct `tokio::process`
   spawn, PTY setup, cancellation, reader/waiter tasks, and session lifetime.
 - `src/managed_process.rs` owns the helper status/ack handshake only inside a
@@ -89,7 +93,8 @@ FullHost semantics.
   that the selected backend can be requested before scheduler admission;
   release the permit on every setup failure.
 - Route only daemon-authorized constrained creates to this owner after
-  qualification. Until then, keep the current early refusal unchanged.
+  qualification. Unsupported host setup still refuses before target execution,
+  handle creation, or success audit, with no direct-spawn fallback.
 
 ## 7. Ordered work packages
 
@@ -99,9 +104,8 @@ FullHost semantics.
 2. Implement the helper-backed PTY launch while preserving descriptor
    ownership and status/ack framing. Prove the requested child, not merely the
    helper, is the process supervised by the PTY session.
-3. Add daemon routing from the principal-resolved profile. Keep constrained
-   routing disabled behind an internal qualification gate until hosted
-   evidence passes; do not add a client-controlled switch.
+3. Add daemon routing from the principal-resolved profile. Do not add a
+   client-controlled switch.
 4. Add exact-host native tests for protected proc/IPC, denied host process and
    socket access, allowed PTY I/O and resize, normal descendant execution,
    cancellation of descendants, and refusal before target marker when user
@@ -160,10 +164,11 @@ after source or manifest changes.
 ## 12. Documentation updates
 
 Update `docs/execution-ownership.toml`, `architecture/jobs.md`,
-`architecture/security.md`, and the M004 implementation plan to describe the
-actual long-lived owner and its obtained guarantees. Keep user-facing docs
-clear that constrained PTY remains unavailable until the production gate is
-closed. Record host/kernel/Bubblewrap/AppArmor/user-namespace facts with
+`architecture/security.md`, and this implementation plan to describe the
+actual long-lived owner and its obtained guarantees. User-facing docs describe
+the constrained PTY route as available only when the daemon resolves a
+constrained profile and the host supports the required setup; unsupported hosts
+fail closed. Record host/kernel/Bubblewrap/AppArmor/user-namespace facts with
 hosted evidence.
 
 ## 13. Acceptance criteria
