@@ -1,6 +1,6 @@
 # Interactive Terminal Liveness Post-Closure Corrective Addendum
 
-Status: closed (C001 closed; C002–C003 deliberately unopened)
+Status: active (C001 and C002 closed; C003 deliberately unopened)
 
 Long-term references:
 - `plans/000-long-term-specification.md#45-locality-by-default` — PTYs execute on the node owning the workspace; the coordinator receives **structured events and bounded output** rather than proxying local operation synchronously.
@@ -190,7 +190,7 @@ Rules this shape encodes:
 | `human-execution-corrective` C003 | hard (interface) | closed; key classification and VT rendering are reused unchanged |
 | `tui-panel-surface-convergence` M001 | interface | closed; the panel's keymap/chrome ownership is reused unchanged |
 | Existing event-loop tick + `spawn_registered_tui_task` + `AsyncUiRequestState` semantics | interface | stable, in-tree |
-| WS-attach / server transport | hard, **C002 only** | absent; blocks C002, does not block C001 |
+| WS-attach / server transport | hard, **C002 only** | partially present: `/core` already routes `InteractiveProcess*`; `/tui` (the WS-attach TUI frontend) does not and will not in C002. C002 delivers the typed refusal instead |
 
 No dependency of C001 is open. C001 is dependency-ready.
 
@@ -221,10 +221,62 @@ Class: **capability** (K2).
 Objective: either route interactive-process requests/responses over the WS-attach frontend
 and the server, or fail with a typed, honest refusal that names the transport.
 
-Deliberately **not opened**. It crosses a transport boundary (`src/server/**`, the WS
-protocol, `crates/codegg-client`) that C001 must not touch, and it needs an explicit decision
-about whether terminal bytes may traverse the WS channel at all — a question with I2
-implications. Plan the milestone before scheduling it.
+**Opened 2026-10-17. Option B selected. Closed 2026-10-17.**
+
+Research into the transport decision (baseline `8b6191140`) found that C002's original premise
+was incomplete, and the finding changed the milestone's shape:
+
+- The server exposes **three** WS endpoints, not one. `/core` speaks
+  `CoreFrame::Request(RequestEnvelope<CoreRequest>)`
+  (`crates/codegg-protocol/src/frames.rs:181`) and `handle_core_frame` has **no variant
+  allowlist** — its only gates are a five-variant `is_secret_bearing()` check that does not cover
+  interactive processes, and projection-specific checks matching only `Projection*` variants. It
+  calls `daemon.handle_request_for_client(envelope, client_id)` with the authenticated connection
+  id (`src/server/ws.rs:4429`). So the interactive family is **already routable over `/core`**;
+  there is no missing route to add.
+- The addendum's original claim — that "the server frontend has no `InteractiveProcess` routing at
+  all" — is therefore true of `/tui` only, and remains the accurate description of the WS-attach
+  TUI frontend: `src/client/attach.rs` opens `/tui`, speaks `protocol::tui::TuiMessage`, and never
+  constructs a `CoreClient`, which is why every terminal command's `core_client` guard fires.
+- C002 therefore splits in two, and only one half belongs here.
+
+**Selected: Option B — the typed refusal.** The nine terminal refusal sites already exist but all
+emit "Daemon connection unavailable; …", which is **false** on the WS-attach frontend: the daemon
+is healthy and serving every other surface. A refusal that names a healthy component sends the
+operator to debug the wrong thing — the same defect class C001 closed, in the diagnostic instead
+of the render. C002 makes the refusal name the transport and the real cause, and records the
+boundary precisely.
+
+**Not selected, and why.** Option A (routing terminal bytes) requires answering whether a remote
+principal may obtain a host shell. That is an authorization-contract change requiring a new ADR,
+and giving the TUI-attach frontend a `CoreClient` would affect every `core_client`-based command,
+not just terminal — far beyond a bounded milestone. ADR-0010 already names `/core` the
+remote-client protocol, so Option A is architecturally plausible; it is simply not this
+milestone's scope.
+
+**Explicitly out of this milestone.** `/core`'s interactive-process authorization posture is a
+separate registered workstream: `plans/subsystems/remote-interactive-process-authorization-corrective-roadmap.md`.
+C002's closure must not claim that remote principals cannot create interactive processes.
+
+Plan: `plans/implementation/interactive-terminal-liveness-post-closure-corrective/002-honest-transport-refusal-and-capability-boundary.md`.
+Closure: `plans/closure/interactive-terminal-liveness-post-closure-corrective/002-status.md`.
+
+**Delivered.** One shared classifier (`TerminalRefusal` — `TransportUnsupported` vs
+`NoDaemonConnection`) now owns the wording, and all nine entry points route through
+it via `terminal_core_client`, so the two causes can no longer share one sentence.
+The connection wording is preserved byte-for-byte where it is true. K2's exit
+condition is met on its second half, so this is closure rather than a deferral.
+
+Implementation also found a defect the plan did not anticipate, in the same silent
+class: `flush_terminal_input` classified *after* `take_pending_input` and
+`begin_input`, so a refused flush dropped the queued keystrokes **and** left
+`input_in_flight` permanently set — one visible toast, then silence for the life of
+the attachment. It was unreachable on the attach frontend, which is why it
+survived. Fixed, with the drained resize restored to its queue on refusal.
+
+The frontend boundary is now stated in `architecture/tui.md`, `docs/tui.md`, and the
+TUI skill. As required, none of them claims that remote principals are prevented from
+creating interactive processes; `/core` still routes that family and R001 owns it.
 
 ### C003 — Terminal surface polish follow-ups
 
@@ -278,6 +330,8 @@ Deliberately **not opened**, and ordered after C001 and C002 per `plans/003-plan
 | An agent decides the pull "should" be a push | Stop condition. Push is a new daemon/frontend protocol decision and requires a new ADR |
 | C001 pulls a `max_bytes` default that exceeds the daemon cap | Use the daemon's default (`max_bytes: None`); do not introduce a second bound |
 | WS-attach parity gets bundled into C001 | Prohibited. C002 owns the transport boundary; C001 stops at the socket-daemon frontend and says so |
+| Option A (routing terminal bytes) gets bundled into C002 | Prohibited. It is ADR-gated and belongs to a new milestone; C002 delivers the typed refusal (Option B) only |
+| C002's closure is read as "remote principals cannot get a PTY" | Prohibited. C002 closes the **frontend** half only; `/core` already routes `InteractiveProcess*`, tracked by `plans/subsystems/remote-interactive-process-authorization-corrective-roadmap.md` |
 
 ## 11. Completion definition
 
@@ -293,6 +347,6 @@ closure records named in §Predecessor closures, **without editing those records
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | closed | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/001-live-output-pull-and-terminal-liveness-closure.md` | pending | none |
-| C002 | not opened | — | — | needs a transport-scope decision; not planned |
+| C001 | closed | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/001-live-output-pull-and-terminal-liveness-closure.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/001-status.md` | none |
+| C002 | closed (Option B — honest typed refusal) | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/002-honest-transport-refusal-and-capability-boundary.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/002-status.md` | none; no ADR required — C002 delivered no transport |
 | C003 | not opened | — | — | polish, ordered after C001/C002 |
