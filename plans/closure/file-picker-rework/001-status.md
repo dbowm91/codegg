@@ -2,12 +2,12 @@
 
 Status: conditionally closed
 
-Conditionally, and for one reason: **the condition is satisfied by the commit
-this record ships in**, and `tui-panel-surface-convergence-corrective` M001 is
-registered as blocked pending exactly that — a commit SHA at which to re-inspect
-`src/tui/components/component.rs` and `src/tui/panels/hosted.rs`. Every
-acceptance criterion in the plan is met and verified. Once this record's own
-commit exists, that plan may proceed; nothing else here is outstanding.
+Conditionally, and for one reason: **the condition is a commit SHA at which
+`tui-panel-surface-convergence-corrective` M001 can re-inspect
+`src/tui/components/component.rs` and `src/tui/panels/hosted.rs`.** That
+condition is met by `b4f4b916f7bd0fed85863419fab838cb9ca9f4c4` (§7.7 records
+the merge it was verified on). Every acceptance criterion in the plan is met
+and verified; nothing else here is outstanding.
 
 Source implementation plan:
 
@@ -21,15 +21,16 @@ Repository baseline reviewed: `b77c8156b594494b7f59e0348d93a73ca2c1fd1c`
 
 Implementation commits or pull requests:
 
-- Landed on `main` in the commit carrying this record, on branch
+- Landed on `main` as **`b4f4b916f7bd0fed85863419fab838cb9ca9f4c4`**
+  (`feat(tui): panel owns its keymap, host owns its chrome`), on branch
   `feat/auto-20261016-9ebb3f33`
   (worktree `.worktrees/feat-auto-20261016-9ebb3f33`), fast-forwarded onto
   `origin/main` `5a7381432` — that commit rewrites the working strip, the
   tasks overlay and `docs/tui.md`/`architecture/tui.md`, three of the files
   below; the merge was automatic, with no conflict markers, and both sides'
-  assertions survive it.
-- The exact SHA is recorded in `plans/registry.md` for this milestone, since a
-  commit cannot cite itself.
+  assertions survive it (§7.7).
+- `tui-panel-surface-convergence-corrective` M001 re-inspects `component.rs`
+  and `hosted.rs` at that SHA.
 
 ## 1. Executive finding
 
