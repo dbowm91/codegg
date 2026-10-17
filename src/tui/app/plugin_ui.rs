@@ -6,7 +6,6 @@
 
 use super::{App, Dialog};
 use crate::util::truncate::truncate_prefix;
-use std::sync::Arc;
 
 impl App {
     pub fn apply_plugin_ui_effect(
@@ -124,7 +123,6 @@ impl App {
                                     |dialog: &mut crate::tui::components::dialogs::plugin::PluginDialog| {
                                         dialog.update_content(lines);
                                         dialog.set_title(spec.title.clone());
-                                        dialog.set_theme(&self.ui_state.theme);
                                     },
                                 );
                             } else {
@@ -133,7 +131,6 @@ impl App {
                                         spec.id.clone(),
                                         spec.title.clone(),
                                         lines,
-                                        Arc::clone(&self.ui_state.theme),
                                     );
                                 self.push_dialog(Dialog::Plugin, Box::new(dialog));
                             }

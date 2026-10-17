@@ -228,14 +228,58 @@ model to the wrong connection.
   `Component::keymap_hint()`, so the string sits next to the `handle_key`
   arms that implement it; the host's generic `j/k scroll · i act` is only
   the fallback for widgets that answer `None`, and it named `i`, which no
-  adopted box dispatches. A docked panel advertises itself **unfocused**
+  adopted box dispatches. **Every dockable box now answers it** (14
+  overrides, counted by grepping `src/` for `fn keymap_hint` and excluding
+  the trait declaration), and every one also overrides `render_in_panel`
+  (15, including `Placeholder`), so `InfoDialog` is no longer the template
+  — **`FilesDialog` and `InfoDialog` are the two worked examples**, and
+  a third should copy one of them rather than invent an idiom.
+  Three rules the twelve adapters established, each of which a new one
+  must keep:
+  - **A hint names only keys a *docked* box can receive.** The host
+    answers, before the widget is consulted, `Esc`, `q`, the four
+    arrows, and bare **and** shifted uppercase `H`/`J`/`K`/`L`
+    (`insert_panel_direction_bindings`). So spell scrolling `j/k`, never
+    `↑/↓`; never advertise `Enter` as a close verb, because docking pops
+    the box off the modal stack and `CloseDialog` runs against an empty
+    one. `Home`/`End`/`PageUp`/`PageDown` *do* arrive.
+  - **One body routine, parameterised by chrome.** `enum
+    Chrome { Owned, Hosted }` and a single private routine that `render`
+    and `render_in_panel` both call. Two viewport computations is how a
+    docked box ends up with an unreachable tail and no error — the
+    `ResearchBrowserDialog` report view shipped exactly that, and its
+    `Home` key rendered the report blank because nothing clamped the
+    offset. Clamp in the shared routine, against the rect actually being
+    filled, or do not have a sentinel-keyed scroll at all.
+  - **Retire in-panel footers and border-title keymaps into the hint**,
+    but check whether the footer is also an *affordance*. `plugin`
+    keeps its `12-30/30` scroll indicator (that is content, and the only
+    end-of-content signal); `panel_picker` keeps its whole footer,
+    because it declares `docks_as_viewer() == true` but has no
+    `App::dock_target` arm, so it never docks and the footer is all a
+    user ever sees. Do not replay a caller-supplied `set_custom_footer`
+    string into the hint: those describe the modal box, where `Esc`
+    really does close.
+  A docked panel advertises itself **unfocused**
   too, leading with the gesture that enters it (`PanelPlacement::toward`),
   because the alternative is a keymap readable only after you have already
   guessed the keys. Bespoke panels (session, chat, help, agents) decline
   unfocused — a pre-docked column is on screen every session — and an empty
   panel is silent because `focus` refuses it. The host owns the border and
   the `●` focus dot, so a widget with chrome of its own overrides
-  `Component::render_in_panel` rather than `render`.
+  `Component::render_in_panel` rather than `render`; `FilesDialog` and
+  `InfoDialog` are the two worked examples, and the rule for both is one
+  private body routine parameterised by "draw chrome", because the hosted and
+  modal paths must reach the same end of the same scroll. `InfoDialog` is the
+  one to copy when the box has scroll state: its `Down`/`j` arm is
+  deliberately unbounded and `scroll_to_end` stores a `usize::MAX` sentinel
+  because a wrapped line occupies several rows, so both hand the clamp to the
+  render pass and two clamps reach a different last row with no error to show.
+  A `keymap_hint` is a claim about the **hosted** verb set: `Esc` never reaches
+  a hosted widget (the host claims `Esc`/`q` as its own exit and blurs first)
+  and `Enter`'s `CloseDialog` runs against an empty modal stack, because
+  docking popped the box off it. Do not name either, and do not replay a
+  `set_custom_footer` string into the hint — those describe the modal box.
   Project binding is resolved by `commands/panels.rs`, not by the panel.
   Key precedence in `App::on_key`:
   **Ctrl+digit hotkey recall** → modals → timeline → command mode →
@@ -822,11 +866,29 @@ model to the wrong connection.
   `App::input_target()` returns `Chat` while `PromptState::chat_seed` is set,
   the badge shows `[REPLY]`/`[EDIT]`, and Normal-mode `Esc` cancels the
   context without discarding the typed text.
-- **Selection uses `bg`, not `fg`.** `theme.selection` is a background; using
-  it as a foreground painted selected message authors dark-on-dark. Pair it
-  with `fg(theme.foreground)`. Unselected bodies are `foreground`, not
-  `muted` — dimming the whole transcript whenever nothing was unread made
-  the common case the unreadable one.
+- **Selection uses `bg`, not `fg`, and its text is `theme.selection_text`.**
+  `theme.selection` is a background; using it as a foreground painted selected
+  message authors dark-on-dark. Its text needs a colour that reads on *that
+  fill*, which is not necessarily the body foreground — a light theme's
+  selection can be pale enough that dark text is required. Use
+  `fg(theme.selection_text)`; it is derived per theme, never hardcode a literal
+  foreground (a `Color::White` row is white-on-white on every light theme, which
+  is what the old selection code did). `Theme::selection_style()` already pairs
+  them. Unselected bodies are `foreground`, not `muted` — dimming the whole
+  transcript whenever nothing was unread made the common case the unreadable
+  one.
+- **A render path reads the theme it is handed; it never caches one.**
+  `Component::render` / `render_in_panel` receive the live `&Arc<Theme>` every
+  frame. A box that stores `Arc<Theme>` and refreshes it only when opened goes
+  stale the moment the user changes theme, because the seven sites that
+  reassign `UiState::theme` do not re-push into an open box. A box that
+  reassigns the field from inside its own render is *also* wrong — it happens to
+  work, and it is the shape a source grep ranks as the worst offender.
+  Enforced by `tests/tui_theme_source_of_truth.rs`: render with theme A, render
+  again with theme B, and no interior foreground may be a colour A defined.
+  `Widget` cannot receive a theme, so a widget that must stay one has to be an
+  inherent method instead — `DiffViewer::render_in`, `PlanDialog::render_legacy`,
+  `DiffDialog::render_legacy`.
 - **Chat surfaces open on the newest message and follow the tail.**
   `ChatBrowser::follow_tail` starts true; `k` unpins, `j` past the newest and
   `G` re-pin. `sync` runs on every render and snapshot, not only on

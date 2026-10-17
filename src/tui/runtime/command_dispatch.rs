@@ -781,8 +781,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ResearchLoadSection { run_id, section } => {
             start_research_load_section(app, run_id, section);
         }
-        TuiCommand::OpenRunDetailLoaded { mut dialog } => {
-            dialog.set_theme(&app.ui_state.theme);
+        TuiCommand::OpenRunDetailLoaded { dialog } => {
             app.push_dialog(crate::tui::Dialog::RunDetail, Box::new(dialog));
         }
         TuiCommand::OpenRunDetailError { error } => {

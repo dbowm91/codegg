@@ -115,9 +115,10 @@ impl Component for ConfirmDialog {
                     "  "
                 };
                 let style = if i == self.selected_option {
-                    Style::default()
-                        .fg(ratatui::style::Color::White)
-                        .bg(theme.primary)
+                    // `accent_text`, not white: the option is drawn on the
+                    // accent *fill*, and white-on-white is what this used to
+                    // render under a light theme.
+                    Style::default().fg(theme.accent_text).bg(theme.primary)
                 } else {
                     Style::default().fg(theme.foreground)
                 };

@@ -56,22 +56,20 @@ pub struct RunDetailDialog {
     pub tab_index: usize,
     pub scroll: usize,
     pub selected_artifact: Option<usize>,
-    pub theme: Arc<Theme>,
 }
 
 impl RunDetailDialog {
-    pub fn new(detail: RunDetailView, theme: Arc<Theme>) -> Self {
+    /// Takes no theme: `render` receives the live one from the `Component` seam
+    /// and every helper below resolves against that. The dialog used to cache an
+    /// `Arc<Theme>` set once at open, so the whole run-detail view — seven tabs —
+    /// painted one theme's colours regardless of which was active.
+    pub fn new(detail: RunDetailView) -> Self {
         Self {
             detail,
             tab_index: 0,
             scroll: 0,
             selected_artifact: None,
-            theme,
         }
-    }
-
-    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
     }
 
     fn current_tab(&self) -> &RunDetailTab {
@@ -82,30 +80,30 @@ impl RunDetailDialog {
         (self.scroll.min(u16::MAX as usize) as u16, 0)
     }
 
-    fn render_summary(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render_summary(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let cell = &self.detail.cell;
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Run ID: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Run ID: ", Style::default().fg(theme.muted)),
                 Span::raw(cell.run_id.to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Title: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Title: ", Style::default().fg(theme.muted)),
                 Span::raw(&cell.title),
             ]),
             Line::from(vec![
-                Span::styled("Kind: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Kind: ", Style::default().fg(theme.muted)),
                 Span::raw(format!("{:?}", cell.kind)),
             ]),
             Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Status: ", Style::default().fg(theme.muted)),
                 Span::styled(
                     format!("{:?}", cell.status),
                     Self::status_style(&cell.status),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Backend: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Backend: ", Style::default().fg(theme.muted)),
                 Span::raw(&cell.backend_label),
             ]),
         ];
@@ -113,19 +111,19 @@ impl RunDetailDialog {
         if let Some(duration) = cell.duration {
             let secs = duration.num_seconds();
             lines.push(Line::from(vec![
-                Span::styled("Duration: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Duration: ", Style::default().fg(theme.muted)),
                 Span::raw(format!("{}s", secs)),
             ]));
         }
 
         lines.push(Line::from(vec![
-            Span::styled("Risk: ", Style::default().fg(self.theme.muted)),
+            Span::styled("Risk: ", Style::default().fg(theme.muted)),
             Span::raw(&cell.risk_label),
         ]));
 
         if let Some(ref sandbox) = cell.sandbox_label {
             lines.push(Line::from(vec![
-                Span::styled("Sandbox: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Sandbox: ", Style::default().fg(theme.muted)),
                 Span::raw(sandbox),
             ]));
         }
@@ -133,19 +131,23 @@ impl RunDetailDialog {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             &cell.summary,
-            Style::default().fg(Color::White),
+            // Body text on the default background, so it takes the theme's own
+            // foreground. It was pinned to `Color::White`, which is a colour no
+            // theme chose — and on a light theme this summary rendered
+            // white-on-white.
+            Style::default().fg(theme.foreground),
         )));
 
         if cell.changed_file_count > 0 {
             lines.push(Line::from(vec![
-                Span::styled("Changed files: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Changed files: ", Style::default().fg(theme.muted)),
                 Span::raw(cell.changed_file_count.to_string()),
             ]));
         }
 
         // Context promotion state
         let ctx_color = match &cell.context_state {
-            codegg_core::run_store::ContextPromotionState::LocalOnly => self.theme.muted,
+            codegg_core::run_store::ContextPromotionState::LocalOnly => theme.muted,
             codegg_core::run_store::ContextPromotionState::ProjectionIncluded => Color::Green,
             codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => {
                 Color::Cyan
@@ -165,7 +167,7 @@ impl RunDetailDialog {
             codegg_core::run_store::ContextPromotionState::Excluded => "Excluded",
         };
         lines.push(Line::from(vec![
-            Span::styled("Context: ", Style::default().fg(self.theme.muted)),
+            Span::styled("Context: ", Style::default().fg(theme.muted)),
             Span::styled(ctx_label, Style::default().fg(ctx_color)),
         ]));
 
@@ -176,30 +178,30 @@ impl RunDetailDialog {
         paragraph.render(area, buf);
     }
 
-    fn render_invocation(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render_invocation(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let inv = &self.detail.invocation;
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Command: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Command: ", Style::default().fg(theme.muted)),
                 Span::raw(&inv.command),
             ]),
             Line::from(vec![
-                Span::styled("CWD: ", Style::default().fg(self.theme.muted)),
+                Span::styled("CWD: ", Style::default().fg(theme.muted)),
                 Span::raw(inv.cwd.display().to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Workspace: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Workspace: ", Style::default().fg(theme.muted)),
                 Span::raw(inv.workspace_root.display().to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Backend: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Backend: ", Style::default().fg(theme.muted)),
                 Span::raw(&inv.backend_family),
             ]),
         ];
 
         if let Some(ref detail) = inv.backend_detail {
             lines.push(Line::from(vec![
-                Span::styled("Backend detail: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Backend detail: ", Style::default().fg(theme.muted)),
                 Span::raw(detail),
             ]));
         }
@@ -208,7 +210,7 @@ impl RunDetailDialog {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "argv:",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
             for arg in argv {
                 lines.push(Line::from(format!("  {}", arg)));
@@ -217,7 +219,7 @@ impl RunDetailDialog {
 
         if let Some(ref hash) = inv.script_hash {
             lines.push(Line::from(vec![
-                Span::styled("Script hash: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Script hash: ", Style::default().fg(theme.muted)),
                 Span::raw(hash),
             ]));
         }
@@ -229,7 +231,7 @@ impl RunDetailDialog {
         paragraph.render(area, buf);
     }
 
-    fn render_artifacts(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render_artifacts(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let artifacts = &self.detail.artifacts;
         if artifacts.is_empty() {
             let paragraph = Paragraph::new("No artifacts.")
@@ -249,7 +251,7 @@ impl RunDetailDialog {
                 Style::default()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("{} ", i + 1), Style::default().fg(self.theme.muted)),
+                Span::styled(format!("{} ", i + 1), Style::default().fg(theme.muted)),
                 Span::styled(format!("{:?}", artifact.kind), style),
                 Span::styled(
                     format!(
@@ -281,7 +283,7 @@ impl RunDetailDialog {
         paragraph.render(area, buf);
     }
 
-    fn render_changes(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render_changes(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let changes = &self.detail.changes;
         if changes.is_empty() {
             let paragraph = Paragraph::new("No changed files.")
@@ -295,10 +297,7 @@ impl RunDetailDialog {
             .iter()
             .map(|c| {
                 Line::from(vec![
-                    Span::styled(
-                        format!("[{}] ", c.kind),
-                        Style::default().fg(self.theme.muted),
-                    ),
+                    Span::styled(format!("[{}] ", c.kind), Style::default().fg(theme.muted)),
                     Span::raw(c.path.display().to_string()),
                 ])
             })
@@ -311,23 +310,23 @@ impl RunDetailDialog {
         paragraph.render(area, buf);
     }
 
-    fn render_policy(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render_policy(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let policy = &self.detail.policy;
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Risk: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Risk: ", Style::default().fg(theme.muted)),
                 Span::raw(&policy.risk_level),
             ]),
             Line::from(vec![
-                Span::styled("Subprocess: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Subprocess: ", Style::default().fg(theme.muted)),
                 Span::raw(if policy.has_subprocess { "yes" } else { "no" }),
             ]),
             Line::from(vec![
-                Span::styled("Git mutation: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Git mutation: ", Style::default().fg(theme.muted)),
                 Span::raw(if policy.has_git_mutation { "yes" } else { "no" }),
             ]),
             Line::from(vec![
-                Span::styled("Destructive: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Destructive: ", Style::default().fg(theme.muted)),
                 Span::raw(if policy.has_destructive_mutation {
                     "yes"
                 } else {
@@ -336,11 +335,11 @@ impl RunDetailDialog {
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("OS isolation: ", Style::default().fg(self.theme.muted)),
+                Span::styled("OS isolation: ", Style::default().fg(theme.muted)),
                 Span::raw(if policy.os_isolation { "yes" } else { "no" }),
             ]),
             Line::from(vec![
-                Span::styled("Network isolation: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Network isolation: ", Style::default().fg(theme.muted)),
                 Span::raw(if policy.network_isolation {
                     "yes"
                 } else {
@@ -352,7 +351,7 @@ impl RunDetailDialog {
         if !policy.read_roots.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Read roots:",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
             for root in &policy.read_roots {
                 lines.push(Line::from(format!("  {}", root.display())));
@@ -362,7 +361,7 @@ impl RunDetailDialog {
         if !policy.write_roots.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Write roots:",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
             for root in &policy.write_roots {
                 lines.push(Line::from(format!("  {}", root.display())));
@@ -376,11 +375,11 @@ impl RunDetailDialog {
         paragraph.render(area, buf);
     }
 
-    fn render_context(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render_context(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let state = &self.detail.cell.context_state;
         let (state_label, state_color) = match state {
             codegg_core::run_store::ContextPromotionState::LocalOnly => {
-                ("Local only (not in context)", self.theme.muted)
+                ("Local only (not in context)", theme.muted)
             }
             codegg_core::run_store::ContextPromotionState::ProjectionIncluded => {
                 ("Projection included in context", Color::Green)
@@ -398,7 +397,7 @@ impl RunDetailDialog {
 
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("State: ", Style::default().fg(self.theme.muted)),
+                Span::styled("State: ", Style::default().fg(theme.muted)),
                 Span::styled(state_label, Style::default().fg(state_color)),
             ]),
             Line::from(""),
@@ -408,11 +407,11 @@ impl RunDetailDialog {
         let total_artifact_bytes: u64 = self.detail.artifacts.iter().map(|a| a.byte_length).sum();
         let est_tokens = total_artifact_bytes / 4; // rough estimate
         lines.push(Line::from(vec![
-            Span::styled("Estimated tokens: ", Style::default().fg(self.theme.muted)),
+            Span::styled("Estimated tokens: ", Style::default().fg(theme.muted)),
             Span::raw(format!("~{}", est_tokens)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("Artifact bytes: ", Style::default().fg(self.theme.muted)),
+            Span::styled("Artifact bytes: ", Style::default().fg(theme.muted)),
             Span::raw(Self::format_bytes(total_artifact_bytes)),
         ]));
 
@@ -421,19 +420,19 @@ impl RunDetailDialog {
             codegg_core::run_store::ContextPromotionState::LocalOnly => {
                 lines.push(Line::from(Span::styled(
                     "Press [p] to promote to context",
-                    Style::default().fg(self.theme.muted),
+                    Style::default().fg(theme.muted),
                 )));
             }
             codegg_core::run_store::ContextPromotionState::Pinned => {
                 lines.push(Line::from(Span::styled(
                     "Press [u] to unpin from context",
-                    Style::default().fg(self.theme.muted),
+                    Style::default().fg(theme.muted),
                 )));
             }
             _ => {
                 lines.push(Line::from(Span::styled(
                     "Press [p] to change promotion state",
-                    Style::default().fg(self.theme.muted),
+                    Style::default().fg(theme.muted),
                 )));
             }
         }
@@ -445,7 +444,7 @@ impl RunDetailDialog {
         paragraph.render(area, buf);
     }
 
-    fn render_output(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render_output(&self, area: Rect, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
         let proj = &self.detail.projection;
         let artifacts = &self.detail.artifacts;
 
@@ -453,11 +452,11 @@ impl RunDetailDialog {
 
         if let Some(proj) = proj {
             lines.push(Line::from(vec![
-                Span::styled("Projector: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Projector: ", Style::default().fg(theme.muted)),
                 Span::raw(&proj.projector),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("Exactness: ", Style::default().fg(self.theme.muted)),
+                Span::styled("Exactness: ", Style::default().fg(theme.muted)),
                 Span::raw(&proj.exactness),
             ]));
             if !proj.omitted_ranges.is_empty() {
@@ -479,7 +478,7 @@ impl RunDetailDialog {
         if let Some(stdout) = stdout {
             lines.push(Line::from(Span::styled(
                 "stdout:",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
             lines.push(Line::from(format!(
                 "  {} ({})",
@@ -490,7 +489,7 @@ impl RunDetailDialog {
         if let Some(stderr) = stderr {
             lines.push(Line::from(Span::styled(
                 "stderr:",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
             lines.push(Line::from(format!(
                 "  {} ({})",
@@ -506,7 +505,7 @@ impl RunDetailDialog {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Press [Enter] to view artifact content",
-            Style::default().fg(self.theme.muted),
+            Style::default().fg(theme.muted),
         )));
 
         let paragraph = Paragraph::new(lines)
@@ -597,8 +596,8 @@ impl Component for RunDetailDialog {
         None
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, _theme: &Arc<Theme>) {
-        let area = centered_rect(80, 80, area);
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let area = crate::tui::components::component::centered_rect(80, 80, area);
         frame.render_widget(Clear, area);
 
         let block = Block::default()
@@ -617,7 +616,7 @@ impl Component for RunDetailDialog {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(self.theme.muted)
+                    Style::default().fg(theme.muted)
                 };
                 Line::from(Span::styled(tab.label(), style))
             })
@@ -635,13 +634,15 @@ impl Component for RunDetailDialog {
         frame.render_widget(tabs, chunks[0]);
 
         match self.current_tab() {
-            RunDetailTab::Summary => self.render_summary(chunks[1], frame.buffer_mut()),
-            RunDetailTab::Invocation => self.render_invocation(chunks[1], frame.buffer_mut()),
-            RunDetailTab::Output => self.render_output(chunks[1], frame.buffer_mut()),
-            RunDetailTab::Artifacts => self.render_artifacts(chunks[1], frame.buffer_mut()),
-            RunDetailTab::Changes => self.render_changes(chunks[1], frame.buffer_mut()),
-            RunDetailTab::Policy => self.render_policy(chunks[1], frame.buffer_mut()),
-            RunDetailTab::Context => self.render_context(chunks[1], frame.buffer_mut()),
+            RunDetailTab::Summary => self.render_summary(chunks[1], frame.buffer_mut(), theme),
+            RunDetailTab::Invocation => {
+                self.render_invocation(chunks[1], frame.buffer_mut(), theme)
+            }
+            RunDetailTab::Output => self.render_output(chunks[1], frame.buffer_mut(), theme),
+            RunDetailTab::Artifacts => self.render_artifacts(chunks[1], frame.buffer_mut(), theme),
+            RunDetailTab::Changes => self.render_changes(chunks[1], frame.buffer_mut(), theme),
+            RunDetailTab::Policy => self.render_policy(chunks[1], frame.buffer_mut(), theme),
+            RunDetailTab::Context => self.render_context(chunks[1], frame.buffer_mut(), theme),
         }
     }
 
@@ -652,24 +653,4 @@ impl Component for RunDetailDialog {
     fn is_modal(&self) -> bool {
         true
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }

@@ -26,7 +26,6 @@ pub struct SourcePreviewDialog {
     /// Optional label indicating where the preview was opened from,
     /// e.g. "Security Review Finding".
     pub origin_label: Option<String>,
-    pub theme: Arc<Theme>,
 }
 
 #[derive(Clone)]
@@ -37,7 +36,7 @@ pub struct SourcePreviewLine {
 }
 
 impl SourcePreviewDialog {
-    pub fn new(theme: Arc<Theme>, path: PathBuf, line: Option<u32>) -> Self {
+    pub fn new(path: PathBuf, line: Option<u32>) -> Self {
         let context_radius = 10;
         let (lines, error) = Self::read_file(&path, line, context_radius);
         Self {
@@ -48,16 +47,10 @@ impl SourcePreviewDialog {
             error,
             scroll: 0,
             origin_label: None,
-            theme,
         }
     }
 
-    pub fn with_origin(
-        theme: Arc<Theme>,
-        path: PathBuf,
-        line: Option<u32>,
-        origin_label: String,
-    ) -> Self {
+    pub fn with_origin(path: PathBuf, line: Option<u32>, origin_label: String) -> Self {
         let context_radius = 10;
         let (lines, error) = Self::read_file(&path, line, context_radius);
         Self {
@@ -68,12 +61,7 @@ impl SourcePreviewDialog {
             error,
             scroll: 0,
             origin_label: Some(origin_label),
-            theme,
         }
-    }
-
-    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
     }
 
     fn read_file(
@@ -197,7 +185,7 @@ impl Component for SourcePreviewDialog {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, _theme: &Arc<Theme>) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         if area.height < 4 || area.width < 20 {
             return;
         }
@@ -224,12 +212,12 @@ impl Component for SourcePreviewDialog {
         };
         let header_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
+            .border_style(Style::default().fg(theme.border))
             .title(" Source Preview ");
         let header_para = Paragraph::new(Line::from(Span::styled(
             header_text,
             Style::default()
-                .fg(self.theme.primary)
+                .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         )))
         .block(header_block);
@@ -237,14 +225,14 @@ impl Component for SourcePreviewDialog {
 
         let content_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
+            .border_style(Style::default().fg(theme.border));
         let content_inner = content_block.inner(chunks[1]);
         frame.render_widget(content_block, chunks[1]);
 
         if let Some(ref err) = self.error {
             let err_para = Paragraph::new(Line::from(Span::styled(
                 err.clone(),
-                Style::default().fg(self.theme.error),
+                Style::default().fg(theme.error),
             )));
             frame.render_widget(err_para, content_inner);
         } else {
@@ -254,12 +242,12 @@ impl Component for SourcePreviewDialog {
                 .map(|pl| {
                     let line_style = if pl.highlighted {
                         Style::default()
-                            .fg(self.theme.primary)
+                            .fg(theme.primary)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(self.theme.foreground)
+                        Style::default().fg(theme.foreground)
                     };
-                    let num_style = Style::default().fg(self.theme.muted);
+                    let num_style = Style::default().fg(theme.muted);
                     Line::from(vec![
                         Span::styled(format!("{:>4} ", pl.number), num_style),
                         Span::styled(pl.text.clone(), line_style),
@@ -277,12 +265,12 @@ impl Component for SourcePreviewDialog {
         );
         let footer = Paragraph::new(Line::from(Span::styled(
             footer_text,
-            Style::default().fg(self.theme.muted),
+            Style::default().fg(theme.muted),
         )))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border)),
+                .border_style(Style::default().fg(theme.border)),
         );
         frame.render_widget(footer, chunks[2]);
     }

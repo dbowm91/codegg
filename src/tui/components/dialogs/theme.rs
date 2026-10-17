@@ -1,4 +1,4 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
@@ -21,6 +21,33 @@ pub enum PreviewState {
     Inactive,
     Previewing { original_id: String },
 }
+
+/// Who owns this render's chrome.
+///
+/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
+/// draws its own border, heading and footer; [`Chrome::Hosted`] is a column in
+/// a side panel, where the host has already painted all three into the same
+/// rect.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    Owned,
+    Hosted,
+}
+
+/// The verbs before a navigation arms a live preview.
+///
+/// `handle_key` below is the implementation and this is the advertisement.
+/// `Esc` is deliberately absent even though it answers one of two very
+/// different things here (revert a preview, otherwise close): a focused panel
+/// never sees it, because `SidePanelHost::handle_key` claims `Esc`/`q` as its
+/// universal exits before consulting the widget. Keeping it out also avoids
+/// promising a revert that a panel cannot perform.
+const HINT_SETTLED: &str = "j/k navigate · enter apply";
+
+/// The same verbs once a preview is live, with `Enter` meaning commit rather
+/// than apply. A hint that did not change here would understate the commitment
+/// `enter` now carries.
+const HINT_PREVIEWING: &str = "j/k preview · enter commit";
 
 #[derive(Clone)]
 pub struct ThemePickerDialog {
@@ -192,6 +219,85 @@ impl ThemePickerDialog {
     pub fn selected_theme(&self) -> Option<&Theme> {
         self.themes.get(self.selected)
     }
+
+    /// One listing routine for both render paths.
+    ///
+    /// The footer was the reason this could not stay one routine before. It
+    /// spelled `j/k/↑/↓ … | Esc cancel` (or `revert`) in a modal, where `Esc`
+    /// really does mean cancel, and was then repainted verbatim into a panel
+    /// column — where `↑/↓` are panel directions and `Esc` is the host's
+    /// universal exit, so a third of every footer taught keys that could not
+    /// fire. The words that describe the column's own verbs now live in
+    /// `keymap_hint`, and what is left here is a `Chrome::Owned` footer.
+    ///
+    /// The viewport arithmetic below is deliberately the modal's, unchanged:
+    /// both paths subtract the same chrome budget from the rect they are given
+    /// and read the same [`Self::visible_height`] through `count_visible_themes`,
+    /// which is also what arms the `select_up`/`select_down` clamp, so the
+    /// window the render pass paints and the window the keys clamp against
+    /// cannot disagree. Deriving it some other way here would change modal
+    /// rendering, which is the regression net for this whole change.
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+        let mut lines: Vec<Line> = Vec::new();
+
+        if chrome == Chrome::Owned {
+            lines.push(Line::from(Span::styled(
+                " Select Theme ",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        // See Widget::render for the line budget rationale. Using the
+        // actual area height here makes the picker fill the dialog box
+        // even after the inline preview block was removed.
+        let max_lines = (area.height as usize).saturating_sub(6);
+        let scroll = self.scroll.get();
+        let visible_themes = self.count_visible_themes_in(scroll, max_lines);
+        for (i, thm) in self
+            .themes
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible_themes)
+        {
+            push_theme_row(&mut lines, thm, theme, i == self.selected);
+        }
+
+        if chrome == Chrome::Owned {
+            lines.push(Line::from(""));
+            let footer = if self.is_previewing() {
+                "j/k/↑/↓ preview  |  Enter commit  |  Esc revert"
+            } else {
+                "j/k/↑/↓ navigate  |  Enter apply  |  Esc cancel"
+            };
+            lines.push(Line::from(Span::styled(
+                footer,
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        match chrome {
+            Chrome::Owned => {
+                let block = Block::default()
+                    .title(" Themes ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .style(Style::default().bg(theme.background));
+
+                let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+                paragraph.render(area, frame.buffer_mut());
+            }
+            Chrome::Hosted => {
+                let paragraph = Paragraph::new(lines)
+                    .style(Style::default().bg(theme.background))
+                    .wrap(Wrap { trim: true });
+                paragraph.render(area, frame.buffer_mut());
+            }
+        }
+    }
 }
 
 impl Default for ThemePickerDialog {
@@ -361,52 +467,39 @@ impl Component for ThemePickerDialog {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let mut lines: Vec<Line> = Vec::new();
-
-        lines.push(Line::from(Span::styled(
-            " Select Theme ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-
-        // See Widget::render for the line budget rationale. Using the
-        // actual area height here makes the picker fill the dialog box
-        // even after the inline preview block was removed.
-        let max_lines = (area.height as usize).saturating_sub(6);
-        let scroll = self.scroll.get();
-        let visible_themes = self.count_visible_themes_in(scroll, max_lines);
-        for (i, thm) in self
-            .themes
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .take(visible_themes)
-        {
-            push_theme_row(&mut lines, thm, theme, i == self.selected);
-        }
-
-        lines.push(Line::from(""));
-        let footer = if self.is_previewing() {
-            "j/k/↑/↓ preview  |  Enter commit  |  Esc revert"
+    /// The verbs this box owns, reworded once a navigation arms a live preview.
+    ///
+    /// `Esc` is the interesting omission: it means something different in the
+    /// two states (revert a preview, otherwise close) and neither of them is
+    /// reachable from a column, where `SidePanelHost::handle_key` claims it as a
+    /// universal exit before the widget is consulted. The two states also differ
+    /// in what `Enter` costs, so one fixed string would understate the second.
+    fn keymap_hint(&self) -> Option<String> {
+        Some(if self.is_previewing() {
+            HINT_PREVIEWING.to_string()
         } else {
-            "j/k/↑/↓ navigate  |  Enter apply  |  Esc cancel"
-        };
-        lines.push(Line::from(Span::styled(
-            footer,
-            Style::default().fg(theme.muted),
-        )));
+            HINT_SETTLED.to_string()
+        })
+    }
 
-        let block = Block::default()
-            .title(" Themes ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
+    /// The swatch list alone: no border, no title, no footer.
+    ///
+    /// The host has already painted a border, a ` ● Themes ` title and the `●`
+    /// focus marker into this same rect, and `render_in_panel` is handed the full
+    /// rect rather than the interior, so a second border does not stack — it
+    /// overwrites all three, and a focused column renders exactly like an
+    /// unfocused one. `area` is the host's full rect, so inset by its border
+    /// first.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let inner = area.inner(Margin::new(1, 1));
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        self.render_body(frame, inner, theme, Chrome::Hosted);
+    }
 
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, frame.buffer_mut());
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render_body(frame, area, theme, Chrome::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {

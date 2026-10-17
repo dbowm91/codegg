@@ -931,13 +931,8 @@ impl App {
             } => {
                 use crate::tui::components::dialogs::source_preview::SourcePreviewDialog;
                 let dialog = match origin_label {
-                    Some(label) => SourcePreviewDialog::with_origin(
-                        Arc::clone(&self.ui_state.theme),
-                        path,
-                        line,
-                        label,
-                    ),
-                    None => SourcePreviewDialog::new(Arc::clone(&self.ui_state.theme), path, line),
+                    Some(label) => SourcePreviewDialog::with_origin(path, line, label),
+                    None => SourcePreviewDialog::new(path, line),
                 };
                 self.push_dialog(Dialog::SourcePreview, Box::new(dialog));
             }
@@ -947,13 +942,12 @@ impl App {
                 if let Some(ref run_store) = self.run_store {
                     let run_id_val = codegg_core::run_store::RunId(run_id.clone());
                     let run_store = Arc::clone(run_store);
-                    let theme = Arc::clone(&self.ui_state.theme);
                     let tx = self.tui_cmd_tx.clone();
                     tokio::spawn(async move {
                         match run_store.get_run(&run_id_val).await {
                             Ok(Some(manifest)) => {
                                 let detail = RunDetailView::from_manifest(&manifest);
-                                let dialog = RunDetailDialog::new(detail, Arc::clone(&theme));
+                                let dialog = RunDetailDialog::new(detail);
                                 if let Some(ref tx) = tx {
                                     let _ =
                                         send_tui(tx, TuiCommand::OpenRunDetailLoaded { dialog });

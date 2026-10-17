@@ -1763,7 +1763,41 @@ implement it, so the two cannot disagree. The host only keeps a generic
 not a default worth keeping in place: it named `i`, and `i` is not a verb any
 adopted box dispatches, so every box-derived panel advertised keys that did
 nothing. `/files` re-roots with `l`, expands with `enter` and pages with
-`^d`/`^u`, and its panel now says so.
+`^d`/`^u`, and its panel now says so; the `InfoDialog` family says `j/k scroll`,
+with `a publish` added only for `/project-init`, which is the one `InfoType`
+that arms it.
+
+**A hint describes the *hosted* verb set, which is not the modal one.** More arms
+of a widget's `handle_key` are unreachable in a column than M002a first found, and
+a hint that named them would be teaching keys that do not work:
+
+- `Esc` never arrives. `SidePanelHost::handle_key` claims `Esc`/`q` as the
+  universal exit and blurs before the panel is consulted, and a hosted panel
+  does not override `owns_exit_key`.
+- `Enter` arrives and closes nothing. Docking *pops* the box off the modal
+  stack, so `TuiMsg::CloseDialog` runs `close_dialog()` against an empty stack.
+  `Shift+←` is the way back to a modal, and the host already says so.
+- **The arrow keys and bare uppercase `H`/`J`/`K`/`L` never arrive either.**
+  `SidePanelHost::handle_key` resolves a panel `InputAction` and routes it to
+  `MoveDirection` *before* the panel is consulted, and
+  `insert_panel_direction_bindings` binds the four arrows plus bare **and**
+  shifted `H`/`J`/`K`/`L`. This is the finding that made the keymap half of
+  M002b non-trivial: every `↑/↓ navigate` in the twelve dockable boxes was dead,
+  and so was `/tasks`'s advertised `J/K reorder` and `/security-review`'s
+  `H copy hunk`. Lowercase `j`/`k` are *not* panel directions and do arrive, which
+  is why every hint spells them that way.
+- `Home`, `End`, `PageUp` and `PageDown` are not panel directions, so a widget
+  that dispatches them does deliver them from a column.
+
+For the same reason a `set_custom_footer` string is **not** replayed into the
+hint: `/project-init`'s `"a: publish   Esc: cancel"` and `/shell-show`'s
+six-verb footer describe the modal box, where `Esc` really does close.
+Reusing them would re-advertise exactly the dead `Esc` the hint exists to stop
+describing. M002b retired twelve in-panel footers and four copies of a
+border-title keymap on the same reasoning, and the one widget that keeps its
+footer is `PanelPicker`, which declares `docks_as_viewer() == true` but has no
+`App::dock_target` arm and therefore never docks — its footer is its only
+affordance.
 
 **The host owns the chrome, the widget owns the rows.** `render_hosted` paints
 the border and the ` ● Files ` title — the `●` being the only thing on screen
@@ -1775,6 +1809,87 @@ the focus dot with it, so a focused panel and an unfocused one rendered
 identically. `/files` also drops its in-box keymap footer there, because the
 composer row carries those bytes and a column too narrow to hold a keymap gives
 its rows to the listing instead.
+
+Every dockable box has now adopted this: fifteen `render_in_panel` overrides
+(thirteen dialogs plus `Placeholder`) and fourteen `keymap_hint` overrides,
+counted by grepping `src/` for the method names and excluding
+`components/component.rs` where the seam is declared. `GENERIC_KEYS` remains as
+the fallback for the bespoke panels, where the host owns the whole surface, and
+it is now correct for no dockable box at all.
+
+**A box's colours come from the theme it is handed, never from one it cached.**
+`Component::render` and `render_in_panel` receive the live `&Arc<Theme>` on every
+frame. A body that stores an `Arc<Theme>` and refreshes it only when the box is
+opened goes stale the moment the user changes theme: seven sites reassign
+`UiState::theme` and none of them re-pushes it into an open box, so the rest of
+the UI follows the new theme while the box keeps the old one. Four boxes did
+exactly that — `review`, `plugin`, `security_review`, and the `diff` dialog via
+`DiffViewer`.
+
+Two shapes of the same mistake look different in a source count but are the
+same hazard. `mcp` and `research` cached a theme *and* reassigned it from inside
+their own render body, so they were correct — a cache the render overwrites
+every frame. They were also the two highest `self.theme.` read counts in the
+codebase, which is how a source-count audit ranks the defect's "worst
+instances" as the two boxes that are actually fine. Read against a rendered
+buffer they pass; read against grep they lead the chart.
+
+`Widget` cannot carry a theme at all, so a widget that is *only* a `Widget` has
+no way to reach the live one. That is why `DiffViewer::render_in`,
+`PlanDialog::render_legacy` and `DiffDialog::render_legacy` are inherent methods
+rather than trait impls: a trait impl would have to read a cached field, which
+is the defect. They render byte-identically to the impls they replaced.
+
+The picker is the deliberate exception: `/theme` previews each candidate
+palette, so its column deliberately paints colours that are not the active
+theme's. "Everything follows the live theme" would destroy the feature.
+`tests/tui_theme_source_of_truth.rs` encodes both rules — each box must follow a
+theme change, and the picker must keep showing candidates.
+
+**A chrome-free body must still compute one viewport.** `InfoDialog` overrides
+both seams by passing a flag to a single private routine rather than writing a
+second render path, and that is load-bearing rather than tidy. Its `Down`/`j` arm
+deliberately does not bound `scroll`, and `scroll_to_end` stores a `usize::MAX`
+sentinel instead of an offset, because a line that wraps occupies several rows
+and the reachable maximum is not `lines.len()`. Both hand the clamp to the
+render pass. Two passes — one clamping against the modal rect, one against a
+column inset by a different amount — reach a different last wrapped row, and
+nothing reports it: the panel just stops scrolling early, with no error and
+nothing to show in a screenshot. One routine makes the number the clamp uses and
+the number the paragraph paints into the same value by construction.
+
+M002b carried that rule to the whole set, and it caught a second instance of the
+identical defect. `ResearchBrowserDialog`'s report view stored a row offset that
+no render path clamped, so its `Home` arm — which sets `usize::MAX` — reached
+ratatui as `u16::MAX` through the field's `as u16` and rendered the report
+**blank**, with no way back out because the offset only ever grew. The clamp now
+lives in the shared body routine, in both paths, against the rect actually being
+filled. This is the one place in M002b where modal output changes, in one state
+(after `Home`), and it is the milestone's own structural rule rather than a new
+feature: the alternative was shipping a box whose End key erases its content.
+
+The general rule for a viewport, since the widgets do not agree on who owns it:
+
+- **Render-derived.** `/files` and `/diff` compute their visible-row count from
+  the rect they are filling on every pass, so the modal and the column are both
+  correct by construction.
+- **Externally-owned.** `/tree` and `/theme` carry a `visible_height` field that
+  **no production code ever sets** — only `tests/tui.rs` calls
+  `set_visible_height`, so it stays at its `new()` default of 10 however tall the
+  box is. A 12-row `/tree` modal therefore offers 10 rows into 6 usable ones and
+  ratatui clips the tail. That mismatch predates this work and was deliberately
+  left alone: re-deriving the field from the rect would change modal rendering,
+  and a single field shared by the render pass and the selection clamp is still
+  one source of truth, so the two paths cannot disagree with each other. It only
+  disagrees with the box's own height.
+
+**Dead render paths, not dead widgets.** Five dialogs still carry a legacy
+`impl Widget for &XDialog` that duplicates the whole modal render, and `/diff` and
+`/plan` still expose a public `render(&self, frame, area)` alongside
+`Component::render`. None of them is called from anywhere in `src/` or `tests/`.
+They were left in place deliberately: they are duplicated surface rather than a
+hosted path, and removing them is the later de-duplication milestone's work, not
+this one's.
 
 **Key ownership precedence** in `App::on_key`: modal dialogs (`FocusManager`) →
 timeline → command mode → completions → change review → **side panel (Normal
@@ -3987,7 +4102,17 @@ action.
 - **Dialog::Info doesn't exist**: `Dialog::Info` is NOT in the Dialog
   enum. `components/dialogs/info.rs` exists but `InfoDialog` uses
   `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`,
-  `TerminalShow`, etc. via `dialog_type_for_info_type()`.
+  `TerminalShow`, etc. via `dialog_type_for_info_type()`. One widget, one
+  file, and therefore one seam override covering every one of them — but not
+  all 17 `InfoType`s are reachable as a hosted panel. `TerminalShow` resolves
+  to `DialogType::Terminal`, a bespoke panel that owns its own `SidePanel`
+  impl and never renders through `render_hosted`; `Agents` resolves to
+  `DialogType::Agent`, bespoke *and* the one panel
+  `discards_a_docked_box()` names; and `WorktreeList` resolves to a
+  `DialogType` that `dock_target` omits entirely, so the gesture refuses.
+  Fourteen remain reachable-hosted, and `ProjectInit` shares `DialogType::Team`
+  with `Team` — two content types, one panel, which is why `keymap_hint` is
+  written per `InfoType` and no test here may key on `DialogType`.
 - **DialogType in component.rs**: `DialogType` lives in
   `src/tui/components/component.rs` (not `types.rs`, and not a
   `component/component.rs` — that directory holds only `context.rs` and

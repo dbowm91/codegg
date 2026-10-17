@@ -314,11 +314,7 @@ fn security_review_panel_selection_clamps_on_filter_change() {
     // Construct a list of items and verify that clamping logic
     // behaves correctly when the filter narrows the set.
     use codegg::tui::components::dialogs::security_review::SecurityReviewDialog;
-    use codegg::tui::theme::Theme;
-    use std::sync::Arc;
-
-    let theme = Arc::new(Theme::dark());
-    let mut dialog = SecurityReviewDialog::with_receipt(theme, sample_receipt());
+    let mut dialog = SecurityReviewDialog::with_receipt(sample_receipt());
     // Sample receipt has 2 findings + 1 prompt + 1 note = 4 items.
     assert_eq!(dialog.visible_items.len(), 4);
     dialog.selected_index = 3;

@@ -410,7 +410,7 @@ impl App {
                         area,
                     )
                 }
-                _ => centered_rect(60, 50, area),
+                _ => crate::tui::components::component::centered_rect(60, 50, area),
             };
             self.dialog_area = Some(popup_area);
             let dialog_result =
@@ -576,7 +576,7 @@ impl App {
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Center);
 
-        let center_area = centered_rect(60, 40, area);
+        let center_area = crate::tui::components::component::centered_rect(60, 40, area);
         frame.render_widget(Clear, center_area);
         frame.render_widget(paragraph, center_area);
     }
@@ -2620,7 +2620,7 @@ impl App {
             return;
         }
 
-        let popup_area = centered_rect(60, 50, area);
+        let popup_area = crate::tui::components::component::centered_rect(60, 50, area);
         frame.render_widget(Clear, popup_area);
 
         if !self.focus_manager.is_empty() {

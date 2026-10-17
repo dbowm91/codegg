@@ -914,9 +914,44 @@ a left-column panel says `Shift+← in`. The `l/→` and `enter` you see there a
 the file browser's own keys, not a generic panel description: the box, its
 panel, and this line are written from one source, so they cannot drift apart.
 
+That source is the box itself. Every box that can dock says its own keys now, not
+just the information panels: `/files` says `l/→ root at dir`, `/mcps` says
+`j/k move · enter actions`, `/review` says `j/k move · enter diff`, and `/diff`
+says `j/k scroll · ^d/^u page · s side-by-side`. A box whose meaning changes with
+what it is showing says the right thing in each case — `/theme` says
+`j/k preview · enter commit` once you have navigated and `j/k navigate · enter
+apply` before that, and `/security-review` drops its `H copy hunk` verb from the
+panel for a reason given below. `/cost`, `/usage`, `/logs`, `/doctor` and the
+rest of the information panels are all one widget, so a single panel of theirs
+says `j/k scroll` and `/project-init` adds `a publish`, because that is the one
+of them that has an approve key. Nothing advertises a key the box does not have.
+
+**A docked box never sees the arrow keys, `Esc`, or uppercase `H`/`J`/`K`/`L`.**
+While a panel has the keyboard, the host answers those before the box is asked:
+the arrows and bare uppercase `H`/`J`/`K`/`L` move *between panels*, and `Esc`
+returns the keyboard to the input. So a docked box's line spells its scrolling
+verbs `j/k` and never `↑/↓`, and `/tasks` does not offer `J/K reorder` in a
+column — the same `J` that reorders modally moves panels when docked. This is
+why those verbs are missing rather than forgotten.
+
+**A docked box has no `Esc`.** `Esc` returns the keyboard to the input, and
+`Shift+←` brings the box back out of the column as a window you can close. So
+when you want the box *gone* rather than just stepped out of, press `Shift+←`
+first. The in-box window keeps `Esc`/`Enter` closing it exactly as before.
+
+Two boxes are worth knowing the shape of. `/diff` and `/plan` have no close key
+in a column at all — their `Enter` is wired to close the window, and a docked box
+has no window left to close, so `Shift+←` is the way out. `/keybinds` in export
+or import mode is the same shape: `Esc` is the only exit from those two modes,
+and a column does not deliver it, so use `Shift+←` and come back to the list.
+
 The in-box modal keeps its own keymap along the bottom, because a modal box owns
 its whole surface. The side column does not: a column too narrow for a keymap
-gives its rows to the listing instead.
+gives its rows to the listing instead. A docked information panel keeps one
+line at the bottom instead, reading `Showing 12-40 of 214`, because its scroll
+keys do not stop at the end of the page — and so does a docked plugin box, which
+keeps its `12-30/30` indicator for the same reason: that number is where you are,
+not a keymap, and it is the only thing telling you the listing ends.
 
 The columns you never go into — the session projection by default — stay quiet,
 and a panel with nothing loaded in it says nothing either.

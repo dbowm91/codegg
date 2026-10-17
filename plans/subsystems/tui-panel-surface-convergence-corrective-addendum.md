@@ -1,11 +1,13 @@
 # TUI Panel Surface Convergence Corrective Addendum
 
-Status: proposed (M001 closed; M002/M003 not approved)
+Status: active (M001, M002a and M002b closed; M003 approved into planning, plan written)
 
 Repository baseline audited: `b77c8156b594494b7f59e0348d93a73ca2c1fd1c`
 (`feat(tui): editor cursor, readable colours, in-file / search, syntax colours`, 2026-10-16),
-plus the **uncommitted** `file-picker-rework` M001 working-tree changes present in that
-worktree. Re-inspect before each implementation pass.
+plus the `file-picker-rework` M001 changes that preceded it. §1 and §4 describe that baseline
+and are a historical record of the defects, not current counts — the live seam counts are in
+§4.1 as re-measured at `f8286a284` and updated by M002a. Re-inspect before each implementation
+pass.
 
 Parent roadmaps (both closed; this addendum does not reopen them):
 
@@ -14,8 +16,10 @@ Parent roadmaps (both closed; this addendum does not reopen them):
 
 Adjacent, **in-flight and not owned by this addendum**:
 
-- `plans/subsystems/file-picker-rework-roadmap.md` — M001 **conditionally closed**,
-  implemented in the working tree but uncommitted. See §5.
+- `plans/subsystems/file-picker-rework-roadmap.md` — M001 **conditionally closed** and
+  committed as `b4f4b916f`. Its `Component::keymap_hint` / `render_in_panel` seams are
+  final and consumed here. Its own M002 candidates (typeahead, `..` row, narrow-column
+  guide policy) remain deliberately unopened.
 
 Long-term references:
 
@@ -72,8 +76,11 @@ listed panel is reachable or is not listed. Docked boxes present one shared look
 border, host title, host focus dot, one status line carrying the widget's own verbs.
 
 **Infrastructure.** A typed outcome from `open_panel_box` replacing the implicit
-box-or-nothing convention. A shared dialog chrome/geometry helper. A static guard that
-fails when a new hosted widget paints chrome or ships a placeholder instruction.
+box-or-nothing convention. A shared dialog chrome/geometry helper. Per-widget
+rendered-buffer assertions that a hosted widget does not clobber the host's chrome — these
+replace the originally-planned *static* guard, which is not achievable: `Component::render`
+is the modal path where a border is correct, so no static check can distinguish a widget that
+paints chrome while hosted from one that paints it as a modal.
 
 **Polish.** Placeholder wording. Footer wording. Border-title keymaps. Colour literals in
 `plan` and `mcp` selection rows.
@@ -89,23 +96,37 @@ fails when a new hosted widget paints chrome or ships a placeholder instruction.
 - No rework of bespoke panels' content or keymaps. `Session`, `Chat`, `Terminal`, `Help`,
   and `Agents` keep their own `SidePanel` impls; M001 only stops a silent adoption drop.
 - No widget redesign, no visual restyling, no new iconography or typography.
-- No `Component` trait default flip. The cost/risk of inverting `render_in_panel` to
-  inset-by-one across all implementors is **unestablished**; treat it as a research item in
-  M002, not as a starting assumption.
+- No `Component` trait default flip. The `render_in_panel` inset-by-one default was
+  considered as a research item and **withdrawn** — §7 records the evidence. The per-widget
+  override is the fix, and it costs the same either way.
 
 ## 4. Current state (repo evidence at baseline)
 
 ### 4.1 Three seams, one adoptor
 
+Counts re-measured at `f8286a284`, after M001 landed:
+
 | Seam | Purpose | Implementors |
 |---|---|---|
-| `Component::docks_as_viewer()` | opt into the shared docking gesture | 16 dialogs |
-| `Component::render_in_panel()` | suppress own chrome when hosted | 1 — `dialogs/files.rs` |
-| `Component::keymap_hint()` | declare own verbs for the status line | 1 — `dialogs/files.rs` |
+| `Component::docks_as_viewer()` | opt into the shared docking gesture | 18 — 17 dialogs + `Placeholder` |
+| `Component::render_in_panel()` | suppress own chrome when hosted | 15 — 13 dialogs + `Placeholder` |
+| `Component::keymap_hint()` | declare own verbs for the status line | 14 — 14 dialogs |
 
-`docks_as_viewer` worked: 16 boxes answer the shared `Shift+←/→/↑/↓` gesture correctly, and
-`dock_target` covers every dockable box, so no docking gesture is a dead key. The other two
-seams have no coverage.
+Re-measured after M002b landed, by `grep -rn '    fn render_in_panel' src/` and
+`grep -rn '    fn keymap_hint' src/`, counting overrides only and excluding
+`component.rs` where the seam is *declared*. The thirteen dialogs adopting
+`render_in_panel` are `files`, `info`, `tree`, `plan`, `diff`, `review`,
+`task_view`, `research`, `security_review`, `plugin`, `mcp`, `keybind`, `theme`,
+`panel_picker`; the fourteen for `keymap_hint` are the same list without
+`Placeholder`.
+
+The two rows above this one are now saturated, and that is the point. `docks_as_viewer`
+was already complete — 16 boxes answer the shared `Shift+←/→/↑/↓` gesture correctly, and
+`dock_target` covers every dockable box, so no docking gesture is a dead key. `render_in_panel`
+and `keymap_hint` had no coverage at all, which is what M002a, M002b and
+`file-picker-rework` M001 closed. `GENERIC_KEYS` in `panels/hosted.rs` stays as the
+fallback for the remaining widgets; it is simply correct for none of these any more.
+
 
 ### 4.2 The host's chrome is destroyed on every dock except `/files`
 
@@ -187,19 +208,64 @@ the same verbs, which the chrome overwrite then destroys.
 
 ### 4.9 Colour sourcing is inconsistent, and five boxes freeze the theme at open time
 
-Five dockable boxes ignore their `theme` parameter and read a `set_theme()`-populated cache
-(`dialogs/plugin.rs`, `dialogs/review.rs`, `dialogs/security_review.rs`, `dialogs/diff.rs`,
-`dialogs/ui_node.rs`). A docked box therefore renders stale colours after the user changes
-theme, while the rest of the UI updates. `dialogs/mcp.rs` already demonstrates the correct
-pattern. Separately, `plan` and `mcp` hardcode `Color::White` for selection foreground over a
-themed background, which is unreadable on a light theme, and `plan` carries four
+Dockable boxes ignore their `theme` parameter and read a `set_theme()`-populated cache. A
+docked box therefore renders stale colours after the user changes theme, while the rest of
+the UI updates. Separately, `plan` and `mcp` hardcode `Color::White` for selection foreground
+over a themed background, which is unreadable on a light theme, and `plan` carries four
 near-identical render implementations with the same literals copied between them.
+
+> **Corrected at M003 planning.** This section originally named five boxes
+> (`plugin`, `review`, `security_review`, `diff`, `ui_node`) and stated that
+> "`dialogs/mcp.rs` already demonstrates the correct pattern". Re-measured against the
+> post-M002b tree, **ten** dockable boxes read a stale cache and `mcp` is the **worst**
+> instance — its shared body reads the cache 44 times and the live theme zero times, so the
+> claim was the inverse of the truth. `ui_node` has no `render_in_panel` and was never a
+> docked box. Nine boxes read the cache exclusively and one (`diff`) is stale through its
+> `DiffViewer` sub-widget; four of them mix live and cached reads, which repaints
+> incoherently rather than uniformly stale. The colour-literal counts (`plan` 6, `mcp` 2)
+> were correct; two further literals in `confirm.rs` and `run_detail.rs` were not listed.
+> The derived token these literals need **cannot be ingested from Halloy** —
+> `foreground_selected` is declared by the Halloy schema and defined by 0 of the 50 bundled
+> themes. See
+> `plans/implementation/tui-panel-surface-convergence-corrective/004-theme-sourcing-and-shared-chrome-geometry.md`
+> §3.2 and §3.4.
+
+> **Corrected again at M003 closure — "ten" is a count of code, not of defects.**
+> The correction above measured `self.theme.` occurrences, which counts *how much code
+> reads a cache*, not *whether the cache is stale*. `tests/tui_theme_source_of_truth.rs`
+> settles it by rendering each box with theme A and then theme B and inspecting the cells.
+> Measured that way the stale set is **four**: `review`, `plugin`, `security_review`, and
+> `diff` via `DiffViewer`.
+>
+> - `mcp` (44 reads) and `research` (46) are **not stale** — each reassigns
+>   `self.theme = Arc::clone(theme)` inside its own render body, so the cache is overwritten
+>   on the frame that reads it. They led the source count and are the two boxes that are
+>   actually fine; `mcp` was named here as "the worst instance" for the second time.
+> - `keybind` (21), `tree` (11), `plan` (17) and `theme` (5) were recorded as mixing live and
+>   cached reads. Their cached reads are all in the **dead legacy** paths — `impl Widget for
+>   &XDialog`, plus `plan`'s uncalled third `render`. Their live bodies already read the
+>   seam's theme, so they never repainted incoherently because there was nothing cached in
+>   the path that runs.
+> - The `review` "second sub-widget with the same problem" does not exist; `ReviewDialog`'s
+>   diff view colours from the passed theme.
+>
+> W2 converted `mcp` and `research` anyway — a cache a render method overwrites is a hazard,
+> and the milestone's acceptance criterion covers every render path — but they are recorded
+> here as **not defects**, because a roadmap that lists them as the worst cases points the
+> next milestone at the wrong code.
 
 ### 4.10 No shared chrome geometry
 
-There is no dialog chrome helper. `centered_rect` is defined twice, byte-identical, in
-`App` and in `dialogs/run_detail.rs`. Sixty-three `Layout::…split(…)` sites across 24 files
-hand-type their constraint sets.
+There is no dialog chrome helper. `centered_rect` is defined twice, in `App` and in
+`dialogs/run_detail.rs`. Fifty-six `Layout::…split(…)` sites across 31 files hand-type
+their constraint sets.
+
+> **Corrected at M003 planning.** The two `centered_rect` definitions are semantically
+> identical but **not** "byte-identical" as originally recorded: the parameter is named
+> `area` in one and `r` in the other, and `run_detail` qualifies `Direction` as
+> `ratatui::layout::Direction`. The layout-site figure also drifted from "63 across 24
+> files" to 56 `Layout::` sites across 31 files. The *absence* of a chrome helper is
+> unchanged and still true.
 
 ### 4.11 Why none of this was caught
 
@@ -211,21 +277,19 @@ asserts over `SidePanelId::ALL`, so a panel can be listed, unconstructible, and 
 
 ## 5. Relationship to `file-picker-rework` M001 (read first)
 
-`file-picker-rework` M001 is **implemented but uncommitted and unclosed** in the working
-tree audited here. It is the work that created `keymap_hint()` and `render_in_panel()`,
-wired them into `HostPanel::composer_hints`, and adopted both in `FilesDialog`. Its roadmap
-already diagnoses §4.2 for one widget (§4.5 there: *"The hosted panel's own title is painted
-over"*).
+`file-picker-rework` M001 created `keymap_hint()` and `render_in_panel()`, wired them into
+`HostPanel::composer_hints`, and adopted both in `FilesDialog`. Its roadmap already diagnoses
+§4.2 for one widget. It is **committed** as `b4f4b916f` and its closure record exists, so the
+seams are final and the shared-file collision risk is gone.
 
-Three consequences bind this addendum:
+Two consequences bind this addendum:
 
-1. **No seam may be re-created.** `keymap_hint`, `render_in_panel`, and the
-   `GENERIC_KEYS` fallback already exist. M002 generalizes what M001 proved on one widget.
-2. **`src/tui/panels/hosted.rs` is a shared, currently-dirty boundary.** M001 here edits
-   `Placeholder`, which M001-of-file-picker does not, but in the same file and the same
-   uncommitted worktree. Serialize.
-3. **Do not read `component.rs` as closed.** Both methods may still change shape before that
-   milestone closes.
+1. **No seam may be re-created.** `keymap_hint`, `render_in_panel`, and the `GENERIC_KEYS`
+   fallback already exist. M002a/M002b generalize what M001 proved on one widget, and
+   `Placeholder` extended it in M001 of this addendum.
+2. **`FilesDialog` is the worked template.** Its `render_in_panel` is an inset plus the
+   widget's own row-rendering, and its doc comment records why the in-box footer was retired
+   with it. M002a/M002b follow that shape; they do not invent another one.
 
 ## 6. Target architecture
 
@@ -244,8 +308,10 @@ Plus one host-side change: `open_panel_box` returns a **typed outcome** —
 panel, and the `Placeholder` describes state instead of routing the user through the
 composer.
 
-And one guard: a static check over `SidePanelId::ALL` asserting that every listed panel
-constructs a box or is bespoke, and that no hosted widget paints chrome.
+And one guard: an exhaustive sweep over `SidePanelId::ALL` asserting that every listed panel
+constructs a box or is bespoke (delivered by M001), plus a per-widget rendered-buffer
+assertion that the host's border, title and `●` survive a hosted render (delivered by
+M002a/M002b). A **static** guard for the second was considered and rejected — see §2.
 
 ## 7. Milestones
 
@@ -269,39 +335,86 @@ states why it cannot — in one step, without telling the user to run a `/` comm
 
 ### M002 — Chrome and keymap adoption across dockable boxes
 
-**Class:** capability (with polish). **Status: proposed — not approved for planning.**
+**Class:** capability (with polish). **Status: approved into planning, split into M002a and
+M002b** — see §7.1 for the split rationale.
 
 Generalizes what `file-picker-rework` M001 proved on `/files` to every dockable box:
-`render_in_panel` overrides for the ~15 chrome-painting widgets, `Placeholder` included;
-`keymap_hint` for every box that owns distinct verbs, retiring in-panel footers and
-border-title keymaps in favour of the shared status line; `InfoDialog` as the template that
-retires 13 clobber sites at once.
+`render_in_panel` overrides for the widgets that paint their own chrome, `Placeholder`
+included; `keymap_hint` for every box that owns distinct verbs, retiring in-panel footers and
+border-title keymaps in favour of the shared status line.
 
-Requires M001 and `file-picker-rework` M001 closed. Includes the `render_in_panel` default
-flip only as a **research item with a whole-tree sweep**; the plan must prove non-dockable
-implementors are unaffected before adopting it, and may drop it if the evidence does not
-support it.
+**The `render_in_panel` default flip is dropped, not deferred.** It was to be a research item.
+It is withdrawn on the evidence: the host passes `frame.area()` — the full column, border
+cells included — to `render_in_panel`, so an inset-by-one default would not stop a widget
+painting its own `Block`, it would only move that block one character inward. The flip
+therefore does not reduce the override count at all; it only helps widgets that already draw
+no chrome. Against that, `Component::render` is the modal path where a border is *correct*
+— the same fact that made M001 reject a static chrome guard — so the flip's blast radius
+covers every box in the tree for a marginal gain. The per-widget override is the fix.
 
 ### M003 — Theme sourcing and shared chrome geometry
 
-**Class:** polish. **Status: proposed — not approved for planning.**
+**Class:** polish. **Status: approved into planning; plan written** at
+`plans/implementation/tui-panel-surface-convergence-corrective/004-theme-sourcing-and-shared-chrome-geometry.md`.
+The theme-cache and colour-literal counts below **have now been re-derived** (see §4.9's
+correction note); they are no longer the audited-baseline figures.
 
-Retire the five `set_theme()` colour caches so a docked box follows the live theme; replace
-the `Color::White` selection literals in `plan` and `mcp` with theme tokens; collapse
-`plan`'s four duplicated render paths behind one; de-duplicate `centered_rect` and give the
-box set one shared chrome/geometry helper.
+Retire the `set_theme()` colour caches so a docked box follows the live theme — **ten**
+dockable boxes, not five — and replace the `Color::White` selection literals with theme
+tokens **derived** from colours every Halloy theme already carries, so no Halloy key is
+required; de-duplicate `centered_rect`.
 
-Deferred until M002, so the helper is written against the post-adoption shape rather than
-being re-broken by the next chrome change.
+Two scope changes were made at planning time and are recorded deliberately:
+
+- **The four duplicated `plan` render paths no longer exist as a live problem.** M002b
+  already collapsed the two live ones into a single shared body routine. What remains is
+  two *dead* entry points, which join the legacy `Widget` cleanup below rather than
+  expanding M003.
+- **The shared chrome/geometry helper is deferred out of M003.** It has no seam, no failing
+  test to define it, and would run directly against the `Chrome::{Owned,Hosted}` contract
+  M002b just established. M003 takes only the mechanical half (`centered_rect`); the
+  helper should be its own milestone, written against a settled shape.
+- **The legacy `impl Widget for &XDialog` impls are also deferred.** There are **ten**
+  (not the five M002b's closure recorded) and **none** has a production caller — but
+  `connect` and `share` have test-only callers whose purpose is comparing the Widget path
+  against the Component path, so they must be rewritten before those two can go. A clean
+  deletion is eight impls; the other two need a replacement signal first. Recommended as a
+  standalone cleanup milestone.
+
+Deferred until M002b, so the colour reads are written against the post-adoption shape rather
+than being re-broken by the next chrome change. M002b is closed, so this is satisfied.
+
+### 7.1 Why M002 is split in two
+
+One `InfoDialog` override retires 13 clobber sites, because `InfoDialog` backs `Cost`,
+`Usage`, `Stats`, `Context`, `Logs`, `DoctorReport`, `ShellShow`, `TaskList`, `GoalShow`,
+`Collaborators`, `Team`, `Control` and `MemoryResults`. The remaining widgets are
+single-`DialogType` boxes, several of which carry multiple in-panel footers (`diff` has
+three render paths with three footers, `research` three, `review` two) and therefore need
+per-widget reasoning about which viewport state the inset changes.
+
+That is two differently-sized, differently-risky units. M002a is one widget with a large
+fan-out and a single scroll-clamp hazard; M002b is ~12 widgets with scattered viewport state
+and up to three footer sites each. Keeping them together would put a small, reviewable,
+single-file change in the same pass as the bulk of the migration.
+
+| | M002a | M002b |
+|---|---|---|
+| Scope | `InfoDialog` chrome + keymap | remaining dockable boxes |
+| Clobber sites retired | 13 | ~12 widgets |
+| Plan | `plans/implementation/tui-panel-surface-convergence-corrective/002-info-dialog-chrome-and-keymap-adoption.md` | `plans/implementation/tui-panel-surface-convergence-corrective/003-dockable-box-chrome-and-keymap-adoption.md` |
+| Depends on | M001, `file-picker-rework` M001 | M001, `file-picker-rework` M001, M002a |
+
+M002b following M002a is what lets M002b treat `InfoDialog`'s inset as the established
+pattern rather than a second opinion.
 
 ## 8. Blockers
 
-| Blocker | Class | Owner | Resolution |
-|---|---|---|---|
-| `file-picker-rework` M001 is uncommitted and unclosed in the same worktree, and edits `src/tui/panels/hosted.rs` and `src/tui/components/component.rs` — both inside this addendum's M001 boundary | interface | `plans/subsystems/file-picker-rework-roadmap.md` | That milestone commits, verifies, and writes `plans/closure/file-picker-rework/001-status.md`. Until then both seams may change shape and `Placeholder` edits collide in the same file. |
-| M002 cannot finalize the `render_in_panel` default flip | hard | M002's own planning pass | A whole-tree sweep over `Component` implementors must establish that non-dockable boxes are unaffected, or the flip is dropped. |
+No blockers outstanding. The `file-picker-rework` M001 sequencing blocker is **resolved**:
+that milestone is committed as `b4f4b916f`, its closure record exists, and the seams it
+created are final and consumed. The M002 default-flip blocker is **withdrawn** — see §7.
 
-No other dependency is outstanding. No ADR is required.
+No ADR is required. No other dependency is outstanding.
 
 ## 9. Cross-cutting requirements
 
@@ -327,26 +440,43 @@ No other dependency is outstanding. No ADR is required.
 - **Render tests assert buffer contents, not string reachability** — the panel title and the
   `●` focus marker must be present in the hosted rect; the placeholder must not contain a
   `Shift+←` or a `/`-command instruction.
-- An exhaustive `SidePanelId::ALL` sweep, absent today, is the primary acceptance signal for
-  M001 and the regression gate for M002/M003.
-- A negative test per milestone: an added `Block` in a hosted widget's `render` fails a
-  static guard rather than silently clobbering.
+- An exhaustive `SidePanelId::ALL` sweep, added by M001, is the regression gate for
+  M002a/M002b and M003.
+- A negative test per milestone: an added chrome painter in a hosted widget must be caught.
+  M001 established that a **static** `Block` guard cannot work here — `Component::render` is
+  the modal path, where a border is correct, so a static check cannot tell the two apart and
+  would false-positive on every dialog. M002a/M002b therefore detect the defect
+  **behaviourally**: a rendered-buffer assertion per widget that the host's border, title and
+  `●` survive inside a hosted column. A widget that paints its own `Block` fails it, and a
+  widget that draws nothing cannot.
+- Every widget whose render derives a scroll viewport or selection window from `area` must
+  be proven to derive it from the inset rect instead. This is the one silent-failure class in
+  this milestone: an inset that leaves the viewport unadjusted makes the tail of the content
+  unreachable with no error anywhere.
 
 ## 11. Risks and decision points
 
-- **`render_in_panel` default flip.** The root-cause fix, and the one change that could
-  silently alter every non-dockable box. Gated on a whole-tree sweep; droppable.
-- **Removing `SidePanelId::Workspace` is a user-visible surface change.** If `Route::Workspace`
-  is not reachable from the manager, the panel must either gain a real entry path or leave
-  the list. Do not leave a permanently-empty row in the manager.
+- **The inset/viewport hazard, not the chrome.** Painting over the host's title is visible and
+  self-announcing; a scroll clamp left two rows short is not. Every widget M002a/M002b adopts
+  needs its viewport proven against the inset rect, and the acceptance signal is "the last
+  line is reachable", not "the border survived".
+- **Keymap honesty cuts both ways.** `GENERIC_KEYS` advertises `i act`, which several
+  adopting boxes do not implement. Correcting that is the point — but declaring a box's real
+  verbs means asserting what `handle_key` dispatches. A hint that names a verb its own
+  `handle_key` does not arm is the same defect in a new place.
+- **Removing `SidePanelId::Workspace` is a user-visible surface change.** Resolved in M001 by
+  removal; recorded here so the decision is not silently revisited. See the M001 closure
+  record §2 for the option set and the fail-soft verification of the persisted binding.
 - **A guard that is too strict blocks legitimate modal chrome.** Any static check must
   distinguish "hosted" from "modal" rendering, or it will forbid the modal border every box
   legitimately draws.
 - **Adoption semantics.** Making a failed adoption visible risks surfacing gestures that were
   always silently dropping a box. That is the point, but the message must name the panel,
   not expose an internal enum.
-- **M001 blocks on an uncommitted sibling.** If that milestone stalls, this addendum stalls
-  with it. That is preferable to two plans editing one dirty file.
+- **M001's sequencing risk is realised, not live.** M001 and `file-picker-rework` M001 both
+  ran dirty in one worktree; the collision was avoided by a separate worktree and by
+  sequencing after the closure record. M002a/M002b have no equivalent hazard — both seams are
+  committed and the plans name their boundary files.
 
 ## 12. Completion definition
 
@@ -357,13 +487,63 @@ the host's title or focus marker; every dockable box's verbs appear once, on the
 status line; docked boxes follow the live theme; `verify.sh quick` and `verify.sh full` are
 green; and `docs/tui.md` and `architecture/tui.md` match shipped behavior.
 
-M002 and M003 are never implicitly approved. A closure that unblocks nothing downstream is a
-valid outcome and MUST be recorded as such in the closure record.
+M003 is never implicitly approved, and neither M002a nor M002b was implicitly approved — all
+three entered planning explicitly, M003 by an explicit instruction to write its plan after
+its counts were re-derived. A closure that unblocks nothing downstream is a valid outcome
+and MUST be recorded as such in the closure record.
 
 ## 13. Milestone status table
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | blocked | `plans/implementation/tui-panel-surface-convergence-corrective/001-panel-manager-outcome-contract-and-registry-reachability.md` | — | `file-picker-rework` M001 uncommitted/unclosed; shared `hosted.rs` boundary |
-| M002 | proposed (not approved) | — | — | requires M001 + `file-picker-rework` M001 closed; fresh planning pass |
-| M003 | proposed (not approved) | — | — | requires M002; fresh planning pass |
+| M001 | closed | `plans/implementation/tui-panel-surface-convergence-corrective/001-panel-manager-outcome-contract-and-registry-reachability.md` | `plans/closure/tui-panel-surface-convergence-corrective/001-status.md` | none |
+| M002a | **closed** | `plans/implementation/tui-panel-surface-convergence-corrective/002-info-dialog-chrome-and-keymap-adoption.md` | `plans/closure/tui-panel-surface-convergence-corrective/002-status.md` | none |
+| M002b | **closed** | `plans/implementation/tui-panel-surface-convergence-corrective/003-dockable-box-chrome-and-keymap-adoption.md` | `plans/closure/tui-panel-surface-convergence-corrective/003-status.md` | none |
+| M003 | **approved into planning** (ready for handoff) | `plans/implementation/tui-panel-surface-convergence-corrective/004-theme-sourcing-and-shared-chrome-geometry.md` | — | none — counts re-derived at planning; the shared chrome/geometry helper and the legacy `Widget` cleanup are deliberately deferred out |
+
+M002a closed with one finding it did not fix and did not absorb: **`Esc` never
+reaches a hosted widget** (`SidePanelHost::handle_key` claims `Esc`/`q` as the
+universal exit and blurs before the panel is consulted) **and `Enter` closes
+nothing** (docking pops the box off the modal stack, so `TuiMsg::CloseDialog`
+runs against an empty one). A docked `InfoDialog` therefore has no in-panel
+dismiss key; `Shift+←` returns it to a modal where `Esc` works. This is a
+host-level design question, not a widget fix — see the closure record §5.1.
+
+M002b inherited it for all twelve boxes and, rather than re-deriving it,
+**found two more keys the host answers first**: the four arrows and bare
+**and** shifted uppercase `H`/`J`/`K`/`L`, all of which resolve to a panel
+`InputAction` that `SidePanelHost::handle_key` routes to `MoveDirection`
+before the widget is consulted. Every `↑/↓ navigate` in those twelve
+footers, plus `/tasks`'s advertised `J/K reorder` and
+`/security-review`'s `H copy hunk`, were therefore dead the moment the box
+docked. All twelve boxes now name only keys a column can deliver, and the
+host-level exit gap itself is recorded per widget rather than fixed — see
+the M002b closure record §5.
+
+Three pre-existing scroll defects were found and deliberately **not** fixed,
+because they are behaviour changes and this milestone moves chrome:
+`review`'s diff view renders from line 0 and ignores its own `diff_scroll`
+(so its scroll is inert), `review`'s `k` and `research`'s `k`/`j` move the
+wrong way relative to the arrows, and `tree`/`theme` carry a
+`visible_height` that no production code sets. The `research` report
+view's *unclamped* `usize::MAX` offset **was** fixed, because the
+milestone's own one-body-routine rule requires the clamp to live in the
+shared routine — see the M002b closure record §6.
+
+M003's planning corrected three of this addendum's own recorded facts, and one of them
+was an outright false claim rather than a drifted number. **§4.9's "five boxes" is ten,
+and `mcp` — named here as the exemplar of the correct pattern — is the worst instance of
+the defect.** §4.10's "byte-identical" `centered_rect` pair is semantically but not
+textually identical, and its layout-site count drifted. Correcting all three required
+re-deriving the milestone's headline number rather than inheriting it, which is what §4.9's
+original "must be re-derived before this milestone is planned" note anticipated. The
+M002b closure record's §6 legacy-path claim was corrected in the same pass: **ten** legacy
+`impl Widget for &XDialog` impls exist, not five, and `connect` and `share` do have
+callers — test-only ones, in tests that exist to compare the two render paths.
+
+Two things M003 explicitly does **not** do, having been considered and declined at
+planning: it does not build the shared chrome/geometry helper (no seam, no failing test to
+define it, and it would run against the `Chrome::{Owned,Hosted}` contract M002b just
+established), and it does not delete the legacy `Widget` impls (the eight with no callers
+are trivial; `connect` and `share` need their comparison tests rewritten first). Both are
+recorded as recommended standalone milestones rather than silently dropped.

@@ -208,6 +208,13 @@ fn selected_completion_row_is_readable_on_the_selection_fill() {
         border: ratatui::style::Color::Rgb(46, 60, 73),
         selection: ratatui::style::Color::Rgb(26, 30, 37),
         selection_dim: ratatui::style::Color::Rgb(26, 30, 37),
+        // Derived on the same rule the importers use, so this hostile palette
+        // gets the real answer rather than a hand-picked one: `foreground`
+        // (220,220,225) reads on the near-black selection fill. Previously the
+        // row was painted `primary`, which here is the fill itself — this
+        // fixture is the same defect the derived token retires.
+        selection_text: ratatui::style::Color::Rgb(220, 220, 225),
+        accent_text: ratatui::style::Color::Rgb(220, 220, 225),
         alternate_bg: ratatui::style::Color::Rgb(13, 15, 20),
         input_bg: ratatui::style::Color::Rgb(17, 21, 28),
         code_theme: "base16-ocean.dark".into(),

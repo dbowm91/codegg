@@ -14700,7 +14700,7 @@ impl App {
         let max_visible = 15.min(count as u16);
         let height = max_visible + 4;
 
-        let timeline_area = centered_rect(75, height, area);
+        let timeline_area = crate::tui::components::component::centered_rect(75, height, area);
 
         let block = Block::default()
             .title(" Timeline ")
@@ -15223,26 +15223,6 @@ fn index_files_recursive(
             }
         }
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 fn format_key_event(key: &crossterm::event::KeyEvent) -> String {

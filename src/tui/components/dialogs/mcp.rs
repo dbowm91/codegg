@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -11,6 +11,38 @@ use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::tui::app::TuiMsg;
 use crate::util::truncate::truncate_prefix;
+
+/// Who owns this render's chrome.
+///
+/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
+/// draws its own border on each pane plus a per-pane footer; [`Chrome::Hosted`]
+/// is a column in a side panel, where the host has already painted the border,
+/// the title and the `●` focus marker into the same rect — twice over, once per
+/// pane.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    Owned,
+    Hosted,
+}
+
+/// The verbs this box owns, for the panel host to reuse verbatim.
+///
+/// It varies by mode, because the same key means two different things in the two
+/// states and only one of them can be right at a time. `handle_key` below is the
+/// implementation; this is the advertisement.
+///
+/// `↑/↓` and `Esc` are absent even though `handle_key` answers them. A focused
+/// panel never sees them: `SidePanelHost::handle_key` resolves the arrow keys as
+/// panel directions and claims `Esc`/`q` as its universal exits before the widget
+/// is consulted. So the footer these two strings replaced — and it appeared
+/// twice, once per pane — was false in both panes the moment the box docked.
+///
+/// The consequence worth stating plainly: `Esc` is the *only* way out of action
+/// mode, so a docked `/mcp` can enter that mode and cannot leave it from inside
+/// the column. That is the host-level exit gap milestone M002a recorded, not
+/// something this widget can fix by choosing different words.
+const HINT_BROWSE: &str = "j/k move · enter actions";
+const HINT_ACTION: &str = "j/k move · enter run";
 
 #[derive(Debug, Clone)]
 pub struct McpServerInfo {
@@ -38,7 +70,6 @@ pub struct McpResourceInfo {
 
 #[derive(Clone)]
 pub struct McpDialog {
-    pub theme: Arc<Theme>,
     pub servers: Vec<McpServerInfo>,
     pub selected: usize,
     pub action_mode: bool,
@@ -53,19 +84,14 @@ pub enum BrowseMode {
 }
 
 impl McpDialog {
-    pub fn new(theme: Arc<Theme>) -> Self {
+    pub fn new() -> Self {
         Self {
-            theme,
             servers: Vec::new(),
             selected: 0,
             action_mode: false,
             selected_action: 0,
             browse_mode: BrowseMode::None,
         }
-    }
-
-    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
     }
 
     pub fn set_servers(&mut self, servers: Vec<McpServerInfo>) {
@@ -176,34 +202,54 @@ impl McpDialog {
         actions.get(self.selected_action).copied()
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render_body(frame, area, theme, Chrome::Owned);
+    }
+
+    /// One routine for both render paths, so the two panes cannot disagree
+    /// about who owns the chrome.
+    ///
+    /// `mcp` is the one box in this milestone that paints **two** bordered
+    /// panes rather than one, which is what makes a partial fix so easy to
+    /// write: a hosted `mcp` that dropped the outer box and kept the inner one
+    /// still overwrote the host's title. Both blocks and both footers are
+    /// behind `Chrome::Owned`, and `Chrome::Hosted` draws neither.
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
         let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(area);
 
-        self.render_server_list(chunks[0], frame);
-        self.render_server_details(chunks[1], frame);
+        self.render_server_list(chunks[0], frame, theme, chrome);
+        self.render_server_details(chunks[1], frame, theme, chrome);
     }
 
-    fn render_server_list(&self, area: Rect, frame: &mut Frame) {
+    fn render_server_list(
+        &self,
+        area: Rect,
+        frame: &mut Frame,
+        theme: &Arc<Theme>,
+        chrome: Chrome,
+    ) {
         let mut lines: Vec<Line> = Vec::new();
 
-        lines.push(Line::from(Span::styled(
-            " MCP Servers ",
-            Style::default()
-                .fg(self.theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
+        if chrome == Chrome::Owned {
+            lines.push(Line::from(Span::styled(
+                " MCP Servers ",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+        }
 
         if self.servers.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (no servers configured)",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  Use /mcps add to configure",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
         } else {
             for (i, server) in self.servers.iter().enumerate() {
@@ -215,19 +261,19 @@ impl McpDialog {
                     _ => "○",
                 };
                 let status_color = match server.status.as_str() {
-                    "connected" => self.theme.success,
-                    "connecting" => self.theme.warning,
-                    "error" => self.theme.error,
-                    _ => self.theme.muted,
+                    "connected" => theme.success,
+                    "connecting" => theme.warning,
+                    "error" => theme.error,
+                    _ => theme.muted,
                 };
 
                 let style = if is_selected {
                     Style::default()
-                        .fg(self.theme.primary)
-                        .bg(self.theme.selection)
+                        .fg(theme.primary)
+                        .bg(theme.selection)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(self.theme.foreground)
+                    Style::default().fg(theme.foreground)
                 };
 
                 lines.push(Line::from(vec![
@@ -239,32 +285,50 @@ impl McpDialog {
             }
         }
 
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  |  Enter select  |  Esc close",
-            Style::default().fg(self.theme.muted),
-        )));
+        if chrome == Chrome::Owned {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "↑/↓ navigate  |  Enter select  |  Esc close",
+                Style::default().fg(theme.muted),
+            )));
 
-        let block = Block::default()
-            .title(" Servers ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .style(Style::default().bg(self.theme.background));
+            let block = Block::default()
+                .title(" Servers ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .style(Style::default().bg(theme.background));
 
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+            let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(Style::default().bg(theme.background))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
     }
 
-    fn render_server_details(&self, area: Rect, frame: &mut Frame) {
+    fn render_server_details(
+        &self,
+        area: Rect,
+        frame: &mut Frame,
+        theme: &Arc<Theme>,
+        chrome: Chrome,
+    ) {
         let mut lines: Vec<Line> = Vec::new();
 
-        lines.push(Line::from(Span::styled(
-            " Server Details ",
-            Style::default()
-                .fg(self.theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
+        if chrome == Chrome::Owned {
+            lines.push(Line::from(Span::styled(
+                " Server Details ",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+        }
 
         if let Some(server) = self.selected_server() {
             let status_icon = match server.status.as_str() {
@@ -274,10 +338,10 @@ impl McpDialog {
                 _ => "○",
             };
             let status_color = match server.status.as_str() {
-                "connected" => self.theme.success,
-                "connecting" => self.theme.warning,
-                "error" => self.theme.error,
-                _ => self.theme.muted,
+                "connected" => theme.success,
+                "connecting" => theme.warning,
+                "error" => theme.error,
+                _ => theme.muted,
             };
             let status_text = match server.status.as_str() {
                 "connected" => "Connected",
@@ -287,30 +351,30 @@ impl McpDialog {
             };
 
             lines.push(Line::from(vec![
-                Span::styled("name:   ", Style::default().fg(self.theme.muted)),
+                Span::styled("name:   ", Style::default().fg(theme.muted)),
                 Span::raw(&server.name),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("type:   ", Style::default().fg(self.theme.muted)),
+                Span::styled("type:   ", Style::default().fg(theme.muted)),
                 Span::raw(&server.server_type),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("status: ", Style::default().fg(self.theme.muted)),
+                Span::styled("status: ", Style::default().fg(theme.muted)),
                 Span::styled(status_icon, Style::default().fg(status_color)),
                 Span::raw(format!(" {}", status_text)),
             ]));
 
             if let Some(ref error) = server.status_error {
                 lines.push(Line::from(vec![
-                    Span::styled("error:  ", Style::default().fg(self.theme.error)),
+                    Span::styled("error:  ", Style::default().fg(theme.error)),
                     Span::raw(error),
                 ]));
             }
 
             if server.has_oauth {
                 lines.push(Line::from(vec![
-                    Span::styled("oauth:  ", Style::default().fg(self.theme.muted)),
-                    Span::styled("configured", Style::default().fg(self.theme.success)),
+                    Span::styled("oauth:  ", Style::default().fg(theme.muted)),
+                    Span::styled("configured", Style::default().fg(theme.success)),
                 ]));
             }
 
@@ -320,7 +384,7 @@ impl McpDialog {
                 lines.push(Line::from(Span::styled(
                     " Resources ",
                     Style::default()
-                        .fg(self.theme.primary)
+                        .fg(theme.primary)
                         .add_modifier(Modifier::BOLD),
                 )));
                 lines.push(Line::from(""));
@@ -328,7 +392,7 @@ impl McpDialog {
                 if server.resources.is_empty() {
                     lines.push(Line::from(Span::styled(
                         "  (no resources available)",
-                        Style::default().fg(self.theme.muted),
+                        Style::default().fg(theme.muted),
                     )));
                 } else {
                     let selected_idx = match self.browse_mode {
@@ -340,10 +404,10 @@ impl McpDialog {
                         let prefix = if is_selected { "> " } else { "  " };
                         let style = if is_selected {
                             Style::default()
-                                .fg(ratatui::style::Color::White)
-                                .bg(self.theme.selection)
+                                .fg(theme.selection_text)
+                                .bg(theme.selection)
                         } else {
-                            Style::default().fg(self.theme.foreground)
+                            Style::default().fg(theme.foreground)
                         };
                         lines.push(Line::from(vec![
                             Span::styled(prefix, style),
@@ -357,7 +421,7 @@ impl McpDialog {
                             };
                             lines.push(Line::from(Span::styled(
                                 d,
-                                Style::default().fg(self.theme.muted),
+                                Style::default().fg(theme.muted),
                             )));
                         }
                     }
@@ -366,7 +430,7 @@ impl McpDialog {
                 lines.push(Line::from(Span::styled(
                     " Tools ",
                     Style::default()
-                        .fg(self.theme.primary)
+                        .fg(theme.primary)
                         .add_modifier(Modifier::BOLD),
                 )));
                 lines.push(Line::from(""));
@@ -374,13 +438,13 @@ impl McpDialog {
                 if server.tools.is_empty() {
                     lines.push(Line::from(Span::styled(
                         "  (no tools available)",
-                        Style::default().fg(self.theme.muted),
+                        Style::default().fg(theme.muted),
                     )));
                 } else {
                     for tool in server.tools.iter().take(10) {
                         lines.push(Line::from(vec![
                             Span::styled("  ", Style::default()),
-                            Span::styled(&tool.name, Style::default().fg(self.theme.foreground)),
+                            Span::styled(&tool.name, Style::default().fg(theme.foreground)),
                         ]));
                         if !tool.description.is_empty() {
                             let desc = if tool.description.len() > 60 {
@@ -390,14 +454,14 @@ impl McpDialog {
                             };
                             lines.push(Line::from(vec![
                                 Span::styled("      ", Style::default()),
-                                Span::styled(desc, Style::default().fg(self.theme.muted)),
+                                Span::styled(desc, Style::default().fg(theme.muted)),
                             ]));
                         }
                     }
                     if server.tools.len() > 10 {
                         lines.push(Line::from(Span::styled(
                             format!("  ... and {} more", server.tools.len() - 10),
-                            Style::default().fg(self.theme.muted),
+                            Style::default().fg(theme.muted),
                         )));
                     }
                 }
@@ -409,7 +473,7 @@ impl McpDialog {
                             "  {} resources available (Enter to browse)",
                             server.resources.len()
                         ),
-                        Style::default().fg(self.theme.primary),
+                        Style::default().fg(theme.primary),
                     )));
                 }
             }
@@ -418,7 +482,7 @@ impl McpDialog {
             lines.push(Line::from(Span::styled(
                 " Actions ",
                 Style::default()
-                    .fg(self.theme.primary)
+                    .fg(theme.primary)
                     .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
@@ -428,11 +492,9 @@ impl McpDialog {
                 let is_selected = self.action_mode && i == self.selected_action;
                 let prefix = if is_selected { "> " } else { "  " };
                 let style = if is_selected {
-                    Style::default()
-                        .fg(ratatui::style::Color::White)
-                        .bg(self.theme.primary)
+                    Style::default().fg(theme.accent_text).bg(theme.primary)
                 } else {
-                    Style::default().fg(self.theme.foreground)
+                    Style::default().fg(theme.foreground)
                 };
                 lines.push(Line::from(Span::styled(
                     format!("{}{}", prefix, action),
@@ -442,30 +504,40 @@ impl McpDialog {
         } else {
             lines.push(Line::from(Span::styled(
                 "  (select a server to view details)",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
         }
 
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  |  Enter select  |  Esc close",
-            Style::default().fg(self.theme.muted),
-        )));
+        if chrome == Chrome::Owned {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "↑/↓ navigate  |  Enter select  |  Esc close",
+                Style::default().fg(theme.muted),
+            )));
 
-        let block = Block::default()
-            .title(" Details ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .style(Style::default().bg(self.theme.background));
+            let block = Block::default()
+                .title(" Details ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .style(Style::default().bg(theme.background));
 
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+            let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(Style::default().bg(theme.background))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
     }
 }
 
 impl Default for McpDialog {
     fn default() -> Self {
-        Self::new(Arc::new(Theme::dark()))
+        Self::new()
     }
 }
 
@@ -525,13 +597,37 @@ impl Component for McpDialog {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
-        let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
+    /// The verbs this box owns in the state it is currently in.
+    fn keymap_hint(&self) -> Option<String> {
+        Some(
+            if self.action_mode {
+                HINT_ACTION
+            } else {
+                HINT_BROWSE
+            }
+            .to_string(),
+        )
+    }
 
-        self.render_server_list(chunks[0], frame);
-        self.render_server_details(chunks[1], frame);
+    /// Both panes, with neither pane's chrome.
+    ///
+    /// The host has already painted a border, a ` ● MCP ` title and the `●`
+    /// focus marker into this same rect, and `render_in_panel` is handed the
+    /// full rect rather than the interior. This box paints two panes, so it
+    /// could overwrite that chrome twice over; the panes keep their contents and
+    /// lose their frames, headings and footers, which is what the host's own
+    /// title and the status line above the composer now say instead. `area` is
+    /// the host's full rect, so inset by its border first.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let inner = area.inner(Margin::new(1, 1));
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        self.render_body(frame, inner, theme, Chrome::Hosted);
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render_body(frame, area, theme, Chrome::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {
