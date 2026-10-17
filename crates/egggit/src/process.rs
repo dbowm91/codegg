@@ -246,6 +246,12 @@ struct ObjectViewCache {
     clock: u64,
 }
 
+fn report_private_object_view_failure(context: &str, error: &dyn std::fmt::Debug) {
+    if std::env::var_os("CODEGG_GIT_TEST_DIAGNOSTICS").is_some() {
+        eprintln!("private Git object view rejected at {context}: {error:?}");
+    }
+}
+
 impl ObjectStoreWatcher {
     fn new(root: &Path) -> std::io::Result<Option<Self>> {
         #[cfg(target_os = "linux")]
@@ -891,21 +897,32 @@ fn prepare_private_object_view(
     if !argv_reads_objects(argv) {
         return Ok(None);
     }
-    let object_dir = trusted_object_directory(cwd)?;
-    let Some(object_dir) = object_dir else {
-        return Ok(None);
-    };
     let unavailable = || GitExecutionPolicyOutcome::BackendUnavailable {
         capabilities: vec![GitExecutionCapability::RepositoryAlias],
     };
+    let unavailable_with = |context: &str, error: &dyn std::fmt::Debug| {
+        report_private_object_view_failure(context, error);
+        unavailable()
+    };
+    let object_dir = match trusted_object_directory(cwd) {
+        Ok(object_dir) => object_dir,
+        Err(error) => {
+            return Err(unavailable_with("repository metadata", &error));
+        }
+    };
+    let Some(object_dir) = object_dir else {
+        return Ok(None);
+    };
     let cache = OBJECT_VIEW_CACHE.get_or_init(|| Mutex::new(None));
-    let mut cache = cache.lock().map_err(|_| unavailable())?;
+    let mut cache = cache
+        .lock()
+        .map_err(|error| unavailable_with("cache lock", &error))?;
     if cache.is_none() {
         let root = Arc::new(
             tempfile::Builder::new()
                 .prefix("codegg-git-object-cache-")
                 .tempdir()
-                .map_err(|_| unavailable())?,
+                .map_err(|error| unavailable_with("cache directory", &error))?,
         );
         *cache = Some(ObjectViewCache {
             root,
@@ -924,9 +941,12 @@ fn prepare_private_object_view(
             continue;
         }
         let clean = if let Some(watcher) = &view.watcher {
-            watcher.is_clean().map_err(|_| unavailable())?
+            watcher
+                .is_clean()
+                .map_err(|error| unavailable_with("cached view watcher", &error))?
         } else {
-            let current = object_store_fingerprint(&object_dir).map_err(|_| unavailable())?;
+            let current = object_store_fingerprint(&object_dir)
+                .map_err(|error| unavailable_with("cached view fingerprint", &error))?;
             fingerprint = Some(current);
             current == view.fingerprint
         };
@@ -953,7 +973,8 @@ fn prepare_private_object_view(
     let watcher = ObjectStoreWatcher::new(&object_dir).ok().flatten();
     let fingerprint = match fingerprint {
         Some(fingerprint) => fingerprint,
-        None => object_store_fingerprint(&object_dir).map_err(|_| unavailable())?,
+        None => object_store_fingerprint(&object_dir)
+            .map_err(|error| unavailable_with("source fingerprint", &error))?,
     };
 
     // Build inside the daemon-owned cache root. The resulting TempDir remains
@@ -963,14 +984,20 @@ fn prepare_private_object_view(
     let view = tempfile::Builder::new()
         .prefix("view-")
         .tempdir_in(cache.root.path())
-        .map_err(|_| unavailable())?;
-    let bytes = copy_object_files(&object_dir, view.path()).map_err(|_| unavailable())?;
+        .map_err(|error| unavailable_with("snapshot directory", &error))?;
+    let bytes = copy_object_files(&object_dir, view.path())
+        .map_err(|error| unavailable_with("snapshot copy", &error))?;
     let stable = if let Some(watcher) = &watcher {
-        watcher.is_clean().map_err(|_| unavailable())?
+        watcher
+            .is_clean()
+            .map_err(|error| unavailable_with("snapshot watcher", &error))?
     } else {
-        object_store_fingerprint(&object_dir).map_err(|_| unavailable())? == fingerprint
+        object_store_fingerprint(&object_dir)
+            .map_err(|error| unavailable_with("post-copy fingerprint", &error))?
+            == fingerprint
     };
     if !stable {
+        report_private_object_view_failure("source stability", &"source changed during snapshot");
         return Err(unavailable());
     }
     if bytes > OBJECT_VIEW_CACHE_MAX_BYTES {

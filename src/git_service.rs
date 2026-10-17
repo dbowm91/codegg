@@ -1306,6 +1306,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn init_repo(dir: &Path) {
+        std::env::set_var("CODEGG_GIT_TEST_DIAGNOSTICS", "1");
         StdCommand::new("git")
             .args(["init", "--initial-branch=main"])
             .current_dir(dir)
