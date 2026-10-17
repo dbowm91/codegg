@@ -211,10 +211,14 @@ cancellation, and Rustup/rustc probes, plus protected-mount and trusted-Git
 regressions. The runner relaxed its ephemeral unprivileged-userns AppArmor
 sysctl. Later exact-head qualification added Cargo workspace compatibility,
 offline-network probes, concurrent namespace separation, and C013 constrained
-PTY routing with descendant cleanup and restricted-userns refusal. M004's
-remaining production-owner gate is the constrained duplex LSP service and its
-exact-host qualification. This does not change C010's no-admission decision
-for the general M003 protected-mount backend.
+PTY routing with descendant cleanup and restricted-userns refusal. Exact-source
+M004 qualification [run 39003759157](https://github.com/dbowm91/codegg/actions/runs/39003759157)
+also passed the daemon-owned constrained LSP duplex/procfs route, constrained
+PTY owner and route, protected-mount/Git regression slice, and restricted-host
+refusal checks. M004 is closed for the recorded hosted Linux configuration;
+broader host-policy qualification remains a rollout concern. This does not
+change C010's no-admission decision for the general M003 protected-mount
+backend.
 
 The interactive PTY owner now has an internal long-lived M004 launch path:
 `ManagedProcessService` retains the helper setup receipt/ack protocol while
