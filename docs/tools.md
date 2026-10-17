@@ -259,6 +259,19 @@ sandboxes deny writes to ungranted sibling roots. Some native backends permit
 broad reads for tool compatibility, so scratch grants do not claim OS-level
 read confidentiality.
 
+If a structured write targets a known host temp directory outside the
+authorized workspace and scratch roots, CodeGG suggests the corresponding
+path under the run's private scratch directory. The suggestion is not an
+authorization or a rewrite: the original path is left untouched, and any
+explicit permission Deny remains final. Structured reads and shell commands
+are not redirected. FullHost shell processes retain access to the real host
+temp directory unless their selected native sandbox constrains it. Revoking a
+shared resource stops new child admission; active attempt leases keep it alive.
+Unix cleanup runs after the final lease releases. Windows shared scratch is
+retained because safe reclamation is disabled pending native qualification.
+Session and run-private scratch remains disposable cache data and is not
+recursively collected by CodeGG.
+
 ## Testing and the scheduler
 
 The `test` tool runs the project's suite through the daemon scheduler rather

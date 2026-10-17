@@ -179,12 +179,17 @@ impl Tool for WriteTool {
             .collect::<Vec<_>>();
         let requested = input["path"].as_str().map(Path::new);
         let output = if let (Some(path), Some(scratch)) = (requested, scratch) {
-            let root = std::iter::once(scratch)
+            let root = std::iter::once(scratch.clone())
                 .chain(shared_roots)
                 .find(|root| path.is_absolute() && path.starts_with(root));
             if let Some(root) = root {
                 Self::new().with_allowed_root(root).execute(input).await?
             } else {
+                if crate::tool::util::validate_target_path(path, &self.allowed_root).is_err() {
+                    if let Some(error) = temp_path_recovery_error(path, Some(&scratch)) {
+                        return Err(error);
+                    }
+                }
                 self.execute(input).await?
             }
         } else {
@@ -192,6 +197,16 @@ impl Tool for WriteTool {
         };
         Ok(crate::tool::StructuredToolResult::legacy("write", output))
     }
+}
+
+fn temp_path_recovery_error(path: &Path, private_scratch: Option<&Path>) -> Option<ToolError> {
+    let relative = crate::tool::util::relative_to_known_temp_root(path)?;
+    let scratch_root = private_scratch?.canonicalize().ok()?;
+    let suggestion = scratch_root.join(relative);
+    Some(ToolError::Permission(format!(
+        "temporary path is outside the authorized workspace; retry at '{}' or request access to the original location through the normal permission flow",
+        suggestion.display()
+    )))
 }
 
 impl Default for WriteTool {
@@ -324,5 +339,87 @@ mod delegated_scratch_tests {
             .await
             .is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "artifact");
+    }
+
+    #[tokio::test]
+    async fn unauthorized_temp_write_suggests_private_scratch_without_rewriting() {
+        use crate::tool::Tool;
+
+        let session_id = format!("temp-hint-session-{}", uuid::Uuid::new_v4());
+        let private = tempfile::tempdir().unwrap();
+        let private_root = private.path().canonicalize().unwrap();
+        let requested_root = tempfile::tempdir().unwrap();
+        let requested_path = requested_root.path().join("original.txt");
+        let scope = crate::scratch::AgentScratchScope {
+            session_id: session_id.clone(),
+            run_id: codegg_core::identity::AgentRunId::new(),
+            private_root: private_root.clone(),
+            shared: Vec::new(),
+        };
+        let error = WriteTool::default()
+            .execute_structured(
+                serde_json::json!({"path": requested_path, "content": "do not redirect"}),
+                Some(context(scope)),
+            )
+            .await
+            .expect_err("ungranted temp writes remain denied by the path boundary");
+        let message = error.to_string();
+        assert!(message.contains("retry at"), "{message}");
+        assert!(
+            message.contains(private_root.to_str().unwrap()),
+            "{message}"
+        );
+        assert!(message.contains("request access"), "{message}");
+        assert!(
+            !requested_path.exists(),
+            "the original path was not written"
+        );
+        assert_eq!(std::fs::read_dir(private.path()).unwrap().count(), 0);
+
+        let original = requested_root.path().join("real-read.txt");
+        std::fs::write(&original, "host temp data").unwrap();
+        let read_scope = crate::scratch::AgentScratchScope {
+            session_id,
+            run_id: codegg_core::identity::AgentRunId::new(),
+            private_root,
+            shared: Vec::new(),
+        };
+        assert!(
+            crate::tool::read::ReadTool::new()
+                .execute_structured(
+                    serde_json::json!({"path": original}),
+                    Some(context(read_scope)),
+                )
+                .await
+                .is_err(),
+            "reading the actual temp path is not redirected"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_write_under_host_temp_is_not_misclassified_as_unauthorized() {
+        use crate::tool::Tool;
+
+        let session_id = format!("temp-workspace-session-{}", uuid::Uuid::new_v4());
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_root = workspace.path().canonicalize().unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let target = workspace_root.join("workspace-file.txt");
+        let scope = crate::scratch::AgentScratchScope {
+            session_id,
+            run_id: codegg_core::identity::AgentRunId::new(),
+            private_root: private.path().canonicalize().unwrap(),
+            shared: Vec::new(),
+        };
+
+        WriteTool::new()
+            .with_allowed_root(workspace_root)
+            .execute_structured(
+                serde_json::json!({"path": target, "content": "workspace write"}),
+                Some(context(scope)),
+            )
+            .await
+            .expect("a temp-root workspace remains an authorized write root");
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "workspace write");
     }
 }
