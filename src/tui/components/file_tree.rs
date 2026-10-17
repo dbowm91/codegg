@@ -40,13 +40,6 @@ pub const MIN_TREE_PANE_WIDTH: u16 = 22;
 /// Fraction of the editor viewport given to the tree pane.
 pub const TREE_PANE_RATIO: u16 = 2;
 
-/// Deepest indent the pane will draw.
-///
-/// Indentation is orientation, the name is content: past this a nested row
-/// would push its name out of a narrow pane entirely. With `l` re-rooting the
-/// pane, the depth that actually shows up inside one is a level or two.
-const MAX_INDENT_DEPTH: usize = 8;
-
 /// Split `area` into `(tree, editor)`, or `(None, area)` when the pane does
 /// not fit.
 ///
@@ -143,8 +136,8 @@ impl<'a> FileTreeView<'a> {
                 Style::default().fg(theme.muted),
             )));
         }
-        for row in &rows[scroll..end] {
-            lines.push(self.row_line(row));
+        for (offset, row) in rows[scroll..end].iter().enumerate() {
+            lines.push(self.row_line(row, &rows, scroll + offset, inner.width));
         }
         frame.render_widget(Paragraph::new(lines), inner);
 
@@ -168,10 +161,23 @@ impl<'a> FileTreeView<'a> {
         }
     }
 
-    fn row_line(&self, row: &TreeRow) -> Line<'static> {
+    /// `index` addresses `rows`, which is what the shared indent needs to know
+    /// whether this row closes its level. `inner_width` is the pane's usable
+    /// columns: the guide is sized against it so that at the 22-column minimum
+    /// the name is what survives a narrow column.
+    fn row_line(
+        &self,
+        row: &TreeRow,
+        rows: &[TreeRow],
+        index: usize,
+        inner_width: u16,
+    ) -> Line<'static> {
         let theme = Arc::clone(&self.theme);
         let selected = self.state.selected.as_deref() == Some(row.path.as_str());
-        let indent = "  ".repeat(row.depth.min(MAX_INDENT_DEPTH));
+        // Shared with the `/files` box, including the scope a `l`-scoped
+        // listing needs added to `row.depth`: both renderers once computed
+        // their own indent and drew different ladders for the same tree.
+        let indent = file_icons::tree_indent(self.state, rows, index, inner_width as usize);
         // The folder icon carries the expansion state, so there is no second
         // caret column doing the same job in a pane 22 columns wide.
         let (glyph, icon_style) = file_icons::icon_style(

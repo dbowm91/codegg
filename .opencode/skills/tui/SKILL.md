@@ -216,6 +216,18 @@ model to the wrong connection.
   seam. A panel declares its own keys through `SidePanel::composer_hints`,
   which render on one contextual line directly above the composer — that is
   the seam for adding the next panel, so do not grow per-panel footers.
+  A **hosted** box gets its verbs from the box itself via
+  `Component::keymap_hint()`, so the string sits next to the `handle_key`
+  arms that implement it; the host's generic `j/k scroll · i act` is only
+  the fallback for widgets that answer `None`, and it named `i`, which no
+  adopted box dispatches. A docked panel advertises itself **unfocused**
+  too, leading with the gesture that enters it (`PanelPlacement::toward`),
+  because the alternative is a keymap readable only after you have already
+  guessed the keys. Bespoke panels (session, chat, help, agents) decline
+  unfocused — a pre-docked column is on screen every session — and an empty
+  panel is silent because `focus` refuses it. The host owns the border and
+  the `●` focus dot, so a widget with chrome of its own overrides
+  `Component::render_in_panel` rather than `render`.
   Project binding is resolved by `commands/panels.rs`, not by the panel.
   Key precedence in `App::on_key`:
   **Ctrl+digit hotkey recall** → modals → timeline → command mode →
@@ -248,6 +260,20 @@ model to the wrong connection.
   `root_history`'s last entry *is* the current root — one axis, not a prefix
   field and an expansion set that can disagree — and it is re-seeded with the
   workspace root before the first push, or the very first `l` becomes one-way.
+- **Depth is display arithmetic, and only one function owns it.** A subtree
+  walk counts depth from the subtree, so a listing scoped with `l` arrives at
+  the same depth the workspace root's top level does — and rendering `row.depth`
+  alone therefore drew the two identically. `FileTreeState::display_depth`
+  adds `scope_depth()` back and clamps at `MAX_INDENT_DEPTH`; `indent_for`
+  pairs that with last-ness for `└─` over `├─`; `file_icons::tree_indent`
+  renders both. The box and the Ctrl+T pane call that last one rather than each
+  carrying their own `"  ".repeat(...)` and their own cap. The guide is BMP box
+  drawing and deliberately **not** behind `CODEGG_FILE_ICONS` — hierarchy must
+  not depend on a patched font — and it is elided before the name, never after.
+  The box title is the same fact in words: a `workspace › src › tui`
+  breadcrumb. `display_depth` reads state and never writes it; if it starts
+  changing expansion, selection or what a walk returns, it has become
+  navigation and stopped being a display concern.
 - **`Ctrl+d`/`Ctrl+u` page a listing that does not fit.** They carry
   `Char('d')`/`Char('u')` codes, so the tree checks modifiers *before* its
   character arms. A page is two thirds of `FileTreeState::viewport_rows`,

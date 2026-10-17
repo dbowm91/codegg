@@ -12246,9 +12246,12 @@ impl App {
         // runs long, and the one surface with nothing written above the input.
         // Only during a turn — an idle buffer has nothing to stop.
         //
-        // The turn keys come first but never gate the panel's own hints: a
-        // focused panel advertises its keys whether a turn is running or not,
-        // and only a composer with neither shows no row at all.
+        // The turn keys come first but never gate the panel's own hints: the
+        // active panel advertises its keys whether a turn is running or not,
+        // and only a composer with neither shows no row at all. The panel may
+        // not have the keyboard either — a docked panel names itself and the
+        // gesture that enters it, which is the only way its keymap is
+        // readable before anyone presses the wrong key.
         let agent_keys = self.llm_buffer_key_hints();
         let panel = self
             .panel_host

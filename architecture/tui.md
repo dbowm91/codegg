@@ -1310,6 +1310,47 @@ itself is enumerated on the daemon host, never the TUI host. Files opened
 from `/files` are therefore `DocumentScope::Workspace`, and the editor's
 `[project]` badge is the honest reading.
 
+#### Depth is display arithmetic
+
+`TreeNode::depth` counts from **the walk's own root**, and
+`walk_directory(&root.join(prefix), prefix, ..)` gives a subtree walk a fresh
+count. So the top level of a listing scoped with `l` arrives at exactly the
+depth the workspace root's top level arrives at — the two are the same number,
+and both renderers used to draw it as the same thing. Entering a directory
+therefore made the listing look like the root again, which is the one thing
+re-rooting exists to stop doing.
+
+`FileTreeState::display_depth` is the fix: `scope_depth() + row.depth`, clamped
+to `MAX_INDENT_DEPTH`. `scope_depth` is the component count of `root_prefix()`,
+so what the walk cannot know — how deep the pane itself is sitting — comes from
+the state that *did* know, and the walk is left alone. It is a read: it touches
+no expansion, no selection and no scroll, which is what keeps a presentation fix
+out of navigation.
+
+`FileTreeState::indent_for` pairs that depth with last-ness (`└─` over `├─`) in
+one place, because both renderers need them together. Last-ness reads the
+**immediately next** row: deeper means the row has children still coming,
+same-or-shallower means it was the last entry in its directory. The rows are a
+pre-order flattening, so that is the whole question — and testing the rest of
+the slice instead would close every level at once.
+
+`file_icons::tree_indent` turns the pair into glyphs and sizes them. Box drawing
+only (`│` `├` `─` `└`, all BMP), deliberately **not** behind `CODEGG_FILE_ICONS`:
+"which directory does this row belong to" cannot depend on a patched font the
+user may not have, so `plain` and `nerd` render the same hierarchy. When the
+column is too narrow, levels are dropped from the outside in — the guide to the
+immediate parent is what tells a reader what the row belongs to, so that is the
+part that survives — and the guide goes away entirely before the name does. The
+name is content; the guide is orientation.
+
+Both renderers call that one function. They used to carry their own
+`"  ".repeat(row.depth.min(8))` and their own private `MAX_INDENT_DEPTH`, which
+is how the box and the pane came to draw different ladders for one tree.
+
+The box's title is a **breadcrumb** — `workspace › src › tui` — for the same
+reason. The flat `Files · src/tui (n shown)` carried the same information and
+hid which component `h` steps back through, so stepping out looked arbitrary.
+
 ### Swappable side panel (`src/tui/panels/`)
 
 The panel column is a **panel host**, not a widget chosen by an `if` in the render
@@ -1624,11 +1665,32 @@ rules replace the original "consumes every key" contract:
 **Panels advertise their own keys.** `SidePanel::composer_hints` is the
 generalisation seam: a panel declares the verbs it owns, and they appear on
 the shared hint line above the composer. It takes a narrow `PanelHints`
-(`focused`, `chat_project`) rather than the full `PanelCtx`, so the composer
-row can ask for a string during render without taking `&mut` borrows of the
-sidebar and chat state. Adding the next panel — a multiplexer-style region
-that brings up a box where `/chat` used to — is still an enum variant, an
-entry in `SidePanelId::ALL`, and one `SidePanel` impl.
+(`focused`, `placement`, `chat_project`, `input_mode`) rather than the full
+`PanelCtx`, so the composer row can ask for a string during render without
+taking `&mut` borrows of the sidebar and chat state. Adding the next panel — a
+multiplexer-style region that brings up a box where `/chat` used to — is still
+an enum variant, an entry in `SidePanelId::ALL`, and one `SidePanel` impl.
+
+**A hosted box's verbs come from the box, not from the host.** `HostPanel`
+holds a `Box<dyn Component>`, and a widget that knows its own keymap answers
+`Component::keymap_hint()` — the string sits next to the `handle_key` arms that
+implement it, so the two cannot disagree. The host only keeps a generic
+`"j/k scroll · i act"` fallback for widgets that answer `None`. That fallback is
+not a default worth keeping in place: it named `i`, and `i` is not a verb any
+adopted box dispatches, so every box-derived panel advertised keys that did
+nothing. `/files` re-roots with `l`, expands with `enter` and pages with
+`^d`/`^u`, and its panel now says so.
+
+**The host owns the chrome, the widget owns the rows.** `render_hosted` paints
+the border and the ` ● Files ` title — the `●` being the only thing on screen
+that says which panel has the keyboard — and then calls
+`Component::render_in_panel`, which defaults to `render`. A widget that draws a
+border and a title of its own overrides `render_in_panel` instead: painted over
+the same rect, its chrome did not layer but *overwrite*, taking the title and
+the focus dot with it, so a focused panel and an unfocused one rendered
+identically. `/files` also drops its in-box keymap footer there, because the
+composer row carries those bytes and a column too narrow to hold a keymap gives
+its rows to the listing instead.
 
 **Key ownership precedence** in `App::on_key`: modal dialogs (`FocusManager`) →
 timeline → command mode → completions → change review → **side panel (Normal
@@ -1777,13 +1839,31 @@ on every render and every snapshot, not just on navigation, so a message
 arriving while the user is pinned moves them with it.
 
 **Contextual keys above the input.** `SidePanel::composer_hints` returns the
-verbs the focused panel owns; `App::composer_hint_text` prefers an armed seed
+verbs the active panel owns; `App::composer_hint_text` prefers an armed seed
 (`↵ send reply · Esc cancel reply`) over panel hints, and `render.rs` reserves
 one row for the line directly above the composer — inside the prompt
-allocation, so focusing a panel cannot shrink the input. The row is not
-reserved at all when nothing is focused and nothing is armed. Panels advertise
+allocation, so focusing a panel cannot shrink the input. Panels advertise
 their keys once, next to the input those keys modify, rather than growing
 per-panel footers.
+
+**A docked panel advertises itself before you go in.** The host used to return
+`None` for any unfocused panel, so a docked `/files` showed its keymap only
+after the user had already guessed the keys correctly. It now asks every panel
+regardless of focus and passes honest focus state plus the edge it is docked to,
+so the line can lead with the gesture that makes the verbs live —
+`Files · Shift+→/Shift+L in · j/k move · …` — and swap that for `Shift+← back`
+once the panel holds the keyboard. The gesture comes from
+`PanelPlacement::toward`/`away` and `PanelDirection::gesture_key`, the same
+values the dispatcher parses, so it cannot name a key that does not work there.
+
+What each panel does when it does *not* have the keyboard is the panel's own
+decision, and the split is deliberate. The session, chat, help and agents
+panels decline — a pre-docked session column is on screen from the first frame
+of every session, and making it announce itself would put a key line nobody
+asked for permanently under the composer. A panel the user *docked* speaks.
+An empty panel says nothing either way: `focus` refuses one, so its verbs are
+unreachable and naming the command that would load it is advice for someone who
+is not in that column.
 
 **Panel manager** (`Shift+S`): a box listing every
 registered panel with its `label`, its `hint`, and the digit already bound to

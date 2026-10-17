@@ -99,6 +99,15 @@ impl HostPanel {
     }
 }
 
+/// The verbs a hosted panel falls back to describing when its widget has no
+/// keymap of its own.
+///
+/// Still a host-side guess, so `i act` stays here — but only as the fallback.
+/// Every widget whose verbs can be wrong should answer
+/// [`Component::keymap_hint`] instead, because this string cannot know what
+/// `handle_key` dispatches, and it had `i` wrong for every box it described.
+const GENERIC_KEYS: &str = "j/k scroll · i act";
+
 impl SidePanel for HostPanel {
     fn id(&self) -> SidePanelId {
         self.id
@@ -126,21 +135,39 @@ impl SidePanel for HostPanel {
         }
     }
 
+    /// The verbs this panel actually dispatches, named once by the widget.
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
-        if !hints.focused {
+        // Nothing adopted, so there are no verbs to teach and no keys the user
+        // could usefully press — and the panel cannot take the keyboard either
+        // (`focus` refuses an empty panel, so `hints.focused` is never true
+        // here), which is why this says nothing rather than naming the command
+        // that would fill it. That line used to live in this branch and could
+        // never render: advice about a surface you cannot enter is advice for
+        // someone who is not there.
+        if !self.has_content() {
             return None;
         }
-        if !self.has_content() {
-            return Some(format!(
-                "{} · empty · run {} to load · Shift+← back",
+        // The widget's own keymap, not a paraphrase of it. `/files` re-roots
+        // with `l`, expands with `enter` and pages with `^d`/`^u`, and none of
+        // those are `i act`; a docked panel that advertised the generic line was
+        // teaching the wrong keys for the one box whose keys cannot be guessed.
+        let keys = self
+            .widget
+            .keymap_hint()
+            .unwrap_or_else(|| GENERIC_KEYS.to_string());
+        if hints.focused {
+            Some(format!("{} · {keys} · Shift+← back", self.id.title()))
+        } else {
+            // The verbs are not live yet, so the line leads with the gesture
+            // that makes them live. Placement-correct, because it is a different
+            // key on every edge: `Shift+→` for the right column, `Shift+←` for
+            // the left, `Shift+↓` for the bottom row.
+            Some(format!(
+                "{} · {} in · {keys}",
                 self.id.title(),
-                load_command(self.id)
-            ));
+                hints.enter_gesture()
+            ))
         }
-        Some(format!(
-            "{} · j/k scroll · i act · Shift+← back",
-            self.id.title()
-        ))
     }
 }
 

@@ -221,6 +221,29 @@ pub trait Component: Send + Any + AsAny {
     fn docks_as_viewer(&self) -> bool {
         false
     }
+    /// The verbs this widget owns, spelled the way this widget spells them.
+    ///
+    /// The panel host asks for this so the shared hint line above the composer
+    /// can describe **this box** rather than a host-side paraphrase of it. The
+    /// keymap is written next to the `handle_key` arms that implement it and
+    /// read from the same place, which is what makes "the box, its panel, and
+    /// the hint line cannot disagree" true rather than aspirational.
+    ///
+    /// `None` means "the host's generic line is correct for me" — the default,
+    /// so a widget with nothing distinctive to say is unchanged.
+    fn keymap_hint(&self) -> Option<String> {
+        None
+    }
+    /// Render into a side-panel column.
+    ///
+    /// Defaults to the modal render, so a widget that draws no chrome of its
+    /// own keeps working when the host adopts it. A widget that *does* — a
+    /// border, a title, a keymap footer — overrides this instead of `render`,
+    /// because the host has already painted a border and a title into the same
+    /// rect and a second set of chrome overwrites it, focus dot included.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render(frame, area, theme);
+    }
     fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> {
         None
     }

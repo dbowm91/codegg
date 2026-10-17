@@ -152,6 +152,10 @@ the same for the keybinding reference, and `/terminal` then `Shift+L` moves
 the terminal across. With no box open, the same keys move the keyboard
 instead.
 
+Whichever panel is on your selected edge has its keys on the line just above
+the input, docked or not — see [Browsing files](#browsing-files) for what that
+looks like.
+
 ### Moving a panel to the other side
 
 **Pushing a panel toward an empty side moves it there.** There is no "wrong
@@ -793,13 +797,38 @@ the same navigation, so the keys below mean the same thing in both.
 
 `l` re-roots rather than expanding, so the listing always has a top level:
 walking into a deeply nested tree is the same operation at every depth, and
-`h` puts the cursor back on the directory you just came out of. The title
-names the directory you are in.
+`h` puts the cursor back on the directory you just came out of.
 
-Rows show a per-type icon (folders, source files by language, docs, configs,
-media) using Nerd Font glyphs. If your terminal shows them as boxes, set
-`CODEGG_FILE_ICONS=plain` before starting CodeGG to fall back to the plain
-caret markers.
+**Where you are, three ways.** The title is a breadcrumb — `workspace › src ›
+tui` — and every row is drawn one level further in for each component of that
+trail, with a `├─` / `└─` guide to the directory it belongs to. Enter a
+directory and the rows below it visibly step in, so a scoped listing no longer
+looks like the workspace root it stopped being. Guides are plain box-drawing
+characters, so this still reads correctly with `CODEGG_FILE_ICONS=plain`.
+
+### Where the keys are
+
+**The line just above the input is where a panel's keys live — including the
+keys of a panel you have docked but not yet entered.**
+
+When `/files` is running in the side panel, that line reads
+
+```
+▌ Files · Shift+→/Shift+L in · j/k move · ^d/^u page · l/→ root at dir · …
+```
+
+and once the panel has the keyboard the front of it flips to `Shift+← back`. The
+gesture is the one for wherever your panel is docked — see the table above — so
+a left-column panel says `Shift+← in`. The `l/→` and `enter` you see there are
+the file browser's own keys, not a generic panel description: the box, its
+panel, and this line are written from one source, so they cannot drift apart.
+
+The in-box modal keeps its own keymap along the bottom, because a modal box owns
+its whole surface. The side column does not: a column too narrow for a keymap
+gives its rows to the listing instead.
+
+The columns you never go into — the session projection by default — stay quiet,
+and a panel with nothing loaded in it says nothing either.
 
 ## Where to go next
 
