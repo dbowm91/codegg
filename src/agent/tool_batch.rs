@@ -1,9 +1,9 @@
 //! Tool permission, execution-context, and batch execution ownership.
 
 use super::r#loop::{
-    extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_path_within_workspace, is_test_command, is_workspace_file_mutation, parse_mcp_tool_name,
-    truncate_test_event_preview, AgentLoop, ToolPermissionOutcome, ToolTimeoutConfig,
+    extract_bash_command, extract_git_subcommand, extract_path_from_tool_call, is_test_command,
+    parse_mcp_tool_name, truncate_test_event_preview, AgentLoop, ToolPermissionOutcome,
+    ToolTimeoutConfig,
 };
 use crate::agent::progress_recovery::ToolExecutionOutcome;
 use crate::bus::events::AppEvent;
@@ -523,6 +523,30 @@ impl AgentLoop {
                     Some(&self.session_id),
                 )
                 .await
+        } else if matches!(
+            tc.name.as_str(),
+            "write" | "edit" | "apply_patch" | "replace"
+        ) {
+            let allowed_roots = [self.workspace_root.as_path()];
+            match path.as_deref() {
+                Some(path) => {
+                    self.services
+                        .permission_checker
+                        .check_trusted_root_mutation(
+                            tc.name.as_str(),
+                            path,
+                            &allowed_roots,
+                            Some(&self.session_id),
+                        )
+                        .await
+                }
+                None => {
+                    self.services
+                        .permission_checker
+                        .check(&tc.name, None, Some(&self.session_id))
+                        .await
+                }
+            }
         } else {
             self.services
                 .permission_checker
@@ -662,24 +686,6 @@ impl AgentLoop {
                     );
                     DeterministicVerdict::Escalate { request }
                 } else if let PermissionResult::Ask(req) = perm_result {
-                    // Preserve the narrow local-file UX exception. External
-                    // MCP origin is never evidence that an unknown tool is
-                    // safe.
-                    if is_workspace_file_mutation(
-                        tc.name.as_str(),
-                        req.path.as_deref(),
-                        &self.workspace_root,
-                    ) && is_path_within_workspace(req.path.as_deref(), &self.workspace_root)
-                        && sensitive_match.is_none()
-                    {
-                        return ToolPermissionOutcome::Allowed {
-                            tool_call: tc.clone(),
-                            receipt: self.accepted_permission_receipt(
-                                approval_source::WORKSPACE_FILE_MUTATION,
-                            ),
-                            command_preflight: command_preflight.clone(),
-                        };
-                    }
                     let dialog_args = req.args.clone();
                     let request = ApprovalRequest::new(
                         req.tool.clone(),

@@ -397,6 +397,20 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // Durable delegated runs need the session's canonical
+                // repository identity so the scheduler can allocate their
+                // managed worktrees. SessionRuntime intentionally stores the
+                // workspace locator and project compatibility projection,
+                // not repository lineage; resolve the full bound context at
+                // the turn boundary instead of silently constructing
+                // repository-less AgentTasks.
+                let repository_id = match self
+                    .resolve_session_context(&session_id, &runtime.directory.to_string_lossy())
+                    .await
+                {
+                    Ok(context) => context.repository_id,
+                    Err(error) => return Err(error),
+                };
 
                 // Session-open and manual refreshes converge here as the
                 // final correctness gate: the turn captures the currently
@@ -733,7 +747,7 @@ impl CoreDaemon {
                     run_control: self.deps.run_control.clone(),
                     run_group_service: self.deps.run_group_service.clone(),
                     project_id: codegg_core::identity::ProjectId::parse(&runtime.project_id).ok(),
-                    repository_id: None,
+                    repository_id,
                     asset_snapshot,
                     asset_pin,
                     approval_mode,

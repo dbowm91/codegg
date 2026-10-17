@@ -1477,8 +1477,13 @@ async fn execute_agent_task(
     // remains authoritative and subagent `Always` choices stay in-memory.
     // Subagent loops also default to `Interactive` so they never exceed a
     // parent Yolo/Automatic ceiling without explicit narrowing.
-    let permission_checker =
-        PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
+    let workspace_root = request
+        .workspace_root
+        .clone()
+        .ok_or_else(|| "subagent execution requires an explicit workspace root".to_string())?;
+    let permission_checker = PermissionChecker::new(Some(&config), None)
+        .with_agent_rules(agent_rules)
+        .with_workspace_root(workspace_root.clone());
 
     // The subagent loop receives the MCP handle from the explicit
     // runtime context bootstrapped above (no second bootstrap, no
@@ -1491,10 +1496,6 @@ async fn execute_agent_task(
         .map(|parent_id| format!("{}-sub-{}", parent_id, request.task_id))
         .unwrap_or_else(|| format!("subagent-{}", request.task_id));
     let subagent_session_id_for_context = subagent_session_id.clone();
-    let workspace_root = request
-        .workspace_root
-        .clone()
-        .ok_or_else(|| "subagent execution requires an explicit workspace root".to_string())?;
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
         provider,
@@ -1507,6 +1508,10 @@ async fn execute_agent_task(
         workspace_root,
         subagent_session_id,
     );
+    // Usage rows must reference a durable session because the synthetic
+    // subagent transcript ID is not present in the session table. The child
+    // run ID still distinguishes siblings in that originating session.
+    agent_loop.set_usage_session_id(request.parent_id.clone());
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }

@@ -239,18 +239,15 @@ that:
 | `TestJobExecutor` | `workdir: ctx.workspace_root` |
 | `PythonJobExecutor` | canonical workdir, else `ctx.workspace_root`; **errors** if neither |
 | `ToolProgramExecutor` | `job_tool_context(&ctx.workspace_root)` |
-| `SubagentJobExecutor` | `allowed_paths.first()`, else `ctx.workspace_root` |
+| `SubagentJobExecutor` | `ctx.workspace_root`; path scopes only narrow authority within that root |
 
-`SubagentJobExecutor` was the outlier: it derived the child's root solely from
-the payload's `allowed_paths`, so a job with an empty list produced
-`workspace_root: None` and `SubAgentPool` refused the run outright ("subagent
-execution requires an explicit workspace root") even though the daemon held the
-correct root. Empty `allowed_paths` is a live production state — the daemon's
-chat-collaboration action and the schedule materializer both emit it — and
-`tool/task.rs` already substitutes the parent root at the agent-facing edge.
-An empty `allowed_paths` now means "the job's own workspace" and resolves to
-`ctx.workspace_root`; an unresolved root fails the attempt rather than
-substituting the daemon's launch directory.
+`SubagentJobExecutor` binds the child root to `ctx.workspace_root`; it never
+uses the first `allowed_paths` entry as a root. Path scopes are resolved within
+that workspace and, for mutating durable runs, remapped into the managed
+worktree while preserving their narrowing. An empty scope list leaves the
+child rooted at the job's workspace (or its managed worktree); an unresolved
+root or out-of-root scope fails the attempt rather than substituting the
+daemon's launch directory or retargeting isolation.
 `JobRecord`/`JobAttempt` remain authoritative for queue state and retry/recovery;
 the run record is the attributable delegated-agent ownership layer.
 

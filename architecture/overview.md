@@ -288,7 +288,7 @@ after reconciling the search-backend retirement with current `main`.
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 31 (32 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
 | Database tables (`CREATE TABLE`) | 87 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 79 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Storage layout version | 80 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |

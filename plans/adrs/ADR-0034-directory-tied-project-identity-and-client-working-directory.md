@@ -1,4 +1,4 @@
-# ADR-0033: Directory-tied project identity and client working directory
+# ADR-0034: Directory-tied project identity and client working directory
 
 Status: accepted
 

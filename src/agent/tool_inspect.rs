@@ -179,59 +179,11 @@ pub(super) fn mcp_tool_surface_revision(tools: &[crate::provider::ToolDefinition
     format!("sha256:{:x}", sha2::Sha256::digest(encoded))
 }
 
-pub(super) fn is_workspace_file_mutation(
-    tool_name: &str,
-    path: Option<&str>,
-    workspace_root: &std::path::Path,
-) -> bool {
-    path.is_some()
-        && is_file_modifying_tool(tool_name)
-        && is_path_within_workspace(path, workspace_root)
-}
-
 pub(super) fn tool_outcome_is_success(outcome: &ToolExecutionOutcome) -> bool {
     matches!(
         outcome.status,
         crate::agent::progress_recovery::ToolExecutionStatus::Success
     )
-}
-
-pub(super) fn is_path_within_workspace(
-    path: Option<&str>,
-    workspace_root: &std::path::Path,
-) -> bool {
-    let root = match workspace_root.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let Some(raw_path) = path else {
-        // For tools like glob, missing path means "use the owning workspace".
-        return true;
-    };
-
-    let candidate = {
-        let p = std::path::PathBuf::from(raw_path);
-        if p.is_absolute() {
-            p
-        } else {
-            root.join(p)
-        }
-    };
-
-    let canonical = match candidate.canonicalize() {
-        Ok(p) => p,
-        Err(_) => {
-            let Some(parent) = candidate.parent() else {
-                return false;
-            };
-            match parent.canonicalize() {
-                Ok(parent) => parent,
-                Err(_) => return false,
-            }
-        }
-    };
-
-    canonical.starts_with(&root)
 }
 
 pub(super) enum ToolPermissionOutcome {
@@ -479,35 +431,6 @@ mod tests {
             output.is_char_boundary(prefix_len),
             "truncated prefix must end at a UTF-8 char boundary"
         );
-    }
-
-    #[test]
-    fn workspace_file_mutation_allows_new_file_under_explicit_root() {
-        let workspace = tempfile::tempdir().unwrap();
-        assert!(is_workspace_file_mutation(
-            "write",
-            Some("definitely_missing_file_for_permission_test.md"),
-            workspace.path()
-        ));
-    }
-
-    #[test]
-    fn workspace_file_mutation_ignores_process_cwd() {
-        let workspace = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let outside_file = outside.path().join("outside.txt");
-        std::fs::write(&outside_file, "outside").unwrap();
-
-        assert!(is_workspace_file_mutation(
-            "write",
-            Some("new.txt"),
-            workspace.path()
-        ));
-        assert!(!is_workspace_file_mutation(
-            "write",
-            Some(&outside_file.to_string_lossy()),
-            workspace.path()
-        ));
     }
 
     #[test]

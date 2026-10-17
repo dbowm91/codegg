@@ -194,6 +194,10 @@ pub struct PermissionEntry {
 pub struct UsageRecord {
     pub id: String,
     pub session_id: String,
+    /// Durable delegated run that produced this provider usage, if any.
+    /// Root session usage remains unscoped and is stored as `None`.
+    #[serde(default)]
+    pub agent_run_id: Option<String>,
     pub provider: String,
     pub model: String,
     pub input_tokens: i64,

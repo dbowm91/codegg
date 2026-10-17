@@ -614,6 +614,80 @@ async fn process_group_created_for_descendants() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Test 5: An escaped descendant outlives the managed job (shared-write gate)
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn escaped_set_sid_descendant_outlives_managed_job() {
+    // A process group is not a complete process-tree boundary: a child can
+    // fork, call setsid(), close inherited output pipes, and keep writing
+    // after the managed parent has exited. This records why a checkout-writer
+    // lease cannot be released on job completion alone.
+    let tmp = tempfile::tempdir().unwrap();
+    let pid_path = tmp.path().join("escaped.pid");
+    let marker_path = tmp.path().join("escaped-write.txt");
+    let python = r#"
+import os, sys, time
+pid_path, marker_path = sys.argv[1:]
+pid = os.fork()
+if pid != 0:
+    os._exit(0)
+os.setsid()
+os.close(1)
+os.close(2)
+with open(pid_path, "w", encoding="ascii") as f:
+    f.write(str(os.getpid()))
+time.sleep(2.0)
+with open(marker_path, "w", encoding="utf-8") as f:
+    f.write("escaped descendant wrote after managed job completion")
+os._exit(0)
+"#;
+    let argv = vec![
+        "python3".to_string(),
+        "-c".to_string(),
+        python.to_string(),
+        pid_path.to_string_lossy().to_string(),
+        marker_path.to_string_lossy().to_string(),
+    ];
+    let (scheduler, submission, store, ws_id, _root) = setup_managed_argv().await;
+    let sched = scheduler.clone();
+    let loop_handle = tokio::spawn(async move { sched.run().await });
+
+    let submitted = submission
+        .submit(None, build_managed_argv_job(&ws_id, argv))
+        .await
+        .expect("submit");
+    let job = wait_for_terminal(&store, &submitted.job_id, Duration::from_secs(10)).await;
+    assert_eq!(job.state, JobState::Completed);
+
+    let escaped_pid = wait_for_pid_file(&pid_path, Duration::from_secs(5)).await;
+    let _cleanup = PidCleanup(vec![escaped_pid]);
+    assert!(
+        is_pid_alive(escaped_pid),
+        "escaped process should still be live"
+    );
+    assert!(
+        !marker_path.exists(),
+        "escaped child should still be writing after the job reached a terminal state"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !marker_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "escaped write did not occur"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(&marker_path).unwrap(),
+        "escaped descendant wrote after managed job completion"
+    );
+
+    scheduler
+        .shutdown(SchedulerShutdownMode::ImmediateInterrupt)
+        .await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
+}
+
 // Test 5: Managed process output is bounded
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -11,7 +11,7 @@ Long-term references:
 
 Related ADRs:
 
-- `plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`
+- `plans/adrs/ADR-0034-directory-tied-project-identity-and-client-working-directory.md`
   (accepted 2026-10-16). W001 and W002 are **conformance work against this
   accepted decision**; they introduce no new architectural decision. W003 is a
   capability that must be consistent with ADR-0033 but does not amend it.
@@ -69,7 +69,7 @@ authorization model itself.
 
 ## 3. Non-goals
 
-- Daemon `chdir`. ADR-0033 Option B was explicitly rejected; the daemon's
+- Daemon `chdir`. ADR-0034 Option B was explicitly rejected; the daemon's
   process cwd staying at its launch directory is correct behaviour, not the
   defect.
 - Changing ADR-0033's 1:1 root↔project rule, project archive/destroy, or
@@ -116,7 +116,7 @@ intentionally permitted bootstrap readers.
 `App::set_session` adopts the session's directory into the active tab only when
 the tab has no root. A tab normally already has one, so switching to a session
 belonging to a different directory leaves the tab's execution context pointing at
-the previous root. This contradicts ADR-0033 §2, which defines switching the
+the previous root. This contradicts ADR-0034 §2, which defines switching the
 working directory as switching "the tab's execution context, tool workdir
 default, and displayed path".
 
@@ -197,7 +197,7 @@ W001 and W002 are ordered. W003 additionally requires a UX decision recorded in
 
 - **Class:** invariant
 - **Objective:** Make switching sessions re-establish the tab's execution
-  context, workdir default, and displayed path, per ADR-0033 §2.
+  context, workdir default, and displayed path, per ADR-0034 §2.
 - **Deliverable boundary:** session-switch adoption in the TUI, the project
   execution-context resolution, and `/sessions` enumeration scope.
 - **Exit conditions:**

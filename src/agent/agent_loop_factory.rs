@@ -72,6 +72,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     // built-in mode still narrows a tool the agent allowed
     // (`merge_rulesets` lets the later ruleset win a tie).
     .with_agent_rules(active_agent_rules(&input.agents))
+    .with_workspace_root(input.execution.workspace_root.clone())
     .with_active_mode(&input.config);
     let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
         input.agents,

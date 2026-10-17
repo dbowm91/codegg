@@ -10,7 +10,7 @@ Git policy, sandbox grants, scheduler admission, or run creation.
 - `crates/codegg-core/src/workstream_claim.rs` owns typed claim, actor,
   prerequisite, state, CAS, target-normalization, and SQLite store contracts.
 - `crates/codegg-core/src/session/schema.rs::migrate_v79` owns the additive
-  schema; `STORAGE_LAYOUT_VERSION` is 79.
+  schema; `STORAGE_LAYOUT_VERSION` is 80.
 - `crates/codegg-protocol/src/projection/workstream.rs` joins authorized
   claim summaries to the existing session projection. It does not access
   storage or authorize a caller.

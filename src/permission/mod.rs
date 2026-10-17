@@ -1006,6 +1006,7 @@ pub struct PermissionChecker {
     canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
     legacy_exec_mode: bool,
     path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>,
+    workspace_root: Option<PathBuf>,
 }
 
 impl PermissionChecker {
@@ -1026,6 +1027,7 @@ impl PermissionChecker {
             canonicalized_agent_tool_rules: Vec::new(),
             legacy_exec_mode: false,
             path_cache: Arc::new(RwLock::new(HashMap::new())),
+            workspace_root: None,
         }
     }
 
@@ -1041,6 +1043,15 @@ impl PermissionChecker {
         self.agent_rules = rules;
         self.compiled_globs = compile_path_rules(&self.effective_path_rules());
         self.canonicalized_agent_tool_rules = canonicalize_tool_rules(&self.agent_rules.tool_rules);
+        self
+    }
+
+    /// Bind relative permission paths and safe direct-file writes to the
+    /// daemon-resolved workspace. This never grants shell or Git access; it
+    /// only changes the fallback for the native file mutation tools.
+    pub fn with_workspace_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.workspace_root = Some(root.into());
+        self.path_cache = Arc::new(RwLock::new(HashMap::new()));
         self
     }
 
@@ -1217,6 +1228,76 @@ impl PermissionChecker {
                 args: None,
             }),
         }
+    }
+
+    /// Resolve a native file mutation against host-authenticated writable
+    /// roots. Only an implicit default Ask is relaxed; explicit decisions,
+    /// path rules, stored grants/denials and hard policy denials remain active.
+    pub async fn check_trusted_root_mutation(
+        &self,
+        tool: &str,
+        path: &str,
+        allowed_roots: &[&Path],
+        session_id: Option<&str>,
+    ) -> PermissionResult {
+        if !is_workspace_file_mutation_tool(tool) {
+            return PermissionResult::Deny;
+        }
+        let ordinary = self.check(tool, Some(path), session_id).await;
+        if !matches!(ordinary, PermissionResult::Ask(_)) {
+            return ordinary;
+        }
+
+        let requested = Path::new(path);
+        let mut canonical_target = None;
+        for (index, root) in allowed_roots.iter().enumerate() {
+            // Relative file targets always resolve from the workspace.
+            if !requested.is_absolute() && index > 0 {
+                continue;
+            }
+            let candidate = if requested.is_absolute() {
+                requested.to_path_buf()
+            } else {
+                root.join(requested)
+            };
+            let Ok(target) = crate::tool::util::validate_target_path(&candidate, root) else {
+                continue;
+            };
+            let Ok(canonical_root) = root.canonicalize() else {
+                continue;
+            };
+            if target.starts_with(&canonical_root) {
+                canonical_target = Some(target);
+                break;
+            }
+        }
+        let Some(canonical_target) = canonical_target else {
+            return ordinary;
+        };
+
+        {
+            let store = self.store.read().await;
+            if let Some(level) = store.get_decision(tool, Some(path), session_id) {
+                return permission_result_for_level(tool, Some(path), level);
+            }
+        }
+        if self.effective_policy_denies(tool, Some(path), None).await
+            || (self.legacy_exec_mode
+                && self.configured_policy_denies(tool, Some(path), None).await)
+        {
+            return PermissionResult::Deny;
+        }
+
+        if let Some(level) = self.effective_tool_rule(tool, Some(path)).await {
+            return permission_result_for_level(tool, Some(path), level);
+        }
+        let canonical_string = canonical_target.to_string_lossy();
+        for (matcher, level) in &self.compiled_globs {
+            if matcher.is_match(canonical_string.as_ref()) {
+                return permission_result_for_level(tool, Some(path), level.clone());
+            }
+        }
+        PermissionResult::Allow
     }
 
     pub async fn check_bash(
@@ -1509,12 +1590,9 @@ impl PermissionChecker {
         }
 
         let canonical = tokio::task::spawn_blocking({
-            let path = path.to_owned();
-            move || {
-                Path::new(&path).canonicalize().map_err(|e| {
-                    PermissionError::Check(format!("path does not exist: {}: {}", path, e))
-                })
-            }
+            let path = PathBuf::from(path);
+            let workspace_root = self.workspace_root.clone();
+            move || canonicalize_permission_path(&path, workspace_root.as_deref())
         })
         .await
         .unwrap_or_else(|e| {
@@ -1757,6 +1835,72 @@ async fn find_canonicalized_tool_rule(
                 None
             }
         })
+    }
+}
+
+fn permission_result_for_level(
+    tool: &str,
+    path: Option<&str>,
+    level: PermissionLevel,
+) -> PermissionResult {
+    match level {
+        PermissionLevel::Allow => PermissionResult::Allow,
+        PermissionLevel::Deny => PermissionResult::Deny,
+        PermissionLevel::Ask => PermissionResult::Ask(PermissionRequest {
+            tool: tool.to_string(),
+            path: path.map(str::to_string),
+            args: None,
+        }),
+    }
+}
+
+fn is_workspace_file_mutation_tool(tool: &str) -> bool {
+    matches!(tool, "write" | "edit" | "apply_patch" | "replace")
+}
+
+fn canonicalize_permission_path(
+    path: &Path,
+    workspace_root: Option<&Path>,
+) -> Result<PathBuf, PermissionError> {
+    let target = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(root) = workspace_root {
+        root.join(path)
+    } else {
+        path.to_path_buf()
+    };
+    if let Ok(canonical) = target.canonicalize() {
+        return Ok(canonical);
+    }
+
+    // New files and directories do not canonicalize themselves. Resolve the
+    // nearest existing ancestor (which resolves any symlinks), then append
+    // only the missing path components. This keeps a new workspace file from
+    // falling back to Ask merely because it does not exist yet.
+    let mut ancestor = target.as_path();
+    let mut suffix = Vec::new();
+    loop {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            let mut resolved = canonical;
+            for component in suffix.iter().rev() {
+                resolved.push(component);
+            }
+            return Ok(resolved);
+        }
+        let Some(name) = ancestor.file_name() else {
+            return Err(PermissionError::Check(format!(
+                "path has no existing ancestor: {}",
+                target.display()
+            )));
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            return Err(PermissionError::Check(format!(
+                "path has no existing ancestor: {}",
+                target.display()
+            )));
+        };
+        ancestor = parent;
     }
 }
 
@@ -2209,10 +2353,10 @@ pub fn default_ruleset() -> PermissionRuleset {
     // short-circuited at the top of `PermissionChecker::check()` based on
     // their `ToolCategory`. They never reach this ruleset.
 
-    // Mutating tools default to Ask unless user has configured otherwise.
-    // `edit` is the only one we pre-populate because users overwhelmingly
-    // expect it to require permission.
-    for tool in ["edit", "apply_patch", "replace", "write", "task", "image"] {
+    // Delegation and image generation remain explicit decisions. Direct file
+    // mutation tools fall through to the selected workspace path authority;
+    // paths outside it still use the default Ask level.
+    for tool in ["task", "image"] {
         tool_rules.push(ToolRule {
             tool: tool.to_string(),
             level: PermissionLevel::Ask,
@@ -2553,6 +2697,165 @@ mod tests {
                 result
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_file_writes_are_allowed_inside_workspace_only() {
+        let workspace = tempfile::tempdir().unwrap();
+        let checker =
+            PermissionChecker::new(None, None).with_workspace_root(workspace.path().to_path_buf());
+
+        for tool in ["write", "edit", "apply_patch", "replace"] {
+            let relative_target = format!("nested/{tool}.txt");
+            assert!(matches!(
+                checker
+                    .check_trusted_root_mutation(tool, &relative_target, &[workspace.path()], None,)
+                    .await,
+                PermissionResult::Allow
+            ));
+        }
+
+        let outside = workspace.path().parent().unwrap().join("outside.txt");
+        assert!(matches!(
+            checker
+                .check_trusted_root_mutation(
+                    "write",
+                    outside.to_str().unwrap(),
+                    &[workspace.path()],
+                    None,
+                )
+                .await,
+            PermissionResult::Ask(_)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_file_write_rules_override_workspace_default() {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("kept-for-review.txt");
+        let rules = PermissionRuleset {
+            default: PermissionLevel::Ask,
+            tool_rules: vec![ToolRule {
+                tool: "write".to_string(),
+                level: PermissionLevel::Ask,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: Vec::new(),
+        };
+        let checker = PermissionChecker::new(None, None)
+            .with_workspace_root(workspace.path().to_path_buf())
+            .with_agent_rules(rules);
+
+        assert!(matches!(
+            checker
+                .check_trusted_root_mutation(
+                    "write",
+                    target.to_str().unwrap(),
+                    &[workspace.path()],
+                    None,
+                )
+                .await,
+            PermissionResult::Ask(_)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn general_ask_default_does_not_prompt_for_workspace_file_mutations() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = Config {
+            permission: Some(crate::config::schema::PermissionConfig {
+                default: Some("ask".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let checker = PermissionChecker::new(Some(&config), None);
+
+        assert!(matches!(
+            checker
+                .check_trusted_root_mutation("write", "new-file.rs", &[workspace.path()], None,)
+                .await,
+            PermissionResult::Allow
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_path_denial_still_fences_workspace_write() {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("rust/src/lib.rs");
+        let rules = PermissionRuleset {
+            default: PermissionLevel::Ask,
+            tool_rules: Vec::new(),
+            path_rules: vec![PathRule {
+                pattern: "**/rust/**".to_string(),
+                level: PermissionLevel::Deny,
+            }],
+        };
+        let checker = PermissionChecker::new(None, None)
+            .with_workspace_root(workspace.path().to_path_buf())
+            .with_agent_rules(rules);
+
+        assert!(matches!(
+            checker
+                .check_trusted_root_mutation(
+                    "edit",
+                    target.to_str().unwrap(),
+                    &[workspace.path()],
+                    None,
+                )
+                .await,
+            PermissionResult::Deny
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_path_ask_is_preserved_inside_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("reviewed.txt");
+        let rules = PermissionRuleset {
+            default: PermissionLevel::Ask,
+            tool_rules: Vec::new(),
+            path_rules: vec![PathRule {
+                pattern: "**/reviewed.txt".to_string(),
+                level: PermissionLevel::Ask,
+            }],
+        };
+        let checker = PermissionChecker::new(None, None)
+            .with_workspace_root(workspace.path().to_path_buf())
+            .with_agent_rules(rules);
+
+        assert!(matches!(
+            checker
+                .check_trusted_root_mutation(
+                    "write",
+                    target.to_str().unwrap(),
+                    &[workspace.path()],
+                    None,
+                )
+                .await,
+            PermissionResult::Ask(_)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_file_mutations_outside_workspace_still_ask() {
+        let workspace = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("artifact.py");
+        let checker = PermissionChecker::new(None, None);
+
+        assert!(matches!(
+            checker
+                .check_trusted_root_mutation(
+                    "write",
+                    target.to_str().unwrap(),
+                    &[workspace.path()],
+                    None,
+                )
+                .await,
+            PermissionResult::Ask(_)
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -166,6 +166,8 @@ pub enum BuiltinSlashAction {
     ChatActionReview,
     ChatActionList,
     Sessions,
+    /// Open the project picker (same box as `Ctrl+\` / Normal-mode `Shift+F`).
+    Projects,
     Share,
     Unshare,
     Rename,
@@ -537,6 +539,9 @@ impl CommandRegistry {
                 // silently shadow the other.
                 .with_aliases(&["resume", "continue"])
                 .with_description("Switch session"),
+            Command::new("/projects", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Projects))
+                .with_aliases(&["/project"])
+                .with_description("Open the project picker (Shift+F in Normal mode)"),
             Command::new("/new", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::New))
                 .with_aliases(&["clear"])
                 .with_description("New session"),
@@ -1383,6 +1388,7 @@ mod tests {
             B::ChatActionReview,
             B::ChatActionList,
             B::Sessions,
+            B::Projects,
             B::Share,
             B::Unshare,
             B::Rename,

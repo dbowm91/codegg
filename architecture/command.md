@@ -422,11 +422,11 @@ The `built_in_command_count_matches_release_docs` test ensures the
 
 Verified 2026-10-13 against `src/tui/command.rs` and `src/command/mod.rs`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1187`) asserts 166, and every `(\d+)\s+(hardcoded|built-in|total)`
+(`command.rs:1190`) asserts 166, and every `(\d+)\s+(hardcoded|built-in|total)`
 plus `[Cc]ount is (\d+)` match in this document resolves to 166 (the three
 former's matches are on lines 15, 23, and 256; the latter's on line 391).
 Also verified the 166 built-in registry length, `BuiltinSlashAction`
-(155 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+(156 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
 `CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:298`), the TUI `Command` struct fields
 (`command.rs:307`), `CommandRegistry` (`command.rs:485`), core `Command`

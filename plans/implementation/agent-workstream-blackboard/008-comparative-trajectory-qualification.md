@@ -21,7 +21,7 @@ S3: isolated children with peer observations plus atomic task/dependency claims.
 S4: 2 children within an explicitly serialized shared worktree with observations, claims and compilation-aware resource coordination.
 Optional: read-only parallel specialists and N=3+ separately, only after N=2 stability; never imply previous PASC result generalizes to N=16.
 
-Keep model/provider choice, output budget, task input, tool availability, sandbox/approval and total token/time budget comparable. Use real provider-backed CodeGG agents for the effectiveness comparison; scripted providers and deterministic fixtures qualify mechanics only. Freeze the task contract and evaluation tests before trials. At least one substantial Rust task and one substantial Python task MUST share a documented interface (for example, a versioned JSON schema or a Rust-produced artifact consumed by Python), with agent assignments that require coordination on that interface in S1/S2/S3. Include at least one substantial language-specific task in each language so the shared-interface case is not the whole sample. Report attempted tasks, denominator, random seeds/order, retries, tool-call counts, queue times and timeouts. If any configuration lacks supported OS shared-write containment, mark unrun/unavailable rather than substituting an unsafe emulation.
+Keep model/provider choice, output budget, task input, tool availability, sandbox/approval and total token/time budget comparable. Use real provider-backed CodeGG agents for the effectiveness comparison; scripted providers and deterministic fixtures qualify mechanics only. Freeze the task contract and evaluation tests before trials. At least one substantial Rust task and one substantial Python task MUST share a documented interface (for example, a versioned JSON schema or a Rust-produced artifact consumed by Python), with agent assignments that require coordination on that interface in S1/S2/S3. Include at least one substantial language-specific task in each language so the shared-interface case is not the whole sample. Report attempted tasks, denominator, random seeds/order, retries, tool-call counts, queue times and timeouts. Attribute provider-reported tokens and estimated USD to each durable child `AgentRunId`; report parent and child totals separately and aggregate only for the trial total. Session-level totals alone are not comparable because they mix sibling runs. If any configuration lacks supported OS shared-write containment, mark unrun/unavailable rather than substituting an unsafe emulation.
 
 ## Task strata and metrics
 
@@ -163,3 +163,55 @@ trial. Fixture v1 tree digest (17 files, relative-path/content SHA-256 stream):
 starter evaluator is intentionally red: Rust baseline 0/7 and Python baseline
 0/7; these are harness checks, not agent-trial results. No provider-backed
 comparison has started.
+
+### Comparative trial execution update (2026-10-17)
+
+The frozen fixture was used first. Provider-backed S0 completed on the frozen
+Rust/Python producer-consumer contract and all three acceptance checks passed.
+The trial used OpenCode Go `gpt-6-luna`; provider usage reports 292,298 input
+and 7,473 output tokens across 13 parent-session usage rows. The provider did
+not report a nonzero cost and the local model pricing catalog had no matching
+entry, so USD cost is unavailable rather than treated as zero. Child-run token
+and cost attribution is now persisted by `AgentRunId` (storage migration v80)
+and covered by `crates/codegg-core/tests/agent_run_usage.rs`. The first S2
+attempt after that change exposed that a child's synthetic transcript session
+ID violates the usage table's durable-session foreign key. Child usage now
+records against its originating durable session while retaining the child
+`AgentRunId`; foreign-key-backed aggregation coverage passes. A fresh run is
+still needed to produce comparable child-level measurements.
+
+Two S2 starts were attempted. The first exposed that daemon turn admission did
+not carry the session's repository identity into the durable child task; this
+was corrected in `src/core/daemon_turns.rs`. The second confirmed both child
+tasks received repository identity, then exposed a separate executor defect:
+relative child scopes (`rust/`, `python/`) were interpreted as repository
+roots, so managed worktree creation failed before child execution. The executor
+now roots runs in the scheduler-owned workspace and resolves/remaps child path
+scopes within the managed worktree. After those fixes, one S2 and one S3 group
+were started against the same fixture and isolated trial daemon. Neither
+produced a source change or acceptance result, so neither is an effectiveness
+trial:
+
+| Condition | Group / parent session | Child `AgentRunId`s | Child usage rows (input/output; reported USD) | Durable outcome at inspection |
+|---|---|---|---|---|
+| S2 factual peer observations, no claim enforcement | group `b37c8d61-4e0f-46fb-ba99-d3b4b3f9961e`; parent session `8f3676dd-1275-4ecc-b8ae-3673114e6943` | Rust `c08fd232-54ad-4c5c-b148-7d3d0cd87901`; Python `c71b2f7e-e1b9-4f8b-aff9-e687f8e2fac7` | Rust 1 row, 8,901/52 tokens; Python 1 row, 8,900/34 tokens; cost unavailable (stored 0.0, no provider cost or catalog price) | Both children `interrupted` with `scheduler_recovery`; group still `running`; no edits or acceptance checks |
+| S3 observations plus atomic claims | group `10f975ea-50f0-4012-bc9e-09800ee5c8b7`; parent session `af77adf3-9739-4d9f-b176-36887292a5ef` | Rust `fb34669a-1b58-4102-b0a5-3857b40dfe01`; Python `49f5a1ab-0e63-40e9-8a51-0735421a3332` | Rust 3 rows, 27,980/423 tokens; Python 2 rows, 18,295/300 tokens; cost unavailable (stored 0.0, no provider cost or catalog price) | Both children and group remained `running` after daemon shutdown; no claims, edits, or acceptance checks; recovery did not reconcile this group |
+
+Both parent turns ended with empty results. The S3 parent attempted the board,
+status, and message actions; the board action returned “workstream action
+requires a bound group actor”, and no durable claims were created. The isolated
+workspace remained unchanged. The child-level usage rows now correctly carry
+their own `AgentRunId`, making the failure attributable, but these incomplete
+turns cannot be compared to S0. Do not aggregate their token counts as trial
+totals or claim USD cost. The stale S3 group/run state is an unresolved restart
+reconciliation defect to investigate before another comparative attempt. The
+durable run journals contain only run lifecycle, safe-boundary, and queued /
+delivered-control events for these children; no completed child tool action is
+recorded.
+
+The user-approved credential selection used the most recently updated existing
+OpenCode Go credential in the trial-only database; no secret was displayed or
+copied into the report. No new provider-backed retries were started after the
+S3 recovery discrepancy. Rust-heavy overlapping APIs, dependency-heavy builds,
+and the remaining task strata are still open. No S2/S3 effectiveness result is
+claimed, and no dependent plan is unblocked.

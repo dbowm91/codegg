@@ -456,7 +456,7 @@ with a bounded diagnostic (never silent fallback). Guard:
 ### UsageStore (`session/store.rs:2530`)
 
 Methods: `new`, `insert`, `get_session_usage`, `get_all_usage`,
-`get_session_cost_summary`
+`get_session_cost_summary`, `get_agent_run_cost_summary`
 
 ### EventStore (`session/store.rs:2687`)
 
@@ -518,7 +518,7 @@ pub struct SessionAnalytics {
 ```
 
 **UsageRecord** (`session/models.rs:194`):
-`id`, `session_id`, `provider`, `model`, `input_tokens`,
+`id`, `session_id`, optional durable `agent_run_id`, `provider`, `model`, `input_tokens`,
 `output_tokens`, `cached_tokens`, `cost_usd`, `timestamp`
 
 ## Configuration Surface

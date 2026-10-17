@@ -25,7 +25,7 @@ Long-term requirements:
 Applicable ADRs:
 
 - ADR-0022 (daemon-authorized workspace directory listing) — consumed unchanged.
-- ADR-0033 (directory-tied project identity) — consumed unchanged.
+- ADR-0034 (directory-tied project identity) — consumed unchanged.
 
 Primary class: capability
 

@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — ADR-0032 and ADR-0033 are accepted; M006 and M007 are strictly closed and M008 proceeds on isolated worktrees. ADR-0033 accepts the restricted CodeGG-mediated writer boundary, but complete-mediation/native-lifecycle gates remain open. Do not start a writer-permit service until those gates pass. Shared mutation remains unavailable.
+Status: active — ADR-0032 and ADR-0033 are accepted; M006 and M007 are strictly closed and M008 proceeds on isolated worktrees. The candidate writer-path inventory is complete. Native Darwin process-lifecycle qualification found that a `setsid()` descendant can write after its managed job reaches `Completed`; complete mediation/native-lifecycle gates therefore remain open. Do not start a writer-permit service until those gates pass. Shared mutation remains unavailable.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
@@ -160,12 +160,43 @@ mean CodeGG can serialize arbitrary external programs running as the same OS
 user. External edits must still be detected as conflicts at guarded transaction
 boundaries; detection is not protection from a concurrent external writer.
 
-A broad source scan of direct filesystem write APIs finds additional candidates
-in client/config/storage/artifact code as well as workspace mutation code. A
-textual hit is not by itself a workspace writer: qualification must trace the
-effective project root and caller authority to the actual write sink. The
-inventory above is a control-flow starting point, not a claim that every
-workspace-rooted writer has already been enumerated or covered.
+A source-wide scan of direct filesystem mutation APIs was completed on the
+integrated branch on 2026-10-17. The scan found 198 Rust source files with
+candidate filesystem-write calls across `src/` and `crates/`; most are not
+project-rooted writes. Every candidate family is classified below by the
+authority and lifetime that reaches its sink. The scan is discovery evidence,
+not a line-by-line count of effective writers: filesystem APIs in test code,
+database/config stores, temporary artifacts, caches, plugin installation,
+and read-only adapters were excluded from the workspace-writer set after
+tracing their roots. The command used was:
+
+```text
+rg -l -g '*.rs' '(std::fs|tokio::fs|fs::(write|rename|remove|create|OpenOptions)|File::create|OpenOptions::new\\(\\)|create_dir_all|rename\\(|remove_file|remove_dir_all|hard_link)' src crates
+```
+
+#### Completed writer-path classification (2026-10-17)
+
+| Effective writer family | Workspace-rooted entry points / owners traced | Shared-placement disposition before a permit exists |
+|---|---|---|
+| Native agent file edits | `src/tool/{write,edit,replace,apply_patch}.rs`, `src/agent/tool_batch.rs`; validates against the session workspace and executes the transaction/checkpoint path. | Deny for shared placement until the whole transaction obtains a typed, generation-fenced permit. Existing batch overlap serialization is local to one batch. |
+| LSP-produced edits | `src/tool/lsp_preview_apply.rs` and `src/lsp/mutation.rs`; applies a returned preview to the selected workspace document. | Deny shared-placement LSP requests until both persistent server lifetime and host-side apply are scoped; a request lock covers only the latter. |
+| Document, editor, and file-tree APIs | `src/document_service.rs`, `src/tui/{document_session,editor,file_tree.rs}`, `src/tui/commands/{editor,file_tree}.rs`, `src/server/routes/file.rs`, and `src/ide/mod.rs`; writes are workspace/document scoped and can run outside an AgentRun. | Route through the common permit or refuse while that worktree has a shared reservation. User edits do not inherit agent membership. |
+| Project/workspace initialization and updates | `src/core/daemon_project_init.rs`, `src/tui/commands/project_init.rs`, `src/server/routes/{project,workspace}.rs`, and workspace service registration. | Permit or deny any operation whose destination resolves inside the reserved checkout. Catalog-only identity and metadata writes remain outside the checkout. |
+| Git/index/worktree mutation | `src/git_mutations.rs`, `src/git_recovery.rs`, `src/git_network_ops.rs`, `src/git_service.rs`, `src/tool/git.rs`, and `crates/codegg-core/src/worktree_service.rs`; Git changes repository metadata/index/refs, while managed worktree creation and cleanup mutate the shared common repository administration area. | Git mutation and cleanup are denied for shared-placement members until they use the same permit and typed ownership. Managed worktree creation is a separate pre-placement lifecycle operation. |
+| Finite process-backed workspace writes | `src/tool/bash.rs`, `src/python_script/`, `src/test_runner/`, `src/scheduler/`, `src/tool/formatter.rs`, Tool Program executors, and managed hooks/process plugins; effective write extent is the process tree, not the submitting call. | Deny until final executors retain authority through verified tree quiescence. Escaped descendants quarantine the checkout; output-pipe closure is not proof of quiescence. |
+| Interactive or persistent process writers | `src/interactive_process.rs`, `src/tool/terminal.rs`, `crates/egglsp/src/launch.rs`, and `src/mcp/local.rs`; PTY/LSP/MCP lifetimes can outlast the request and current daemon restart accounting does not prove filesystem quiescence. | Deny shared-placement creation/attachment/use until a bounded checkout-scoped lifecycle is qualified. |
+| Workspace asset/config writers | Project-scoped asset refresh and project-init paths can target a project root; user agent definitions, project discovery indexes, and config migrations write their configured application/config roots instead. | Permit project-rooted asset writes; classify user/config/catalog roots as global state and exclude them from checkout serialization. Any path that can resolve under the checkout remains denied until covered. |
+| Session and run artifacts | `crates/codegg-core/src/run_store.rs`, snapshot/checkpoint modules, context artifact storage, goal/memory stores, and tool-program result/ledger stores use explicit session/data roots rather than the current project root. | Excluded from checkout writers when their daemon-owned root is outside the worktree. Validate the resolved root at runtime; never infer from a relative caller path. |
+| Global installation, credential, theme, skill, and cache writes | `src/plugin/install.rs`, `src/install.rs`, credential/config stores, skill/theme registries, provider state, build/cache directories, and security report outputs use explicit user/global/temp roots. | Outside the shared-checkout lock domain. Refuse any configurable destination that resolves inside a reserved checkout unless routed through the permit. |
+| External same-user processes | Editors and user shells not launched/owned by CodeGG have no daemon authority or cancellation link. | Outside ADR-0033's serialization guarantee; detect resulting checkout drift as conflict, without claiming exclusion. |
+
+The inventory is complete for the source-level writer families in this branch
+and identifies the paths that remain denied. It does not establish universal
+containment or authorize Q1: source tracing cannot prove arbitrary dynamic
+paths, uninstrumented native extensions, persistent descendants, or platform
+filesystem confinement. The next gate is the native process-lifecycle matrix
+and a per-platform denial/allow profile, followed by Q1–Q5 only if the
+effective writer set is bounded.
 
 #### Qualification sequence
 
@@ -194,6 +225,29 @@ workspace-rooted writer has already been enumerated or covered.
   Q1–Q5 or is denied.
 
 Current qualification result: Q1–Q5 have not been run for this candidate.
+The writer-path discovery/classification gate is complete as recorded above;
+process-lifecycle and platform qualification remain independent open gates.
+
+#### Native process-lifecycle qualification (Darwin, 2026-10-17)
+
+On the integrated branch, the following focused arm64 macOS suites passed:
+
+| Suite | Result | What it establishes |
+|---|---:|---|
+| `cargo test --test managed_process_descendants --locked` | 6/6 passed in one run on arm64 macOS | Cancellation, timeout, SIGKILL escalation, process-group setup, and bounded output work for ordinary descendants. The adversarial `setsid()` child outlives a terminal managed job and writes afterward, proving current process-group teardown is not a complete effective-writer boundary. |
+| `tests/interactive_process_sessions.rs` | 11/11 | PTY attach/input/resize/output, process-group termination, shutdown cleanup, and admission refusal after shutdown behave as tested. This does not make a live PTY safe to release at request completion. |
+| `tests/interactive_process_attach_resume.rs` | 19/19 | Daemon attach/resume, cursor, authorization, disconnect, handle invalidation, and termination behavior pass. Handles remain ephemeral across restart. |
+
+The descendant escape test intentionally passes by witnessing the unsafe
+property: a scheduled managed job reaches `Completed` while the escaped child
+is still live, then that child writes to its temporary workspace. The test's
+PID guard reaps the process after observation. This is a hard M005 disqualifier
+for arbitrary shell/process writers: a future permit must be quarantined until
+quiescence is proven, or these process surfaces must be denied. It is not
+shared-write qualification. The native worktree, delegation, project-picker,
+and identity suites passed earlier on the integrated branch; rerun them at the
+final head before closure. Windows/Linux process-owner qualification remains pending the
+exact-head hosted platform jobs.
 
 **Q0 — safe-default posture (pass; negative evidence only).** On merged head
 `c19a6c3c2ae1f77e5298cb3390035f0420140929`, the spawn surface still has no

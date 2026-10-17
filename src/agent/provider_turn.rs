@@ -496,7 +496,11 @@ async fn stream_once(
                     }
                     ChatEvent::Finish { usage, .. } => {
                         if let Some(ref store) = usage_store {
-                            let session_id = loop_.session_id.clone();
+                            let session_id = loop_
+                                .usage_session_id
+                                .clone()
+                                .unwrap_or_else(|| loop_.session_id.clone());
+                            let agent_run_id = loop_.run_id.as_ref().map(ToString::to_string);
                             let model = model_name.clone();
                             let provider = provider_name.clone();
                             let input_tokens = usage.input_tokens as i64;
@@ -513,6 +517,7 @@ async fn stream_once(
                             let record = crate::session::UsageRecord {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 session_id,
+                                agent_run_id,
                                 provider,
                                 model,
                                 input_tokens,

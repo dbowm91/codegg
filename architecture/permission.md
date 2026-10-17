@@ -108,6 +108,22 @@ AgentLoop::check_tool_permission()
     └──► Cache decision if AlwaysAllow/AlwaysDeny
 ```
 
+### Direct Workspace File Writes
+
+Native file mutation tools (`write`, `edit`, `apply_patch`, and `replace`) are
+allowed by default when their target resolves inside the daemon-bound workspace
+root. Relative targets resolve from that root, including new files whose
+parents already exist. A separate scratchpad inside the workspace follows the
+same rule. Targets outside the workspace continue to use the configured
+default (Ask unless changed).
+
+Explicit tool rules and matching path rules retain precedence, including
+`Ask` and `Deny`. Child-agent path fences therefore still constrain direct
+writes to the delegated scope. This fallback grants no authority to shell,
+Git, delegation, image generation, or other tools; their own rules remain in
+force. The workspace root is supplied by the session/worker factory from its
+resolved execution context, never inferred from the daemon process cwd.
+
 ### Orphan Guard
 
 The human wait itself is unbounded by default — a user may take arbitrarily long

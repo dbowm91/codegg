@@ -46,6 +46,11 @@ skill covers the ordering and isolation invariants that are easy to break.
   process runs under. Never derive one from the other.
 - **Ceilings still apply in `Yolo`.** `yolo` auto-allows escalations *within
   the authority ceiling*; an explicit deterministic `Deny` still denies.
+- **Direct file writes follow the bound workspace.** `write`, `edit`,
+  `apply_patch`, and `replace` allow targets inside the session's resolved
+  workspace by default, including a scratchpad there. Explicit tool/path
+  `Ask` or `Deny` rules win, and child path fences remain effective. Keep this
+  authority limited to native file tools; do not extend it to shell or Git.
 - **Carry the accepted decision through execution.** Agent tool calls pass an
   immutable `ExecutionAuthorizationContext` (snapshot, receipt, bounded
   command-preflight result) through the broker and retries. Bash must consume

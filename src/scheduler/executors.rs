@@ -5,7 +5,7 @@
 //! scheduler instead of calling these subsystems directly.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -714,27 +714,12 @@ impl JobExecutor for SubagentJobExecutor {
             .bytes()
             .take(8)
             .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-        // W001: a delegated child's workspace root is daemon-owned job state,
-        // never the daemon process's working directory. An explicit
-        // `allowed_paths` entry narrows it; an **empty** list means "the
-        // job's own workspace", which the scheduler lease has already
-        // resolved into `ctx.workspace_root` — whose own field docs state
-        // that executors "must use this instead of consulting process-global
-        // CWD".
-        //
-        // Deriving the root from the payload alone left a legitimate job with
-        // no root at all: the daemon's chat-collaboration dispatch and the
-        // schedule materializer both emit `allowed_paths: Vec::new()`, and
-        // `SubAgentPool` then refuses the run ("subagent execution requires
-        // an explicit workspace root") even though the daemon was holding the
-        // correct root the whole time. This is the same binding the sibling
-        // scheduler executors already perform — see `PythonJobExecutor` and
-        // `ToolProgramExecutor::job_tool_context`, which documents the same
-        // daemon-has-no-session-root hazard.
-        let mut workspace_root = match allowed_paths.first() {
-            Some(path) => std::path::PathBuf::from(path),
-            None => ctx.workspace_root.clone(),
-        };
+        // The workspace is daemon-owned lease state. `allowed_paths` narrows
+        // filesystem authority inside it; it is never a workspace selector.
+        // In particular, a relative child scope such as `rust/` must not be
+        // interpreted as the repository root when allocating a managed
+        // worktree.
+        let mut workspace_root = ctx.workspace_root.clone();
         // Fail closed on an unresolved root. Substituting the process cwd
         // here would silently retarget the entire child run into whatever
         // tree the daemon happened to be launched from.
@@ -749,6 +734,16 @@ impl JobExecutor for SubagentJobExecutor {
                 ),
             );
         }
+        allowed_paths = match resolve_path_scopes(&workspace_root, &allowed_paths) {
+            Ok(paths) => paths,
+            Err(error) => {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!("invalid delegated path scope: {error}"),
+                );
+            }
+        };
         let mut owned_worktree = None;
         let needs_isolation = self.pool.requires_isolation(&agent, &denied_tools);
         if needs_isolation && run_id.is_none() {
@@ -901,7 +896,20 @@ impl JobExecutor for SubagentJobExecutor {
                             format!("worktree linkage failed: {error}"),
                         );
                     }
-                    allowed_paths = vec![record.path.to_string_lossy().into_owned()];
+                    allowed_paths =
+                        match remap_path_scopes(&workspace_root, &record.path, &allowed_paths) {
+                            Ok(paths) => paths,
+                            Err(error) => {
+                                let _ = worktree_service
+                                    .release_lease(&record.worktree_id, run_id, lease.generation)
+                                    .await;
+                                return failure_completion(
+                                    started,
+                                    ExecutorStatus::Failed,
+                                    format!("invalid delegated path scope: {error}"),
+                                );
+                            }
+                        };
                     workspace_root = record.path.clone();
                     owned_worktree = Some((record, lease));
                 }
@@ -1719,6 +1727,52 @@ fn _ensure_permit_used(_p: &ResourcePermitGuard) {}
 #[allow(dead_code)]
 fn _ensure_availability_used(_a: ExecutorAvailability) {}
 
+/// Resolve delegated path scopes against the scheduler-owned workspace root.
+/// Relative scopes are workspace-relative; absolute scopes must already be
+/// inside the workspace. This prevents a child request from changing the
+/// repository root used for isolation or extending authority outside it.
+fn resolve_path_scopes(root: &Path, scopes: &[String]) -> Result<Vec<String>, String> {
+    scopes
+        .iter()
+        .map(|scope| {
+            let path = Path::new(scope);
+            let relative = if path.is_absolute() {
+                path.strip_prefix(root)
+                    .map_err(|_| format!("scope is outside workspace root: {scope}"))?
+            } else {
+                if path.components().any(|component| {
+                    matches!(
+                        component,
+                        Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                    )
+                }) {
+                    return Err(format!("relative scope escapes workspace root: {scope}"));
+                }
+                path
+            };
+            Ok(root.join(relative).to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+/// Move resolved workspace scopes into the equivalent paths in a managed
+/// worktree while preserving each scope's narrowing.
+fn remap_path_scopes(
+    workspace_root: &Path,
+    worktree_root: &Path,
+    scopes: &[String],
+) -> Result<Vec<String>, String> {
+    scopes
+        .iter()
+        .map(|scope| {
+            let relative = Path::new(scope)
+                .strip_prefix(workspace_root)
+                .map_err(|_| format!("scope is outside workspace root: {scope}"))?;
+            Ok(worktree_root.join(relative).to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1726,6 +1780,22 @@ mod tests {
         ExecutionTarget, IdempotencyClass, JobId, JobPayload, JobPriority, JobSource, JobState,
         ResourceRequest, RetryPolicy,
     };
+
+    #[test]
+    fn delegated_scopes_are_workspace_relative_and_remap_into_worktrees() {
+        let workspace = Path::new("/repo");
+        let resolved = resolve_path_scopes(workspace, &["rust/".into()]).unwrap();
+        assert_eq!(Path::new(&resolved[0]), Path::new("/repo/rust"));
+
+        let remapped = remap_path_scopes(workspace, Path::new("/managed/wt"), &resolved).unwrap();
+        assert_eq!(Path::new(&remapped[0]), Path::new("/managed/wt/rust"));
+    }
+
+    #[test]
+    fn delegated_scopes_cannot_escape_the_workspace() {
+        assert!(resolve_path_scopes(Path::new("/repo"), &["../outside".into()]).is_err());
+        assert!(resolve_path_scopes(Path::new("/repo"), &["/outside".into()]).is_err());
+    }
 
     fn sample_test_job(argv: Vec<String>, cwd: Option<String>) -> JobRecord {
         let now = chrono::Utc::now();

@@ -259,6 +259,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 79 {
         migrate_and_record(pool, 79).await?;
     }
+    if current_version < 80 {
+        migrate_and_record(pool, 80).await?;
+    }
 
     Ok(())
 }
@@ -350,6 +353,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             77 => migrate_v77(&mut tx).await?,
             78 => migrate_v78(&mut tx).await?,
             79 => migrate_v79(&mut tx).await?,
+            80 => migrate_v80(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3597,6 +3601,13 @@ mod migration_upgrade_tests {
                 .await
                 .expect("read upgraded marker");
         assert_eq!(upgraded, STORAGE_LAYOUT_VERSION as i64);
+        let run_usage_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('usage') WHERE name = 'agent_run_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("inspect run usage attribution column");
+        assert_eq!(run_usage_column, 1, "v80 adds durable run attribution");
         let preserved: (String, String) = sqlx::query_as(
             "SELECT scope_kind, scope_id FROM origin_attribution WHERE scope_id = 'legacy-session'",
         )
@@ -3664,4 +3675,20 @@ mod migration_upgrade_tests {
 
         pool.close().await;
     }
+}
+
+/// Associate provider usage rows with their durable delegated run so child
+/// token and estimated-cost totals can be compared independently.
+async fn migrate_v80(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        "ALTER TABLE usage ADD COLUMN agent_run_id TEXT REFERENCES agent_run(run_id) ON DELETE SET NULL",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS usage_agent_run_idx ON usage(agent_run_id)")
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
 }

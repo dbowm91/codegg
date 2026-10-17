@@ -46,9 +46,8 @@ pub(super) use super::loop_output::redact_local_paths;
 pub use super::loop_output::AgentLoopTerminalOutput;
 pub(super) use super::tool_inspect::{
     extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_file_modifying_tool, is_path_within_workspace, is_soft_stop_reason, is_test_command,
-    is_workspace_file_mutation, parse_mcp_tool_name, tool_outcome_is_success,
-    truncate_test_event_preview, ToolPermissionOutcome, ToolTimeoutConfig,
+    is_file_modifying_tool, is_soft_stop_reason, is_test_command, parse_mcp_tool_name,
+    tool_outcome_is_success, truncate_test_event_preview, ToolPermissionOutcome, ToolTimeoutConfig,
 };
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
@@ -130,6 +129,11 @@ pub struct AgentLoop {
     pub(super) local_paths: (Option<String>, Option<String>),
     pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
     pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
+    /// Durable session foreign-key target for usage emitted by a child loop.
+    /// Child transcripts use synthetic session IDs that are not stored as
+    /// durable sessions, so accounting joins them through the originating
+    /// session plus `run_id` instead.
+    pub(super) usage_session_id: Option<String>,
     /// Push hints only; idle runs are never woken by peer observations.
     pub(super) peer_observation_rx:
         Option<tokio::sync::broadcast::Receiver<crate::bus::events::AppEvent>>,
@@ -446,6 +450,7 @@ impl AgentLoop {
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             run_id: None,
+            usage_session_id: None,
             peer_observation_rx: None,
             peer_observation_session_id: None,
             peer_group_members: HashMap::new(),
@@ -844,6 +849,10 @@ impl AgentLoop {
         self.run_id = Some(run_id);
         self.peer_observation_rx = Some(crate::bus::global::GlobalEventBus::subscribe());
         self.peer_observation_gap = true;
+    }
+
+    pub fn set_usage_session_id(&mut self, session_id: Option<String>) {
+        self.usage_session_id = session_id;
     }
 
     pub fn set_peer_group_memberships(&mut self, groups: Vec<(String, Vec<String>)>) {

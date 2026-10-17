@@ -21,7 +21,18 @@ use codegg_config::schema::SessionTemplate;
 
 /// Row type returned by usage queries (id, session_id, provider, model,
 /// input_tokens, output_tokens, cached_tokens, cost_usd, timestamp).
-type UsageRow = (String, String, String, String, i64, i64, i64, f64, i64);
+type UsageRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    f64,
+    i64,
+);
 
 /// How many of the most recent messages a forked session inherits.
 ///
@@ -2724,12 +2735,13 @@ impl UsageStore {
     pub async fn insert(&self, record: UsageRecord) -> Result<(), StorageError> {
         sqlx::query(
             r#"
-            INSERT INTO usage (id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO usage (id, session_id, agent_run_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&record.id)
         .bind(&record.session_id)
+        .bind(&record.agent_run_id)
         .bind(&record.provider)
         .bind(&record.model)
         .bind(record.input_tokens)
@@ -2750,7 +2762,7 @@ impl UsageStore {
     ) -> Result<Vec<UsageRecord>, StorageError> {
         let rows: Vec<UsageRow> = sqlx::query_as(
             r#"
-            SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
+            SELECT id, session_id, agent_run_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
             FROM usage WHERE session_id = ?
             ORDER BY timestamp ASC
             "#,
@@ -2766,6 +2778,7 @@ impl UsageStore {
                 |(
                     id,
                     session_id,
+                    agent_run_id,
                     provider,
                     model,
                     input_tokens,
@@ -2777,6 +2790,7 @@ impl UsageStore {
                     UsageRecord {
                         id,
                         session_id,
+                        agent_run_id,
                         provider,
                         model,
                         input_tokens,
@@ -2797,7 +2811,7 @@ impl UsageStore {
         let rows: Vec<UsageRow> = if let Some(limit) = limit {
             sqlx::query_as(
                 r#"
-                SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
+                SELECT id, session_id, agent_run_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
                 FROM usage
                 ORDER BY timestamp DESC
                 LIMIT ?
@@ -2810,7 +2824,7 @@ impl UsageStore {
         } else {
             sqlx::query_as(
                 r#"
-                SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
+                SELECT id, session_id, agent_run_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
                 FROM usage
                 ORDER BY timestamp DESC
                 "#,
@@ -2826,6 +2840,7 @@ impl UsageStore {
                 |(
                     id,
                     session_id,
+                    agent_run_id,
                     provider,
                     model,
                     input_tokens,
@@ -2837,6 +2852,7 @@ impl UsageStore {
                     UsageRecord {
                         id,
                         session_id,
+                        agent_run_id,
                         provider,
                         model,
                         input_tokens,
@@ -2848,6 +2864,25 @@ impl UsageStore {
                 },
             )
             .collect())
+    }
+
+    /// Returns aggregate provider usage for one durable delegated run as
+    /// (input, output, cached, estimated USD). This is the comparable child
+    /// accounting surface; summing the parent session would mix siblings.
+    pub async fn get_agent_run_cost_summary(
+        &self,
+        agent_run_id: &str,
+    ) -> Result<(i64, i64, i64, f64), StorageError> {
+        let row: Option<(i64, i64, i64, f64)> = sqlx::query_as(
+            r#"SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                      COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cost_usd), 0.0)
+               FROM usage WHERE agent_run_id = ?"#,
+        )
+        .bind(agent_run_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(row.unwrap_or((0, 0, 0, 0.0)))
     }
 
     pub async fn get_session_cost_summary(
