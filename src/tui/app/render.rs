@@ -964,11 +964,16 @@ impl App {
         let cursor = presentation.cursor_byte;
         let mode = presentation.mode;
         let focus = self.editor_state.buffer_focused(self.ui_state.input_mode);
-        let pending = presentation
-            .pending_command
-            .get(..crate::tui::editor::MAX_EDITOR_PENDING_COMMAND)
-            .unwrap_or("")
-            .to_string();
+        // Hoisted like the search fields below: `EditorPrefix` is `Copy`, and
+        // reading it here rather than inside the widget literal ends the
+        // shared borrow of `session` before the tree pane is painted.
+        let pending_prefix = presentation.pending_prefix;
+        // `EditorPrefix` and `FindNote` are `Copy`, and reading them here
+        // rather than inside the widget literal ends the shared borrow of
+        // `session` before the tree pane is painted. `FindNote::label`
+        // allocates, so it is done once per frame here instead of per banner
+        // line inside the widget.
+        let find_note = presentation.find_note.label();
         let command_active = presentation.command_active;
         let command_line = presentation.command_line.clone();
         let command_selection = presentation.command_selection;
@@ -1000,9 +1005,10 @@ impl App {
                 path: &path,
                 status: status.label(),
                 notice: notice.as_deref(),
+                find_note: &find_note,
                 mode,
                 buffer_focused: focus,
-                pending_command: &pending,
+                pending_prefix,
                 command_active,
                 command_line: &command_line,
                 command_selection,

@@ -2638,7 +2638,7 @@ composer badge and every dockable box already show. On `Route::Editor`:
 | Mode | Keyboard | Typing goes to |
 |---|---|---|
 | `Insert` | the document | the text box — the cursor is drawn there |
-| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `/`, `n`, `N`, `i/a/I/A/o/O`, `u`, `Ctrl+r`) | the bottom input box |
+| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `/`, `n`, `N`, `i/a/I/A/o/O`, `u`, `U`) | the bottom input box |
 
 **A file opens in `Normal`, not `Insert`.** This is the same choice
 `/terminal`, the panel manager, and the chat box make: they are read before
@@ -2697,6 +2697,204 @@ delete-to-end-of-line because it has no Helix meaning here. Bare `d` is
 **claimed even with nothing selected**: an unclaimed `d` escapes to the global
 `OpenDiff` binding. `space y` is remembered prefix state, not a chord, because
 legacy xterm encoding delivers it as two events.
+
+#### Key dispatch authority: ordered stages, one owner per chord
+
+`editor_buffer_key` (`src/tui/commands/editor.rs`) is a **sequence of ordered
+stages**, and a chord declared in a later stage is unreachable the moment an
+earlier stage claims it. The order is the contract:
+
+1. **Modal lines.** An open `/` search line, then an open `:` command line. Each
+   owns *every* key, including the mode-independent chords — a half-typed `:q`
+   must not be written to the file by `Ctrl+S`.
+2. **Mode-independent chords.** `Ctrl+S` → `RequestSave`, `Ctrl+R` →
+   `RequestResync`. Both in every mode. `R` → `RequestReload` is Normal-only,
+   because it discards the local draft and in `Insert` those two keystrokes are
+   the letter `R`.
+3. **Mode dispatch.** `handle_insert_key`, or `handle_normal_key`.
+
+The rule that follows: **every chord has exactly one owner, and that owner is
+the first stage that claims it.**
+
+This was not a prose promise. `handle_normal_key` declared
+`(KeyModifiers::CONTROL, KeyCode::Char('r')) => editor_redo`, which stage 2
+already owned — so the arm was dead code and Normal mode had undo (`u`) with no
+reachable redo. The suite stayed green because all three redo tests called
+`editor_redo(&mut state)` **directly** instead of pressing a key: a binding test
+that bypasses dispatch tests the helper, not the binding.
+
+Redo is now `U`, which is Helix's own chord (`u` undo, `U` redo; Helix binds
+`Ctrl+r` in *Insert* mode only). That keeps `Ctrl+R` as resync in every mode
+with no invented chord and no second owner, so `RequestSave`/`RequestResync`
+never lose a path. Two things enforce the rule:
+
+- `scripts/check_tui_editor_key_authority.py` attributes every chord to its
+  stage and fails when a mode table re-declares a chord an earlier stage owns,
+  or when one table declares the same chord twice. It treats an arm shape it
+  cannot resolve as an **error**, never as a pass, and asserts the stages still
+  exist so it cannot pass vacuously.
+- The dispatch-path tests in `src/tui/commands/editor.rs` drive every
+  Normal-mode arm through `editor_buffer_key` and assert both the reported
+  `BufferKey` and the observable state change, so a shadowed arm fails on the
+  state change even when the reported effect looks plausible. An
+  Insert-mode sweep separately asserts that no Normal-mode binding reaches the
+  Insert path and swallows a printable character, in all three spellings a
+  terminal may send a capital (`Char('R')` with `NONE` *or* `SHIFT`).
+
+One stage sits above this chain: `handle_editor_key` answers the App layer's
+Normal-only pane gestures (`Shift+L`/`Shift+H`) before the buffer sees the key.
+That overlap is deliberate and is documented at its call site.
+
+#### The pending-prefix grammar: one prefix, one terminal key
+
+A multi-key gesture is *remembered state*, not a chord: `space y` arrives as
+two key events in legacy xterm encoding, exactly as it does in `/terminal`.
+That state lives in one field, `TuiDocumentPresentation::pending_prefix`, typed
+`EditorPrefix` (`src/tui/editor.rs`).
+
+**The rule: one pending prefix, one terminal key consumed.** A key arriving
+while a prefix is armed either matches a leaf or disarms it; nothing consumes a
+second key, and no prefix is ever armed on top of another.
+`TuiDocumentPresentation::arm_prefix` therefore *replaces* rather than stacks.
+
+The resolution is deliberately a separate function,
+`resolve_pending_prefix`, rather than a block at the top of
+`handle_normal_key`: the key-authority guard scopes itself to that function's
+first `match (key.modifiers, key.code)`, and a prefix resolution shaped like a
+key table would make it parse the wrong one.
+
+**The two migrated gestures disagreed, and still do.** `gg` **consumes** an
+unmatched second key — it is half of a chord, so the key belongs to the chord
+whether or not it completes it. `space y` **disarms and retries** it — the
+prefix modifies the next key, so an unmapped second key is an ordinary
+normal-mode verb. That is why `EditorPrefix::swallows_unmatched` is a property
+of the *prefix* rather than a single machine-wide rule: collapsing the two
+would have changed a gesture while looking like a refactor.
+
+| Prefix | Armed by | Leaf | Unmatched key | Indicator |
+|---|---|---|---|---|
+| `Goto` | `g` | `g` (`gg`) | consumed | `g` |
+| `Space` | `space` | `y` (`space y`) | retried | `space` |
+| `OpenBracket` | `[` | none until M006 | retried | `[` |
+| `CloseBracket` | `]` | none until M006 | retried | `]` |
+
+The unimpaired prefixes retry rather than swallow because their leaves are two
+milestones away: swallowing there would mean a `[` followed by a letter lost
+that letter on its way to the composer, and a prefix that cannot be escaped is
+worse than one that occasionally passes a key through.
+
+**Disarm points.** A prefix is retired whenever the thing it was aimed at
+stops being the thing on screen. A prefix that outlives its target is a
+gesture applied to the wrong buffer — the "relative path resolved against the
+wrong root" defect in gesture form.
+
+| Trigger | Disarmed at |
+|---|---|
+| Opening a document | `TuiDocumentPresentation::reset_for_open` |
+| Reconciliation (`resync`, `reload_from_disk`, `close`) | `editor::clear_history` |
+| Leaving the editor route | `leave_editor_view` |
+| Focus moving to the tree pane | `file_tree::toggle_tree`, `file_tree::set_focus` |
+
+Two consequences worth stating. `clear_history` disarming the prefix is not a
+coincidence of naming: the gesture was aimed at text that reconciliation has
+just replaced underneath it. And before M002 that disarm covered only
+`pending_command` — a `space` typed before a reload stayed armed and yanked in
+the reloaded buffer, so the merged path removes that asymmetry rather than
+preserving it.
+
+**The indicator is part of the contract.** `space` previously had no indicator
+at all, because its state was a `bool` with nothing to render. Every pending
+prefix now renders a distinct label bounded by `MAX_EDITOR_PENDING_PREFIX`, and
+`space` renders as the word because a literal space would put nothing on
+screen. A pending prefix the user cannot see is a prefix they cannot predict.
+
+The terminal panel (`src/tui/commands/interactive_terminal.rs`) keeps its own
+`prefix_pending`/`YankPrefix` for the same gesture. Converging the two onto
+one shared state machine is desirable and deliberately **not** done here.
+
+`scripts/check_tui_editor_prefix_state.py` keeps the deletion honest: it fails
+if `pending_command`, `yank_prefix_pending`, `MAX_EDITOR_PENDING_COMMAND`,
+`bounded_pending`, or `push_pending` reappear anywhere under `src/`, and — the
+part a fixed name list cannot express — if `TuiDocumentPresentation` declares
+any prefix field other than exactly one `pending_prefix`. It ignores comments,
+because the type's own doc comment is where the history of those two fields
+belongs.
+
+#### The find target is a prefix whose next key is data
+
+`f`, `F`, `t` and `T` are `EditorPrefix` variants, so they arm through the same
+machine and disarm at the same points. They are the one case where the grammar's
+"one terminal key" is **data** rather than a leaf glyph: after `f`, the character
+typed is the target. `EditorPrefix::leaf` is `None` for all four, so there is no
+glyph that could complete them, and `find_target_char` in
+`commands/editor` does the capture. It is deliberately a different path from
+`leaf()` — a key that is a target never resolves against the keymap, and a key
+that is a leaf never becomes a character.
+
+Three rules that are easy to get wrong and are each covered by a test:
+
+- **A non-character key is retried, not swallowed.** `f` then `Left` moves left.
+  An armed `f` that ate the arrow would be an arrow the composer never sees, on a
+  route where unclaimed keys are supposed to fall through to it.
+- **`:` and `/` outrank a pending target.** They open their modal lines rather
+  than becoming the character to search for. This is stricter than taking the
+  next key literally; the counter-argument (a colon after `f` *should* mean
+  find-colon) is recorded in the M003 closure record.
+- **Insert mode never captures.** `handle_insert_key` does not consult the
+  prefix, so the armed `f` is left intact for Normal mode rather than disarmed.
+
+**The scan is bounded and the bound is disclosed.** `MAX_EDITOR_FIND_BYTES` is
+`MAX_EDITOR_SEARCH_BYTES` rather than a second number to reason about, but it is
+measured *from the cursor* — `[cursor, cursor + MAX)` forward,
+`[cursor - MAX, cursor)` back — because a find jumps toward a target rather than
+enumerating the document. `FindOutcome` keeps `Absent` (the whole direction was
+scanned) distinct from `Bounded` (the window ran out), and `FindNote` renders the
+difference in the banner row. Reporting both as "not found" would be a search
+that lies by omission, which is the `search_partial` defect one layer down.
+
+**Read in aligned chunks, never a byte at a time.** `DocumentSnapshot::read_bytes`
+refuses a range that does not start *and* end on a character boundary, so a
+per-byte scan cannot read byte 1 of `"aé…"` at all — it would walk past every
+multi-byte target. The first implementation of `find_char` did exactly that and
+failed silently on any document containing a non-ASCII character. It now reads
+`FIND_SCAN_CHUNK`-sized windows with a `target.len_utf8() - 1` overlap so a
+multi-byte target straddling a chunk edge is still wholly inside one of them.
+Overlapping means a target can be seen twice, which is harmless: the first
+occurrence is returned and the scan stops.
+
+**`t`/`T` land on the target, as `f`/`F` do.** In Helix the head of a till-motion
+lands *past* the match so the selection covers it; with a single cursor that
+translates to "cursor on the target". The two pairs therefore differ in nothing
+observable at this milestone, and the distinction belongs to M007's selection
+set. It is spelled out in the `EditorCommand` doc comments rather than collapsed,
+because collapsing the two arms would have quietly adopted the vi reading the plan
+rejects.
+
+**`Alt-.` is a single motion slot, not a find stack.** `last_find` holds one
+`FindMotion`, written by `apply_motion` on every find — including one that found
+nothing, because Helix sets the repeat slot by *running* the command. Every other
+Normal-mode motion clears it through `note_motion`, which is why `f x`, `j`,
+`Alt-.` repeats nothing. `note_motion` is deliberately not folded into
+`editor_motion`: that is also Insert mode's cursor nudge, and an arrow inside a
+sentence is not a gesture `Alt-.` should forget. `apply_helix_verb` carries the
+record and the note back from its throwaway probe alongside the cursor, because a
+find is the one motion that also writes state about the *attempt*.
+
+`Alt-.` is claimed only while a `last_find` exists, for the same reason `n` is
+gated on an existing search: a binding that consumes the key and then does
+nothing is indistinguishable from a hung editor, and it steals the keystroke from
+the composer.
+
+**Where this keymap is published, and where it is not.** The authoritative
+user-facing statement of the editor's chords is `docs/tui.md` ("Editor
+language features") plus the table above. The shipped `/help` surface
+(`components::dialogs::help::HelpDialog`, fed by `input::default_help_entries`)
+lists global bindings only and names no editor chord at all, so it cannot
+drift here or there. Note also that `src/tui/components/help_overlay.rs` is
+**not** a live surface: it is absent from `components/mod.rs`, so it is never
+compiled, and its `editor_bindings()` table still advertises `Ctrl+R (redo)`
+and a `dd dw` row for bindings that do not exist. Do not read it as the
+implemented keymap.
 
 **Selection is the shared state machine.** `tui::helix_selection::SelectionState`
 is instantiated with `EditorPoint { byte, line }` — byte offsets plus the line

@@ -404,6 +404,19 @@ impl EditorState {
         }
     }
 
+    /// Disarm any armed multi-key prefix.
+    ///
+    /// Called wherever the surface the pending key was aimed at stops being the
+    /// one on screen: leaving the editor route and moving focus to the tree
+    /// pane. A `g` armed over one buffer and answered over another would jump
+    /// the cursor somewhere the user never asked for, which is the same
+    /// defect as resolving a relative path against the wrong root.
+    pub fn disarm_prefix(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            session.presentation_mut().disarm_prefix();
+        }
+    }
+
     /// Invalidate every in-flight completion and detach the session.
     ///
     /// Called when the editor closes or switches documents. Bumping the
