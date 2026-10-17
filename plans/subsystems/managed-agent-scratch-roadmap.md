@@ -1,6 +1,6 @@
 # Managed Agent Scratch Spaces Roadmap
 
-Status: active planning — M001–M002 closed; M003 active.
+Status: conditionally closed — M001–M003 closure records accepted; Linux/Windows native qualification and non-Unix shared cleanup remain explicitly unqualified.
 
 Planning baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (main inspected 2026-10-16).
 
@@ -80,7 +80,7 @@ M001 — private managed session scratch, prompt/env, safe lifecycle [closed]
 M002 — delegated private scratch + explicit shared ScratchId grants [closed]
        |
        v
-M003 — actionable permission hints, cleanup hardening/qualification [active: M002 closed]
+M003 — actionable permission hints, cleanup hardening/qualification [conditionally closed: `plans/closure/managed-agent-scratch/003-status.md`]
 ```
 
 M001 is an end-to-end single-agent vertical slice, not merely a directory allocation type. M002 is a separate durable delegation contract with direct-parent and ownership checks. M003 qualifies security/restart/diagnostic behavior and closes the workstream; correctness blockers found earlier must be corrected *in that milestone*, not deferred as polish.
@@ -139,4 +139,4 @@ All three milestones have accepted `plans/closure/managed-agent-scratch/00N-stat
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/managed-agent-scratch/001-private-session-scratch-and-launch-wiring.md` | `plans/closure/managed-agent-scratch/001-status.md` | none |
 | M002 | closed | `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md` | `plans/closure/managed-agent-scratch/002-status.md` | none |
-| M003 | active | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | — | M002 strict closure recorded; eligible |
+| M003 | conditionally closed | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | `plans/closure/managed-agent-scratch/003-status.md` | Unix cleanup and macOS native containment verified; Linux/Windows native qualification and non-Unix shared cleanup remain unqualified. No successor milestone is registered. |

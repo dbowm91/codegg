@@ -1,6 +1,6 @@
 # Managed Agent Scratch M003 — Permission Guidance, Safe Reclamation and Cross-Platform Qualification
 
-Status: active — M002 strict closure recorded; M003 is now eligible
+Status: conditionally closed — see `plans/closure/managed-agent-scratch/003-status.md` (implementation `d83dfda1a6cf3676e6d221b10dd1fe080eb84794`)
 Repository baseline: `2e0aa549233dff1ef0caeb759690738161e7f80d` (M002 implementation accepted; revalidated on 2026-10-16).
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 26–29; `plans/001-terminology-and-domain-model.md` §§5–8; `plans/002-long-term-roadmap.md` Phase 19.
