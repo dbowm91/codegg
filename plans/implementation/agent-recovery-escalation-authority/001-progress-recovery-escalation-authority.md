@@ -1,6 +1,8 @@
 # Agent Recovery Escalation Authority Milestone C001 — Progress-Recovery Escalation Authority
 
-Status: ready for handoff
+Status: closed
+
+Closure record: `plans/closure/agent-recovery-escalation-authority/001-status.md`
 
 Repository baseline: `b77c8156b594494b7f59e0348d93a73ca2c1fd1c`
 (branch `feat/auto-20261016-9ebb3f33`)

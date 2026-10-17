@@ -977,6 +977,302 @@ fn assert_no_orphan_tool_results(msgs: &[Message]) {
     }
 }
 
+// =============================================================================
+// PROGRESS-RECOVERY INTEGRATION (milestone C001)
+// =============================================================================
+//
+// These drive the *real* `AgentLoop` observation path — the construction site in
+// `src/agent/loop.rs` that builds a `ProgressObservation` per tool call — rather
+// than the controller in isolation. A controller-only test proves the classifier
+// behaves; only these prove the loop actually feeds it the evidence the rule
+// depends on, including `effect_class` sourced from the tool contract.
+
+/// A read-only probe whose contract declares `ReadOnly`, so the loop resolves
+/// `effect_class = Some(ReadOnly)` and the novel-read rule can apply.
+struct ReadProbeTool;
+
+#[async_trait]
+impl Tool for ReadProbeTool {
+    fn name(&self) -> &str {
+        "probe_read"
+    }
+    fn description(&self) -> &str {
+        "Reads a named resource"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"],
+        })
+    }
+    async fn execute(&self, input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        Ok(format!(
+            "contents of {}",
+            input["path"].as_str().unwrap_or("?")
+        ))
+    }
+    fn category(&self) -> codegg::tool::ToolCategory {
+        codegg::tool::ToolCategory::ReadOnly
+    }
+    fn contract(
+        &self,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> codegg::tool::contract::ToolContract {
+        let mut contract = codegg::tool::contract::ToolContract::legacy(tool_name, input_schema);
+        contract.effect_class = codegg::tool::contract::ToolEffectClass::ReadOnly;
+        contract
+    }
+}
+
+/// A mutating probe that always fails, with a process-class contract.
+struct FailingBuildTool;
+
+#[async_trait]
+impl Tool for FailingBuildTool {
+    fn name(&self) -> &str {
+        "probe_build"
+    }
+    fn description(&self) -> &str {
+        "Builds a named crate, and fails"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "crate": { "type": "string" } },
+            "required": ["crate"],
+        })
+    }
+    async fn execute(&self, input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        let name = input["crate"].as_str().unwrap_or("?");
+        Err(codegg::error::ToolError::Execution(format!(
+            "error[E0425]: cannot find `m` while building {name}"
+        )))
+    }
+    fn category(&self) -> codegg::tool::ToolCategory {
+        codegg::tool::ToolCategory::Mutating
+    }
+    fn contract(
+        &self,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> codegg::tool::contract::ToolContract {
+        let mut contract = codegg::tool::contract::ToolContract::legacy(tool_name, input_schema);
+        contract.effect_class = codegg::tool::contract::ToolEffectClass::ProcessExec;
+        contract
+    }
+}
+
+/// A process-class probe that succeeds. Deliberately *not* read-only: it is the
+/// shape that carries no progress signal, and it must still never be escalated.
+struct ShellProbeTool;
+
+#[async_trait]
+impl Tool for ShellProbeTool {
+    fn name(&self) -> &str {
+        "probe_shell"
+    }
+    fn description(&self) -> &str {
+        "Runs a shell command"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "command": { "type": "string" } },
+            "required": ["command"],
+        })
+    }
+    async fn execute(&self, input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        Ok(format!("ran {}", input["command"].as_str().unwrap_or("?")))
+    }
+    fn category(&self) -> codegg::tool::ToolCategory {
+        codegg::tool::ToolCategory::Mutating
+    }
+    fn contract(
+        &self,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> codegg::tool::contract::ToolContract {
+        let mut contract = codegg::tool::contract::ToolContract::legacy(tool_name, input_schema);
+        contract.effect_class = codegg::tool::contract::ToolEffectClass::ProcessExec;
+        contract
+    }
+}
+
+fn recovery_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(ReadProbeTool);
+    registry.register(FailingBuildTool);
+    registry.register(ShellProbeTool);
+    registry
+}
+
+fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider) {
+    let provider = ScriptedProvider::new(responses);
+    // `PermissionChecker::new(None, None)` leaves the default level at Ask, and
+    // an unanswered request parks the tool call forever — the turn never
+    // returns and the test hangs rather than failing. Allow everything: these
+    // tests are about recovery classification, not about authorization.
+    let permission_checker =
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        });
+    let agent_loop = build_test_agent_loop_with_permissions(
+        Box::new(provider.clone()),
+        recovery_registry(),
+        permission_checker,
+    );
+    (agent_loop, provider)
+}
+
+fn tool_call_event(id: &str, name: &str, args: serde_json::Value) -> ChatEvent {
+    ChatEvent::ToolCall(ToolCall {
+        id: id.to_string().into(),
+        name: name.to_string().into(),
+        arguments: args,
+    })
+}
+
+fn finish_event() -> ChatEvent {
+    ChatEvent::Finish {
+        stop_reason: "stop".to_string().into(),
+        usage: TokenUsage::default(),
+    }
+}
+
+/// The regression, through the real loop: one provider turn emitting a batch of
+/// ten *distinct* failing builds.
+///
+/// At baseline the `EquivalentError` arm matched on tool name plus error class
+/// alone, so these ten different commands — ten different crates, ten different
+/// error messages — read as one repeating incident and climbed Nudge → Correct
+/// → RestoreBasePalette → Replan → Stall. The turn was terminated and the model
+/// was told "Agent stalled" while it was bisecting a build failure.
+///
+/// Note the shape matters: the failures must be consecutive. An intervening
+/// successful read is progress and resets the ladder, which is why a
+/// read-then-fail-per-round sequence does *not* reproduce this — it only hides
+/// it. The batch below is the honest reproduction.
+///
+/// The signal is how many provider turns were consumed, not a bus event: the
+/// global event bus is process-global, so asserting on it from a parallel test
+/// binary would be racy. A stalled turn breaks out of the loop, so the scripted
+/// provider stops being called and the turn count falls short of the two this
+/// sequence needs.
+#[tokio::test]
+async fn a_batch_of_distinct_failing_commands_does_not_stall_the_turn() {
+    const ATTEMPTS: usize = 10;
+    let mut batch = Vec::new();
+    for n in 0..ATTEMPTS {
+        batch.push(tool_call_event(
+            &format!("build-{n}"),
+            "probe_build",
+            serde_json::json!({ "crate": format!("crate-{n}") }),
+        ));
+    }
+    batch.push(finish_event());
+
+    let (mut agent_loop, provider) = recovery_loop(vec![
+        batch,
+        vec![
+            ChatEvent::TextDelta("gave up".to_string().into()),
+            finish_event(),
+        ],
+    ]);
+    agent_loop
+        .run(make_chat_request("Get the build green"))
+        .await
+        .expect("bisecting a build failure must not break the turn");
+
+    assert!(
+        provider.request_count().await >= 2,
+        "the turn must reach its second provider call; it stopped at {} because the \
+         ten distinct failures were classified as one repeat",
+        provider.request_count().await
+    );
+}
+
+/// Coverage for the ordinary explore shape: many reads interleaved with
+/// successful shell calls, none of them repeating. This is the shape the removed
+/// `ShortCycle` arm used to kill, so it stays pinned even though that arm is
+/// long gone.
+#[tokio::test]
+async fn exploring_with_alternating_reads_and_shell_never_stalls() {
+    const ROUNDS: usize = 8;
+    let mut responses = Vec::new();
+    for n in 0..ROUNDS {
+        responses.push(vec![
+            tool_call_event(
+                &format!("read-{n}"),
+                "probe_read",
+                serde_json::json!({ "path": format!("src/module-{n}.rs") }),
+            ),
+            tool_call_event(
+                &format!("shell-{n}"),
+                "probe_shell",
+                serde_json::json!({ "command": format!("rg -n needle src/module-{n}.rs") }),
+            ),
+            finish_event(),
+        ]);
+    }
+    responses.push(vec![
+        ChatEvent::TextDelta("done".to_string().into()),
+        finish_event(),
+    ]);
+
+    let (mut agent_loop, provider) = recovery_loop(responses);
+    agent_loop
+        .run(make_chat_request("Explore the repository"))
+        .await
+        .expect("an exploring turn must complete normally");
+
+    assert!(
+        provider.request_count().await > ROUNDS,
+        "alternating reads and shell work must not break the turn: {}",
+        provider.request_count().await
+    );
+}
+
+/// The true positive through the real loop: the identical failing call repeated
+/// must still terminate the turn, and the ladder must break out rather than
+/// consuming every scripted turn. Narrowing what counts as an incident must not
+/// make a real loop survivable.
+#[tokio::test]
+async fn an_identical_repeated_failure_still_stalls_the_turn() {
+    const SCRIPTED_TURNS: usize = 12;
+    let responses = (0..SCRIPTED_TURNS)
+        .map(|_| {
+            vec![
+                tool_call_event(
+                    "build-again",
+                    "probe_build",
+                    serde_json::json!({ "crate": "core" }),
+                ),
+                finish_event(),
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    let (mut agent_loop, provider) = recovery_loop(responses);
+    agent_loop
+        .run(make_chat_request("Fix the build"))
+        .await
+        .expect("a stalled turn still returns rather than hanging");
+
+    let consumed = provider.request_count().await;
+    assert!(
+        consumed < SCRIPTED_TURNS,
+        "the bounded ladder must break the turn before every scripted turn: {consumed}"
+    );
+    assert!(
+        consumed >= 2,
+        "the identical repeat must still be detected, not ignored: {consumed}"
+    );
+}
+
 #[tokio::test]
 async fn peer_evidence_arriving_during_provider_stream_fences_returned_tool_batch() {
     let session_id = format!("peer-fence-session-{}", uuid::Uuid::new_v4());
@@ -4892,6 +5188,7 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
     // TOCTOU gate, and a constrained profile would contain the touch.
     registry.register(
         codegg::tool::bash::BashTool::new()
+            .with_workspace_root(temp.path().to_path_buf())
             .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, temp.path()),
     );
 

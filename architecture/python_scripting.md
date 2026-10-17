@@ -99,7 +99,9 @@ pub struct PythonScriptRequest {
 ```
 
 `workspace_root` provides the authoritative workspace boundary for CWD containment.
-Falls back to process cwd when `None`.
+There is no process-cwd fallback: with no resolved root the execution path
+returns `ToolError::MissingWorkspaceRoot` rather than running the script in the
+daemon's launch directory.
 
 The script source and runtime temp files live in a private collision-resistant
 per-run directory. Under an OS sandbox, that directory is the only generic

@@ -637,6 +637,16 @@ impl BashTool {
             command_digest = %crate::live_execution_audit::command_digest_str(command),
             "dispatching command"
         );
+        // W001: with no explicit `workdir` on the request, the session's
+        // workspace root is the default working directory — the same rule
+        // `PythonJobExecutor` and `TestJobExecutor` already follow. Set after
+        // `context` so command-intent classification keeps seeing exactly what
+        // the request stated. The daemon's process directory is never the
+        // default; with neither an explicit workdir nor a session root, the
+        // dispatch below fails with `ToolError::MissingWorkspaceRoot`.
+        if canonical_workdir.is_none() {
+            canonical_workdir = self.workspace_root.clone();
+        }
         let start = std::time::Instant::now();
 
         // 3. route to scheduler or local supervised process.
@@ -966,9 +976,22 @@ mod tests {
     use crate::config::schema::CommandIntentFamily;
     use crate::config::schema::RouteLevel;
 
+    /// W001: a `BashTool` with no `workspace_root` has no directory it is
+    /// allowed to run in, and now fails closed with
+    /// `ToolError::MissingWorkspaceRoot` instead of inheriting the test
+    /// process's cwd. Tests that exercise routing or execution must therefore
+    /// name a root explicitly, which is what the daemon always does.
+    fn rooted_bash() -> BashTool {
+        let mut tool = BashTool::new();
+        // The repo, not temp: some tests run real `git` commands, and the
+        // repository is what the process cwd used to supply implicitly.
+        tool.workspace_root = Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        tool
+    }
+
     #[test]
     fn builder_defaults_match_documented_contract() {
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         assert_eq!(tool.timeout, Duration::from_secs(120));
         assert_eq!(tool.max_output_lines, 2000);
         assert_eq!(tool.max_output_bytes, 50_000);
@@ -986,7 +1009,7 @@ mod tests {
     async fn accepted_constrained_profile_refuses_full_host_bash_configuration() {
         let root = tempfile::tempdir().expect("workspace tempdir");
         let marker = root.path().join("must-not-exist");
-        let tool = BashTool::new()
+        let tool = rooted_bash()
             .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, root.path());
         let mut context =
             ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
@@ -1123,7 +1146,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_no_config_produces_no_routing_metadata() {
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         let input = serde_json::json!({"command": "echo hello"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("hello"));
@@ -1136,7 +1159,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo hello"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("[intent:"));
@@ -1150,7 +1173,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: test"));
@@ -1165,7 +1188,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Off);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: test"));
@@ -1178,7 +1201,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_git_read = Some(RouteLevel::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: git-readonly"));
@@ -1192,7 +1215,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_search = Some(RouteLevel::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "grep -rn 'pattern' src/"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: search-readonly"));
@@ -1207,7 +1230,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_python = Some(RouteLevel::Off);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'print(1)'"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("python"));
@@ -1220,7 +1243,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Off);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo hello"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: raw-shell"));
@@ -1235,7 +1258,7 @@ mod tests {
         cic.route_tests = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo observe-test-ok"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1252,7 +1275,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo hello"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("[intent:"), "metadata must be present");
@@ -1267,7 +1290,7 @@ mod tests {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo default-mode"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1283,7 +1306,7 @@ mod tests {
         cic.route_tests = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo route-fallback-ok"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1306,7 +1329,7 @@ mod tests {
         cic.route_python = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
 
         let input = serde_json::json!({"command": "echo routing-inactive"});
         let result = tool.execute(input).await.unwrap();
@@ -1325,7 +1348,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_config_produces_no_metadata_no_mode() {
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         let input = serde_json::json!({"command": "echo clean"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("clean"));
@@ -1339,7 +1362,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: test"), "must classify as test");
@@ -1361,7 +1384,7 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1384,7 +1407,7 @@ mod tests {
         cic.route_tests = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --help"});
         let error = tool
             .execute(input)
@@ -1400,7 +1423,7 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Observe);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("mode: observe"));
@@ -1414,7 +1437,7 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Off);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1431,7 +1454,7 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new()
+        let tool = rooted_bash()
             .with_routing_disabled_env(true)
             .with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
@@ -1447,7 +1470,7 @@ mod tests {
         cic.route_build = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo check"});
         let error = tool
             .execute(input)
@@ -1464,7 +1487,7 @@ mod tests {
         cic.route_python = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'print(42)'"});
         let error = tool
             .execute(input)
@@ -1485,7 +1508,7 @@ mod tests {
         cic.route_python = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'import sys; print(sys.version)'"});
         let error = tool
             .execute(input)
@@ -1507,7 +1530,7 @@ mod tests {
         cic.route_search = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "rg --version"});
         let error = tool
             .execute(input)
@@ -1523,7 +1546,7 @@ mod tests {
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("[exit code:"));
@@ -1539,7 +1562,7 @@ mod tests {
         cic.route_safe_commands = Some(true);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo active-fallback"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -1552,7 +1575,7 @@ mod tests {
     fn built_in_risk_pattern_does_not_terminally_reject() {
         // Built-in risk classifiers inform review but do not reject in the
         // tool-side text policy.
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         let parts: Vec<&str> = "rm -rf /".split_whitespace().collect();
         assert!(tool.check_command_security("rm -rf /", &parts).is_ok());
         assert!(policy::find_ask_pattern("rm -rf /").is_some());
@@ -1580,12 +1603,25 @@ mod timeout_execution_tests {
     use super::*;
     use crate::tool::backend::ToolExecutionContext;
 
+    /// W001: a `BashTool` with no `workspace_root` has no directory it is
+    /// allowed to run in, and now fails closed with
+    /// `ToolError::MissingWorkspaceRoot` instead of inheriting the test
+    /// process's cwd. Tests that exercise routing or execution must therefore
+    /// name a root explicitly, which is what the daemon always does.
+    fn rooted_bash() -> BashTool {
+        let mut tool = BashTool::new();
+        // The repo, not temp: some tests run real `git` commands, and the
+        // repository is what the process cwd used to supply implicitly.
+        tool.workspace_root = Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        tool
+    }
+
     /// End-to-end proof against a real child: a timed-out command reports
     /// what it managed to print. Before this change the tool returned only
     /// the command name and the drained pipes were discarded.
     #[tokio::test]
     async fn a_timed_out_command_still_reports_what_it_printed() {
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         let input = serde_json::json!({
             "command": "echo BUILD-STEP-42-OK; sleep 30",
             "timeout": 2
@@ -1606,7 +1642,7 @@ mod timeout_execution_tests {
     /// the wrapper and the child cannot end up on different durations.
     #[tokio::test]
     async fn the_brokered_timeout_governs_the_child_process() {
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         let mut ctx =
             ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
         ctx.timeout_ms = Some(2_000);
@@ -1622,7 +1658,7 @@ mod timeout_execution_tests {
     /// legitimate slow run survives.
     #[tokio::test]
     async fn a_model_requested_long_timeout_is_not_cut_short() {
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         let mut ctx =
             ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
         ctx.timeout_ms = Some(30_000);

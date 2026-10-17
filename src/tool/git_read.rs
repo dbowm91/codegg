@@ -155,7 +155,7 @@ impl Default for GitQueryTool {
 impl GitReadTool {
     pub fn new() -> Self {
         Self {
-            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            workdir: crate::tool::util::unresolved_workspace_root(),
             timeout: Duration::from_secs(30),
         }
     }

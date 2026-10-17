@@ -771,27 +771,50 @@ rows stay notify-only (see `architecture/jobs.md` and
 `RecoveryController::detect` (`src/agent/progress_recovery.rs`) classifies a
 tool observation into an `IncidentKind` and climbs a bounded ladder
 (`Nudge` → `Correct` → `RestoreBasePalette` → `Replan` → `Stall`). `Stall`
-**breaks the turn** and reports "agent stalled". Two rules keep that from
+**breaks the turn** and reports "agent stalled". Four rules keep that from
 firing on a model that is simply working:
 
 - **Every incident is keyed on `action_key()`** — canonical tool *plus*
   normalized-argument fingerprint. There is deliberately no tool-name-only
-  check. An earlier `ShortCycle` arm compared `canonical_tool` alone while all
-  the other checks used the whole call, so it fired exactly when the same tool
-  was reached for again with *different* arguments: reading a second file,
-  running a second grep. That is the ordinary shape of a model exploring a
-  codebase, it climbed the whole ladder, and it killed the turn — the
-  `agent stalled ... incident=ShortCycle` lines on read-heavy turns. The
-  variant and its arm are gone. Repeated *work* is `ExactRepeat` /
-  `EquivalentResult`, keyed on the whole call.
+  check, and that holds for `EquivalentError` too. Two earlier arms violated
+  it, both keyed on `canonical_tool` alone. The first was `ShortCycle`, which
+  fired exactly when the same tool was reached for again with *different*
+  arguments — reading a second file, running a second grep — so it climbed the
+  whole ladder and killed the turn. The second was `EquivalentError`, which
+  compared tool *plus* error class, so a model bisecting a build failure ran
+  five different commands, saw the same `tool_error` class five times, and was
+  terminated for work it had never repeated. Both are gone. Repeated *work* is
+  `ExactRepeat` / `EquivalentResult` / `EquivalentError`, keyed on the whole
+  call.
 - **A successful read-only call this turn has never made is `NewEvidence`.**
   Novelty is a fact, not a heuristic: it cannot be a repeat, so it must never
   be escalated, and it resets `recoveries`/`transitions`. Reading a dozen
-  different files, or alternating reads and bash, is progress.
+  different files, or alternating reads and bash, is progress. Novelty is
+  derived from history; there is no `new_evidence` field to set.
+- **A successful mutating or process-class call carries no progress signal
+  on its own.** `state_changed` is the only such signal and it needs a drained
+  file-change bus event, which nothing emits for process execution. Crediting
+  those calls unconditionally would credit every step a looping model takes.
+  Widening this requires a per-tool state-change observation, which does not
+  exist yet.
+- **Ladder state belongs to one incident.** A detected incident whose
+  `action_key()` differs from the tracked one starts at `Nudge` instead of
+  inheriting a count the model has already climbed. Without this, unrelated
+  failures accumulated into a terminal stall, and a model that fixed its
+  problem mid-sequence was terminated for the failures that preceded the fix.
+
+Error *wording* is deliberately not part of any key: the argument fingerprint
+already says which work a call is, and letting phrasing into the key would make
+classification unstable across two ways of reporting the same failure.
 
 `EffectClass` must be populated for the novel-read rule to apply; the loop
-reads it from the tool's contract (`src/agent/loop.rs`). The outer bound on a
-run is `ExecutionLimits::max_turns` (default 100), not this ladder.
+reads it from the tool's contract (`src/agent/loop.rs`). `None` means the
+registry has no entry for that tool name — *unknown*, never read-only, matching
+`ToolEffectClass`'s own conservative default. A `ProgressSignal` variant with
+no producer is not a hook for a future signal; `ChildAdvanced` sat permanently
+`false` at the only construction site and was removed rather than left to read
+as supported. The outer bound on a run is `ExecutionLimits::max_turns` (default
+100), not this ladder.
 
 ### Session transcript persistence
 

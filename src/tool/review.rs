@@ -24,7 +24,7 @@ pub struct ReviewTool {
 impl ReviewTool {
     pub fn new() -> Self {
         Self {
-            workdir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            workdir: crate::tool::util::unresolved_workspace_root(),
             provider: None,
         }
     }

@@ -363,11 +363,14 @@ impl BashTool {
         ),
         ToolError,
     > {
-        let cwd_owned = canonical_workdir
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok());
-        let cwd = cwd_owned.clone().ok_or_else(|| {
-            ToolError::Execution("managed shell cwd could not be resolved".into())
+        // W001: a managed shell with no canonical workdir has no directory
+        // it is allowed to run in. Falling back to the daemon's process
+        // directory would run the command in whatever tree the user
+        // launched it from.
+        let cwd = canonical_workdir.map(PathBuf::from).ok_or_else(|| {
+            ToolError::MissingWorkspaceRoot {
+                context: "managed shell dispatch has no canonical workdir".to_string(),
+            }
         })?;
         let raw_shell_argv = shell_argv(command, self.windows_shell)?;
         // One place decides contained vs unavailable vs unconstrained, from
@@ -653,10 +656,11 @@ impl BashTool {
 
         let argv_owned = command.full_argv();
         let tool_name = command.executable.clone();
-        let cwd = canonical_workdir
-            .map(Path::to_path_buf)
-            .or_else(|| std::env::current_dir().ok())
-            .ok_or_else(|| ToolError::Execution("native tool cwd could not be resolved".into()))?;
+        let cwd = canonical_workdir.map(Path::to_path_buf).ok_or_else(|| {
+            ToolError::MissingWorkspaceRoot {
+                context: "native tool dispatch has no canonical workdir".to_string(),
+            }
+        })?;
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             argv_owned.iter().map(|arg| arg.into()).collect(),
             cwd,
@@ -729,9 +733,11 @@ impl BashTool {
             _ => PythonExecutionMode::Analyze,
         };
 
-        let cwd = canonical_workdir
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let cwd = canonical_workdir.map(Path::to_path_buf).ok_or_else(|| {
+            ToolError::MissingWorkspaceRoot {
+                context: "python script execution has no canonical workdir".to_string(),
+            }
+        })?;
 
         let request = crate::python_script::PythonScriptRequest {
             code: script.to_string(),
@@ -775,10 +781,11 @@ impl BashTool {
             RetryPolicy,
         };
 
+        // W001: the request's own cwd is a legitimate explicit input; the
+        // process directory is not, and never sat in this chain.
         let workspace_root = request
             .workspace_root
             .clone()
-            .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| request.cwd.clone());
 
         let workspace_id = submission
@@ -975,9 +982,9 @@ impl BashTool {
         } else if let Some(c_path) = extract_cwd_from_argv(&request.argv) {
             c_path
         } else {
-            std::env::current_dir().map_err(|e| {
-                ToolError::Execution(format!("could not resolve working directory: {e}"))
-            })?
+            return Err(ToolError::MissingWorkspaceRoot {
+                context: "managed argv dispatch resolved no working directory".to_string(),
+            });
         };
 
         // Managed/unknown plumbing operations are not promoted through the
@@ -1093,12 +1100,11 @@ impl BashTool {
         origin_label: &str,
     ) -> Result<DispatchOutcome, ToolError> {
         let argv_owned = argv.to_vec();
-        let cwd_owned = cwd
-            .map(|p| p.to_path_buf())
-            .or_else(|| std::env::current_dir().ok())
-            .ok_or_else(|| {
-                ToolError::Execution("git managed argv cwd could not be resolved".into())
-            })?;
+        let cwd_owned =
+            cwd.map(|p| p.to_path_buf())
+                .ok_or_else(|| ToolError::MissingWorkspaceRoot {
+                    context: "git managed argv dispatch has no workdir".to_string(),
+                })?;
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             argv_owned.iter().map(OsString::from).collect(),
             cwd_owned.clone(),

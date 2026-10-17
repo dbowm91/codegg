@@ -525,9 +525,14 @@ Raw `WorkspaceRegister`, global `WorkspaceList`, and unscoped
 team principals fail closed); see `architecture/authorization.md` and
 `architecture/workspace.md`.
 
-**Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected
-modules for `std::env::current_dir()` usage. Existing legacy uses in tool
-`default()` constructors are allowlisted; new production-path uses fail CI.
+**Static guard**: `scripts/check_daemon_cwd_usage.py` rejects *any*
+`std::env::current_dir()` / `set_current_dir()` use in daemon-owned execution
+surfaces (`src/tool/`, `src/scheduler/`, `src/core/`, `src/agent/worker.rs`,
+`src/agent/turn_runtime.rs`, the Git execution services), exempting only
+`#[cfg(test)]` modules and the two pre-session bootstrap files `src/main.rs`
+and `src/exec.rs`. There is no line-pattern allowlist — the predecessor's
+patterns matched the production sites themselves, so it passed with every
+violation present. Use `--self-test` to confirm the guard still discriminates.
 
 See `crates/codegg-core/src/workspace.rs` for the full contract.
 

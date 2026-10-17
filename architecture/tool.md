@@ -748,6 +748,34 @@ omitted `workdir` rather than inventing one. Both previously had no workspace
 root at all and fell back to `std::env::current_dir()`, so a session's tests and
 scripts ran in the daemon's launch directory.
 
+## Missing workspace root is typed, not defaulted
+
+This is now a registry-wide contract rather than a per-tool exception.
+`ToolRegistryOptions.workspace_root` is `Option<PathBuf>`, and `None` no longer
+means "construct the tool anyway":
+
+- `ToolRegistry::with_options` registers an `UnrootedTool`
+  (`src/tool/disabled.rs`) for each workspace-scoped tool when the option is
+  `None`. The stub keeps the tool's name and description, is hidden from the
+  model's tool list, and returns `ToolError::MissingWorkspaceRoot { context }`
+  if invoked. `ToolRegistry::register_boxed` exists because a stub and the real
+  tool it replaces are unrelated concrete types.
+- The tool `Default` constructors (`read`, `write`, `edit`, `glob`, `grep`,
+  `list`, `diff`, `apply_patch`, `replace`, `lsp`, `lsp_read`, `git`,
+  `git_read`, `commit`, `review`, `research`, `skill`, `backend`) seed
+  `unresolved_workspace_root()` instead of the process cwd.
+- `validate_path` / `validate_target_path` recognise that sentinel and return
+  `MissingWorkspaceRoot` before canonicalizing. That single choke point is what
+  makes every `allowed_root` consumer fail closed without each tool repeating
+  the check.
+
+`ToolError::MissingWorkspaceRoot` is deliberately distinct from
+`ToolError::Execution` (a failure inside a rooted call) and `ToolError::Disabled`
+(operator configuration): here the caller supplied no root at all, and the
+remedy is to resolve one — never to widen the search. `ToolBroker` classifies
+it as `missing_workspace_root`, and progress recovery treats it as a
+deterministic tool error rather than a transport fault.
+
 ## ToolContracts and the Canonical Broker
 
 All production tool calls route through `ToolBroker` (`src/tool/broker.rs`),

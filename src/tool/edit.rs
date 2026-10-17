@@ -22,8 +22,7 @@ pub struct EditTool {
 impl EditTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir()
-                .unwrap_or_else(|e| panic!("edit tool: daemon CWD unreadable: {e}")),
+            allowed_root: crate::tool::util::unresolved_workspace_root(),
             unrestricted: false,
             preflight: None,
         }

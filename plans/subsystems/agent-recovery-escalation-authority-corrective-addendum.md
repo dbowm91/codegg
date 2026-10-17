@@ -148,10 +148,14 @@ No interface dependency on another subsystem. C001 does not require any ADR.
 - **Exit conditions:**
   - Every `ProgressObservation` field is populated from production evidence or
     deleted; no field is permanently `false` in the only construction site.
-  - A successful read-only or process-class call that this turn has not made is
-    progress, and reading many files or alternating read/shell never escalates.
-  - A successful call whose result differs from the previous result of the
-    identical call is progress.
+  - A successful read-only call that this turn has not made is progress, and
+    reading many files or alternating read/shell never escalates. A successful
+    mutating or process-class call is **not** progress on its own (see §10) —
+    but it is never escalated either, because a call the turn has never made
+    cannot be a repeat, and a change of incident identity resets the ladder.
+  - A successful read-only call whose result differs from the previous result of
+    the identical call is progress, bounded to the first change so volatile
+    output cannot reset recovery forever.
   - A run of failing calls with the same tool and error class but distinct
     arguments or distinct error text does not reach `Stall`.
   - Changing incident identity resets ladder state.
@@ -222,12 +226,24 @@ ladder can terminate a turn, both documents are updated in the same commit.
 - **Widening "progress" too far** would mask genuine loops. The guard is that
   novelty is still a *fact* about the whole call, and that identical repeated
   calls still escalate.
-- **Deciding whether mutating `bash` is progress** is a genuine decision point:
-  there is no per-tool state-change observation for shell commands today. If a
-  bounded observation is not available, the conservative choice is to treat a
-  successful `bash` as novel-call progress only when its result differs from the
-  previous identical call. This is recorded as an explicit decision, not a
-  silent default.
+- **Deciding whether mutating `bash` is progress** was resolved during C001, and
+  the answer is **no**. The candidate fallback recorded here before C001 — treat
+  a successful `bash` as progress when its result differs from the previous
+  identical call — was **rejected**, because it contradicts the other invariant:
+  the changed-result rule must stay bounded to read-only calls so that volatile
+  mutating output cannot reset recovery forever
+  (`volatile_mutating_output_does_not_reset_recovery` pins this). Widening it
+  makes a shell loop that echoes a timestamp look productive. Instead, a
+  successful mutating or process-class call stays uncredited, and it is protected
+  from false stalls by the two rules it *does* get: a call the turn has never
+  made is never escalated, and a change of incident identity resets the ladder.
+  Recording it again here because the next reader should not rediscover it, and
+  because the rejected fallback is the tempting one.
+  **Residual, for C002:** a successful mutating call that *is* a repeat leaves
+  `AutonomyState.transitions` untouched rather than resetting it, so a long turn
+  can exhaust the transition budget without a corresponding number of incidents.
+  Worth confirming against real trajectories; fixing it needs the per-tool
+  state-change observation described in §4, not a heuristic.
 - **Removing a dead knob** is safe; **wiring** it changes parallelism under
   recovery and must not be done incidentally in C001.
 
@@ -241,5 +257,5 @@ observation contract contains no permanently-false field.
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | ready | `plans/implementation/agent-recovery-escalation-authority/001-progress-recovery-escalation-authority.md` | — | None |
-| C002 | not started | — | — | C001 |
+| C001 | closed | `plans/implementation/agent-recovery-escalation-authority/001-progress-recovery-escalation-authority.md` | `plans/closure/agent-recovery-escalation-authority/001-status.md` | None |
+| C002 | not started; eligible for fresh planning | — | — | C001 now closed |

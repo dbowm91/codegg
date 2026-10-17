@@ -2095,7 +2095,12 @@ mod tests {
 
     fn sample_tool_program_job(program_id: &str, source_digest: &str) -> JobRecord {
         let now = chrono::Utc::now();
-        let registry = crate::tool::ToolRegistry::with_defaults();
+        // W001: a registry built with `workspace_root: None` registers
+        // fail-closed stubs, so contract snapshots need a real root.
+        let registry = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+            workspace_root: Some(std::env::temp_dir()),
+            ..crate::tool::ToolRegistryOptions::default()
+        });
         let broker = crate::tool::ToolBroker::new(&registry);
         let tools = vec!["read".to_string()];
         let contracts =
@@ -2278,7 +2283,13 @@ mod tests {
             }
         }
 
-        let mut registry = ToolRegistry::with_defaults();
+        // W001: a registry built with `workspace_root: None` registers
+        // fail-closed stubs, so contract snapshots need a real root.
+        let mut registry =
+            crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+                workspace_root: Some(std::env::temp_dir()),
+                ..crate::tool::ToolRegistryOptions::default()
+            });
         registry.register(BespokeTool);
         let registry = Arc::new(registry);
         let broker = Arc::new(ToolBroker::new(&registry));
