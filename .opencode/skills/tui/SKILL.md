@@ -176,13 +176,13 @@ model to the wrong connection.
   (`Shift+S` in Normal mode, or `/panels` from anywhere) and persisted as
   `ui.panel_placement`; the strip is deliberately **display-only** rather than
   rows in the navigable list, because "which edge" and "which panel" are
-  different questions and merging them renumbers every panel row. 33 panels
-  ship: 5 **bespoke** (`Session`, `Agents`, `Chat`, `Terminal`, `Help`) and 28
+  different questions and merging them renumbers every panel row. 32 panels
+  ship: 5 **bespoke** (`Session`, `Agents`, `Chat`, `Terminal`, `Help`) and 27
   **hosted** — one per `/` command that brings up a box. Which one is loaded
   is chosen by the same manager, which renders `SidePanelId::ALL` directly —
   the list it shows *is* the registry. To add a **hosted** panel (the common case): an enum
   variant, an entry in `SidePanelId::ALL`, and `label`/`title`/`hint`/
-  `load_command`/`config_key` arms. The host builds its `HostPanel` from
+  `config_key` arms. The host builds its `HostPanel` from
   `ALL` filtered on **`SidePanelId::is_bespoke()`**, so there is no host field,
   no `panel()` arm and no render-path branch. To add a **bespoke** panel: add
   it to `is_bespoke()`, write a `SidePanel` impl, and add arms in `panel()`,
@@ -195,10 +195,18 @@ model to the wrong connection.
   unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
   box's filter, cursor and scroll. Selecting an empty hosted panel loads it
   in one step (`commands::panels::materialize_hosted_panel`, same seams as
-  its `/` command): a sync box is opened and adopted at once, a live-loading
-  box (Research, Task view) stays open with an `L`-to-dock toast, and a panel
-  with nothing to show keeps a placeholder naming its `/` loader — never an
-  empty bordered box, which reads as a rendering bug. `render_hosted` is a deliberate **bridge**:
+  its `/` command), and **`open_panel_box` returns a `PanelFill`** saying which
+  of three things it did: `Filled` (adopt it now), `Loading` (the box arrives
+  on its own — the panel shows progress), or `Cannot(reason)` (the panel states
+  why). Two more variants exist for a box that mounted but is still loading
+  (`StillLoading` — adopt it and you freeze its spinner) and for one that
+  belongs to another panel (`OpenedAs`). **Never re-read `dock_target()` to
+  infer this** — that inference is what the enum replaced, and the mid-load
+  special case used to be a `matches!` list of panel ids at the call site.
+  A panel with nothing to show keeps a placeholder describing its **state** —
+  never an empty bordered box (a rendering bug), and never an instruction to
+  run a `/` command or press `Shift+←`, because the panel is already in place.
+  `render_hosted` is a deliberate **bridge**:
   `SidePanel::render` gets a `&mut Buffer`, `Component::render` needs a
   `&mut Frame`, and ratatui's `Frame` has no public constructor, so the
   widget renders into an in-memory backend sized to the column and is copied

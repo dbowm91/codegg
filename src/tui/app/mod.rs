@@ -10492,7 +10492,14 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) {
+    /// Show the diff for `path`, or the whole working tree when it is `None`.
+    ///
+    /// Returns whether a diff box was actually opened. Four of the paths below
+    /// return without mounting anything — no git root, no changes, a failed
+    /// `git diff` — and the caller needs to be able to say so. It used to
+    /// re-read `dock_target()` to find out, which is the inference this return
+    /// value replaces.
+    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) -> bool {
         let project_dir = self.active_workspace_root().unwrap_or_default();
         let git_root = match crate::worktree::find_git_root(&project_dir) {
             Some(r) => r,
@@ -10500,7 +10507,7 @@ impl App {
                 self.messages_state
                     .toasts
                     .info("Not in a git repository - showing text diff");
-                return;
+                return false;
             }
         };
 
@@ -10525,7 +10532,7 @@ impl App {
 
             if old_content == new_content {
                 self.messages_state.toasts.info("No changes detected");
-                return;
+                return false;
             }
 
             let title = format!("Diff: {}", file_path);
@@ -10534,6 +10541,7 @@ impl App {
                 new_content: new_content.into_boxed_str(),
                 title: title.into_boxed_str(),
             });
+            true
         } else {
             let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
             let output = crate::git_mutations::GitEnvPolicy::default()
@@ -10546,24 +10554,27 @@ impl App {
                     let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
                     if diff_text.is_empty() {
                         self.messages_state.toasts.info("No changes detected");
-                        return;
+                        return false;
                     }
                     self.process_msg(TuiMsg::OpenDiffDialog {
                         old_content: String::new().into_boxed_str(),
                         new_content: diff_text.into_boxed_str(),
                         title: "Repository Diff".to_string().into_boxed_str(),
                     });
+                    true
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                     self.messages_state
                         .toasts
                         .error(&format!("git diff failed: {}", stderr));
+                    false
                 }
                 Err(e) => {
                     self.messages_state
                         .toasts
                         .error(&format!("Failed to run git diff: {}", e));
+                    false
                 }
             }
         }
@@ -12200,7 +12211,6 @@ impl App {
             DialogType::Plugin => Some(P::Plugins),
             DialogType::Team => Some(P::Team),
             DialogType::Control => Some(P::Control),
-            DialogType::WorkspaceDashboard => Some(P::Workspace),
             DialogType::TaskView => Some(P::TaskView),
             DialogType::Diff => Some(P::Diff),
             DialogType::Review => Some(P::Review),
@@ -12208,6 +12218,12 @@ impl App {
             // gesture must say so rather than silently selecting a pane the
             // user did not ask for. Everything here is a *modal* box — the
             // session sidebar has no box because it is always present.
+            //
+            // `WorkspaceDashboard` is here because its box cannot exist: the
+            // Workspace view is `Route::Workspace` and `open_workspace_dashboard`
+            // pushes no dialog. It was mapped to a panel that could therefore
+            // never hold content, and the panel was removed rather than the
+            // mapping left to rot.
             _ => None,
         }
     }

@@ -513,8 +513,6 @@ pub enum SidePanelId {
     Team,
     /// `/control` — active-turn controller.
     Control,
-    /// `/workspace` — global Workspace dashboard.
-    Workspace,
     /// `/task` — the project Task view (WorkOrders).
     TaskView,
     /// `/diff` — diff for a file.
@@ -536,9 +534,12 @@ impl SidePanelId {
     /// The bespoke panels lead, then every box that can dock into the
     /// column. Bespoke means "owns its own implementation" — see
     /// [`is_bespoke`](Self::is_bespoke), which is what `SidePanelHost` filters
-    /// on. A panel appears here only if it is reachable: either the box
-    /// that fills it exists, or selecting it renders a placeholder that names
-    /// the command to run.
+    /// on. **A panel appears here only if selecting it does something**:
+    /// either the box that fills it exists, or selecting it states the reason
+    /// it cannot act. A row that could only ever render an empty placeholder
+    /// was a promise the manager could not keep — `Workspace` was one, and was
+    /// removed for it. The Workspace *view* is untouched and still opens with
+    /// `Ctrl+O` / `/workspace`; it was never a panel.
     pub const ALL: &'static [SidePanelId] = &[
         SidePanelId::Session,
         SidePanelId::Chat,
@@ -568,7 +569,6 @@ impl SidePanelId {
         SidePanelId::Plugins,
         SidePanelId::Team,
         SidePanelId::Control,
-        SidePanelId::Workspace,
         SidePanelId::TaskView,
         SidePanelId::Diff,
         SidePanelId::Review,
@@ -607,7 +607,6 @@ impl SidePanelId {
             SidePanelId::Plugins => "Plugins",
             SidePanelId::Team => "Team",
             SidePanelId::Control => "Control",
-            SidePanelId::Workspace => "Workspace",
             SidePanelId::TaskView => "Task View",
             SidePanelId::Diff => "Diff",
             SidePanelId::Review => "Review",
@@ -651,53 +650,9 @@ impl SidePanelId {
             SidePanelId::Plugins => "PLUGINS",
             SidePanelId::Team => "TEAM",
             SidePanelId::Control => "CONTROL",
-            SidePanelId::Workspace => "WORKSPACE",
             SidePanelId::TaskView => "ORDERS",
             SidePanelId::Diff => "DIFF",
             SidePanelId::Review => "REVIEW",
-        }
-    }
-
-    /// The `/` command whose box fills this panel.
-    ///
-    /// Used by the placeholder a panel shows before anything is docked into
-    /// it. A panel that cannot name its own loader cannot tell the user how to
-    /// make itself useful.
-    pub fn load_command(self) -> &'static str {
-        match self {
-            SidePanelId::Session => "/sidebar",
-            SidePanelId::Chat => "/chat",
-            SidePanelId::Terminal => "/terminal",
-            SidePanelId::Help => "/help",
-            SidePanelId::Tree => "/tree",
-            SidePanelId::Files => "/files",
-            SidePanelId::Sessions => "/sessions",
-            SidePanelId::Tasks => "/tasks",
-            SidePanelId::Plan => "/plan",
-            SidePanelId::Goal => "/goal show",
-            SidePanelId::Collaborators => "/collaborators",
-            SidePanelId::Memory => "/memory-search",
-            SidePanelId::Research => "/research-show",
-            SidePanelId::Logs => "/logs",
-            SidePanelId::Context => "/context",
-            SidePanelId::Cost => "/cost",
-            SidePanelId::Usage => "/usage",
-            SidePanelId::Stats => "/stats",
-            SidePanelId::Doctor => "/doctor",
-            SidePanelId::ShellShow => "/shell-list",
-            SidePanelId::Security => "/security-review-show",
-            SidePanelId::Models => "/models",
-            SidePanelId::Agents => "/agents",
-            SidePanelId::Mcp => "/mcps",
-            SidePanelId::Keybinds => "/keybinds",
-            SidePanelId::Themes => "/themes",
-            SidePanelId::Plugins => "/plugins",
-            SidePanelId::Team => "/team",
-            SidePanelId::Control => "/control",
-            SidePanelId::Workspace => "/workspace",
-            SidePanelId::TaskView => "/task",
-            SidePanelId::Diff => "/diff",
-            SidePanelId::Review => "/review",
         }
     }
 
@@ -743,7 +698,6 @@ impl SidePanelId {
             SidePanelId::Plugins => "plugins",
             SidePanelId::Team => "team",
             SidePanelId::Control => "control",
-            SidePanelId::Workspace => "workspace",
             SidePanelId::TaskView => "task_view",
             SidePanelId::Diff => "diff",
             SidePanelId::Review => "review",
@@ -771,6 +725,24 @@ impl SidePanelId {
             self,
             Self::Session | Self::Agents | Self::Chat | Self::Terminal | Self::Help
         )
+    }
+
+    /// Whether docking a box into this panel would **throw the box away**.
+    ///
+    /// Deliberately *not* [`is_bespoke`](Self::is_bespoke). A bespoke panel
+    /// holds no adopted component because it builds or shares its own: `Help`
+    /// owns a `HelpDialog`, `Terminal` owns a terminal, and `Chat` reads the
+    /// shared `ChatState` the box was already writing to. Docking those boxes
+    /// changes the frame and loses nothing — `SidePanelHost::adopt` answering
+    /// `false` for them is by design, not a failure.
+    ///
+    /// `Agents` is the one that does not line up. The panel is the management
+    /// **rows** list; `Dialog::Agent` is the agent **editor**. Docking closed
+    /// the editor, discarded the component `adopt` had just refused, and
+    /// focused a panel showing something else — silently, because the `bool`
+    /// went unread. Hence the pre-check in `dock_open_box`.
+    pub fn discards_a_docked_box(self) -> bool {
+        matches!(self, Self::Agents)
     }
 
     /// Position in [`SidePanelId::ALL`].
@@ -825,12 +797,59 @@ impl SidePanelId {
             SidePanelId::Plugins => "installed · trust",
             SidePanelId::Team => "members · roles",
             SidePanelId::Control => "turn · handoff",
-            SidePanelId::Workspace => "projects · attention",
             SidePanelId::TaskView => "orders · triggers",
             SidePanelId::Diff => "hunks · files",
             SidePanelId::Review => "changed files",
         }
     }
+}
+
+/// What selecting a panel from the manager actually did.
+///
+/// This used to be an inference. `materialize_hosted_panel` called the arm,
+/// then re-read `App::dock_target()` and guessed from the answer which of
+/// three things had happened — and a fourth, the panel that had silently done
+/// nothing, looked exactly like the first. The guess about which boxes were
+/// mid-load lived in `matches!(id, Research | TaskView)` at the call site, so a
+/// new panel arm could not state its own answer and had to be added to a list
+/// somewhere else entirely.
+///
+/// Each arm of `open_panel_box` now returns one of these instead. That is the
+/// whole point: **a panel that cannot be filled says so here**, next to the
+/// work that could not do it, rather than leaving a caller to infer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelFill {
+    /// A box whose content is already resolved is mounted, and it belongs to
+    /// the panel that was asked for. Adopt it.
+    Filled,
+    /// A load started and **nothing is mounted yet**. Select the panel and
+    /// show a progress state; the box arrives through its own completion path,
+    /// which is where it has always docked.
+    Loading,
+    /// A box is mounted but its data has not arrived. Leave it live.
+    ///
+    /// This is the protection the `Research` / `TaskView` literal list used to
+    /// provide: adopting a box at this point would freeze it on its spinner
+    /// and cancel the load running behind it.
+    StillLoading,
+    /// A box was mounted, but it belongs to `other` rather than to the panel
+    /// that was asked for. The box keeps the keyboard and names its own panel.
+    OpenedAs(SidePanelId),
+    /// The panel cannot act without something the manager cannot supply.
+    ///
+    /// The reason is a *why*, never a command to run: naming a `/` command
+    /// here is what told the user to leave a panel that was already in place.
+    /// The toast still says what to do — it is transient, and by the time the
+    /// user looks at the column again it is gone.
+    Cannot(&'static str),
+    /// The panel owns its own live projection, so there was nothing to fill
+    /// and no box to adopt.
+    ///
+    /// Unreachable from the manager, which returns before calling the arm for
+    /// a panel that is not hosted. It exists because "nothing to do" and
+    /// "could not act" are different answers and [`Cannot`] would have claimed
+    /// the second.
+    Bespoke,
 }
 
 /// Result of routing one key to the active panel.
@@ -1379,6 +1398,17 @@ impl SidePanelHost {
             .iter()
             .find(|panel| panel.id() == id)
             .map(hosted::HostPanel::has_content)
+    }
+
+    /// Record what happened when the command layer last tried to fill `id`.
+    ///
+    /// The placeholder is how a panel admits that it did nothing, so the layer
+    /// that just tried has to be the one saying what it did. A no-op for the
+    /// bespoke panels, which are not hosted and never show a placeholder.
+    pub fn set_placeholder_state(&mut self, id: SidePanelId, state: hosted::PlaceholderState) {
+        if let Some(panel) = self.hosted_mut(id) {
+            panel.set_placeholder_state(state);
+        }
     }
 
     /// Hand a just-unmounted box to the panel that can hold it.
@@ -2176,20 +2206,19 @@ mod tests {
         assert_eq!(shown, vec![PanelPlacement::Right]);
     }
 
-    /// Every panel must be constructible by name and nameable on disk.
+    /// Every panel must be nameable on disk and describable in the manager.
     ///
-    /// `load_command` is what a placeholder tells the user to run, and
-    /// `config_key` is what a persisted `Ctrl+digit` binding is stored under.
-    /// A variant that forgets either one is reachable from the manager but
-    /// cannot say how to fill itself or survive a restart.
+    /// `config_key` is what a persisted `Ctrl+digit` binding is stored under, and
+    /// `label`/`hint` are what the manager row reads. A variant that forgets
+    /// them is reachable but cannot be bound or identified.
+    ///
+    /// This used to also pin a `load_command` per panel, back when the placeholder
+    /// named that command. It does not any more: a panel describes its *state*,
+    /// and the only consumer of a per-panel command string was the copy that told
+    /// the user to go and run it.
     #[test]
-    fn every_panel_names_its_loader_and_its_config_spelling() {
+    fn every_panel_names_its_config_spelling_and_itself() {
         for panel in SidePanelId::ALL.iter().copied() {
-            let command = panel.load_command();
-            assert!(
-                command.starts_with('/'),
-                "{panel:?} has no `/` loader, got {command:?}"
-            );
             assert!(
                 !panel.config_key().is_empty(),
                 "{panel:?} has no persisted config spelling"
@@ -2201,6 +2230,11 @@ mod tests {
                     .all(|c| c.is_ascii_lowercase() || c == '_'),
                 "{panel:?} config spelling must be snake_case"
             );
+            assert!(
+                !panel.label().is_empty(),
+                "{panel:?} has no title-bar label"
+            );
+            assert!(!panel.hint().is_empty(), "{panel:?} has no manager hint");
         }
     }
 

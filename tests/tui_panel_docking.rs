@@ -1287,7 +1287,8 @@ async fn a_live_loading_box_stays_open_instead_of_docking_frozen() {
 ///
 /// `start_tasks_command` falls back to the async schedule list, which
 /// toasts and opens nothing synchronously. The selection must land on
-/// the placeholder (naming the loader) rather than on a stray surface.
+/// the placeholder — which now states *why* it is empty — rather than on a
+/// stray surface.
 #[tokio::test(flavor = "current_thread")]
 async fn tasks_without_a_project_lands_on_its_placeholder() {
     let mut app = test_app();

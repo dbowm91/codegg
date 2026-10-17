@@ -22,7 +22,10 @@ use std::sync::Arc;
 use crate::tui::app::state::chat::ChatState;
 use crate::tui::app::App;
 use crate::tui::input::{InputAction, InputMode};
-use crate::tui::panels::{PanelCtx, PanelDirection, PanelKey, PanelPlacement, SidePanelId};
+use crate::tui::panels::hosted::PlaceholderState;
+use crate::tui::panels::{
+    PanelCtx, PanelDirection, PanelFill, PanelKey, PanelPlacement, SidePanelId,
+};
 use crate::tui::theme::Theme;
 
 /// Resolve the project the chat panel should bind to right now.
@@ -312,10 +315,14 @@ pub(crate) enum SelectOutcome {
 /// reads snapshots and starts daemon work, all of which panels are barred
 /// from. A panel with content already (or a bespoke panel) is untouched.
 ///
-/// Returns `true` when the caller should select `id` — either it now has
-/// content, or it has a placeholder (with the reason toasted). Returns
-/// `false` when a live box was opened instead: the box owns the keyboard
-/// and the current panel must stay as it is.
+/// Returns `true` when the caller should select `id`. That is true for
+/// everything except the two outcomes where a live box owns the keyboard —
+/// [`PanelFill::StillLoading`] and [`PanelFill::OpenedAs`] — because focusing
+/// the panel behind an open modal would claim the badge while every key goes
+/// to the modal.
+///
+/// Whatever happened is recorded on the panel itself, so the column shows the
+/// truth instead of a standing "nothing is loaded".
 fn materialize_hosted_panel(app: &mut App, id: SidePanelId) -> bool {
     if app.panel_host.hosted_panel_has_content(id) != Some(false) {
         return true;
@@ -326,92 +333,169 @@ fn materialize_hosted_panel(app: &mut App, id: SidePanelId) -> bool {
     if app.dock_target().is_some() {
         return true;
     }
-    open_panel_box(app, id);
-    match app.dock_target() {
-        Some(target) if target == id => {
-            // Loading boxes stay live: adopting one now would freeze it on
-            // its spinner and cancel the load behind it. The toast tells
-            // the user the one remaining step.
-            if matches!(id, SidePanelId::Research | SidePanelId::TaskView) {
-                app.messages_state
-                    .toasts
-                    .info(&format!("{} opened — press L to dock it", id.label()));
-                return false;
-            }
+    match open_panel_box(app, id) {
+        PanelFill::Filled => {
             if let Some(widget) = app.close_dialog() {
                 app.panel_host.adopt(id, widget);
             }
             true
         }
-        Some(other) => {
+        PanelFill::Loading => {
+            app.panel_host
+                .set_placeholder_state(id, PlaceholderState::Loading);
+            true
+        }
+        PanelFill::Cannot(reason) => {
+            app.panel_host
+                .set_placeholder_state(id, PlaceholderState::Cannot(reason));
+            true
+        }
+        // The box is live and incomplete: adopting it would freeze it on its
+        // spinner and cancel the load behind it, and it owns the keyboard.
+        // The panel is still recorded as loading, so the moment the user looks
+        // at *this* column instead of the box it says why it is empty rather
+        // than claiming nothing was ever asked for.
+        PanelFill::StillLoading => {
+            app.panel_host
+                .set_placeholder_state(id, PlaceholderState::Loading);
+            app.messages_state
+                .toasts
+                .info(&format!("{} opened — press L to dock it", id.label()));
+            false
+        }
+        // A box opened, just not for this panel. It keeps the keyboard, and the
+        // panel it actually belongs to is the one that can adopt it.
+        PanelFill::OpenedAs(other) => {
             app.messages_state
                 .toasts
                 .info(&format!("Opened as {} — press L to dock it", other.label()));
             false
         }
-        None => true,
+        // Not hosted, so no placeholder exists and nothing was attempted.
+        PanelFill::Bespoke => true,
     }
 }
 
-/// Open the box that fills `id`, using the same seams as its `/` command.
+/// Open the box that fills `id`, using the same seams as its `/` command, and
+/// report what that actually did.
 ///
-/// Synchronous snapshot boxes (context, logs, models, …) appear
-/// immediately and the caller adopts them. Asynchronous ones (goal,
-/// doctor, plugins, …) only start their load and toast what is happening;
-/// their box opens later as a modal through the existing completion path,
-/// where `L` docks it as before. Panels that cannot act at all (a plan
-/// panel with no pending confirmation, a security panel with no receipt)
-/// toast why and leave the placeholder in place.
+/// Synchronous snapshot boxes (context, logs, models, …) mount immediately and
+/// are ready to adopt. Asynchronous ones (goal, doctor, plugins, …) only start
+/// their load; their box opens later as a modal through the existing
+/// completion path, where `L` docks it as before. Two arms mount a box *and*
+/// start a load behind it (research runs, the Task view), so the box is live
+/// but incomplete and must not be adopted. Panels that cannot act at all (a
+/// plan panel with no pending confirmation, a security panel with no receipt,
+/// a memory panel with no query) toast why and say so in the panel.
+///
+/// **Every arm returns its own outcome.** That is the contract: a caller must
+/// never have to re-read `dock_target()` and guess. Two arms deliberately
+/// pre-check a condition instead of trusting the helper to report it, and each
+/// says which condition it mirrors — see `Tasks`, `Team`, and `Collaborators`.
 ///
 /// Also the entry point for a bare `/agents`: the panel is loaded and focused
 /// from the same `P::Agents` arm either way, so the slash command and
 /// `Shift+L` cannot disagree about what the panel shows.
-pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) {
+pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) -> PanelFill {
     use crate::tui::app::Dialog;
     use SidePanelId as P;
     match id {
-        P::Session | P::Chat | P::Terminal | P::Help => {}
-        P::Tree => app.open_dialog(Dialog::Tree),
-        P::Sessions => app.open_dialog(Dialog::Session),
+        // Bespoke panels are their own live surface, so there is nothing to
+        // open and nothing to adopt. `materialize_hosted_panel` returns before
+        // reaching these for a panel that is not hosted; the picker reaches
+        // `Agents` directly, which is why that one still does its work.
+        P::Session | P::Chat | P::Terminal | P::Help => PanelFill::Bespoke,
+        P::Tree => {
+            app.open_dialog(Dialog::Tree);
+            PanelFill::Filled
+        }
+        P::Sessions => {
+            app.open_dialog(Dialog::Session);
+            PanelFill::Filled
+        }
+        // `start_tasks_command` either starts the async schedule list, whose
+        // box arrives from a completion, or lands on the project Task view —
+        // a box that belongs to `TaskView` and is still loading. Both are
+        // declared here rather than inferred from whichever box appeared.
         P::Tasks => crate::tui::commands::work_orders::start_tasks_command(app),
         P::Plan => {
             if app.dialog_state.plan_dialog.is_some() {
                 app.open_dialog(Dialog::Plan);
+                PanelFill::Filled
             } else {
                 app.messages_state
                     .toasts
                     .info("No pending plan confirmation — /plan shows the current task plan");
+                PanelFill::Cannot("no pending plan confirmation")
             }
         }
         P::Goal => match app.session_state.session.clone() {
             Some(session) => {
                 crate::tui::commands::goals::start_goal_show(app, session.id);
                 app.messages_state.toasts.info("Loading goal…");
+                PanelFill::Loading
             }
             None => {
                 app.messages_state.toasts.warning("No active session");
+                PanelFill::Cannot("no active session")
             }
         },
-        P::Collaborators => crate::tui::commands::presence::show_collaborators(app),
+        // Mirrors `show_collaborators`: it opens its box synchronously from
+        // already-resolved presence state, but refuses without a project.
+        P::Collaborators => {
+            if app.active_project_id().is_none() {
+                app.messages_state
+                    .toasts
+                    .info("No active project — open a project tab first");
+                PanelFill::Cannot("no active project")
+            } else {
+                crate::tui::commands::presence::show_collaborators(app);
+                PanelFill::Filled
+            }
+        }
         P::Memory => {
             app.messages_state
                 .toasts
                 .info("Memory needs a query — run /memory-search <query>");
+            PanelFill::Cannot("memory search needs a query")
         }
-        P::Research => app.handle_research_runs_command(),
-        P::Logs => app.open_logs_window(),
-        P::Context => app.open_dialog(Dialog::Context),
-        P::Cost => app.open_dialog(Dialog::Cost),
-        P::Usage => app.open_dialog(Dialog::Usage),
-        P::Stats => app.open_stats_dialog(),
+        // The browser mounts with `loading = true` and fills from the reply,
+        // so the box is real and incomplete: adopting it here would pin the
+        // panel to its spinner.
+        P::Research => {
+            app.handle_research_runs_command();
+            PanelFill::StillLoading
+        }
+        P::Logs => {
+            app.open_logs_window();
+            PanelFill::Filled
+        }
+        P::Context => {
+            app.open_dialog(Dialog::Context);
+            PanelFill::Filled
+        }
+        P::Cost => {
+            app.open_dialog(Dialog::Cost);
+            PanelFill::Filled
+        }
+        P::Usage => {
+            app.open_dialog(Dialog::Usage);
+            PanelFill::Filled
+        }
+        P::Stats => {
+            app.open_stats_dialog();
+            PanelFill::Filled
+        }
         P::Doctor => {
             if let Some(ref tx) = app.tui_cmd_tx {
                 let _ = crate::tui::app::send_tui(tx, crate::tui::app::TuiCommand::RunDoctor);
                 app.messages_state.toasts.info("Running doctor…");
+                PanelFill::Loading
             } else {
                 app.messages_state
                     .toasts
                     .info("doctor: not connected to a core client");
+                PanelFill::Cannot("not connected to a core client")
             }
         }
         P::ShellShow => {
@@ -419,43 +503,56 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) {
                 app.messages_state
                     .toasts
                     .info("No shell commands in history");
+                PanelFill::Cannot("no shell commands in history")
             } else {
                 app.messages_state
                     .toasts
                     .info("Run /shell-show <id|last> to open one, then L to dock it");
+                PanelFill::Cannot("no shell selected")
             }
         }
         P::Security => {
             if app.latest_security_review.is_some() {
                 app.open_dialog(Dialog::SecurityReview);
+                PanelFill::Filled
             } else {
                 app.messages_state.toasts.warning(
                     "No security review result available yet. Run /security-review first.",
                 );
+                PanelFill::Cannot("no security review result yet")
             }
         }
-        P::Models => app.open_dialog(Dialog::Model),
+        P::Models => {
+            app.open_dialog(Dialog::Model);
+            PanelFill::Filled
+        }
+        P::Mcp => {
+            app.open_dialog(Dialog::Mcp);
+            PanelFill::Filled
+        }
+        P::Keybinds => {
+            app.open_dialog(Dialog::Keybind);
+            PanelFill::Filled
+        }
+        P::Themes => {
+            app.open_dialog(Dialog::Theme);
+            PanelFill::Filled
+        }
+        // Loads its rows and takes focus itself, so there is no box to adopt —
+        // but it is reached from the picker, so the work still happens here.
+        // `select_panel` is the one seam that both selects and loads, so the
+        // picker and `Shift+L` land on the panel by exactly the same path.
         P::Agents => match app.project_execution_context() {
             Ok(context) => {
-                // M006-F: `/agents` is the management panel, not a
-                // read-only dump. The rows come from the same registry the
-                // text form renders, so the panel and `/agents show` can
-                // never disagree about which agents exist. Loading is a
-                // synchronous registry read, so the panel is filled before
-                // it is shown rather than after a frame with stale rows.
+                // The rows come from the same registry the text form renders,
+                // so the panel and `/agents show` can never disagree about
+                // which agents exist. Loading is a synchronous registry read,
+                // so the panel is filled before it is shown rather than after
+                // a frame with stale rows.
                 let rows = crate::tui::commands::agent_editor::agent_rows_for_root(
                     &context.workspace_root,
                 );
                 app.panel_host.set_agents_rows(rows);
-                // `select_panel` is the one seam that both selects and
-                // loads, so `/agents` and `Shift+L` land on the panel by
-                // exactly the same path rather than by a private shortcut.
-                // It does not *focus*: the two halves are separate on purpose
-                // elsewhere (loading a box must not steal the keyboard from a
-                // focused panel), which left `/agents` loading the panel and
-                // then warning that it had not taken focus — true of the
-                // keyboard, false of the panel. Same order `dock_open_box`
-                // uses.
                 select_panel(app, SidePanelId::Agents);
                 focus_panel(app);
                 if !app.panel_host.is_focused() {
@@ -463,32 +560,83 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) {
                         .toasts
                         .warning("Agents panel could not take focus — press L to select it");
                 }
+                PanelFill::Bespoke
             }
             Err(error) => {
                 app.messages_state.toasts.error(&error);
+                PanelFill::Cannot("no active project")
             }
         },
-        P::Mcp => app.open_dialog(Dialog::Mcp),
-        P::Keybinds => app.open_dialog(Dialog::Keybind),
-        P::Themes => app.open_dialog(Dialog::Theme),
+        // Starts an async read whose box arrives from the reply, so the panel
+        // shows progress until it does. It used to toast "Loading plugins…"
+        // while the column said no Plugins existed anywhere.
         P::Plugins => {
             let has_manager = app.plugin_manager.is_some();
             crate::tui::commands::plugin_management::show_plugins(app);
             if has_manager {
                 app.messages_state.toasts.info("Loading plugins…");
+                PanelFill::Loading
+            } else {
+                PanelFill::Cannot("plugin manager unavailable")
             }
         }
-        P::Team => crate::tui::commands::team::dispatch_team_command(app, ""),
-        P::Control => crate::tui::commands::control::dispatch_control_command(app, ""),
-        P::Workspace => {
-            app.messages_state
-                .toasts
-                .info("Workspace is a primary view — open it with Ctrl+O (or /workspace)");
+        // Two branches behind one arm: without a daemon connection the helper
+        // opens a box synchronously saying so, and with one it starts an async
+        // read whose box arrives from the reply. Mirrors `start_show_team`.
+        P::Team => {
+            if app.active_project_id().is_none() {
+                app.messages_state
+                    .toasts
+                    .info("No active project — open a project tab first");
+                PanelFill::Cannot("no active project")
+            } else {
+                // Read the branch before dispatching, because the helper takes
+                // the same one and returns nothing.
+                let without_daemon = app.core_client.is_none();
+                crate::tui::commands::team::dispatch_team_command(app, "");
+                if without_daemon {
+                    PanelFill::Filled
+                } else {
+                    PanelFill::Loading
+                }
+            }
         }
-        P::TaskView => crate::tui::commands::work_orders::open_task_view(app),
-        P::Diff => app.handle_diff_command(None),
-        P::Review => app.open_dialog(Dialog::Review),
-        P::Files => app.open_dialog(Dialog::Files),
+        // Mirrors `dispatch_control_command`: it refuses without a session and
+        // otherwise starts an async read.
+        P::Control => {
+            if app.active_session_id().is_none() {
+                app.messages_state
+                    .toasts
+                    .info("No active session — open a session tab first");
+                PanelFill::Cannot("no active session")
+            } else {
+                crate::tui::commands::control::dispatch_control_command(app, "");
+                PanelFill::Loading
+            }
+        }
+        // Mounts the Task view and then refreshes it, so the box is real and
+        // incomplete — the same shape as `Research`.
+        P::TaskView => {
+            crate::tui::commands::work_orders::open_task_view(app);
+            PanelFill::StillLoading
+        }
+        // Reports for itself: a clean tree, a missing git root, and a failed
+        // `git diff` all return without opening anything.
+        P::Diff => {
+            if app.handle_diff_command(None) {
+                PanelFill::Filled
+            } else {
+                PanelFill::Cannot("no changes to show")
+            }
+        }
+        P::Review => {
+            app.open_dialog(Dialog::Review);
+            PanelFill::Filled
+        }
+        P::Files => {
+            app.open_dialog(Dialog::Files);
+            PanelFill::Filled
+        }
     }
 }
 
@@ -755,14 +903,31 @@ pub(crate) fn dock_open_box(app: &mut App, dir: PanelDirection) {
             .warning("No panel for this box — open a panel-capable box first");
         return;
     };
+    // Refuse **before** unmounting. `SidePanelHost::adopt` consumes the widget
+    // it is handed and answers `false` for a panel that is not hosted, so
+    // finding that out afterwards means the box is already gone — it used to be
+    // discarded exactly like that, silently, because the `bool` went unread.
+    //
+    // The predicate is `discards_a_docked_box`, **not** `is_bespoke`: `Help`,
+    // `Terminal` and `Chat` are bespoke and still dock correctly, because they
+    // build or share the very content their box was showing. Only `Agents`
+    // pairs a box with a panel that shows something else.
+    if id.discards_a_docked_box() {
+        app.messages_state.toasts.warning(&format!(
+            "{} is the management list, not the editor box — there is nothing to dock into",
+            id.label()
+        ));
+        return;
+    }
     // Close first: `select_panel` reads sidebar visibility and focus, and a
     // box still mounted would keep claiming keys the panel is about to own.
     //
     // `close_dialog` hands back the component it unmounted. For a hosted
     // panel that component is the box itself — same filter, same cursor,
     // same scroll offset — so docking is a move rather than a re-open that
-    // happens to look similar. The bespoke panels have their own dock
-    // paths and ignore the returned component.
+    // happens to look similar. `Help`, `Terminal` and `Chat` ignore the
+    // returned component and rebuild from their own state, which is why a
+    // `false` from `adopt` below is expected for them rather than a failure.
     let unmounted = app.close_dialog();
     let from = app.panel_host.placement();
     let placement = edge_named_by(dir, from);

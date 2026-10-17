@@ -40,8 +40,11 @@
 //! client or resolves a project. That is why an adopted panel is empty until a
 //! box is docked into it: the box was the thing that fetched the content. A
 //! panel selected straight from the manager with nothing adopted renders an
-//! explicit placeholder naming the command that loads it, rather than an empty
-//! box that looks broken.
+//! explicit placeholder describing the panel's **state** — nothing loaded, a
+//! load in flight, or the reason it cannot act — because an empty bordered box
+//! is indistinguishable from a rendering bug, and a panel that told the user
+//! to go run a `/` command elsewhere was describing a workflow this surface
+//! does not have.
 
 use std::sync::Arc;
 
@@ -56,11 +59,6 @@ use crate::tui::components::component::{Component, DialogType};
 use crate::tui::theme::Theme;
 
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
-
-/// The `/` command that fills a given panel, used by the placeholder.
-fn load_command(id: SidePanelId) -> &'static str {
-    id.load_command()
-}
 
 /// A side panel that hosts one existing modal component.
 ///
@@ -78,9 +76,23 @@ impl HostPanel {
         Self { id, widget }
     }
 
-    /// Host an explicit placeholder naming the command that loads this panel.
+    /// Host an explicit placeholder describing this panel's current state.
     pub fn placeholder(id: SidePanelId) -> Self {
-        Self::new(id, Box::new(Placeholder { id }))
+        Self::new(id, Box::new(Placeholder::new(id)))
+    }
+
+    /// Record what happened when the manager last tried to fill this panel.
+    ///
+    /// A no-op once a real box has been adopted: a placeholder that is not on
+    /// screen has no business remembering anything, and rewriting state here
+    /// would let a stale reason outlive the condition that produced it.
+    pub fn set_placeholder_state(&mut self, state: PlaceholderState) {
+        if self.has_content() {
+            return;
+        }
+        if let Some(placeholder) = self.widget.as_any_mut().downcast_mut::<Placeholder>() {
+            placeholder.state = state;
+        }
     }
 
     /// Whether a real box has been adopted into this panel yet.
@@ -171,13 +183,83 @@ impl SidePanel for HostPanel {
     }
 }
 
+/// What a hosted panel is showing while nothing has been adopted into it.
+///
+/// The manager sets this when it tries to fill a panel, so the column can say
+/// what actually happened instead of asserting that nothing is loaded. It is
+/// deliberately a **state**, never an instruction: the panel is already where
+/// the user asked for it, so there is nothing to move into it, and telling them
+/// to leave and run a `/` command described a workflow this surface does not
+/// have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceholderState {
+    /// Nothing has been committed to this panel yet, so there is nothing to
+    /// report beyond the fact that it is empty.
+    Idle,
+    /// A load started; the box opens through its own completion path.
+    Loading,
+    /// The panel cannot act without something the manager cannot supply.
+    ///
+    /// The reason is a *why*, never a command to go and run — that instruction
+    /// is the toast's job, which is transient and already gone by the time the
+    /// user looks at the column again.
+    Cannot(&'static str),
+}
+
 /// What is mounted when a panel has no adopted box.
 ///
 /// Named rather than inferred: a panel that is empty because nothing has been
-/// docked into it must say so and name the fix, because the alternative — an
-/// empty bordered box — is indistinguishable from a rendering bug.
+/// docked into it must say so, because the alternative — an empty bordered box
+/// — is indistinguishable from a rendering bug.
 pub struct Placeholder {
     id: SidePanelId,
+    state: PlaceholderState,
+}
+
+impl Placeholder {
+    fn new(id: SidePanelId) -> Self {
+        Self {
+            id,
+            state: PlaceholderState::Idle,
+        }
+    }
+
+    /// Headline plus explanation, in that order.
+    ///
+    /// Both lines describe the panel's state; neither one tells the user to go
+    /// somewhere and come back.
+    fn lines(&self) -> Vec<ratatui::text::Line<'static>> {
+        let bold = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
+        match self.state {
+            PlaceholderState::Idle => vec![
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from("Nothing loaded.").style(bold),
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from("Open it from the panel manager (⇧S)."),
+            ],
+            PlaceholderState::Loading => vec![
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from(format!("Loading {}…", self.id.label())).style(bold),
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from("It opens here when it arrives."),
+            ],
+            PlaceholderState::Cannot(reason) => vec![
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from(format!("{} can't open here.", self.id.label()))
+                    .style(bold),
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from(reason),
+            ],
+        }
+    }
+
+    /// The body both render paths share. The difference is only who owns the
+    /// border: the host owns it in a column, the widget owns it standalone.
+    fn body(&self) -> Paragraph<'static> {
+        Paragraph::new(self.lines())
+            .alignment(ratatui::layout::Alignment::Center)
+            .wrap(Wrap { trim: true })
+    }
 }
 
 impl Component for Placeholder {
@@ -191,22 +273,28 @@ impl Component for Placeholder {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let body = Paragraph::new(vec![
-            ratatui::text::Line::from(""),
-            ratatui::text::Line::from(format!("No {} loaded.", self.id.label()))
-                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
-            ratatui::text::Line::from(""),
-            ratatui::text::Line::from(format!("Run  {}  to open it,", load_command(self.id))),
-            ratatui::text::Line::from("then Shift+← to move it here."),
-        ])
-        .alignment(ratatui::layout::Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
+        // Standalone path only: a placeholder is never mounted as a modal
+        // (`dialog_type` is `None`), so this exists to keep the component total
+        // rather than to be a supported surface.
+        let body = self.body().block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border)),
         );
         frame.render_widget(body, area);
+    }
+
+    /// The host has already painted a border, a title, and the `●` focus
+    /// marker into `area` by the time this runs, so painting another border
+    /// over the same rect does not layer — it overwrites all three. That is
+    /// why the host has its own seam for this and why the body is inset
+    /// instead of framed.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, _theme: &Arc<Theme>) {
+        let inner = area.inner(ratatui::layout::Margin::new(1, 1));
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        frame.render_widget(self.body(), inner);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -232,5 +320,116 @@ trait PlaceholderMarker {
 impl PlaceholderMarker for Box<dyn Component> {
     fn is_placeholder(&self) -> bool {
         self.as_any().downcast_ref::<Placeholder>().is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A column big enough that the copy under test is not wrapped away.
+    const AREA: Rect = Rect::new(0, 0, 44, 12);
+
+    fn rendered(placeholder: &mut Placeholder, title: &str) -> String {
+        let theme = Arc::new(Theme::default());
+        let mut buf = Buffer::empty(AREA);
+        crate::tui::panels::render_hosted(placeholder, &mut buf, AREA, &theme, title);
+        (0..AREA.height)
+            .map(|y| {
+                (0..AREA.width)
+                    .map(|x| {
+                        buf.cell((x, y))
+                            .map(|cell| cell.symbol().to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The host's border and title are the panel's identity, and the `●` in
+    /// that title is the only thing telling a focused panel from an unfocused
+    /// one. A placeholder that painted its own all-borders `Block` over the
+    /// whole column destroyed all three at once.
+    #[test]
+    fn a_hosted_placeholder_keeps_the_panel_title_and_focus_dot() {
+        for state in [
+            PlaceholderState::Idle,
+            PlaceholderState::Loading,
+            PlaceholderState::Cannot("nothing to show yet"),
+        ] {
+            let mut placeholder = Placeholder::new(SidePanelId::Files);
+            placeholder.state = state;
+            let text = rendered(&mut placeholder, " ● Files ");
+            assert!(
+                text.contains("● Files"),
+                "{state:?}: the panel title and its focus marker are the host's, not the widget's, got {text:?}"
+            );
+        }
+    }
+
+    /// The panel is already where it belongs: there is no box to move into
+    /// it, and `Shift+←` means something else on every edge. Telling the user
+    /// to leave the panel they are looking at, to run a `/` command, to press
+    /// a key, and to come back was three instructions where the state was one
+    /// sentence.
+    #[test]
+    fn a_hosted_placeholder_never_asks_the_user_to_go_and_come_back() {
+        // The panels that cannot fill themselves from the manager are the ones
+        // that used to be told to name a command. Their loaders are spelled
+        // out here on purpose: the assertion is that the copy no longer
+        // reaches for them, not that the registry still tracks them.
+        let cases = [
+            (SidePanelId::Memory, "/memory-search"),
+            (SidePanelId::Plan, "/plan"),
+            (SidePanelId::Security, "/security-review-show"),
+            (SidePanelId::ShellShow, "/shell-list"),
+        ];
+        for (id, loader) in cases {
+            for state in [
+                PlaceholderState::Idle,
+                PlaceholderState::Loading,
+                PlaceholderState::Cannot("nothing to show yet"),
+            ] {
+                let mut placeholder = Placeholder::new(id);
+                placeholder.state = state;
+                let text = rendered(&mut placeholder, " x ");
+                assert!(
+                    !text.contains("Shift+←"),
+                    "{id:?}/{state:?} told the user to move a box that is already in place, got {text:?}"
+                );
+                assert!(
+                    !text.contains("to open it"),
+                    "{id:?}/{state:?} told the user to go run a command from the input box, got {text:?}"
+                );
+                assert!(
+                    !text.contains(loader),
+                    "{id:?}/{state:?} named its own loader instead of describing its state, got {text:?}"
+                );
+            }
+        }
+    }
+
+    /// A panel whose load is running is not an empty panel, and one that
+    /// cannot act says why. Both were "No X loaded" while the toast said
+    /// "Loading…" — the two halves of the same selection disagreeing on screen.
+    #[test]
+    fn a_declared_state_is_described_rather_than_denied() {
+        let mut loading = Placeholder::new(SidePanelId::Goal);
+        loading.state = PlaceholderState::Loading;
+        let text = rendered(&mut loading, " Goal ");
+        assert!(
+            text.contains("Loading Goal"),
+            "a load in flight must read as a load in flight, got {text:?}"
+        );
+
+        let mut blocked = Placeholder::new(SidePanelId::Memory);
+        blocked.state = PlaceholderState::Cannot("memory search needs a query");
+        let text = rendered(&mut blocked, " Memory ");
+        assert!(
+            text.contains("memory search needs a query"),
+            "a panel that cannot act must say why, got {text:?}"
+        );
     }
 }

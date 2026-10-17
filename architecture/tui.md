@@ -1534,7 +1534,7 @@ need their own key model:
 | `Help` | `[HELP]` | the keybinding reference |
 | `Agents` | `[AGENTS]` | the M006-F management rows |
 
-The other **28** are **hosted**: each is a `/` command that brings up a box,
+The other **27** are **hosted**: each is a `/` command that brings up a box,
 and the panel holds that box's component rather than a lookalike. They are one
 implementation (`panels/hosted.rs`), not 28:
 
@@ -1542,7 +1542,7 @@ implementation (`panels/hosted.rs`), not 28:
 |---|---|
 | Lists | `Tree` `Sessions` `Tasks` `Plan` `Goal` `Collaborators` `Memory` `Research` |
 | Reports | `Logs` `Context` `Cost` `Usage` `Stats` `Doctor` `ShellShow` `Security` |
-| Pickers | `Models` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
+| Pickers | `Models` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `TaskView` `Diff` `Review` |
 | Browsers | `Files` |
 
 Which panel is loaded is chosen by the **panel manager box**
@@ -3666,8 +3666,13 @@ action.
   with the same filter, cursor, scroll offset and selection the box was
   showing a frame earlier. A panel with nothing adopted that cannot be
   materialized (no pending plan confirmation, no security receipt) still
-  renders a placeholder naming the `/` command that loads it — an empty
-  bordered box is indistinguishable from a rendering bug.
+  renders a placeholder — an empty bordered box is indistinguishable from a
+  rendering bug — but the placeholder describes **state**, never instructions:
+  nothing loaded, a load in flight, or the reason it cannot act. It used to
+  read "Run `<cmd>` to open it, then Shift+← to move it here", which described
+  a workflow the surface does not have: the panel is already in place, so there
+  is nothing to move into it, and `Shift+←` names a different edge on every
+  placement.
 - **Selecting a hosted panel loads it: one step, not two.**
   `commands::panels::select_panel` materializes an empty hosted panel before
   selecting it, through the same seams as its `/` command
@@ -3675,12 +3680,20 @@ action.
   is opened and adopted immediately, so `Shift+S` + `Enter` lands on live
   content with focus — the behaviour the bespoke panels always had. A
   live-loading box (Research, Task view) stays open as a modal instead:
-  adopting its spinner would freeze it and cancel the load, so the toast
-  names the one remaining step (`L` to dock). Panels with genuinely nothing
-  to show (Plan with no pending confirmation, Security with no receipt,
-  Workspace, which is a primary view) keep the placeholder and toast why.
-  `Shift+↑/↓` walking deliberately does not materialize: cycling all 33
-  entries would fire 29 loads for panels the user only glanced at.
+  adopting its spinner would freeze it and cancel the load, so it keeps the
+  keyboard until its data arrives. Panels with genuinely nothing to show
+  (Plan with no pending confirmation, Security with no receipt) are selected
+  and show why. `Shift+↑/↓` walking deliberately does not materialize: cycling
+  all entries would fire dozens of loads for panels the user only glanced at.
+- **`PanelFill` is the contract, not `dock_target`.**
+  `open_panel_box` used to return `()` and its caller re-read
+  `App::dock_target()` to infer which of three things had happened — with a
+  fourth, "the panel did nothing", looking identical to the first. The
+  mid-load special case lived in `matches!(id, Research | TaskView)` at the call
+  site, so a panel arm could not state its own answer. Every arm now returns a
+  [`PanelFill`]: `Filled`, `Loading`, `StillLoading`, `OpenedAs(other)`,
+  `Cannot(reason)`, or `Bespoke`. The `StillLoading` variant *is* the old
+  literal list, moved next to the work that needs the protection.
 - **`render_hosted` is a bridge, not the destination.**
   `SidePanel::render` receives a `&mut Buffer` while every `Component::render`
   takes a `&mut Frame`, and ratatui's `Frame` has no public constructor. The

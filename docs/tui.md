@@ -212,6 +212,24 @@ It has two ways in: `Shift+S` in `NOR` mode, or the `/panels` command from
 anywhere. Use `/panels` mid-prompt — in `INS` mode `Shift+S` is just the
 letter `S`, so it has to stay typeable.
 
+#### What `Enter` does
+
+`Enter` on a row is **one act**, and the panel then tells you which of three
+things it was:
+
+- the panel **fills** — it shows its content, and takes your keyboard;
+- a **load started** — the panel says it is loading, and the box arrives on its
+  own (that is where `Shift+L` docks it);
+- the panel **cannot act** — it says why, in the panel, e.g. *memory search
+  needs a query* or *no pending plan confirmation*.
+
+Every panel in the list does one of those three. A row that could only ever sit
+empty is not in the list: the Workspace dashboard is a full view of its own,
+opened with `Ctrl+O` or `/workspace`, so it is not a panel. A panel with
+nothing loaded in it yet says so plainly and points back at `/panels` — it will
+never tell you to go and run a command elsewhere, or to press `Shift+←`, since
+the panel is already where you asked for it.
+
 `p` inside the manager moves the panel to the next edge — right → left →
 bottom — carrying whatever panel is loaded with it, and the choice is saved too
 (`panel_placement` in `codegg.json`). The strip above the list always shows all
