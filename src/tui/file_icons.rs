@@ -5,7 +5,9 @@
 //! their own `▾ `/`▸ `/`  ` markers inline, so a change to one was not a
 //! change to the other and a file type was distinguishable only by its
 //! extension being visible. This module is the single answer to "what glyph
-//! and what colour does this row get", for both surfaces.
+//! and what colour does this row get", for both surfaces — and, since the
+//! indentation that says *which directory a row belongs to* was a third thing
+//! each renderer computed on its own, to "how deep is this row drawn" too.
 //!
 //! ## Font support
 //!
@@ -22,6 +24,11 @@
 //! preference the config schema should carry, and a wrong-shaped key in a
 //! layered config discards more than it selects.
 //!
+//! The tree guide ([`indent_prefix`]) is deliberately **not** part of this
+//! switch. It is box-drawing, which every terminal has, because "which
+//! directory does this row belong to" cannot depend on a font the user may not
+//! have — so plain and Nerd render the same hierarchy, only the icons differ.
+//!
 //! ## No I/O, no state
 //!
 //! Every function here is pure over `(kind, name, expanded, theme)`. The
@@ -32,7 +39,8 @@ use std::sync::OnceLock;
 
 use ratatui::style::Style;
 
-use crate::tui::file_tree::TreeNodeKind;
+use crate::tui::app::state::file_tree::{FileTreeState, MAX_INDENT_DEPTH};
+use crate::tui::file_tree::{TreeNodeKind, TreeRow};
 use crate::tui::theme::Theme;
 
 /// Environment switch selecting the icon style.
@@ -200,6 +208,72 @@ pub fn row_style(
         }
     };
     Style::default().fg(color)
+}
+
+/// Columns the icon span occupies: the glyph plus its trailing space.
+///
+/// Two, for both icon styles. A Nerd Font glyph is rendered double-width by
+/// some terminals, so this over-reserves by one column there rather than
+/// letting the guide push the name off a narrow column.
+const ICON_COLS: usize = 2;
+
+/// Columns one level of tree guide costs — `│  `, `├─ ` or `└─ `.
+pub const INDENT_LEVEL_COLS: usize = 3;
+
+/// The tree guide in front of one row, sized to what the column can spare.
+///
+/// One function, two callers, for the same reason the glyph table is: the
+/// `/files` box and the Ctrl+T pane are the same navigator drawn twice, and
+/// two copies of "how deep is this row" is how they came to disagree.
+///
+/// ## Why box-drawing and nothing else
+///
+/// `│` `├` `─` `└` are in the Basic Multilingual Plane and every terminal
+/// draws them. The Nerd Font vocabulary is a *nice-to-have* for file types;
+/// the hierarchy is load-bearing, so it must not depend on a patched font or
+/// a user having found `CODEGG_FILE_ICONS=plain`. With the plain style a
+/// nested row reads `├─ name` exactly as it does with the Nerd glyphs.
+///
+/// ## Why the guide is the thing that gives way
+///
+/// `budget` is what remains of the column once the name and the icon are
+/// accounted for, and levels that do not fit are dropped from the **outside**
+/// in: the guide to the immediate parent is what tells the reader what this
+/// row belongs to, so that is the part that survives. When even one level does
+/// not fit, the guide is empty and the name sits flush left — the name is
+/// content, the guide is orientation.
+pub fn tree_indent(
+    state: &FileTreeState,
+    rows: &[TreeRow],
+    index: usize,
+    inner_width: usize,
+) -> String {
+    let indent = state.indent_for(rows, index);
+    // Char count rather than display width: it under-counts a CJK name, which
+    // can leave the guide one column wider than the budget. Cheap and it
+    // errs toward keeping the guide rather than dropping it.
+    let name_cols = rows.get(index).map_or(0, |row| row.name.chars().count());
+    indent_prefix(
+        indent.depth,
+        indent.last,
+        inner_width.saturating_sub(name_cols + ICON_COLS),
+    )
+}
+
+/// The guide for a row at `depth`, narrowed to `budget` columns.
+///
+/// `depth == 0` draws nothing: a top-level row has no parent to connect to.
+pub fn indent_prefix(depth: usize, last: bool, budget: usize) -> String {
+    let levels = depth.min(MAX_INDENT_DEPTH).min(budget / INDENT_LEVEL_COLS);
+    let mut out = String::with_capacity(levels * INDENT_LEVEL_COLS);
+    for level in 0..levels {
+        out.push_str(match (level + 1 == levels, last) {
+            (true, true) => "└─ ",
+            (true, false) => "├─ ",
+            (false, _) => "│  ",
+        });
+    }
+    out
 }
 
 /// Icon for a directory that has a name of its own.
@@ -545,6 +619,135 @@ mod tests {
             FileIconStyle::parse(Some("tofu")),
             FileIconStyle::Nerd,
             "an unrecognized value must not silently disable icons"
+        );
+    }
+
+    /// The guide ladder, as a table, because the shape is the contract: a top
+    /// level row has no connector, a last child closes its level, and anything
+    /// else hangs off a continuing one.
+    #[test]
+    fn the_guide_ladder_is_one_function_for_both_renderers() {
+        assert_eq!(indent_prefix(0, false, 40), "", "top level: no guide");
+        assert_eq!(
+            indent_prefix(0, true, 40),
+            "",
+            "lastness is meaningless at depth 0"
+        );
+        assert_eq!(indent_prefix(1, false, 40), "├─ ");
+        assert_eq!(indent_prefix(1, true, 40), "└─ ");
+        assert_eq!(indent_prefix(2, false, 40), "│  ├─ ");
+        assert_eq!(indent_prefix(3, true, 40), "│  │  └─ ");
+    }
+
+    /// A guide is orientation; a name is content. When the column cannot hold
+    /// both, the guide is what gives way — including by going away entirely.
+    #[test]
+    fn a_narrow_column_elides_the_guide_before_the_name() {
+        assert_eq!(indent_prefix(1, false, 0), "", "no room at all");
+        assert_eq!(indent_prefix(1, false, 2), "", "less than one level");
+        // Exactly one level: the connector to the immediate parent survives.
+        assert_eq!(indent_prefix(4, false, 3), "├─ ");
+        // More room than levels: nothing is invented.
+        assert_eq!(
+            indent_prefix(1, false, 40).chars().count(),
+            INDENT_LEVEL_COLS,
+            "box drawing is single-width, so columns are characters"
+        );
+        // Never wider than the budget, at any depth.
+        for depth in 0..12 {
+            for budget in 0..24 {
+                let guide = indent_prefix(depth, true, budget);
+                assert!(
+                    guide.chars().count() <= budget,
+                    "depth {depth} drew {guide:?} ({}) into {budget} columns",
+                    guide.chars().count()
+                );
+            }
+        }
+    }
+
+    /// Depths past the cap are drawn, not rejected — the cap is on *columns*,
+    /// and a listing may legitimately be deeper than any single column is wide.
+    #[test]
+    fn a_deep_scope_is_clamped_to_one_cap_rather_than_unbounded() {
+        let capped = indent_prefix(MAX_INDENT_DEPTH + 5, true, 1_000);
+        let at_cap = indent_prefix(MAX_INDENT_DEPTH, true, 1_000);
+        assert_eq!(capped, at_cap);
+        assert_eq!(at_cap.chars().count(), MAX_INDENT_DEPTH * INDENT_LEVEL_COLS);
+    }
+
+    /// The guide must not depend on the icon style, or `CODEGG_FILE_ICONS=plain`
+    /// would trade away the hierarchy along with the glyphs.
+    #[test]
+    fn the_guide_is_box_drawing_and_needs_no_nerd_font() {
+        for glyph in ['│', '├', '─', '└'] {
+            let code = glyph as u32;
+            assert!(
+                !glyph.is_ascii(),
+                "{glyph:?} must be box drawing, not an ASCII stand-in"
+            );
+            assert!(
+                !(0xE000..=0xF8FF).contains(&code),
+                "{glyph:?} is in the Nerd Font private-use range"
+            );
+        }
+    }
+
+    /// End to end through the state: real scope, drawn from the same
+    /// `tree_indent` both surfaces call.
+    #[test]
+    fn tree_indent_counts_the_scope_a_subtree_walk_restarted() {
+        use crate::tui::app::state::file_tree::FileTreeState;
+        use crate::tui::file_tree::TreeRow;
+
+        let row = |path: &str, name: &str, depth: usize| TreeRow {
+            path: path.to_string(),
+            name: name.to_string(),
+            depth,
+            kind: TreeNodeKind::File,
+            expanded: false,
+        };
+        let rows = vec![row("src", "src", 0), row("src/lib.rs", "lib.rs", 1)];
+
+        let mut state = FileTreeState::default();
+        assert_eq!(state.indent_for(&rows, 0).depth, 0, "at the root, nothing");
+        assert_eq!(state.indent_for(&rows, 1).depth, 1);
+        assert_eq!(tree_indent(&state, &rows, 0, 40), "");
+        assert_eq!(
+            tree_indent(&state, &rows, 1, 40),
+            "└─ ",
+            "one level in: the connector to the parent, and nothing above it"
+        );
+
+        // Two levels: the outer level keeps a continuing guide so the row is
+        // visibly inside something rather than merely indented.
+        let deeper = vec![row("a", "a", 0), row("a/b", "b", 1), row("a/b/c", "c", 2)];
+        assert_eq!(
+            tree_indent(&state, &deeper, 1, 40),
+            "├─ ",
+            "one level in, with a sibling still to come, keeps its level open"
+        );
+        assert_eq!(
+            tree_indent(&state, &deeper, 2, 40),
+            "│  └─ ",
+            "two levels in and last: the outer level continues, this one closes"
+        );
+
+        assert!(state.set_root_prefix("src"));
+        // A real `l` re-walk restarts the depth count at the subtree, so the
+        // scoped listing's top level carries the same number the workspace
+        // root's top level carries — which is exactly what used to make a
+        // scoped listing render identically to the root.
+        let scoped = vec![row("src/lib.rs", "lib.rs", 1)];
+        assert_eq!(
+            state.indent_for(&scoped, 0).depth,
+            2,
+            "a subtree walk restarts the count; the scope has to be added back"
+        );
+        assert_eq!(
+            tree_indent(&state, &scoped, 0, 40),
+            "│  └─ ",
+            "the scope itself is the parent, so its only child closes the level"
         );
     }
 }

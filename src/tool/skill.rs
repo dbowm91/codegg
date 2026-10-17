@@ -13,6 +13,13 @@ struct SkillInput {
 pub struct SkillTool {
     snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
     asset_pin: Option<Arc<Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    /// Root that local skill discovery is bounded to.
+    ///
+    /// `None` means "no session root was resolved", which is a refusal, not a
+    /// cue to read the daemon's process directory: skill lookup walks
+    /// `<workspace>/.opencode/skills`, so an inherited process directory would
+    /// silently load another tree's skills.
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl SkillTool {
@@ -23,7 +30,14 @@ impl SkillTool {
         Self {
             snapshot,
             asset_pin,
+            workspace_root: None,
         }
+    }
+
+    /// Bind local skill discovery to the session's workspace root.
+    pub fn with_workspace_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.workspace_root = root;
+        self
     }
 }
 
@@ -71,10 +85,13 @@ impl Tool for SkillTool {
             return render_skill(skill);
         }
 
-        // Build an explicit context. CLI bootstrap reads cwd exactly once
-        // at this boundary; the registry no longer reads process-global
-        // state.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        // Build an explicit context from propagated workspace state only.
+        let cwd = self
+            .workspace_root
+            .clone()
+            .ok_or_else(|| ToolError::MissingWorkspaceRoot {
+                context: "skill tool was constructed without a workspace root".to_string(),
+            })?;
         let ctx = crate::agent::asset_context::AssetContextBuilder::new()
             .with_synthetic_project_id(crate::agent::asset_context::ProjectId::new())
             .with_workspace_root(cwd)

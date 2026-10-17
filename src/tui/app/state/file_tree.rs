@@ -40,6 +40,28 @@ use crate::tui::file_tree::{visible_rows, TreeListing, TreeNodeKind, TreeRow};
 /// very fast paste, and a page verb must never become a no-op there.
 pub const FALLBACK_PAGE_ROWS: usize = 10;
 
+/// Deepest indent a row may draw, counting the scope itself.
+///
+/// Indentation is orientation, the name is content: past this a nested row
+/// would push its name out of a narrow column entirely, and the listing is
+/// scoped one directory at a time anyway, so real depth inside one pane is a
+/// level or two. Defined once here because the `/files` box and the Ctrl+T
+/// pane used to carry independent copies of this number and nothing kept them
+/// equal.
+pub const MAX_INDENT_DEPTH: usize = 8;
+
+/// How deep to draw one row, and whether it closes its own level.
+///
+/// Purely presentational: nothing here feeds back into navigation, expansion or
+/// selection, which is what keeps the hierarchy fix out of the walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TreeIndent {
+    /// Depth to draw, scope included. `0` draws no guide at all.
+    pub depth: usize,
+    /// Whether the row is the last at its depth — `└─` rather than `├─`.
+    pub last: bool,
+}
+
 /// Why the pane is showing what it is showing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum FileTreeStatus {
@@ -295,6 +317,62 @@ impl FileTreeState {
     /// The directory this pane is listing: `""` for the workspace root.
     pub fn root_prefix(&self) -> &str {
         self.root_history.last().map(String::as_str).unwrap_or("")
+    }
+
+    /// How deep to *display* `row`.
+    ///
+    /// A walk of a subtree counts depth from the subtree
+    /// (`crate::directory_listing::walk_directory` seeds the walk with the
+    /// subtree as its base), so the top level of a listing scoped with `l`
+    /// arrives at exactly the depth the workspace root's own top level arrives
+    /// at. A renderer that trusted `row.depth` therefore drew a scoped listing
+    /// identically to the root — entering a directory made the indentation say
+    /// nothing at all. The scope's components are added back here, so the
+    /// nesting the user is actually in is visible in the drawing.
+    ///
+    /// Display arithmetic over an unchanged listing: it reads
+    /// [`Self::root_prefix`] and clamps, and touches nothing else. Clamping to
+    /// [`MAX_INDENT_DEPTH`] keeps a deep scope from eating the name.
+    pub fn display_depth(&self, row: &TreeRow) -> usize {
+        self.scope_depth()
+            .saturating_add(row.depth)
+            .min(MAX_INDENT_DEPTH)
+    }
+
+    /// How many directory components the current scope sits below the
+    /// workspace root: `0` at the root, `1` one `l` deep, and so on.
+    pub fn scope_depth(&self) -> usize {
+        self.root_prefix()
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .count()
+    }
+
+    /// How one visible row should be indented.
+    ///
+    /// Depth and last-ness travel together because both renderers need them
+    /// together and neither may compute them alone: the `/files` box and the
+    /// Ctrl+T pane once each derived `"  ".repeat(row.depth.min(8))` locally,
+    /// which is how they came to disagree about what "one level in" looked
+    /// like. `rows` is the caller's visible-row slice and `index` addresses it.
+    pub fn indent_for(&self, rows: &[TreeRow], index: usize) -> TreeIndent {
+        let Some(row) = rows.get(index) else {
+            return TreeIndent::default();
+        };
+        TreeIndent {
+            depth: self.display_depth(row),
+            // The rows are a pre-order flattening, so a row's *next* row is
+            // what answers this: deeper means the row has children still to
+            // come, same-or-shallower means this was the last entry of the
+            // directory the row sits in. The end of the listing is last too.
+            //
+            // Only the next row, never the rest of the slice: "every row after
+            // me is deeper" holds for a whole chain of parents, so testing all
+            // of them would close every level at once.
+            last: rows
+                .get(index + 1)
+                .is_none_or(|next| next.depth <= row.depth),
+        }
     }
 
     /// True when the pane is showing the workspace root rather than a
@@ -1107,5 +1185,93 @@ mod tests {
             state.truncated.is_some(),
             "a truncated walk must carry its notice into the view state"
         );
+    }
+
+    /// `display_depth` is the fix for "a listing scoped with `l` draws flush
+    /// left", and the table *is* the fix: a scoped listing's rows arrive
+    /// counted from the subtree rather than from the workspace root, so the
+    /// scope has to be added back or the indentation says the user is at the
+    /// root when they are not.
+    #[test]
+    fn display_depth_adds_back_the_scope_a_subtree_walk_restarted() {
+        let root = temp();
+        write(root.path(), "a/b/c/deep.txt");
+        let state = state_with(root.path());
+        let row = |depth: usize| TreeRow {
+            path: "x".to_string(),
+            name: "x".to_string(),
+            depth,
+            kind: TreeNodeKind::File,
+            expanded: false,
+        };
+
+        assert_eq!(state.scope_depth(), 0, "the root scope has no components");
+        assert_eq!(state.display_depth(&row(0)), 0);
+        assert_eq!(state.display_depth(&row(3)), 3);
+
+        let mut scoped = FileTreeState::default();
+        assert!(scoped.set_root_prefix("a"));
+        assert_eq!(scoped.scope_depth(), 1);
+        assert_eq!(scoped.display_depth(&row(1)), 2, "one `l` deep, top level");
+        assert_eq!(scoped.display_depth(&row(3)), 4);
+
+        assert!(scoped.set_root_prefix("a/b"));
+        assert_eq!(scoped.scope_depth(), 2);
+        assert_eq!(
+            scoped.display_depth(&row(1)),
+            3,
+            "a two-component scope is two levels below the root"
+        );
+    }
+
+    /// Past the cap the answer stops growing. A name is content and a guide is
+    /// orientation, so the guide is what runs out of room first — silently
+    /// pushing the name off a narrow column is the failure this prevents.
+    #[test]
+    fn display_depth_clamps_at_the_one_cap_both_renderers_share() {
+        let mut state = FileTreeState::default();
+        assert!(state.set_root_prefix("a/b/c/d/e/f/g/h/i/j/k"));
+        let deep = TreeRow {
+            path: "x".to_string(),
+            name: "x".to_string(),
+            depth: 9,
+            kind: TreeNodeKind::File,
+            expanded: false,
+        };
+        assert_eq!(state.display_depth(&deep), MAX_INDENT_DEPTH);
+    }
+
+    /// Depth is display arithmetic and must stay that way: reading it on every
+    /// row may not move the cursor, open a directory, or change what the walk
+    /// would hand back. A hierarchy fix that reached into navigation would make
+    /// "visually deeper" and "reachable differently" the same change.
+    #[test]
+    fn display_depth_is_a_read_and_changes_nothing_about_navigation() {
+        let root = temp();
+        write(root.path(), "dir/nested/a.txt");
+        write(root.path(), "top.txt");
+
+        let mut state = state_with(root.path());
+        state.selected = Some("dir".to_string());
+        assert!(
+            state.toggle_selected().is_some(),
+            "expanding a directory adds its children as rows"
+        );
+        let before_rows = state.rows();
+        let before_selected = state.selected.clone();
+        let before_expanded = state.expanded.clone();
+        let before_scroll = state.scroll;
+        assert!(before_rows.len() > 2, "expansion added a child row");
+
+        let depths: Vec<usize> = before_rows
+            .iter()
+            .map(|row| state.display_depth(row))
+            .collect();
+        assert!(depths.iter().any(|depth| *depth > 0), "something is nested");
+
+        assert_eq!(state.rows(), before_rows, "rows must be untouched");
+        assert_eq!(state.selected, before_selected, "the cursor must not move");
+        assert_eq!(state.expanded, before_expanded, "expansion must not change");
+        assert_eq!(state.scroll, before_scroll, "the viewport must not move");
     }
 }

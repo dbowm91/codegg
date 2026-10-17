@@ -714,7 +714,41 @@ impl JobExecutor for SubagentJobExecutor {
             .bytes()
             .take(8)
             .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-        let mut workspace_root = allowed_paths.first().map(std::path::PathBuf::from);
+        // W001: a delegated child's workspace root is daemon-owned job state,
+        // never the daemon process's working directory. An explicit
+        // `allowed_paths` entry narrows it; an **empty** list means "the
+        // job's own workspace", which the scheduler lease has already
+        // resolved into `ctx.workspace_root` — whose own field docs state
+        // that executors "must use this instead of consulting process-global
+        // CWD".
+        //
+        // Deriving the root from the payload alone left a legitimate job with
+        // no root at all: the daemon's chat-collaboration dispatch and the
+        // schedule materializer both emit `allowed_paths: Vec::new()`, and
+        // `SubAgentPool` then refuses the run ("subagent execution requires
+        // an explicit workspace root") even though the daemon was holding the
+        // correct root the whole time. This is the same binding the sibling
+        // scheduler executors already perform — see `PythonJobExecutor` and
+        // `ToolProgramExecutor::job_tool_context`, which documents the same
+        // daemon-has-no-session-root hazard.
+        let mut workspace_root = match allowed_paths.first() {
+            Some(path) => std::path::PathBuf::from(path),
+            None => ctx.workspace_root.clone(),
+        };
+        // Fail closed on an unresolved root. Substituting the process cwd
+        // here would silently retarget the entire child run into whatever
+        // tree the daemon happened to be launched from.
+        if workspace_root.as_os_str().is_empty() {
+            return failure_completion(
+                started,
+                ExecutorStatus::Failed,
+                format!(
+                    "delegated run {} has no workspace root: neither the payload's \
+                     allowed_paths nor the scheduler lease resolved one",
+                    ctx.job.job_id
+                ),
+            );
+        }
         let mut owned_worktree = None;
         let needs_isolation = self.pool.requires_isolation(&agent, &denied_tools);
         if needs_isolation && run_id.is_none() {
@@ -821,22 +855,7 @@ impl JobExecutor for SubagentJobExecutor {
                     );
                 }
                 if let Some(repository_id) = task.repository_id.clone() {
-                    let Some(repository_root) = workspace_root.clone() else {
-                        let message = "mutating delegated run has no repository root";
-                        if let Err(error) = store
-                            .finish(
-                                run_id,
-                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
-                                None,
-                                Some("isolation_unavailable".into()),
-                                Some(message.into()),
-                            )
-                            .await
-                        {
-                            tracing::error!(?error, run_id = ?run_id, "agent run finish failed (missing repository root)");
-                        }
-                        return failure_completion(started, ExecutorStatus::Failed, message.into());
-                    };
+                    let repository_root = workspace_root.clone();
                     let request = codegg_core::worktree_service::CreateWorktreeRequest {
                         project_id: task.project_id.clone(),
                         repository_id,
@@ -883,7 +902,7 @@ impl JobExecutor for SubagentJobExecutor {
                         );
                     }
                     allowed_paths = vec![record.path.to_string_lossy().into_owned()];
-                    workspace_root = Some(record.path.clone());
+                    workspace_root = record.path.clone();
                     owned_worktree = Some((record, lease));
                 }
             }
@@ -981,7 +1000,7 @@ impl JobExecutor for SubagentJobExecutor {
                 .unwrap_or(1),
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: model,
-            workspace_root,
+            workspace_root: Some(workspace_root),
             workspace_locks: None,
             // M005: scheduler-owned children inherit the default ceiling;
             // isolated worktree roots become their writable sandbox roots

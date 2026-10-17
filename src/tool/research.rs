@@ -39,20 +39,6 @@ impl ResearchTool {
         }
     }
 
-    /// Build a test/legacy tool rooted at the process cwd.
-    ///
-    /// Daemon turns must use [`Self::for_execution`] so workspace identity is
-    /// explicit. Keeping this constructor available preserves the standalone
-    /// tool and unit-test API without allowing it to leak into turn setup.
-    pub fn with_default_service() -> Self {
-        Self {
-            service: Arc::new(ResearchService::new(
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            )),
-            timeout_secs: 600,
-        }
-    }
-
     /// Construct a research tool from daemon-owned workspace context.
     pub fn for_execution(execution: &codegg_core::workspace::ExecutionContext) -> Self {
         Self::new(Arc::new(ResearchService::new(
@@ -246,15 +232,23 @@ mod tests {
     use super::*;
     use crate::tool::Tool;
 
+    /// Test-only constructor. Its process-cwd variant was deleted in W001:
+    /// the registry now refuses the tool outright when no workspace root was
+    /// resolved, so the only remaining caller is a unit test, which names its
+    /// own root explicitly.
+    fn with_default_service() -> ResearchTool {
+        ResearchTool::new(Arc::new(ResearchService::new(std::env::temp_dir())))
+    }
+
     #[test]
     fn name_is_research() {
-        let t = ResearchTool::with_default_service();
+        let t = with_default_service();
         assert_eq!(t.name(), "research");
     }
 
     #[test]
     fn parameters_require_question() {
-        let t = ResearchTool::with_default_service();
+        let t = with_default_service();
         let p = t.parameters();
         let required = p.get("required").and_then(|v| v.as_array()).unwrap();
         assert!(required.iter().any(|v| v == "question"));
@@ -262,14 +256,14 @@ mod tests {
 
     #[test]
     fn description_mentions_websearch() {
-        let t = ResearchTool::with_default_service();
+        let t = with_default_service();
         let d = t.description();
         assert!(d.contains("websearch"));
     }
 
     #[test]
     fn empty_question_rejected() {
-        let t = ResearchTool::with_default_service();
+        let t = with_default_service();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -284,7 +278,7 @@ mod tests {
 
     #[test]
     fn model_backed_phases_are_off_by_default() {
-        assert!(!ResearchTool::with_default_service().model_backed_phases_enabled());
+        assert!(!with_default_service().model_backed_phases_enabled());
     }
 
     #[test]
@@ -292,7 +286,7 @@ mod tests {
         // Regression: nothing in production ever attached a provider, so the
         // tool's service stayed model-less and research silently used the
         // deterministic fallbacks for extraction/claims/verification.
-        let t = ResearchTool::with_default_service().with_model_backed_phases(stub(), "m".into());
+        let t = with_default_service().with_model_backed_phases(stub(), "m".into());
         assert!(t.model_backed_phases_enabled());
     }
 
@@ -303,7 +297,7 @@ mod tests {
         // builder may clobber the other's decision.
         use crate::config::schema::{SearchBackendConfig, SearchConfig};
 
-        let enabled = ResearchTool::with_default_service()
+        let enabled = with_default_service()
             .with_search_runtime(crate::search_backend::SearchRuntimeContext::new(
                 SearchConfig {
                     backend: Some(SearchBackendConfig::Eggsearch),
@@ -313,7 +307,7 @@ mod tests {
             .with_model_backed_phases(stub(), "m".into());
         assert!(enabled.model_backed_phases_enabled());
 
-        let disabled = ResearchTool::with_default_service()
+        let disabled = with_default_service()
             .with_search_runtime(crate::search_backend::SearchRuntimeContext::disabled())
             .with_model_backed_phases(stub(), "m".into());
         assert!(disabled.model_backed_phases_enabled());

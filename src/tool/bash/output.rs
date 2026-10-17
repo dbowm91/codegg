@@ -167,10 +167,15 @@ impl BashTool {
         use chrono::Utc;
         use codegg_core::run_store::*;
 
-        let cwd = canonical_workdir
+        // W001: both explicit inputs are legitimate; the daemon's process
+        // directory never was. With neither, there is no run to persist
+        // against and the caller returns early.
+        let Some(cwd) = canonical_workdir
             .cloned()
             .or_else(|| workdir.map(PathBuf::from))
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        else {
+            return;
+        };
         let workspace_root = cwd.clone();
 
         // Extract risk info from routing metadata if available

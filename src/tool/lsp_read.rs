@@ -92,7 +92,7 @@ impl LspReadTool {
     pub fn new(service: Arc<crate::lsp::service::LspService>) -> Self {
         Self {
             service,
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: crate::tool::util::unresolved_workspace_root(),
         }
     }
 

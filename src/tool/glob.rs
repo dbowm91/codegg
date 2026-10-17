@@ -22,7 +22,7 @@ pub struct GlobTool {
 impl GlobTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: crate::tool::util::unresolved_workspace_root(),
             unrestricted: false,
         }
     }

@@ -241,6 +241,82 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// Forwarding impl so a heterogeneous `Box<dyn Tool>` can itself be
+/// registered.
+///
+/// This exists for `ToolRegistry::with_options`' fail-closed arms: a refused
+/// workspace tool ([`crate::tool::disabled::UnrootedTool`]) and the real tool
+/// it replaces have unrelated concrete types, and the registry must be able to
+/// register whichever one applies without upcasting machinery at every site.
+#[async_trait]
+impl Tool for Box<dyn Tool> {
+    fn name(&self) -> &str {
+        self.as_ref().name()
+    }
+
+    fn description(&self) -> &str {
+        self.as_ref().description()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.as_ref().parameters()
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.as_ref().execute(input).await
+    }
+
+    fn category(&self) -> ToolCategory {
+        self.as_ref().category()
+    }
+
+    fn set_available_tools(&mut self, tools: Vec<String>) {
+        self.as_mut().set_available_tools(tools);
+    }
+
+    fn defer_loading(&self) -> bool {
+        self.as_ref().defer_loading()
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        self.as_ref().execute_structured(input, ctx).await
+    }
+
+    fn expose_in_definitions(&self) -> bool {
+        self.as_ref().expose_in_definitions()
+    }
+
+    fn has_functional_backend(&self) -> bool {
+        self.as_ref().has_functional_backend()
+    }
+
+    fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> contract::ToolContract {
+        self.as_ref().contract(tool_name, input_schema)
+    }
+
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        self.as_ref().causal_contract()
+    }
+}
+
+/// Refuse a workspace-scoped tool that has no resolved root.
+///
+/// The alternative — registering `inner` directly — would let it act inside
+/// the sentinel `allowed_root`, which `validate_path` rejects, but it would
+/// also keep offering the model a tool that cannot work, and it would report
+/// the refusal through whatever path the tool happened to validate first.
+/// Wrapping instead makes the missing root a typed, introspectable outcome
+/// while keeping the tool's contract (program callability, effect class,
+/// cache and retry policy) identical to the real tool's — see
+/// [`crate::tool::disabled::UnrootedTool`].
+pub(crate) fn unrooted(inner: Box<dyn Tool>) -> Box<dyn Tool> {
+    Box::new(crate::tool::disabled::UnrootedTool::wrapping(inner))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub tool_name: String,
@@ -423,19 +499,19 @@ pub struct ToolRegistryOptions {
 /// model-backed path actually took, because the registry stores tools
 /// as un-downcastable `Box<dyn Tool>`.
 pub(crate) fn build_research_tool(
-    workspace_root: Option<&std::path::PathBuf>,
+    workspace_root: &std::path::Path,
     provider: Option<Arc<dyn crate::provider::Provider>>,
     model: Option<String>,
     search_runtime: crate::search_backend::SearchRuntimeContext,
 ) -> crate::tool::research::ResearchTool {
-    let tool = match workspace_root {
-        Some(root) => crate::tool::research::ResearchTool::new(std::sync::Arc::new(
-            crate::research::service::ResearchService::new(root.clone()),
-        ))
-        .with_search_runtime(search_runtime),
-        None => crate::tool::research::ResearchTool::with_default_service()
-            .with_search_runtime(search_runtime),
-    };
+    // W001: the research service is always rooted explicitly. Its
+    // process-cwd-rooted sibling is now test-only (see
+    // `ResearchTool::with_default_service` in the test module), because a
+    // registry without a root refuses the tool outright instead.
+    let tool = crate::tool::research::ResearchTool::new(std::sync::Arc::new(
+        crate::research::service::ResearchService::new(workspace_root.to_path_buf()),
+    ))
+    .with_search_runtime(search_runtime);
     match (provider, model) {
         (Some(provider), Some(model)) => tool.with_model_backed_phases(provider, model),
         // Either half alone leaves the coordinator's
@@ -595,29 +671,49 @@ impl ToolRegistry {
         let verify_bash = bash_tool.clone();
         registry.register(bash_tool);
         registry.register(crate::tool::verify::VerifyTool::new(verify_bash));
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::read::ReadTool::default().with_allowed_root(root.clone()),
-            None => crate::tool::read::ReadTool::default(),
+        // W001: the `None` arms below refuse rather than defaulting. Every
+        // `X::default()` here seeds `allowed_root` from `std::env::current_dir()`.
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::read::ReadTool::default().with_allowed_root(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::read::ReadTool::default())),
         });
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::edit::EditTool::default().with_allowed_root(root.clone()),
-            None => crate::tool::edit::EditTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::edit::EditTool::default().with_allowed_root(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::edit::EditTool::default())),
         });
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::write::WriteTool::default().with_allowed_root(root.clone()),
-            None => crate::tool::write::WriteTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::write::WriteTool::default().with_allowed_root(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::write::WriteTool::default())),
         });
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::glob::GlobTool::default().with_allowed_root(root.clone()),
-            None => crate::tool::glob::GlobTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::glob::GlobTool::default().with_allowed_root(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::glob::GlobTool::default())),
         });
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::grep::GrepTool::default().with_allowed_root(root.clone()),
-            None => crate::tool::grep::GrepTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::grep::GrepTool::default().with_allowed_root(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::grep::GrepTool::default())),
         });
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::list::ListTool::default().with_allowed_root(root.clone()),
-            None => crate::tool::list::ListTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::list::ListTool::default().with_allowed_root(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::list::ListTool::default())),
         });
         registry.register(crate::tool::task::TaskTool::default());
         registry.register(
@@ -627,12 +723,24 @@ impl ToolRegistry {
         registry.register(crate::tool::websearch::WebSearchTool::with_search_runtime(
             search_runtime.clone(),
         ));
-        registry.register(build_research_tool(
-            options.workspace_root.as_ref(),
-            options.research_provider.clone(),
-            options.research_model.clone(),
-            search_runtime.clone(),
-        ));
+        // W001: `ResearchTool::with_default_service` is documented as "test/legacy
+        // … rooted at the process cwd" and must not leak into turn setup. With
+        // no resolved root there is nothing to root the research service at,
+        // so the tool is refused instead.
+        let research_tool: Box<dyn Tool> = match options.workspace_root.as_ref() {
+            Some(root) => Box::new(build_research_tool(
+                root,
+                options.research_provider.clone(),
+                options.research_model.clone(),
+                search_runtime.clone(),
+            )),
+            None => unrooted(Box::new(crate::tool::research::ResearchTool::new(
+                std::sync::Arc::new(crate::research::service::ResearchService::new(
+                    std::path::PathBuf::new(),
+                )),
+            ))),
+        };
+        registry.register(research_tool);
 
         // Evidence/search wrapper tools — only register when the evidence
         // backend is enabled and configured for eggsearch.
@@ -757,41 +865,46 @@ impl ToolRegistry {
             ));
         }
 
-        registry.register(crate::tool::skill::SkillTool::with_snapshot(
-            options.asset_snapshot,
-            options.asset_pin,
-        ));
+        registry.register(
+            crate::tool::skill::SkillTool::with_snapshot(options.asset_snapshot, options.asset_pin)
+                .with_workspace_root(workspace_root.clone()),
+        );
         registry.register(crate::tool::skill_proposal::SkillProposalTool);
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => {
-                crate::tool::apply_patch::ApplyPatchTool::default().with_allowed_root(root.clone())
-            }
-            None => crate::tool::apply_patch::ApplyPatchTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => Box::new(
+                crate::tool::apply_patch::ApplyPatchTool::default().with_allowed_root(root.clone()),
+            ) as Box<dyn Tool>,
+            None => unrooted(Box::new(crate::tool::apply_patch::ApplyPatchTool::default())),
         });
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::diff::DiffTool::default().with_allowed_root(root.clone()),
-            None => crate::tool::diff::DiffTool::default(),
-        });
-        registry.register(match workspace_root.as_ref() {
+        registry.register_boxed(match workspace_root.as_ref() {
             Some(root) => {
-                crate::tool::replace::ReplaceTool::default().with_allowed_root(root.clone())
+                Box::new(crate::tool::diff::DiffTool::default().with_allowed_root(root.clone()))
+                    as Box<dyn Tool>
             }
-            None => crate::tool::replace::ReplaceTool::default(),
+            None => unrooted(Box::new(crate::tool::diff::DiffTool::default())),
+        });
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => Box::new(
+                crate::tool::replace::ReplaceTool::default().with_allowed_root(root.clone()),
+            ) as Box<dyn Tool>,
+            None => unrooted(Box::new(crate::tool::replace::ReplaceTool::default())),
         });
         registry.register(crate::tool::review::ReviewTool::default());
-        registry.register(match workspace_root.as_ref() {
+        registry.register_boxed(match workspace_root.as_ref() {
             Some(root) => {
                 let terminal = crate::tool::terminal::TerminalTool::default()
                     .with_workdir(root.clone())
                     .with_sandbox_profile(sandbox_profile, root);
                 if options.child_git_policy.is_some() {
-                    terminal.with_allowed_root(root.clone())
+                    Box::new(terminal.with_allowed_root(root.clone())) as Box<dyn Tool>
                 } else {
-                    terminal
+                    Box::new(terminal) as Box<dyn Tool>
                 }
             }
-            None => crate::tool::terminal::TerminalTool::default()
-                .with_sandbox_profile_without_root(sandbox_profile),
+            None => unrooted(Box::new(
+                crate::tool::terminal::TerminalTool::default()
+                    .with_sandbox_profile_without_root(sandbox_profile),
+            )),
         });
         let test_tool = if let Some(ref store) = options.run_store {
             crate::tool::test::TestTool::with_run_store(store.clone())
@@ -871,41 +984,54 @@ impl ToolRegistry {
             crate::tool::tool_program::ToolProgramTool::new()
         };
         registry.register(tool_program_tool);
-        let git_tool = match options.workspace_root.clone() {
-            Some(root) => crate::tool::git::GitTool::default().with_workdir(root),
-            None => crate::tool::git::GitTool::default(),
+        // W001: without a resolved root there is no worktree the tool could
+        // be bounded to, so it is refused rather than defaulting to the
+        // daemon's process cwd. The `None` case short-circuits before
+        // `GitTool::default()`, which would read that cwd.
+        let git_tool: Box<dyn Tool> = match options.workspace_root.clone() {
+            Some(root) => {
+                let tool = crate::tool::git::GitTool::default().with_workdir(root);
+                let tool = if let Some(policy) = options.child_git_policy {
+                    tool.with_child_policy(policy)
+                } else {
+                    tool
+                };
+                let tool = if let Some(agent) = options.git_read_only {
+                    tool.with_read_only_only(true, agent)
+                } else {
+                    tool
+                };
+                let tool = if let Some(ref store) = options.run_store {
+                    tool.with_run_store(store.clone())
+                } else {
+                    tool
+                };
+                Box::new(tool)
+            }
+            None => unrooted(Box::new(crate::tool::git::GitTool::default())),
         };
-        let git_tool = if let Some(policy) = options.child_git_policy {
-            git_tool.with_child_policy(policy)
-        } else {
-            git_tool
-        };
-        let git_tool = if let Some(agent) = options.git_read_only {
-            git_tool.with_read_only_only(true, agent)
-        } else {
-            git_tool
-        };
-        let git_tool = if let Some(ref store) = options.run_store {
-            git_tool.with_run_store(store.clone())
-        } else {
-            git_tool
-        };
-        registry.register(git_tool);
+        registry.register_boxed(git_tool);
 
         // --- M003: hidden program-only git read adapter. ---
         // Operation-scoped `ProgrammaticOnly` reads delegating the
         // canonical git execution service. Hidden from model
         // definitions and `tool_search`; broker-callable by programs.
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::git_read::GitReadTool::default().with_workdir(root.clone()),
-            None => crate::tool::git_read::GitReadTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::git_read::GitReadTool::default().with_workdir(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::git_read::GitReadTool::default())),
         });
         // M003: additive model-facing read facade. It delegates to the
         // hidden program adapter's bounded implementation, while retaining
         // a direct-only read contract and a deferred disclosure state.
-        registry.register(match workspace_root.as_ref() {
-            Some(root) => crate::tool::git_read::GitQueryTool::default().with_workdir(root.clone()),
-            None => crate::tool::git_read::GitQueryTool::default(),
+        registry.register_boxed(match workspace_root.as_ref() {
+            Some(root) => {
+                Box::new(crate::tool::git_read::GitQueryTool::default().with_workdir(root.clone()))
+                    as Box<dyn Tool>
+            }
+            None => unrooted(Box::new(crate::tool::git_read::GitQueryTool::default())),
         });
 
         // --- LSP: consult resolved backend config. ---
@@ -1199,9 +1325,19 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: impl Tool + 'static) {
+        self.register_boxed(Box::new(tool));
+    }
+
+    /// Register an already-boxed tool.
+    ///
+    /// Needed where the tool is selected between two unrelated concrete
+    /// types at runtime — a fail-closed
+    /// [`crate::tool::disabled::UnrootedTool`] standing in for a
+    /// workspace-scoped tool that had no resolved root, versus the real tool.
+    pub fn register_boxed(&mut self, tool: Box<dyn Tool>) {
         let name = tool.name().to_string();
         self.catalog.register(&tool);
-        self.tools.insert(name, Box::new(tool));
+        self.tools.insert(name, tool);
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -2471,7 +2607,7 @@ mod compatibility_surface_tests {
 
         let root = std::path::PathBuf::from("/tmp/research-wiring");
         let tool = build_research_tool(
-            Some(&root),
+            &root,
             Some(Arc::new(crate::research::tests::StubProvider)),
             Some("m".to_string()),
             crate::search_backend::SearchRuntimeContext::new(SearchConfig {
@@ -2489,7 +2625,7 @@ mod compatibility_surface_tests {
         // on its fallbacks rather than borrowing an ambient one.
         let root = std::path::PathBuf::from("/tmp/research-wiring");
         let tool = build_research_tool(
-            Some(&root),
+            &root,
             None,
             None,
             crate::search_backend::SearchRuntimeContext::default(),
@@ -2505,7 +2641,7 @@ mod compatibility_surface_tests {
         // relying on the coordinator's fall-through.
         let root = std::path::PathBuf::from("/tmp/research-wiring");
         let tool = build_research_tool(
-            Some(&root),
+            &root,
             Some(Arc::new(crate::research::tests::StubProvider)),
             None,
             crate::search_backend::SearchRuntimeContext::default(),

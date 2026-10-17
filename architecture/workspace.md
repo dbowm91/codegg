@@ -171,20 +171,34 @@ another root's project binding.
 
 ## Static guard
 
-`scripts/check_daemon_cwd_usage.py` rejects new uses of
-`std::env::current_dir()` and `std::env::set_current_dir(...)` inside
-protected modules:
+`scripts/check_daemon_cwd_usage.py` rejects **any** use of
+`std::env::current_dir()`, a bare `current_dir(`, or
+`std::env::set_current_dir(...)` inside daemon-owned execution surfaces:
 
+- `src/tool/` (whole tree, including `bash/`, `terminal`, `formatter`,
+  `tool_program`, `lsp`, `lsp_read`, `git_read`, `skill`, `backend`)
+- `src/scheduler/` (whole tree)
 - `src/core/`
-- `src/agent/turn_runtime.rs`
-- `src/agent/worker.rs`
-- `src/tool/` process/filesystem executors
-- `src/test_runner/`
-- `src/python_script/`
-- Git execution services
+- `src/agent/worker.rs`, `src/agent/turn_runtime.rs`
+- Git execution services (`git_service.rs`, `git_mutations.rs`,
+  `git_recovery.rs`)
 
-Existing legacy uses in tool `default()` constructors are explicitly
-allowlisted. New production-path uses fail CI.
+`#[cfg(test)]` modules are skipped, and two files are exempt as pre-session
+bootstrap: `src/main.rs` and `src/exec.rs`.
+
+There is **no line-pattern allowlist**. The guard's predecessor had one, and
+its patterns (`allowed_root: std::env::current_dir`, `let cwd = …`,
+`std::env::current_dir().`) matched the production sites themselves — so it
+exited 0 with every violation still in the tree, and could be cited as
+evidence that the code was clean when it was not. Exemptions are now
+whole-file with a written justification, because a pattern that matches a real
+violation cannot be distinguished from one that does not.
+
+Run `python3 scripts/check_daemon_cwd_usage.py --self-test` before trusting a
+change to the guard: it feeds synthetic sources through the same detector and
+fails if a planted violation is not reported. The negative case — injecting a
+`std::env::current_dir()` read into `src/tool/read.rs` and confirming exit 1 —
+is recorded in the W001 closure record.
 
 `scripts/check_identity_path_usage.py` checks the canonical project-storage
 module for path-derived `ProjectId` construction while leaving compatibility

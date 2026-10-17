@@ -320,8 +320,9 @@ impl TerminalTool {
         let cwd = self
             .workdir
             .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .ok_or_else(|| ToolError::Execution("terminal cwd could not be resolved".into()))?;
+            .ok_or_else(|| ToolError::MissingWorkspaceRoot {
+                context: "terminal tool was constructed without a workdir".to_string(),
+            })?;
         let execution_authorization = audit_ctx.and_then(|ctx| ctx.execution_authorization.clone());
         if let (Some(profile), Some(authorization)) = (
             self.configured_sandbox_profile,

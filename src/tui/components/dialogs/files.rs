@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -38,16 +38,18 @@ use crate::tui::file_tree::{TreeListing, TreeNodeKind};
 
 /// Hints rendered under the listing. Kept in one place so the box, its
 /// hosted panel, and the help dialog cannot disagree about what the keys do.
+///
+/// The single source is not a convention any more: [`Component::keymap_hint`]
+/// hands this exact string to the panel host, so the composer status line for
+/// a docked `/files` panel is these bytes and not a host-side paraphrase. A
+/// second copy in `panels/hosted.rs` is what taught the panel to advertise an
+/// `i act` verb `handle_key` never implemented.
 pub const HINT: &str =
     "j/k move · ^d/^u page · l/→ root at dir · h/← up · enter open · r refresh · esc close";
 
-/// Deepest indent the box will draw.
-///
-/// Indentation is orientation, the name is content: past this a nested row
-/// would push its name out of a narrow column entirely, and the listing is
-/// scoped one directory at a time anyway, so real depth inside the pane is
-/// one or two levels.
-const MAX_INDENT_DEPTH: usize = 8;
+/// Separator between breadcrumb components. A `›` reads as "down one level"
+/// and is BMP box-adjacent, so it survives the plain-icon fallback.
+const BREADCRUMB_SEP: &str = " › ";
 
 #[derive(Clone)]
 pub struct FilesDialog {
@@ -165,7 +167,18 @@ impl FilesDialog {
                 .enumerate()
             {
                 let is_selected = selected == Some(self.scroll.get() + offset);
-                let indent = "  ".repeat(row.depth.min(MAX_INDENT_DEPTH));
+                // Depth, last-ness and the guide glyph come from one shared
+                // calculation, so a row nested one level in looks the same in
+                // this box, in the Ctrl+T pane, and in a listing scoped with
+                // `l` — whose top level arrives at the depth the workspace
+                // root's own top level arrives at, and so used to draw exactly
+                // like the root it was no longer showing.
+                let indent = file_icons::tree_indent(
+                    &self.state,
+                    &rows,
+                    self.scroll.get() + offset,
+                    area.width as usize,
+                );
                 let (glyph, icon_style) = file_icons::icon_style(
                     row.kind,
                     &row.name,
@@ -204,11 +217,18 @@ impl FilesDialog {
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
     }
 
-    /// The title names the directory being listed.
+    /// The title is a breadcrumb of the scope, not a flat path.
     ///
     /// A pane scoped with `l` is not showing the workspace root, and a title
     /// that still read the workspace name would be telling the user the wrong
-    /// thing about every row under it.
+    /// thing about every row under it. Spelling the scope as
+    /// `workspace › one › two` says the same thing the indentation now says
+    /// about the rows: this is the third level of the same tree, one `h` from
+    /// its parent.
+    ///
+    /// The path already carried this information and nobody could use it — a
+    /// nested scope presented as one unbroken string hides which component you
+    /// arrived through, so `h` looked like it would jump somewhere arbitrary.
     fn title(&self) -> String {
         let total = self.state.rows().len();
         let workspace = self
@@ -217,12 +237,20 @@ impl FilesDialog {
             .as_ref()
             .and_then(|root| root.file_name())
             .map(|name| name.to_string_lossy().to_string());
-        let scope = self.state.root_prefix();
-        match (workspace.as_deref(), scope) {
-            (_, "") => format!(" Files ({total} shown)"),
-            (Some(workspace), scope) => format!(" Files · {scope} ({total} shown) · {workspace}"),
-            (None, scope) => format!(" Files · {scope} ({total} shown)"),
+        let mut crumbs: Vec<&str> = Vec::new();
+        if let Some(workspace) = workspace.as_deref() {
+            crumbs.push(workspace);
         }
+        crumbs.extend(
+            self.state
+                .root_prefix()
+                .split('/')
+                .filter(|part| !part.is_empty()),
+        );
+        if crumbs.is_empty() {
+            return format!(" Files ({total} shown)");
+        }
+        format!(" Files · {} ({total} shown)", crumbs.join(BREADCRUMB_SEP))
     }
 
     fn error_line(&self) -> Option<&str> {
@@ -239,6 +267,39 @@ impl Component for FilesDialog {
     /// before this dialog sees the key.
     fn docks_as_viewer(&self) -> bool {
         true
+    }
+
+    /// The verbs this box implements, for the panel host to reuse verbatim.
+    ///
+    /// `handle_key` below is the implementation and `HINT` is the
+    /// advertisement; putting the same bytes on both sides of that boundary is
+    /// the whole point, because a host-side paraphrase is how the panel came
+    /// to advertise `i act`, a verb no arm above ever dispatches.
+    fn keymap_hint(&self) -> Option<String> {
+        Some(HINT.to_string())
+    }
+
+    /// The listing alone: no border, no title, no footer.
+    ///
+    /// The host has already painted a border and a ` ● Files ` title into this
+    /// same rect. Painting a second set of chrome over them did not stack, it
+    /// overwrote — focus dot included, so a focused hosted panel and an
+    /// unfocused one rendered identically and there was nothing on screen to
+    /// say which had the keyboard.
+    ///
+    /// The in-box footer goes too, for the reason the requirement states: in a
+    /// narrow side column it wrapped onto several rows and pushed the listing
+    /// out of the panel, and it duplicated the status line above the composer
+    /// that now carries the same text. `area` is the host's full rect, so
+    /// inset by its border first.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let inner = area.inner(Margin::new(1, 1));
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        self.visible_height = inner.height as usize;
+        self.reveal();
+        self.render_rows(frame, inner, theme);
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
@@ -309,7 +370,10 @@ impl Component for FilesDialog {
         frame.render_widget(block, area);
 
         // The hint row is reserved rather than overlaid, so the listing never
-        // draws under it and the last visible file is never half-hidden.
+        // draws under it and the last visible file is never half-hidden. It
+        // belongs to the box only: `render_in_panel` omits it, and the same
+        // bytes reach a docked panel through the status line above the composer
+        // instead of a column too narrow to hold them.
         let height = inner.height.saturating_sub(1) as usize;
         self.visible_height = height.max(1);
         self.reveal();
@@ -605,5 +669,243 @@ mod tests {
         let dialog = dialog(root.path());
         assert_eq!(dialog.visible_row_count(), 0);
         assert!(dialog.error_line().is_none());
+    }
+
+    /// Render the box into a buffer and hand back the text.
+    fn render_text(dialog: &mut FilesDialog, width: u16, height: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let theme = Arc::clone(&dialog.theme);
+                dialog.render(frame, frame.area(), &theme);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A listing scoped with `l`, exactly as the command layer hands it over.
+    fn scoped_dialog(root: &std::path::Path, prefix: &str) -> FilesDialog {
+        static NEVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let mut state = FileTreeState::default();
+        // The root is known before the scope is set: `begin_rebuild` resets the
+        // scope chain when the root changes, so a scope set on a state that has
+        // never seen this workspace is thrown away again.
+        let (generation, request_id) = state.begin_rebuild(root.to_path_buf());
+        state.apply_listing(generation, request_id, root.to_path_buf(), build_tree(root));
+        assert!(state.set_root_prefix(prefix), "the scope must be accepted");
+        let (generation, request_id) = state.begin_rebuild(root.to_path_buf());
+        let mut listing = crate::tui::file_tree::from_shared_listing(
+            crate::directory_listing::walk_directory(&root.join(prefix), prefix, &NEVER),
+        );
+        // The daemon's listing is stamped with the scope it answered; the local
+        // walk helper always stamps the workspace root.
+        listing.prefix = prefix.to_string();
+        assert!(
+            state.apply_listing(generation, request_id, root.to_path_buf(), listing),
+            "a scoped listing must apply to a scoped pane"
+        );
+        FilesDialog::new(Arc::new(Theme::default()), state)
+    }
+
+    /// Drop the box's own left border, leaving the row as the widget drew it.
+    ///
+    /// By character, not by byte: `│` is three bytes, so `&line[1..]` would
+    /// land inside it.
+    fn inner_of(line: &str) -> &str {
+        match line.char_indices().nth(1) {
+            Some((index, _)) => line[index..].trim_end(),
+            None => "",
+        }
+    }
+
+    /// The acceptance signal for the reported defect: a listing scoped with `l`
+    /// is walked with depth restarting at the subtree, so its top level arrives
+    /// at exactly the depth the workspace root's top level arrives at — and
+    /// both renderers drew that identically, so entering a directory made the
+    /// listing *look* like the root again. Assert on the rendered buffer, not
+    /// on `depth`: `depth` was never wrong, the drawing of it was.
+    #[test]
+    fn a_scoped_listing_draws_its_rows_one_level_in() {
+        let root = temp();
+        write(root.path(), "dir/nested/deep.txt");
+        write(root.path(), "dir/top.txt");
+
+        let mut at_root = dialog(root.path());
+        let mut scoped = scoped_dialog(root.path(), "dir");
+
+        let root_depths: Vec<usize> = at_root.state.rows().iter().map(|r| r.depth).collect();
+        let scoped_depths: Vec<usize> = scoped.state.rows().iter().map(|r| r.depth).collect();
+        assert_eq!(
+            root_depths.first().copied(),
+            scoped_depths.first().copied(),
+            "the premise: a subtree walk restarts depth, so `dir`'s top level \
+             arrives at the same depth the workspace root's does"
+        );
+        assert!(
+            at_root.state.display_depth(&at_root.state.rows()[0])
+                < scoped.state.display_depth(&scoped.state.rows()[0]),
+            "and that is exactly why the scope has to be added back"
+        );
+
+        let text = render_text(&mut scoped, 44, 10);
+        assert!(
+            text.contains("top.txt") && text.contains("nested"),
+            "the scoped listing must still list its own rows, got {text:?}"
+        );
+        let top_line = text
+            .lines()
+            .find(|line| line.contains("top.txt"))
+            .expect("a row for top.txt");
+        // Drop the box's own left border, leaving the guide, the icon, the name.
+        let row = inner_of(top_line);
+        assert!(
+            row.starts_with("│  └─ "),
+            "a row one level inside `dir` draws a continuing guide and closes its \
+             own level, before the icon and the name, got {row:?}"
+        );
+
+        // And the same row in the *root* listing sits one level further left,
+        // which is the whole point: the two listings are distinguishable.
+        let root_text = render_text(&mut at_root, 44, 10);
+        let dir_line = root_text
+            .lines()
+            .find(|line| line.contains('─') && line.contains("dir"))
+            .unwrap_or_else(|| panic!("a guided row for dir at the root in {root_text:?}"));
+        let root_row = inner_of(dir_line);
+        assert!(
+            !root_row.starts_with('│'),
+            "at the workspace root there is nothing above the row, got {root_row:?}"
+        );
+        assert!(
+            root_row.find("dir") < row.find("top.txt"),
+            "a scoped row must be drawn further right than a root row, got \
+             {root_row:?} against {row:?}"
+        );
+    }
+
+    /// The title is a breadcrumb, so a nested scope says which component each
+    /// `h` steps back through — a flat path hid exactly that.
+    #[test]
+    fn the_title_is_a_breadcrumb_of_the_scope() {
+        let root = temp();
+        write(root.path(), "dir/nested/deep.txt");
+
+        let mut dialog = dialog(root.path());
+        let workspace = root
+            .path()
+            .file_name()
+            .expect("temp dir")
+            .to_string_lossy()
+            .to_string();
+        let at_root = dialog.title();
+        assert!(at_root.contains(&workspace), "got {at_root:?}");
+        assert!(
+            !at_root.contains(BREADCRUMB_SEP.trim()),
+            "at the root there is nowhere to go, got {at_root:?}"
+        );
+
+        assert!(dialog.state.set_root_prefix("dir/nested"));
+        let scoped = dialog.title();
+        assert_eq!(
+            scoped,
+            format!(
+                " Files · {workspace}{sep}dir{sep}nested (0 shown)",
+                sep = BREADCRUMB_SEP
+            ),
+            "one breadcrumb step per scope component"
+        );
+    }
+
+    /// The host must not paraphrase this box's keymap. The one line the panel
+    /// shows above the composer is these bytes, so `i act` — a verb no arm in
+    /// `handle_key` dispatches — cannot survive here.
+    #[test]
+    fn the_keymap_the_host_advertises_is_this_box_keymap() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        let dialog = dialog(root.path());
+        assert_eq!(dialog.keymap_hint().as_deref(), Some(HINT));
+        assert!(HINT.contains("enter open"), "got {HINT:?}");
+        assert!(
+            !HINT.contains("i act"),
+            "the generic host line taught a verb this box does not have"
+        );
+    }
+
+    /// The in-box footer stays: a modal box owns its whole surface and has no
+    /// status line of its own. Only the *panel* drops it.
+    #[test]
+    fn the_modal_box_keeps_its_own_footer() {
+        let root = temp();
+        write(root.path(), "a.txt");
+        let mut dialog = dialog(root.path());
+        let text = render_text(&mut dialog, 100, 12);
+        assert!(
+            text.contains("enter open"),
+            "the box's own hint row is its only keymap, got {text:?}"
+        );
+    }
+
+    /// In a docked panel the host owns the chrome. `render_in_panel` must not
+    /// repaint a border or a title over the one the host already drew — the
+    /// focus dot in that title is how a focused panel is told apart from an
+    /// unfocused one — and must not spend rows on a keymap the composer row is
+    /// already showing.
+    #[test]
+    fn a_hosted_render_keeps_the_hosts_chrome_and_spends_every_row_on_rows() {
+        let root = temp();
+        write(root.path(), "alpha.txt");
+        write(root.path(), "beta.txt");
+
+        let mut dialog = dialog(root.path());
+        let theme = Arc::clone(&dialog.theme);
+        let width = 30u16;
+        let height = 8u16;
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    ratatui::widgets::Block::default()
+                        .borders(ratatui::widgets::Borders::ALL)
+                        .title(" ● Files "),
+                    frame.area(),
+                );
+                dialog.render_in_panel(frame, frame.area(), &theme);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            text.contains("● Files"),
+            "the host title is how a focused panel is told from an unfocused one, got {text:?}"
+        );
+        assert!(
+            !text.contains("enter open"),
+            "the keymap belongs to the composer row, not a column this narrow, got {text:?}"
+        );
+        assert!(
+            text.contains("alpha.txt") && text.contains("beta.txt"),
+            "the listing still draws, got {text:?}"
+        );
+        // 8 rows: border, listing rows, border. Nothing reserved for a footer.
+        assert_eq!(height, 8);
     }
 }

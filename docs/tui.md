@@ -152,6 +152,10 @@ the same for the keybinding reference, and `/terminal` then `Shift+L` moves
 the terminal across. With no box open, the same keys move the keyboard
 instead.
 
+Whichever panel is on your selected edge has its keys on the line just above
+the input, docked or not — see [Browsing files](#browsing-files) for what that
+looks like.
+
 ### Moving a panel to the other side
 
 **Pushing a panel toward an empty side moves it there.** There is no "wrong
@@ -207,6 +211,24 @@ column open behind you.
 It has two ways in: `Shift+S` in `NOR` mode, or the `/panels` command from
 anywhere. Use `/panels` mid-prompt — in `INS` mode `Shift+S` is just the
 letter `S`, so it has to stay typeable.
+
+#### What `Enter` does
+
+`Enter` on a row is **one act**, and the panel then tells you which of three
+things it was:
+
+- the panel **fills** — it shows its content, and takes your keyboard;
+- a **load started** — the panel says it is loading, and the box arrives on its
+  own (that is where `Shift+L` docks it);
+- the panel **cannot act** — it says why, in the panel, e.g. *memory search
+  needs a query* or *no pending plan confirmation*.
+
+Every panel in the list does one of those three. A row that could only ever sit
+empty is not in the list: the Workspace dashboard is a full view of its own,
+opened with `Ctrl+O` or `/workspace`, so it is not a panel. A panel with
+nothing loaded in it yet says so plainly and points back at `/panels` — it will
+never tell you to go and run a command elsewhere, or to press `Shift+←`, since
+the panel is already where you asked for it.
 
 `p` inside the manager moves the panel to the next edge — right → left →
 bottom — carrying whatever panel is loaded with it, and the choice is saved too
@@ -299,7 +321,9 @@ the chord is live in both modes.
 `Shift+T` opens a single overlay listing **todos, then subagents, then jobs**,
 each under its own heading. A group with nothing in it is left out entirely —
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
-and `Esc` closes the overlay.
+and `Esc` closes the overlay. With nothing in any group the overlay says
+`Nothing pending` rather than opening to a blank strip, so a quiet session still
+confirms the key did something.
 
 It shows what the turn is *waiting on*, not what it has done: finished
 subagents and completed jobs are filtered out. When a job reports a state this
@@ -314,6 +338,15 @@ typing with it open.
 The two surfaces overlap by design — todos appear in both — because the strip is
 a progress line that stays on screen at all times, and the overlay is a
 fuller list you open when you want it.
+
+### When the agent is waiting on other work
+
+The status row above the input reports `idle` only when nothing at all is
+running. If the main agent has handed work to subagents or background jobs and
+is now blocked on the results, it reads `awaiting N tasks` and names the
+breakdown — so a long fan-out looks like a wait rather than a hang. Live jobs
+count here too, which is why a job running under a finished turn is still
+visible there.
 
 ### Subagent tabs
 
@@ -631,16 +664,51 @@ security signal pipeline that can escalate them, are described in
 
 ## Editor language features
 
-Opening a file puts the cursor in the document (`INS`). `Esc` returns to
-`NOR`, where `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
-`v` selects by character, `x` selects the whole line (press again for one more),
-`d` deletes the selection, and `space y` copies it — the same Helix keys
-`/terminal` uses in its viewing mode. In `NOR` anything the buffer does not
-claim types into the input box at the bottom, so you can talk to the agent
-without leaving the file. `Esc` never closes the editor; `:q` does.
+Opening a file puts you in `NOR`, not `INS`. It is a surface you read before
+you type into, and `i` is one keystroke away. `NOR` gives the keyboard to the
+Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
+`v` selects by character, `x` selects the whole line (press again for one
+more), `d` deletes the selection, and `space y` copies it — the same keys
+`/terminal` uses in its viewing mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`,
+where typing goes into the file and `Esc` returns. In `NOR` anything the
+buffer does not claim types into the input box at the bottom, so you can talk
+to the agent without leaving the file. `Esc` never closes the editor; `:q`
+does.
 
-Syntax highlighting arrives with the file and is refreshed shortly after you
-stop typing. Press `F9` to ask again if your language server was still starting.
+The cursor is a block in `NOR` and a thin bar in `INS`, so you can always see
+where you are. `Ctrl+d` pages down and continues to the end of the file when a
+half-page would land past it.
+
+### Searching inside the file
+
+`/` searches the document while the editor has focus in `NOR`. The line opens
+pre-filled with the word under the cursor, and it searches as you type:
+`/host` → `/host_status` → `/host_status fn`. Matches are highlighted in the
+text and the count shows next to the line/column readout.
+
+| Key | What it does |
+|---|---|
+| `Enter` | accept, keep the highlight |
+| `Esc` | abandon the search and clear the highlight |
+| `n` / `N` | next / previous match (after `Enter`) |
+| `Backspace` | remove a character and re-search |
+
+Search covers a bounded window of the file. If it stops short, the status row
+says `partial` rather than implying the count is the whole story.
+
+In `INS` a slash is just a slash — otherwise you could not type a URL.
+
+### Syntax highlighting
+
+Files are coloured as soon as they open, with no language server required.
+When a language server is available its semantic tokens take over and stay
+authoritative, because it knows the real grammar. Built-in highlighting follows
+the file's extension; an extension with no bundled grammar renders plain.
+Press `F9` to re-request server tokens if your language server was still
+starting.
+
+Very large files (more than 5000 lines) drop built-in highlighting rather than
+freeze a frame while re-scanning; the text still edits normally.
 
 The editor can show current-file diagnostics and request hover, definition,
 references, document symbols, and workspace symbols from the daemon-owned
@@ -747,13 +815,38 @@ the same navigation, so the keys below mean the same thing in both.
 
 `l` re-roots rather than expanding, so the listing always has a top level:
 walking into a deeply nested tree is the same operation at every depth, and
-`h` puts the cursor back on the directory you just came out of. The title
-names the directory you are in.
+`h` puts the cursor back on the directory you just came out of.
 
-Rows show a per-type icon (folders, source files by language, docs, configs,
-media) using Nerd Font glyphs. If your terminal shows them as boxes, set
-`CODEGG_FILE_ICONS=plain` before starting CodeGG to fall back to the plain
-caret markers.
+**Where you are, three ways.** The title is a breadcrumb — `workspace › src ›
+tui` — and every row is drawn one level further in for each component of that
+trail, with a `├─` / `└─` guide to the directory it belongs to. Enter a
+directory and the rows below it visibly step in, so a scoped listing no longer
+looks like the workspace root it stopped being. Guides are plain box-drawing
+characters, so this still reads correctly with `CODEGG_FILE_ICONS=plain`.
+
+### Where the keys are
+
+**The line just above the input is where a panel's keys live — including the
+keys of a panel you have docked but not yet entered.**
+
+When `/files` is running in the side panel, that line reads
+
+```
+▌ Files · Shift+→/Shift+L in · j/k move · ^d/^u page · l/→ root at dir · …
+```
+
+and once the panel has the keyboard the front of it flips to `Shift+← back`. The
+gesture is the one for wherever your panel is docked — see the table above — so
+a left-column panel says `Shift+← in`. The `l/→` and `enter` you see there are
+the file browser's own keys, not a generic panel description: the box, its
+panel, and this line are written from one source, so they cannot drift apart.
+
+The in-box modal keeps its own keymap along the bottom, because a modal box owns
+its whole surface. The side column does not: a column too narrow for a keymap
+gives its rows to the listing instead.
+
+The columns you never go into — the session projection by default — stay quiet,
+and a panel with nothing loaded in it says nothing either.
 
 ## Where to go next
 

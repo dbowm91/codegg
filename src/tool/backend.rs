@@ -171,7 +171,7 @@ impl ToolExecutionContext {
         Self {
             backend,
             session_id: None,
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cwd: crate::tool::util::unresolved_workspace_root(),
             permission_mode: None,
             timeout_ms: None,
             invocation_key: None,

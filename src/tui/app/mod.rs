@@ -10609,7 +10609,14 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) {
+    /// Show the diff for `path`, or the whole working tree when it is `None`.
+    ///
+    /// Returns whether a diff box was actually opened. Four of the paths below
+    /// return without mounting anything — no git root, no changes, a failed
+    /// `git diff` — and the caller needs to be able to say so. It used to
+    /// re-read `dock_target()` to find out, which is the inference this return
+    /// value replaces.
+    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) -> bool {
         let project_dir = self.active_workspace_root().unwrap_or_default();
         let git_root = match crate::worktree::find_git_root(&project_dir) {
             Some(r) => r,
@@ -10617,7 +10624,7 @@ impl App {
                 self.messages_state
                     .toasts
                     .info("Not in a git repository - showing text diff");
-                return;
+                return false;
             }
         };
 
@@ -10642,7 +10649,7 @@ impl App {
 
             if old_content == new_content {
                 self.messages_state.toasts.info("No changes detected");
-                return;
+                return false;
             }
 
             let title = format!("Diff: {}", file_path);
@@ -10651,6 +10658,7 @@ impl App {
                 new_content: new_content.into_boxed_str(),
                 title: title.into_boxed_str(),
             });
+            true
         } else {
             let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
             let output = crate::git_mutations::GitEnvPolicy::default()
@@ -10663,24 +10671,27 @@ impl App {
                     let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
                     if diff_text.is_empty() {
                         self.messages_state.toasts.info("No changes detected");
-                        return;
+                        return false;
                     }
                     self.process_msg(TuiMsg::OpenDiffDialog {
                         old_content: String::new().into_boxed_str(),
                         new_content: diff_text.into_boxed_str(),
                         title: "Repository Diff".to_string().into_boxed_str(),
                     });
+                    true
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                     self.messages_state
                         .toasts
                         .error(&format!("git diff failed: {}", stderr));
+                    false
                 }
                 Err(e) => {
                     self.messages_state
                         .toasts
                         .error(&format!("Failed to run git diff: {}", e));
+                    false
                 }
             }
         }
@@ -12317,7 +12328,6 @@ impl App {
             DialogType::Plugin => Some(P::Plugins),
             DialogType::Team => Some(P::Team),
             DialogType::Control => Some(P::Control),
-            DialogType::WorkspaceDashboard => Some(P::Workspace),
             DialogType::TaskView => Some(P::TaskView),
             DialogType::Diff => Some(P::Diff),
             DialogType::Review => Some(P::Review),
@@ -12325,6 +12335,12 @@ impl App {
             // gesture must say so rather than silently selecting a pane the
             // user did not ask for. Everything here is a *modal* box — the
             // session sidebar has no box because it is always present.
+            //
+            // `WorkspaceDashboard` is here because its box cannot exist: the
+            // Workspace view is `Route::Workspace` and `open_workspace_dashboard`
+            // pushes no dialog. It was mapped to a panel that could therefore
+            // never hold content, and the panel was removed rather than the
+            // mapping left to rot.
             _ => None,
         }
     }
@@ -12363,9 +12379,12 @@ impl App {
         // runs long, and the one surface with nothing written above the input.
         // Only during a turn — an idle buffer has nothing to stop.
         //
-        // The turn keys come first but never gate the panel's own hints: a
-        // focused panel advertises its keys whether a turn is running or not,
-        // and only a composer with neither shows no row at all.
+        // The turn keys come first but never gate the panel's own hints: the
+        // active panel advertises its keys whether a turn is running or not,
+        // and only a composer with neither shows no row at all. The panel may
+        // not have the keyboard either — a docked panel names itself and the
+        // gesture that enters it, which is the only way its keymap is
+        // readable before anyone presses the wrong key.
         let agent_keys = self.llm_buffer_key_hints();
         let panel = self
             .panel_host
@@ -14289,24 +14308,49 @@ impl App {
         }
     }
 
+    /// Delegated work the main agent is blocked on right now.
+    ///
+    /// Counts live subagents and live jobs using the *same* predicates the
+    /// tasks overlay renders from (`SubagentRow::is_running` and
+    /// `tasks::is_live_state`), so the working strip can never disagree with
+    /// the list the user checks to confirm it.
+    ///
+    /// This is derived rather than announced by a `SubagentStarted` /
+    /// `JobStarted` event on purpose: the indicator has to be right on the one
+    /// occasion it matters — the main agent has fanned out and is now silent —
+    /// and an event that is dropped, coalesced, or simply not wired to the
+    /// phase leaves the strip reading `idle` for the entire wait. Deriving it
+    /// from the same projection the overlay reads cannot drift.
+    pub fn awaiting_task_counts(&self) -> (usize, usize) {
+        let subagents = self.ui_state.subagents.running_count();
+        let jobs = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| {
+                snapshot
+                    .jobs
+                    .iter()
+                    .filter(|job| crate::tui::app::state::tasks::is_live_state(&job.state))
+                    .count()
+            })
+            .unwrap_or(0);
+        (subagents, jobs)
+    }
+
     /// Rows the unified tasks overlay needs, including its per-group headers.
     ///
-    /// Returns 0 when collapsed *or* when there is genuinely nothing to show,
-    /// so the input keeps the space in both cases. The height is deliberately
-    /// independent of `todo_strip_height`: the overlay is on-demand, and
-    /// coupling them would make expanding one reflow the other's rows.
+    /// Returns 0 only when collapsed. An expanded overlay always claims at
+    /// least one row, which is the "Nothing pending" line: with every group
+    /// empty there are no headers to draw, and reserving nothing made `Shift+T`
+    /// a silently dead key on an idle session — the very first thing a user
+    /// tries. The height is deliberately independent of `todo_strip_height`:
+    /// the overlay is on-demand, and coupling them would make expanding one
+    /// reflow the other's rows.
     pub fn tasks_strip_height(&self) -> u16 {
         if !self.tasks_expanded {
             return 0;
         }
-        let rows = self.bounded_task_rows();
-        if rows.is_empty() {
-            return 0;
-        }
-        // Header + rows + the "nothing here" line when the overlay is open but
-        // every group was empty. Without that last row an expanded-but-empty
-        // overlay would collapse to nothing and the toggle would appear broken.
-        rows.len() as u16
+        self.bounded_task_rows().len().max(1) as u16
     }
 
     /// Build the tasks overlay rows from the three projection-backed sources.

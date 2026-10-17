@@ -128,9 +128,21 @@ change-triggered (`ls scripts/check_*` for the full list):
   reporting a file missing that its own hint then suggests, and tests/scripts
   executing "in the wrong workspace". **Walk the path you validated** — `glob`
   and `list` both validated a root and then walked the raw request, the same bug
-  wearing a different hat. `check_daemon_cwd_usage.py` only rejects
-  *new* `current_dir()` calls, and its allowlist exempts the `Default::new()`
-  constructors — so "no new violations" is not proof the default is right.
+  wearing a different hat.
+- **A missing workspace root is a refusal, never a cue to read the process cwd.**
+  Every scheduler executor binds `JobExecutionContext.workspace_root` (whose own field docs say
+  "executors must use this instead of consulting process-global CWD"), and
+  `ToolRegistry::with_options` registers an `UnrootedTool` for each workspace tool when
+  `workspace_root: None` rather than calling `X::default()`. The `Default` constructors themselves
+  now seed the sentinel `util::unresolved_workspace_root()`, which `validate_path`/
+  `validate_target_path` reject with `ToolError::MissingWorkspaceRoot` — so a tool built without
+  a root fails typed instead of silently reading an unrelated tree. `SubagentJobExecutor` was
+  the last executor deriving its root from the payload's `allowed_paths`, so a legitimate job
+  with an empty list was refused while the daemon held the right root.
+  `check_daemon_cwd_usage.py` enforces this, has **no** line-pattern allowlist (its predecessor
+  matched `allowed_root: std::env::current_dir` and so passed with every violation present), and
+  carries `--self-test`; if you change it, prove it fails on an injected violation before citing
+  it as evidence.
 - `PermissionRegistry`/`QuestionRegistry` are sync (`register`/`respond`/`answer_question`
   are `fn`, not `async`); register the responder BEFORE publishing the Pending event.
 - One approval on screen, the rest in `DialogState::permission_queue`. `show_permission_dialog`
@@ -164,12 +176,22 @@ change-triggered (`ls scripts/check_*` for the full list):
   into an absent channel, orphaning the daemon waiter on an unbounded human wait,
   so approving a tool hangs the turn with no visible error.
 - Progress recovery keys every incident on the whole `action_key()` (tool **plus** normalized
-  arguments). An earlier `ShortCycle` arm compared `canonical_tool` alone, so it fired exactly
-  when a model reached for the same tool again with *different* arguments — reading a second
-  file, running a second grep — climbed the whole ladder and stalled the turn. That variant is
-  gone. Do not reintroduce a tool-name-only check, and do not forget that a successful read-only
-  call the turn has never made is `NewEvidence`: it cannot be a repeat, so it must never be
-  escalated. The outer run bound is `ExecutionLimits::max_turns`, not the recovery ladder.
+  arguments), `EquivalentError` included. Two tool-name-only arms got this wrong and each killed
+  ordinary turns. `ShortCycle` compared `canonical_tool` alone, so it fired exactly when a model
+  reached for the same tool again with *different* arguments — reading a second file, running a
+  second grep — and climbed the whole ladder. `EquivalentError` compared tool plus `error_class`,
+  so a model bisecting a build failure ran five different commands, saw the same `tool_error` class
+  five times, and was stalled for work it had never repeated. Both are gone; do not reintroduce a
+  tool-name-only check, and do not let error *wording* into a key either — the arguments already
+  identify the work. A successful read-only call the turn has never made is `NewEvidence`: it
+  cannot be a repeat, so it must never be escalated. Ladder state belongs to one incident and
+  resets when `action_key()` changes, so a model that fixed its problem mid-sequence is not
+  terminated for the failures that preceded the fix. A successful mutating or process-class call
+  carries **no** progress signal on its own — `state_changed` needs a drained file-change bus
+  event, which nothing emits for process execution; do not widen it to "the call succeeded" or the
+  ladder goes blind to a loop. The outer run bound is `ExecutionLimits::max_turns`, not the
+  recovery ladder. A `ProgressSignal` variant with no producer is a claim, not a hook: `ChildAdvanced`
+  sat hardcoded `false` at the only construction site until it was deleted.
 - The **working strip row 0 is reserved unconditionally** and is the main buffer's only
   status surface. Its height is subtracted from the transcript (`session_layout` splits
   `prompt_height` against `Min(10)`), so gating it on turn state reflowed the transcript

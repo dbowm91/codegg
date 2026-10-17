@@ -170,7 +170,7 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
         app.messages_state
             .toasts
             .info("Document is already open in the editor");
-        enter_editor_insert(app);
+        enter_editor_normal(app);
         return;
     }
     let context = match app.project_execution_context() {
@@ -216,14 +216,19 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
 
     let session = TuiDocumentSession::new(core_client);
     app.editor_state.session = Some(session);
-    // Opening a file puts the keyboard *in the document*. The alternative —
-    // arriving on the editor route with the keyboard nowhere useful — is what
-    // made opening a file read as "the editor does not work": the buffer
-    // rendered, every Helix verb moved a cursor nobody could see was live, and
-    // every printable character went to the input box instead. INS is the mode
-    // a user opens an editor to be in; `Esc` is one keystroke away, and Normal
-    // is where the Helix verbs and the input box are.
-    enter_editor_insert(app);
+    // Opening a file lands in **Normal**, matching `/terminal`'s viewing mode
+    // and every other reader surface: the Helix verbs own the keyboard and
+    // the bottom input box still takes typing.
+    //
+    // It used to enter Insert. That put the keyboard in the document before
+    // anyone had read a word of it, and the two costs were concrete. The
+    // first keystroke of a mistaken open became an edit to the file. The
+    // second was that the reader arrived on a surface that looks like a
+    // reader and answers `j` by inserting a newline, so every navigation
+    // key became an edit key until `Esc` — a chord nothing on screen named.
+    // Nothing is lost by starting in Normal: `i` is one keystroke away and
+    // is what a user who wants to type reaches for.
+    enter_editor_normal(app);
     if !matches!(
         app.ui_state.routes.current(),
         crate::tui::route::Route::Editor
@@ -415,10 +420,10 @@ pub(crate) fn open_editor_template_in(
             .routes
             .navigate_to(crate::tui::route::Route::Editor);
     }
-    // Put the keyboard in the document immediately: the user asked for a new
-    // file to *edit*, and landing anywhere else makes the template look
-    // unfocused.
-    enter_editor_insert(app);
+    // `:new <name>` also lands in Normal, for the same reason opening an
+    // existing file does. The one difference is that a fresh template has
+    // nothing to navigate, so the status row already says `i` inserts.
+    enter_editor_normal(app);
 
     let controller = app
         .editor_state
@@ -1489,6 +1494,15 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
         cursor_after,
         stay_insert,
     } = edit;
+    // A `/` search's matches are byte offsets into the text that was searched.
+    // The moment an edit lands they describe a document that no longer
+    // exists, and a match inside the *new* bounds would highlight whatever
+    // text happens to sit there now — a search that quietly points at the
+    // wrong words is worse than one that is gone. Drop it here, at the single
+    // funnel every mutation passes through, rather than at each edit verb.
+    if let Some(session) = state.session.as_mut() {
+        session.presentation_mut().cancel_search();
+    }
     // The forward transaction is retained for redo; both directions are
     // bounded by the same depth/byte caps.
     let forward = transaction.clone();
@@ -1724,18 +1738,6 @@ pub(crate) fn editor_delete_backward(state: &mut EditorState) {
 
 // ── Mode ─────────────────────────────────────────────────────────────────────
 
-/// Put the keyboard in the document.
-///
-/// The whole of "focus the buffer" now: there is no second axis to keep in
-/// step, so there is nothing that can put the editor in a state where the
-/// buffer renders and no key reaches it.
-pub(crate) fn enter_editor_insert(app: &mut App) {
-    app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
-    if let Some(session) = app.editor_state.session.as_mut() {
-        session.presentation_mut().mode = EditorMode::Insert;
-    }
-}
-
 /// Return the keyboard to the Helix verbs and the bottom input box.
 ///
 /// Also closes a held selection, because leaving Insert with text selected
@@ -1869,14 +1871,19 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
     // in Normal the `:` command line is closed first, and in Insert a document
     // that is about to be typed into must not also be one keystroke from gone.
     if key.code == KeyCode::Esc {
-        if app
-            .editor_state
-            .session
-            .as_ref()
-            .is_some_and(|session| session.presentation().command_active)
-        {
+        // The two modal input lines close before the route steps mode, so
+        // `Esc` always undoes the most recent thing the user asked for.
+        if app.editor_state.session.as_ref().is_some_and(|session| {
+            let presentation = session.presentation();
+            presentation.command_active || presentation.search_active
+        }) {
             if let Some(session) = app.editor_state.session.as_mut() {
-                session.presentation_mut().close_command_line();
+                let presentation = session.presentation_mut();
+                if presentation.search_active {
+                    presentation.cancel_search();
+                } else {
+                    presentation.close_command_line();
+                }
             }
             return true;
         }
@@ -2321,6 +2328,109 @@ fn handle_command_line_key(state: &mut EditorState, key: KeyEvent) -> BufferKey 
     }
 }
 
+/// Handle one key while the `/` search line is open.
+///
+/// Modal for the same reason the `:` line is: it owns *every* key, so a
+/// leaked printable cannot silently edit the document behind a line the
+/// user believes is capturing it.
+///
+/// It searches **as you type** rather than waiting for `Enter`. A needle
+/// being refined one character at a time is the whole interaction — `/host`,
+/// `/host_status`, `/host_status fn` — and a find-on-Enter model makes
+/// every intermediate refinement a separate round trip for no benefit.
+/// `Enter` accepts and leaves the matches painted; `Esc` abandons the whole
+/// search, highlight included, because the highlight is derived state the
+/// user has just disowned.
+fn handle_search_line_key(
+    state: &mut EditorState,
+    key: KeyEvent,
+    visible_lines: usize,
+) -> BufferKey {
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().cancel_search();
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().cancel_search();
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Enter => {
+            if let Some(session) = state.session.as_mut() {
+                // Keep the matches: the search happened, and `n`/`N` need
+                // somewhere to walk. An empty needle is a search for
+                // nothing, so it leaves with the highlight.
+                if session.presentation().search_line.is_empty() {
+                    session.presentation_mut().cancel_search();
+                } else {
+                    session.presentation_mut().close_search_line();
+                }
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Backspace => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().pop_search_char();
+            }
+            run_editor_search(state, visible_lines);
+            BufferKey::Consumed
+        }
+        KeyCode::Char(ch)
+            if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().push_search_char(ch);
+            }
+            run_editor_search(state, visible_lines);
+            BufferKey::Consumed
+        }
+        _ => BufferKey::Consumed,
+    }
+}
+
+/// Re-run the search for the current needle and park the cursor on the first
+/// match at or after where it already is.
+///
+/// A needle that matches nothing leaves the cursor exactly where it was: a
+/// failed search is information, and yanking the reader to the top of the
+/// file to deliver that information is not it.
+fn run_editor_search(state: &mut EditorState, visible_lines: usize) {
+    let Some(session) = state.session.as_mut() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let needle = session.presentation().search_line.clone();
+    let outcome = editor::find_matches(&snapshot, &needle);
+    let cursor = session.presentation().cursor_byte;
+    let Some(offset) = session.presentation_mut().adopt_search(outcome, cursor) else {
+        return;
+    };
+    let presentation = session.presentation_mut();
+    editor::move_cursor_to(presentation, &snapshot, offset, visible_lines);
+}
+
+/// Step the cursor to the next/previous `/` match, wrapping.
+fn step_editor_search(state: &mut EditorState, forward: bool, visible_lines: usize) -> bool {
+    let Some(session) = state.session.as_mut() else {
+        return false;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return false;
+    };
+    let Some(offset) = session.presentation_mut().step_search(forward) else {
+        return false;
+    };
+    let presentation = session.presentation_mut();
+    editor::move_cursor_to(presentation, &snapshot, offset, visible_lines);
+    true
+}
+
 /// Half-page motion needs a viewport height. The widget resolves the exact
 /// window at render time, so the key handler uses a nominal height: the
 /// motion is resolved by line, and the viewport follows the cursor on the
@@ -2401,9 +2511,19 @@ fn editor_buffer_key(
     mode: crate::tui::input::InputMode,
     key: KeyEvent,
 ) -> BufferKey {
-    // Command mode is modal and outranks everything below it, including the
-    // mode-independent Ctrl chords: a half-typed `:q` must not be rewritten
-    // by `Ctrl+S` silently writing the file the user was about to close.
+    // The `:` and `/` lines are both modal and outrank everything below
+    // them, including the mode-independent Ctrl chords: a half-typed
+    // `:q` must not be rewritten by `Ctrl+S` silently writing the file the
+    // user was about to close. `/` is checked first only so the two input
+    // lines can never both be open.
+    if state
+        .session
+        .as_ref()
+        .is_some_and(|session| session.presentation().search_active)
+    {
+        let visible_lines = visible_line_estimate();
+        return handle_search_line_key(state, key, visible_lines);
+    }
     if state
         .session
         .as_ref()
@@ -2607,6 +2727,46 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         (m, KeyCode::Char(':')) if m == none => {
             session.presentation_mut().open_command_line("");
             BufferKey::Consumed
+        }
+        // `/` searches the *document*, not the command catalog. On this route
+        // the composer arms bare text with `:`, so an unclaimed `/` used to
+        // become `:/` and resolve to nothing — a key that looks like it
+        // should do something and silently does not. Normal mode only, for
+        // the same reason `:` is: in Insert a slash is document text, and
+        // swallowing it would make a URL untypeable.
+        (m, KeyCode::Char('/')) if m == none => {
+            // The snapshot is owned, so the seed lookup does not hold a
+            // borrow of the session that `run_editor_search` would need.
+            let snapshot = session.try_snapshot();
+            let cursor = session.presentation().cursor_byte;
+            let seed = snapshot
+                .and_then(|snapshot| editor::word_at(&snapshot, cursor))
+                .unwrap_or_default();
+            session.presentation_mut().open_search_line(&seed);
+            if !seed.is_empty() {
+                // Seeded from the word under the cursor, so the matches that
+                // word already has are highlighted before the first keystroke.
+                run_editor_search(state, visible_lines);
+            }
+            BufferKey::Consumed
+        }
+        // `n`/`N` walk the matches an accepted `/` search left behind.
+        // Claimed only while there is a search to walk, so an `n` typed with
+        // no search still reaches the composer as the start of a new session
+        // name rather than being eaten.
+        (m, KeyCode::Char('n')) if m == none && session.presentation().has_search() => {
+            if step_editor_search(state, true, visible_lines) {
+                BufferKey::Consumed
+            } else {
+                BufferKey::Unhandled
+            }
+        }
+        (m, KeyCode::Char('N')) if m == shift && session.presentation().has_search() => {
+            if step_editor_search(state, false, visible_lines) {
+                BufferKey::Consumed
+            } else {
+                BufferKey::Unhandled
+            }
         }
         _ => BufferKey::Unhandled,
     }

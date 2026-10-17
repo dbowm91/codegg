@@ -3320,21 +3320,27 @@ pub(crate) fn apply_task_session_focus(
 /// available; otherwise fall back to the low-level schedule list with
 /// an explicit compatibility diagnostic. The low-level `Schedule*`
 /// protocol is preserved; `/schedules` keeps direct diagnostic access.
-pub(crate) fn start_tasks_command(app: &mut App) {
+///
+/// Reports what it did, because the panel manager needs to say it rather than
+/// guess from whichever box happened to appear: the schedule list arrives from
+/// an async reply, while the Task view mounts a box that belongs to
+/// `TaskView` and is still loading.
+pub(crate) fn start_tasks_command(app: &mut App) -> crate::tui::panels::PanelFill {
     let context = match app.project_execution_context() {
         Ok(context) => context,
         Err(_) => {
             // No project scope (or legacy session-only state): keep the
             // legacy schedule surface rather than failing.
             super::tasks::start_list_tasks(app);
-            return;
+            return crate::tui::panels::PanelFill::Loading;
         }
     };
     if context.project_id.is_none() {
         super::tasks::start_list_tasks(app);
-        return;
+        return crate::tui::panels::PanelFill::Loading;
     }
     open_task_view(app);
+    crate::tui::panels::PanelFill::OpenedAs(crate::tui::panels::SidePanelId::TaskView)
 }
 
 // ── Route/scope helpers ──────────────────────────────────────────────

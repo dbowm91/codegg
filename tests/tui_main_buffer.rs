@@ -483,6 +483,78 @@ fn a_long_fan_out_is_truncated_with_an_honest_count() {
     );
 }
 
+/// Regression: a main agent blocked on delegated work must not read as idle.
+///
+/// The main agent fans out and then goes silent while it waits for a subagent
+/// or a job. `ActivityPhase::WaitingOnSubagent` existed for this the whole time
+/// and was never constructed by anything, so row 0 fell through to the literal
+/// word `idle` for the entire wait — which is indistinguishable from a hung
+/// session. The wait is now derived from the projection.
+#[test]
+fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
+    let mut app = test_app();
+    // The main agent's own stream is finished; it is blocked on the subagent.
+    app.session_state.session_status = SessionStatus::Idle;
+    app.ui_state.subagents.set_rows(vec![
+        SubagentRow {
+            task_id: "t1".into(),
+            run_id: None,
+            display_name: None,
+            agent: "explore".into(),
+            description: "map the thing".into(),
+            status: "running".into(),
+        },
+        SubagentRow {
+            task_id: "t2".into(),
+            run_id: None,
+            display_name: None,
+            agent: "explore".into(),
+            description: "already done".into(),
+            status: "completed".into(),
+        },
+    ]);
+
+    assert_eq!(app.awaiting_task_counts().0, 1, "only the live row counts");
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    // Row 0 is the status surface under test. The footer separately renders the
+    // session's own status word, so assert on the strip rather than the frame.
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.contains("awaiting 1 task"),
+        "a blocked main agent must name the wait: {strip}"
+    );
+    assert!(
+        !strip.lines().next().unwrap_or_default().contains(" idle"),
+        "`idle` is the wrong answer while work is in flight: {strip}"
+    );
+    assert!(
+        strip.contains("1 subagent"),
+        "the row must break the wait down by kind: {strip}"
+    );
+}
+
+#[test]
+fn an_actually_idle_session_still_reads_idle() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    app.ui_state.subagents.set_rows(vec![SubagentRow {
+        task_id: "t1".into(),
+        run_id: None,
+        display_name: None,
+        agent: "explore".into(),
+        description: "done".into(),
+        status: "completed".into(),
+    }]);
+
+    assert_eq!(app.awaiting_task_counts(), (0, 0));
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.lines().next().unwrap_or_default().contains("idle"),
+        "with no live work, idle is the honest answer: {strip}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3. Subagent buffer
 // ---------------------------------------------------------------------------
@@ -1002,6 +1074,41 @@ fn a_collapsed_tasks_overlay_reserves_nothing() {
     assert!(
         app.tasks_area.is_none(),
         "a collapsed overlay must not paint"
+    );
+}
+
+/// Regression: an expanded-but-empty overlay must still claim a row.
+///
+/// The renderer has a "Nothing pending" line for exactly this state, but it
+/// could never paint: `tasks_strip_height` returned 0, so no rows were carved,
+/// so `tasks_area` was `None`, so `render_tasks_strip` returned before reaching
+/// it. `Shift+T` was therefore a silently dead key on an idle session — which is
+/// the first thing a user tries when they go looking for the feature.
+#[test]
+fn an_expanded_but_empty_tasks_overlay_confirms_the_key_worked() {
+    let mut app = test_app();
+    app.set_todos(vec![]);
+    app.tasks_expanded = true;
+
+    assert!(
+        app.task_rows().is_empty(),
+        "precondition: an idle session has nothing to list"
+    );
+    assert_eq!(
+        app.tasks_strip_height(),
+        1,
+        "an expanded overlay must reserve the 'Nothing pending' row"
+    );
+
+    render_to_buffer(&mut app, 100, 30);
+    assert!(
+        app.tasks_area.is_some(),
+        "the overlay must be given space so it can confirm the toggle"
+    );
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
+    assert!(
+        text.contains("Nothing pending"),
+        "the confirmation line must actually paint:\n{text}"
     );
 }
 

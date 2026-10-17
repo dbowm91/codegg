@@ -600,20 +600,35 @@ stops being the visible one.
 
 **Activity phase** (`ActivityPhase`). A closed enum, not a free label:
 `Queued`, `WaitingForApproval`, `Thinking`, `Writing`, `RunningTool`,
-`Retrying { attempt, total, class }`, `WaitingOnSubagent`. It was a `String`,
+`Retrying { attempt, total, class }`. It was a `String`,
 which meant the describable states were only the ones somebody remembered to
 pass in — and the two that matter most when a turn looks stuck were the missing
 ones: a turn parked on a permission prompt, and a provider backing off between
 retries. Both read as a silent screen. A closed set also means the renderer
 cannot be handed a phase it does not know how to draw.
 
+Every phase describes the **main agent's own stream**, and each is announced by
+an event that has to be wired to it. A main agent **blocked on delegated work is
+deliberately not a phase here**: it emits nothing while it waits, so an
+event-set phase reads as whatever the last event said — or as nothing. There was
+a `WaitingOnSubagent { name }` variant for exactly this that nothing ever
+constructed, and row 0 said the literal word `idle` for the whole fan-out, which
+is indistinguishable from a hung session. It is now **derived** at row 0 from
+`App::awaiting_task_counts`, which counts live subagents and live jobs with the
+*same* predicates the overlay renders from (`SubagentRow::is_running`,
+`tasks::is_live_state`) so the two surfaces cannot disagree. Derivation is the
+point: an event can be dropped, coalesced, or simply not wired, and the wait is
+exactly the window in which that goes unnoticed.
+
 **Working strip** (`render_working_strip`). The main buffer's **single status
 surface**, and row 0 is **reserved unconditionally** — it reads `idle` when
-nothing is running. This height is subtracted from the transcript
+nothing is running and nothing is delegated, and `awaiting N task[s]` (with the
+per-kind counts appended) when the main agent is blocked on subagents or jobs.
+This height is subtracted from the transcript
 (`session_layout` splits `prompt_height` against `Min(10)`), so gating row 0 on
 "there is something to say" reflowed the transcript on every submit and again on
 every completion. Reserving it permanently turns that off for good: the strip's
-*content* can change freely — idle, working, stopped, failed — without the
+*content* can change freely — idle, awaiting, working, stopped, failed — without the
 transcript viewport ever changing height. Subagent rows stay content-driven,
 because N subagents genuinely need N rows.
 
@@ -732,6 +747,16 @@ subagent rows. A todo or job row returns `false` and the overlay stays open,
 rather than inventing a destination. On success the overlay **closes**: the
 thing the user asked to look at now owns the main buffer, and a selection cursor
 left behind it would be a control they are no longer looking at.
+
+**An expanded overlay always claims at least one row.** `tasks_strip_height`
+returns 0 only when collapsed; an expanded-but-empty overlay reserves the row
+for `render_tasks_strip`'s `Nothing pending` line. Height, not content, decides
+whether that line can paint — the render is handed `tasks_area`, and it returns
+at `None` before reaching the empty branch. Returning 0 for "nothing to show"
+therefore made the line unreachable *and* `Shift+T` a silently dead key on an
+idle session, which is the first thing a user tries. The same trap applies to
+any "draw an empty-state message" affordance: **reserve the row, then draw the
+message into it.**
 
 **Subagent tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
 `state/subagent_tabs.rs`). Three properties are load-bearing and each closes a
@@ -915,10 +940,22 @@ Two rules follow:
 - **Rebuilds are suffix-scoped.** `rows_dirty_from` is a watermark, and
   `MessageLayoutCache::truncate_from` drops only that suffix. Streaming appends
   to the last message, so a token costs one message rather than the whole
-  transcript; `invalidate_tail_rows` is the streaming/tool-result path and
-  `invalidate_rows_from` the general one. A suffix (rather than a set of dirty
-  indices) is what lets the blank-collapse across a message boundary be
+  transcript; `invalidate_rows_from` is the general form and
+  `invalidate_tail_rows` its `len-1` shorthand. A suffix (rather than a set of
+  dirty indices) is what lets the blank-collapse across a message boundary be
   recomputed correctly during a partial rebuild.
+- **`invalidate_tail_rows` is only correct for a mutation that *is* the tail.**
+  It used to be documented as "the streaming/tool-result path", and
+  `update_tool_call` used it while searching every message for the matching tool
+  id — which is the tell. A suffix rebuild is only valid when the write landed
+  at or after the suffix start, and a tool result does not: `add_tool_call`
+  pushes a **new message per call**, so when a turn issues several tool calls
+  the earlier ones are not the tail by the time their results land. Those rows
+  stayed cached with the running styling, so the row kept its "working" colour
+  until the user clicked it — and clicking happened to invalidate the *correct*
+  index via `invalidate_rows_from`, which is why a click appeared to fix the
+  colour. **Any mutator that searches for its target must invalidate from the
+  index it actually found**, the way `mark_tool_call_running` already did.
 
 `messages.max_scroll()`, `scroll_position()`, `scrollbar_state()` and the render
 all read that one index, so they cannot disagree. `MessageLayoutCache::new` and
@@ -1273,6 +1310,47 @@ itself is enumerated on the daemon host, never the TUI host. Files opened
 from `/files` are therefore `DocumentScope::Workspace`, and the editor's
 `[project]` badge is the honest reading.
 
+#### Depth is display arithmetic
+
+`TreeNode::depth` counts from **the walk's own root**, and
+`walk_directory(&root.join(prefix), prefix, ..)` gives a subtree walk a fresh
+count. So the top level of a listing scoped with `l` arrives at exactly the
+depth the workspace root's top level arrives at — the two are the same number,
+and both renderers used to draw it as the same thing. Entering a directory
+therefore made the listing look like the root again, which is the one thing
+re-rooting exists to stop doing.
+
+`FileTreeState::display_depth` is the fix: `scope_depth() + row.depth`, clamped
+to `MAX_INDENT_DEPTH`. `scope_depth` is the component count of `root_prefix()`,
+so what the walk cannot know — how deep the pane itself is sitting — comes from
+the state that *did* know, and the walk is left alone. It is a read: it touches
+no expansion, no selection and no scroll, which is what keeps a presentation fix
+out of navigation.
+
+`FileTreeState::indent_for` pairs that depth with last-ness (`└─` over `├─`) in
+one place, because both renderers need them together. Last-ness reads the
+**immediately next** row: deeper means the row has children still coming,
+same-or-shallower means it was the last entry in its directory. The rows are a
+pre-order flattening, so that is the whole question — and testing the rest of
+the slice instead would close every level at once.
+
+`file_icons::tree_indent` turns the pair into glyphs and sizes them. Box drawing
+only (`│` `├` `─` `└`, all BMP), deliberately **not** behind `CODEGG_FILE_ICONS`:
+"which directory does this row belong to" cannot depend on a patched font the
+user may not have, so `plain` and `nerd` render the same hierarchy. When the
+column is too narrow, levels are dropped from the outside in — the guide to the
+immediate parent is what tells a reader what the row belongs to, so that is the
+part that survives — and the guide goes away entirely before the name does. The
+name is content; the guide is orientation.
+
+Both renderers call that one function. They used to carry their own
+`"  ".repeat(row.depth.min(8))` and their own private `MAX_INDENT_DEPTH`, which
+is how the box and the pane came to draw different ladders for one tree.
+
+The box's title is a **breadcrumb** — `workspace › src › tui` — for the same
+reason. The flat `Files · src/tui (n shown)` carried the same information and
+hid which component `h` steps back through, so stepping out looked arbitrary.
+
 ### Swappable side panel (`src/tui/panels/`)
 
 The panel column is a **panel host**, not a widget chosen by an `if` in the render
@@ -1456,7 +1534,7 @@ need their own key model:
 | `Help` | `[HELP]` | the keybinding reference |
 | `Agents` | `[AGENTS]` | the M006-F management rows |
 
-The other **28** are **hosted**: each is a `/` command that brings up a box,
+The other **27** are **hosted**: each is a `/` command that brings up a box,
 and the panel holds that box's component rather than a lookalike. They are one
 implementation (`panels/hosted.rs`), not 28:
 
@@ -1464,7 +1542,7 @@ implementation (`panels/hosted.rs`), not 28:
 |---|---|
 | Lists | `Tree` `Sessions` `Tasks` `Plan` `Goal` `Collaborators` `Memory` `Research` |
 | Reports | `Logs` `Context` `Cost` `Usage` `Stats` `Doctor` `ShellShow` `Security` |
-| Pickers | `Models` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
+| Pickers | `Models` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `TaskView` `Diff` `Review` |
 | Browsers | `Files` |
 
 Which panel is loaded is chosen by the **panel manager box**
@@ -1587,11 +1665,32 @@ rules replace the original "consumes every key" contract:
 **Panels advertise their own keys.** `SidePanel::composer_hints` is the
 generalisation seam: a panel declares the verbs it owns, and they appear on
 the shared hint line above the composer. It takes a narrow `PanelHints`
-(`focused`, `chat_project`) rather than the full `PanelCtx`, so the composer
-row can ask for a string during render without taking `&mut` borrows of the
-sidebar and chat state. Adding the next panel — a multiplexer-style region
-that brings up a box where `/chat` used to — is still an enum variant, an
-entry in `SidePanelId::ALL`, and one `SidePanel` impl.
+(`focused`, `placement`, `chat_project`, `input_mode`) rather than the full
+`PanelCtx`, so the composer row can ask for a string during render without
+taking `&mut` borrows of the sidebar and chat state. Adding the next panel — a
+multiplexer-style region that brings up a box where `/chat` used to — is still
+an enum variant, an entry in `SidePanelId::ALL`, and one `SidePanel` impl.
+
+**A hosted box's verbs come from the box, not from the host.** `HostPanel`
+holds a `Box<dyn Component>`, and a widget that knows its own keymap answers
+`Component::keymap_hint()` — the string sits next to the `handle_key` arms that
+implement it, so the two cannot disagree. The host only keeps a generic
+`"j/k scroll · i act"` fallback for widgets that answer `None`. That fallback is
+not a default worth keeping in place: it named `i`, and `i` is not a verb any
+adopted box dispatches, so every box-derived panel advertised keys that did
+nothing. `/files` re-roots with `l`, expands with `enter` and pages with
+`^d`/`^u`, and its panel now says so.
+
+**The host owns the chrome, the widget owns the rows.** `render_hosted` paints
+the border and the ` ● Files ` title — the `●` being the only thing on screen
+that says which panel has the keyboard — and then calls
+`Component::render_in_panel`, which defaults to `render`. A widget that draws a
+border and a title of its own overrides `render_in_panel` instead: painted over
+the same rect, its chrome did not layer but *overwrite*, taking the title and
+the focus dot with it, so a focused panel and an unfocused one rendered
+identically. `/files` also drops its in-box keymap footer there, because the
+composer row carries those bytes and a column too narrow to hold a keymap gives
+its rows to the listing instead.
 
 **Key ownership precedence** in `App::on_key`: modal dialogs (`FocusManager`) →
 timeline → command mode → completions → change review → **side panel (Normal
@@ -1740,13 +1839,31 @@ on every render and every snapshot, not just on navigation, so a message
 arriving while the user is pinned moves them with it.
 
 **Contextual keys above the input.** `SidePanel::composer_hints` returns the
-verbs the focused panel owns; `App::composer_hint_text` prefers an armed seed
+verbs the active panel owns; `App::composer_hint_text` prefers an armed seed
 (`↵ send reply · Esc cancel reply`) over panel hints, and `render.rs` reserves
 one row for the line directly above the composer — inside the prompt
-allocation, so focusing a panel cannot shrink the input. The row is not
-reserved at all when nothing is focused and nothing is armed. Panels advertise
+allocation, so focusing a panel cannot shrink the input. Panels advertise
 their keys once, next to the input those keys modify, rather than growing
 per-panel footers.
+
+**A docked panel advertises itself before you go in.** The host used to return
+`None` for any unfocused panel, so a docked `/files` showed its keymap only
+after the user had already guessed the keys correctly. It now asks every panel
+regardless of focus and passes honest focus state plus the edge it is docked to,
+so the line can lead with the gesture that makes the verbs live —
+`Files · Shift+→/Shift+L in · j/k move · …` — and swap that for `Shift+← back`
+once the panel holds the keyboard. The gesture comes from
+`PanelPlacement::toward`/`away` and `PanelDirection::gesture_key`, the same
+values the dispatcher parses, so it cannot name a key that does not work there.
+
+What each panel does when it does *not* have the keyboard is the panel's own
+decision, and the split is deliberate. The session, chat, help and agents
+panels decline — a pre-docked session column is on screen from the first frame
+of every session, and making it announce itself would put a key line nobody
+asked for permanently under the composer. A panel the user *docked* speaks.
+An empty panel says nothing either way: `focus` refuses one, so its verbs are
+unreachable and naming the command that would load it is advice for someone who
+is not in that column.
 
 **Panel manager** (`Shift+S`): a box listing every
 registered panel with its `label`, its `hint`, and the digit already bound to
@@ -2506,7 +2623,17 @@ composer badge and every dockable box already show. On `Route::Editor`:
 | Mode | Keyboard | Typing goes to |
 |---|---|---|
 | `Insert` | the document | the text box — the cursor is drawn there |
-| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `i/a/I/A/o/O`, `u`, `Ctrl+r`) | the bottom input box |
+| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `/`, `n`, `N`, `i/a/I/A/o/O`, `u`, `Ctrl+r`) | the bottom input box |
+
+**A file opens in `Normal`, not `Insert`.** This is the same choice
+`/terminal`, the panel manager, and the chat box make: they are read before
+they are typed into, and `i` is one keystroke away. The editor used to enter
+`Insert` on open, which cost two concrete things. The first keystroke of a
+mistaken open became an edit to the file. And the reader arrived on a
+surface that looks like a reader and answers `j` by inserting a newline —
+every navigation key silently became an edit key until `Esc`, a chord
+nothing on screen named. `open_document` and `:new` both call
+`enter_editor_normal`; nothing puts a freshly opened document in `Insert`.
 
 **Normal returns `BufferKey::Unhandled` for every key it does not own**, which
 is the mechanism, not a fallback: the editor claims navigation and editing and
@@ -2516,7 +2643,33 @@ interactive terminal runs on — NOR reads, INS types — and the same rule
 
 `Esc` is a **mode step, never an exit**. Insert → Normal. Normal → a toast
 naming `:q`. It never leaves the route: the only ways out are `:q` and `:wq`,
-and the frame says so. `Esc` closes an open `:` command line first.
+and the frame says so. `Esc` closes an open `/` search line first, then an
+open `:` command line, then steps the mode — most recent request first.
+
+**`/` searches the document, not the command catalog.** On this route the
+composer arms bare text with `:` (`composer_refuses_bare_text`), so an
+unclaimed `/` used to become `:/` and resolve to no command: a key that looks
+like it should do something and silently did not. `handle_normal_key` claims
+it, seeds the line from the word under the cursor, and owns every key while
+open — the same modal contract as `:`, including the mode-independent `Ctrl`
+chords, because a leaked printable must not edit the document behind a line
+the user believes is capturing it.
+
+It searches **as you type** (`/host` → `/host_status` → `/host_status fn`),
+which is the whole interaction: a needle being refined one character at a
+time is not a reason to make every intermediate refinement its own round
+trip. `Enter` accepts and leaves the matches painted; `Esc` abandons the whole
+search, highlight included, because the match set is derived state the user
+has just disowned. `n`/`N` then walk the accepted matches and are claimed
+**only while a search exists**, so an `n` with no search still reaches the
+composer as the start of a session name. Matches are bounded
+(`MAX_EDITOR_SEARCH_MATCHES`, `MAX_EDITOR_SEARCH_BYTES`) and a partial result
+says so in the status row rather than reading as a complete one.
+
+`Ctrl+d` **continues to the last line** when a half-page would land past the
+end. Half a window from the last page is an ordinary place to be, and a
+motion that quietly refuses there reads as a dropped keypress rather than as
+the end of the document.
 
 Insertion entries (`i`/`a`/`I`/`A`/`o`/`O`) return `BufferKey::EnterInsert`
 and the App layer adopts `Insert` mode; a read-only attachment returns
@@ -2551,6 +2704,69 @@ by viewport height, and each visible line is read with one bounded
 `read_bytes` call. A multi-megabyte file renders exactly like a small one.
 A whole-document `Vec<Line>` is never built, which the static guard also
 enforces.
+
+**The cursor is drawn, and it is drawn last.** `line_spans` resolves four
+layers into one set of spans, each overriding only the fields it owns:
+
+1. **Syntax** — an LSP semantic token where a language server supplied one,
+   otherwise the built-in scan below. Foreground only.
+2. **Search** — a `/` match, `selection_dim` background.
+3. **Selection** — a held Helix selection, `selection` background.
+4. **Cursor** — painted *last*, so nothing can bury the position.
+
+**Every background layer pins the foreground to `theme.foreground` at the
+same time.** A themed background carrying a syntax foreground chosen for a
+*different* background is exactly the dark-on-dark case, so "patch only the
+background" was never a safe compromise — it was the same bug one layer
+down. Two concrete defects came out of this:
+
+- The current line used to render as `fg(theme.alternate_bg)` — a
+  *background* colour used as a foreground. On every dark theme that is
+  near-black on near-black, so the cursor's own line was the one line a
+  reader could not read. Since a file opens in `Normal`, this was the
+  default state, not an edge case. It is now `bg(theme.alternate_bg)`: a
+  tint that says "this one" and leaves the syntax colours alone.
+- The **document area had no theme background at all.** The block paints
+  `theme.background`, then `render_text` renders `Clear` over the text area
+  — which resets every cell to the terminal's own default — and a bare
+  `Paragraph` on top of it inherits that default. Both `Paragraph`s now
+  restate `bg(theme.background).fg(theme.foreground)`.
+
+**The cursor paints differently per mode, for a reason.** In `Normal` it is
+**reverse video** — `fg(theme.background)` on `bg(theme.foreground)`. The
+cursor must stay legible over whatever the highlighter painted underneath,
+and a fixed accent background cannot promise that: a dark syntax foreground
+over a dark accent is the unreadable pairing again, one layer down. Swapping
+the theme's own two colours guarantees contrast for every token color and
+every theme without the renderer having to know which of them is light. In
+`Insert` it is a thin bar (`fg(primary)` + `UNDERLINED`), because a block
+would cover the character being typed over — the one thing Insert exists to
+show.
+
+A cursor sitting **past the last character** still owns a cell, rendered as
+one space past the end of the text. That is the position a reader reaches
+most often — the end of a line they are about to append to — so it is the
+one that must never be invisible. It is only drawn when the row is
+horizontally in view, so a cursor scrolled off to the left does not become a
+ghost.
+
+**Syntax highlighting has a server-free floor.** LSP semantic tokens stay
+authoritative, but a language server is optional: with none installed, every
+file rendered flat, which made "syntax highlighting" a property of the
+machine rather than of the editor. `tui::editor_highlight::EditorHighlight`
+is a bounded `syntect` scan underneath the tokens, keyed by path, code
+theme, and document revision. It lives on `EditorState::highlight`, is
+passed to the widget as a scoped `&mut`, and holds no document text — only
+byte ranges and colors, so the text-authority guard is unaffected.
+
+Its scan is **sequential and forward-only** because `syntect`'s parser is a
+state machine: line N depends on whether line N-1 opened a block comment.
+Already-scanned lines are cached; a backwards scroll or a jump resets the
+machine and replays from the top, bounded by `MAX_HIGHLIGHT_SCAN_LINES`
+(5000), past which highlighting switches **itself off** and says so. An
+unknown extension is a plain render, not an error. `theme.code_theme` is
+already light/dark-correct (`select_code_theme`), so the scan's palette
+cannot invert against the surrounding UI.
 
 **Async discipline.** Every controller round trip (open, save, reload,
 resync, close) is spawned with `spawn_scoped_registered_tui_task` and carries
@@ -3450,8 +3666,13 @@ action.
   with the same filter, cursor, scroll offset and selection the box was
   showing a frame earlier. A panel with nothing adopted that cannot be
   materialized (no pending plan confirmation, no security receipt) still
-  renders a placeholder naming the `/` command that loads it — an empty
-  bordered box is indistinguishable from a rendering bug.
+  renders a placeholder — an empty bordered box is indistinguishable from a
+  rendering bug — but the placeholder describes **state**, never instructions:
+  nothing loaded, a load in flight, or the reason it cannot act. It used to
+  read "Run `<cmd>` to open it, then Shift+← to move it here", which described
+  a workflow the surface does not have: the panel is already in place, so there
+  is nothing to move into it, and `Shift+←` names a different edge on every
+  placement.
 - **Selecting a hosted panel loads it: one step, not two.**
   `commands::panels::select_panel` materializes an empty hosted panel before
   selecting it, through the same seams as its `/` command
@@ -3459,12 +3680,20 @@ action.
   is opened and adopted immediately, so `Shift+S` + `Enter` lands on live
   content with focus — the behaviour the bespoke panels always had. A
   live-loading box (Research, Task view) stays open as a modal instead:
-  adopting its spinner would freeze it and cancel the load, so the toast
-  names the one remaining step (`L` to dock). Panels with genuinely nothing
-  to show (Plan with no pending confirmation, Security with no receipt,
-  Workspace, which is a primary view) keep the placeholder and toast why.
-  `Shift+↑/↓` walking deliberately does not materialize: cycling all 33
-  entries would fire 29 loads for panels the user only glanced at.
+  adopting its spinner would freeze it and cancel the load, so it keeps the
+  keyboard until its data arrives. Panels with genuinely nothing to show
+  (Plan with no pending confirmation, Security with no receipt) are selected
+  and show why. `Shift+↑/↓` walking deliberately does not materialize: cycling
+  all entries would fire dozens of loads for panels the user only glanced at.
+- **`PanelFill` is the contract, not `dock_target`.**
+  `open_panel_box` used to return `()` and its caller re-read
+  `App::dock_target()` to infer which of three things had happened — with a
+  fourth, "the panel did nothing", looking identical to the first. The
+  mid-load special case lived in `matches!(id, Research | TaskView)` at the call
+  site, so a panel arm could not state its own answer. Every arm now returns a
+  [`PanelFill`]: `Filled`, `Loading`, `StillLoading`, `OpenedAs(other)`,
+  `Cannot(reason)`, or `Bespoke`. The `StillLoading` variant *is* the old
+  literal list, moved next to the work that needs the protection.
 - **`render_hosted` is a bridge, not the destination.**
   `SidePanel::render` receives a `&mut Buffer` while every `Component::render`
   takes a `&mut Frame`, and ratatui's `Frame` has no public constructor. The

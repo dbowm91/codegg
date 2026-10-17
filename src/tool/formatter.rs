@@ -50,11 +50,10 @@ impl Formatter {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(Path::to_path_buf)
-            .or_else(|| std::env::current_dir().ok())
             .ok_or_else(|| {
-                AppError::Tool(ToolError::Format(
-                    "formatter cwd could not be resolved".into(),
-                ))
+                AppError::Tool(ToolError::MissingWorkspaceRoot {
+                    context: "formatter has no parent directory to run in".into(),
+                })
             })?;
         let mut argv = command.iter().map(OsString::from).collect::<Vec<_>>();
         argv.push(path.as_os_str().to_owned());

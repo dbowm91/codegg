@@ -176,13 +176,13 @@ model to the wrong connection.
   (`Shift+S` in Normal mode, or `/panels` from anywhere) and persisted as
   `ui.panel_placement`; the strip is deliberately **display-only** rather than
   rows in the navigable list, because "which edge" and "which panel" are
-  different questions and merging them renumbers every panel row. 33 panels
-  ship: 5 **bespoke** (`Session`, `Agents`, `Chat`, `Terminal`, `Help`) and 28
+  different questions and merging them renumbers every panel row. 32 panels
+  ship: 5 **bespoke** (`Session`, `Agents`, `Chat`, `Terminal`, `Help`) and 27
   **hosted** — one per `/` command that brings up a box. Which one is loaded
   is chosen by the same manager, which renders `SidePanelId::ALL` directly —
   the list it shows *is* the registry. To add a **hosted** panel (the common case): an enum
   variant, an entry in `SidePanelId::ALL`, and `label`/`title`/`hint`/
-  `load_command`/`config_key` arms. The host builds its `HostPanel` from
+  `config_key` arms. The host builds its `HostPanel` from
   `ALL` filtered on **`SidePanelId::is_bespoke()`**, so there is no host field,
   no `panel()` arm and no render-path branch. To add a **bespoke** panel: add
   it to `is_bespoke()`, write a `SidePanel` impl, and add arms in `panel()`,
@@ -195,10 +195,18 @@ model to the wrong connection.
   unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
   box's filter, cursor and scroll. Selecting an empty hosted panel loads it
   in one step (`commands::panels::materialize_hosted_panel`, same seams as
-  its `/` command): a sync box is opened and adopted at once, a live-loading
-  box (Research, Task view) stays open with an `L`-to-dock toast, and a panel
-  with nothing to show keeps a placeholder naming its `/` loader — never an
-  empty bordered box, which reads as a rendering bug. `render_hosted` is a deliberate **bridge**:
+  its `/` command), and **`open_panel_box` returns a `PanelFill`** saying which
+  of three things it did: `Filled` (adopt it now), `Loading` (the box arrives
+  on its own — the panel shows progress), or `Cannot(reason)` (the panel states
+  why). Two more variants exist for a box that mounted but is still loading
+  (`StillLoading` — adopt it and you freeze its spinner) and for one that
+  belongs to another panel (`OpenedAs`). **Never re-read `dock_target()` to
+  infer this** — that inference is what the enum replaced, and the mid-load
+  special case used to be a `matches!` list of panel ids at the call site.
+  A panel with nothing to show keeps a placeholder describing its **state** —
+  never an empty bordered box (a rendering bug), and never an instruction to
+  run a `/` command or press `Shift+←`, because the panel is already in place.
+  `render_hosted` is a deliberate **bridge**:
   `SidePanel::render` gets a `&mut Buffer`, `Component::render` needs a
   `&mut Frame`, and ratatui's `Frame` has no public constructor, so the
   widget renders into an in-memory backend sized to the column and is copied
@@ -216,6 +224,18 @@ model to the wrong connection.
   seam. A panel declares its own keys through `SidePanel::composer_hints`,
   which render on one contextual line directly above the composer — that is
   the seam for adding the next panel, so do not grow per-panel footers.
+  A **hosted** box gets its verbs from the box itself via
+  `Component::keymap_hint()`, so the string sits next to the `handle_key`
+  arms that implement it; the host's generic `j/k scroll · i act` is only
+  the fallback for widgets that answer `None`, and it named `i`, which no
+  adopted box dispatches. A docked panel advertises itself **unfocused**
+  too, leading with the gesture that enters it (`PanelPlacement::toward`),
+  because the alternative is a keymap readable only after you have already
+  guessed the keys. Bespoke panels (session, chat, help, agents) decline
+  unfocused — a pre-docked column is on screen every session — and an empty
+  panel is silent because `focus` refuses it. The host owns the border and
+  the `●` focus dot, so a widget with chrome of its own overrides
+  `Component::render_in_panel` rather than `render`.
   Project binding is resolved by `commands/panels.rs`, not by the panel.
   Key precedence in `App::on_key`:
   **Ctrl+digit hotkey recall** → modals → timeline → command mode →
@@ -248,6 +268,20 @@ model to the wrong connection.
   `root_history`'s last entry *is* the current root — one axis, not a prefix
   field and an expansion set that can disagree — and it is re-seeded with the
   workspace root before the first push, or the very first `l` becomes one-way.
+- **Depth is display arithmetic, and only one function owns it.** A subtree
+  walk counts depth from the subtree, so a listing scoped with `l` arrives at
+  the same depth the workspace root's top level does — and rendering `row.depth`
+  alone therefore drew the two identically. `FileTreeState::display_depth`
+  adds `scope_depth()` back and clamps at `MAX_INDENT_DEPTH`; `indent_for`
+  pairs that with last-ness for `└─` over `├─`; `file_icons::tree_indent`
+  renders both. The box and the Ctrl+T pane call that last one rather than each
+  carrying their own `"  ".repeat(...)` and their own cap. The guide is BMP box
+  drawing and deliberately **not** behind `CODEGG_FILE_ICONS` — hierarchy must
+  not depend on a patched font — and it is elided before the name, never after.
+  The box title is the same fact in words: a `workspace › src › tui`
+  breadcrumb. `display_depth` reads state and never writes it; if it starts
+  changing expansion, selection or what a walk returns, it has become
+  navigation and stopped being a display concern.
 - **`Ctrl+d`/`Ctrl+u` page a listing that does not fit.** They carry
   `Char('d')`/`Char('u')` codes, so the tree checks modifiers *before* its
   character arms. A page is two thirds of `FileTreeState::viewport_rows`,
@@ -284,17 +318,74 @@ model to the wrong connection.
   toggles. Never reintroduce a second axis. On `Route::Editor`: **`Insert` puts
   the keyboard in the document** (the cursor is drawn in the text box);
   **`Normal` gives it to the Helix verbs and leaves typing to the bottom input
-  box**. Opening a file enters `Insert`. `handle_normal_key` returning
+  box**. `handle_normal_key` returning
   `BufferKey::Unhandled` is the *mechanism* for the second half, not a
   fallback — the editor claims navigation and editing and everything else
   stays a composer keystroke. Same contract as `/terminal`: NOR reads, INS
   types.
+- **A file opens in `Normal`, not `Insert`.** Same choice `/terminal` and the
+  panels make: they are read before they are typed into, and `i` is one
+  keystroke away. It used to enter `Insert`, which cost two concrete things —
+  the first keystroke of a mistaken open became an *edit*, and `j`/`k` silently
+  inserted newlines, so every navigation key was an edit key until `Esc`, a
+  chord nothing on screen named. `open_document` and `:new` both call
+  `enter_editor_normal`; nothing puts a fresh document in `Insert`.
+- **`/` searches the document, not the command catalog.** On this route the
+  composer arms bare text with `:`, so an unclaimed `/` became `:/` and
+  resolved to no command — a key that looks like it should do something and
+  silently did not. `handle_normal_key` claims it, seeds from the word under
+  the cursor, and owns *every* key while open (same modal contract as `:`,
+  including `Ctrl` chords). It searches **as you type**; `Enter` accepts and
+  keeps the highlight, `Esc` abandons the whole search. `n`/`N` are claimed
+  **only while a search exists**, so an `n` with no search still reaches the
+  composer. Bounded (`MAX_EDITOR_SEARCH_MATCHES`/`_BYTES`), and a partial
+  result says so in the status row rather than reading as complete.
+- **The cursor is painted *last*, in `line_spans`, and that ordering is the
+  contract.** Four layers resolve into one set of spans — syntax, `/` search,
+  selection, cursor — each overriding only the fields it owns. Nothing may
+  bury the position.
+- **Every background layer pins `fg(theme.foreground)` with it.** "Patch only
+  the background" is *not* a safe compromise; it is the same dark-on-dark bug
+  one layer down. It was tried: the current line rendered as
+  `fg(theme.alternate_bg)` (a *background* colour as a foreground), so on every
+  dark theme the cursor's own line was the one line a reader could not read.
+  The current line is now `bg(theme.alternate_bg)` — a tint that leaves the
+  syntax colours alone.
+- **The document area needs its theme background restated.** The block paints
+  `theme.background`, then `render_text` renders `Clear` over the text area —
+  which resets every cell to the terminal default — and a bare `Paragraph`
+  inherits it. Both `Paragraph`s now carry
+  `bg(theme.background).fg(theme.foreground)`.
+- **The Normal cursor is reverse video, not an accent block.** It must stay
+  legible over whatever the highlighter painted, and a fixed accent
+  background cannot promise that (dark token foreground over a dark accent is
+  the same unreadable pairing). `fg(background)` on `bg(foreground)` guarantees
+  contrast for every token color and every theme without the renderer knowing
+  which of them is light. Insert draws a thin bar (`fg(primary)` +
+  `UNDERLINED`) — a block would cover the character being typed over. A cursor
+  past the last character still owns a cell: one space past the end, so "the
+  cursor is at the end of the line" is never invisible.
+- **Syntax highlighting has a server-free floor.** LSP semantic tokens stay
+  authoritative, but a language server is *optional* — with none installed
+  every file rendered flat, which made highlighting a property of the machine
+  rather than of the editor. `tui::editor_highlight::EditorHighlight` is a
+  bounded `syntect` scan underneath, keyed by path/code-theme/revision, living
+  on `EditorState::highlight` and passed as a scoped `&mut`. It holds byte
+  ranges and colors only, so the text-authority guard is unaffected. Its scan
+  is **forward-only and sequential** because `syntect` is a state machine (line
+  N depends on line N-1 opening a block comment); backwards scrolls replay from
+  the top, bounded by `MAX_HIGHLIGHT_SCAN_LINES`, past which it switches
+  **itself off** and says so. An unknown extension renders plain, not wrong.
+- **`Ctrl+d` continues to the last line** when a half-page would land past the
+  end — half a window from the last page is an ordinary place to be, and a
+  motion that quietly refuses there reads as a dropped keypress.
 - **`Esc` on the editor route is a mode step, never an exit.** Insert → Normal;
   Normal → a toast naming `:q`. It is answered in `handle_editor_key` *above*
   every other editor key, so it cannot reach anything that closes the view. It
   used to call `close_editor`, which meant the only key that could get you out
   of Insert was also the key that threw the document away. The only exits are
-  `:q` and `:wq`, and the frame says so.
+  `:q` and `:wq`, and the frame says so. It closes an open `/` line first, then
+  an open `:` line, then steps the mode.
 - **The buffer speaks Helix, matching `/terminal`.** `hjkl`/arrows move,
   `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word, `v` selects by character, `x`
   selects the whole line and grows one per press, `d` deletes the held

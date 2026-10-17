@@ -1728,15 +1728,27 @@ impl AgentLoop {
                     result_size: crate::agent::progress_recovery::result_size_class(output),
                     error_class: None,
                     execution_status: Some(outcome.status),
+                    // `None` only when the registry has no entry for this tool
+                    // name. Recovery treats that as unknown, never as a read.
                     effect_class,
-                    new_evidence: false,
+                    // The only state-change oracle the loop owns is the
+                    // file-change bus, and the only tools that emit on it are
+                    // the durable file writers. A mutating `bash`, a git
+                    // mutation, and a job submission all change state, but
+                    // nothing observable separates "changed it" from "ran and
+                    // changed nothing", so crediting them would credit every
+                    // successful step a looping model takes. They stay
+                    // uncredited on purpose; widening this needs a per-tool
+                    // state-change observation that does not exist yet.
+                    //
+                    // Known imprecision, in the permissive direction: the bus
+                    // is drained once per batch, so within a multi-call batch
+                    // every file-modifying call is credited when *any* of them
+                    // emitted a change. Correcting it needs per-path
+                    // attribution, which is a separate change from this one.
                     state_changed: observed_file_change
                         && is_file_modifying_tool(&tc.name)
                         && tool_outcome_is_success(outcome),
-                    // A successful task submission is not itself a child
-                    // transition. Child progress is populated only by a
-                    // concrete child-state observation, when one is exposed.
-                    child_advanced: false,
                     selected_surface_fingerprint: None,
                     batch_id: recovery_batch,
                 };

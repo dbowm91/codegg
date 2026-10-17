@@ -256,6 +256,14 @@ pub enum MessageRole {
 ///
 /// A closed set also means the renderer cannot be handed a phase it does not
 /// know how to draw.
+///
+/// Every phase here describes the MAIN agent's own stream, and each one is
+/// announced by an event that has to be wired to it. A main agent blocked on
+/// delegated work is deliberately NOT a phase here: it produces no events at
+/// all while it waits, so a phase set by an event would read as whatever the
+/// last event said — or as nothing. That wait is derived at the working strip
+/// (`App::awaiting_task_counts`) from the same projection the tasks overlay
+/// renders, so it cannot be dropped on the floor by an unwired handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityPhase {
     /// Turn admitted, first event not yet arrived.
@@ -277,8 +285,6 @@ pub enum ActivityPhase {
         total: usize,
         class: String,
     },
-    /// The agent is waiting on a dispatched subagent.
-    WaitingOnSubagent { name: String },
 }
 
 impl ActivityPhase {
@@ -301,7 +307,6 @@ impl ActivityPhase {
                 total,
                 class,
             } => format!("retrying {attempt}/{total} · {class}"),
-            Self::WaitingOnSubagent { name } => format!("waiting on subagent {name}"),
         }
     }
 }
@@ -972,7 +977,8 @@ impl MessagesWidget {
         exit_code: Option<i32>,
         output_lines: Option<usize>,
     ) {
-        for msg in &mut self.messages {
+        let mut updated = None;
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for part in &mut msg.parts {
                 if let MsgPart::ToolCall {
                     id: part_id,
@@ -990,11 +996,21 @@ impl MessagesWidget {
                         *part_duration = duration_ms;
                         *part_exit_code = exit_code;
                         *part_output_lines = output_lines;
+                        updated = Some(msg_idx);
                     }
                 }
             }
         }
-        self.invalidate_tail_rows();
+        // Invalidate from the message that was actually updated, NOT the tail.
+        // `add_tool_call` pushes a new message per call, so when a turn issues
+        // several tool calls the earlier ones are not the tail by the time
+        // their results land. Invalidating the tail left those rows cached with
+        // the running styling, so the row stayed "working" until the user
+        // clicked it — and clicking invalidated the right index, which is why a
+        // click appeared to fix the colour.
+        if let Some(msg_idx) = updated {
+            self.invalidate_rows_from(msg_idx);
+        }
         if self.auto_scroll {
             self.scroll = usize::MAX;
         }
@@ -4496,5 +4512,97 @@ mod tests {
         widget.add_streaming_token(&"é".repeat(1024 * 1024 / 2 + 8));
         widget.add_streaming_token("tail");
         assert!(widget.streaming_tokens.ends_with("tail"));
+    }
+
+    /// Rendered rows for one message, read through the same row index the
+    /// renderer and the scrollbar use.
+    fn message_rows_as_text(widget: &mut MessagesWidget, msg_idx: usize) -> String {
+        let cache = widget.build_layout_cache();
+        cache
+            .rows_of_message(msg_idx)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Regression: a tool result must repaint the message it landed on.
+    ///
+    /// `add_tool_call` pushes a NEW message per call, so when a turn issues
+    /// several tool calls the earlier ones are not the tail by the time their
+    /// results land. `update_tool_call` used to invalidate only the tail, which
+    /// left those rows cached with the running styling — the row stayed
+    /// "working" until the user clicked it, because clicking invalidated the
+    /// right index by accident.
+    #[test]
+    fn a_completed_tool_repaints_its_own_message_not_only_the_tail() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(60);
+        widget.add_tool_call(
+            "t1".into(),
+            "bash".into(),
+            serde_json::json!({"command": "ls"}),
+        );
+        widget.add_tool_call(
+            "t2".into(),
+            "read".into(),
+            serde_json::json!({"path": "a.rs"}),
+        );
+        widget.mark_tool_call_running("t1");
+        widget.mark_tool_call_running("t2");
+
+        // Warm the row cache the way a running TUI would have.
+        let _ = widget.build_layout_cache();
+
+        // t1 completes while t2's message is the tail.
+        widget.update_tool_call(
+            "t1",
+            "total 0".into(),
+            crate::session::message::ToolStatus::Completed,
+            Some(5),
+            Some(0),
+            Some(1),
+        );
+
+        let t1_text = message_rows_as_text(&mut widget, 0);
+        assert!(
+            !t1_text.contains("waiting for command/tool output"),
+            "t1 completed, so its row must not still read as running:\n{t1_text}"
+        );
+        // The icon glyph is the visible proof the status branch re-ran.
+        assert!(
+            t1_text.contains('\u{2713}'),
+            "t1 must render the completed check mark, got:\n{t1_text}"
+        );
+    }
+
+    /// The tail case must keep working — the fix must not just invalidate
+    /// everything, which would repaint but throw away the streaming fast path.
+    #[test]
+    fn a_completed_tool_on_the_tail_message_still_repaints() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(60);
+        widget.add_tool_call(
+            "t1".into(),
+            "bash".into(),
+            serde_json::json!({"command": "ls"}),
+        );
+        widget.mark_tool_call_running("t1");
+        let _ = widget.build_layout_cache();
+
+        widget.update_tool_call(
+            "t1",
+            "total 0".into(),
+            crate::session::message::ToolStatus::Completed,
+            Some(5),
+            Some(0),
+            Some(1),
+        );
+
+        let text = message_rows_as_text(&mut widget, 0);
+        assert!(
+            text.contains('\u{2713}'),
+            "expected a completed row:\n{text}"
+        );
     }
 }
