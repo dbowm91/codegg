@@ -14069,24 +14069,49 @@ impl App {
         }
     }
 
+    /// Delegated work the main agent is blocked on right now.
+    ///
+    /// Counts live subagents and live jobs using the *same* predicates the
+    /// tasks overlay renders from (`SubagentRow::is_running` and
+    /// `tasks::is_live_state`), so the working strip can never disagree with
+    /// the list the user checks to confirm it.
+    ///
+    /// This is derived rather than announced by a `SubagentStarted` /
+    /// `JobStarted` event on purpose: the indicator has to be right on the one
+    /// occasion it matters — the main agent has fanned out and is now silent —
+    /// and an event that is dropped, coalesced, or simply not wired to the
+    /// phase leaves the strip reading `idle` for the entire wait. Deriving it
+    /// from the same projection the overlay reads cannot drift.
+    pub fn awaiting_task_counts(&self) -> (usize, usize) {
+        let subagents = self.ui_state.subagents.running_count();
+        let jobs = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| {
+                snapshot
+                    .jobs
+                    .iter()
+                    .filter(|job| crate::tui::app::state::tasks::is_live_state(&job.state))
+                    .count()
+            })
+            .unwrap_or(0);
+        (subagents, jobs)
+    }
+
     /// Rows the unified tasks overlay needs, including its per-group headers.
     ///
-    /// Returns 0 when collapsed *or* when there is genuinely nothing to show,
-    /// so the input keeps the space in both cases. The height is deliberately
-    /// independent of `todo_strip_height`: the overlay is on-demand, and
-    /// coupling them would make expanding one reflow the other's rows.
+    /// Returns 0 only when collapsed. An expanded overlay always claims at
+    /// least one row, which is the "Nothing pending" line: with every group
+    /// empty there are no headers to draw, and reserving nothing made `Shift+T`
+    /// a silently dead key on an idle session — the very first thing a user
+    /// tries. The height is deliberately independent of `todo_strip_height`:
+    /// the overlay is on-demand, and coupling them would make expanding one
+    /// reflow the other's rows.
     pub fn tasks_strip_height(&self) -> u16 {
         if !self.tasks_expanded {
             return 0;
         }
-        let rows = self.bounded_task_rows();
-        if rows.is_empty() {
-            return 0;
-        }
-        // Header + rows + the "nothing here" line when the overlay is open but
-        // every group was empty. Without that last row an expanded-but-empty
-        // overlay would collapse to nothing and the toggle would appear broken.
-        rows.len() as u16
+        self.bounded_task_rows().len().max(1) as u16
     }
 
     /// Build the tasks overlay rows from the three projection-backed sources.

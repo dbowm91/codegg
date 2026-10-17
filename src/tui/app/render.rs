@@ -1713,9 +1713,28 @@ impl App {
                 .unwrap_or_else(|| self.working_elapsed_fallback());
             (line, theme.primary)
         } else {
-            // Idle is an answer, not an absence. Naming it is what lets row 0
-            // be reserved permanently without reading as a broken widget.
-            ("idle".to_string(), theme.muted)
+            // The main agent blocked on delegated work is NOT idle, even though
+            // nothing is arriving on its own stream. Reading `idle` here is
+            // what made a long fan-out look like a dead session: the agent is
+            // waiting, and saying so is the difference between "this will
+            // finish" and "this hung". Derived from the projection rather than
+            // announced by a start event, because the wait is exactly the
+            // window in which a dropped or unwired event would go unnoticed.
+            // The per-kind counts are appended by the shared suffix below, so
+            // this body is only the headline.
+            let (awaiting_subs, awaiting_jobs) = self.awaiting_task_counts();
+            let awaiting = awaiting_subs + awaiting_jobs;
+            if awaiting > 0 {
+                let mut label = format!("awaiting {awaiting} task");
+                if awaiting != 1 {
+                    label.push('s');
+                }
+                (label, theme.primary)
+            } else {
+                // Idle is an answer, not an absence. Naming it is what lets row 0
+                // be reserved permanently without reading as a broken widget.
+                ("idle".to_string(), theme.muted)
+            }
         };
 
         let mut head = body;
@@ -1723,11 +1742,23 @@ impl App {
             head.push_str(" · ");
             head.push_str(&hint);
         }
-        let running_subs = self.ui_state.subagents.running_count();
-        if running_subs > 0 && !self.session_state.stopped_turn {
-            head.push_str(&format!(" · {running_subs} subagent"));
-            if running_subs != 1 {
-                head.push('s');
+        let (running_subs, running_jobs) = self.awaiting_task_counts();
+        if !self.session_state.stopped_turn {
+            if running_subs > 0 {
+                head.push_str(&format!(" · {running_subs} subagent"));
+                if running_subs != 1 {
+                    head.push('s');
+                }
+            }
+            // Jobs get the same treatment as subagents: a durable job running
+            // under the main agent is exactly as much a reason the session is
+            // not idle, and it was the one kind of delegated work this row
+            // could not name at all.
+            if running_jobs > 0 {
+                head.push_str(&format!(" · {running_jobs} job"));
+                if running_jobs != 1 {
+                    head.push('s');
+                }
             }
         }
         lines.push(Line::from(Span::styled(

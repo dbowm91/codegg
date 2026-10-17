@@ -299,7 +299,9 @@ the chord is live in both modes.
 `Shift+T` opens a single overlay listing **todos, then subagents, then jobs**,
 each under its own heading. A group with nothing in it is left out entirely —
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
-and `Esc` closes the overlay.
+and `Esc` closes the overlay. With nothing in any group the overlay says
+`Nothing pending` rather than opening to a blank strip, so a quiet session still
+confirms the key did something.
 
 It shows what the turn is *waiting on*, not what it has done: finished
 subagents and completed jobs are filtered out. When a job reports a state this
@@ -314,6 +316,15 @@ typing with it open.
 The two surfaces overlap by design — todos appear in both — because the strip is
 a progress line that stays on screen at all times, and the overlay is a
 fuller list you open when you want it.
+
+### When the agent is waiting on other work
+
+The status row above the input reports `idle` only when nothing at all is
+running. If the main agent has handed work to subagents or background jobs and
+is now blocked on the results, it reads `awaiting N tasks` and names the
+breakdown — so a long fan-out looks like a wait rather than a hang. Live jobs
+count here too, which is why a job running under a finished turn is still
+visible there.
 
 ### Subagent tabs
 

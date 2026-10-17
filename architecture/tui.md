@@ -600,20 +600,35 @@ stops being the visible one.
 
 **Activity phase** (`ActivityPhase`). A closed enum, not a free label:
 `Queued`, `WaitingForApproval`, `Thinking`, `Writing`, `RunningTool`,
-`Retrying { attempt, total, class }`, `WaitingOnSubagent`. It was a `String`,
+`Retrying { attempt, total, class }`. It was a `String`,
 which meant the describable states were only the ones somebody remembered to
 pass in — and the two that matter most when a turn looks stuck were the missing
 ones: a turn parked on a permission prompt, and a provider backing off between
 retries. Both read as a silent screen. A closed set also means the renderer
 cannot be handed a phase it does not know how to draw.
 
+Every phase describes the **main agent's own stream**, and each is announced by
+an event that has to be wired to it. A main agent **blocked on delegated work is
+deliberately not a phase here**: it emits nothing while it waits, so an
+event-set phase reads as whatever the last event said — or as nothing. There was
+a `WaitingOnSubagent { name }` variant for exactly this that nothing ever
+constructed, and row 0 said the literal word `idle` for the whole fan-out, which
+is indistinguishable from a hung session. It is now **derived** at row 0 from
+`App::awaiting_task_counts`, which counts live subagents and live jobs with the
+*same* predicates the overlay renders from (`SubagentRow::is_running`,
+`tasks::is_live_state`) so the two surfaces cannot disagree. Derivation is the
+point: an event can be dropped, coalesced, or simply not wired, and the wait is
+exactly the window in which that goes unnoticed.
+
 **Working strip** (`render_working_strip`). The main buffer's **single status
 surface**, and row 0 is **reserved unconditionally** — it reads `idle` when
-nothing is running. This height is subtracted from the transcript
+nothing is running and nothing is delegated, and `awaiting N task[s]` (with the
+per-kind counts appended) when the main agent is blocked on subagents or jobs.
+This height is subtracted from the transcript
 (`session_layout` splits `prompt_height` against `Min(10)`), so gating row 0 on
 "there is something to say" reflowed the transcript on every submit and again on
 every completion. Reserving it permanently turns that off for good: the strip's
-*content* can change freely — idle, working, stopped, failed — without the
+*content* can change freely — idle, awaiting, working, stopped, failed — without the
 transcript viewport ever changing height. Subagent rows stay content-driven,
 because N subagents genuinely need N rows.
 
@@ -732,6 +747,16 @@ subagent rows. A todo or job row returns `false` and the overlay stays open,
 rather than inventing a destination. On success the overlay **closes**: the
 thing the user asked to look at now owns the main buffer, and a selection cursor
 left behind it would be a control they are no longer looking at.
+
+**An expanded overlay always claims at least one row.** `tasks_strip_height`
+returns 0 only when collapsed; an expanded-but-empty overlay reserves the row
+for `render_tasks_strip`'s `Nothing pending` line. Height, not content, decides
+whether that line can paint — the render is handed `tasks_area`, and it returns
+at `None` before reaching the empty branch. Returning 0 for "nothing to show"
+therefore made the line unreachable *and* `Shift+T` a silently dead key on an
+idle session, which is the first thing a user tries. The same trap applies to
+any "draw an empty-state message" affordance: **reserve the row, then draw the
+message into it.**
 
 **Subagent tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
 `state/subagent_tabs.rs`). Three properties are load-bearing and each closes a
@@ -915,10 +940,22 @@ Two rules follow:
 - **Rebuilds are suffix-scoped.** `rows_dirty_from` is a watermark, and
   `MessageLayoutCache::truncate_from` drops only that suffix. Streaming appends
   to the last message, so a token costs one message rather than the whole
-  transcript; `invalidate_tail_rows` is the streaming/tool-result path and
-  `invalidate_rows_from` the general one. A suffix (rather than a set of dirty
-  indices) is what lets the blank-collapse across a message boundary be
+  transcript; `invalidate_rows_from` is the general form and
+  `invalidate_tail_rows` its `len-1` shorthand. A suffix (rather than a set of
+  dirty indices) is what lets the blank-collapse across a message boundary be
   recomputed correctly during a partial rebuild.
+- **`invalidate_tail_rows` is only correct for a mutation that *is* the tail.**
+  It used to be documented as "the streaming/tool-result path", and
+  `update_tool_call` used it while searching every message for the matching tool
+  id — which is the tell. A suffix rebuild is only valid when the write landed
+  at or after the suffix start, and a tool result does not: `add_tool_call`
+  pushes a **new message per call**, so when a turn issues several tool calls
+  the earlier ones are not the tail by the time their results land. Those rows
+  stayed cached with the running styling, so the row kept its "working" colour
+  until the user clicked it — and clicking happened to invalidate the *correct*
+  index via `invalidate_rows_from`, which is why a click appeared to fix the
+  colour. **Any mutator that searches for its target must invalidate from the
+  index it actually found**, the way `mark_tool_call_running` already did.
 
 `messages.max_scroll()`, `scroll_position()`, `scrollbar_state()` and the render
 all read that one index, so they cannot disagree. `MessageLayoutCache::new` and
