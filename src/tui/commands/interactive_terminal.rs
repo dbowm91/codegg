@@ -27,6 +27,7 @@ use crate::protocol::interactive_process::{
     InteractiveOutputChunk, InteractiveProcessCreateRequest, InteractiveProcessMetadata,
     InteractiveResync,
 };
+use crate::tui::app::TerminalResumeRequest;
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::interactive_terminal::{TerminalKey, TerminalKeyAction};
@@ -581,6 +582,7 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
+    let owner = TerminalResumeRequest::User(request_id);
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,
@@ -588,6 +590,8 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
         TuiTaskKind::Command,
         "terminal_resume",
         async move {
+            // Byte-for-byte the same request the cadence pull issues: the
+            // daemon's own chunk bound, one explicit cursor, no second cap.
             let request = crate::core::new_request(
                 format!("terminal-resume-{}", uuid::Uuid::new_v4()),
                 CoreRequest::InteractiveProcessResume {
@@ -599,7 +603,7 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
             let result = match core_client.request(request).await {
                 Ok(CoreResponse::InteractiveProcessResumed { chunk, .. }) => {
                     TuiCommand::TerminalResumeFinished {
-                        request_id,
+                        request: owner,
                         handle,
                         chunk: Some(chunk),
                         resync: None,
@@ -608,7 +612,7 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
                 }
                 Ok(CoreResponse::InteractiveProcessResyncRequired { resync, .. }) => {
                     TuiCommand::TerminalResumeFinished {
-                        request_id,
+                        request: owner,
                         handle,
                         chunk: None,
                         resync: Some(resync),
@@ -616,21 +620,21 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
                     }
                 }
                 Ok(CoreResponse::Error { code, message }) => TuiCommand::TerminalResumeFinished {
-                    request_id,
+                    request: owner,
                     handle,
                     chunk: None,
                     resync: None,
                     error: Some(terminal_error_hint(&code, &message)),
                 },
                 Ok(other) => TuiCommand::TerminalResumeFinished {
-                    request_id,
+                    request: owner,
                     handle,
                     chunk: None,
                     resync: None,
                     error: Some(format!("unexpected resume response: {other:?}")),
                 },
                 Err(error) => TuiCommand::TerminalResumeFinished {
-                    request_id,
+                    request: owner,
                     handle,
                     chunk: None,
                     resync: None,
@@ -643,26 +647,46 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
 }
 
 /// Apply a resume completion on the event loop.
+///
+/// Both owners project through here. What differs is only which bookkeeping
+/// slot is released, and that is decided by the typed owner rather than by
+/// which completion happened to arrive first: a cadence pull releases its own
+/// per-attachment read id and never the shared `terminal_request` generation,
+/// so it cannot swallow an in-flight input, resize, detach or terminate
+/// completion (and vice versa).
 pub(crate) fn apply_terminal_resume_finished(
     app: &mut App,
-    request_id: u64,
+    owner: TerminalResumeRequest,
     handle: String,
     chunk: Option<InteractiveOutputChunk>,
     resync: Option<InteractiveResync>,
     error: Option<String>,
 ) {
+    let from_pull = owner.pull().is_some();
     if let Some(error) = error {
-        if app
-            .dialog_state
-            .terminal_request
-            .fail(request_id, error.clone())
-        {
-            app.messages_state.toasts.error(&error);
+        if release_resume_owner(app, &owner, &handle, Some(error.clone())) {
+            if from_pull {
+                // The cadence stopped on a typed daemon refusal. Toast it once,
+                // keep it verbatim on the view: a pull that keeps re-issuing
+                // against a dead attachment is a silent retry loop, and one
+                // that toasts every frame is a toast storm. Either is worse
+                // than saying it once and waiting for the user.
+                app.interactive_terminals
+                    .note_read_refusal(&handle, error.clone());
+                app.messages_state.toasts.error(&error);
+            } else {
+                app.messages_state.toasts.error(&error);
+            }
         }
         return;
     }
-    if !app.dialog_state.terminal_request.finish(request_id) {
+    if !release_resume_owner(app, &owner, &handle, None) {
         return;
+    }
+    // A `/terminal-resume` is the documented recovery from a stopped cadence,
+    // so a successful answer re-arms it.
+    if !from_pull {
+        app.interactive_terminals.clear_read_refusal(&handle);
     }
     if let Some(chunk) = chunk {
         match app.interactive_terminals.apply_resumed(&handle, &chunk) {
@@ -679,7 +703,162 @@ pub(crate) fn apply_terminal_resume_finished(
             .toasts
             .warning("Terminal requires resync; use /terminal-resume to follow live output");
     }
+    // Both surfaces repaint on the chunk. The box needs the explicit refresh
+    // because its content is a pushed dialog; the panel reads the controller on
+    // its next render, so the same completion repaints it too.
     refresh_terminal_dialog(app, &handle);
+}
+
+/// Release the bookkeeping slot a resume answer claims.
+///
+/// Returns `false` when the answer is superseded and must be discarded. The
+/// error, when present, is recorded in the shared slot for a user-initiated
+/// answer; a pull has no shared slot and never borrows one.
+fn release_resume_owner(
+    app: &mut App,
+    owner: &TerminalResumeRequest,
+    handle: &str,
+    error: Option<String>,
+) -> bool {
+    match owner {
+        TerminalResumeRequest::User(generation) => {
+            let generation = *generation;
+            match error {
+                Some(error) => app.dialog_state.terminal_request.fail(generation, error),
+                None => app.dialog_state.terminal_request.finish(generation),
+            }
+        }
+        TerminalResumeRequest::Pull {
+            read_id,
+            attachment_id,
+        } => app
+            .interactive_terminals
+            .finish_output_read(handle, *read_id, attachment_id),
+    }
+}
+
+// ── Cadence pull ────────────────────────────────────────────────────
+//
+// The only output read the TUI ever issues on its own. It rides the event
+// loop's existing pump tick, issues exactly the same bounded
+// `InteractiveProcessResume` `/terminal-resume` issues, and holds per
+// attachment read bookkeeping rather than a shared generation, so it cannot
+// supersede a user's own operation.
+
+/// The handle of the terminal surface currently mounted, if any.
+///
+/// Box first, then panel: they are peers, and a box over a docked panel is the
+/// one the user is looking at. A background view that is neither — attached,
+/// alive, and on no surface — is not read, because nothing it produces would
+/// reach a screen.
+fn mounted_terminal_surface(app: &App) -> Option<String> {
+    if matches!(app.ui_state.dialog, crate::tui::Dialog::Terminal) {
+        if let Some(handle) = app.dialog_state.terminal_detail_handle.as_deref() {
+            return Some(handle.to_string());
+        }
+    }
+    app.panel_host.visible_terminal_handle()
+}
+
+/// Pull live output for the mounted terminal surface, if it needs it.
+///
+/// Called from the event loop's pump tick. Returns `true` when it issued a
+/// read, so the tick can ask for a repaint on the same pass.
+///
+/// No second timer, no interval, no new spinner: this is one call on the tick
+/// that already services the editor's semantic refresh.
+pub(crate) fn service_terminal_output_pull(app: &mut App) -> bool {
+    let Some(handle) = mounted_terminal_surface(app) else {
+        return false;
+    };
+    // The panel sizes its PTY from the render path, which has no seam of its
+    // own, and the only drain used to be reachable through the input flush. A
+    // docked terminal the user never types into therefore stayed at its
+    // create-time 80x24 and would wrap once liveness landed. Draining here
+    // decouples the resize from typing without a second timer.
+    flush_terminal_resize(app, &handle);
+    let Some(core_client) = app.core_client.clone() else {
+        // No daemon: there is no PTY to read, and nothing to say about it.
+        return false;
+    };
+    let read_id = app.interactive_terminals.next_read_id();
+    let Some(read) = app
+        .interactive_terminals
+        .begin_output_read(&handle, read_id)
+    else {
+        return false;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "terminal_output_pull",
+        async move {
+            // Identical to the `/terminal-resume` request: one explicit
+            // cursor, the daemon's own chunk bound, no client-side cap and no
+            // unbounded "give me everything" route.
+            let request = crate::core::new_request(
+                format!("terminal-pull-{}", uuid::Uuid::new_v4()),
+                CoreRequest::InteractiveProcessResume {
+                    attachment_id: read.attachment_id.clone(),
+                    from_seq: read.from_seq,
+                    max_bytes: None,
+                },
+            );
+            let owner = TerminalResumeRequest::Pull {
+                read_id: read.read_id,
+                attachment_id: read.attachment_id,
+            };
+            let result = match core_client.request(request).await {
+                Ok(CoreResponse::InteractiveProcessResumed { chunk, .. }) => {
+                    TuiCommand::TerminalResumeFinished {
+                        request: owner,
+                        handle,
+                        chunk: Some(chunk),
+                        resync: None,
+                        error: None,
+                    }
+                }
+                Ok(CoreResponse::InteractiveProcessResyncRequired { resync, .. }) => {
+                    TuiCommand::TerminalResumeFinished {
+                        request: owner,
+                        handle,
+                        chunk: None,
+                        resync: Some(resync),
+                        error: None,
+                    }
+                }
+                // Typed refusals stay typed: the daemon's code and message are
+                // carried through `terminal_error_hint` unchanged and kept on
+                // the view, rather than being flattened into a generic error
+                // that hides which class of failure it was.
+                Ok(CoreResponse::Error { code, message }) => TuiCommand::TerminalResumeFinished {
+                    request: owner,
+                    handle,
+                    chunk: None,
+                    resync: None,
+                    error: Some(terminal_error_hint(&code, &message)),
+                },
+                Ok(other) => TuiCommand::TerminalResumeFinished {
+                    request: owner,
+                    handle,
+                    chunk: None,
+                    resync: None,
+                    error: Some(format!("unexpected resume response: {other:?}")),
+                },
+                Err(error) => TuiCommand::TerminalResumeFinished {
+                    request: owner,
+                    handle,
+                    chunk: None,
+                    resync: None,
+                    error: Some(format!("resume request failed: {error}")),
+                },
+            };
+            Some(result)
+        },
+    );
+    true
 }
 
 // ── Input / resize (bounded, coalesced) ─────────────────────────────
@@ -2256,5 +2435,395 @@ mod tests {
         assert!(terminal_error_hint("interactive_attachment_gone", "x").contains("re-attach"));
         assert!(terminal_error_hint("interactive_handle_gone", "x").contains("/terminal-list"));
         assert!(terminal_error_hint("interactive_not_running", "x").contains("already exited"));
+    }
+
+    // ── Live output pull acceptance (C001) ──────────────────────────
+    //
+    // Everything below drives the *production* composition end to end: a real
+    // PTY behind the real M002 protocol, reached through the TUI's own
+    // `CoreClient` seam, with keystrokes injected by `App::on_key` and the
+    // output read by the production cadence service. Nothing here calls the
+    // protocol directly to move bytes into the view — the assertions are about
+    // what the user can actually see.
+    //
+    // The two boxed tests are the falsification of the write-only defect: on a
+    // TUI with no output read at all they fail with every byte the daemon is
+    // holding in its ring still absent from the rendered buffer.
+
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use codegg_core::workspace::{ExecutionContext, InMemoryWorkspaceStore, WorkspaceRegistry};
+    use codegg_core::workspace_services::{
+        ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    use crate::interactive_process_attach::InteractiveProcessProtocol;
+
+    /// Production pull cadence. Must equal the event-loop tick: the pull rides
+    /// the pump tick and adds no second timer (I4).
+    const PULL_TIMEOUT: Duration = Duration::from_secs(15);
+    const CLIENT_ID: &str = "client-c001";
+
+    /// A `CoreClient` backed by the **real** M002 interactive-process protocol, so
+    /// the acceptance tests below travel the same requests the daemon answers.
+    struct PtyCoreClient {
+        protocol: InteractiveProcessProtocol,
+        ctx: Arc<ExecutionContext>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::core::CoreClient for PtyCoreClient {
+        async fn request(
+            &self,
+            envelope: crate::protocol::core::RequestEnvelope<CoreRequest>,
+        ) -> Result<CoreResponse, crate::error::AppError> {
+            let response = match envelope.payload {
+                CoreRequest::InteractiveProcessCreate { request } => {
+                    self.protocol
+                        .create(CLIENT_ID, &self.ctx, &request, None)
+                        .await
+                }
+                CoreRequest::InteractiveProcessAttach {
+                    handle,
+                    from_seq,
+                    max_bytes,
+                } => {
+                    self.protocol
+                        .attach(CLIENT_ID, &handle, from_seq, max_bytes)
+                        .await
+                }
+                CoreRequest::InteractiveProcessResume {
+                    attachment_id,
+                    from_seq,
+                    max_bytes,
+                } => {
+                    self.protocol
+                        .resume(CLIENT_ID, &attachment_id, from_seq, max_bytes)
+                        .await
+                }
+                CoreRequest::InteractiveProcessInput {
+                    attachment_id,
+                    data_b64,
+                } => {
+                    self.protocol
+                        .input(CLIENT_ID, &attachment_id, &data_b64)
+                        .await
+                }
+                CoreRequest::InteractiveProcessResize {
+                    attachment_id,
+                    cols,
+                    rows,
+                } => {
+                    self.protocol
+                        .resize(CLIENT_ID, &attachment_id, cols, rows)
+                        .await
+                }
+                CoreRequest::InteractiveProcessDetach { attachment_id } => {
+                    self.protocol.detach(CLIENT_ID, &attachment_id).await
+                }
+                other => CoreResponse::Error {
+                    code: "fixture_unsupported".to_string(),
+                    message: format!("{other:?}"),
+                },
+            };
+            Ok(response)
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
+    async fn pull_test_context(root: &Path) -> Arc<ExecutionContext> {
+        let store = Arc::new(InMemoryWorkspaceStore::new());
+        let registry = WorkspaceRegistry::load(store).await.expect("registry");
+        let record = registry.get_or_register(root).await.expect("register");
+        let _services = WorkspaceServiceRegistry::new(
+            registry,
+            Arc::new(ProductionWorkspaceServicesFactory),
+            WorkspaceServicePolicy::default(),
+        );
+        ExecutionContext::new(
+            record,
+            Some("session-c001".to_string()),
+            CancellationToken::new(),
+        )
+    }
+
+    /// A bound session so `resolve_terminal_workspace` has its canonical
+    /// workspace. Terminals never fall back to ambient cwd.
+    fn bind_workspace_session(app: &mut App, workspace_id: &str, directory: &Path) {
+        let mut session = crate::session::models::Session::default();
+        session.id = "s-c001".to_string();
+        session.project_id = "p-c001".to_string();
+        session.workspace_id = Some(workspace_id.to_string());
+        session.directory = directory.display().to_string();
+        app.session_state.session = Some(session);
+    }
+
+    /// Apply every `TuiCommand` the spawned terminal tasks published, exactly as
+    /// the event loop's `cmd_rx` arm does.
+    async fn drain_tui_commands(app: &mut App) -> usize {
+        let mut applied = 0usize;
+        while let Some(rx) = app.tui_cmd_rx.as_mut() {
+            match tokio::time::timeout(Duration::from_millis(25), rx.recv()).await {
+                Ok(Some(cmd)) => {
+                    crate::tui::runtime::command_dispatch::dispatch_tui_command(app, cmd).await;
+                    applied += 1;
+                }
+                _ => break,
+            }
+        }
+        applied
+    }
+
+    fn render_buffer_text(app: &mut App, width: u16, height: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| app.render(frame))
+            .expect("render must stay panic-free");
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    /// Type `text` then `Enter` through the real key router, one `on_key` per
+    /// keystroke. There is no test-side shortcut into `send_terminal_input`: the
+    /// bytes have to travel the same gate a human's keystrokes do.
+    fn type_through_app(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            app.on_key(key(crossterm::event::KeyCode::Char(ch)));
+        }
+        app.on_key(key(crossterm::event::KeyCode::Enter));
+    }
+
+    /// Spin the production cadence until `marker` is visible in the rendered
+    /// buffer. Returns the buffer that satisfied the predicate.
+    async fn pull_until_rendered(
+        app: &mut App,
+        handle: &str,
+        marker: &str,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let started = Instant::now();
+        loop {
+            // The cadence service the event loop's pump tick calls, plus the same
+            // command drain the `cmd_rx` arm performs.
+            service_terminal_output_pull(app);
+            drain_tui_commands(app).await;
+            let rendered = render_buffer_text(app, width, height);
+            if rendered.contains(marker) {
+                return rendered;
+            }
+            if started.elapsed() > PULL_TIMEOUT {
+                // Report the projection too, not just the frame: "the box is
+                // empty" and "the box never learned the bytes" look identical in
+                // a buffer dump and have completely different causes.
+                let projected = app
+                    .interactive_terminals
+                    .view(handle)
+                    .map(|view| {
+                        format!(
+                            "{}\nprojected rows: {:#?}",
+                            view.status_line(),
+                            app.interactive_terminals.render_lines(handle, 40)
+                        )
+                    })
+                    .unwrap_or_else(|| "<no view>".to_string());
+                panic!(
+                    "the cadence never made {marker:?} visible in the rendered buffer.\n\
+                 view: {projected}\n\
+                 focus_manager={} dialog={:?} sidebar={} panel={:?} area={:?}\n\
+                 last_render_error={:?}\n\
+                 last rendered surface:\n{rendered}",
+                    app.focus_manager.len(),
+                    app.ui_state.dialog,
+                    app.ui_state.sidebar_visible,
+                    app.panel_host.active(),
+                    app.dialog_area,
+                    app.ui_state.last_render_error,
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// An echo-free `cat`: `stty raw -echo` means nothing the user types comes
+    /// back from the line discipline, so the marker can only appear if the TUI read
+    /// the PTY's output and projected it.
+    fn marker_shell() -> Vec<String> {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "stty raw -echo; exec cat".to_string(),
+        ]
+    }
+
+    async fn pull_test_app(dir: &Path, argv: Vec<String>) -> App {
+        let mut app = pull_app(dir).await;
+        start_terminal_create(&mut app, argv);
+        app
+    }
+
+    /// The panel route: the shell lands in the docked side panel instead of the
+    /// box. `terminal_panel_spawn` is the one bit of correlation state the panel
+    /// route uses — set it directly because [`spawn_default_terminal_for_panel`]
+    /// hardcodes the default shell and this fixture needs an echo-free `cat`.
+    async fn pull_test_panel_app(dir: &Path, argv: Vec<String>) -> App {
+        let mut app = pull_app(dir).await;
+        app.ui_state.sidebar_visible = true;
+        app.terminal_panel_spawn = true;
+        start_terminal_create(&mut app, argv);
+        app
+    }
+
+    async fn pull_app(dir: &Path) -> App {
+        let ctx = pull_test_context(dir).await;
+        let mut config = crate::scheduler::config::ResolvedSchedulerConfig::default();
+        config.resources.max_process_slots = 8;
+        let protocol = InteractiveProcessProtocol::new(Arc::new(
+            crate::scheduler::admission::AdmissionController::new(config),
+        ));
+        let mut app = test_app();
+        app.set_core_client(Arc::new(PtyCoreClient {
+            protocol,
+            ctx: ctx.clone(),
+        }));
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        app.tui_cmd_tx = Some(tx);
+        app.tui_cmd_rx = Some(rx);
+        bind_workspace_session(&mut app, ctx.workspace_id.as_str(), dir);
+        app
+    }
+
+    /// Select the terminal panel through the panel manager — the same keystrokes a
+    /// user presses — and put the app in Normal mode, which is the only mode in
+    /// which a panel holds the keyboard.
+    fn select_terminal_panel(app: &mut App) {
+        use crate::tui::panels::SidePanelId;
+        app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+        let from = app.panel_host.active().index();
+        let to = SidePanelId::Terminal.index();
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('S'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        for _ in 0..(to + SidePanelId::ALL.len() - from) % SidePanelId::ALL.len() {
+            app.on_key(key(crossterm::event::KeyCode::Char('j')));
+        }
+        app.on_key(key(crossterm::event::KeyCode::Enter));
+        app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+        assert_eq!(
+            app.panel_host.active(),
+            SidePanelId::Terminal,
+            "the terminal panel must be the live panel before its keys mean anything"
+        );
+        assert!(
+            app.panel_host.is_focused(),
+            "the terminal panel must hold the keyboard before its keys reach it"
+        );
+    }
+
+    /// Box surface: create, attach, type, let the cadence pull, then read the
+    /// rendered buffer.
+    ///
+    /// This is the acceptance test for the write-only defect. `cat` runs with
+    /// `stty raw -echo`, so the line discipline echoes nothing: the marker can only
+    /// reach the screen if the TUI read the PTY's output back and projected it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn box_rendered_buffer_shows_live_pty_output() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let marker = "CODEGG-LIVE-PULL-BOX";
+        let mut app = pull_test_app(dir.path(), marker_shell()).await;
+
+        drain_tui_commands(&mut app).await;
+        assert_eq!(
+            app.ui_state.dialog,
+            crate::tui::Dialog::Terminal,
+            "the box must be mounted before its output can be asserted on"
+        );
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+        assert!(
+            app.interactive_terminals.is_focused(&handle),
+            "the box opens in insert, so the keystrokes below are meaningful"
+        );
+        assert!(
+            !app.focus_manager.is_empty(),
+            "the box owns a pushed dialog; without one there is nothing to render"
+        );
+
+        // Let the viewport resize land *before* typing. A PTY resize flushes the
+        // tty's pending input, so a resize issued mid-word is indistinguishable
+        // from lost keystrokes — and this test is about liveness, not about what a
+        // resize does to a half-typed line.
+        service_terminal_output_pull(&mut app);
+        drain_tui_commands(&mut app).await;
+
+        type_through_app(&mut app, marker);
+        let rendered = pull_until_rendered(&mut app, &handle, marker, 120, 40).await;
+
+        assert!(
+            rendered.contains(marker),
+            "the box must show live PTY output; rendered surface:\n{rendered}"
+        );
+    }
+
+    /// Panel surface: the same chain, but the shell lands in the docked side
+    /// panel, which — unlike the box — does not open focused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn panel_rendered_buffer_shows_live_pty_output() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let marker = "CODEGG-LIVE-PULL-PANEL";
+        let mut app = pull_test_panel_app(dir.path(), marker_shell()).await;
+
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .panel_host
+            .terminal_handle()
+            .expect("the panel adopted the new terminal")
+            .to_string();
+        assert!(
+            !app.interactive_terminals.is_focused(&handle),
+            "the panel never steals the keyboard: `i` is the documented way in"
+        );
+
+        select_terminal_panel(&mut app);
+        app.on_key(key(crossterm::event::KeyCode::Char('i')));
+        assert!(
+            app.interactive_terminals.is_focused(&handle),
+            "`i` on a docked live terminal is the documented route into INS mode"
+        );
+
+        type_through_app(&mut app, marker);
+        let rendered = pull_until_rendered(&mut app, &handle, marker, 120, 40).await;
+
+        assert!(
+            rendered.contains(marker),
+            "the panel must show live PTY output; rendered surface:\n{rendered}"
+        );
     }
 }

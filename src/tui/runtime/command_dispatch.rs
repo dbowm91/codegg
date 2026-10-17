@@ -2074,13 +2074,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             );
         }
         TuiCommand::TerminalResumeFinished {
-            request_id,
+            request,
             handle,
             chunk,
             resync,
             error,
         } => {
-            apply_terminal_resume_finished(app, request_id, handle, chunk, resync, error);
+            apply_terminal_resume_finished(app, request, handle, chunk, resync, error);
         }
         TuiCommand::TerminalOpFinished {
             request_id,

@@ -226,6 +226,17 @@ pub enum TerminalFocus {
     Focused,
 }
 
+impl TerminalFocus {
+    /// Short status label for `/terminal-list` and panel status rows.
+    pub fn label(&self) -> &'static str {
+        match self {
+            TerminalFocus::Hidden => "hidden",
+            TerminalFocus::Viewing => "viewing",
+            TerminalFocus::Focused => "focused",
+        }
+    }
+}
+
 /// Daemon-link state for one terminal view.
 ///
 /// Mirrors the M002 lifecycle from the TUI side: attach/detach never kill
@@ -529,6 +540,9 @@ pub struct InteractiveTerminalView {
     /// first thing on screen for someone who just asked for a shell — and it
     /// pushed the actual terminal rows off a small dialog. `D` restores it.
     diagnostics: bool,
+    /// This attachment's cadence-read slot. Never shared with
+    /// `dialog_state.terminal_request`.
+    read: TerminalReadState,
 }
 
 impl InteractiveTerminalView {
@@ -552,6 +566,7 @@ impl InteractiveTerminalView {
             redactions: Redactions::default(),
             pending_prefix: false,
             diagnostics: false,
+            read: TerminalReadState::default(),
         }
     }
 
@@ -595,25 +610,26 @@ impl InteractiveTerminalView {
 
     /// One-line status for dialog headers and `/terminal-list` output.
     pub fn status_line(&self) -> String {
-        let focus = match self.focus {
-            TerminalFocus::Hidden => "hidden",
-            TerminalFocus::Viewing => "viewing",
-            TerminalFocus::Focused => "focused",
-        };
         let attached = if self.attachment_id.is_some() {
             "attached"
         } else {
             "detached"
         };
+        let read = match self.read.refused.as_deref() {
+            Some(refusal) => format!(" read-stopped:{refusal}"),
+            None if self.read.in_flight.is_some() => " reading".to_string(),
+            None => String::new(),
+        };
         format!(
-            "{} [{}] {} {} {}x{} seq={} {}",
+            "{} [{}] {} {} {}x{} seq={}{} {}",
             self.handle,
             self.link.label(),
             attached,
-            focus,
+            self.focus.label(),
             self.cols,
             self.rows,
             self.scrollback.next_seq,
+            read,
             self.command,
         )
     }
@@ -1041,6 +1057,9 @@ fn previous_word_start(text: &str, from: u16) -> Option<usize> {
 pub struct InteractiveTerminalController {
     views: BTreeMap<String, InteractiveTerminalView>,
     active: Option<String>,
+    /// Source of cadence read ids. Controller-wide so two terminals polling in
+    /// the same frame cannot mint the same id.
+    read_counter: u64,
 }
 
 impl InteractiveTerminalController {
@@ -1048,6 +1067,7 @@ impl InteractiveTerminalController {
         Self {
             views: BTreeMap::new(),
             active: None,
+            read_counter: 0,
         }
     }
 
@@ -1187,6 +1207,14 @@ impl InteractiveTerminalController {
             .get_mut(handle)
             .ok_or_else(|| format!("unknown terminal handle: {handle}"))?;
         view.attachment_id = Some(attachment_id);
+        // A fresh attachment is a fresh read: the slot is re-armed and any
+        // refusal recorded against the previous one no longer describes this
+        // link.
+        view.read = TerminalReadState {
+            attachment_id: None,
+            in_flight: None,
+            refused: None,
+        };
         if view.scrollback.apply_chunk(chunk, &raw) {
             view.screen.reset(view.rows, view.cols);
             view.screen_degraded = true;
@@ -1242,6 +1270,10 @@ impl InteractiveTerminalController {
                     reason: "handle gone: removed or daemon restarted".to_string(),
                 };
                 view.attachment_id = None;
+                // A gone handle has no attachment to resume. The cadence stops
+                // on its own here rather than by being refused one poll later,
+                // which is the same outcome with one fewer doomed round trip.
+                view.read = TerminalReadState::default();
             } else {
                 view.screen.reset(view.rows, view.cols);
                 view.screen_degraded = true;
@@ -1256,6 +1288,10 @@ impl InteractiveTerminalController {
         if let Some(view) = self.views.get_mut(handle) {
             view.attachment_id = None;
             view.focus = TerminalFocus::Viewing;
+            // The attachment a read was issued against is gone, so its
+            // completion is superseded whatever id it carries. Clearing the
+            // slot stops a stale answer from landing on the next attachment.
+            view.read = TerminalReadState::default();
         }
     }
 
@@ -1278,6 +1314,9 @@ impl InteractiveTerminalController {
             view.focus = TerminalFocus::Viewing;
             view.pending_input.clear();
             view.pending_resize = None;
+            // An exited process has no attachment to resume; releasing the slot
+            // keeps one outstanding read from looking live forever.
+            view.read = TerminalReadState::default();
         }
     }
 
@@ -1319,6 +1358,7 @@ impl InteractiveTerminalController {
             view.focus = TerminalFocus::Viewing;
             view.pending_input.clear();
             view.pending_resize = None;
+            view.read = TerminalReadState::default();
             if matches!(view.link, TerminalLinkState::Live)
                 || matches!(view.link, TerminalLinkState::ResyncRequired(_))
             {
@@ -1336,6 +1376,7 @@ impl InteractiveTerminalController {
             view.focus = TerminalFocus::Viewing;
             view.pending_input.clear();
             view.pending_resize = None;
+            view.read = TerminalReadState::default();
             if !view.link.is_exited() {
                 view.link = TerminalLinkState::Gone {
                     reason: "daemon restarted: ephemeral handles invalidated".to_string(),
@@ -1966,6 +2007,23 @@ impl InteractiveTerminalController {
             TerminalLinkState::Gone { reason } => lines.push(format!("gone: {reason}")),
             TerminalLinkState::Live | TerminalLinkState::Reconnecting => {}
         }
+        // A live link with no attachment reads as a live session on screen and
+        // is not one: nothing is reading the PTY, so no output can arrive. Say
+        // so rather than leaving an empty box that looks merely quiet, and
+        // keep the recovery on the same line as the diagnosis.
+        if view.attachment_id.is_none() && !view.link.is_exited() {
+            lines.push(format!(
+                "no attachment — output is not being read; use /terminal-attach {}",
+                view.handle
+            ));
+        }
+        // A typed daemon refusal that stopped the cadence, verbatim. The class
+        // is the useful part, so it is never flattened into a generic message.
+        if let Some(refusal) = view.read.refused.as_deref() {
+            lines.push(format!(
+                "live output stopped: {refusal} (re-attach, or /terminal-resume to retry)"
+            ));
+        }
         Some(lines)
     }
 
@@ -2084,6 +2142,142 @@ impl InteractiveTerminalController {
             .get(handle)
             .and_then(|view| view.attachment_id.clone())
     }
+
+    // ── Cadence output read ───────────────────────────────────────────
+    //
+    // The read is bounded by construction: it is an
+    // `InteractiveProcessResume` at an explicit cursor. There is no
+    // "read everything" entry point here, no second byte cap, and no path
+    // that shifts history silently — a cursor the daemon no longer retains
+    // comes back as its own typed resync and is applied as one.
+
+    /// Mint the next read id.
+    ///
+    /// Monotonic and never zero: `0` is what a caller that has no read to
+    /// identify passes, and a wrapped counter must not be able to produce it.
+    pub fn next_read_id(&mut self) -> u64 {
+        self.read_counter = self.read_counter.wrapping_add(1).max(1);
+        self.read_counter
+    }
+
+    /// Whether a cadence read is already outstanding for `handle`.
+    pub fn output_read_in_flight(&self, handle: &str) -> bool {
+        self.views
+            .get(handle)
+            .is_some_and(|view| view.read.in_flight.is_some())
+    }
+
+    /// Claim the read slot for `handle` and return what to resume.
+    ///
+    /// Returns `None` — issuing nothing — when the view is unknown, has no
+    /// attachment, is not [`TerminalLinkState::Live`], has been refused by the
+    /// daemon (see [`Self::note_read_refusal`]), or already has a read
+    /// outstanding. One read per attachment at a time is what keeps a cadence
+    /// poll from racing itself.
+    pub fn begin_output_read(&mut self, handle: &str, read_id: u64) -> Option<TerminalOutputRead> {
+        let view = self.views.get_mut(handle)?;
+        if view.read.in_flight.is_some() || view.read.refused.is_some() {
+            return None;
+        }
+        let attachment_id = view.attachment_id.clone()?;
+        if !matches!(view.link, TerminalLinkState::Live) {
+            return None;
+        }
+        let read = TerminalOutputRead {
+            attachment_id: attachment_id.clone(),
+            from_seq: view.scrollback.next_seq,
+            read_id,
+        };
+        view.read.in_flight = Some(read_id);
+        view.read.attachment_id = Some(attachment_id);
+        Some(read)
+    }
+
+    /// Release the read slot for `handle`, reporting whether the completion
+    /// still owns it.
+    ///
+    /// `false` means the read was superseded: a different read holds the slot,
+    /// or the attachment changed under it. The caller must then discard the
+    /// answer — applying it would mix one attachment's output into another.
+    /// The slot is cleared either way that it owns, so a lost completion can
+    /// never pin the cadence off permanently.
+    pub fn finish_output_read(&mut self, handle: &str, read_id: u64, attachment_id: &str) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        let owned = view.read.in_flight == Some(read_id)
+            && view.read.attachment_id.as_deref() == Some(attachment_id);
+        if owned {
+            view.read.in_flight = None;
+        }
+        owned
+    }
+
+    /// Record a typed daemon refusal against `handle` and stop the cadence.
+    ///
+    /// A pull that keeps re-issuing against a process that has exited, or a
+    /// handle that is gone, is the silent retry loop this state exists to end:
+    /// the error is kept verbatim — code and message — so the surface can
+    /// report the class it actually got, and the cadence stays off until a
+    /// user-driven action re-arms it.
+    pub fn note_read_refusal(&mut self, handle: &str, error: String) {
+        if let Some(view) = self.views.get_mut(handle) {
+            view.read.refused = Some(error);
+        }
+    }
+
+    /// Re-arm a refused cadence read.
+    ///
+    /// Only reached from user-driven recovery — a fresh attach, or the
+    /// documented `/terminal-resume`. The cadence never re-arms itself,
+    /// because a self-re-arming refusal is the retry loop.
+    pub fn clear_read_refusal(&mut self, handle: &str) {
+        if let Some(view) = self.views.get_mut(handle) {
+            view.read.refused = None;
+        }
+    }
+
+    /// The typed refusal currently stopping this view's cadence, if any.
+    pub fn read_refusal(&self, handle: &str) -> Option<&str> {
+        self.views
+            .get(handle)
+            .and_then(|view| view.read.refused.as_deref())
+    }
+}
+
+/// One bounded output read the cadence is permitted to issue.
+///
+/// `from_seq` is the view's own cursor, so the read is always incremental from
+/// what is already on screen. It is not an adjustable knob: the cadence cannot
+/// widen its own window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalOutputRead {
+    /// The caller-owned attachment to resume.
+    pub attachment_id: String,
+    /// Explicit resume cursor.
+    pub from_seq: u64,
+    /// This read's identity, for matching its completion.
+    pub read_id: u64,
+}
+
+/// Per-attachment output-read bookkeeping.
+///
+/// Deliberately **not** `dialog_state.terminal_request`: that is one shared
+/// slot behind a single generation counter for all nine terminal operations, so
+/// a cadence read that called `begin()` there would supersede an in-flight
+/// input, resize, detach or terminate completion and drop it on the floor.
+/// Keeping the read's identity here makes "a background read must not
+/// invalidate a user action" structural rather than a matter of timing.
+#[derive(Debug, Clone, Default)]
+struct TerminalReadState {
+    /// Attachment this slot is currently reading. A completion whose
+    /// attachment no longer matches is superseded whatever its id.
+    attachment_id: Option<String>,
+    /// Id of the outstanding read, if any.
+    in_flight: Option<u64>,
+    /// Typed daemon refusal that stops the cadence until a user-driven action
+    /// re-arms it.
+    refused: Option<String>,
 }
 
 fn decode_chunk(chunk: &InteractiveOutputChunk) -> Result<Vec<u8>, String> {

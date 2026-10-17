@@ -21,7 +21,9 @@ mod render;
 mod types;
 
 pub(crate) use commands::send_tui;
-pub use commands::{SessionMutationOp, ShellPromotionStageResult, TuiCommand};
+pub use commands::{
+    SessionMutationOp, ShellPromotionStageResult, TerminalResumeRequest, TuiCommand,
+};
 pub use types::{
     CompletionType, ConnectionLifecycleAction, Dialog, HistoryEntry, SessionStatus, TodoEntry,
     TuiMsg,

@@ -1589,6 +1589,27 @@ impl SidePanelHost {
         self.terminal.show(handle);
     }
 
+    /// The terminal the panel is *currently showing*, if that panel is docked
+    /// and visible on screen.
+    ///
+    /// Visibility is part of the answer on purpose. A terminal adopted by a
+    /// panel that is collapsed, swapped out for another panel, or moved off
+    /// the edge is not on anyone's screen, so nothing it produces is worth a
+    /// read; treating "adopted" as "mounted" is how a background terminal ends
+    /// up polling forever for nobody.
+    pub fn visible_terminal_handle(&self) -> Option<String> {
+        if !self.terminal.is_empty() && self.panel_is_terminal_visible() {
+            return self.terminal.handle().map(str::to_string);
+        }
+        None
+    }
+
+    fn panel_is_terminal_visible(&self) -> bool {
+        PanelPlacement::ALL.iter().any(|placement| {
+            self.panel_at(*placement) == SidePanelId::Terminal && self.is_visible_at(*placement)
+        })
+    }
+
     /// Drop the terminal panel's handle when its view disappears.
     pub fn forget_terminal(&mut self, handle: &str) {
         self.terminal.forget(handle);

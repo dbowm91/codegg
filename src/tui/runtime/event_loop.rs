@@ -450,6 +450,14 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                 ) {
                     needs_render = true;
                 }
+                // Live output for the mounted terminal surface. Rides this
+                // same tick on purpose: the interactive surface is a bounded
+                // pull, not a push, so a second timer or a second spinner would
+                // be a second cadence for one subsystem.
+                if crate::tui::commands::interactive_terminal::service_terminal_output_pull(app)
+                {
+                    needs_render = true;
+                }
                 if app.streaming_active
                     || matches!(app.session_state.session_status, SessionStatus::Working)
                     || !app.messages_state.toasts.is_empty()
