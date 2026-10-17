@@ -2,12 +2,13 @@
 
 Status: closed
 
-The milestone is implemented and verified. The blocking condition recorded in
-the plan's §2 — `file-picker-rework` M001 uncommitted and unclosed — has been
-resolved for this work: its closure record exists, its seam signatures were
-re-inspected and match what this milestone assumed, and the work was performed
-in a **separate worktree** so the two could not collide in one dirty tree. The
-one residual condition is that neither milestone is committed yet; see §6.
+The milestone is implemented, committed and verified. The blocking condition
+recorded in the plan's §2 — `file-picker-rework` M001 uncommitted and unclosed —
+is resolved in full: its closure record exists, its seam signatures were
+re-inspected and match what this milestone assumed, and it landed on `main` as
+`b4f4b916f` before this work was reconciled onto it. The work was performed in a
+**separate worktree** so the two could not collide in one dirty tree, and is
+committed as `18bcfa3d9` on top of `origin/main` `27726f7e3`.
 
 Source implementation plan:
 
@@ -18,14 +19,17 @@ Source subsystem roadmap:
 - `plans/subsystems/tui-panel-surface-convergence-corrective-addendum.md`
 
 Repository baseline reviewed: `b77c8156b594494b7f59e0348d93a73ca2c1fd1c`
-plus the uncommitted `file-picker-rework` M001 working-tree changes.
+plus the `file-picker-rework` M001 working-tree changes — then reconciled onto
+`origin/main` `27726f7e3` (`5a7381432` status surfaces, `b4f4b916f` file-picker,
+`27726f7e3` plan records) by a three-way merge before the commit was made.
 
 Implementation commits or pull requests:
 
-- *uncommitted* — working-tree diff, on branch
+- `18bcfa3d97e4ab95444a72f5dfcaa434c827d4ca` — `fix(tui): committing a panel
+  never asks you to leave and come back`, a single-parent commit on top of
+  `origin/main` `27726f7e3`; 18 files, +3135/−184. Branch
   `fork/446e57902e2e-0ae9640ab4bb432f9fa08368b8ae2faf`
   (worktree `.worktrees/fork-446e57902e2e-0ae9640ab4bb432f9fa08368b8ae2faf`).
-  Commit/push were not requested.
 
 ## 1. Executive finding
 
@@ -163,16 +167,47 @@ assertion that checks nothing — is invisible in a green run:
 cargo test -p codegg --lib tui::panels                     40 passed
 cargo test --test tui_panel_manager_reachability             5 passed
 cargo test --test tui_panel_docking                         52 passed
-cargo test --test tui_chat_surfaces                         31 passed
+cargo test --test tui_chat_surfaces                         29 passed
 cargo test --test tui_panel_placement                       30 passed
 cargo test --test tui_agents_panel                           3 passed
-cargo test --test tui_side_panels                           29 passed
+cargo test --test tui_side_panels                           31 passed
 cargo fmt --check                                            clean
 scripts/verify.sh quick                            exit 0 — "Quick verification passed"
 scripts/verify.sh full                           exit 100 — pre-existing failures only, §4.1
 cargo nextest run --workspace --locked --profile ci --no-fail-fast
                                           14175 run, 14163 passed, 11 pre-existing fails
 ```
+
+**Re-verified after reconciling with `origin/main`.** The worktree predated
+`5a7381432` (status surfaces) and `b4f4b916f` (file-picker), so the tree under
+test above was not the tree that was committed. The reconciliation was a
+three-way merge — main's versions of the stale file-picker plan records and
+registry rows win, this milestone's rows win — and every suite was re-run at the
+commit (`18bcfa3d9`):
+
+```text
+cargo test -p codegg --lib tui::panels                     40 passed
+cargo test --test tui_panel_manager_reachability             5 passed
+cargo test --test tui_panel_docking                         52 passed
+cargo test --test tui_chat_surfaces                         29 passed
+cargo test --test tui_panel_placement                       30 passed
+cargo test --test tui_agents_panel                           3 passed
+cargo test --test tui_side_panels                           31 passed
+cargo test --test tui_main_buffer                           44 passed  # main's own suite
+cargo fmt --check                                            clean
+scripts/verify.sh quick                            exit 0 — "Quick verification passed"
+                                              (cargo check --workspace --all-targets
+                                               --locked finished clean on the merged tree)
+```
+
+Three notes on that list. The pre-merge block above had `tui_chat_surfaces` and
+`tui_side_panels` **transposed**; both files are byte-identical to the pre-merge
+base and hold 29 and 31 test functions respectively, so the counts shown are the
+ones that run and the pre-merge list is corrected in place. `tui_main_buffer` is
+main's own suite, run because the reconciliation pulled `5a7381432` into this
+tree. `verify.sh full` was **not** re-run at the merged commit: §4.1 stands for
+the pre-merge base, and the merged commit is covered by the focused suites above
+plus `quick`.
 
 ### 4.1 `verify.sh full`
 
@@ -245,13 +280,15 @@ newly caused** — the earlier run stopped at 1110 tests and never reached them.
 
 ## 6. Residual conditions
 
-- **Neither milestone is committed.** `file-picker-rework` M001 was already
-  recorded as *conditionally closed* for exactly this reason, and this milestone
-  is in the same state. The §2 unblock condition is satisfied in substance
-  (closure record exists, seam signatures verified as landed: `keymap_hint() ->
-  Option<String>` and `render_in_panel(&mut Frame, Rect, &Arc<Theme>)`, both
-  defaulted) but not in the letter the plan asked for. **M002 should still
-  re-inspect both boundary files at the eventual commit before starting.**
+- **Resolved after this record was drafted: both milestones are committed.**
+  `file-picker-rework` M001 landed on `main` as `b4f4b916f` and this milestone as
+  `18bcfa3d9`, reconciled with `origin/main` `27726f7e3`. The §2 condition was
+  satisfied in substance before the commit (closure record exists, seam
+  signatures verified as landed: `keymap_hint() -> Option<String>` and
+  `render_in_panel(&mut Frame, Rect, &Arc<Theme>)`, both defaulted) and in the
+  letter once it existed. **M002 should still re-inspect both boundary files at
+  `18bcfa3d9` before starting**, since it re-plans against the post-adoption
+  shape anyway.
 - **The `Workspace` persisted hotkey is now unbound, silently.** A user who had
   bound `Ctrl+digit` to `workspace` loses that binding with no error. This is
   the fail-soft path the plan's §9 required and it was verified before the
