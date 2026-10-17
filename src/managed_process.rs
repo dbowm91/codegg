@@ -232,7 +232,7 @@ impl EnvironmentPolicy {
             .collect()
     }
 
-    fn sandbox_interactive_entries(
+    pub(crate) fn sandbox_interactive_entries(
         &self,
         provenance: &ProcessProvenance,
     ) -> Result<Vec<(String, String)>, ManagedProcessError> {
@@ -682,6 +682,7 @@ pub(crate) async fn spawn_sandboxed_interactive_child(
     stdin: std::process::Stdio,
     stdout: std::process::Stdio,
     stderr: std::process::Stdio,
+    attach_controlling_terminal: bool,
     cancellation: &CancellationToken,
     shutdown: &CancellationToken,
 ) -> Result<LiveSandboxChild, ManagedProcessError> {
@@ -727,14 +728,17 @@ pub(crate) async fn spawn_sandboxed_interactive_child(
     environment_policy.apply(&mut command);
     ProcessProvenance::default().apply(&mut command);
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
-            // The PTY slave is fd 0 in the helper. Keep it as this session's
-            // controlling terminal across helper and Bubblewrap execs.
-            if libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
-                return Err(io::Error::last_os_error());
+            if attach_controlling_terminal {
+                // The PTY slave is fd 0 in the helper. Keep it as this
+                // session's controlling terminal across helper and Bubblewrap
+                // execs. Duplex protocol children such as LSP use pipes.
+                if libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
             }
             Ok(())
         });

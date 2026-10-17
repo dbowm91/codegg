@@ -8,6 +8,13 @@ on:
       - 'src/bin/codegg-sandbox-helper.rs'
       - 'src/managed_process.rs'
       - 'src/interactive_process.rs'
+      - 'src/lsp/**'
+      - 'src/agent/turn_runtime.rs'
+      - 'src/tool/mod.rs'
+      - 'crates/egglsp/src/client.rs'
+      - 'crates/egglsp/src/launch.rs'
+      - 'crates/egglsp/src/runtime.rs'
+      - 'crates/egglsp/src/service.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
@@ -18,6 +25,13 @@ on:
       - 'src/bin/codegg-sandbox-helper.rs'
       - 'src/managed_process.rs'
       - 'src/interactive_process.rs'
+      - 'src/lsp/**'
+      - 'src/agent/turn_runtime.rs'
+      - 'src/tool/mod.rs'
+      - 'crates/egglsp/src/client.rs'
+      - 'crates/egglsp/src/launch.rs'
+      - 'crates/egglsp/src/runtime.rs'
+      - 'crates/egglsp/src/service.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
@@ -90,6 +104,9 @@ jobs:
           CODEGG_RUN_M004_PTY_NATIVE: '1'
         run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant -- --nocapture
 
+      - name: M004 daemon-owned constrained LSP duplex and procfs qualification
+        run: cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope --features lsp-test-support -- --test-threads=1 --nocapture
+
       - name: Protected mount and Git regressions
         run: |
           cargo test --locked --lib protected_mount_ -- --nocapture
@@ -129,3 +146,6 @@ jobs:
 
       - name: Constrained PTY route refuses before target under host userns policy
         run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture
+
+      - name: Constrained LSP launch refuses before target under host userns policy
+        run: cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture

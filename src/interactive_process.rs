@@ -1450,6 +1450,7 @@ async fn spawn_unix_child(
             child_stdin,
             child_stdout,
             child_stderr,
+            true,
             &ctx.cancellation,
             shutdown,
         )

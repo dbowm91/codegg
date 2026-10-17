@@ -229,6 +229,37 @@ impl TurnRuntime for DefaultTurnRuntime {
     async fn run_turn(&self, input: TurnRunInput) -> Result<TurnRunOutput, AppError> {
         use crate::agent::agent_loop_factory::AgentLoopBuildInput;
 
+        let profile = input
+            .sandbox_profile
+            .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+        let m004_lsp_scope = if profile.requires_filesystem_containment() {
+            #[cfg(target_os = "linux")]
+            {
+                match crate::lsp::m004::M004LspServiceScope::new(
+                    profile,
+                    input.execution.workspace_root.clone(),
+                    crate::lsp::config_lsp_to_egglsp(input.config.lsp.clone().unwrap_or_default()),
+                ) {
+                    Ok(scope) => Some(scope),
+                    Err(error) => {
+                        tracing::warn!(%error, "constrained LSP service could not be constructed");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                None
+            }
+        } else {
+            None
+        };
+        let lsp_service = if profile.requires_filesystem_containment() {
+            m004_lsp_scope.as_ref().map(|scope| scope.service())
+        } else {
+            input.lsp_service.clone()
+        };
+
         let TurnRunInput {
             session_id,
             agents_dto,
@@ -243,7 +274,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             memory_store,
             event_log,
             turn_id,
-            lsp_service,
+            lsp_service: _,
             document_service,
             lsp_context_input,
             plugin_service,
@@ -782,26 +813,17 @@ impl TurnRuntime for DefaultTurnRuntime {
             ));
         }
 
-        if sandbox_profile
-            .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite)
-            .is_full_host()
-        {
-            if let Some(ref svc) = lsp_service {
-                let root = execution.workspace_root.clone();
-                if let Some(lsp_ctx) = assemble_lsp_context_for_turn(
-                    svc,
-                    lsp_context_input,
-                    &model_profile.family,
-                    root,
-                )
-                .await
-                {
-                    runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
-                        crate::agent::prompt::PromptBlockKind::LspContext,
-                        "lsp:turn-context",
-                        &lsp_ctx,
-                    ));
-                }
+        if let Some(ref svc) = lsp_service {
+            let root = execution.workspace_root.clone();
+            if let Some(lsp_ctx) =
+                assemble_lsp_context_for_turn(svc, lsp_context_input, &model_profile.family, root)
+                    .await
+            {
+                runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
+                    crate::agent::prompt::PromptBlockKind::LspContext,
+                    "lsp:turn-context",
+                    &lsp_ctx,
+                ));
             }
         }
         let git_ctx = build_git_context_for_path(&execution.workspace_root).await;
@@ -974,6 +996,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         let event_log_for_spawn = event_log;
         let specialized_prepared_for_spawn = specialized_prepared;
         let run_control_for_spawn = run_control;
+        let m004_lsp_scope_for_spawn = m004_lsp_scope;
         let title_model = request.model.clone();
         tokio::spawn(async move {
             // A panic inside the agent-loop task must not vanish with the
@@ -1084,6 +1107,9 @@ impl TurnRuntime for DefaultTurnRuntime {
                         }
                     }
                 }
+            }
+            if let Some(scope) = m004_lsp_scope_for_spawn {
+                scope.shutdown().await;
             }
         });
 

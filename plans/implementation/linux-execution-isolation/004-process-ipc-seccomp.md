@@ -1,6 +1,6 @@
 # Linux Execution Isolation M004 — Process, IPC, Procfs and Syscall Isolation
 
-Status: active (internal PID/IPC/proc/FD/seccomp implementation has exact-hosted positive probes, including concurrent namespace separation; broader compatibility, PTY routing, and host-admission gates remain open)
+Status: active (internal PID/IPC/proc/FD/seccomp implementation has exact-hosted positive probes, including concurrent namespace separation; C013 constrained PTY ownership is closed; constrained LSP ownership and its exact-host/restricted-host qualification are in progress)
 Primary class: capability
 <<<<<<< HEAD
 Repository baseline: current-main merge `188edb371759f40b291052f25598bdb8ab57702d` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. PID/IPC/proc/FD and architecture-checked seccomp enforcement are implemented behind an internal opt-in and have exact-head hosted denial and ordinary-tool probes; broader host qualification, production PTY/LSP routing, and full toolchain compatibility remain open.
@@ -48,12 +48,12 @@ attempt used invalid `cargo metadata --workspace` syntax and failed; commit
 `7312acad` corrected the invocation. The final hosted result is for the
 corrected code.
 
-This qualifies the current internal process/IPC and offline-network test
-candidate on the recorded hosted runner. It does not close M004: constrained
-PTY creation still refuses before spawn, and constrained LSP turns remain
-unbound from the shared FullHost service because there is no supervised duplex
-LSP process owner carrying the M004 launch scope. Supported-host qualification
-and actual production-owner routing remain hard closure gates. M005 remains an
+This qualifies the internal process/IPC and offline-network test candidate on
+the recorded hosted runner. At that point, constrained PTY and LSP production
+owners remained open. C013 subsequently closed the constrained PTY route with
+principal-bound profile resolution, supervised helper launch, cleanup, and
+hosted restricted-userns refusal. M004 remains active for constrained LSP
+ownership and exact-host/restricted-host qualification. M005 remains an
 internal candidate, and C010's M003 no-admission decision is unchanged.
 
 ### Exact-head DNS and object-view regression qualification (2026-10-16)
@@ -79,10 +79,12 @@ file passed locally 12/12. That isolated correction is commit `7646ed68`;
 fresh full CI `38934845574` on that head is pending. Full-suite
 reconciliation remains open until the latest run completes.
 
-This additional native evidence closes the DNS fixture gap only. The PTY
-service still refuses constrained profiles before `openpty`/spawn, and the
-LSP service still has no distinct daemon-owned constrained runtime. No M004
-production owner or M005 production network-enforcement claim is promoted.
+This additional native evidence closes the DNS fixture gap only. At that
+point, the PTY service still refused constrained profiles before
+`openpty`/spawn, and the LSP service still had no distinct daemon-owned
+constrained runtime. C013 later closed the PTY owner route. The LSP scope
+implementation and qualification remain the current M004 work. No M005
+production network-enforcement claim is promoted.
 
 ### Post-merge exact-head owner-boundary qualification (2026-10-16)
 
@@ -118,11 +120,12 @@ fresh full CI remains required. The earlier hosted Git-log failure did not
 recur in the 6,704 tests run before fail-fast in `38937869443`; it remains
 classified as an earlier unreproduced failure, not a confirmed transient.
 
-The PTY service still refuses constrained profiles before `openpty`/spawn,
-and constrained LSP turns remain unbound from the shared FullHost service
-because no supervised duplex LSP process owner carries the M004 launch scope.
-No production PTY/LSP owner or M005 production network-enforcement claim is
-promoted. C010's no-admission decision remains unchanged.
+At this point in the recorded history, the PTY service still refused
+constrained profiles before `openpty`/spawn, and constrained LSP turns remained
+unbound from the shared FullHost service. C013 later closed the PTY owner
+route. The constrained LSP owner is the current M004 implementation and
+qualification work. No M005 production network-enforcement claim is promoted.
+C010's no-admission decision remains unchanged.
 
 ## 3. Invariants
 
@@ -168,6 +171,10 @@ cargo test -p codegg --test sandbox_containment -- --test-threads=1
 CODEGG_RUN_M004_BWRAP_NATIVE=1 cargo test --locked --test linux_m004_process_ipc process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket -- --nocapture
 CODEGG_RUN_M004_CARGO_NATIVE=1 cargo test --locked --test linux_m004_process_ipc process_tier_runs_workspace_check_and_managed_process_tests -- --nocapture
 CODEGG_RUN_M004_RESTRICTED_USERNS=1 cargo test --locked --test linux_m004_process_ipc required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
+CODEGG_RUN_M004_BWRAP_NATIVE=1 cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_process_is_owned_by_m004_scope --features lsp-test-support -- --test-threads=1 --nocapture
+CODEGG_RUN_M004_RESTRICTED_USERNS=1 cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture
+cargo test --locked -p egglsp --lib service::tests::manual_restart_terminates_old_runtime_before_new_start --features lsp-test-support -- --test-threads=1
+cargo test --locked -p codegg --test document_lsp_integration --features lsp-test-support -- --test-threads=1
 python3 scripts/check_sandbox_contract.py
 scripts/verify.sh quick
 ```
@@ -204,45 +211,29 @@ cannot escape through a specialized protocol owner.
 PTY policy association is daemon-owned and principal-scoped. At create time,
 the daemon resolves the transport-bound principal's `RuntimePreference` and
 passes the resulting `SandboxProfile` to `InteractiveProcessProtocol`; no
-client DTO field selects or widens the profile. The protocol refuses
-`ReadOnly` and `WorkspaceWrite` requests before scheduler admission or target
-spawn until PTY creation is owned by the qualified M004 launcher. `FullHost`
-retains the existing PTY path. A preference-store failure refuses creation.
-This association does not claim constrained PTY support and does not attach a
-client-selected profile to a process.
+client DTO field selects or widens the profile. C013 now routes constrained
+PTY creation through the supervised M004 helper, with hosted positive routing,
+descendant cleanup, and restricted-userns refusal-before-target probes. A
+preference-store failure refuses creation. `FullHost` retains the existing
+PTY path.
 
-Agent turns carry a daemon-resolved sandbox profile. `LspTool` and the shared
-daemon `LspService` are available only to FullHost turns; constrained turns
-receive disabled LSP tools and no shared service or preview adapter. The
-ownership decision is that a future contained LSP runtime must be a distinct
-daemon-owned service instance whose immutable launch scope includes profile,
-workspace, server identity, and generation. That service must own launch,
-restart, cancellation, and shutdown for every LSP child; it must not look up
-or restart a FullHost process. Its launch adapter must preserve supervised
-JSON-RPC stdin/stdout and stderr while applying the qualified M004 boundary.
-The current LSP launcher does not support this duplex contained-process
-contract, so constrained LSP process creation remains refused before spawn.
-End-to-end tests must pin FullHost start/restart compatibility and prove a
-constrained turn cannot create, reuse, or restart a FullHost LSP process.
+Agent turns carry a daemon-resolved sandbox profile. FullHost turns retain the
+shared daemon LSP service. Linux constrained turns receive a distinct service
+scope bound to the canonical workspace and immutable profile; tool registry
+admission checks that scope before exposing `lsp`, `lsp_read`, preview apply,
+or prompt-context collection. Initial launches and restarts go through the
+required M004 helper, the service runtime owns child exit and helper status,
+and turn teardown shuts the service down. Failure to construct or launch the
+scope keeps the constrained tools unavailable. The client cannot select the
+profile. Native qualification must demonstrate a real duplex JSON-RPC
+exchange, host-proc denial, and restricted-userns refusal-before-target while
+existing FullHost launch/restart tests continue to pass.
 
-The current corrective refuses constrained LSP at session-tool construction:
-it registers unavailable `lsp`/`lsp_read` tools, does not bind the shared LSP
-service or preview adapter, and omits LSP prompt-context collection. FullHost
-turns keep the existing service. This closes the cross-profile reuse path by
-refusing before a specialized launch, but it is a fail-closed compatibility
-state, not positive M004 LSP qualification. Production PTY now resolves the
-principal's daemon-owned profile and refuses constrained creates before spawn;
-FullHost behavior remains compatible. M004 stays active until a contained
-duplex LSP owner and contained PTY route are qualified on supported and
-restricted-userns host configurations.
-
-`egglsp::LspService` now accepts one `LspProcessLauncher` when constructed and
+`egglsp::LspService` accepts one `LspProcessLauncher` when constructed and
 routes both initial launches and restart generations through that same
-service-owned launcher. Existing services use the direct FullHost adapter.
-This provides the injection boundary for a future daemon-owned constrained
-LSP instance while preserving duplex pipe ownership. No constrained adapter is
-currently installed, and the existing constrained refusal remains in force;
-the interface change is not execution containment evidence.
+service-owned launcher. Existing services use the direct FullHost adapter; the
+turn runtime installs the M004 launcher only for a new constrained service
+scope. This keeps FullHost state separate and preserves duplex pipe ownership.
 
 Exact-code-head hosted qualification ran on
 `0ddafd40609be6e57d09046584e3478d79c7ca63`. Linux M004 workflow

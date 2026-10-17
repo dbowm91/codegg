@@ -67,16 +67,21 @@ full native, descriptor, cancellation, and tool-compatibility evidence is
 accepted.
 
 Long-lived PTY sessions retain a distinct `InteractiveProcessService` owner.
-Its internal Linux M004 candidate uses `ManagedProcessService` helper launch
-and setup acknowledgment before releasing the target, then retains status
-monitoring alongside PTY/session lifetime ownership. For three terminal
-standard streams, the helper pins its own executable into the private mount
-view and runs it as an in-namespace bootstrap that creates a visible foreground
-process group, then execs the requested target in place. The daemon routes the
-principal-resolved constrained profile through this owner after exact-host
-qualification; unsupported setup fails before target start and must not use a
-direct-spawn fallback. Constrained LSP remains unavailable until its own duplex
-process owner is wired through the service-scoped launcher.
+Its Linux M004 path uses `ManagedProcessService` helper launch and setup
+acknowledgment before releasing the target, then retains status monitoring
+alongside PTY/session lifetime ownership. For three terminal standard streams,
+the helper pins its own executable into the private mount view and runs it as
+an in-namespace bootstrap that creates a visible foreground process group,
+then execs the requested target in place. The daemon routes the
+principal-resolved constrained profile through this owner; unsupported setup
+fails before target start and cannot fall back to direct spawn.
+
+Constrained Linux turns may use LSP only through their distinct per-turn M004
+service, bound to the daemon-resolved profile and canonical workspace. The
+service launcher uses the same supervised helper while retaining duplex
+JSON-RPC pipes and status-receipt ownership through child exit. It never
+borrows the shared FullHost LSP service. If scoped construction or launch
+fails, constrained LSP tools and context remain unavailable.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows

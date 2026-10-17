@@ -553,6 +553,9 @@ pub struct LspClient {
     /// process monitoring. `None` after the handle has been taken by
     /// the supervisor monitor task.
     pub(crate) child: Mutex<Option<tokio::process::Child>>,
+    /// Optional private containment-status owner returned by a daemon-owned
+    /// launcher. The process runtime takes and awaits it when the child exits.
+    pub(crate) status_task: Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
     /// Stderr pipe handle retained during construction so the
     /// authoritative process runtime can take ownership of the
     /// reader at monitor-startup time. `None` after the runtime has
@@ -712,6 +715,7 @@ impl LspClient {
 
         // Extract child handle for process monitoring after stdout/stdin are taken.
         let child = process.child;
+        let status_task = process.status_task;
 
         let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -801,6 +805,7 @@ impl LspClient {
             transport_state,
             dynamic_registrations,
             child: Mutex::new(Some(child)),
+            status_task: Mutex::new(status_task),
             stderr: Mutex::new(stderr_handle),
             server_generation,
             observed_push_diagnostics,
@@ -929,6 +934,7 @@ impl LspClient {
             transport_state,
             dynamic_registrations,
             child: Mutex::new(Some(child)),
+            status_task: Mutex::new(None),
             // Test stubs use the legacy stderr drain; no runtime
             // owns the stderr pipe.
             stderr: Mutex::new(None),

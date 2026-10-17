@@ -3715,6 +3715,8 @@ async fn spawn_process_monitor(
         }
     };
 
+    let status_task = client.status_task.lock().await.take();
+
     // Take the stderr handle from the client so the runtime can own
     // the bounded ring buffer. If a test stub populated `None` (the
     // legacy stderr drain path), the runtime still works — the
@@ -3729,6 +3731,7 @@ async fn spawn_process_monitor(
             generation,
             child,
             stderr_handle,
+            status_task,
         ),
         None => {
             // No stderr handle available; spawn the runtime with a
@@ -3754,6 +3757,7 @@ async fn spawn_process_monitor(
                 generation,
                 child,
                 dummy_stderr,
+                status_task,
             )
         }
     };
@@ -7805,6 +7809,7 @@ mod tests {
             0,
             child,
             stderr_handle,
+            None,
         );
         runtime
     }
@@ -7832,6 +7837,7 @@ mod tests {
             0,
             child,
             stderr_handle,
+            None,
         );
         runtime
     }
