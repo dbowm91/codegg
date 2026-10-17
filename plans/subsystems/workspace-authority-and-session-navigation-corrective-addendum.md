@@ -1,6 +1,6 @@
 # Workspace Authority and Session Navigation Corrective Addendum
 
-Status: proposed
+Status: active (W001 closed; W002/W003 not started)
 
 Long-term references:
 
@@ -312,6 +312,6 @@ discoverable and answerable through the workspace surface.
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| W001 | ready | `plans/implementation/workspace-authority-and-session-navigation/001-workspace-root-execution-authority.md` | — | None |
+| W001 | closed | `plans/implementation/workspace-authority-and-session-navigation/001-workspace-root-execution-authority.md` | `plans/closure/workspace-authority-and-session-navigation/001-status.md` | None |
 | W002 | not started | — | — | W001 |
 | W003 | not started | — | — | W002; UX decision (§10) |
