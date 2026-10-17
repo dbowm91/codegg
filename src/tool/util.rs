@@ -172,6 +172,40 @@ pub fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf,
     Ok(normalized)
 }
 
+/// Return a normalized path beneath a known host temporary root. This is
+/// advisory for structured-tool recovery only and grants no path authority.
+pub fn relative_to_known_temp_root(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let normalized = lexically_normalize(path);
+    let mut roots = vec![std::env::temp_dir()];
+    #[cfg(unix)]
+    roots.extend([
+        PathBuf::from("/tmp"),
+        PathBuf::from("/var/tmp"),
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/private/var/tmp"),
+    ]);
+    #[cfg(windows)]
+    if let Some(temp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMP")) {
+        roots.push(PathBuf::from(temp));
+    }
+
+    roots.into_iter().find_map(|root| {
+        let root = lexically_normalize(&root);
+        let relative = normalized.strip_prefix(root).ok()?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        Some(relative.to_path_buf())
+    })
+}
+
 /// Resolve a caller-supplied working directory against the workspace root.
 ///
 /// Delegates to [`validate_target_path`] rather than repeating its containment
@@ -434,6 +468,20 @@ mod tests {
             validate_path(Path::new("src/http/missing.rs"), root.path()).is_err(),
             "a genuinely missing file is still an error"
         );
+    }
+
+    #[test]
+    fn temp_guidance_uses_path_components_and_rejects_traversal() {
+        let root = std::env::temp_dir();
+        let request = root.join("codegg-temp-guidance").join("artifact.txt");
+        assert_eq!(
+            relative_to_known_temp_root(&request),
+            Some(PathBuf::from("codegg-temp-guidance/artifact.txt"))
+        );
+        assert!(relative_to_known_temp_root(&root).is_none());
+        assert!(relative_to_known_temp_root(&root.join("../outside.txt")).is_none());
+        #[cfg(unix)]
+        assert!(relative_to_known_temp_root(Path::new("/tmp-prefix/secret")).is_none());
     }
 
     /// The error must name what the caller sent, not the derived absolute

@@ -138,6 +138,17 @@ directory and applies the same symlink-aware validator beneath that root.
 Relative paths continue to resolve from the workspace. Scratch access does not
 apply to another session, human shell, plugins, or arbitrary absolute paths.
 
+If a structured `write` reaches the path boundary with an absolute target under
+a recognized host temporary root, but that root is not authorized, the tool
+returns a non-authoritative recovery hint to retry under the current private
+scratch path. It does not rewrite the target or add a grant. The hint is shown
+only when the host scratch directory exists. A required original location must
+still use the normal permission path; an explicit Deny is resolved before the
+tool runs and is never converted into a scratch write. Structured reads and
+shell commands keep their existing path and execution semantics. This hint
+does not intercept shell writes: an unsandboxed FullHost process can address
+the real host temp directory, and shell syntax inspection is not containment.
+
 `check_with_args()` adds a destructive-pattern fallback for
 `ShellExec` tools. If the user's ruleset would allow the command but
 it matches a destructive pattern (`rm -rf /`, `mkfs`, `dd of=...`,

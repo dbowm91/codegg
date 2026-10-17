@@ -46,6 +46,9 @@ instructions into the candidate. See `architecture/agent.md`.
    granted only by their direct owner through an opaque `ScratchId` stored in
    the accepted run snapshot; the worker revalidates grants before exposing
    `CODEGG_SHARED_SCRATCH_<ALIAS>`. Keep standard temporary variables private.
+   A structured write rejected under a known host temp root can return an
+   advisory path under private scratch; preserve the original path and all
+   explicit permission decisions. Reads and shell commands are not redirected.
 2. **Never edit `src/agent/builtins/generated.rs`.** Edit
    `assets/agents/*.toml` or `assets/prompts/` then run
    `python3 scripts/generate_builtin_agents.py` (`--check` in CI).

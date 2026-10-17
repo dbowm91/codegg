@@ -5,6 +5,11 @@
 //! searches existing directories to infer ownership.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(unix)]
+static SHARED_RECLAIM_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentScratchScope {
@@ -92,6 +97,8 @@ pub enum ScratchError {
     WrongOwner(PathBuf),
     #[error("could not determine the current user's home-directory owner")]
     OwnerUnavailable,
+    #[error("shared scratch reclamation is unavailable on this platform")]
+    CleanupUnavailable,
 }
 
 /// Resolve and securely create the persistent scratch root for one session.
@@ -166,34 +173,104 @@ pub fn shared_scratch_dir(
 /// Remove a shared cache directory after the durable store proves it has been
 /// revoked and has no admitted attempt leases. Unknown paths are never read
 /// from model input; the leaf is reconstructed from the typed resource ID.
+#[cfg(unix)]
 pub(crate) fn reclaim_shared_scratch_dir(
     session_id: &str,
     scratch_id: &codegg_core::identity::ScratchId,
 ) -> Result<bool, ScratchError> {
+    let _guard = SHARED_RECLAIM_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let session_root = session_scratch_dir(session_id)?;
     let shared_root = session_root.join("shared");
     let owner = directory_owner(&session_root)?;
     ensure_private_directory(&shared_root, owner)?;
     let digest = resource_digest("shared-scratch", scratch_id.as_str());
     let path = shared_root.join(hex_digest(&digest));
-    match std::fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+    let canonical_shared_root = std::fs::canonicalize(&shared_root)?;
+    let recovered = recover_reclaim_tombstones(&shared_root, &digest, owner)?;
+    let tombstone = shared_root.join(format!(
+        ".reclaim-{}-{}",
+        hex_digest(&digest),
+        uuid::Uuid::new_v4()
+    ));
+    match std::fs::rename(&path, &tombstone) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(recovered),
         Err(error) => return Err(error.into()),
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(ScratchError::InvalidPath(path));
+    }
+    validate_and_remove_tombstone(&tombstone, &canonical_shared_root, &digest, owner)?;
+    Ok(true)
+}
+
+/// Windows cleanup stays disabled until stable hardlink and reparse-point
+/// inspection is available at the repository's minimum Rust version.
+#[cfg(not(unix))]
+pub(crate) fn reclaim_shared_scratch_dir(
+    _session_id: &str,
+    _scratch_id: &codegg_core::identity::ScratchId,
+) -> Result<bool, ScratchError> {
+    Err(ScratchError::CleanupUnavailable)
+}
+
+#[cfg(unix)]
+fn recover_reclaim_tombstones(
+    shared_root: &Path,
+    digest: &[u8],
+    owner: impl OwnerCheck,
+) -> Result<bool, ScratchError> {
+    let prefix = format!(".reclaim-{}-", hex_digest(digest));
+    let tombstones = std::fs::read_dir(shared_root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .collect::<Vec<_>>();
+    let canonical_shared_root = std::fs::canonicalize(shared_root)?;
+    let mut recovered = false;
+    for previous in tombstones {
+        // Claim an orphaned tombstone under a fresh opaque name. A concurrent
+        // retry can claim it first; either claimant removes only this revoked
+        // resource generation, never a directory recreated at its live name.
+        let claimed = shared_root.join(format!("{prefix}{}", uuid::Uuid::new_v4()));
+        match std::fs::rename(&previous, &claimed) {
+            Ok(()) => {
+                validate_and_remove_tombstone(&claimed, &canonical_shared_root, digest, owner)?;
+                recovered = true;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        Ok(_) => {}
     }
-    let expected = shared_root.join(hex_digest(&resource_digest(
-        "shared-scratch",
-        scratch_id.as_str(),
-    )));
-    if std::fs::canonicalize(&path)? != expected.canonicalize()? {
-        return Err(ScratchError::InvalidPath(path));
+    Ok(recovered)
+}
+
+#[cfg(unix)]
+fn validate_and_remove_tombstone(
+    tombstone: &Path,
+    canonical_shared_root: &Path,
+    digest: &[u8],
+    owner: impl OwnerCheck,
+) -> Result<(), ScratchError> {
+    let metadata = std::fs::symlink_metadata(tombstone)?;
+    if is_symlink_or_reparse_point(&metadata) || !metadata.is_dir() {
+        return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
     }
-    let owner_record = path.join(OWNER_RECORD_NAME);
+    let expected_tombstone = canonical_shared_root.join(
+        tombstone
+            .file_name()
+            .ok_or_else(|| ScratchError::InvalidPath(tombstone.to_path_buf()))?,
+    );
+    if std::fs::canonicalize(tombstone)? != expected_tombstone {
+        return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
+    }
+    let owner_record = tombstone.join(OWNER_RECORD_NAME);
     let owner_metadata = std::fs::symlink_metadata(&owner_record)?;
-    if owner_metadata.file_type().is_symlink() || !owner_metadata.is_file() {
+    if is_symlink_or_reparse_point(&owner_metadata) || !owner_metadata.is_file() {
         return Err(ScratchError::InvalidPath(owner_record));
     }
     #[cfg(unix)]
@@ -205,13 +282,41 @@ pub(crate) fn reclaim_shared_scratch_dir(
     }
     let record = std::fs::read(&owner_record)?;
     let mut expected_record = b"codegg-session-scratch-v1\n".to_vec();
-    expected_record.extend_from_slice(hex_digest(&digest).as_bytes());
+    expected_record.extend_from_slice(hex_digest(digest).as_bytes());
     expected_record.push(b'\n');
     if record != expected_record {
-        return Err(ScratchError::InvalidPath(path));
+        return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
     }
-    std::fs::remove_dir_all(&path)?;
-    Ok(true)
+    validate_reclaim_tree(tombstone)?;
+    std::fs::remove_dir_all(tombstone)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_reclaim_tree(path: &Path) -> Result<(), ScratchError> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if is_symlink_or_reparse_point(&metadata) {
+        return Err(ScratchError::InvalidPath(path.to_path_buf()));
+    }
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            validate_reclaim_tree(&entry?.path())?;
+        }
+        return Ok(());
+    }
+    if !metadata.is_file() {
+        return Err(ScratchError::InvalidPath(path.to_path_buf()));
+    }
+    use std::os::unix::fs::MetadataExt;
+    if metadata.nlink() != 1 {
+        return Err(ScratchError::InvalidPath(path.to_path_buf()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
 }
 
 fn resource_digest(scope: &str, id: &str) -> Vec<u8> {
@@ -484,11 +589,122 @@ mod tests {
         assert_ne!(first, second);
         assert_ne!(first, shared_root);
         assert_ne!(second, shared_root);
-        assert!(reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
-        assert!(!shared_root.exists());
-        assert!(!reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
+        #[cfg(unix)]
+        {
+            assert!(reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
+            assert!(!shared_root.exists());
+            assert!(!reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(matches!(
+                reclaim_shared_scratch_dir(&session_id, &shared),
+                Err(ScratchError::CleanupUnavailable)
+            ));
+            assert!(shared_root.is_dir());
+            std::fs::remove_dir_all(&shared_root).unwrap();
+        }
         std::fs::remove_dir_all(first).unwrap();
         std::fs::remove_dir_all(second).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoked_cleanup_recovers_an_orphaned_tombstone_after_restart() {
+        let session_id = format!("scratch-orphaned-reclaim-{}", uuid::Uuid::new_v4());
+        let scratch_id = codegg_core::identity::ScratchId::new();
+        let root = shared_scratch_dir(&session_id, &scratch_id).unwrap();
+        std::fs::write(root.join("artifact.txt"), "disposable").unwrap();
+        let digest = resource_digest("shared-scratch", scratch_id.as_str());
+        let tombstone = root
+            .parent()
+            .unwrap()
+            .join(format!(".reclaim-{}-interrupted", hex_digest(&digest)));
+        std::fs::rename(&root, &tombstone).unwrap();
+
+        assert!(reclaim_shared_scratch_dir(&session_id, &scratch_id).unwrap());
+        assert!(!tombstone.exists());
+        assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_revocation_cleanup_reclaims_one_resource_once() {
+        let session_id = format!("scratch-concurrent-reclaim-{}", uuid::Uuid::new_v4());
+        let scratch_id = codegg_core::identity::ScratchId::new();
+        let root = shared_scratch_dir(&session_id, &scratch_id).unwrap();
+        std::fs::write(root.join("artifact.txt"), "disposable").unwrap();
+        let workers = (0..2)
+            .map(|_| {
+                let session_id = session_id.clone();
+                let scratch_id = scratch_id.clone();
+                std::thread::spawn(move || reclaim_shared_scratch_dir(&session_id, &scratch_id))
+            })
+            .collect::<Vec<_>>();
+        let reclaimed = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().unwrap())
+            .filter(|reclaimed| *reclaimed)
+            .count();
+
+        assert_eq!(reclaimed, 1);
+        assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoked_shared_cleanup_quarantines_symlinks_and_hardlinks() {
+        let session_id = format!("scratch-cleanup-session-{}", uuid::Uuid::new_v4());
+        let scratch_id = codegg_core::identity::ScratchId::new();
+        let external = tempfile::tempdir().unwrap();
+        let external_file = external.path().join("external.txt");
+        std::fs::write(&external_file, "outside content").unwrap();
+        let root = shared_scratch_dir(&session_id, &scratch_id).unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::os::unix::fs::symlink(&external_file, root.join("nested/link")).unwrap();
+
+        assert!(reclaim_shared_scratch_dir(&session_id, &scratch_id).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&external_file).unwrap(),
+            "outside content"
+        );
+
+        let shared_parent = root.parent().unwrap();
+        let tombstone = std::fs::read_dir(shared_parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".reclaim-"))
+            })
+            .expect("unsafe resource is quarantined under an opaque tombstone");
+        assert!(
+            !root.exists(),
+            "the managed name is free for a new generation"
+        );
+        std::fs::remove_dir_all(tombstone).unwrap();
+
+        let hardlink_id = codegg_core::identity::ScratchId::new();
+        let hardlink_root = shared_scratch_dir(&session_id, &hardlink_id).unwrap();
+        std::fs::hard_link(&external_file, hardlink_root.join("external-link")).unwrap();
+        assert!(reclaim_shared_scratch_dir(&session_id, &hardlink_id).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&external_file).unwrap(),
+            "outside content"
+        );
+        let hardlink_tombstone = std::fs::read_dir(shared_parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".reclaim-") && path.exists())
+            })
+            .expect("hardlinked resource is quarantined");
+        std::fs::remove_dir_all(hardlink_tombstone).unwrap();
     }
 
     #[test]
