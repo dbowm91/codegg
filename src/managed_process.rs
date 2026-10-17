@@ -661,6 +661,42 @@ pub(crate) struct LiveSandboxChild {
     pub status_task: tokio::task::JoinHandle<Result<(), String>>,
 }
 
+/// Standard-stream wiring for an M004 interactive child. The PTY owner uses
+/// `terminal`; protocol owners such as LSP use `pipes` and never acquire a
+/// controlling terminal.
+#[cfg(target_os = "linux")]
+pub(crate) struct SandboxInteractiveIo {
+    stdin: std::process::Stdio,
+    stdout: std::process::Stdio,
+    stderr: std::process::Stdio,
+    attach_controlling_terminal: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl SandboxInteractiveIo {
+    pub(crate) fn terminal(
+        stdin: std::process::Stdio,
+        stdout: std::process::Stdio,
+        stderr: std::process::Stdio,
+    ) -> Self {
+        Self {
+            stdin,
+            stdout,
+            stderr,
+            attach_controlling_terminal: true,
+        }
+    }
+
+    pub(crate) fn pipes() -> Self {
+        Self {
+            stdin: std::process::Stdio::piped(),
+            stdout: std::process::Stdio::piped(),
+            stderr: std::process::Stdio::piped(),
+            attach_controlling_terminal: false,
+        }
+    }
+}
+
 /// Spawn a long-lived interactive child through the canonical helper owner.
 /// This is Linux/M004-only and always requires the full process-isolation
 /// composition; callers cannot request a degraded launch through this API.
@@ -670,14 +706,18 @@ pub(crate) async fn spawn_sandboxed_interactive_child(
     mut spec: SandboxLaunchSpec,
     cwd: &Path,
     environment_policy: &EnvironmentPolicy,
-    stdin: std::process::Stdio,
-    stdout: std::process::Stdio,
-    stderr: std::process::Stdio,
-    attach_controlling_terminal: bool,
+    io: SandboxInteractiveIo,
     cancellation: &CancellationToken,
     shutdown: &CancellationToken,
 ) -> Result<LiveSandboxChild, ManagedProcessError> {
     use std::os::fd::AsRawFd;
+
+    let SandboxInteractiveIo {
+        stdin,
+        stdout,
+        stderr,
+        attach_controlling_terminal,
+    } = io;
 
     if !spec.linux_protected_mount_view || !spec.linux_process_isolation {
         return Err(ManagedProcessError::SandboxFailed(
