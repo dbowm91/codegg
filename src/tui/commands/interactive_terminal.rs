@@ -59,6 +59,115 @@ pub(crate) fn active_terminal_handle(app: &App) -> Option<String> {
     })
 }
 
+// ── The refusal, defined once ─────────────────────────────────────────
+
+/// The operation an interactive-terminal refusal is about.
+///
+/// Every entry point refuses through the same classifier, so the per-operation
+/// wording lives here instead of being retyped at each site. That duplication is
+/// the defect: nine copies of one sentence is nine places to get the cause
+/// wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalOperation {
+    Create,
+    List,
+    Attach,
+    Resume,
+    Input,
+    Resize,
+    Detach,
+    Terminate,
+    Remove,
+}
+
+impl TerminalOperation {
+    /// The operation clause shared by both refusal causes.
+    const fn subject(self) -> &'static str {
+        match self {
+            Self::Create => "cannot create a terminal",
+            Self::List => "cannot list terminals",
+            Self::Attach => "cannot attach to the terminal",
+            Self::Resume => "cannot resume terminal output",
+            Self::Input => "terminal input dropped",
+            Self::Resize => "terminal resize dropped",
+            Self::Detach => "cannot detach the terminal",
+            Self::Terminate => "cannot terminate the terminal",
+            Self::Remove => "cannot remove the terminal",
+        }
+    }
+}
+
+/// Why an interactive-terminal operation cannot run on this frontend.
+///
+/// These two are **different faults** and must never share one string.
+/// `NoDaemonConnection` is a real connectivity problem on a frontend that does
+/// support terminals. `TransportUnsupported` is a frontend that was never wired
+/// for them: the `/tui` WebSocket attach frontend (`src/client/attach.rs`) opens
+/// a `TuiMessage` socket and is never handed a `CoreClient`, so **no**
+/// interactive-process operation can reach it. The daemon it is attached to is
+/// healthy and answering everything else, which is exactly why blaming it sends
+/// the reader to restart something that was working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalRefusal {
+    /// This frontend transport carries no interactive-process traffic.
+    TransportUnsupported,
+    /// This frontend supports terminals but has no live daemon connection.
+    NoDaemonConnection,
+}
+
+impl TerminalRefusal {
+    /// Classify why `app` cannot drive a terminal, or `None` when it can.
+    ///
+    /// `App::is_ws_attach_transport()` is the discriminator, not the app mode:
+    /// the socket-daemon frontend is `RemoteCore` too, and it *does* own a
+    /// `CoreClient`. `scripts/check_tui_transport_authority.py` enforces this.
+    fn classify(app: &App) -> Option<Self> {
+        if app.core_client.is_some() {
+            return None;
+        }
+        Some(if app.is_ws_attach_transport() {
+            Self::TransportUnsupported
+        } else {
+            Self::NoDaemonConnection
+        })
+    }
+
+    /// The operator-facing message. It names the faulting component, because a
+    /// refusal that names a healthy one is worse than no message at all.
+    fn message(self, operation: TerminalOperation) -> String {
+        match self {
+            Self::NoDaemonConnection => {
+                format!("Daemon connection unavailable; {}", operation.subject())
+            }
+            Self::TransportUnsupported => format!(
+                "This frontend is attached over a remote WebSocket, which does not carry \
+                 interactive terminals; {}. Open one with `codegg` or `codegg daemon attach` \
+                 on the machine running the daemon.",
+                operation.subject()
+            ),
+        }
+    }
+}
+
+/// The `CoreClient` for a terminal operation, or `None` with the refusal already
+/// reported.
+///
+/// The classifier runs here — before `terminal_request.begin()`, before the task
+/// spawn, before any view write — so a refused command leaves the app exactly as
+/// it found it.
+pub(crate) fn terminal_core_client(
+    app: &mut App,
+    operation: TerminalOperation,
+) -> Option<std::sync::Arc<dyn crate::core::CoreClient>> {
+    if let Some(client) = app.core_client.clone() {
+        return Some(client);
+    }
+    if let Some(refusal) = TerminalRefusal::classify(app) {
+        app.messages_state.toasts.error(&refusal.message(operation));
+    }
+    None
+}
+
 // ── Create ──────────────────────────────────────────────────────────
 
 /// Start an interactive terminal from `/terminal-create <argv...>`.
@@ -76,10 +185,7 @@ pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
             return;
         }
     };
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; cannot create a terminal");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Create) else {
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -282,10 +388,7 @@ pub(crate) fn start_terminal_list(app: &mut App) {
             return;
         }
     };
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; cannot list terminals");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::List) else {
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -388,10 +491,7 @@ pub(crate) fn apply_terminal_list_finished(
 /// Start an attach from `/terminal-attach <handle>` (or internally after
 /// create and on reconnect re-attach).
 pub(crate) fn start_terminal_attach(app: &mut App, handle: String) {
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; cannot attach to the terminal");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Attach) else {
         return;
     };
     // Resume from the retained cursor when re-attaching after a
@@ -575,10 +675,7 @@ pub(crate) fn start_terminal_resume(app: &mut App, handle: Option<String>) {
         ));
         return;
     };
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; cannot resume terminal output");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Resume) else {
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -908,15 +1005,18 @@ pub(crate) fn flush_terminal_input(app: &mut App, handle: String) {
     let Some(pending) = app.interactive_terminals.take_pending_input(&handle) else {
         return;
     };
-    let Some(attachment_id) = app.interactive_terminals.begin_input(&handle) else {
-        // Lost the race between the check and the claim. Put the bytes back.
+    // The classifier runs before `begin_input`, not after. Refusing *after* the
+    // slot is claimed drops the bytes and leaves `input_in_flight` set with
+    // nothing in flight to release it, so every later keystroke parks behind a
+    // flag nobody will ever clear: one visible toast, then permanent silence.
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Input) else {
+        // Put the bytes back. They still want to be typed at.
         let _ = app.interactive_terminals.queue_input(&handle, &pending);
         return;
     };
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; terminal input dropped");
+    let Some(attachment_id) = app.interactive_terminals.begin_input(&handle) else {
+        // Lost the race between the check and the claim. Put the bytes back.
+        let _ = app.interactive_terminals.queue_input(&handle, &pending);
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -1020,10 +1120,11 @@ fn send_terminal_resize(
     cols: u16,
     rows: u16,
 ) {
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; terminal resize dropped");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Resize) else {
+        // The caller already drained this size out of the coalescing queue. Put
+        // it back rather than losing the user's geometry: the next tick, or the
+        // next explicit `/terminal-resize`, then delivers it unchanged.
+        let _ = app.interactive_terminals.queue_resize(&handle, cols, rows);
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -1111,10 +1212,7 @@ pub(crate) fn start_terminal_detach(app: &mut App, handle: Option<String>) {
         refresh_terminal_dialog(app, &handle);
         return;
     };
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; cannot detach the terminal");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Detach) else {
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -1195,10 +1293,7 @@ pub(crate) fn start_terminal_terminate(app: &mut App, handle: Option<String>) {
         ));
         return;
     };
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; cannot terminate the terminal");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Terminate) else {
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -1283,10 +1378,7 @@ pub(crate) fn start_terminal_remove(app: &mut App, handle: Option<String>) {
         ));
         return;
     };
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Daemon connection unavailable; cannot remove the terminal");
+    let Some(core_client) = terminal_core_client(app, TerminalOperation::Remove) else {
         return;
     };
     let request_id = app.dialog_state.terminal_request.begin();
@@ -2941,6 +3033,247 @@ mod tests {
         assert!(
             rendered.contains(marker),
             "the panel must show live PTY output; rendered surface:\n{rendered}"
+        );
+    }
+
+    // --- C002: the refusal must name the transport, not the daemon ---------
+    //
+    // The daemon on the `/tui` attach frontend is present and healthy; it just
+    // does not carry interactive-process traffic to this frontend. Every
+    // terminal entry point used to answer that with "Daemon connection
+    // unavailable", which sends the reader to restart something that is working.
+    //
+    // Both halves of this are load-bearing. If the attach refusal were the only
+    // thing pinned, deleting the connection wording would still pass; the
+    // second test below is what keeps "Daemon connection unavailable" honest
+    // for the frontend where it *is* the truth.
+
+    /// The `/tui` WebSocket attach frontend: `AppMode::RemoteCore`, an owned
+    /// `remote_send_tx`, and — the fact that matters here — no `CoreClient`.
+    /// `src/client/attach.rs` opens `/tui` and speaks `TuiMessage`; it never
+    /// constructs one, so every `core_client` guard fires by construction.
+    fn ws_attach_app() -> App {
+        let mut app = test_app();
+        app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
+            endpoint: "ws://localhost:3000/tui".into(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+        assert!(
+            app.is_ws_attach_transport(),
+            "the fixture must be the attach transport or it proves nothing"
+        );
+        app.session_state.session = Some(codegg_core::session::Session {
+            id: "s-attach".into(),
+            project_id: "/tmp".into(),
+            workspace_id: Some("/tmp".into()),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
+        app
+    }
+
+    /// The same mode with no `remote_send_tx` and no `CoreClient`: the
+    /// socket-daemon frontend before it managed to connect. Here "daemon
+    /// connection unavailable" is the literal truth and must survive.
+    fn socket_daemon_app_without_client() -> App {
+        let mut app = test_app();
+        app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
+            endpoint: "unix:///tmp/codegg.sock".into(),
+        };
+        assert!(
+            app.remote_send_tx.is_none() && !app.is_ws_attach_transport(),
+            "without a remote channel this is the socket path, not the attach transport"
+        );
+        app.session_state.session = Some(codegg_core::session::Session {
+            id: "s-socket".into(),
+            project_id: "/tmp".into(),
+            workspace_id: Some("/tmp".into()),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
+        app
+    }
+
+    fn toast_messages(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect()
+    }
+
+    /// The premise of C002, falsified in the product rather than in a comment:
+    /// on the attach frontend the refusal names a daemon that is working.
+    #[test]
+    fn ws_attach_refusal_names_the_transport_not_the_daemon() {
+        let mut app = ws_attach_app();
+        start_terminal_create(&mut app, vec!["cat".to_string()]);
+        let toasts = toast_messages(&app);
+        assert!(
+            !toasts.is_empty(),
+            "a refused terminal command must say something (J2: no silent failure)"
+        );
+        assert!(
+            !toasts
+                .iter()
+                .any(|t| t.contains("Daemon connection unavailable")),
+            "the daemon is healthy on this frontend; blaming it sends the reader to restart \
+             something that is working. toasts: {toasts:?}"
+        );
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.contains("WebSocket") && t.contains("interactive terminals")),
+            "the refusal must name the transport and what it does not carry. toasts: {toasts:?}"
+        );
+    }
+
+    /// The same command on the socket-daemon frontend with no live connection
+    /// keeps its connection wording. Without this, J1's second half would be
+    /// satisfied by deleting the message entirely.
+    #[test]
+    fn socket_daemon_without_a_connection_still_blames_the_connection() {
+        let mut app = socket_daemon_app_without_client();
+        start_terminal_create(&mut app, vec!["cat".to_string()]);
+        let toasts = toast_messages(&app);
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.contains("Daemon connection unavailable")),
+            "no connection on a frontend that does support terminals is still a connection \
+             problem. toasts: {toasts:?}"
+        );
+    }
+
+    /// J3, per site: a refused command leaves the app exactly as it was — no
+    /// request generation consumed, no background task registered.
+    #[test]
+    fn a_refused_terminal_command_mutates_nothing() {
+        for (label, mut app) in [
+            ("ws-attach", ws_attach_app()),
+            ("socket-daemon", socket_daemon_app_without_client()),
+        ] {
+            let dialog_before = app.ui_state.dialog.clone();
+            let terminals_before = app.interactive_terminals.len();
+
+            start_terminal_create(&mut app, vec!["cat".to_string()]);
+            start_terminal_list(&mut app);
+            start_terminal_attach(&mut app, "h-test".to_string());
+
+            assert_eq!(
+                app.ui_state.dialog, dialog_before,
+                "{label}: a refused command must not open or close a dialog"
+            );
+            assert_eq!(
+                app.interactive_terminals.len(),
+                terminals_before,
+                "{label}: a refused command must not create a terminal view"
+            );
+            assert!(
+                !app.dialog_state.terminal_request.is_loading(),
+                "{label}: the refusal must run before `terminal_request.begin()`, so no \
+                 request generation is left outstanding"
+            );
+            assert_eq!(
+                app.task_registry.active_count(),
+                0,
+                "{label}: a refused command must not register a background task"
+            );
+        }
+    }
+
+    /// J2 on the input path, and the ordering bug this milestone found: the
+    /// refusal used to run *after* `take_pending_input` and `begin_input`, so
+    /// the keystrokes were dropped and the single input slot was left claimed
+    /// with nothing in flight to release it. Every later keystroke then parked
+    /// in the queue forever behind a flag nobody would clear — a silent,
+    /// permanent stall reported once and never again.
+    #[test]
+    fn a_refused_flush_keeps_the_bytes_and_releases_the_input_slot() {
+        let mut app = socket_daemon_app_without_client();
+        let request_id = app.dialog_state.terminal_request.begin();
+        apply_terminal_attach_finished(
+            &mut app,
+            request_id,
+            "h-test".to_string(),
+            Some("a-1".to_string()),
+            Some(test_chunk("$ ")),
+            None,
+            None,
+        );
+        app.interactive_terminals.finish_input("h-test");
+
+        send_terminal_input(&mut app, "h-test".to_string(), b"ls -la\n".to_vec());
+
+        assert!(
+            !app.interactive_terminals.input_in_flight("h-test"),
+            "a refused flush must not leave the input slot claimed; nothing was sent, so nothing \
+             will ever complete and release it"
+        );
+        let mut still_queued = Vec::new();
+        while let Some(bytes) = app.interactive_terminals.take_pending_input("h-test") {
+            still_queued.extend_from_slice(&bytes);
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&still_queued),
+            "ls -la\n",
+            "the refused keystrokes must stay queued rather than being dropped"
+        );
+    }
+
+    /// J4: the C001 cadence must be inert where it cannot work. This mounts a
+    /// terminal surface on the attach frontend — the one shape that would let
+    /// the pull reach its client lookup — and asserts it issues nothing.
+    ///
+    /// "No crash" would be satisfied by a pull that runs, finds no client, and
+    /// quietly returns every tick forever. The observable is the task: a request
+    /// is only ever issued by a spawned task calling `core_client.request`, so
+    /// no task means no request.
+    #[test]
+    fn the_pull_is_inert_on_the_unsupported_transport() {
+        let mut app = ws_attach_app();
+        app.ui_state.dialog = crate::tui::Dialog::Terminal;
+        app.dialog_state.terminal_detail_handle = Some("h-ghost".to_string());
+
+        for _ in 0..50 {
+            assert!(
+                !service_terminal_output_pull(&mut app),
+                "a pull with no client and no live view must not report work"
+            );
+        }
+        assert_eq!(
+            app.task_registry.active_count(),
+            0,
+            "the cadence must not register one task per tick on a transport it cannot read"
+        );
+        assert!(
+            !app.dialog_state.terminal_request.is_loading(),
+            "the cadence must not consume a request generation it will never complete"
+        );
+        assert!(
+            toast_messages(&app).is_empty(),
+            "a pull that reads nothing has nothing to report; a toast per tick would be a \
+             toast storm"
+        );
+    }
+
+    /// J2, from the other end: not supporting terminals is not a reason to stop
+    /// reading the keyboard. The obvious "fix" for a mis-routed key is a
+    /// transport branch in `on_key`, and that branch would swallow every
+    /// keystroke on the attach frontend — a silent regression in the one thing
+    /// that frontend is for.
+    #[test]
+    fn the_unsupported_transport_does_not_swallow_typed_keys() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = ws_attach_app();
+        for c in ['h', 'i'] {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(
+            app.prompt_state.prompt.get_text(),
+            "hi",
+            "typing must still reach the composer on the attach frontend"
         );
     }
 }

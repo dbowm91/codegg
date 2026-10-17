@@ -977,6 +977,34 @@ handles/output, and `src/tui/commands/interactive_terminal.rs` issues
 every mutation as a daemon `CoreRequest::InteractiveProcess*` operation
 through the TUI `CoreClient`.
 
+**The transport boundary: interactive terminals are delivered on the
+socket-daemon frontend, and refused by name everywhere else.** Every
+interactive-process operation needs a `CoreClient`, and the `/tui`
+WebSocket attach frontend never has one — `src/client/attach.rs` opens
+that socket and speaks `protocol::tui::TuiMessage`, so no
+`CoreFrame::InteractiveProcess*` can ever be sent from it. That
+frontend's daemon is present and healthy; it simply does not carry
+terminal traffic to that client, and a refusal must say so. All nine
+entry points therefore classify the fault through one seam,
+`terminal_core_client` → `TerminalRefusal`, rather than each asking
+"is there a client?" and reporting a missing daemon:
+
+| `TerminalRefusal` | Meaning | Message |
+|---|---|---|
+| `TransportUnsupported` | the `/tui` attach frontend, which carries no interactive-process traffic | names the transport, says it does not carry interactive terminals, points at `codegg` / `codegg daemon attach` on the daemon host |
+| `NoDaemonConnection` | a terminal-capable frontend with no live connection | `Daemon connection unavailable; <operation>` — unchanged, because it is the truth there |
+
+The discriminator is `App::is_ws_attach_transport()`, never the app mode:
+the socket-daemon frontend is `RemoteCore` too and *does* own a
+`CoreClient`, so a mode-only gate would misreport that frontend as
+unsupported. `scripts/check_tui_transport_authority.py` enforces this.
+
+This boundary is about the *frontend*. The `/core` WebSocket endpoint is
+a separate surface that routes arbitrary `CoreRequest`s, interactive
+processes included; its remote authorization posture is tracked by
+`plans/subsystems/remote-interactive-process-authorization-corrective-roadmap.md`
+and is not settled by anything here.
+
 - **Slash commands**: `/terminal [handle]` (starts a shell when nothing live is
   behind it), `/terminal-create <cmd> [args...]`, `/terminal-list`,
   `/terminal-attach <handle>`, `/terminal-show <handle>`,
@@ -1042,7 +1070,14 @@ Three consequences are load-bearing rules rather than details:
   single slot per attachment and the cadence drains pending input into it.
   Flushing per keystroke spawned one concurrent daemon request per character,
   and those requests raced, so fast typing could arrive scrambled — silent,
-  character-level loss with no error to point at.
+  character-level loss with no error to point at. The slot has one more
+  obligation because of that ordering: a refusal must be classified **before**
+  `begin_input`, never after. Claiming the slot and then discovering there is no
+  client drops the bytes *and* leaves `input_in_flight` set with nothing in
+  flight to release it, so each later keystroke parks behind a flag nobody will
+  ever clear — one visible refusal followed by permanent silence. The same
+  applies to the drained resize: a refused resize goes back on the coalescing
+  queue rather than being consumed by a refusal.
 - **Resize to the size you already are is a client-side no-op.**
   `queue_resize` drops an unchanged size, and the cadence drains what remains.
   A PTY resize flushes the tty's pending input, so a per-frame resize storm is

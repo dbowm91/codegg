@@ -508,6 +508,16 @@ your login shell (`$SHELL`, falling back to `sh`) — you do not have to name a
 command first. `/terminal-create <command> [args...]` is still there when you
 want to run a specific program instead.
 
+**Terminals need the local frontend.** They work when CodeGG's TUI is talking
+to your daemon — plain `codegg`, or `codegg daemon attach` over the local
+socket. They do not work through the remote WebSocket attach
+(`codegg attach http://<host>:<port> --token …`): that connection carries chat,
+but no interactive-process traffic, so every terminal command there answers
+with a message naming the transport rather than pretending the daemon is down.
+Everything else on that frontend — chatting, tools, permissions — is unaffected.
+To open a shell, run `codegg` (or `codegg daemon attach`) on the machine running
+the daemon.
+
 The box opens **already taking your keys**, so you can type straight away.
 
 Once it is taking your keys, every key is your program's — including `H`, `J`,

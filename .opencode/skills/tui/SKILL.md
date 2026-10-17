@@ -750,6 +750,23 @@ model to the wrong connection.
   stops counting a turn that never started), sets `Error`, stops the thinking
   indicator, and **releases `pending_send` so a retry is possible**. Never
   record a submission failure in a log line and return; the log is not the UI.
+- **Never attribute a refusal to a component that is not at fault.** A missing
+  dependency is not a diagnosis. `app.core_client` being `None` means two
+  different things depending on the transport: on the socket-daemon frontend it
+  really is a lost connection, but on the `/tui` WebSocket attach frontend the
+  daemon is healthy and that frontend was simply never given a `CoreClient`
+  (`src/client/attach.rs` speaks `TuiMessage`). Answering the second with
+  "Daemon connection unavailable" sends the operator to restart a working
+  process. Classify the cause explicitly through one seam that owns the wording
+  — `terminal_core_client` → `TerminalRefusal` for terminals — rather than
+  retyping a sentence at each site; duplicated text is exactly how the wrong
+  cause propagates to nine places. The discriminator is
+  `App::is_ws_attach_transport()`, never `AppMode` alone.
+  Related: classify a refusal **before** any state is consumed.
+  `flush_terminal_input` used to claim the input slot and drain the queued bytes
+  and only then discover there was no client, which dropped the keystrokes *and*
+  left `input_in_flight` set with nothing in flight to release it — one visible
+  error, then permanent silence.
 - **The stall watchdog measures silence, and long tools are silent.**
   `bash` delivers its output only on completion, so a multi-minute build emits
   no events at all. `SessionState::running_tool` (set on `ToolStarted`, cleared

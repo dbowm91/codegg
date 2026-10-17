@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Interactive terminals refused themselves for the wrong reason.** On the
+  WebSocket-attach frontend, every terminal command — create, list, attach,
+  detach, close, input, flush, resize, output — refused with "Daemon connection
+  unavailable; …". The daemon was healthy; that frontend does not carry
+  interactive terminals at all. The refusal now names the real cause and the
+  operation that was refused, and points at `codegg` or `codegg daemon attach`
+  on the machine running the daemon. The genuinely disconnected case keeps its
+  existing wording, because on that one the connection really is at fault.
+- **A refused terminal command could wedge the terminal for good.** `flush`
+  claimed the input slot and drained the queued bytes *before* it checked
+  whether it was allowed to send. On a frontend that cannot send, one flush
+  threw away the keystrokes you had typed and left the slot marked in-flight —
+  and since nothing was ever sent, nothing was ever going to complete and
+  release it, so every later keystroke was dropped too. The refusal is now
+  classified before the slot is claimed and the bytes go back on the queue. A
+  resize refused after draining its size is re-armed the same way, and typed
+  keys reach the composer either way.
 - **Subcommand diagnostics were written to stdout, breaking machine-readable
   output.** `src/main.rs` installed `tracing_subscriber::fmt()` with no writer
   for ordinary subcommands, and `tracing-subscriber` defaults to stdout. A
