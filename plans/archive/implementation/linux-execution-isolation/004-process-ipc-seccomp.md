@@ -1,8 +1,8 @@
 # Linux Execution Isolation M004 — Process, IPC, Procfs and Syscall Isolation
 
-Status: active (internal PID/IPC/proc/FD/seccomp implementation has exact-hosted positive probes, including concurrent namespace separation; C013 constrained PTY ownership is closed; constrained LSP ownership and its exact-host/restricted-host qualification are in progress)
+Status: closed (constrained PTY and daemon-owned LSP launch owners are implemented and passed exact-source hosted Linux qualification; broader host-policy admission remains outside M004 closure)
 Primary class: capability
-Repository baseline: current-main merge `188edb371759f40b291052f25598bdb8ab57702d` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0035. Accepted ADR-0034 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. PID/IPC/proc/FD and architecture-checked seccomp enforcement are implemented behind an internal opt-in and have exact-head hosted denial and ordinary-tool probes; broader host qualification, production PTY/LSP routing, and full toolchain compatibility remain open.
+Repository baseline: current-main merge `188edb371759f40b291052f25598bdb8ab57702d` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0035. Accepted ADR-0034 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Closure evidence is recorded at `plans/closure/linux-execution-isolation/004-status.md`. Exact-source hosted Linux qualification includes PID/IPC denial, ordinary toolchain work, production PTY and constrained LSP owners, and restricted-userns refusal. M003 admission, M005 production networking, and qualification of additional Linux host configurations remain separate.
 
 ## 1. Objective
 
@@ -116,12 +116,13 @@ fresh full CI remains required. The earlier hosted Git-log failure did not
 recur in the 6,704 tests run before fail-fast in `38937869443`; it remains
 classified as an earlier unreproduced failure, not a confirmed transient.
 
-At this point in the recorded history, the PTY service still refused
-constrained profiles before `openpty`/spawn, and constrained LSP turns remained
-unbound from the shared FullHost service. C013 later closed the PTY owner
-route. The constrained LSP owner is the current M004 implementation and
-qualification work. No M005 production network-enforcement claim is promoted.
-C010's no-admission decision remains unchanged.
+This section records the state before the production-owner corrective work.
+C013 later routed constrained PTY creation through the supervised M004 owner;
+the daemon-owned constrained LSP scope subsequently routed initial starts and
+restarts through its profile/workspace-bound helper launcher. Their current
+implementation and exact-host evidence are recorded in the M004 closure. No
+M005 production network-enforcement claim is promoted. C010's no-admission
+decision remains unchanged.
 
 ## 3. Invariants
 
