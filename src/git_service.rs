@@ -573,6 +573,8 @@ impl GitExecutionService {
                     .collect::<Vec<_>>(),
             ),
             Err(error) => {
+                #[cfg(test)]
+                eprintln!("structured changed-files extraction failed: {error:?}");
                 tracing::warn!(%error, "failed to parse structured changed files");
                 None
             }
