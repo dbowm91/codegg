@@ -354,8 +354,6 @@ impl egglsp::launch::LspProcessLauncher for M004LspProcessLauncher {
         launch: &egglsp::launch::LspLaunchSpec,
         root: &Path,
     ) -> Result<egglsp::launch::LspProcess, egglsp::error::LspError> {
-        use std::process::Stdio;
-
         let canonical_root = root.canonicalize().map_err(|error| {
             egglsp::error::LspError::LaunchFailed(format!(
                 "M004 LSP root cannot be canonicalized: {error}"
@@ -399,10 +397,7 @@ impl egglsp::launch::LspProcessLauncher for M004LspProcessLauncher {
             sandbox,
             &self.workspace_root,
             &environment,
-            Stdio::piped(),
-            Stdio::piped(),
-            Stdio::piped(),
-            false,
+            crate::managed_process::SandboxInteractiveIo::pipes(),
             &cancellation,
             &self.shutdown,
         )

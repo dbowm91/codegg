@@ -232,7 +232,9 @@ impl TurnRuntime for DefaultTurnRuntime {
         let profile = input
             .sandbox_profile
             .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
-        let m004_lsp_scope = if profile.requires_filesystem_containment() {
+        let m004_lsp_scope: Option<Arc<crate::lsp::m004::M004LspServiceScope>> = if profile
+            .requires_filesystem_containment()
+        {
             #[cfg(target_os = "linux")]
             {
                 match crate::lsp::m004::M004LspServiceScope::new(

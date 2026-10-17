@@ -1447,10 +1447,11 @@ async fn spawn_unix_child(
             sandbox_spec,
             cwd,
             &sandbox_policy,
-            child_stdin,
-            child_stdout,
-            child_stderr,
-            true,
+            crate::managed_process::SandboxInteractiveIo::terminal(
+                child_stdin,
+                child_stdout,
+                child_stderr,
+            ),
             &ctx.cancellation,
             shutdown,
         )
