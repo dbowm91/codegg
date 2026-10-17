@@ -62,6 +62,11 @@ skill covers the ordering and isolation invariants that are easy to break.
   Services channels. Keep backend limits visible in `architecture/security.md`.
 - **`Automatic` is never silent Yolo.** With no reviewer model configured,
   `Automatic` defers to the human.
+- **Scratch recovery is advisory.** A structured write to a known host temp
+  root may suggest the current private scratch path after path authorization
+  rejects it. Never rewrite the request, expose an ungranted shared path, or
+  let a suggestion override explicit Ask/Deny. Structured reads and shell
+  commands keep their normal semantics.
 
 ## The Automatic Reviewer
 

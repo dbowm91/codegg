@@ -153,6 +153,60 @@ impl Tool for WriteTool {
             }
         ))
     }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<crate::tool::backend::ToolExecutionContext>,
+    ) -> Result<crate::tool::StructuredToolResult, ToolError> {
+        let scratch_scope = ctx
+            .as_ref()
+            .and_then(|ctx| ctx.execution_authorization.as_ref())
+            .and_then(|authorization| authorization.scratch_scope.as_ref());
+        let scratch = if let Some(scope) = scratch_scope {
+            Some(scope.private_root.clone())
+        } else {
+            ctx.as_ref()
+                .and_then(|ctx| ctx.session_id.as_deref())
+                .filter(|session_id| !session_id.is_empty())
+                .map(crate::scratch::session_scratch_dir)
+                .transpose()
+                .map_err(|error| ToolError::Execution(error.to_string()))?
+        };
+        let shared_roots = scratch_scope
+            .into_iter()
+            .flat_map(|scope| scope.shared.iter().map(|root| root.path.clone()))
+            .collect::<Vec<_>>();
+        let requested = input["path"].as_str().map(Path::new);
+        let output = if let (Some(path), Some(scratch)) = (requested, scratch) {
+            let root = std::iter::once(scratch.clone())
+                .chain(shared_roots)
+                .find(|root| path.is_absolute() && path.starts_with(root));
+            if let Some(root) = root {
+                Self::new().with_allowed_root(root).execute(input).await?
+            } else {
+                if crate::tool::util::validate_target_path(path, &self.allowed_root).is_err() {
+                    if let Some(error) = temp_path_recovery_error(path, Some(&scratch)) {
+                        return Err(error);
+                    }
+                }
+                self.execute(input).await?
+            }
+        } else {
+            self.execute(input).await?
+        };
+        Ok(crate::tool::StructuredToolResult::legacy("write", output))
+    }
+}
+
+fn temp_path_recovery_error(path: &Path, private_scratch: Option<&Path>) -> Option<ToolError> {
+    let relative = crate::tool::util::relative_to_known_temp_root(path)?;
+    let scratch_root = private_scratch?.canonicalize().ok()?;
+    let suggestion = scratch_root.join(relative);
+    Some(ToolError::Permission(format!(
+        "temporary path is outside the authorized workspace; retry at '{}' or request access to the original location through the normal permission flow",
+        suggestion.display()
+    )))
 }
 
 impl Default for WriteTool {
@@ -192,4 +246,180 @@ fn generate_diff(old: &str, new: &str, path: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod delegated_scratch_tests {
+    use super::*;
+
+    fn context(
+        scope: crate::scratch::AgentScratchScope,
+    ) -> crate::tool::backend::ToolExecutionContext {
+        let mut context = crate::tool::backend::ToolExecutionContext::with_backend(
+            crate::tool::backend::ToolBackendKind::Native,
+        );
+        context.session_id = Some(scope.session_id.clone());
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Interactive,
+                    codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                    None,
+                    Some(scope.session_id.clone()),
+                    Some("test-child".into()),
+                    None,
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed("test", None),
+                command_preflight: None,
+                scratch_scope: Some(scope),
+            });
+        context
+    }
+
+    #[tokio::test]
+    async fn only_explicitly_granted_child_tools_can_read_or_write_shared_scratch() {
+        use crate::tool::Tool;
+
+        let session_id = format!("shared-tool-session-{}", uuid::Uuid::new_v4());
+        let scratch_id = codegg_core::identity::ScratchId::new();
+        let shared_dir = tempfile::tempdir().unwrap();
+        let resource_root = shared_dir.path().to_path_buf();
+        let file = resource_root.join("handoff.txt");
+        let mut private_dirs = Vec::new();
+        let mut make_scope = |granted: bool| {
+            let run_id = codegg_core::identity::AgentRunId::new();
+            let private = tempfile::tempdir().unwrap();
+            let private_root = private.path().to_path_buf();
+            private_dirs.push(private);
+            crate::scratch::AgentScratchScope {
+                session_id: session_id.clone(),
+                run_id,
+                private_root,
+                shared: if granted {
+                    vec![crate::scratch::AuthorizedSharedScratchRoot {
+                        scratch_id: scratch_id.clone(),
+                        alias: "handoff".into(),
+                        path: resource_root.clone(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+            }
+        };
+
+        WriteTool::default()
+            .execute_structured(
+                serde_json::json!({"path": file, "content": "artifact"}),
+                Some(context(make_scope(true))),
+            )
+            .await
+            .expect("granted child writes through structured tool");
+        let read = crate::tool::read::ReadTool::new()
+            .execute_structured(
+                serde_json::json!({"path": file}),
+                Some(context(make_scope(true))),
+            )
+            .await
+            .expect("second granted child reads through structured tool");
+        assert!(read.output.contains("artifact"));
+
+        assert!(WriteTool::default()
+            .execute_structured(
+                serde_json::json!({"path": file, "content": "forbidden"}),
+                Some(context(make_scope(false))),
+            )
+            .await
+            .is_err());
+        assert!(crate::tool::read::ReadTool::new()
+            .execute_structured(
+                serde_json::json!({"path": file}),
+                Some(context(make_scope(false))),
+            )
+            .await
+            .is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "artifact");
+    }
+
+    #[tokio::test]
+    async fn unauthorized_temp_write_suggests_private_scratch_without_rewriting() {
+        use crate::tool::Tool;
+
+        let session_id = format!("temp-hint-session-{}", uuid::Uuid::new_v4());
+        let private = tempfile::tempdir().unwrap();
+        let private_root = private.path().canonicalize().unwrap();
+        let requested_root = tempfile::tempdir().unwrap();
+        let requested_path = requested_root.path().join("original.txt");
+        let scope = crate::scratch::AgentScratchScope {
+            session_id: session_id.clone(),
+            run_id: codegg_core::identity::AgentRunId::new(),
+            private_root: private_root.clone(),
+            shared: Vec::new(),
+        };
+        let error = WriteTool::default()
+            .execute_structured(
+                serde_json::json!({"path": requested_path, "content": "do not redirect"}),
+                Some(context(scope)),
+            )
+            .await
+            .expect_err("ungranted temp writes remain denied by the path boundary");
+        let message = error.to_string();
+        assert!(message.contains("retry at"), "{message}");
+        assert!(
+            message.contains(private_root.to_str().unwrap()),
+            "{message}"
+        );
+        assert!(message.contains("request access"), "{message}");
+        assert!(
+            !requested_path.exists(),
+            "the original path was not written"
+        );
+        assert_eq!(std::fs::read_dir(private.path()).unwrap().count(), 0);
+
+        let original = requested_root.path().join("real-read.txt");
+        std::fs::write(&original, "host temp data").unwrap();
+        let read_scope = crate::scratch::AgentScratchScope {
+            session_id,
+            run_id: codegg_core::identity::AgentRunId::new(),
+            private_root,
+            shared: Vec::new(),
+        };
+        assert!(
+            crate::tool::read::ReadTool::new()
+                .execute_structured(
+                    serde_json::json!({"path": original}),
+                    Some(context(read_scope)),
+                )
+                .await
+                .is_err(),
+            "reading the actual temp path is not redirected"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_write_under_host_temp_is_not_misclassified_as_unauthorized() {
+        use crate::tool::Tool;
+
+        let session_id = format!("temp-workspace-session-{}", uuid::Uuid::new_v4());
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_root = workspace.path().canonicalize().unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let target = workspace_root.join("workspace-file.txt");
+        let scope = crate::scratch::AgentScratchScope {
+            session_id,
+            run_id: codegg_core::identity::AgentRunId::new(),
+            private_root: private.path().canonicalize().unwrap(),
+            shared: Vec::new(),
+        };
+
+        WriteTool::new()
+            .with_allowed_root(workspace_root)
+            .execute_structured(
+                serde_json::json!({"path": target, "content": "workspace write"}),
+                Some(context(scope)),
+            )
+            .await
+            .expect("a temp-root workspace remains an authorized write root");
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "workspace write");
+    }
 }

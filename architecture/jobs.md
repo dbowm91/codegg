@@ -274,6 +274,20 @@ the projection replay path (`projection_replay/publication.rs:514`).
 The `PRIMARY KEY(schedule_id, scheduled_for)` constraint prevents
 double-firing after restart.
 
+### Delegated scratch attempt leases (managed-agent-scratch M002)
+
+The accepted `AgentRunRecord` carries an immutable list of explicitly granted
+shared scratch IDs. `SubagentJobExecutor` acquires leases for the run-private
+resource and each shared resource under the scheduler `JobId` and `AttemptId`
+before dispatch, then releases them only after the child worker returns. A
+retry acquires the same accepted run snapshot under the new attempt identity.
+Revocation prevents new grants and new lease acquisition; it does not remove
+scratch from an attempt already admitted. Startup/recovery reconciliation
+removes leases only when the durable job attempt is no longer created, admitted,
+or running. Revoked shared roots are reclaimed only after the last attempt
+lease releases; ordinary run-private roots remain disposable cache data and
+may be removed by host cache maintenance.
+
 ## Configuration Surface
 
 Job records carry their configuration at creation time. Key defaults

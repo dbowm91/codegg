@@ -17,4 +17,6 @@ pub struct ExecutionAuthorizationContext {
     pub snapshot: ExecutionPolicySnapshot,
     pub receipt: PermissionDecisionReceipt,
     pub command_preflight: Option<CommandPreflightResult>,
+    /// Host-authorized durable run scratch. Never accepted from tool arguments.
+    pub scratch_scope: Option<crate::scratch::AgentScratchScope>,
 }

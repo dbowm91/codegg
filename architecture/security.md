@@ -285,11 +285,38 @@ missing denied child is preserved relative to its nearest existing parent.
 On Seatbelt, credential read/write denials are emitted after workspace write
 re-allow rules because SBPL evaluation is order-sensitive.
 
-Persistent writes are restricted to approved workspace roots and stateless
-device nodes. Each constrained managed process receives a collision-resistant
-0700 `TMPDIR`, added as its own read/write root and removed after the process
-tree is reaped. Python's temporary script is held in its own private run
-directory. Shared `/tmp` and global HOME caches are not writable grants.
+Persistent writes are restricted to approved workspace roots, authorized
+session scratch roots, and stateless device nodes. A model process with a
+trusted session identity receives an owner-private directory under the
+per-user CodeGG cache root (`dirs::cache_dir()/codegg`) as
+`CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. This is kept outside the
+macOS credential-denied daemon data root; scratch contents are disposable and
+may be removed by host cache maintenance. The Required launch adds the exact
+path as a read/write root. Durable child runs receive a separate owner-private
+root keyed by `AgentRunId`; parent-created shared roots enter that run's scope
+only through an immutable direct-child grant validated in `AgentRunStore`.
+Shared roots are explicit sandbox/tool roots and never replace the child's
+private temp variables. Scheduler attempt leases preserve admitted access
+through child completion; revocation blocks later admission. Unix session and
+run roots use mode 0700; Windows inherits
+the per-user cache-root ACL and has no native isolation claim while Required
+launches remain unavailable. Constrained
+launches also retain a separate collision-resistant 0700 per-launch staging directory,
+which is reaped with the process tree. Python's temporary script is held in
+its own private run directory. Shared `/tmp` and global HOME caches are not
+writable grants. Revoked shared directories are removed after the last
+attempt lease releases. Run-private scratch is retained as disposable cache
+data and may be removed by host cache maintenance.
+On Unix, shared-resource reclamation first atomically renames the managed
+directory to an opaque tombstone, validates its owner marker and walks entries
+without following symlinks. Symlinks, non-regular entries, and
+multiply-linked regular files quarantine the tombstone and stop deletion. A
+later retry recovers an orphaned tombstone after daemon interruption, and
+concurrent reclamation is serialized. Windows cleanup is disabled until stable
+hardlink and reparse-point inspection is available at the repository's minimum
+Rust version; revoked data is retained there. Cleanup applies to explicitly
+revoked shared resources only; CodeGG does not recursively collect session or
+run-private cache roots.
 Existing denied regular files with hardlink aliases cause the required launch
 to fail because path-based backends cannot distinguish the aliases. As before,
 paths are canonicalized so Seatbelt matches resolved paths such as

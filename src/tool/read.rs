@@ -353,4 +353,43 @@ impl Tool for ReadTool {
 
         Ok(result)
     }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<crate::tool::backend::ToolExecutionContext>,
+    ) -> Result<crate::tool::StructuredToolResult, ToolError> {
+        let scratch_scope = ctx
+            .as_ref()
+            .and_then(|ctx| ctx.execution_authorization.as_ref())
+            .and_then(|authorization| authorization.scratch_scope.as_ref());
+        let scratch = if let Some(scope) = scratch_scope {
+            Some(scope.private_root.clone())
+        } else {
+            ctx.as_ref()
+                .and_then(|ctx| ctx.session_id.as_deref())
+                .filter(|session_id| !session_id.is_empty())
+                .map(crate::scratch::session_scratch_dir)
+                .transpose()
+                .map_err(|error| ToolError::Execution(error.to_string()))?
+        };
+        let shared_roots = scratch_scope
+            .into_iter()
+            .flat_map(|scope| scope.shared.iter().map(|root| root.path.clone()))
+            .collect::<Vec<_>>();
+        let requested = input["path"].as_str().map(Path::new);
+        let output = if let (Some(path), Some(scratch)) = (requested, scratch) {
+            let root = std::iter::once(scratch)
+                .chain(shared_roots)
+                .find(|root| path.is_absolute() && path.starts_with(root));
+            if let Some(root) = root {
+                Self::new().with_allowed_root(root).execute(input).await?
+            } else {
+                self.execute(input).await?
+            }
+        } else {
+            self.execute(input).await?
+        };
+        Ok(crate::tool::StructuredToolResult::legacy("read", output))
+    }
 }

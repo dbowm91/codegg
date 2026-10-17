@@ -341,9 +341,20 @@ impl JobExecutor for ManagedArgvExecutor {
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             argv.into_iter().map(OsString::from).collect(),
             cwd,
-            crate::managed_process::ProcessProvenance::new(
-                ctx.job.job_id.as_str(),
-                ctx.attempt_id.as_str(),
+            ctx.job.session_id.as_deref().map_or_else(
+                || {
+                    crate::managed_process::ProcessProvenance::new(
+                        ctx.job.job_id.as_str(),
+                        ctx.attempt_id.as_str(),
+                    )
+                },
+                |session_id| {
+                    crate::managed_process::ProcessProvenance::new(
+                        ctx.job.job_id.as_str(),
+                        ctx.attempt_id.as_str(),
+                    )
+                    .with_session(session_id.to_owned())
+                },
             ),
         );
         #[cfg(windows)]
@@ -991,6 +1002,36 @@ impl JobExecutor for SubagentJobExecutor {
         };
         let effective_workspace_root = request.workspace_root.clone();
 
+        let leases_acquired = if let (Some(store), Some(run_id)) =
+            (&self.agent_runs, run_id.as_ref())
+        {
+            if let Err(error) = store.reconcile_scratch_attempt_leases().await {
+                finish_scratch_admission_failure(store.as_ref(), run_id, &error.to_string()).await;
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!("scratch lease recovery failed: {error}"),
+                );
+            }
+            match store
+                .acquire_scratch_attempt_leases(run_id, &ctx.job.job_id, &ctx.attempt_id)
+                .await
+            {
+                Ok(_) => true,
+                Err(error) => {
+                    finish_scratch_admission_failure(store.as_ref(), run_id, &error.to_string())
+                        .await;
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("scratch attempt lease acquisition failed: {error}"),
+                    );
+                }
+            }
+        } else {
+            false
+        };
+
         let result = if run_id_for_lifecycle.is_some() {
             self.pool
                 .spawner()
@@ -999,6 +1040,19 @@ impl JobExecutor for SubagentJobExecutor {
         } else {
             self.pool.spawner().send_and_wait(request).await
         };
+        if leases_acquired {
+            if let Some(store) = &self.agent_runs {
+                if let Err(error) = store
+                    .release_scratch_attempt_leases(&ctx.job.job_id, &ctx.attempt_id)
+                    .await
+                {
+                    tracing::error!(?error, job_id = %ctx.job.job_id, attempt_id = %ctx.attempt_id, "scratch attempt lease release failed");
+                }
+                if let Some(run_id) = run_id.as_ref() {
+                    reclaim_revoked_shared_for_run(store.as_ref(), run_id).await;
+                }
+            }
+        }
         match result {
             Ok(result) => {
                 if let Some((record, lease)) = owned_worktree.as_ref() {
@@ -1154,6 +1208,74 @@ impl JobExecutor for SubagentJobExecutor {
                 )
             }
         }
+    }
+}
+
+pub(super) async fn reclaim_revoked_shared_for_run(
+    store: &dyn codegg_core::agent_run::AgentRunStore,
+    run_id: &codegg_core::identity::AgentRunId,
+) {
+    let run = match store.get_run(run_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(?error, run_id = %run_id, "cannot inspect shared scratch after attempt release");
+            return;
+        }
+    };
+    let task = match store.get_task(&run.task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(?error, run_id = %run_id, "cannot load shared scratch session after attempt release");
+            return;
+        }
+    };
+    for grant in &run.shared_scratch {
+        let resource = match store.get_scratch_resource(&grant.scratch_id).await {
+            Ok(Some(resource)) => resource,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(?error, scratch_id = %grant.scratch_id, "cannot inspect shared scratch resource after release");
+                continue;
+            }
+        };
+        if !resource.revoked {
+            continue;
+        }
+        match store.has_scratch_leases(&grant.scratch_id).await {
+            Ok(false) => {
+                if let Err(error) = crate::scratch::reclaim_shared_scratch_dir(
+                    &task.originating_session_id,
+                    &grant.scratch_id,
+                ) {
+                    tracing::warn!(?error, scratch_id = %grant.scratch_id, "revoked shared scratch cleanup deferred");
+                }
+            }
+            Ok(true) => {}
+            Err(error) => {
+                tracing::warn!(?error, scratch_id = %grant.scratch_id, "cannot verify shared scratch leases after release")
+            }
+        }
+    }
+}
+
+async fn finish_scratch_admission_failure(
+    store: &dyn codegg_core::agent_run::AgentRunStore,
+    run_id: &codegg_core::identity::AgentRunId,
+    message: &str,
+) {
+    if let Err(error) = store
+        .finish(
+            run_id,
+            codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+            None,
+            Some("scratch_admission".into()),
+            Some(message.to_string()),
+        )
+        .await
+    {
+        tracing::error!(?error, run_id = %run_id, "failed to finish run after scratch admission failure");
     }
 }
 

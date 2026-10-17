@@ -259,6 +259,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 79 {
         migrate_and_record(pool, 79).await?;
     }
+    if current_version < 80 {
+        migrate_and_record(pool, 80).await?;
+    }
 
     Ok(())
 }
@@ -350,6 +353,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             77 => migrate_v77(&mut tx).await?,
             78 => migrate_v78(&mut tx).await?,
             79 => migrate_v79(&mut tx).await?,
+            80 => migrate_v80(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3334,6 +3338,70 @@ async fn migrate_v79(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         )
         "#,
         "CREATE INDEX IF NOT EXISTS idx_workstream_claim_event_group ON workstream_claim_event(group_id, created_at, event_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Migration(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Managed agent scratch M002: durable parent-owned resources, immutable
+/// child grant snapshots, and scheduler attempt leases.
+async fn migrate_v80(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    let has_agent_run_table: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_run')",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| StorageError::Migration(error.to_string()))?;
+    if has_agent_run_table {
+        let has_shared_scratch_column: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_run') WHERE name = 'shared_scratch_json')",
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|error| StorageError::Migration(error.to_string()))?;
+        if !has_shared_scratch_column {
+            sqlx::query(
+                "ALTER TABLE agent_run ADD COLUMN shared_scratch_json TEXT NOT NULL DEFAULT '[]'",
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Migration(error.to_string()))?;
+        }
+    }
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_scratch_resource (
+            scratch_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            owner_key TEXT NOT NULL,
+            owner_run_id TEXT,
+            alias TEXT NOT NULL CHECK (length(alias) BETWEEN 1 AND 32),
+            idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 512),
+            revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0,1)),
+            created_at INTEGER NOT NULL,
+            UNIQUE (session_id, owner_key, idempotency_key),
+            UNIQUE (session_id, owner_key, alias COLLATE NOCASE),
+            FOREIGN KEY (owner_run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_scratch_resource_owner ON agent_scratch_resource(session_id, owner_key, revoked)",
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_scratch_attempt_lease (
+            scratch_id TEXT NOT NULL,
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('private_run','shared')),
+            run_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (scratch_id, job_id, attempt_id),
+            FOREIGN KEY (run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_scratch_attempt_lease_attempt ON agent_scratch_attempt_lease(job_id, attempt_id)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

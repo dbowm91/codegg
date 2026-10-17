@@ -271,6 +271,7 @@ async fn linked_agent_run(pool: &SqlitePool, job_id: &str, attempt_done: bool) -
                 model: "model".to_string(),
                 authority_digest: "authority".to_string(),
                 budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
             },
         )
         .await

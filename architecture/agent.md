@@ -194,6 +194,29 @@ class, and content hash. The compiler emits a versioned fingerprint used
 by `ContextPlan` for context identity. There is no production
 post-compaction system-string mutation.
 
+Turn construction adds one bounded required capability block for the
+canonical session's private scratch path. It is compiled with the normal
+runtime blocks and does not change on each tool call; other sessions receive
+their own path. The broker independently carries the authenticated session
+identity to the tool/process owners, so the prompt text itself never grants
+filesystem authority.
+
+Durable delegated runs get a separate private root keyed by `AgentRunId` under
+their originating session scratch tree. A parent may create a named shared
+resource with `task` and grant its opaque `ScratchId` to selected direct child
+runs. The run record stores the immutable grant snapshot. At child startup the
+worker rechecks session, direct-parent ownership, alias, and revocation against
+`AgentRunStore`; only then does it provision paths and attach them to the child
+authorization context. Standard temp variables still point only at the private
+run root. Shared roots use `CODEGG_SHARED_SCRATCH_<ALIAS>` and are added as
+explicit structured-tool and Required-sandbox roots. Prompt text is descriptive
+and does not confer access. Structured tools reject ungranted reads and writes;
+Required sandboxes deny ungranted writes, while native backends that permit
+broad reads provide no OS-level read-confidentiality guarantee. Revocation
+blocks new child admission while an
+already-admitted attempt retains its durable scratch lease until its child run
+and managed processes have completed.
+
 Prompt-block precedence for overlapping work state (M002 §6.9, M004 §6.5):
 current turn user input outranks an active goal revision newer than the
 checkpoint, which outranks the installed continuation projection

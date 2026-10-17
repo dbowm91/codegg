@@ -1479,6 +1479,7 @@ mod tests {
                 command_preflight: Some(super::super::authorization::CommandPreflightResult {
                     summary: Some("bounded advisory".into()),
                 }),
+                scratch_scope: None,
             });
 
         let first = execution_context_for_attempt(&invocation, 10_000);
