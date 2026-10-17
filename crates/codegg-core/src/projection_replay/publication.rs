@@ -186,6 +186,8 @@ pub fn projection_events_from_core(
             task_id,
             agent,
             description,
+            display_name,
+            run_id,
         } => {
             let event = ProjectionEvent::SubagentStarted {
                 node: codegg_protocol::projection::dto::AgentTreeNodeProjection {
@@ -197,6 +199,12 @@ pub fn projection_events_from_core(
                     created_at: envelope.timestamp_ms,
                     completed_at: None,
                     result_summary: None,
+                    // Replayed verbatim from the recorded event. This is the
+                    // determinism contract: a replay that re-drew the name
+                    // would make the historical view disagree with the live
+                    // one about what a given subagent was called.
+                    display_name: display_name.clone(),
+                    run_id: run_id.clone(),
                 },
             };
             Some((session_id.clone(), None, event))
@@ -373,7 +381,7 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone(), None, event))
         }
-        CoreEvent::SessionUpdated { session_id } => {
+        CoreEvent::SessionUpdated { session_id, .. } => {
             let event = ProjectionEvent::SessionActivated {
                 summary: codegg_protocol::projection::dto::SessionSummaryProjection {
                     session_id: session_id.clone(),
@@ -642,4 +650,76 @@ pub fn projection_events_from_core(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codegg_protocol::projection::event::ProjectionEvent;
+
+    fn started_envelope(display_name: Option<&str>) -> EventEnvelope<CoreEvent> {
+        EventEnvelope {
+            protocol_version: 1,
+            event_seq: 7,
+            timestamp_ms: 1_700_000_000_000,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::SubagentStarted {
+                session_id: "s1".into(),
+                task_id: 42,
+                agent: "explore".into(),
+                description: "map the auth flow".into(),
+                display_name: display_name.map(str::to_string),
+                run_id: Some("run-42".into()),
+            },
+        }
+    }
+
+    fn started_node(
+        envelope: &EventEnvelope<CoreEvent>,
+    ) -> codegg_protocol::projection::dto::AgentTreeNodeProjection {
+        projection_events_from_core(envelope)
+            .into_iter()
+            .find_map(|(_, env)| match env.payload {
+                ProjectionEvent::SubagentStarted { node } => Some(node),
+                _ => None,
+            })
+            .expect("a SubagentStarted projection event")
+    }
+
+    /// The load-bearing guarantee: replay copies the recorded name instead of
+    /// drawing a fresh one. A re-drawn name would make the historical view
+    /// disagree with the live one about what a given subagent was called.
+    #[test]
+    fn replay_preserves_the_recorded_display_name() {
+        let node = started_node(&started_envelope(Some("Sally")));
+        assert_eq!(node.display_name.as_deref(), Some("Sally"));
+    }
+
+    #[test]
+    fn replay_preserves_the_recorded_run_id() {
+        let node = started_node(&started_envelope(Some("Sally")));
+        assert_eq!(node.run_id.as_deref(), Some("run-42"));
+    }
+
+    /// Two replays of the same recorded event must agree. This is the test
+    /// that would fail if the name were minted on the replay path.
+    #[test]
+    fn replay_is_deterministic_across_repeated_application() {
+        let envelope = started_envelope(Some("Sally-2"));
+        let first = started_node(&envelope);
+        for _ in 0..8 {
+            let again = started_node(&envelope);
+            assert_eq!(first, again, "replay diverged between runs");
+        }
+    }
+
+    /// A node recorded before display names existed must still decode, with
+    /// the field simply absent. Consumers fall back to the agent type.
+    #[test]
+    fn an_event_without_a_display_name_replays_as_absent() {
+        let node = started_node(&started_envelope(None));
+        assert_eq!(node.display_name, None);
+        assert_eq!(node.agent, "explore", "the agent type is the fallback");
+    }
 }

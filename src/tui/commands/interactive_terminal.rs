@@ -1250,13 +1250,22 @@ pub(crate) fn handle_terminal_show(app: &mut App, handle: String) {
     }
     app.interactive_terminals.set_active(&handle);
     app.dialog_state.terminal_detail_handle = Some(handle);
-    let shown = app
-        .dialog_state
-        .terminal_detail_handle
-        .clone()
-        .expect("terminal detail handle just set");
+    let Some(shown) = app.dialog_state.terminal_detail_handle.clone() else {
+        return;
+    };
+    // Open **in insert**. Someone who typed `/terminal` wants a shell, and
+    // requiring a second `i` before the first character reached the PTY is
+    // what made the box feel broken: keys typed in that gap went nowhere at
+    // all, neither draft nor process. Focus is best-effort — a terminal that
+    // cannot take keystrokes yet (still attaching) still opens for reading.
+    let focusing = app.interactive_terminals.focus(&shown);
     refresh_terminal_dialog(app, &shown);
     app.ui_state.dialog = crate::tui::Dialog::Terminal;
+    if !focusing {
+        app.messages_state
+            .toasts
+            .info("Terminal is not attached yet — keys go to the view. `i` types when it is live.");
+    }
 }
 
 /// Re-render the open terminal dialog for `handle` when it is the
@@ -1348,7 +1357,7 @@ pub(crate) fn focus_terminal(app: &mut App, handle: Option<String>) {
     };
     if app.interactive_terminals.focus(&handle) {
         app.messages_state.toasts.info(&format!(
-            "Terminal {handle} focused: keystrokes go to the process; Esc Esc leaves focus"
+            "Terminal {handle}: INS — typing goes to the process. Esc reads, Ctrl+] sends a literal esc"
         ));
         refresh_terminal_dialog(app, &handle);
     } else {
@@ -1377,7 +1386,7 @@ pub(crate) fn focus_terminal_panel(app: &mut App, handle: &str) {
     }
     if app.interactive_terminals.focus(handle) {
         app.messages_state.toasts.info(&format!(
-            "Terminal {handle} focused: keystrokes go to the process; Esc Esc leaves focus"
+            "Terminal {handle}: INS — typing goes to the process. Esc reads, Ctrl+] sends a literal esc"
         ));
         return;
     }
@@ -1399,7 +1408,7 @@ pub(crate) fn blur_terminal_panel(app: &mut App, handle: &str) {
     app.interactive_terminals.escape(handle);
     app.messages_state
         .toasts
-        .info("Terminal unfocused: keystrokes go to the prompt; Shift+← leaves the panel");
+        .info("Terminal NOR: keys move the cursor here. i types; Shift+← leaves the panel");
 }
 
 /// Clear the local scrollback and screen for `handle`.
@@ -1442,9 +1451,13 @@ pub(crate) fn close_terminal_view(app: &mut App, terminate: bool) {
 ///
 /// Returns `true` when the key was consumed by terminal handling (the
 /// caller must not route it to the prompt or the dialog scroller).
-/// Ctrl-] while focused only leaves focus; literal Esc is sent to the PTY.
-/// Escape while viewing closes the view (detach); the prompt is never
-/// submitted from the terminal dialog.
+///
+/// **Insert means type.** While the terminal owns the keyboard every printable
+/// key, `Enter`, `Backspace`, `Tab`, arrows and `Ctrl-C`/`Ctrl-D` go straight
+/// to the PTY, which is what "the cursor is in the terminal window" has to
+/// mean in practice. `Esc` leaves insert for the reader — helm navigation,
+/// selection, yank — and never reaches the child; a program that needs its own
+/// escape gets `Ctrl+]`.
 pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -1456,14 +1469,14 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
     }
     let focused = app.interactive_terminals.is_focused(&handle);
 
-    // Explicit focus entry: `i` while viewing (mirrors Normal-mode focus).
+    // Explicit focus entry: `i` while reading (mirrors Normal-mode focus).
     if !focused && matches!(key.code, KeyCode::Char('i')) && key.modifiers == KeyModifiers::NONE {
         focus_terminal(app, Some(handle));
         return true;
     }
 
     if !focused {
-        // Viewing: the directional gesture docks this box into the side
+        // Reading: the directional gesture docks this box into the side
         // panel. Handled here rather than by the dialog scroller below,
         // which would swallow it — a modal short-circuits key routing
         // before the binding map is consulted, so the box has to recognise
@@ -1492,11 +1505,16 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
             app.close_dialog();
             return true;
         }
-        return false;
+        // A reader-mode key we do not claim belongs to the box's own scroll,
+        // not to the prompt underneath a modal.
+        return matches!(
+            key.code,
+            KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp
+        );
     }
 
-    // Focused: every key goes through the focus gate. Esc Esc (or Ctrl-])
-    // leaves focus; a lone Esc and other supported input forward to the PTY.
+    // Focused: every key goes through the focus gate. `Esc` leaves focus and
+    // lands in the reader above; `Ctrl+]` sends a real escape byte instead.
     let terminal_key = map_key(key);
     match app
         .interactive_terminals
@@ -1504,9 +1522,6 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
     {
         TerminalKeyAction::EscapeFocus => {
             app.interactive_terminals.escape(&handle);
-            app.messages_state
-                .toasts
-                .info("Terminal unfocused: keystrokes go to the prompt; Esc closes the view");
             refresh_terminal_dialog(app, &handle);
             true
         }
@@ -1715,12 +1730,12 @@ pub(crate) fn classify_nav_key(key: crossterm::event::KeyEvent) -> TerminalNavAc
 ///
 /// Shared with the side panel so both surfaces map a keystroke identically;
 /// the alternative is a panel that quietly disagrees with the box about what
-/// `Ctrl-]` or a literal `Esc` means.
+/// `Esc` or `Ctrl-]` means.
 pub(crate) fn map_key(key: crossterm::event::KeyEvent) -> TerminalKey {
     use crossterm::event::{KeyCode, KeyModifiers};
     match key.code {
         KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            TerminalKey::ExitFocus
+            TerminalKey::LiteralEscape
         }
         KeyCode::Esc => TerminalKey::Esc,
         KeyCode::Enter => TerminalKey::Enter,
@@ -1783,7 +1798,7 @@ mod tests {
     }
 
     #[test]
-    fn key_mapping_reserves_ctrl_right_bracket_and_forwards_escape() {
+    fn key_mapping_reserves_ctrl_right_bracket_for_the_child_escape() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
@@ -1791,12 +1806,20 @@ mod tests {
         );
         assert_eq!(
             map_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL)),
-            TerminalKey::ExitFocus
+            TerminalKey::LiteralEscape
         );
+        // `Esc` is the mode key; only `Ctrl+]` carries an escape byte onward.
         assert_eq!(
             classify_key(
                 true,
                 map_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            ),
+            TerminalKeyAction::EscapeFocus
+        );
+        assert_eq!(
+            classify_key(
+                true,
+                map_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL))
             ),
             TerminalKeyAction::Forward(vec![0x1b])
         );

@@ -128,6 +128,13 @@ pub fn route_disposition_table() -> Vec<RouteDispositionEntry> {
             capability: "project.configure",
         },
         RouteDispositionEntry {
+            method: "PATCH",
+            path: "/api/projects/{id}",
+            disposition: D::SharedAuthz,
+            operation: "project_update",
+            capability: "project.configure",
+        },
+        RouteDispositionEntry {
             method: "POST",
             path: "/api/sessions/{id}/unshare",
             disposition: D::SharedAuthz,
@@ -203,6 +210,13 @@ pub fn route_disposition_table() -> Vec<RouteDispositionEntry> {
             path: "/api/projects/{id}/restore",
             disposition: D::SharedAuthz,
             operation: "project_restore",
+            capability: "project.configure",
+        },
+        RouteDispositionEntry {
+            method: "DELETE",
+            path: "/api/projects/{id}",
+            disposition: D::SharedAuthz,
+            operation: "project_delete",
             capability: "project.configure",
         },
         // Workspaces.
@@ -411,7 +425,7 @@ pub async fn authorize_project(
     project: &ProjectId,
     capability: Capability,
     operation: &'static str,
-) -> Result<(), AxumAppError> {
+) -> Result<codegg_core::authorization::AuthorizationDecision, AxumAppError> {
     let service = service_for(pool);
     let descriptor =
         OperationDescriptor::new(operation, ScopeKind::DirectProject, Some(capability));
@@ -421,7 +435,7 @@ pub async fn authorize_project(
         Some(project.clone()),
         format!("http:{operation}"),
     );
-    service.authorize(&request).await.map(|_| ()).map_err(|e| {
+    service.authorize(&request).await.map_err(|e| {
         if e.is_denial() {
             denial_not_found()
         } else {

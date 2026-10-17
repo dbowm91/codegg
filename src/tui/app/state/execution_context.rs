@@ -102,6 +102,28 @@ mod tests {
     }
 
     #[test]
+    fn captured_execution_context_is_isolated_from_later_tab_switches() {
+        let mut tabs = tabs_with_root("/projects/a");
+        let context_at_dispatch = resolve_active(&tabs).unwrap();
+        let mut tab_b = ProjectTabState::empty(ProjectTabId::new(), "project-b".into());
+        tab_b.project_id = Some("project-b".into());
+        tab_b.workspace_id = Some("workspace-b".into());
+        tab_b.workspace_root = Some(PathBuf::from("/projects/b"));
+        let tab_b_id = tabs.add_tab(tab_b);
+
+        assert!(tabs.set_active(&tab_b_id));
+        let context_after_switch = resolve_active(&tabs).unwrap();
+        assert_eq!(
+            context_at_dispatch.workspace_root,
+            PathBuf::from("/projects/a")
+        );
+        assert_eq!(
+            context_after_switch.workspace_root,
+            PathBuf::from("/projects/b")
+        );
+    }
+
+    #[test]
     fn switching_tabs_refreshes_project_command_catalog_without_chdir() {
         let roots = tempfile::tempdir().unwrap();
         let root_a = roots.path().join("a");

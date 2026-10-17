@@ -216,6 +216,25 @@ impl PermissionRegistry {
             .remove_if(perm_id, |_key, val| val.session_id == session_id);
     }
 
+    /// Drop every pending permission sender owned by a deleted session.
+    /// Dropping the senders wakes their waiters with a closed-channel deny.
+    pub fn cancel_session(session_id: &str) -> usize {
+        let ids = PERMISSION_REGISTRY
+            .senders
+            .iter()
+            .filter(|entry| entry.value().session_id == session_id)
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter(|perm_id| {
+                PERMISSION_REGISTRY
+                    .senders
+                    .remove_if(perm_id, |_key, val| val.session_id == session_id)
+                    .is_some()
+            })
+            .count()
+    }
+
     /// Backward-compatible existence check. Returns `true` if `perm_id` is
     /// registered at all, in any session. New call sites should prefer
     /// [`Self::is_registered_scoped`].
@@ -410,6 +429,25 @@ impl QuestionRegistry {
             .remove_if(question_id, |_key, val| val.session_id == session_id);
     }
 
+    /// Drop every pending question sender owned by a deleted session.
+    /// Dropping the senders wakes their waiters with a closed-channel error.
+    pub fn cancel_session(session_id: &str) -> usize {
+        let ids = QUESTION_REGISTRY
+            .senders
+            .iter()
+            .filter(|entry| entry.value().session_id == session_id)
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter(|question_id| {
+                QUESTION_REGISTRY
+                    .senders
+                    .remove_if(question_id, |_key, val| val.session_id == session_id)
+                    .is_some()
+            })
+            .count()
+    }
+
     /// Backward-compatible existence check. Returns `true` if
     /// `question_id` is registered at all, in any session. New call sites
     /// should prefer [`Self::is_registered_scoped`].
@@ -560,5 +598,75 @@ mod tests {
 
         PermissionRegistry::set_pending_ttl(None);
         assert_eq!(PermissionRegistry::pending_ttl(), None);
+    }
+
+    #[test]
+    fn cancel_session_closes_only_its_pending_permissions() {
+        let session_id = format!("delete-perm-{}", uuid::Uuid::new_v4());
+        let other_session = format!("keep-perm-{}", uuid::Uuid::new_v4());
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let (other_tx, mut other_rx) = tokio::sync::oneshot::channel();
+        PermissionRegistry::register_with_session(
+            session_id.clone(),
+            None,
+            format!("{}-id", session_id),
+            tx,
+        );
+        PermissionRegistry::register_with_session(
+            other_session.clone(),
+            None,
+            format!("{}-id", other_session),
+            other_tx,
+        );
+
+        assert_eq!(PermissionRegistry::cancel_session(&session_id), 1);
+        assert_eq!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        assert!(PermissionRegistry::is_registered_scoped(
+            &other_session,
+            &format!("{}-id", other_session)
+        ));
+        PermissionRegistry::cancel_session(&other_session);
+        assert_eq!(
+            other_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+    }
+
+    #[test]
+    fn cancel_session_closes_only_its_pending_questions() {
+        let session_id = format!("delete-question-{}", uuid::Uuid::new_v4());
+        let other_session = format!("keep-question-{}", uuid::Uuid::new_v4());
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let (other_tx, mut other_rx) = tokio::sync::oneshot::channel();
+        QuestionRegistry::register_with_session(
+            session_id.clone(),
+            None,
+            format!("{}-id", session_id),
+            tx,
+        );
+        QuestionRegistry::register_with_session(
+            other_session.clone(),
+            None,
+            format!("{}-id", other_session),
+            other_tx,
+        );
+
+        assert_eq!(QuestionRegistry::cancel_session(&session_id), 1);
+        assert_eq!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        assert!(QuestionRegistry::is_registered_scoped(
+            &other_session,
+            &format!("{}-id", other_session)
+        ));
+        QuestionRegistry::cancel_session(&other_session);
+        assert_eq!(
+            other_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
     }
 }

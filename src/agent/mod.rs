@@ -45,6 +45,7 @@ pub mod run_integration;
 pub mod semantic_router;
 mod snapshot_capture;
 pub mod specialized_runtime;
+pub mod subagent_names;
 pub mod task_tool_runtime;
 pub mod title;
 mod tool_batch;

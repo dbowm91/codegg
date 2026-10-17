@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 use crate::projection::limits::{
-    truncate_str, MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_STRING_BYTES,
+    truncate_str, MAX_PROJECTION_DISPLAY_NAME_BYTES, MAX_PROJECTION_RUN_SUMMARY_BYTES,
+    MAX_PROJECTION_STRING_BYTES,
 };
 
 /// Visibility classification carried on every projection DTO.
@@ -450,6 +451,27 @@ pub struct AgentTreeNodeProjection {
     pub created_at: i64,
     pub completed_at: Option<i64>,
     pub result_summary: Option<String>,
+    /// Human-readable name drawn from the curated pool at spawn, e.g.
+    /// `Sally` or `Sally-2`.
+    ///
+    /// Additive and defaulted so snapshots recorded before this field existed
+    /// still decode; such nodes simply have no display name and fall back to
+    /// the agent type.
+    ///
+    /// The name is carried **in the event** and copied here verbatim. It is
+    /// never re-drawn by the reducer: a re-drawn random value would make
+    /// replay non-deterministic, and the live view and the durable record would
+    /// disagree about what a given subagent was called.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Durable run id for this node, when the run was scheduler-owned.
+    ///
+    /// Additive and defaulted for the same reason as `display_name`. This is
+    /// the identity the TUI actually joins on: `task_id` here is a daemon-local
+    /// `u64`, while `AgentRunSummary::task_id` is a UUID string, so comparing
+    /// the two as strings can never match.
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 impl AgentTreeNodeProjection {
@@ -460,6 +482,13 @@ impl AgentTreeNodeProjection {
         if let Some(summary) = self.result_summary.as_deref() {
             self.result_summary =
                 Some(truncate_str(summary, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned());
+        }
+        if let Some(name) = self.display_name.as_deref() {
+            self.display_name =
+                Some(truncate_str(name, MAX_PROJECTION_DISPLAY_NAME_BYTES).into_owned());
+        }
+        if let Some(run_id) = self.run_id.as_deref() {
+            self.run_id = Some(truncate_str(run_id, MAX_PROJECTION_STRING_BYTES).into_owned());
         }
     }
 }

@@ -141,11 +141,13 @@ model to the wrong connection.
 ## Other Invariants
 
 - **The launch directory is registered at startup.** `ProjectContextResolver`
-  resolves a directory by catalog lookup only and never registers on a miss, so
-  a directory CodeGG has not seen before has no executable project context.
-  `App::bootstrap_launch_project_context` runs from `main.rs` before any
-  session-scoped request: `WorkspaceRegister` then `ProjectRegister` for the
-  launch directory (both idempotent), writing the resulting pair onto the
+  resolves a directory by catalog lookup only and never registers on a miss.
+  Startup and the local directory picker share
+  `ensure_bound_project_context`: they register the workspace then the
+  directory-named project, and both operations are idempotent for a known
+  canonical root. New roots receive one project each even when their Git
+  lineage matches another project; historical multi-root bindings stay
+  readable until explicitly rebound. The launch pair is written onto the
   active tab via `set_active_identities`. New code must not move identity
   creation into the resolver, and must not send a path in an identity field —
   `SessionCreate` takes a `(project_id, workspace_id)` **pair**, so a
@@ -230,13 +232,35 @@ model to the wrong connection.
   and the Ctrl+T pane use. Only a *file* emits an open intent; a directory has
   no document. `/files` is `DocumentScope::Workspace`, so the editor's
   `[project]` badge is the honest reading.
-- **`Enter` and `l` both expand a directory, and that is deliberate.** `Enter`
-  reveals contents in place and leaves the cursor alone; `l` expands *and*
-  steps onto the first child. `h` collapses an open directory in place and
-  only steps to the parent when it is already closed — backing out of a
-  directory means closing it. All three verbs live on `FileTreeState`
-  (`toggle_selected` / `enter_selected` / `leave_selected`), so the box, the
-  hosted panel, and the Ctrl+T pane cannot drift.
+- **`Enter` expands, `l` re-roots, `h` goes up a level.** `Enter` reveals a
+  directory's contents in place and leaves the cursor alone. `l` makes the
+  selected directory the listing's **root** — a daemon round-trip scoped by
+  `WorkspaceDirectoryListRequestDto::prefix`, not a local filter of the
+  already-loaded rows, which would drop everything the first walk hit its
+  bounds on and present the remainder as if it were the directory. `h` pops
+  `FileTreeState::root_history` and lands the cursor on the directory just
+  left behind; at the workspace root, where there is no level to leave, it
+  falls back to `leave_selected` (collapse in place, else step to the parent)
+  rather than making the key inert at the one depth every listing starts at.
+  All of it lives on `FileTreeState`, so the box, the hosted panel, and the
+  Ctrl+T pane cannot drift; re-rooting and ascending are **intents**
+  (`TuiMsg::FilesDescend` / `FilesAscend`) because the box holds a copy.
+  `root_history`'s last entry *is* the current root — one axis, not a prefix
+  field and an expansion set that can disagree — and it is re-seeded with the
+  workspace root before the first push, or the very first `l` becomes one-way.
+- **`Ctrl+d`/`Ctrl+u` page a listing that does not fit.** They carry
+  `Char('d')`/`Char('u')` codes, so the tree checks modifiers *before* its
+  character arms. A page is two thirds of `FileTreeState::viewport_rows`,
+  which the renderer publishes from the widget's returned `PaneLayout` —
+  a widget borrows the state it draws and does not write into it. Unmeasured
+  (`0`) falls back to `FALLBACK_PAGE_ROWS`; a page verb must never be a no-op.
+- **One icon table, `src/tui/file_icons.rs`.** Both navigators call it for
+  the glyph and its tone; neither owns the mapping. The folder glyph doubles
+  as expansion state, so there is no second caret column in a 22-column pane,
+  and a selected row is *repainted* (bg + fg) rather than recolored so the
+  type color survives the cursor landing on it. Nerd Font by default;
+  `CODEGG_FILE_ICONS=plain` for a terminal without a patched font — an env
+  switch, not a config key, because it is a terminal-capability question.
 - **`:` is one registry, and it is modal.** The editor's command line opens
   from Normal mode only (in Insert a colon is document text) and owns *every*
   key while open, including the mode-independent `Ctrl+S` chords — a leaked
@@ -250,13 +274,64 @@ model to the wrong connection.
   **refused**, not run as `:wq`. `:wq` sets
   `EditorState::close_after_save` and closes from the save *completion* —
   closing eagerly would discard the draft the user asked to keep.
+- **The editor route has ONE mode axis, and it is `ui_state.input_mode`.**
+  This is the invariant that was violated for the whole life of `EditorFocus`.
+  The route used to carry `EditorFocus` (`Composer`/`Buffer`) *beside*
+  `EditorMode`, the two could disagree, and a fresh open defaulted to
+  `Composer` — so `handle_editor_key` claimed nothing except `Ctrl+E` while
+  the bare-text gate swallowed every printable. The file rendered and no key
+  reached it, which read as "the editor does not work" rather than as two
+  toggles. Never reintroduce a second axis. On `Route::Editor`: **`Insert` puts
+  the keyboard in the document** (the cursor is drawn in the text box);
+  **`Normal` gives it to the Helix verbs and leaves typing to the bottom input
+  box**. Opening a file enters `Insert`. `handle_normal_key` returning
+  `BufferKey::Unhandled` is the *mechanism* for the second half, not a
+  fallback — the editor claims navigation and editing and everything else
+  stays a composer keystroke. Same contract as `/terminal`: NOR reads, INS
+  types.
+- **`Esc` on the editor route is a mode step, never an exit.** Insert → Normal;
+  Normal → a toast naming `:q`. It is answered in `handle_editor_key` *above*
+  every other editor key, so it cannot reach anything that closes the view. It
+  used to call `close_editor`, which meant the only key that could get you out
+  of Insert was also the key that threw the document away. The only exits are
+  `:q` and `:wq`, and the frame says so.
+- **The buffer speaks Helix, matching `/terminal`.** `hjkl`/arrows move,
+  `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word, `v` selects by character, `x`
+  selects the whole line and grows one per press, `d` deletes the held
+  selection, `space y` yanks it, `0`/`$`/`gg`/`G`/`u`/`Ctrl+r` and `i/a/I/A/
+  o/O` as in Helix. vi's `dd`/`dw` are gone (`x` then `d` is the same gesture);
+  `D` stays as delete-to-line-end. Bare `d` is **claimed with nothing selected**
+  — an unclaimed `d` escapes to the global `OpenDiff`. `space y` is remembered
+  prefix state, not a chord, because legacy xterm sends it as two events.
+  Uppercase verbs bind with *and* without `SHIFT`.
+- **Selection reuses `tui::helix_selection`; `editor.rs` owns only geometry.**
+  The editor instantiates `SelectionState<EditorPoint>` where `EditorPoint` is
+  `{ byte, line }`, and `SelectionState::restore` lets it drive the shared
+  machine while keeping its own byte-offset cursor. Never re-derive `v`/`x`
+  locally — `v` is a mode and `x` is an action on both surfaces, and that split
+  is the only reason `x` can mean both "select this line" and "again, the
+  next". `editor::selection_range` is the single resolver: character mode is
+  inclusive of the head, line mode spans whole lines including terminators so a
+  delete leaves no trailing blank line. The renderer patches only `bg` for a
+  selection, never `fg`, or highlighted text becomes dark-on-dark exactly where
+  the user is selecting.
+- **Syntax highlighting is ambient, debounced, and never steals a key.**
+  `EditorLspState::clear_semantic` runs on every local edit (spans are
+  revision-bound), and the re-request is deferred to
+  `EditorState::arm_semantic_refresh` + `service_editor_semantic_refresh` from
+  the render pump, so a fast typist produces one request, not one per
+  keystroke — and the file is never permanently colourless. `F9` is the manual
+  retry. **Not F8**: F8 is the completion trigger, and a highlight refresh
+  stealing it would make completion unreachable. `request_editor_semantic_tokens`
+  deliberately never opens the LSP result panel, so a server that answered
+  `NotReady` leaves an unhighlighted file rather than a modal over it.
 - **The editor replaces the main buffer, so the composer arms with `:`.**
-  `composer_refuses_bare_text()` is true only on `Route::Editor` with the
-  buffer unfocused, and the gate sits on the single `InputAction::Char` arm
+  `composer_refuses_bare_text()` is true only on `Route::Editor` in **Normal**
+  mode, and the gate sits on the single `InputAction::Char` arm
   so every typing path is covered by one rule. Scoped narrowly: a focused
   side panel has its own composer and chat is a conversation, so both stay
   freely typeable.
-- **The directionals survive the editor buffer.** With the buffer focused in
+- **The directionals survive the editor buffer.** On `Route::Editor` in
   Normal mode, `Shift+H/J/K/L` still selects or docks a panel, routed through
   `panels::handle_normal_only_action` — the same entry point `App::on_key`
   uses for its five direction arms. Two dispatchers for one gesture family is
@@ -704,21 +779,41 @@ model to the wrong connection.
   locally or send frontend cwd/environment. Insert a run into shell history
   only after daemon admission; preserve the captured session/workspace binding
   so late output cannot be promoted into another tab.
-- **Interactive terminal keys** are modal input: a focused lone `Esc` is
-  forwarded to the PTY, `Esc Esc` (or `Ctrl-]`) leaves focus, and viewing-mode
-  Esc detaches/closes. `Esc Esc` is the reachable exit on keyboards without a
-  `]` key, and any intervening key disarms the pair. Terminal
-  output is interpreted by bounded VT screen state before Ratatui rendering;
-  never write raw child escape sequences to the host terminal.
+- **Interactive terminal keys are modal input, one key per meaning.** INS (the
+  process owns the keyboard): every printable key plus `Enter`/`Backspace`/`Tab`/
+  arrows/`Ctrl-C`/`Ctrl-D` goes to the PTY; `Esc` returns to NOR; `Ctrl+]` sends a
+  real `0x1b` for full-screen programs and stays in INS. NOR (the reader owns it):
+  helix `hjkl`/`Ctrl+u/d`/`e`/`b`/`v`/`x`/`d`/`space+y`/`C`/`D`, `i` or `Enter`
+  back to INS, `Esc` detaches. `/terminal` opens the box **already in INS**.
+  Terminal output is interpreted by bounded VT screen state before Ratatui
+  rendering; never write raw child escape sequences to the host terminal.
+- **Never make one key answer two questions.** `Esc` used to be both "leave
+  insert" and "pass an escape byte through", disambiguated by a hidden
+  `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's
+  destination then depended on state the user could not see. Give each meaning
+  its own key and keep the classifier stateless.
+- **A panel that fronts a process must opt into Insert-mode keys.**
+  `SidePanel::claims_insert_keys` is what makes `panel_active` consult a focused
+  panel in Insert. The default is correct for panels that render their own text
+  field (there Insert means "type into that field"), and exactly wrong for a
+  panel fronting a PTY — without the opt-in, docking with `Shift+L` and typing
+  sends everything to a composer the user is not looking at.
 - **Focus must never desync between the panel host and the PTY view.**
   `SidePanelHost::blur` and `TerminalFocus` are separate flags, and
   `panel_active` requires `is_focused()` — so a focused PTY that declines
   `owns_exit_key` looks like it left while still reporting INS, and then takes
   no keys at all. A panel whose view can hold the keyboard claims the host's
-  exit keys (`owns_exit_key` takes `ctx` for exactly this) and ends in the
-  blur that clears its own focus. Terminal output is interpreted by bounded VT
-  screen state before Ratatui rendering; never write raw child escape sequences
-  to the host terminal.
+  mode key (`owns_exit_key` takes `ctx` for exactly this) and ends in the blur
+  that clears its own focus. Claim **`Esc` only** — claiming `q` as well meant
+  the shell could never receive the most common letter in most commands.
+- **Side panels are mouse surfaces.** Record every occupied column's rect on
+  each render (`App::panel_areas`) and resolve `ClickTarget::Panel { placement }`
+  from it, so the list can never name a column that is not painted. Click focuses
+  the column (`TuiMsg::FocusPanelAt`, via the same composer-mode park/restore as
+  `Shift+H/J/K/L`); drag joins the viewport in `on_mouse`'s deferred-press arm so
+  release copies; wheel scrolls **that column**. An unhandled target falls
+  through to the transcript, which is what made scrolling a terminal column look
+  like scrolling the conversation.
 - **The terminal is a reader, not a text editor.** In viewing (NOR) mode it
   speaks Helix: `j/k/h/l` and arrows move the cursor and scroll at the edges,
   `Ctrl+u`/`Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x`

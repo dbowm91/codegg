@@ -1339,6 +1339,8 @@ fn event_matches_raw_filter(
                     | CoreEvent::ProjectRegistered { .. }
                     | CoreEvent::ProjectArchived { .. }
                     | CoreEvent::ProjectRestored { .. }
+                    | CoreEvent::ProjectDeleted { .. }
+                    | CoreEvent::ProjectUpdated { .. }
                     | CoreEvent::ProjectHealthChanged { .. }
             ),
         }
@@ -2286,6 +2288,8 @@ fn tui_raw_event_matches(event: &EventEnvelope<CoreEvent>, session_id: Option<&s
                 | CoreEvent::ProjectRegistered { .. }
                 | CoreEvent::ProjectArchived { .. }
                 | CoreEvent::ProjectRestored { .. }
+                | CoreEvent::ProjectDeleted { .. }
+                | CoreEvent::ProjectUpdated { .. }
                 | CoreEvent::ProjectHealthChanged { .. }
         ),
     }

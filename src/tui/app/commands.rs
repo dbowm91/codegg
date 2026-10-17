@@ -353,10 +353,10 @@ pub enum TuiCommand {
     },
     /// Completion: a single session's metadata was refreshed.
     ///
-    /// Auto-title writes the new title in the daemon and publishes
-    /// `CoreEvent::SessionUpdated`, but that event carries only a session id,
-    /// so the title itself has to be re-read. Without this the sidebar and
-    /// header kept showing "Untitled" until a manual session reload.
+    /// Fallback for id-only `CoreEvent::SessionUpdated` events. Auto-title
+    /// events carry the title itself and are applied directly without this
+    /// round trip. Without either path the sidebar and header kept showing
+    /// "Untitled" until a manual session reload.
     SessionRefreshed {
         request_id: u64,
         session_id: String,
@@ -926,6 +926,47 @@ pub enum TuiCommand {
         result: Option<crate::protocol::dto::ProjectDetailsDto>,
         error: Option<String>,
     },
+    /// Completion of the `ProjectGet` used to build a permanent-destroy
+    /// confirmation. It is picker-generation scoped and has no side effects.
+    ProjectDestroyConfirmationLoaded {
+        picker_request_id: u64,
+        project_id: String,
+        display_name: Option<String>,
+        session_count: Option<usize>,
+        error: Option<String>,
+    },
+    /// Completion of recoverable archive/restore.
+    ProjectLifecycleFinished {
+        picker_request_id: u64,
+        project_id: String,
+        restored: bool,
+        error: Option<String>,
+    },
+    /// Completion of permanent project destruction.
+    ProjectDeleteFinished {
+        picker_request_id: u64,
+        project_id: String,
+        deleted_session_count: Option<usize>,
+        error: Option<String>,
+    },
+    /// Project/workspace detail loaded for a rename/repath form.
+    ProjectEditLoaded {
+        picker_request_id: u64,
+        project_id: String,
+        display_name: Option<String>,
+        root: Option<String>,
+        expected_updated_at: Option<i64>,
+        error: Option<String>,
+    },
+    /// Completion of a rename/repath update.
+    ProjectUpdateFinished {
+        picker_request_id: u64,
+        project: Option<crate::protocol::dto::ProjectSummaryDto>,
+        workspace: Option<crate::protocol::dto::ProjectWorkspaceSummaryDto>,
+        previous_display_name: Option<String>,
+        previous_root: Option<String>,
+        error: Option<String>,
+    },
     /// Project Picker (Milestone 2): load sessions for a project tab.
     StartListProjectSessions {
         tab_id: crate::tui::app::state::ProjectTabId,
@@ -945,24 +986,12 @@ pub enum TuiCommand {
     StartRegisterWorkspace {
         path: String,
     },
-    /// Project Picker (Milestone 2): workspace registration completion.
-    WorkspaceRegistered {
-        request_id: u64,
-        picker_request_id: u64,
-        workspace_id: Option<String>,
-        error: Option<String>,
-    },
-    /// Project Picker (Milestone 2): register a project.
-    StartRegisterProject {
-        workspace_id: String,
-        display_name: String,
-        description: Option<String>,
-        tags: Vec<String>,
-    },
     /// Project Picker (Milestone 2): project registration completion.
     ProjectRegistered {
         request_id: u64,
         picker_request_id: u64,
+        workspace_id: String,
+        workspace_root: String,
         project_id: Option<String>,
         error: Option<String>,
     },

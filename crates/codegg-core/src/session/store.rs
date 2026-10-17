@@ -1026,11 +1026,20 @@ impl SessionStore {
             .as_ref()
             .map(|inner| inner.as_deref());
 
+        // A title change renames the session, so the derived slug moves
+        // with it (auto-title and manual rename share this path).
+        // `None` title = no change, hence no slug change either.
+        let slug = input
+            .title
+            .as_ref()
+            .map(|t| generate_slug(&Some(t.clone())));
+
         let result = sqlx::query_as::<_, SessionRow>(
             r#"
             UPDATE session SET
                 time_updated = ?,
                 title = COALESCE(?, title),
+                slug = COALESCE(?, slug),
                 share_url = COALESCE(?, share_url),
                 summary_additions = COALESCE(?, summary_additions),
                 summary_deletions = COALESCE(?, summary_deletions),
@@ -1051,6 +1060,7 @@ impl SessionStore {
         )
         .bind(now)
         .bind(&input.title)
+        .bind(slug)
         .bind(&input.share_url)
         .bind(input.summary_additions)
         .bind(input.summary_deletions)

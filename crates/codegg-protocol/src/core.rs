@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
-    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto,
-    ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto, RecoveryReportDto, RunQueryDto,
+    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDeleteRequestDto,
+    ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto,
+    ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto, RunQueryDto,
     RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
     SessionBindingDto, WorkspaceServiceHealthDto,
 };
@@ -1263,6 +1264,16 @@ pub enum CoreResponse {
     ProjectRestored {
         project: ProjectSummaryDto,
     },
+    ProjectDeleted {
+        project_id: String,
+        deleted_session_count: usize,
+    },
+    ProjectUpdated {
+        project: ProjectSummaryDto,
+        workspace: ProjectWorkspaceSummaryDto,
+        previous_display_name: String,
+        previous_root: String,
+    },
     ProjectHealth {
         health: ProjectHealthDto,
     },
@@ -2465,6 +2476,12 @@ pub enum CoreRequest {
     ProjectRestore {
         project_id: String,
     },
+    ProjectDelete {
+        request: ProjectDeleteRequestDto,
+    },
+    ProjectUpdate {
+        request: ProjectUpdateRequestDto,
+    },
     ProjectHealth {
         project_id: String,
         workspace_id: String,
@@ -3655,6 +3672,16 @@ pub enum CoreEvent {
         project_id: String,
         project: ProjectSummaryDto,
     },
+    ProjectDeleted {
+        project_id: String,
+        deleted_session_count: usize,
+    },
+    ProjectUpdated {
+        project: ProjectSummaryDto,
+        workspace: ProjectWorkspaceSummaryDto,
+        previous_display_name: String,
+        previous_root: String,
+    },
     ProjectHealthChanged {
         project_id: String,
         workspace_id: String,
@@ -3780,6 +3807,11 @@ pub enum CoreEvent {
     },
     SessionUpdated {
         session_id: String,
+        /// New title when the publisher knows it (daemon auto-title).
+        /// `None` preserves the old id-only shape: receivers fall back to
+        /// a bounded metadata refetch. Serde-defaulted for wire compat.
+        #[serde(default)]
+        title: Option<String>,
     },
     FileChanged {
         path: String,
@@ -3790,6 +3822,19 @@ pub enum CoreEvent {
         task_id: u64,
         agent: String,
         description: String,
+        /// Human-readable name drawn from the curated pool at spawn.
+        ///
+        /// Carried in the event rather than re-drawn downstream so replay
+        /// reproduces the name the live view showed. `None` for a producer
+        /// that has no registry (an older recorded event, or a path that never
+        /// assigned one), in which case consumers fall back to `agent`.
+        display_name: Option<String>,
+        /// Durable run id when this subagent is scheduler-owned.
+        ///
+        /// The daemon-local `task_id` above is a `u64` and cannot be joined
+        /// against `AgentRunSummary::task_id`, which is a UUID string; this is
+        /// the identity that actually links the two.
+        run_id: Option<String>,
     },
     SubagentProgress {
         session_id: String,

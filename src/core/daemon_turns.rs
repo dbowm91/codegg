@@ -625,6 +625,15 @@ impl CoreDaemon {
                     Some(session_id.clone()),
                     Default::default(),
                 );
+                // Pin the resolved root to the log: a turn whose tools
+                // all fail with "not a directory" is otherwise
+                // indistinguishable from a model looping on bad paths.
+                tracing::info!(
+                    session_id = %session_id,
+                    turn_id = %turn_id,
+                    workspace_root = %execution.workspace_root.display(),
+                    "turn execution context bound",
+                );
 
                 // Delegate to the injected turn runtime which handles tool
                 // registry, agent loop construction, and background spawning.

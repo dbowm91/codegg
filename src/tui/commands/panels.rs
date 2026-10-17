@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use crate::tui::app::state::chat::ChatState;
 use crate::tui::app::App;
-use crate::tui::input::InputAction;
+use crate::tui::input::{InputAction, InputMode};
 use crate::tui::panels::{PanelCtx, PanelDirection, PanelKey, PanelPlacement, SidePanelId};
 use crate::tui::theme::Theme;
 
@@ -562,6 +562,22 @@ pub(crate) fn focus_panel(app: &mut App) -> bool {
 pub(crate) fn blur_panel(app: &mut App) {
     app.panel_host.blur();
     restore_composer_mode_if_unfocused(app);
+    sync_workspace_focus(app);
+}
+
+/// Focus the panel docked at `placement` — the pointer's answer to
+/// `Shift+H/J/K/L`.
+///
+/// Goes through the same park/restore of the composer mode that
+/// [`focus_panel`] owns, so a click and the keyboard cannot leave the composer
+/// in different modes.
+pub(crate) fn focus_panel_at(app: &mut App, placement: PanelPlacement) {
+    let focused = app.panel_host.focus_at(placement);
+    if focused {
+        app.composer_mode_before_panel_focus
+            .get_or_insert(app.ui_state.input_mode);
+        app.ui_state.input_mode = InputMode::Normal;
+    }
     sync_workspace_focus(app);
 }
 
@@ -1135,6 +1151,38 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
         // `[BUILD]`/`[CHAT]` target — receives it.
         PanelKey::PassThrough => false,
     }
+}
+
+/// Whether the focused panel takes the keyboard in Insert mode.
+///
+/// See [`SidePanel::claims_insert_keys`](crate::tui::panels::SidePanel::claims_insert_keys).
+/// The context is built and dropped here so the query stays a single explicit
+/// grant; the panel never sees `&App`.
+pub(crate) fn panel_claims_insert_keys(app: &mut App) -> bool {
+    let App {
+        panel_host,
+        sidebar,
+        chat,
+        interactive_terminals,
+        chat_panel_project,
+        sidebar_area,
+        ui_state,
+        ..
+    } = app;
+    if !panel_host.is_focused() || !panel_host.is_visible_at(panel_host.placement()) {
+        return false;
+    }
+    let mut ctx = panel_ctx(
+        ui_state,
+        sidebar,
+        chat,
+        interactive_terminals,
+        chat_panel_project,
+        *sidebar_area,
+        true,
+        InputMode::Insert,
+    );
+    panel_host.claims_insert_keys(&mut ctx)
 }
 
 /// Build the render/key context for the active panel.

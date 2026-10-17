@@ -15,17 +15,23 @@ use codegg::protocol::core::{
     ChatChannelDto, ChatMessageDto, CoreEvent, CoreRequest, CoreResponse, EventEnvelope,
     RequestEnvelope,
 };
+use codegg::tui::app::state::subagents::SubagentRow;
 use codegg::tui::app::state::WorkspaceFocus;
 use codegg::tui::app::TuiMsg;
 use codegg::tui::components::component::DialogType;
 use codegg::tui::components::dialogs::panel_manager::PanelManagerDialog;
+use codegg::tui::components::sidebar::{SidebarFocusTarget, SidebarJob, SidebarSubagent};
 use codegg::tui::input::InputMode;
 use codegg::tui::panels::SidePanelId;
 use codegg::tui::route::Route;
+use ratatui::layout::Rect;
 
 use codegg::core::CoreClient;
 use codegg::error::AppError;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 
 /// Project bound by the active tab; every chat locator resolves to it.
 const PROJECT: &str = "project-a";
@@ -738,4 +744,195 @@ async fn q_still_unfocuses_the_panel_in_normal_mode() {
         !app.panel_host.is_focused(),
         "outside Insert mode q keeps its exit meaning"
     );
+}
+
+// ── Subagent and job sections ───────────────────────────────────────
+
+/// Select and focus the Session panel the way a user does.
+fn focus_session(app: &mut codegg::tui::app::App) {
+    to_normal(app);
+    open_manager(app);
+    // The manager opens on the live panel, which is Session; committing it
+    // without moving is how the user focuses the panel they are looking at.
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app.panel_host.active(),
+        SidePanelId::Session,
+        "precondition: the session panel is active"
+    );
+    assert!(
+        app.panel_host.is_focused(),
+        "precondition: a focused panel owns the keyboard"
+    );
+}
+
+fn sidebar_subagent(task_id: &str, name: &str, agent: &str, status: &str) -> SidebarSubagent {
+    SidebarSubagent {
+        task_id: task_id.to_string(),
+        name: name.to_string(),
+        agent: agent.to_string(),
+        status: status.to_string(),
+    }
+}
+
+/// Publish one subagent to every surface that reads it.
+///
+/// Both sides are seeded because a snapshot does both in one pass: the panel's
+/// `Subagents` section and `SubagentState.rows` are two renderings of the same
+/// derived vector. Seeding only the panel would be a state the runtime never
+/// produces — and would silently pass or fail for the wrong reason, since
+/// `open_task` resolves the row from `SubagentState` and refuses a `task_id`
+/// with nothing behind it.
+fn seed_subagent(
+    app: &mut codegg::tui::app::App,
+    task_id: &str,
+    name: &str,
+    agent: &str,
+    status: &str,
+) {
+    app.sidebar
+        .set_subagents(vec![sidebar_subagent(task_id, name, agent, status)]);
+    app.ui_state.subagents.set_rows(vec![SubagentRow {
+        task_id: task_id.to_string(),
+        run_id: None,
+        display_name: Some(name.to_string()),
+        agent: agent.to_string(),
+        description: "map the subsystem".to_string(),
+        status: status.to_string(),
+    }]);
+}
+
+/// The panel's `Enter` on a subagent row opens that subagent's buffer tab.
+///
+/// The whole chain is exercised: key → binding → `SessionPanel::handle_key`
+/// → `PanelKey::Intent` → `process_msg` → the tab set. The panel routes an
+/// intent rather than touching the tab set itself, so this is also the test
+/// that would fail if the panel ever grew direct authority over tabs.
+#[tokio::test(flavor = "current_thread")]
+async fn enter_on_a_session_panel_subagent_row_opens_its_buffer_tab() {
+    let mut app = test_app();
+    seed_subagent(&mut app, "42", "Sally", "explore", "running");
+    focus_session(&mut app);
+
+    assert!(
+        app.ui_state.subagents.active_tab().is_none(),
+        "precondition: no subagent tab is open yet"
+    );
+    // Section(Subagents) header, then the row itself.
+    app.on_key(plain('j'));
+    app.on_key(plain('j'));
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.ui_state
+            .subagents
+            .active_tab()
+            .map(|tab| tab.tab_id.as_str().to_string()),
+        Some("42".to_string()),
+        "Enter on a subagent row opens exactly the tab it addresses"
+    );
+}
+
+/// Give the app a laid-out sidebar and return the terminal row whose tooltip
+/// contains `needle`.
+///
+/// `App` has no geometry until it renders, and `clickable_area_at` derives
+/// `ClickTarget::Sidebar` from `sidebar_area`, so a click test has to supply
+/// one. The row is *found* through the hover map rather than hard-coded: the
+/// whole point of the alignment invariant is that a row's rendered position
+/// is not a constant, and a test that hard-codes it would pass even when the
+/// map and the render disagree.
+fn sidebar_row_containing(app: &mut codegg::tui::app::App, needle: &str) -> (Rect, u16) {
+    let area = Rect::new(0, 0, 40, 40);
+    app.sidebar_area = Some(area);
+    for y in 1..area.height {
+        app.sidebar.set_hover_position(2, y, Some(area));
+        if app
+            .sidebar
+            .get_tooltip()
+            .is_some_and(|tooltip| tooltip.contains(needle))
+        {
+            return (area, y);
+        }
+    }
+    panic!("no sidebar row whose tooltip contains {needle:?}");
+}
+
+/// `Enter` and a click resolve to the same tab for the same row.
+///
+/// They take different routes through the app — the keyboard through the
+/// panel, the mouse through `ClickTarget::Sidebar` — so agreement is a
+/// property to assert rather than something the shared `SidebarActivation`
+/// gives for free.
+#[tokio::test(flavor = "current_thread")]
+async fn a_clicked_subagent_row_opens_the_same_tab_as_enter() {
+    let mut entered = test_app();
+    seed_subagent(&mut entered, "42", "Sally", "explore", "running");
+    focus_session(&mut entered);
+    entered.on_key(plain('j'));
+    entered.on_key(plain('j'));
+    entered.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    let mut clicked = test_app();
+    seed_subagent(&mut clicked, "42", "Sally", "explore", "running");
+    let (area, row) = sidebar_row_containing(&mut clicked, "Sally");
+    clicked.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 2,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    assert_eq!(area.height, 40, "sanity: the synthetic layout has rows");
+    assert_eq!(
+        entered
+            .ui_state
+            .subagents
+            .active_tab()
+            .map(|tab| tab.tab_id.as_str().to_string()),
+        Some("42".to_string())
+    );
+    assert_eq!(
+        clicked
+            .ui_state
+            .subagents
+            .active_tab()
+            .map(|tab| tab.tab_id.as_str().to_string()),
+        Some("42".to_string()),
+        "click and Enter must open one tab for one row, not two subjects"
+    );
+}
+
+/// A job row is status only: `Enter` opens nothing and reaches no composer.
+#[tokio::test(flavor = "current_thread")]
+async fn a_job_row_is_read_only_and_never_reaches_the_composer() {
+    let mut app = test_app();
+    app.sidebar.set_jobs(vec![SidebarJob {
+        job_id: "j1".to_string(),
+        kind: "test".to_string(),
+        summary: "cargo test".to_string(),
+        state: "running".to_string(),
+        error_class: None,
+    }]);
+    focus_session(&mut app);
+
+    app.on_key(plain('j'));
+    app.on_key(plain('j'));
+    assert_eq!(
+        app.sidebar.focused_target(),
+        Some(&SidebarFocusTarget::Job("j1".to_string())),
+        "the job row is reachable by keyboard"
+    );
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.ui_state.subagents.active_tab().is_none(),
+        "there is no buffer for a job to open"
+    );
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "",
+        "the key was consumed by the panel, not submitted as a turn"
+    );
+    assert!(app.panel_host.is_focused());
 }

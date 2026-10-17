@@ -180,6 +180,16 @@ pub enum TuiMsg {
     /// dispatcher the main buffer's `InputAction` arms reach, so both halves
     /// of a box/panel pair resolve it identically.
     MoveDirection(crate::tui::panels::PanelDirection),
+    /// Put the keyboard on the panel docked at `placement`.
+    ///
+    /// The pointer answer to `Shift+H/J/K/L`. Kept as its own message rather
+    /// than folded into [`MoveDirection`](Self::MoveDirection) because those
+    /// resolve the keyboard position *between* edges, while a click names an
+    /// edge outright — and because focus has to go through the app to
+    /// park/restore the composer mode that `focus_panel` owns.
+    FocusPanelAt {
+        placement: crate::tui::panels::PanelPlacement,
+    },
     /// The terminal panel took the PTY's keyboard.
     ///
     /// A panel cannot focus the terminal itself: the focus flag lives on the
@@ -249,6 +259,8 @@ pub enum TuiMsg {
         placement: crate::tui::panels::PanelPlacement,
     },
     ToggleTodoList,
+    /// Open the unified tasks overlay: todos, subagents, jobs.
+    ToggleTasksList,
     ToggleFullscreen,
     ToggleReasoning,
     ToggleTts,
@@ -512,6 +524,26 @@ pub enum TuiMsg {
     PreviousProjectTab,
     /// Close the active project tab.
     CloseProjectTab,
+    /// Open the subagent with this projection `task_id` as a tab in the main
+    /// buffer.
+    ///
+    /// Addressed by the projection's canonical id rather than a row index so
+    /// every surface that can open a tab — the tasks overlay today, the
+    /// sessions panel's subagent section from M004 — agrees on identity even
+    /// if the rows shift underneath between the keypress and the dispatch.
+    ///
+    /// Carries no authority: opening a tab reads state the projection already
+    /// published and sends nothing to the subagent. Interacting with a
+    /// subagent is M900, which is not approved for planning.
+    OpenSubagentTab {
+        task_id: String,
+    },
+    /// Move to the next subagent tab, wrapping through the conversation.
+    NextSubagentTab,
+    /// Move to the previous subagent tab, wrapping through the conversation.
+    PreviousSubagentTab,
+    /// Close the active subagent tab, returning to the main buffer.
+    CloseSubagentTab,
     /// Select a project tab by visible index.
     SelectProjectTabByIndex {
         index: usize,
@@ -624,6 +656,20 @@ pub enum TuiMsg {
     /// path, so a refresh that lands after the user changed project is
     /// dropped rather than painted over the new workspace.
     FilesRefresh,
+    /// `/files`: make `path` the listing's root (`l`).
+    ///
+    /// The box holds a *copy* of the shared tree state and cannot reach `App`
+    /// from `render`, so re-rooting is an intent like opening a file: the
+    /// command layer moves the shared state's scope and issues the walk. The
+    /// path is workspace-relative, exactly as the listing reported it.
+    FilesDescend {
+        path: String,
+    },
+    /// `/files`: leave the current root and list its parent (`h`).
+    ///
+    /// Carries no path — "one level up" is a relation, not a location, and
+    /// the box cannot compute a parent of a root it does not own.
+    FilesAscend,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

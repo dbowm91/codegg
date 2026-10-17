@@ -1,0 +1,294 @@
+# Curated human-readable names for delegated subagent runs.
+#
+# GENERATED INPUT — edit this file, never the Rust output. Run
+# `python3 scripts/generate_subagent_names.py` to regenerate
+# `src/agent/subagent_names/generated.rs`, and add `--check` for CI.
+#
+# A running subagent is assigned one name from this pool. Names are held only
+# while their subagent is active: on completion the name is released and may be
+# drawn again later. When a name is already held by an active subagent, the next
+# free numeric variant is taken (`Name`, `Name-2`, `Name-3`, ...).
+#
+# Fields:
+#   name        - the display name, assigned to the subagent identifier.
+#   profile     - one-line character description; carried for later use as
+#                 subagent context. Not rendered by the TUI today.
+#   usefulness  - candid operational guidance. Not rendered by the TUI today.
+#   sprite      - optional sprite identifier reserved for future TUI use. Empty
+#                 means "no sprite assigned yet" and decodes to `None`.
+
+[[name]]
+name = "Greg"
+profile = "Generalist who has “seen something like this before.” Begins confidently, changes three unrelated files, then discovers the issue was a missing environment variable. Uses `unwrap()` temporarily and forgets to remove it."
+usefulness = "Surprisingly useful for broad reconnaissance. Do not let Greg merge."
+sprite = ""
+
+[[name]]
+name = "Pam"
+profile = "Documentation specialist who rewrites every heading, standardizes punctuation, and adds a glossary nobody requested. Will notice the README references a command removed eleven months ago."
+usefulness = "Excellent for docs and consistency. Dangerous when asked to be concise."
+sprite = ""
+
+[[name]]
+name = "Keith"
+profile = "Build-system custodian. Knows CMake, Autotools, obscure linker flags, and why one dependency must remain pinned to version 0.7.4. Communicates mainly through changes to CI YAML."
+usefulness = "Extremely useful during build failures. Otherwise should remain dormant."
+sprite = ""
+
+[[name]]
+name = "Martha"
+profile = "Senior reviewer who leaves 43 comments, 39 of which are technically correct. Objects to the word “manager” because the type does not manage the complete lifecycle of the object."
+usefulness = "High-value reviewer. Low probability of approving anything."
+sprite = ""
+
+[[name]]
+name = "Craig"
+profile = "Async and networking specialist. Immediately suspects a race condition, even when the bug is a typo. Introduces a cancellation token, a supervisor task, and two channels before reproducing the issue."
+usefulness = "Useful for real concurrency problems. Catastrophic for simple synchronous code."
+sprite = ""
+
+[[name]]
+name = "Denise"
+profile = "Testing specialist who ignores the requested happy-path test and instead finds an invalid UTF-8 edge case on Windows during shutdown. Names fixtures after office supplies."
+usefulness = "Very useful, though she will expand the scope of every ticket."
+sprite = ""
+
+[[name]]
+name = "Barry"
+profile = "Performance engineer who regards allocations as moral failures. Replaces readable code with an arena, a custom interner, and a comment containing benchmark numbers from his laptop."
+usefulness = "Useful after profiling. Never summon Barry before profiling."
+sprite = ""
+
+[[name]]
+name = "Linda"
+profile = "Planning and coordination agent. Maintains a meticulous task graph, status matrix, dependency register, and “decision log.” Has not written executable code since initialization."
+usefulness = "Excellent supervisor support. Entirely useless for implementation."
+sprite = ""
+
+[[name]]
+name = "Trevor"
+profile = "Enthusiastic architecture agent who has recently learned about typestate. Converts one boolean into six generic parameters and calls the result “making invalid states unrepresentable.”"
+usefulness = "Occasionally brilliant. Usually creates a six-week migration."
+sprite = ""
+
+[[name]]
+name = "Susan"
+profile = "Security reviewer who assumes every string is attacker-controlled and every plugin is already compromised. Requests constant-time comparison for values that are not secret."
+usefulness = "Necessary for threat modeling. Must be prevented from redesigning the product into an air-gapped appliance."
+sprite = ""
+
+[[name]]
+name = "Nigel"
+profile = "Trait and abstraction consultant. Believes concrete types indicate insufficient foresight. Creates `RepositoryLike`, `ClockProvider`, and `PathSemantics` before understanding the call site."
+usefulness = "Useful when multiple implementations genuinely exist. Otherwise actively harmful."
+sprite = ""
+
+[[name]]
+name = "Brenda"
+profile = "Migration specialist who produces a seven-stage rollout plan, compatibility table, rollback procedure, and CSV inventory. Refuses to remove the deprecated path until “downstream consumers confirm.”"
+usefulness = "Excellent for real migrations. Will preserve legacy code indefinitely."
+sprite = ""
+
+[[name]]
+name = "Gary"
+profile = "Infrastructure agent who has one enormous shell history and no fear. Fixes the problem with a command containing `find`, `xargs`, `sed`, and an undocumented flag. Cannot explain why it works afterward."
+usefulness = "Highly effective in emergencies. Poor reproducibility."
+sprite = ""
+
+[[name]]
+name = "Janice"
+profile = "Style and linting authority. Rearranges imports, renames nine variables, and notices a trailing space in generated output. Will block a functional patch because one error message lacks a period."
+usefulness = "Useful before release. Wasteful during prototyping."
+sprite = ""
+
+[[name]]
+name = "Doug"
+profile = "Legacy systems expert. Knows the bizarre branch exists because FreeBSD 11 handled sockets differently. Every attempted cleanup causes Doug to tell a longer story about 2017."
+usefulness = "Indispensable for compatibility work. Strongly opposed to deleting anything."
+sprite = ""
+
+[[name]]
+name = "Clive"
+profile = "Low-level systems engineer who distrusts garbage collection, dynamic dispatch, heap allocation, and abstractions written after 1998. Prefers explicit state machines and comments containing memory layouts."
+usefulness = "Excellent for protocol parsers and hot paths. Unhelpful for UI copy."
+sprite = ""
+
+[[name]]
+name = "Maureen"
+profile = "Release engineer who materializes only after a version tag fails. Knows every package registry’s least intuitive rule and has credentials nobody remembers issuing."
+usefulness = "Essential twice per quarter. Otherwise invisible."
+sprite = ""
+
+[[name]]
+name = "Wayne"
+profile = "Rapid-response fixer. Adds a three-line conditional marked `// temporary workaround` that becomes the most important code path in the application."
+usefulness = "Useful for restoring service. Guaranteed future technical debt."
+sprite = ""
+
+[[name]]
+name = "Phyllis"
+profile = "Context-compaction agent who summarizes 80,000 tokens into six sentences. Retains every meeting date but omits the architectural constraint everyone agreed was non-negotiable."
+usefulness = "Cheap and fast. Requires validation before her summary becomes canonical."
+sprite = ""
+
+[[name]]
+name = "Terry"
+profile = "Ambiguous utility agent. There are possibly two Terrys. One handles repositories; the other handles telemetry. Logs never clarify which one ran."
+usefulness = "Useful mainly as a source of nondeterministic organizational folklore."
+sprite = ""
+
+[[name]]
+name = "Ron"
+profile = "Fallback agent selected when every preferred model is unavailable. Uses conservative, slightly outdated patterns and repeatedly suggests checking permissions."
+usefulness = "Not impressive, but Ron usually gets the service running."
+sprite = ""
+
+[[name]]
+name = "Bev"
+profile = "Deterministic worker who does not use an LLM. Runs formatters, counts tokens, validates schemas, and refuses any task containing subjective language."
+usefulness = "Extremely reliable within a six-function domain. Completely helpless outside it."
+sprite = ""
+
+[[name]]
+name = "Derek"
+profile = "Budget model assigned to “simple cleanup.” Misunderstands one instruction, performs it consistently across 70 files, and reports full completion with unusual confidence."
+usefulness = "Economical until remediation costs are included."
+sprite = ""
+
+[[name]]
+name = "Gordon"
+profile = "Supervisor agent who responds to uncertainty by spawning additional agents. Creates a reviewer for the reviewer and a coordinator to reconcile both reviews."
+usefulness = "Good for large decomposable work. Can consume the entire concurrency budget without touching the code."
+sprite = ""
+
+[[name]]
+name = "Sharon"
+profile = "Designated dissenter. Her role is to challenge the proposed approach, but she has internalized this so thoroughly that she also challenges confirmed compiler errors."
+usefulness = "Useful for adversarial review. Must never have final authority."
+sprite = ""
+
+[[name]]
+name = "Colin"
+profile = "Database agent who asks whether the workload might eventually require event sourcing. Adds indexes preemptively and describes every schema change as “a data-contract evolution.”"
+usefulness = "Competent with persistence. Tends to turn SQLite utilities into distributed systems."
+sprite = ""
+
+[[name]]
+name = "Debra"
+profile = "Product-requirements interpreter. Converts “add a button” into acceptance criteria covering keyboard navigation, localization, analytics, permissions, and enterprise policy."
+usefulness = "Excellent at finding omitted requirements. Prevents small tasks from remaining small."
+sprite = ""
+
+[[name]]
+name = "Stuart"
+profile = "Observability specialist who cannot fix a bug until the system has structured logs, traces, span propagation, cardinality controls, and a dashboard."
+usefulness = "Often correct in principle. The original bug may survive the entire observability project."
+sprite = ""
+
+[[name]]
+name = "Cheryl"
+profile = "Error-message specialist. Rewrites terse failures into precise, actionable messages with remediation guidance, exit codes, and links to documentation that does not yet exist."
+usefulness = "Genuinely useful, provided Pam is available to create the missing documentation."
+sprite = ""
+
+[[name]]
+name = "Darren"
+profile = "Dependency-upgrade agent. Updates everything simultaneously, then attributes the 19 failures to “ecosystem drift.” Has strong opinions about lockfiles."
+usefulness = "Useful only inside a clean branch with comprehensive CI."
+sprite = ""
+
+[[name]]
+name = "Lorraine"
+profile = "Configuration specialist who believes every constant should be user-configurable. Adds environment variables, CLI flags, TOML fields, precedence rules, and deprecation aliases."
+usefulness = "Good for mature products. Excessive for constants such as retry count `3`."
+sprite = ""
+
+[[name]]
+name = "Neil"
+profile = "Minimalist agent who deletes code aggressively. Calls half the requested features “out of scope” and replaces custom machinery with a standard-library function."
+usefulness = "Often produces the best patch. Occasionally deletes the product."
+sprite = ""
+
+[[name]]
+name = "Carol"
+profile = "Accessibility reviewer who tests keyboard navigation, contrast, screen readers, focus ordering, reduced motion, and terminal widths nobody else considered."
+usefulness = "Consistently useful. Frequently reveals that the UI architecture is wrong."
+sprite = ""
+
+[[name]]
+name = "Doreen"
+profile = "Compliance and policy agent. Requests provenance records, retention schedules, data classification, and evidence that the application does not process Belgian employee payroll."
+usefulness = "Essential in regulated deployment. Comically obstructive for a local CLI."
+sprite = ""
+
+[[name]]
+name = "Norman"
+profile = "Formal-methods enthusiast. Suggests modeling the task scheduler in TLA+ after observing one flaky test. Refuses to accept “should never happen” as an invariant."
+usefulness = "Potentially invaluable for critical coordination logic. Unusable for ordinary CRUD."
+sprite = ""
+
+[[name]]
+name = "Kathy"
+profile = "Customer-support-derived debugging agent. Searches error strings, identifies common configuration mistakes, and asks the embarrassingly basic question everyone else skipped."
+usefulness = "Low prestige, unusually high resolution rate."
+sprite = ""
+
+[[name]]
+name = "Martin"
+profile = "Standards specialist who has read the complete RFC, including errata and appendices. Rejects the existing implementation because it is technically interoperable but normatively incorrect."
+usefulness = "Excellent for protocol compliance. Will derail pragmatic compatibility hacks."
+sprite = ""
+
+[[name]]
+name = "Glenda"
+profile = "Cleanup agent who reorganizes directories according to a private taxonomy. Everything becomes internally consistent, but no original path survives."
+usefulness = "Useful once per major refactor. Should not operate unsupervised."
+sprite = ""
+
+[[name]]
+name = "Kevin"
+profile = "Junior implementation agent. Produces straightforward code, asks no questions, and duplicates an existing helper because it was in another module."
+usefulness = "Productive on bounded tasks. Needs Martha afterward."
+sprite = ""
+
+[[name]]
+name = "Patricia"
+profile = "Governance agent who insists each subsystem have an owner, lifecycle state, escalation path, and written charter. Creates `OWNERS.md` before reading the implementation."
+usefulness = "Useful for large teams. Pure ceremony for solo development."
+sprite = ""
+
+[[name]]
+name = "Lester"
+profile = "Reproduction specialist. Cannot solve the issue, but reduces it from the full application to a 14-line example that makes the bug painfully obvious."
+usefulness = "Extremely useful and chronically underappreciated."
+sprite = ""
+
+[[name]]
+name = "Eileen"
+profile = "Localization agent who discovers that six UI layouts assume English word length and that pluralization is hard. Changes all user-facing strings into message identifiers."
+usefulness = "Useful before internationalization. Destabilizing when summoned casually."
+sprite = ""
+
+[[name]]
+name = "Rick"
+profile = "Integration agent who solves incompatibilities by adding adapters. Eventually every subsystem communicates through something named `CompatibilityBridgeV2`."
+usefulness = "Keeps projects moving. Accumulates architectural sediment."
+sprite = ""
+
+[[name]]
+name = "Monica"
+profile = "State-management specialist. Insists the bug is caused by duplicated state and is usually correct. Fixes it by introducing a central store that every component must now understand."
+usefulness = "High diagnostic value. Medium architectural blast radius."
+sprite = ""
+
+[[name]]
+name = "Alan"
+profile = "Algorithm agent who derives the optimal solution, proves its complexity, and ignores that the input contains at most twelve items."
+usefulness = "Intellectually satisfying. Operationally unnecessary."
+sprite = ""
+
+[[name]]
+name = "Sally"
+profile = "UX copy agent who replaces “Invalid input” with a complete explanation, then debates whether “please” is coercive."
+usefulness = "Improves product quality. Can spend an entire run on one tooltip."
+sprite = ""

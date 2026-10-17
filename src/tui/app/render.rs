@@ -6,8 +6,61 @@
 
 use super::*;
 use crate::tui::app::state::subagents::SubagentRow;
+use crate::tui::app::state::tasks::{bounded as bounded_task_rows, is_live_state, TaskRow};
 use crate::tui::panels::{PanelPlacement, SidePanelId};
 use ratatui::style::Color;
+
+/// One overlay row, ellipsized to the strip width.
+///
+/// Wrapping is deliberately avoided: the overlay's height is computed once in
+/// `tasks_strip_height`, so a wrapped line would paint into the next row and a
+/// long job summary would silently corrupt the block below it.
+fn strip_line<'a>(
+    theme: &'a crate::tui::theme::Theme,
+    width: u16,
+    lead: &str,
+    text: &str,
+    colour: Color,
+) -> Line<'a> {
+    let lead_width = unicode_width::UnicodeWidthStr::width(lead);
+    let budget = (width as usize).saturating_sub(3 + lead_width);
+    let body = crate::tui::wrap::ellipsize_to_width(text, budget);
+    Line::from(vec![
+        Span::styled("   ", Style::default()),
+        Span::styled(lead.to_string(), Style::default().fg(theme.primary)),
+        Span::styled(body, Style::default().fg(colour)),
+    ])
+}
+
+/// [`strip_line`] for a row the tasks overlay's cursor is resting on.
+///
+/// Same geometry as the unselected form — the budget arithmetic is shared, so
+/// moving the cursor can never change the overlay's height — with the row
+/// inverted instead of re-coloured. Inverting rather than switching to the
+/// primary colour is deliberate: a selected *job* may be rendered in the error
+/// colour, and an accent that merely happens to differ from both is weaker
+/// evidence of selection than the only styling convention every terminal
+/// already uses for it.
+fn strip_line_selected<'a>(
+    theme: &'a crate::tui::theme::Theme,
+    width: u16,
+    lead: &str,
+    text: &str,
+    colour: Color,
+) -> Line<'a> {
+    let plain = strip_line(theme, width, lead, text, colour);
+    Line::from(
+        plain
+            .spans
+            .into_iter()
+            .map(|span| {
+                let mut style = span.style;
+                style = style.add_modifier(Modifier::REVERSED);
+                Span::styled(span.content, style)
+            })
+            .collect::<Vec<_>>(),
+    )
+}
 
 /// Maximum display width of the agent name shown beside the input-mode badge.
 const MAX_AGENT_BADGE_WIDTH: usize = 20;
@@ -126,11 +179,56 @@ impl App {
         // line and todo strip are: carving it afterwards would shrink the
         // input every time the agent started working.
         let working_rows = self.working_strip_rows();
+        // The unified tasks overlay reserves from the prompt allocation for
+        // the same reason the todo strip does: carving it out afterwards would
+        // shrink the input box every time the overlay opened. It is added
+        // *after* the todo strip because the overlay renders directly beneath
+        // it, so their order in the allocation has to match their order on
+        // screen.
+        //
+        // The unified tasks overlay and the subagent tab bar draw from one
+        // budget of rows left over once every other claim is honoured,
+        // transcript floor included.
+        //
+        // The clamp is what makes this a budget rather than two independent
+        // wishes. Without it the overlay and the prompt box together can exceed
+        // a short pane, the carve below silently yields, and `Shift+T` looks
+        // like a dead key on exactly the terminals where a status overlay would
+        // be most wanted. A too-short pane shows neither rather than a wrong
+        // one.
+        //
+        // Sharing the budget is also the point: neither may be sized as if it
+        // were the only thing asking, or the two together overshoot and
+        // `Min(10)` quietly yields.
+        //
+        // The bar is taken first because it is persistent while the overlay is
+        // on-demand, and a missing bar is worse than a shorter overlay — tabs
+        // the user opened would become invisible with no control that says so.
+        let spare_rows = self.tasks_overlay_allowance(
+            pane_area.height,
+            todo_rows,
+            hint_rows,
+            working_rows,
+            max_prompt_height,
+        );
+        // The bar is one row carved off the top of the *viewport* chunk — see
+        // the carve below. It is deliberately **not** added to
+        // `prompt_height`: that sum is what reserves room for strips carved
+        // off the *prompt* chunk (working strip, hint line, todo strip, tasks
+        // overlay). Adding the bar there as well would charge the transcript
+        // twice for one row, because the bar never touches the prompt chunk at
+        // all. The input box is unaffected either way, which was the only
+        // reason to reserve it in the first place.
+        let tab_rows = self.subagent_tab_strip_height().min(spare_rows);
+        let tasks_rows = self
+            .tasks_strip_height()
+            .min(spare_rows.saturating_sub(tab_rows));
         let prompt_height = self
             .prompt_state
             .prompt
             .needed_height(max_prompt_height)
             .saturating_add(todo_rows)
+            .saturating_add(tasks_rows)
             .saturating_add(hint_rows)
             .saturating_add(working_rows);
         let session_chunks = self
@@ -161,7 +259,11 @@ impl App {
             hint_chunk = Some(split[0]);
             available = split[1];
         }
-        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && available.height > todo_rows {
+        // Carve top-down in the same order the rows were added to
+        // `prompt_height`: working strip, hint line, todo strip, tasks
+        // overlay, then the prompt gets whatever is left. The overlay sits
+        // directly beneath the todo strip on screen for the same reason.
+        let (remaining, todo_chunk) = if todo_rows > 0 && available.height > todo_rows {
             let split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(todo_rows), Constraint::Min(1)])
@@ -170,8 +272,17 @@ impl App {
         } else {
             (available, None)
         };
+        let (prompt_chunk, tasks_chunk) = if tasks_rows > 0 && remaining.height > tasks_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(tasks_rows), Constraint::Min(1)])
+                .split(remaining);
+            (split[1], Some(split[0]))
+        } else {
+            (remaining, None)
+        };
         self.todo_area = todo_chunk;
-        self.viewport_area = Some(session_chunks[1]);
+        self.tasks_area = tasks_chunk;
         self.prompt_area = Some(prompt_chunk);
 
         // Outer TUI frame: paint the left border on the reserved strip
@@ -193,19 +304,37 @@ impl App {
 
         self.render_header(frame, session_chunks[0]);
 
+        // Carve the subagent tab bar off the top of the viewport. Guarded on
+        // the chunk actually having room: on a pane too short to give up the
+        // row, dropping the bar entirely beats eating the transcript's floor.
+        let mut viewport_chunk = session_chunks[1];
+        let mut tab_chunk = None;
+        if tab_rows > 0 && viewport_chunk.height > tab_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(tab_rows), Constraint::Min(1)])
+                .split(viewport_chunk);
+            tab_chunk = Some(split[0]);
+            viewport_chunk = split[1];
+        }
+        // Published *after* the carve, so scroll and scrollbar hit-testing read
+        // the rect the transcript actually occupies. Setting it before the
+        // carve would hand the scrollbar a row that belongs to the tab bar.
+        self.viewport_area = Some(viewport_chunk);
+
         // Viewport (messages) — highest-risk surface for render panics
         let viewport_result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
                 if self.render_panic_injection.messages {
                     panic!("injected messages render panic");
                 }
-                self.render_viewport(frame, session_chunks[1]);
+                self.render_viewport(frame, viewport_chunk);
                 // An open subagent buffer replaces the transcript in the
                 // same rect rather than opening a modal over it: Esc then has
                 // exactly one meaning — return to the main buffer — instead of
                 // being ambiguous between "close a dialog" and "go back".
-                if self.ui_state.subagents.open.is_some() {
-                    self.render_subagent_view(frame, session_chunks[1]);
+                if self.ui_state.subagents.active_tab().is_some() {
+                    self.render_subagent_view(frame, viewport_chunk);
                 }
                 Ok(())
             }));
@@ -216,12 +345,16 @@ impl App {
             self.ui_state
                 .diagnostics
                 .record_component_render_panic("messages");
-            self.render_component_fallback(frame, session_chunks[1], "Messages render error");
+            self.render_component_fallback(frame, viewport_chunk, "Messages render error");
+        }
+        if let Some(area) = tab_chunk {
+            self.render_subagent_tab_strip(frame, area);
         }
 
         self.render_working_strip(frame, working_chunk);
         self.render_composer_hints(frame, hint_chunk);
         self.render_todo_strip(frame, todo_chunk);
+        self.render_tasks_strip(frame, tasks_chunk);
         self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
 
@@ -232,10 +365,17 @@ impl App {
         // is selected: render is not allowed to move the keyboard, and the
         // gesture dispatcher reads `placement()` after this returns.
         self.sidebar_area = None;
+        // Every occupied column records its rect so a later mouse event can
+        // resolve a click to a *panel* rather than to nothing. The list is
+        // rebuilt each frame alongside `sidebar_area`, so it can never name a
+        // panel that is no longer painted — which is what would otherwise let
+        // a click focus a column that has moved or closed.
+        self.panel_areas.clear();
         for (placement, rect) in regions.occupied() {
             if rect.width == 0 || rect.height == 0 {
                 continue;
             }
+            self.panel_areas.push((placement, rect));
             if self.panel_host.panel_at(placement) == SidePanelId::Session {
                 self.sidebar_area = Some(rect);
             }
@@ -626,10 +766,13 @@ impl App {
             }
             Route::Editor => {
                 let path = self.editor_state.path.clone().unwrap_or_default();
-                let focus = if self.editor_state.buffer_focused() {
-                    "buffer"
+                // The same NOR/INS vocabulary the composer badge and every
+                // dockable box use. "focus:composer" named an axis that no
+                // longer exists, and read as a third mode.
+                let focus = if self.editor_state.buffer_focused(self.ui_state.input_mode) {
+                    "INS"
                 } else {
-                    "composer"
+                    "NOR"
                 };
                 Line::from(vec![
                     Span::styled(
@@ -639,7 +782,7 @@ impl App {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!(" {path}  focus:{focus}"),
+                        format!(" {path}  {focus}"),
                         Style::default().fg(self.ui_state.theme.muted),
                     ),
                 ])
@@ -820,7 +963,7 @@ impl App {
         let presentation = session.presentation();
         let cursor = presentation.cursor_byte;
         let mode = presentation.mode;
-        let focus = presentation.focus;
+        let focus = self.editor_state.buffer_focused(self.ui_state.input_mode);
         let pending = presentation
             .pending_command
             .get(..crate::tui::editor::MAX_EDITOR_PENDING_COMMAND)
@@ -850,7 +993,7 @@ impl App {
                 status: status.label(),
                 notice: notice.as_deref(),
                 mode,
-                focus,
+                buffer_focused: focus,
                 pending_command: &pending,
                 command_active,
                 command_line: &command_line,
@@ -873,18 +1016,21 @@ impl App {
     ///
     /// Borrows only `file_tree_state` and the theme, and is a no-op when the
     /// pane is hidden or did not fit, so the M006-A render path is unchanged
-    /// in the default configuration.
-    fn render_file_tree_pane(&self, frame: &mut Frame, area: Option<Rect>) {
+    /// in the default configuration. The measured viewport is published back
+    /// into the state because `Ctrl+d`/`Ctrl+u` page by it and no other layer
+    /// knows how tall the pane ended up.
+    fn render_file_tree_pane(&mut self, frame: &mut Frame, area: Option<Rect>) {
         let Some(area) = area else { return };
         if !self.file_tree_state.visible {
             return;
         }
-        crate::tui::components::file_tree::FileTreeView::new(
+        let layout = crate::tui::components::file_tree::FileTreeView::new(
             &self.file_tree_state,
             self.ui_state.tree_focused,
             Arc::clone(&self.ui_state.theme),
         )
         .render(frame, area);
+        self.file_tree_state.viewport_rows = layout.viewport_rows;
     }
 
     /// M005: non-modal Workspace primary view. Reads the bounded
@@ -1142,6 +1288,170 @@ impl App {
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
     }
 
+    /// How many rows the tasks overlay may reserve on a pane of `pane_height`.
+    ///
+    /// Returns the space left after honouring every other claim on the pane:
+    /// the header and footer, the transcript's `MIN_TRANSCRIPT` floor, the
+    /// prompt box at its own maximum, and the working strip, hint line, and
+    /// todo strip above it.
+    ///
+    /// The floor is the load-bearing part. `session_layout` splits the pane
+    /// into `Min(10)` for the transcript and a fixed height for the prompt, so
+    /// an overlay that overshoots does not merely render short — it makes the
+    /// carve below yield, and `Shift+T` stops doing anything at all. Clamping
+    /// here makes a short pane drop the overlay instead, which is the honest
+    /// outcome: a truncated transcript is worse than no overlay.
+    fn tasks_overlay_allowance(
+        &self,
+        pane_height: u16,
+        todo_rows: u16,
+        hint_rows: u16,
+        working_rows: u16,
+        max_prompt_height: u16,
+    ) -> u16 {
+        const MIN_TRANSCRIPT: u16 = 10;
+        let config = &self.ui_state.layout.config;
+        let claimed = config
+            .header_height
+            .saturating_add(config.footer_height)
+            .saturating_add(MIN_TRANSCRIPT)
+            .saturating_add(max_prompt_height)
+            .saturating_add(todo_rows)
+            .saturating_add(hint_rows)
+            .saturating_add(working_rows);
+        pane_height.saturating_sub(claimed)
+    }
+
+    /// Draw the unified tasks overlay (`Shift+T`) directly above the input.
+    ///
+    /// Renders three projection-backed groups — todos, in-flight subagents,
+    /// in-flight jobs — each preceded by its own header, with empty groups
+    /// omitted entirely. Every line is ellipsized to the available width
+    /// rather than wrapped, so a long description can never change the
+    /// overlay's height and reflow the transcript underneath it.
+    fn render_tasks_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else { return };
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let theme = self.ui_state.theme.clone();
+        let selected = self.tasks_selected;
+        let all_rows = self.task_rows();
+        let rows = bounded_task_rows(all_rows.clone());
+
+        let mut lines: Vec<Line> = Vec::new();
+        if rows.is_empty() {
+            // The overlay is open and there is genuinely nothing to wait on.
+            // Say so rather than rendering an empty block, so the user learns
+            // the key works instead of concluding it is broken.
+            lines.push(Line::from(Span::styled(
+                " Nothing pending · Shift+T close ".to_string(),
+                Style::default().fg(theme.muted),
+            )));
+        } else {
+            for (index, row) in rows.iter().enumerate() {
+                // The cursor renders as a leading marker as well as the
+                // inversion, because `REVERSED` is a hint some themes and
+                // some terminals flatten — and a selection the user cannot
+                // see is a selection they will press Enter against the wrong
+                // row on.
+                let is_selected = selected == Some(index);
+                let lead = if is_selected { "▸" } else { " " };
+                let line = match row {
+                    // Headers are never selectable, so they render plainly
+                    // even if a stale cursor index happens to land here.
+                    TaskRow::Header { group } => Line::from(Span::styled(
+                        format!(" ── {} ──", group.title()),
+                        Style::default().fg(theme.muted),
+                    )),
+                    TaskRow::Todo { bubble, content } => {
+                        // The bubble is rendered as the lead rather than
+                        // folded into the text so the completed/pending
+                        // distinction stays in the same column on every row.
+                        if is_selected {
+                            strip_line_selected(
+                                &theme,
+                                area.width,
+                                &format!("{bubble} "),
+                                content,
+                                theme.foreground,
+                            )
+                        } else {
+                            strip_line(
+                                &theme,
+                                area.width,
+                                &format!("{bubble} "),
+                                content,
+                                theme.foreground,
+                            )
+                        }
+                    }
+                    TaskRow::Subagent {
+                        label,
+                        agent,
+                        description,
+                        status,
+                        ..
+                    } => {
+                        // Name and agent type together: the name is what the
+                        // user looks for later, the type is what it actually is.
+                        let text = if label == agent {
+                            format!(" {label} ")
+                        } else {
+                            format!(" {label} ({agent}) ")
+                        };
+                        let text = if description.trim().is_empty() {
+                            text
+                        } else {
+                            format!("{text}· {status} — {description}")
+                        };
+                        if is_selected {
+                            strip_line_selected(&theme, area.width, lead, &text, theme.foreground)
+                        } else {
+                            strip_line(&theme, area.width, lead, &text, theme.foreground)
+                        }
+                    }
+                    TaskRow::Job {
+                        kind,
+                        summary,
+                        state,
+                        error_class,
+                    } => {
+                        let text = if summary.trim().is_empty() {
+                            format!(" {kind} · {state}")
+                        } else {
+                            format!(" {kind} · {state} — {summary}")
+                        };
+                        let colour = if error_class.is_some() {
+                            theme.error
+                        } else {
+                            theme.foreground
+                        };
+                        if is_selected {
+                            strip_line_selected(&theme, area.width, lead, &text, colour)
+                        } else {
+                            strip_line(&theme, area.width, lead, &text, colour)
+                        }
+                    }
+                };
+                lines.push(line);
+            }
+            lines.push(Line::from(Span::styled(
+                if selected.is_some() {
+                    " Shift+N/P open · ↵ select · Esc close "
+                } else {
+                    " Shift+T close "
+                }
+                .to_string(),
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
     /// Render the open subagent buffer over the transcript.
     ///
     /// Shows only what the projection actually vouches for — the agent, its
@@ -1150,37 +1460,62 @@ impl App {
     /// progress text: the projection adapter hardcodes `progress: None`, so
     /// an invented "working on step 3" line would be a lie the user acts on.
     fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(view) = self.ui_state.subagents.open.clone() else {
+        let Some(tab) = self.ui_state.subagents.active_tab().cloned() else {
             return;
         };
         if area.width == 0 || area.height == 0 {
             return;
         }
         let theme = self.ui_state.theme.clone();
-        let status_style = if view.row.is_running() {
+        let status_style = if tab.is_running() {
             Style::default().fg(theme.primary)
         } else {
             Style::default().fg(theme.muted)
         };
 
         let mut lines: Vec<Line> = Vec::new();
+        // Lead with the curated display name where there is one, so the tab
+        // bar and this view name the same run identically — a tab reading
+        // `Sally` over a body reading `explore` would make the user hunt.
+        let title = match tab.row.display_name.as_deref() {
+            Some(name) if !name.trim().is_empty() && name != tab.row.agent => {
+                format!(" Subagent · {} ({})", name, tab.row.agent)
+            }
+            _ => format!(" Subagent · {}", tab.row.agent),
+        };
         lines.push(Line::from(Span::styled(
-            format!(" Subagent · {}", view.row.agent),
+            title,
             Style::default()
                 .fg(theme.foreground)
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
-            format!(" {}", view.row.status),
+            format!(" {}", tab.row.status),
             status_style,
         )));
+        // The terminal state for "my subject left the projection". This is a
+        // first-class outcome, not an error: the per-turn agent tree is
+        // cleared when the turn ends, so a tab opened during a turn outliving
+        // that turn is expected rather than exceptional. Stating it plainly is
+        // the whole point — the alternative is a view that keeps rendering
+        // `running` for a run the projection has stopped reporting.
+        if !tab.liveness.is_attached() {
+            lines.push(Line::from(Span::styled(
+                " This run is no longer in the session's projection.",
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                " What is shown below is the last state it reported.",
+                Style::default().fg(theme.muted),
+            )));
+        }
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             " Task",
             Style::default().fg(theme.muted),
         )));
         lines.push(Line::from(Span::styled(
-            format!("   {}", view.row.description),
+            format!("   {}", tab.row.description),
             Style::default().fg(theme.foreground),
         )));
         lines.push(Line::default());
@@ -1189,10 +1524,10 @@ impl App {
             Style::default().fg(theme.muted),
         )));
         lines.push(Line::from(Span::styled(
-            format!("   task {}", view.row.task_id),
+            format!("   task {}", tab.row.task_id),
             Style::default().fg(theme.foreground),
         )));
-        if let Some(run_id) = &view.row.run_id {
+        if let Some(run_id) = &tab.row.run_id {
             lines.push(Line::from(Span::styled(
                 format!("   run  {run_id}"),
                 Style::default().fg(theme.foreground),
@@ -1207,8 +1542,58 @@ impl App {
         let width = area.width.saturating_sub(1);
         let paragraph = Paragraph::new(lines)
             .wrap(ratatui::widgets::Wrap { trim: false })
-            .scroll((view.scroll, 0));
+            .scroll((tab.scroll, 0));
         frame.render_widget(paragraph, Rect { width, ..area });
+    }
+
+    /// Draw the one-row subagent tab bar directly under the header.
+    ///
+    /// Carved off the **top** of the viewport chunk rather than the prompt
+    /// chunk: a tab bar belongs to the buffer it labels, and the working strip
+    /// already owns the bottom edge of the transcript. The rows are reserved
+    /// from the prompt allocation instead (see the `prompt_height` sum) so
+    /// opening a tab does not shrink the input box.
+    ///
+    /// The active entry is styled, not merely ordered, because at a narrow
+    /// width the bar trims older tabs and "which one am I reading" can no
+    /// longer be answered by position.
+    fn render_subagent_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.ui_state.theme.clone();
+        let entries = crate::tui::app::state::subagent_tabs::fit_bar_tabs(
+            self.ui_state.subagents.tabs.bar_tabs(),
+            area.width as usize,
+        );
+        let separator = crate::tui::app::state::subagent_tabs::BAR_SEPARATOR;
+        let muted = Style::default().fg(theme.muted);
+
+        let mut spans: Vec<Span> = Vec::with_capacity(entries.len() * 2);
+        for (index, entry) in entries.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(separator.to_string(), muted));
+            }
+            let style = if entry.active {
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD)
+            } else if entry.ellipsis {
+                muted
+            } else {
+                Style::default().fg(theme.foreground)
+            };
+            if entry.glyph.is_empty() {
+                spans.push(Span::styled(entry.label.clone(), style));
+            } else {
+                spans.push(Span::styled(entry.label.clone(), style));
+                spans.push(Span::styled(
+                    format!(" {}", entry.glyph),
+                    if entry.active { style } else { muted },
+                ));
+            }
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// Rows the working strip needs.
@@ -1666,6 +2051,8 @@ impl App {
 
         self.status_bar.set_theme(&self.ui_state.theme);
         self.status_bar.apply_summary(&summary);
+        self.status_bar
+            .set_project_context(self.active_project_display_context());
 
         // M007: daemon-resolved effective policy line (cached from the
         // last snapshot; cleared until the first snapshot lands).
@@ -1964,7 +2351,7 @@ impl App {
         // Populate tool programs from projection snapshot
         if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
             use crate::tui::components::sidebar::{
-                SidebarAgentRun, SidebarConvergence, SidebarToolProgram,
+                SidebarAgentRun, SidebarConvergence, SidebarJob, SidebarToolProgram,
             };
             self.sidebar.set_tool_programs(
                 snapshot
@@ -2032,11 +2419,30 @@ impl App {
                     })
                     .collect(),
             );
+            // Jobs are filtered with the *same* `is_live_state` the `Shift+T`
+            // overlay uses, so "jobs this session is waiting on" means one
+            // thing across both surfaces rather than two rules that drift the
+            // first time a producer invents a new state token.
+            self.sidebar.set_jobs(
+                snapshot
+                    .jobs
+                    .iter()
+                    .filter(|job| is_live_state(&job.state))
+                    .map(|job| SidebarJob {
+                        job_id: job.job_id.clone(),
+                        kind: job.kind.clone(),
+                        summary: job.summary.clone(),
+                        state: job.state.clone(),
+                        error_class: job.error_class.clone(),
+                    })
+                    .collect(),
+            );
         } else {
             self.sidebar.set_tool_programs(Vec::new());
             self.sidebar.set_agent_runs(Vec::new());
             self.sidebar.set_agent_tree(Vec::new());
             self.sidebar.set_convergences(Vec::new());
+            self.sidebar.set_jobs(Vec::new());
         }
 
         // Only a snapshot that *arrives* replaces the rows. A missing
@@ -2046,6 +2452,22 @@ impl App {
         // is genuinely in flight. An arriving snapshot with no tree is
         // authoritative emptiness and does clear.
         if let Some(rows) = subagent_rows {
+            // The panel reads the *same* derived rows rather than re-projecting
+            // the agent tree a third time. That is what makes the panel, the
+            // `Shift+T` overlay, and the tab bar show one name per subagent:
+            // they are three renderings of one vector, not three independent
+            // reads that could disagree. `label()` supplies the same
+            // name-else-agent-type fallback the overlay uses.
+            self.sidebar.set_subagents(
+                rows.iter()
+                    .map(|row| crate::tui::components::sidebar::SidebarSubagent {
+                        task_id: row.task_id.clone(),
+                        name: row.label().to_string(),
+                        agent: row.agent.clone(),
+                        status: row.status.clone(),
+                    })
+                    .collect(),
+            );
             self.ui_state.subagents.set_rows(rows);
         }
     }
@@ -2054,11 +2476,11 @@ impl App {
     ///
     /// Reads the same `active_turn` (falling back to the newest
     /// `recent_turns`) tree the sidebar renders, so the two surfaces cannot
-    /// disagree about which delegated runs exist. Durable runs are joined by
-    /// exact canonical task id — the one identity both sides agree on — purely
-    /// to attach a `run_id` for the detail view; a task with no matching run
-    /// still gets a row rather than being hidden, because the agent tree is
-    /// the authoritative record that the task was dispatched.
+    /// disagree about which delegated runs exist. The durable `run_id` and the
+    /// human-readable `display_name` are read straight off the node, having
+    /// been carried there by the event; a task with no matching run still gets
+    /// a row rather than being hidden, because the agent tree is the
+    /// authoritative record that the task was dispatched.
     ///
     /// Returns `None` when there is no snapshot to read at all, which is not
     /// the same as an empty tree: the caller keeps the rows it already has
@@ -2085,13 +2507,17 @@ impl App {
                 .map(|node| {
                     let task_id = node.task_id.to_string();
                     SubagentRow {
-                        // Exact canonical join against `AgentRunSummary::task_id`.
-                        run_id: snapshot
-                            .agent_runs
-                            .iter()
-                            .find(|run| run.task_id == task_id)
-                            .map(|run| run.run_id.clone()),
+                        // The durable run id now arrives **in the event**
+                        // (`CoreEvent::SubagentStarted::run_id`) and is copied
+                        // onto the node verbatim. It used to be recovered by
+                        // joining this node's `task_id` against
+                        // `AgentRunSummary::task_id`, which could never match:
+                        // the node's is a daemon-local `u64` rendered in
+                        // decimal, the summary's is a UUID string. The field
+                        // was therefore permanently `None`.
+                        run_id: node.run_id.clone(),
                         task_id,
+                        display_name: node.display_name.clone(),
                         agent: node.agent.clone(),
                         description: node.description.clone(),
                         status: match node.status {

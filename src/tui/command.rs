@@ -1185,15 +1185,9 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 165th and 164th are `/fork-worktree` and `/new-worktree` (isolated
-        // session/worktree launch). 163rd is `/start` and 162nd is `/stop`
-        // (carry on after a stopped turn; interrupt a running one). 161st is
-        // `/files` (the workspace file manager); 160th is `/panels` (the side-panel manager,
-        // the spelling of `⇧S` that stays typeable mid-prompt); 159th and 158th
-        // are `/terminal` (bare interactive terminal box) and
-        // `/terminal-clear`. Keep `architecture/command.md` counts in sync when
-        // adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 165);
+        // The 166 registered commands include `/projects`, `/fork-worktree`,
+        // and `/new-worktree`. Keep architecture/command.md in sync.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 166);
     }
 
     #[test]

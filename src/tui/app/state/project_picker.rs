@@ -12,6 +12,8 @@
 
 use crate::protocol::dto::{ProjectDetailsDto, ProjectSummaryDto};
 use crate::tui::app::state::async_request::AsyncUiRequestState;
+use crate::tui::input::InputMode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Maximum number of open project tabs.
 pub const MAX_OPEN_PROJECT_TABS: usize = 16;
@@ -54,8 +56,29 @@ pub enum PickerPhase {
     RegistrationInput,
     /// Confirming registration before submitting.
     RegistrationConfirm,
+    /// Loading the current session count before presenting permanent destroy.
+    DestroyLoading,
+    /// Waiting for explicit confirmation to permanently delete a project.
+    DestroyConfirm,
+    /// A project lifecycle mutation is in flight.
+    LifecycleChanging,
+    /// Permanent project deletion is in flight after explicit confirmation.
+    Destroying,
+    /// Loading the project/workspace values before opening the edit form.
+    ProjectEditLoading,
+    /// Editing the project's display name and bound directory.
+    ProjectEdit,
+    /// Project update is being committed.
+    ProjectUpdating,
     /// An error occurred; show the error and a retry hint.
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerCatalogAction {
+    None,
+    Close,
+    Select,
 }
 
 /// Bounded registration draft for creating a new project.
@@ -98,12 +121,18 @@ pub struct ProjectPickerState {
     pub query: String,
     /// Current phase of the picker.
     pub phase: PickerPhase,
+    /// Local filter mode shown in the picker badge.
+    pub input_mode: InputMode,
     /// Selected row index in the filtered list.
     pub selected_row: usize,
     /// The catalog entry selected for detail lookup.
     pub pinned_project_id: Option<String>,
     /// Resolved ProjectGet result, cached per picker generation.
     pub cached_detail: Option<ProjectDetailsDto>,
+    /// Name and exact session count shown by the destroy confirmation.
+    pub destroy_confirmation: Option<ProjectDestroyConfirmation>,
+    /// Current rename/repath draft while the edit form is mounted.
+    pub project_edit: Option<ProjectEditDraft>,
     /// Per-picker request generation for catalog/detail/registration.
     pub request_id: u64,
     /// Snapshot of catalog cache generation used to build this picker.
@@ -122,6 +151,20 @@ pub struct ProjectPickerState {
     pub picker_request: AsyncUiRequestState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDestroyConfirmation {
+    pub display_name: String,
+    pub session_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectEditDraft {
+    pub display_name: String,
+    pub root: String,
+    pub expected_updated_at: i64,
+    pub editing_root: bool,
+}
+
 impl ProjectPickerState {
     /// Create a fresh picker state. `transport_local` should be set
     /// based on `app.ui_state.mode`.
@@ -129,9 +172,12 @@ impl ProjectPickerState {
         Self {
             query: String::new(),
             phase: PickerPhase::Catalog,
+            input_mode: InputMode::Normal,
             selected_row: 0,
             pinned_project_id: None,
             cached_detail: None,
+            destroy_confirmation: None,
+            project_edit: None,
             request_id: 0,
             catalog_generation,
             show_archived: false,
@@ -149,7 +195,7 @@ impl ProjectPickerState {
     /// score descending (lexicographic tiebreak on project_id).
     pub fn filtered_indices(&self, entries: &[ProjectSummaryDto]) -> Vec<usize> {
         let query = self.query.trim();
-        let mut scored: Vec<(usize, usize, &str)> = entries
+        let mut scored: Vec<(usize, bool, usize, &str)> = entries
             .iter()
             .enumerate()
             .filter(|(_, e)| self.show_archived || e.archived_at.is_none())
@@ -163,19 +209,74 @@ impl ProjectPickerState {
                     .unwrap_or(0);
                 let id_score = crate::util::fuzzy::fuzzy_score(query, &e.project_id);
                 let best = name_score.max(tag_score).max(id_score);
-                (i, best, e.project_id.as_str())
+                (i, e.archived_at.is_some(), best, e.project_id.as_str())
             })
-            .filter(|(_, score, _)| *score > 0 || query.is_empty())
+            .filter(|(_, _, score, _)| *score > 0 || query.is_empty())
             .collect();
 
-        // Sort: score descending, then lexicographic tiebreak on project_id.
-        scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(b.2)));
+        // Keep inactive projects at the bottom while preserving score and
+        // project-id ordering within each lifecycle group.
+        scored.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)).then(a.3.cmp(b.3)));
 
         scored
             .into_iter()
             .take(MAX_PROJECT_LIST_ITEMS)
-            .map(|(i, _, _)| i)
+            .map(|(i, _, _, _)| i)
             .collect()
+    }
+
+    /// Apply one catalog-phase key. The App owns the effects that require
+    /// daemon requests; this state transition owns local filter/navigation
+    /// behavior so the Normal/Insert contract can be tested directly.
+    pub fn handle_catalog_key(
+        &mut self,
+        key: KeyEvent,
+        filtered_count: usize,
+    ) -> PickerCatalogAction {
+        match key.code {
+            KeyCode::Esc if self.input_mode == InputMode::Insert => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Esc if self.query.is_empty() => return PickerCatalogAction::Close,
+            KeyCode::Esc => {
+                self.query.clear();
+                self.selected_row = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k')
+                if key.code == KeyCode::Up || self.input_mode == InputMode::Normal =>
+            {
+                self.select_up(filtered_count);
+            }
+            KeyCode::Down | KeyCode::Char('j')
+                if key.code == KeyCode::Down || self.input_mode == InputMode::Normal =>
+            {
+                self.select_down(filtered_count);
+            }
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.selected_row = 0;
+            }
+            KeyCode::Char('i')
+                if self.input_mode == InputMode::Normal && key.modifiers == KeyModifiers::NONE =>
+            {
+                self.input_mode = InputMode::Insert;
+            }
+            KeyCode::Enter => return PickerCatalogAction::Select,
+            KeyCode::Tab => {
+                self.show_archived = !self.show_archived;
+                self.selected_row = 0;
+            }
+            KeyCode::Char(c)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if self.query.chars().count() < 64 {
+                    self.query.push(c);
+                    self.selected_row = 0;
+                }
+            }
+            _ => {}
+        }
+        PickerCatalogAction::None
     }
 
     /// Begin a new picker request generation.
@@ -215,6 +316,8 @@ impl ProjectPickerState {
         self.selected_row = 0;
         self.pinned_project_id = None;
         self.cached_detail = None;
+        self.destroy_confirmation = None;
+        self.project_edit = None;
         self.last_error = None;
         self.registration = RegistrationDraft::default();
         self.registration_input.clear();
@@ -323,6 +426,78 @@ mod tests {
         entries[1].archived_at = Some(1000);
         let indices = picker.filtered_indices(&entries);
         assert_eq!(indices.len(), 2);
+    }
+
+    #[test]
+    fn archived_projects_sink_below_active_projects() {
+        let mut picker = ProjectPickerState::new(true, 0);
+        picker.show_archived = true;
+        let mut entries = vec![
+            make_summary("z-active", "Zebra"),
+            make_summary("a-inactive", "Alpha"),
+            make_summary("a-active", "Alpha"),
+        ];
+        entries[1].archived_at = Some(1000);
+        let indices = picker.filtered_indices(&entries);
+        assert_eq!(
+            indices
+                .iter()
+                .map(|index| entries[*index].project_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a-active", "z-active", "a-inactive"]
+        );
+    }
+
+    #[test]
+    fn normal_mode_filters_and_navigates_with_query() {
+        let mut picker = ProjectPickerState::new(true, 0);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        picker.handle_catalog_key(key(KeyCode::Char('a')), 4);
+        assert_eq!(picker.query, "a");
+        picker.handle_catalog_key(key(KeyCode::Char('j')), 4);
+        assert_eq!(picker.selected_row, 1);
+        assert_eq!(picker.query, "a");
+        picker.handle_catalog_key(key(KeyCode::Char('k')), 4);
+        assert_eq!(picker.selected_row, 0);
+        assert_eq!(
+            picker.handle_catalog_key(key(KeyCode::Enter), 4),
+            PickerCatalogAction::Select
+        );
+    }
+
+    #[test]
+    fn picker_mode_escape_insert_path_and_selection() {
+        let mut picker = ProjectPickerState::new(true, 0);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        picker.handle_catalog_key(key(KeyCode::Char('i')), 4);
+        assert_eq!(picker.input_mode, InputMode::Insert);
+        picker.handle_catalog_key(key(KeyCode::Char('j')), 4);
+        assert_eq!(picker.query, "j");
+        assert_eq!(
+            picker.handle_catalog_key(key(KeyCode::Esc), 4),
+            PickerCatalogAction::None
+        );
+        assert_eq!(picker.input_mode, InputMode::Normal);
+        assert_eq!(picker.query, "j");
+        picker.handle_catalog_key(key(KeyCode::Esc), 4);
+        assert!(picker.query.is_empty());
+        assert_eq!(
+            picker.handle_catalog_key(key(KeyCode::Esc), 4),
+            PickerCatalogAction::Close
+        );
+        assert_eq!(
+            picker.handle_catalog_key(key(KeyCode::Enter), 4),
+            PickerCatalogAction::Select
+        );
+    }
+
+    #[test]
+    fn picker_normal_mode_switch_preserves_insert_char_typing() {
+        let mut picker = ProjectPickerState::new(true, 0);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        picker.handle_catalog_key(key(KeyCode::Char('i')), 4);
+        picker.handle_catalog_key(key(KeyCode::Char('i')), 4);
+        assert_eq!(picker.query, "i");
     }
 
     #[test]

@@ -243,8 +243,31 @@ pub enum ClickTarget {
     /// The working strip above the composer: the throbber row and the
     /// clickable subagent rows below it.
     Working,
+    /// A side-panel column.
+    ///
+    /// Recorded per placement during render so a click can both *focus* the
+    /// column and resolve a text selection inside it — the same two things a
+    /// click in the main buffer does. Without this the panels were keyboard-
+    /// only: a click over one resolved to `None`, and the wheel scrolled the
+    /// transcript behind a column the user was pointing at.
+    Panel {
+        placement: crate::tui::panels::PanelPlacement,
+    },
     None,
 }
+
+/// Which way a panel wheel event moves its own content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    Up,
+    Down,
+}
+
+/// Rows one wheel notch moves a panel's content.
+///
+/// Three, not one: a terminal column is narrow and often tall, and a
+/// single-row notch makes the wheel feel like it is not responding.
+const PANEL_WHEEL_LINES: i32 = 3;
 
 #[derive(Debug, Clone, Default)]
 pub struct RenderPanicInjection {
@@ -331,9 +354,39 @@ pub struct App {
     /// Whether the above-input todo strip shows the full list or only the
     /// one-line `n/m completed` summary. Toggled with Ctrl+T.
     pub todo_expanded: bool,
+    /// Whether the unified tasks overlay is expanded. Toggled with Shift+T.
+    ///
+    /// Separate from [`App::todo_expanded`] because the two answer different
+    /// questions. `Ctrl+T` owns the always-visible compact progress line; this
+    /// owns the on-demand block that adds in-flight subagents and jobs beneath
+    /// it. Collapsing them would take away the one-line summary that is legible
+    /// without expanding anything.
+    pub tasks_expanded: bool,
+    /// Row the overlay's selection cursor rests on, as an index into the
+    /// *bounded* row list the overlay actually renders.
+    ///
+    /// `None` until the overlay is opened, because an invisible cursor is not
+    /// a cursor: showing one in a strip nobody is looking at would imply the
+    /// overlay is a focusable surface when nothing has asked to focus it yet.
+    ///
+    /// Indices are resolved against the bounded rows rather than the raw
+    /// `task_rows()`, so the cursor can never point at a row that truncation
+    /// removed — which would make `Enter` open a subagent the user cannot see.
+    pub tasks_selected: Option<usize>,
     /// Rows the todo strip occupies on the last render pass.
     pub todo_area: Option<Rect>,
+    /// Rows the unified tasks overlay occupies on the last render pass.
+    pub tasks_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
+    /// Every panel column painted on the last frame, with the placement that
+    /// owns it.
+    ///
+    /// `sidebar_area` is one special case of this (it marks the Session panel
+    /// for its own hover/scroll handling); the list is what makes *every* other
+    /// column hit-testable, so a click can focus it and a drag can select the
+    /// text inside it. Rebuilt on each render, so a placement that is not on
+    /// screen is not clickable.
+    pub panel_areas: Vec<(crate::tui::panels::PanelPlacement, Rect)>,
     /// 1-column strip reserved for the TUI's outer left border.
     pub left_border_area: Option<Rect>,
     /// 1-row strip reserved for the TUI's outer bottom border (under
@@ -1086,8 +1139,12 @@ impl App {
             todos: Vec::new(),
             todo_revision: 0,
             todo_expanded: false,
+            tasks_expanded: false,
+            tasks_selected: None,
             todo_area: None,
+            tasks_area: None,
             sidebar_area: None,
+            panel_areas: Vec::new(),
             left_border_area: None,
             bottom_border_area: None,
             composer_mode_before_panel_focus: None,
@@ -1658,8 +1715,12 @@ impl App {
             todos: Vec::new(),
             todo_revision: 0,
             todo_expanded: false,
+            tasks_expanded: false,
+            tasks_selected: None,
             todo_area: None,
+            tasks_area: None,
             sidebar_area: None,
+            panel_areas: Vec::new(),
             left_border_area: None,
             bottom_border_area: None,
             composer_mode_before_panel_focus: None,
@@ -2053,12 +2114,27 @@ impl App {
                 }
                 true
             }
-            E::SessionUpdated { session_id } => {
-                // The daemon auto-titler writes the new title and publishes
-                // this event, but the event carries only an id — so the
-                // title has to be re-read. Without this the UI kept showing
-                // "Untitled" until a manual session reload.
-                crate::tui::commands::sessions::start_refresh_session(self, session_id);
+            E::SessionUpdated { session_id, title } => {
+                // The daemon auto-titler writes the new title and carries
+                // it on the event when it knows it — apply directly with
+                // no round trip. Id-only events (agent/model selection,
+                // legacy publishers) fall back to a bounded refetch, which
+                // is what kept the UI on "Untitled" until a manual reload.
+                match title.filter(|t| !t.trim().is_empty()) {
+                    Some(title) => {
+                        let request_id = self.dialog_state.session_refresh_request.begin();
+                        crate::tui::commands::sessions::apply_session_refreshed(
+                            self,
+                            request_id,
+                            session_id,
+                            Some(title),
+                            None,
+                        );
+                    }
+                    None => {
+                        crate::tui::commands::sessions::start_refresh_session(self, session_id);
+                    }
+                }
                 true
             }
             E::TurnFailed { message, .. } => {
@@ -2185,6 +2261,33 @@ impl App {
                 self.messages_state
                     .toasts
                     .info(&format!("Background {kind} {status}: {summary}"));
+                true
+            }
+            E::ProjectDeleted {
+                project_id,
+                deleted_session_count,
+            } => {
+                crate::tui::commands::project_picker::apply_project_deleted(
+                    self,
+                    &project_id,
+                    deleted_session_count,
+                );
+                true
+            }
+            E::ProjectUpdated {
+                project,
+                workspace,
+                previous_display_name,
+                previous_root,
+            } => {
+                crate::tui::commands::project_picker::apply_project_updated(
+                    self,
+                    project,
+                    workspace,
+                    previous_display_name,
+                    previous_root,
+                );
+                self.refresh_project_catalog();
                 true
             }
             _ => false,
@@ -3421,11 +3524,43 @@ impl App {
             return;
         }
 
+        // The expanded tasks overlay sits *above* the main buffer, so it gets first
+        // refusal on the keys that drive it. Ordered ahead of the subagent-tab
+        // Esc below because the overlay is the topmost thing on screen: Esc
+        // closes what you are looking at, and what you are looking at is the
+        // overlay.
+        //
+        // Normal mode only, and that gate is load-bearing rather than
+        // cosmetic. The overlay is opened by `Shift+T`, which is itself
+        // Normal-only, but the user switches back to Insert to keep typing
+        // while it is up. Claiming `j`/`k`/`Enter` there would break the
+        // composer outright.
+        if self.tasks_expanded && self.ui_state.input_mode == InputMode::Normal {
+            let action = crate::tui::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            );
+            let consumed = match action {
+                Some(InputAction::Cancel) => {
+                    self.toggle_tasks_list();
+                    true
+                }
+                Some(InputAction::NavigateUp) => self.move_tasks_selection(-1),
+                Some(InputAction::NavigateDown) => self.move_tasks_selection(1),
+                Some(InputAction::Send) => self.open_selected_task(),
+                _ => false,
+            };
+            if consumed {
+                return;
+            }
+        }
+
         // An open subagent buffer is a view *over* the main buffer, so Esc
         // returns to the transcript. It sits below the modal short-circuit
         // so Esc still closes a dialog in front of it, and above everything
         // else so no later handler can consume the key that dismisses it.
-        if self.ui_state.subagents.open.is_some() {
+        if self.ui_state.subagents.active_tab().is_some() {
             if let Some(InputAction::Cancel) = crate::tui::input::handle_key_with_bindings(
                 key,
                 Some(&self.ui_state.bindings),
@@ -3455,17 +3590,25 @@ impl App {
             return;
         }
 
-        // The host takes keys when its overlay is up, or when a panel holds focus
-        // *in Normal mode*. The mode gate is load-bearing: the host claims
-        // `Esc`/`q` as focus-exit keys, so consulting it in Insert mode
-        // would make the letter `q` unfocusable and `Esc` unable to leave
-        // Insert. In Insert mode the composer owns the keyboard — which is
-        // what lets one bottom composer deliver to either target, because
+        // The host takes keys when its overlay is up, or when a panel holds focus.
+        // The mode gate is load-bearing for the ordinary case: the host
+        // claims `Esc`/`q` as focus-exit keys, so consulting a panel in
+        // Insert mode would make the letter `q` unfocusable and `Esc`
+        // unable to leave Insert. For a panel that renders its own text
+        // field the composer really is the right Insert target, which is
+        // what lets one bottom composer deliver to either target because
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
+        //
+        // A panel that fronts something other than itself opts in through
+        // `claims_insert_keys`. The Terminal panel does: after `Shift+L`
+        // docks it, Insert has to mean "type into the PTY". Without the
+        // opt-in the keystrokes went to a composer the user was not looking
+        // at, and the terminal appeared to be frozen.
         let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
             && self.panel_host.is_focused()
-            && self.ui_state.input_mode == InputMode::Normal;
+            && (self.ui_state.input_mode == InputMode::Normal
+                || crate::tui::commands::panels::panel_claims_insert_keys(self));
         // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
         // ahead of the focused panel, and ahead of the binding map. It has to
         // be ahead of the panel because `h/j/k/l` are the panel's own cursor
@@ -3668,6 +3811,9 @@ impl App {
                     InputAction::OpenPanelManager,
                 );
             }
+            Some(InputAction::ToggleTasksList) => {
+                self.toggle_tasks_list();
+            }
             Some(InputAction::ToggleTodoList) => {
                 self.toggle_todo_list();
             }
@@ -3797,6 +3943,15 @@ impl App {
             }
             Some(InputAction::CloseProjectTab) => {
                 self.process_msg(TuiMsg::CloseProjectTab);
+            }
+            Some(InputAction::NextSubagentTab) => {
+                self.process_msg(TuiMsg::NextSubagentTab);
+            }
+            Some(InputAction::PreviousSubagentTab) => {
+                self.process_msg(TuiMsg::PreviousSubagentTab);
+            }
+            Some(InputAction::CloseSubagentTab) => {
+                self.process_msg(TuiMsg::CloseSubagentTab);
             }
             Some(InputAction::ToggleComposerMode) => {
                 self.process_msg(TuiMsg::ToggleComposerMode);
@@ -5707,6 +5862,9 @@ impl App {
             }
             B::Sessions => {
                 self.open_dialog(Dialog::Session);
+            }
+            B::Projects => {
+                self.open_project_picker();
             }
             B::Stop => {
                 crate::tui::commands::turn_control::stop(self);
@@ -8306,6 +8464,9 @@ impl App {
             ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
             ClickTarget::Sidebar => "Click: Collapse section | Wheel: Scroll sidebar".to_string(),
             ClickTarget::Scrollbar { .. } => "Click/drag: Jump | Scroll: Page up/down".to_string(),
+            ClickTarget::Panel { .. } => {
+                "Click: Focus panel | Drag: Select text | Ctrl+C: Copy".to_string()
+            }
             ClickTarget::None => String::new(),
         };
     }
@@ -8327,13 +8488,29 @@ impl App {
         // without this arm the output of a tool call cannot be copied at all.
         // Any other surface (sidebar, scrollbar, dialogs, completion popup,
         // prompt) keeps its immediate press behaviour.
-        let selecting = matches!(target, ClickTarget::Viewport)
+        //
+        // Panel columns join the viewport here. They are the same *kind* of
+        // region — text the user is reading and may want copied — and they are
+        // the densest output in the app when a terminal is docked. Excluding
+        // them is what made panels look unselectable next to a buffer that
+        // was not.
+        let selectable = matches!(target, ClickTarget::Viewport | ClickTarget::Panel { .. });
+        // The viewport's rect already excludes the TUI's outer border strips,
+        // so its rows start at or below 1 and the guard below can simply be
+        // skipped for it. A panel column is the *whole* frame height including
+        // its own block border, so its rect legitimately begins at row 0 —
+        // applying the viewport's guard to it refused the top row of every
+        // docked panel while still reporting that cell as the panel's own.
+        let inside_target = match target {
+            ClickTarget::Panel { .. } => true,
+            _ => event.column >= 1 && event.row >= 1,
+        };
+        let selecting = selectable
             && matches!(
                 event.kind,
                 MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_)
             )
-            && event.column >= 1
-            && event.row >= 1;
+            && inside_target;
         if selecting {
             match event.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -8548,6 +8725,16 @@ impl App {
                 return ClickTarget::Sidebar;
             }
         }
+        // Panel columns, tested after the Session panel so its existing
+        // hover/collapse/scroll behaviour is untouched. The rects come from
+        // the last render, so this cannot name a column that is not painted.
+        for (placement, rect) in &self.panel_areas {
+            if Self::in_rect(x, y, *rect) {
+                return ClickTarget::Panel {
+                    placement: *placement,
+                };
+            }
+        }
         ClickTarget::None
     }
 
@@ -8654,17 +8841,39 @@ impl App {
                     crate::tui::components::sidebar::SidebarActivation::InspectRun(run_id) => {
                         self.process_msg(TuiMsg::OpenRunDetail { run_id });
                     }
+                    // The same tab the panel's `Enter` opens. Both routes
+                    // resolve to one `SidebarActivation` so a click and a
+                    // keystroke cannot open different tabs for the same row.
+                    crate::tui::components::sidebar::SidebarActivation::InspectSubagent(
+                        task_id,
+                    ) => {
+                        self.process_msg(TuiMsg::OpenSubagentTab { task_id });
+                    }
                     crate::tui::components::sidebar::SidebarActivation::None => {}
                 }
             }
             ClickTarget::Working => {
                 // Throbber row (or a gap between rows) has nothing to open.
                 if let Some(index) = self.ui_state.subagents.hit_at(x, y) {
-                    if self.ui_state.subagents.open_row(index) {
-                        let agent = self.ui_state.subagents.rows[index].agent.clone();
-                        self.messages_state.toasts.info(&format!(
-                            "Subagent buffer: {agent} · Esc returns to the main buffer"
-                        ));
+                    let Some(row) = self.ui_state.subagents.rows.get(index).cloned() else {
+                        return;
+                    };
+                    let was_open = self.ui_state.subagents.has_tab(&row.task_id);
+                    if self.ui_state.subagents.open(row.clone()) {
+                        let label = row.label().to_string();
+                        // Reopening an existing tab is a focus change, not a
+                        // new tab, so it gets different guidance than a first
+                        // open. Telling someone who just clicked a tab they
+                        // already had open that it "opened" would be a lie
+                        // about what happened.
+                        let hint = if was_open {
+                            "Shift+N / Shift+P to cycle"
+                        } else {
+                            "Shift+N / Shift+P to cycle, Shift+X to close"
+                        };
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Subagent buffer: {label} · {hint}"));
                     }
                 }
             }
@@ -8692,6 +8901,17 @@ impl App {
                         }
                     }
                 }
+            }
+            ClickTarget::Panel { placement } => {
+                // Clicking a column focuses it — the same answer `Shift+H/J/K/L`
+                // gives — so the pointer and the keyboard agree on which panel
+                // owns the keyboard. Deliberately *focus only*: the selection
+                // that a drag builds is resolved on release above, and a click
+                // must not also fire a panel's row activation, which would
+                // make one press open something the user only pointed at.
+                self.process_msg(TuiMsg::FocusPanelAt {
+                    placement: *placement,
+                });
             }
             ClickTarget::None => {}
         }
@@ -8727,6 +8947,9 @@ impl App {
                     self.sidebar.scroll_up(area);
                 }
             }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Up);
+            }
             ClickTarget::Dialog => {
                 let up_key = crossterm::event::KeyEvent::new(
                     crossterm::event::KeyCode::Up,
@@ -8760,6 +8983,9 @@ impl App {
                     self.sidebar.scroll_down(area);
                 }
             }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Down);
+            }
             ClickTarget::Dialog => {
                 let down_key = crossterm::event::KeyEvent::new(
                     crossterm::event::KeyCode::Down,
@@ -8779,6 +9005,36 @@ impl App {
                 self.messages_state.messages.scroll_page_down();
             }
         }
+    }
+
+    /// Scroll the panel docked to `placement`.
+    ///
+    /// The wheel over a column has to scroll *that column*. Falling through to
+    /// the transcript — which is what an unhandled target did — moved a buffer
+    /// the user was not pointing at, so scrolling a terminal column looked like
+    /// scrolling the conversation.
+    ///
+    /// Only the Terminal panel has its own scrollback today; for the rest this
+    /// is a no-op rather than a fallback, because the wrong surface moving is
+    /// worse than nothing moving.
+    fn scroll_panel(&mut self, placement: crate::tui::panels::PanelPlacement, dir: Scroll) {
+        if self.panel_host.panel_at(placement) != crate::tui::panels::SidePanelId::Terminal {
+            return;
+        }
+        let Some(handle) = self
+            .panel_host
+            .terminal_handle_at(placement)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.interactive_terminals.scroll_by(
+            &handle,
+            match dir {
+                Scroll::Up => -PANEL_WHEEL_LINES,
+                Scroll::Down => PANEL_WHEEL_LINES,
+            },
+        );
     }
 
     fn on_scroll_left(&mut self, target: &ClickTarget) {
@@ -9444,6 +9700,56 @@ impl App {
             PickerPhase::WorkspaceSelection => self.handle_picker_workspace_selection_key(key),
             PickerPhase::RegistrationInput => self.handle_picker_registration_input_key(key),
             PickerPhase::RegistrationConfirm => self.handle_picker_registration_confirm_key(key),
+            PickerPhase::DestroyLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::ProjectEditLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::ProjectEdit => self.handle_picker_project_edit_key(key),
+            PickerPhase::DestroyConfirm => match key.code {
+                crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('n') => {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                    }
+                }
+                crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Char('y') => {
+                    let (project_id, session_count, picker_request_id) = self
+                        .dialog_state
+                        .project_picker
+                        .as_mut()
+                        .and_then(|picker| {
+                            let project_id = picker.pinned_project_id.clone()?;
+                            let session_count = picker.destroy_confirmation.as_ref()?.session_count;
+                            picker.phase = PickerPhase::Destroying;
+                            let request_id = picker.begin_request();
+                            Some((project_id, session_count, request_id))
+                        })
+                        .unwrap_or_default();
+                    if !project_id.is_empty() {
+                        crate::tui::commands::project_picker::start_project_delete(
+                            self,
+                            project_id,
+                            session_count,
+                            picker_request_id,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            PickerPhase::LifecycleChanging
+            | PickerPhase::Destroying
+            | PickerPhase::ProjectUpdating => {}
             PickerPhase::Error => {
                 let _ = key; // suppress unused
                 if let Some(picker) = self.dialog_state.project_picker.as_mut() {
@@ -9457,62 +9763,173 @@ impl App {
     fn handle_picker_catalog_key(&mut self, key: KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
+        let edit_project_id = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::tui::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+                    && key.code == KeyCode::Char('e')
+            })
+            .and_then(|picker| {
+                picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))
+                    .map(|project| project.project_id.clone())
+            });
+        if let Some(project_id) = edit_project_id {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.project_edit = None;
+                picker.last_error = None;
+                picker.phase = crate::tui::app::state::PickerPhase::ProjectEditLoading;
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                crate::tui::commands::project_picker::start_project_edit(
+                    self, project_id, request_id,
+                );
+            }
+            return;
+        }
+
+        let lifecycle_action = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::tui::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+            })
+            .and_then(|picker| {
+                let selected = picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))?;
+                let action = match (key.code, selected.archived_at.is_some()) {
+                    (KeyCode::Char('d'), false) => Some(false),
+                    (KeyCode::Char('d'), true) => Some(true),
+                    (KeyCode::Char('a'), true) => Some(false),
+                    _ => None,
+                }?;
+                let restores = key.code == KeyCode::Char('a');
+                Some((selected.project_id.clone(), action, restores))
+            });
+        if let Some((project_id, destroy, restores)) = lifecycle_action {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.last_error = None;
+                picker.destroy_confirmation = None;
+                picker.phase = if destroy {
+                    crate::tui::app::state::PickerPhase::DestroyLoading
+                } else {
+                    crate::tui::app::state::PickerPhase::LifecycleChanging
+                };
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                if destroy {
+                    crate::tui::commands::project_picker::start_project_destroy_confirmation(
+                        self, project_id, request_id,
+                    );
+                } else {
+                    crate::tui::commands::project_picker::start_project_lifecycle(
+                        self, project_id, restores, request_id,
+                    );
+                }
+            }
+            return;
+        }
+
         let Some(picker) = self.dialog_state.project_picker.as_mut() else {
             self.close_dialog();
             return;
         };
 
-        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+        if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+            if picker.transport_local {
+                picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
+                picker.registration_input.clear();
+            } else {
+                picker.last_error =
+                    Some("Raw path registration requires a local TUI context".to_string());
+                picker.phase = crate::tui::app::state::PickerPhase::Error;
+            }
+            return;
+        }
 
-        match key.code {
-            KeyCode::Esc => {
+        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+        let action = picker.handle_catalog_key(key, filtered_len);
+        match action {
+            crate::tui::app::state::PickerCatalogAction::None => {}
+            crate::tui::app::state::PickerCatalogAction::Close => {
                 self.close_dialog();
             }
-            KeyCode::Up => {
-                picker.select_up(filtered_len);
-            }
-            KeyCode::Down => {
-                picker.select_down(filtered_len);
-            }
-            // `j`/`k` move the catalog list only while the search query is
-            // empty; once the user is typing a query they are ordinary
-            // characters and must reach `picker.query` below.
-            KeyCode::Char('k') if picker.query.is_empty() => {
-                picker.select_up(filtered_len);
-            }
-            KeyCode::Char('j') if picker.query.is_empty() => {
-                picker.select_down(filtered_len);
-            }
-            KeyCode::Backspace => {
-                picker.query.pop();
-            }
-            KeyCode::Char(c) => {
-                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
-                    picker.query.push(c);
-                    picker.selected_row = 0;
-                }
-            }
-            KeyCode::Enter => {
+            crate::tui::app::state::PickerCatalogAction::Select => {
                 self.commit_picker_catalog_selection();
             }
+        }
+    }
+
+    fn handle_picker_project_edit_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+        let Some(edit) = picker.project_edit.as_mut() else {
+            picker.last_error = Some("Project edit form is unavailable".to_string());
+            picker.phase = crate::tui::app::state::PickerPhase::Error;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                picker.reset_to_catalog();
+                picker.begin_request();
+            }
             KeyCode::Tab => {
-                // Toggle show_archived on Tab.
-                picker.show_archived = !picker.show_archived;
-                picker.selected_row = 0;
+                edit.editing_root = !edit.editing_root;
+                picker.last_error = None;
             }
-            _ => {
-                // Ctrl+R enters registration input mode.
-                if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
-                    if picker.transport_local {
-                        picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
-                        picker.registration_input.clear();
-                    } else {
-                        picker.last_error =
-                            Some("Raw path registration requires a local TUI context".to_string());
-                        picker.phase = crate::tui::app::state::PickerPhase::Error;
-                    }
+            KeyCode::Backspace => {
+                if edit.editing_root {
+                    edit.root.pop();
+                } else {
+                    edit.display_name.pop();
                 }
+                picker.last_error = None;
             }
+            KeyCode::Enter => {
+                let Some(project_id) = picker.pinned_project_id.clone() else {
+                    return;
+                };
+                let (name, root, expected) = (
+                    edit.display_name.clone(),
+                    edit.root.clone(),
+                    edit.expected_updated_at,
+                );
+                picker.phase = crate::tui::app::state::PickerPhase::ProjectUpdating;
+                let request_id = picker.begin_request();
+                crate::tui::commands::project_picker::start_project_update(
+                    self, project_id, name, root, expected, request_id,
+                );
+            }
+            KeyCode::Char(ch)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if edit.editing_root {
+                    if edit.root.chars().count() < 1024 {
+                        edit.root.push(ch);
+                    }
+                } else if edit.display_name.chars().count() < 80 {
+                    edit.display_name.push(ch);
+                }
+                picker.last_error = None;
+            }
+            _ => {}
         }
     }
 
@@ -9766,9 +10183,7 @@ impl App {
             let _ = send_tui(&tx, TuiCommand::StartRegisterWorkspace { path });
         }
 
-        // Move to RegistrationConfirm placeholder; the apply will
-        // transition to RegistrationInput on success so the user can
-        // fill in display name / description / tags.
+        // The open flow derives the project name from this directory.
         if let Some(picker) = self.dialog_state.project_picker.as_mut() {
             picker.phase = PickerPhase::RegistrationConfirm;
         }
@@ -11829,7 +12244,7 @@ impl App {
         matches!(
             self.ui_state.routes.current(),
             crate::tui::route::Route::Editor
-        ) && !self.editor_state.buffer_focused()
+        ) && !self.editor_state.buffer_focused(self.ui_state.input_mode)
     }
 
     pub fn input_target(&self) -> crate::tui::panels::InputTarget {
@@ -11954,7 +12369,7 @@ impl App {
         let agent_keys = self.llm_buffer_key_hints();
         let panel = self
             .panel_host
-            .composer_hints(self.chat_panel_project.as_deref());
+            .composer_hints(self.chat_panel_project.as_deref(), self.ui_state.input_mode);
         match (agent_keys, panel) {
             (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
             (Some(agent_keys), None) => Some(agent_keys),
@@ -12100,8 +12515,8 @@ impl App {
     /// Kick off an async refresh of the project catalog.
     ///
     /// This is the public entry point for the catalog client
-    /// (Multi-Project TUI milestone 1). Callers (e.g. the eventual
-    /// `Space f` picker, startup, or a `/projects` slash command)
+    /// (Multi-Project TUI milestone 1). Callers (e.g. the `Ctrl+\`
+    /// picker, startup, or a `/projects` slash command)
     /// dispatch this through the normal event loop so the result
     /// lands back on the loop as a `TuiCommand::ProjectCatalogRefreshed`
     /// completion. The method itself never blocks.
@@ -13110,62 +13525,13 @@ impl App {
             .core_client
             .clone()
             .ok_or_else(|| "core client is not attached".to_string())?;
-        let root = directory.to_string_lossy().into_owned();
-
-        // Phase 1: workspace identity for the root. Idempotent.
-        let workspace_id = match core_client
-            .request(crate::core::new_request(
-                format!("launch-workspace-{}", uuid::Uuid::new_v4()),
-                CoreRequest::WorkspaceRegister { root: root.clone() },
-            ))
-            .await
-        {
-            Ok(CoreResponse::WorkspaceSnapshot { workspace }) => workspace.workspace_id,
-            Ok(CoreResponse::Error { code, message }) => {
-                return Err(format!("workspace registration failed ({code}): {message}"))
-            }
-            Ok(other) => {
-                return Err(format!(
-                    "workspace registration returned an unexpected response: {other:?}"
-                ))
-            }
-            Err(e) => return Err(format!("workspace registration request failed: {e}")),
-        };
-
-        // Phase 2: project identity bound to that workspace. Idempotent —
-        // an existing binding returns the bound project unchanged.
-        let display_name = directory
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| root.clone());
-        let project_id = match core_client
-            .request(crate::core::new_request(
-                format!("launch-project-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ProjectRegister {
-                    request: crate::protocol::dto::ProjectRegisterRequestDto {
-                        workspace_id: workspace_id.clone(),
-                        display_name,
-                        description: None,
-                        tags: Vec::new(),
-                        repository_id: None,
-                        source: LAUNCH_REGISTRATION_SOURCE.to_string(),
-                    },
-                },
-            ))
-            .await
-        {
-            Ok(CoreResponse::ProjectRegistered { project }) => project.project_id,
-            Ok(CoreResponse::Error { code, message }) => {
-                return Err(format!("project registration failed ({code}): {message}"))
-            }
-            Ok(other) => {
-                return Err(format!(
-                    "project registration returned an unexpected response: {other:?}"
-                ))
-            }
-            Err(e) => return Err(format!("project registration request failed: {e}")),
-        };
+        let (project_id, workspace_id, _canonical_root) =
+            crate::tui::commands::project_picker::ensure_bound_project_context(
+                core_client.as_ref(),
+                directory,
+                LAUNCH_REGISTRATION_SOURCE,
+            )
+            .await?;
 
         // Keep the active tab's session binding; only the project/workspace
         // identities are being established here.
@@ -13724,6 +14090,97 @@ impl App {
         self.todo_expanded = !self.todo_expanded;
     }
 
+    /// Toggle the unified tasks overlay (todos, subagents, jobs).
+    ///
+    /// Unlike `toggle_todo_list`, this one is *not* short-circuited when the
+    /// list is empty. An empty overlay is a legitimate answer — "you asked
+    /// what the session is waiting on and the answer is nothing" — and
+    /// swallowing the key would leave the user pressing a key that appears
+    /// dead. The overlay still reports the groups it found nothing in.
+    pub fn toggle_tasks_list(&mut self) {
+        self.tasks_expanded = !self.tasks_expanded;
+        // A cursor left pointing at yesterday's row index would select
+        // whatever happens to sit there now — or nothing at all — the next
+        // time the overlay opens. Reopening starts at the top.
+        self.tasks_selected = None;
+    }
+
+    /// The overlay rows actually rendered, bounded to what fits.
+    ///
+    /// The bound is applied here rather than only at paint time so every
+    /// consumer — the renderer, the selection cursor, `Enter` — agrees on
+    /// which rows exist. A cursor that could point past the bound would open a
+    /// subagent the user cannot see.
+    pub fn bounded_task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
+        crate::tui::app::state::tasks::bounded(self.task_rows())
+    }
+
+    /// Move the overlay's selection cursor by `offset` rows.
+    ///
+    /// Returns whether the cursor moved. The cursor visits body rows only —
+    /// a group heading is a label, not a row to land on — and stops at both
+    /// ends rather than wrapping: it is a scroll position inside a strip the
+    /// user is reading, not a cycle like the tab set.
+    pub fn move_tasks_selection(&mut self, offset: isize) -> bool {
+        if !self.tasks_expanded {
+            return false;
+        }
+        use crate::tui::app::state::tasks::selectable_indices;
+        let selectable = selectable_indices(&self.bounded_task_rows());
+        if selectable.is_empty() {
+            self.tasks_selected = None;
+            return false;
+        }
+        let current = self
+            .tasks_selected
+            .and_then(|index| selectable.iter().position(|row| *row == index));
+        let next = match current {
+            Some(position) => {
+                (position as isize + offset).clamp(0, selectable.len() as isize - 1) as usize
+            }
+            // No cursor yet: start at the first row whichever way the gesture
+            // points. Skipping to the second on `j` would silently swallow the
+            // top item on an overlay that has only ever been opened once, and
+            // the user would `Enter` the wrong subagent.
+            None => 0,
+        };
+        if current == Some(next) {
+            return false;
+        }
+        self.tasks_selected = Some(selectable[next]);
+        true
+    }
+
+    /// Open whatever the overlay's cursor is resting on.
+    ///
+    /// Only a subagent row has a target today. A todo or a job is still
+    /// *selectable* so navigation does not skip over it, but activating one
+    /// does nothing: inventing a detail view for either would be a surface
+    /// the projection does not actually back.
+    pub fn open_selected_task(&mut self) -> bool {
+        use crate::tui::app::state::tasks::activatable_target;
+        if !self.tasks_expanded {
+            return false;
+        }
+        let rows = self.bounded_task_rows();
+        let Some(target) = self
+            .tasks_selected
+            .and_then(|index| rows.get(index))
+            .and_then(activatable_target)
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        if self.open_subagent_tab(&target) {
+            // Opening closes the overlay: the thing the user asked to look at
+            // now owns the main buffer, and leaving a selection cursor behind
+            // it would be a control they are no longer looking at.
+            self.tasks_expanded = false;
+            self.tasks_selected = None;
+        }
+        true
+    }
+
     /// Completed todo count. `TodoStatus::Completed` is the only status that
     /// counts toward the `n/m` progress readout; cancelled items are not
     /// "done work" and must not inflate the numerator.
@@ -13747,6 +14204,143 @@ impl App {
         // the viewport. `Ctrl+T` still reports the true totals in the header.
         let tasks = self.todos.len().min(MAX_TODO_STRIP_TASKS) as u16;
         tasks.saturating_add(1)
+    }
+
+    /// Rows the main buffer's subagent tab bar needs.
+    ///
+    /// One row, and only while a subagent tab is actually open. That is a
+    /// different shape from the working strip, which reserves row 0
+    /// unconditionally precisely so that turn state cannot reflow the
+    /// transcript — but the two are answering different questions. The working
+    /// strip reports on the *turn*, which starts and stops on its own; the tab
+    /// bar reports on tabs, which only appear because the user asked for one.
+    /// A one-row appearance and disappearance caused by an explicit keystroke
+    /// is ordinary editor behaviour, not the automatic reflow I4 forbids.
+    ///
+    /// The row is bounded to 1 and the labels are trimmed to the width
+    /// available (see `fit_bar_tabs`), so opening tabs cannot cost the
+    /// transcript more than a single row no matter how many are open.
+    pub fn subagent_tab_strip_height(&self) -> u16 {
+        u16::from(!self.ui_state.subagents.tabs.is_empty())
+    }
+
+    /// Open the subagent with this projection `task_id` as a buffer tab.
+    ///
+    /// Returns whether a tab is now open for it. `false` covers a task id with
+    /// no live row and a tab set already at capacity; the caller decides
+    /// whether either is worth reporting.
+    pub fn open_subagent_tab(&mut self, task_id: &str) -> bool {
+        let task_id = task_id.to_string();
+        let was_open = self.ui_state.subagents.has_tab(&task_id);
+        let opened = self.ui_state.subagents.open_task(&task_id);
+        if !opened && !was_open {
+            // Distinguish "no such subagent" from "the tab set is full" — the
+            // second is a real limit the user should know about, and telling
+            // them "no such subagent" when the row is right there would be a
+            // lie about what the UI can see.
+            if self
+                .ui_state
+                .subagents
+                .rows
+                .iter()
+                .any(|row| row.task_id == task_id)
+                && self.ui_state.subagents.tabs.is_at_capacity()
+            {
+                self.messages_state
+                    .toasts
+                    .info("Subagent tab limit reached — close a tab with Shift+X to open another");
+            }
+        }
+        opened
+    }
+
+    /// Move `offset` places through the subagent tab cycle.
+    ///
+    /// Returns whether a subagent tab is showing afterwards. `false` with no
+    /// subagent tabs open is not a failure: the conversation stays selected,
+    /// which is the same "no dead key" rule `toggle_tasks_list` follows.
+    fn cycle_subagent_tab(&mut self, offset: isize) -> bool {
+        self.ui_state.subagents.cycle_tabs(offset)
+    }
+
+    /// `Shift+N`: show the next subagent tab, wrapping through the
+    /// conversation.
+    pub fn next_subagent_tab(&mut self) {
+        self.cycle_subagent_tab(1);
+    }
+
+    /// `Shift+P`: show the previous subagent tab, wrapping through the
+    /// conversation.
+    pub fn previous_subagent_tab(&mut self) {
+        self.cycle_subagent_tab(-1);
+    }
+
+    /// `Shift+X`: close the active subagent tab.
+    ///
+    /// Closes nothing but the tab. The run keeps going, because whether a user
+    /// is *watching* a subagent has never had any bearing on whether it
+    /// finishes.
+    pub fn close_subagent_tab(&mut self) {
+        let closed = self.ui_state.subagents.tabs.close_active();
+        if let Some(tab) = closed {
+            self.messages_state
+                .toasts
+                .info(&format!("Closed {}", tab.label()));
+        }
+    }
+
+    /// Rows the unified tasks overlay needs, including its per-group headers.
+    ///
+    /// Returns 0 when collapsed *or* when there is genuinely nothing to show,
+    /// so the input keeps the space in both cases. The height is deliberately
+    /// independent of `todo_strip_height`: the overlay is on-demand, and
+    /// coupling them would make expanding one reflow the other's rows.
+    pub fn tasks_strip_height(&self) -> u16 {
+        if !self.tasks_expanded {
+            return 0;
+        }
+        let rows = self.bounded_task_rows();
+        if rows.is_empty() {
+            return 0;
+        }
+        // Header + rows + the "nothing here" line when the overlay is open but
+        // every group was empty. Without that last row an expanded-but-empty
+        // overlay would collapse to nothing and the toggle would appear broken.
+        rows.len() as u16
+    }
+
+    /// Build the tasks overlay rows from the three projection-backed sources.
+    ///
+    /// Subagents come from the already-projected `SubagentState.rows` rather
+    /// than being re-read from the snapshot, and jobs come from
+    /// `snapshot.jobs`. Nothing here synthesizes a row or mints a name; this
+    /// only selects and formats what the projection already vouches for.
+    pub fn task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
+        let todos: Vec<crate::tui::app::state::tasks::TodoLike> = self
+            .todos
+            .iter()
+            .map(|todo| crate::tui::app::state::tasks::TodoLike {
+                bubble: Self::todo_bubble(&todo.status),
+                content: todo.content.clone(),
+            })
+            .collect();
+        let jobs: Vec<crate::tui::app::state::tasks::JobLike> = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| {
+                snapshot
+                    .jobs
+                    .iter()
+                    .map(|job| crate::tui::app::state::tasks::JobLike {
+                        kind: job.kind.clone(),
+                        summary: job.summary.clone(),
+                        state: job.state.clone(),
+                        error_class: job.error_class.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::tui::app::state::tasks::build_task_rows(&todos, &self.ui_state.subagents.rows, &jobs)
     }
 
     /// The single-character status bubble for a todo entry.
@@ -17622,6 +18216,133 @@ mod skills_command_tests {
             .iter()
             .any(|toast| toast.message.contains("No active asset snapshot")));
         assert!(app.prompt_state.prompt.get_text().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod workspace_entry_convergence_tests {
+    use super::*;
+    use crate::tui::command::{BuiltinSlashAction, CommandAction, CommandRegistry};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// M005 P1: `/workspace` and the Workspace hotkeys must reach **one**
+    /// handler (`commands::workspace_dashboard::open_workspace_dashboard`).
+    ///
+    /// Each entry point is driven through its own production seam — the
+    /// command registry for the slash command, `App::on_key` for the hotkeys —
+    /// rather than by calling the handler directly. A test that calls the
+    /// handler three times asserts only that the handler works; it would keep
+    /// passing after `/workspace` was re-pointed at a different builtin, or
+    /// after the hotkey was rebound, which is precisely the drift P1 exists to
+    /// rule out.
+    #[test]
+    fn workspace_command_and_hotkeys_reach_one_handler() {
+        // 1. The slash command, resolved by its user-facing spelling so an
+        //    alias or rebinding would be caught here.
+        let registry = CommandRegistry::new();
+        let command = registry
+            .find_by_name_or_alias("/workspace")
+            .expect("/workspace must stay registered");
+        let CommandAction::Builtin(BuiltinSlashAction::Workspace) = command.action else {
+            panic!(
+                "/workspace must stay Builtin(Workspace), got {:?}",
+                command.action
+            );
+        };
+
+        let mut via_command = App::new_for_testing("/tmp".into());
+        via_command.dispatch_builtin_command(BuiltinSlashAction::Workspace, None);
+        assert!(
+            matches!(
+                via_command.ui_state.routes.current(),
+                crate::tui::route::Route::Workspace
+            ),
+            "/workspace must open the Workspace view"
+        );
+        assert!(
+            via_command.dialog_state.workspace_dashboard.is_some(),
+            "/workspace must mount the dashboard"
+        );
+
+        // 2. Every bound hotkey for the same action, through the real key
+        //    entry point. `Ctrl+O` works in both input modes; `Shift+W` is a
+        //    vim-Normal letter, so it needs a vim-configured app. `App::
+        //    new_for_testing` deliberately builds the *non-vim* map, and
+        //    using it unchanged would have made `Shift+W` fail for the right
+        //    reason while testing the wrong thing.
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        for mode in [InputMode::Insert, InputMode::Normal] {
+            let mut via_key = App::new_for_testing("/tmp".into());
+            via_key.ui_state.input_mode = mode;
+            via_key.on_key(ctrl_o);
+            assert!(
+                matches!(
+                    via_key.ui_state.routes.current(),
+                    crate::tui::route::Route::Workspace
+                ),
+                "Ctrl+O must open the same Workspace view as /workspace in {mode:?}"
+            );
+            assert!(
+                via_key.dialog_state.workspace_dashboard.is_some(),
+                "Ctrl+O must mount the same dashboard as /workspace in {mode:?}"
+            );
+        }
+
+        let mut vim_app = App::new_for_testing("/tmp".into());
+        vim_app.ui_state.vim_mode = true;
+        vim_app.ui_state.bindings = crate::tui::input::build_bindings(None, true);
+        vim_app.ui_state.input_mode = InputMode::Normal;
+        vim_app.on_key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        assert!(
+            matches!(
+                vim_app.ui_state.routes.current(),
+                crate::tui::route::Route::Workspace
+            ),
+            "Shift+W (vim Normal) must open the same Workspace view as /workspace"
+        );
+        assert!(
+            vim_app.dialog_state.workspace_dashboard.is_some(),
+            "Shift+W (vim Normal) must mount the same dashboard as /workspace"
+        );
+
+        // 3. The normal-only gate is the contract, not an accident of the key
+        //    map: in Insert, `Shift+W` is the letter `W` being composed. If a
+        //    future change made this action global, the capital W a user
+        //    types mid-word would open a dashboard over their prompt.
+        let mut insert_app = App::new_for_testing("/tmp".into());
+        insert_app.ui_state.vim_mode = true;
+        insert_app.ui_state.bindings = crate::tui::input::build_bindings(None, true);
+        insert_app.ui_state.input_mode = InputMode::Insert;
+        insert_app.on_key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        assert!(
+            !matches!(
+                insert_app.ui_state.routes.current(),
+                crate::tui::route::Route::Workspace
+            ),
+            "Shift+W must stay Normal-only: in Insert it is composed text"
+        );
+    }
+
+    /// The advertised help key for the Workspace view must itself resolve.
+    /// `workspace_dashboard_action_is_configurable_and_helped` pins the *help
+    /// text*; this pins the round trip, so a rebind that left the help
+    /// advertising a dead key fails here rather than in a user's terminal.
+    #[test]
+    fn workspace_help_key_resolves_to_the_workspace_action() {
+        for entry in crate::tui::input::help_entries_for_mode(crate::tui::input::HelpMode::Normal) {
+            if entry.action != "Open Workspace view (selected-project chat)" {
+                continue;
+            }
+            assert_eq!(entry.key, "Ctrl+O");
+            let resolved = crate::tui::input::handle_key_with_bindings(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                None,
+                InputMode::Normal,
+            );
+            assert_eq!(resolved, Some(InputAction::OpenWorkspaceDashboard));
+            return;
+        }
+        panic!("help must advertise the Workspace view hotkey");
     }
 }
 

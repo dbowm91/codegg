@@ -627,6 +627,9 @@ impl CoreDaemon {
         &self,
         raw_project_id: &str,
         restore: bool,
+        request_id: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
         let project_id = match codegg_core::identity::ProjectId::parse(raw_project_id) {
             Ok(id) => id,
@@ -644,6 +647,15 @@ impl CoreDaemon {
             });
         };
         let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+        let session_count = match catalog.list_sessions_for_project(&project_id).await {
+            Ok(count) => count,
+            Err(error) => {
+                return Ok(Self::project_catalog_error(
+                    "project lifecycle session count failed",
+                    &error,
+                ))
+            }
+        };
         let result = if restore {
             catalog.restore_project(&project_id, "protocol").await
         } else {
@@ -653,6 +665,22 @@ impl CoreDaemon {
             Ok(record) => {
                 let project =
                     codegg_core::protocol_conversions::project_catalog_record_to_dto(&record);
+                let provenance = codegg_core::authorization::audit_provenance(authz_decision);
+                let audit = codegg_core::audit::AuditEventBuilder::new(
+                    codegg_core::audit::AuditAction::ConfigChange,
+                    authority.principal(),
+                    &provenance,
+                )
+                .with_correlation(request_id)
+                .with_project(project_id.clone())
+                .with_metadata(
+                    "project.lifecycle.operation",
+                    if restore { "reactivate" } else { "deactivate" },
+                )
+                .with_metadata("project.session_count", session_count.to_string())
+                .with_metadata("decision.id", provenance.decision_id())
+                .with_metadata("decision.outcome", "allow");
+                self.audit_emitter().emit(audit).await;
                 let event = if restore {
                     CoreEvent::ProjectRestored {
                         project_id: project.project_id.clone(),

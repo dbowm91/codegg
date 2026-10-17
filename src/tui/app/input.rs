@@ -659,6 +659,9 @@ impl App {
             TuiMsg::MoveDirection(dir) => {
                 crate::tui::commands::panels::move_directionally(self, dir)
             }
+            TuiMsg::FocusPanelAt { placement } => {
+                crate::tui::commands::panels::focus_panel_at(self, placement)
+            }
             TuiMsg::TerminalPanelFocus { handle } => {
                 crate::tui::commands::interactive_terminal::focus_terminal_panel(self, &handle)
             }
@@ -715,6 +718,7 @@ impl App {
             TuiMsg::SavePanelHotkey { digit, panel } => {
                 crate::tui::commands::panels::save_panel_hotkey(self, digit, panel)
             }
+            TuiMsg::ToggleTasksList => self.toggle_tasks_list(),
             TuiMsg::ToggleTodoList => self.toggle_todo_list(),
             TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
             TuiMsg::ToggleReasoning => self.toggle_reasoning(),
@@ -772,6 +776,18 @@ impl App {
             TuiMsg::SelectProjectTabByIndex { index } => {
                 self.select_project_tab_by_visible_index(index);
             }
+            // Subagent tabs are frontend-local view state over projection
+            // rows, so they dispatch straight to `App` rather than over the
+            // `tui_cmd_tx` command channel the project-tab arms use: there is
+            // no daemon-side tab to keep in step, and routing a pure view
+            // change through the command transport would invent a message the
+            // core has no business handling.
+            TuiMsg::OpenSubagentTab { task_id } => {
+                self.open_subagent_tab(&task_id);
+            }
+            TuiMsg::NextSubagentTab => self.next_subagent_tab(),
+            TuiMsg::PreviousSubagentTab => self.previous_subagent_tab(),
+            TuiMsg::CloseSubagentTab => self.close_subagent_tab(),
             TuiMsg::ToggleComposerMode => {
                 crate::tui::commands::work_orders::toggle_composer_mode(self);
             }
@@ -869,6 +885,16 @@ impl App {
             }
             TuiMsg::FilesRefresh => {
                 crate::tui::commands::file_tree::rebuild(self);
+            }
+            TuiMsg::FilesDescend { path } => {
+                // The pane's root moves and the walk follows. One command,
+                // because a scope change without a listing would leave the
+                // box showing the directory the user just walked out of
+                // under the new root's title.
+                crate::tui::commands::file_tree::descend_to(self, &path);
+            }
+            TuiMsg::FilesAscend => {
+                crate::tui::commands::file_tree::ascend_one_level(self);
             }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {

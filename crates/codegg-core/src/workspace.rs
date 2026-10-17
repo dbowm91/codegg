@@ -143,6 +143,8 @@ pub enum PathPolicyError {
 /// Errors produced by [`WorkspaceRegistry`] operations.
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
+    #[error("workspace root '{0}' must be an absolute, non-symlink path")]
+    InvalidRootPath(PathBuf),
     #[error("workspace root '{0}' does not exist or is not a directory")]
     NotADirectory(PathBuf),
 
@@ -607,16 +609,23 @@ impl WorkspaceRegistry {
 ///
 /// Rules:
 /// 1. The path must exist.
-/// 2. The path must be a directory (not a file or symlink to a file).
-/// 3. The path is canonicalized against its filesystem to dedupe
-///    symlink/relative aliases.
-///
-/// We deliberately do **not** follow symlinks during traversal here --
-/// [`std::fs::canonicalize`] resolves every path component with
-/// `realpath`, which is what we want for root identity. A symlink that
-/// resolves into the workspace is still inside the workspace; a symlink
-/// at the root that escapes would have already been resolved.
+/// 2. The path must be absolute and the root itself cannot be a symlink.
+/// 3. The path is canonicalized against its filesystem so all stored roots
+///    use their resolved identity.
 async fn canonicalize_workspace_root(root: &Path) -> Result<(PathBuf, String), WorkspaceError> {
+    if !root.is_absolute() {
+        return Err(WorkspaceError::InvalidRootPath(root.to_path_buf()));
+    }
+    let root_metadata = tokio::fs::symlink_metadata(root).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            WorkspaceError::NotADirectory(root.to_path_buf())
+        } else {
+            WorkspaceError::CanonicalizationFailed(root.to_path_buf(), e.to_string())
+        }
+    })?;
+    if root_metadata.file_type().is_symlink() {
+        return Err(WorkspaceError::InvalidRootPath(root.to_path_buf()));
+    }
     let metadata = tokio::fs::metadata(root).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             WorkspaceError::NotADirectory(root.to_path_buf())
@@ -877,11 +886,14 @@ mod tests {
         let first = registry.get_or_register(dir.path()).await.unwrap();
         let again = registry.get_or_register(dir.path()).await.unwrap();
         assert_eq!(first.id, again.id);
-        // Symlink alias should also dedupe to the same canonical root.
+        // A symlink alias is refused instead of being treated as a second
+        // user-selected project directory.
         let alias = dir.path().join("alias");
         std::os::unix::fs::symlink(dir.path(), &alias).unwrap();
-        let alias_rec = registry.get_or_register(&alias).await.unwrap();
-        assert_eq!(first.id, alias_rec.id);
+        assert!(matches!(
+            registry.get_or_register(&alias).await,
+            Err(WorkspaceError::InvalidRootPath(_))
+        ));
 
         let all = registry.list(false).await.unwrap();
         assert_eq!(all.len(), 1);
@@ -903,6 +915,18 @@ mod tests {
         assert!(matches!(
             registry.get_or_register(&file).await,
             Err(WorkspaceError::NotADirectory(_))
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejects_relative_root_before_resolving_against_process_cwd() {
+        let store = Arc::new(InMemoryWorkspaceStore::new());
+        let registry = WorkspaceRegistry::load(store).await.unwrap();
+        assert!(matches!(
+            registry
+                .get_or_register(Path::new("relative/project"))
+                .await,
+            Err(WorkspaceError::InvalidRootPath(_))
         ));
     }
 

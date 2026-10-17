@@ -160,3 +160,11 @@ same-user edits as detectable checkout drift, and deny CodeGG effect owners
 without complete permit/lifecycle evidence. The user authorized acceptance
 on 2026-10-16. It authorizes no permit service or shared-write execution;
 ADR-0002 isolation remains effective.
+
+
+## ADR-0034 directory-tied project identity (accepted 2026-10-16)
+
+`ADR-0034-directory-tied-project-identity-and-client-working-directory.md`
+accepts one-to-one directory/project identity and per-tab client working
+directories. It gates the project-picker rebind and lifecycle work. ADR-0033
+remains the separately accepted CodeGG-mediated checkout writer boundary.

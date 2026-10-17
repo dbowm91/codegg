@@ -193,6 +193,10 @@ Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:55`).
    a session with its `session_project_binding` row in one transaction.
 3. **Fork**: Copies messages/parts/todos with new IDs, preserves
    parent_id and workspace binding.
+   **Rename** (`update` with a new title, including daemon auto-title)
+   recomputes `slug` from the new title in the same statement; a
+   title-less update leaves the slug untouched. The slug is a derived
+   non-unique search key, never an identity.
 4. **Revert**: Truncates messages after a pivot point, saves removed
    messages/parts as JSON in `session.revert`.
 5. **Soft delete**: Sets `time_deleted`; queries filter `IS NULL`.

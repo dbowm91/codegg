@@ -440,6 +440,16 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                 if app.check_turn_stall() {
                     needs_render = true;
                 }
+                // Deferred syntax-highlight refresh after a local edit. The
+                // arming is consumed by the check, so this is a single
+                // `Instant` compare on every pump tick and does no work
+                // unless typing actually paused.
+                if crate::tui::commands::editor::service_editor_semantic_refresh(
+                    app,
+                    std::time::Instant::now(),
+                ) {
+                    needs_render = true;
+                }
                 if app.streaming_active
                     || matches!(app.session_state.session_status, SessionStatus::Working)
                     || !app.messages_state.toasts.is_empty()

@@ -37,8 +37,8 @@ lands in that tab's workspace.
 Two consequences worth knowing:
 
 - Execution is always scoped to the active tab's workspace. The process working
-  directory is never changed — the launch directory is used exactly once, by
-  the bootstrap path that creates the initial compatibility tab.
+  directory is never changed; the frontend stores the selected workspace root
+  on that tab and passes it as the execution context.
 - The sidebar is keyboard-focusable and includes an Agent Runs tree for nested
   run inspection. The tree renders the active projection turn's bounded run
   nodes parent-first, with status, attention, progress, and joined
@@ -47,8 +47,35 @@ Two consequences worth knowing:
   rather than copying transcripts into sidebar state.
 
 Switch tabs with `NextProjectTab` / `PreviousProjectTab` / `SelectProjectTabByIndex`
-and close one with `CloseProjectTab`. A local project picker (`WorkspaceRegister`
-then `ProjectRegister`) registers a new project into the catalog.
+and close one with `CloseProjectTab`. A local project picker opens a directory:
+an unseen directory creates a project named after that directory, while a
+reopened directory loads its existing project. Open the picker with
+`Shift+F` in `NOR` mode or the `/projects` command
+(which also works mid-prompt).
+
+Each new directory is bound to its own project, even when another directory
+is a clone or worktree with the same Git remote. Existing projects that were
+previously bound to multiple directories remain readable; use the picker edit
+action to rebind one directory before adding another.
+
+The picker shows the active project and its workspace path on the status
+line; the sessions dialog repeats that context in its header. In the picker,
+`j`/`k` move through results and printable keys filter while in `NOR`.
+Press `i` to type a filter including `j` or `k`; `Esc` returns to
+`NOR`, clears a filter, then closes on successive presses. `Tab` includes
+archived projects, which appear after active projects. In `NOR`, `d`
+deactivates an active project and `a` reactivates an archived one. Press
+`d` on an archived project to review its current session count and confirm
+permanent deletion; `Esc` or `n` dismisses without changing anything.
+Destroy permanently deletes the project and its sessions, so it cannot be
+undone. Open tabs for the destroyed project close automatically.
+
+Press `e` on a project row to edit its display name and bound directory.
+Use `Tab` to switch fields, `Enter` to commit, and `Esc` to cancel. Repath
+rebinds the project's sessions to the new existing directory; it never
+moves files. Roots must be absolute directories without a symlink alias.
+A root already bound to another project is refused with that project's
+name. A successful rebind updates open tabs and their displayed paths.
 
 ## Sessions from the CLI
 
@@ -238,9 +265,90 @@ completion popup, return from Insert to Normal mode, or discard a half-written
 prompt — and then stops. `Ctrl+C` unwinds the same layers before it exits, so a
 dialog needs a second press.
 
-Registry metadata — domain, scope, source, keywords — exists for palette and
-help presentation only. It does not bypass dispatch, observer mode, daemon
+Registry metadata — domain, scope, and source exist for palette and help
+presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
+
+## Subagents, jobs, and the tasks overlay
+
+When a turn fans out — several subagents, background jobs — CodeGG gives each
+subagent a short friendly name so you can refer to it, and shows **the same
+name** in every place it appears.
+
+Names are temporary. One is assigned while the subagent is running and released
+when it finishes, so two concurrent runs never share a name, and a name is not
+a durable handle for that run. Read it as "the subagent I was watching a minute
+ago", not as an identifier you can rely on later.
+
+Three surfaces show this, and all three read one projection:
+
+| Surface | Open it with | What it shows |
+|---|---|---|
+| Tasks overlay | `Shift+T` in `NOR` | Todos, subagents, and jobs together |
+| Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
+| Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's transcript per tab, in the main buffer |
+
+All four keys are `[NOR]`-only. In `[INS]` they are ordinary capital letters,
+so composing a word containing `T`, `N`, `P`, or `X` never triggers them — and
+neither does any other capital letter. `Shift+F` (project picker) and `Ctrl+O`
+(Workspace view) work the same way round: the shifted letter is `[NOR]`-only,
+the chord is live in both modes.
+
+### The tasks overlay
+
+`Shift+T` opens a single overlay listing **todos, then subagents, then jobs**,
+each under its own heading. A group with nothing in it is left out entirely —
+there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
+and `Esc` closes the overlay.
+
+It shows what the turn is *waiting on*, not what it has done: finished
+subagents and completed jobs are filtered out. When a job reports a state this
+build does not recognise it is shown rather than hidden, because showing
+finished work costs a glance and hiding live work costs you the thing you
+asked for.
+
+The overlay is driven by `[NOR]` keys only, so you can press `i` and keep
+typing with it open.
+
+`Ctrl+T` is unaffected and still owns the compact todo strip above the input.
+The two surfaces overlap by design — todos appear in both — because the strip is
+a progress line that stays on screen at all times, and the overlay is a
+fuller list you open when you want it.
+
+### Subagent tabs
+
+`Shift+N` and `Shift+P` move between open subagent tabs and wrap around;
+`Shift+X` closes the active one. `Esc` also returns to the conversation. The
+cycle runs `Chat` first, then the subagent tabs in the order you opened them.
+
+With no subagent tabs open the keys do nothing rather than appearing to break —
+you stay on the conversation. Up to 16 subagent tabs can be open at once; at
+that point opening another is **refused** and says so, rather than closing a tab
+you were reading.
+
+A subagent tab shows that subagent's transcript. Closing it cancels nothing —
+the run keeps going whether or not you are watching it. When a run drops out of
+the projection the tab stays open and stops claiming to be live, so the buffer
+cannot show "running" for something the daemon has stopped vouching for.
+
+### Session panel sections
+
+The Session panel lists `Todos`, then `Subagents`, then `Jobs`, so the three
+"what is this waiting on" surfaces sit together. `j`/`k` and the arrow keys
+move through them, `Space` collapses a section, and `Enter` (or a click) acts on
+the selected row:
+
+- a **subagent** row opens that subagent's transcript as a tab in the main
+  buffer, the same tab `Shift+T` would have opened;
+- a **job** row does nothing. Jobs have no transcript to show yet, so the key
+  is consumed rather than sending you somewhere arbitrary;
+- the **Agent Runs tree** further down the panel keeps its own behaviour:
+  `Enter` there opens the run-detail dialog.
+
+Unlike the overlay, the panel keeps rows for finished subagents and marks their
+status. It is a persistent index, not a status light: a subagent that finishes
+should not vanish from the list you are reading. Sections are bounded, and a
+section with more rows than fit ends in a `… N more` line.
 
 ## Themes
 
@@ -367,19 +475,35 @@ your login shell (`$SHELL`, falling back to `sh`) — you do not have to name a
 command first. `/terminal-create <command> [args...]` is still there when you
 want to run a specific program instead.
 
-The terminal starts in viewing mode; press `i` to focus it. While focused, a
-literal `Esc` is sent to the program (for example, Vim). Press `Esc` **twice**
-to return keyboard focus to the TUI, or `Ctrl-]` if your keyboard has that
-chord. Press `Esc` while viewing to close and detach. The
-screen interprets VT cursor movement, erase, SGR colors, and alternate-screen
+The box opens **already taking your keys**, so you can type straight away.
+
+There are two modes, and each key means exactly one thing:
+
+- **INS** — the process owns the keyboard. Everything you type, plus `Enter`,
+  `Backspace`, `Tab`, the arrow keys and `Ctrl-C`/`Ctrl-D`, goes to the
+  terminal. The cursor is drawn where the shell is accepting the next
+  character. Press `Esc` to stop typing and read.
+- **NOR** — the reader owns the keyboard. `hjkl` and the arrows move, `Ctrl+u`
+  and `Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x` selects
+  whole lines, `d` deletes the selection, `space+y` copies it, `C` clears the
+  screen, `D` folds in diagnostics. Press `i` or `Enter` to start typing again.
+  Press `Esc` to close and detach — or to drop an armed selection first.
+
+If you are running a full-screen program that needs its own escape (Vim, less,
+tmux), press `Ctrl+]` to send it a real `Esc` byte and stay in INS. `Esc` itself
+is the mode key and never reaches the child.
+
+The screen interprets VT cursor movement, erase, SGR colors, and alternate-screen
 control in bounded local state; child escape sequences are not written to the
 outer terminal. Resizing the TUI resizes the PTY to the usable dialog viewport.
 
 `/terminal` then `Shift+L` moves it into the side panel, where it behaves the
-same way: `i` takes the keyboard, `Esc Esc` gives it back. If the process behind
-the panel has exited, `i` starts a fresh shell instead — the panel never leaves
-you staring at a dead one. `/terminal-clear` wipes the local scrollback and
-screen while the process keeps running.
+same way. You can also **click** a panel column to focus it, **drag** across one
+to select its text and copy it with `Ctrl+C`, and **scroll** the wheel over one
+to move that column's own content. If the process behind the panel has exited,
+`i` starts a fresh shell instead — the panel never leaves you staring at a dead
+one. `/terminal-clear` wipes the local scrollback and screen while the process
+keeps running.
 
 The box opens with one header line — the command, the link state, and whether
 it is taking your keys. Press `D` while viewing to fold in the full diagnostics
@@ -507,9 +631,20 @@ security signal pipeline that can escalate them, are described in
 
 ## Editor language features
 
+Opening a file puts the cursor in the document (`INS`). `Esc` returns to
+`NOR`, where `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
+`v` selects by character, `x` selects the whole line (press again for one more),
+`d` deletes the selection, and `space y` copies it — the same Helix keys
+`/terminal` uses in its viewing mode. In `NOR` anything the buffer does not
+claim types into the input box at the bottom, so you can talk to the agent
+without leaving the file. `Esc` never closes the editor; `:q` does.
+
+Syntax highlighting arrives with the file and is refreshed shortly after you
+stop typing. Press `F9` to ask again if your language server was still starting.
+
 The editor can show current-file diagnostics and request hover, definition,
 references, document symbols, and workspace symbols from the daemon-owned
-language server. With the editor buffer focused, use F2 for diagnostics, F3
+language server. Use F2 for diagnostics, F3
 for hover, F4 for definition, F5 for references, F6 for document symbols,
 and F7 to search workspace symbols for the word at the cursor. The result
 panel shows unavailable and not-ready states explicitly. A failed refresh
@@ -522,8 +657,8 @@ updates.
 
 ### Completion
 
-With the editor buffer focused, press F8 — or type `:complete` in Normal
-mode — to ask the language server for completions at the cursor. A popup
+Press F8 — or type `:complete` in Normal mode — to ask the language server for
+completions at the cursor. A popup
 lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
 Normal mode) move the selection, `Enter` applies the selected item, and
 `Esc` dismisses the popup without touching anything. Typing anything else
@@ -571,6 +706,11 @@ at the end of the shown prefix; normal files are unaffected.
 The file tree (Ctrl+T pane and `/files`) shows the daemon's directory
 listing for the active workspace: the daemon walks at most 100,000
 directory entries and keeps at most 4096, saying which limit stopped it.
+`l` re-roots the listing at a directory, which is a fresh daemon walk of
+that subtree rather than a filter of what is already on screen, so the
+bounds above apply to the directory you are actually in. A completion
+answered for a different subtree than the one requested is discarded rather
+than painted.
 The complete listing response (entries plus workspace/prefix, status,
 and truncation reason) is capped at 512 KiB on the wire: oversized trees
 are trimmed from the trailing top-level entries with an explicit reason,
@@ -587,6 +727,33 @@ why. Listings unavailable from the daemon are explicit errors — the tree
 never falls back to reading the local machine's own files, so a
 same-spelled local directory can never masquerade as the workspace. A busy
 daemon asks for an explicit retry with `r`.
+
+## Browsing files
+
+`Ctrl+T` opens a tree pane beside the editor; `/files` opens the same
+navigator as a box you can dock into the side panel with `Shift+L`. Both run
+the same navigation, so the keys below mean the same thing in both.
+
+| Key | What it does |
+|---|---|
+| `j` / `k`, `↓` / `↑` | move the cursor |
+| `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
+| `Enter` on a directory | expand or collapse it in place — the cursor stays |
+| `l` / `→` | make that directory the **root** and list what's inside it |
+| `h` / `←` | go back one level (at the workspace root: collapse in place, otherwise jump to the parent) |
+| `Enter` on a file | open it in the editor |
+| `r` | re-list the current directory |
+| `Esc` | leave the pane / close the box |
+
+`l` re-roots rather than expanding, so the listing always has a top level:
+walking into a deeply nested tree is the same operation at every depth, and
+`h` puts the cursor back on the directory you just came out of. The title
+names the directory you are in.
+
+Rows show a per-type icon (folders, source files by language, docs, configs,
+media) using Nerd Font glyphs. If your terminal shows them as boxes, set
+`CODEGG_FILE_ICONS=plain` before starting CodeGG to fall back to the plain
+caret markers.
 
 ## Where to go next
 

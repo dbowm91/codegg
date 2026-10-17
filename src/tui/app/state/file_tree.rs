@@ -8,6 +8,22 @@
 //! Request/generation discipline matches `EditorState`: a walk that completes
 //! after the user switched project tab or asked for a rebuild is discarded
 //! rather than applied to the wrong workspace.
+//!
+//! ## The pane has a root, and it is not always the workspace root
+//!
+//! [`FileTreeState::root_history`] is the chain of directories the user has
+//! walked into with `l`, newest last, so `h` can step back out one level at a
+//! time and land the cursor on the directory it just left. The current listing
+//! scope is always the last entry, which is what makes "which directory am I
+//! looking at" one fact instead of a prefix field and a history field that
+//! can disagree.
+//!
+//! Re-rooting is a **daemon round-trip**, not a local filter: the scope is
+//! carried as `WorkspaceDirectoryListRequestDto::prefix`, and the daemon
+//! walks that subtree with the same bounded walker. Filtering an
+//! already-loaded listing would have been free, but it would silently drop
+//! everything the original walk hit its bounds on, presenting a partial
+//! subtree as if it were the directory.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -18,6 +34,11 @@ use std::sync::{
 
 use crate::tui::app::state::AsyncUiRequestState;
 use crate::tui::file_tree::{visible_rows, TreeListing, TreeNodeKind, TreeRow};
+
+/// Page size used when the pane has not rendered yet and therefore has no
+/// measured viewport. A first keypress can arrive before the first frame on a
+/// very fast paste, and a page verb must never become a no-op there.
+pub const FALLBACK_PAGE_ROWS: usize = 10;
 
 /// Why the pane is showing what it is showing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -73,6 +94,29 @@ pub struct FileTreeState {
     /// task, so it is deliberately not part of equality or debug output
     /// beyond the pointer.
     pub cancel_flag: Option<Arc<AtomicBool>>,
+    /// Directories walked into with `l`, oldest first; the last entry is the
+    /// directory this pane is listing right now.
+    ///
+    /// Starts empty, which reads as the workspace root. `h` pops it. Only
+    /// [`Self::set_root_prefix`] and [`Self::ascend_root`] write it, so the
+    /// scope can never be changed by anything else.
+    pub root_history: Vec<String>,
+    /// The scope the in-flight walk was issued for, captured at
+    /// `begin_rebuild` time.
+    ///
+    /// Separate from the current root because they answer different
+    /// questions: this one is "what did I ask the daemon for", which is what
+    /// an arriving completion is checked against — the daemon echoes the
+    /// prefix it answered, so a mismatched completion is discarded instead of
+    /// painting a subtree the pane is no longer pointing at.
+    pub listing_prefix: String,
+    /// Rows the pane can currently show, published by the renderer after it
+    /// has computed the viewport.
+    ///
+    /// Layout, not navigation: `move_selection` cannot scroll sensibly
+    /// without knowing how many rows fit, and the renderer is the only place
+    /// that knows. `0` means "not measured yet", which pages fall back from.
+    pub viewport_rows: usize,
 }
 
 impl FileTreeState {
@@ -147,6 +191,36 @@ impl FileTreeState {
         }
     }
 
+    /// Rows one `Ctrl+d`/`Ctrl+u` press moves.
+    ///
+    /// Two thirds of the viewport, so consecutive pages keep a row of overlap
+    /// — a full page scrolls *past* a name the user was reaching for, and a
+    /// paging verb that overshoots reads as a broken one.
+    pub fn page_step(&self) -> isize {
+        let rows = if self.viewport_rows == 0 {
+            FALLBACK_PAGE_ROWS
+        } else {
+            self.viewport_rows
+        };
+        ((rows * 2) / 3).max(1) as isize
+    }
+
+    /// Page the cursor by `direction` pages: `1` down, `-1` up.
+    ///
+    /// `Ctrl+d`/`Ctrl+u` on a listing long enough to need paging. The
+    /// selection moves a full page *and* the scroll follows it, because a
+    /// page verb that moved the highlight without moving the listing would
+    /// scroll only after the cursor had already left the screen.
+    pub fn page_selection(&mut self, direction: isize) {
+        if self.rows().is_empty() {
+            return;
+        }
+        self.move_selection(direction * self.page_step());
+        if let Some(index) = self.selected_index() {
+            self.ensure_visible(index, self.viewport_rows);
+        }
+    }
+
     /// Expand or collapse the selected directory.
     ///
     /// Returns the path that changed, so a caller can report it. A file
@@ -164,52 +238,89 @@ impl FileTreeState {
         Some(row.path)
     }
 
-    /// Enter the selected directory: expand it and step onto its first child.
+    /// Step the pane's root back one level.
     ///
-    /// This is the `l`/right-arrow verb. It is deliberately distinct from
-    /// [`Self::toggle_selected`], which is what Enter uses: both end up
-    /// expanding the same directory, but only this one also *moves* the
-    /// cursor, because "go into this directory" and "reveal what is in it"
-    /// are different intentions and should leave the cursor somewhere
-    /// different.
+    /// This is the `h`/left-arrow verb, and the counterpart of
+    /// [`Self::descend_selected`]: the cursor lands on the directory just
+    /// left behind, so stepping out and back in returns to the same place.
     ///
-    /// A file selection is a no-op — there is no directory to enter — and an
-    /// empty directory keeps its selection on itself rather than dropping it,
-    /// so the cursor is never left somewhere unreachable.
-    pub fn enter_selected(&mut self) -> Option<String> {
-        let rows = self.rows();
-        let index = self.selected_index()?;
-        let row = rows.get(index)?;
-        if row.kind != TreeNodeKind::Directory {
-            return None;
+    /// `false` means the pane is already showing the workspace root, where
+    /// "one level up" does not exist. The caller falls back to
+    /// [`Self::leave_selected`] there rather than making `h` inert at the one
+    /// depth every listing starts at.
+    pub fn ascend_root(&mut self) -> bool {
+        if self.root_history.len() < 2 {
+            return false;
         }
-        let path = row.path.clone();
-        // Already open: there is nowhere deeper to go from here.
-        if !row.expanded {
-            self.expanded.insert(path.clone());
-        }
-        // Re-flatten: expanding can append rows after this one.
-        let rows = self.rows();
-        // A directory with no children still stays selected, so an empty
-        // directory is visibly opened rather than appearing inert.
-        let next = rows
-            .get(index + 1)
-            .filter(|child| child.depth > row.depth)
-            .map(|child| child.path.clone())
-            .unwrap_or_else(|| path.clone());
-        self.selected = Some(next.clone());
-        self.reveal_selected(
-            rows.iter()
-                .position(|row| row.path == next)
-                .unwrap_or(index),
-            rows.len(),
-        );
-        Some(path)
+        let left = self
+            .root_history
+            .pop()
+            .expect("length checked immediately above");
+        self.reset_scope();
+        // The directory we came out of is a row again in the new root; if the
+        // daemon reports it gone (it was removed between two listings) the
+        // listing pass falls back to the first row rather than stranding the
+        // cursor on a path that is no longer on screen.
+        self.selected = Some(left);
+        true
     }
 
-    /// Go back one level.
+    /// Point the pane at `prefix` as its root, remembering the way back.
     ///
-    /// This is the `h`/left-arrow verb. Two cases, in order:
+    /// Returns `false` when that is already the root, so the caller can skip
+    /// a round-trip rather than relist the same directory.
+    ///
+    /// Ancestry is preserved when the move stays inside the current root (a
+    /// jump to a descendant leaves `h` able to walk back out along the way it
+    /// came) and reset when it does not, because a history claiming the pane
+    /// arrived from a directory it never listed would make `h` go somewhere
+    /// the user cannot predict.
+    pub fn set_root_prefix(&mut self, prefix: &str) -> bool {
+        let prefix = prefix.trim_matches('/').to_string();
+        if prefix == self.root_prefix() {
+            return false;
+        }
+        if !prefix.starts_with(&format!("{}/", self.root_prefix())) {
+            // Re-seeded with the workspace root before the new entry: a chain
+            // that starts at `src` has no way back out of it, which is how
+            // `h` silently became a no-op after the first `l`.
+            self.root_history.clear();
+            self.root_history.push(String::new());
+        }
+        self.root_history.push(prefix);
+        self.reset_scope();
+        true
+    }
+
+    /// The directory this pane is listing: `""` for the workspace root.
+    pub fn root_prefix(&self) -> &str {
+        self.root_history.last().map(String::as_str).unwrap_or("")
+    }
+
+    /// True when the pane is showing the workspace root rather than a
+    /// directory inside it.
+    pub fn at_workspace_root(&self) -> bool {
+        self.root_prefix().is_empty()
+    }
+
+    /// Drop everything that describes the *contents* of the current scope.
+    ///
+    /// Expansions are workspace-relative so they stay valid across a relist,
+    /// but a subtree listing re-walks from a different base and a cursor
+    /// pointing into rows that are about to be replaced would resolve to
+    /// whatever happens to sort first. An empty pane reading `Loading…` beats
+    /// a populated one showing the directory the user just walked out of.
+    fn reset_scope(&mut self) {
+        self.nodes.clear();
+        self.expanded.clear();
+        self.selected = None;
+        self.scroll = 0;
+        self.truncated = None;
+    }
+
+    /// Go back one level *within* the current scope.
+    ///
+    /// Two cases, in order:
     ///
     /// 1. The cursor is on an expanded directory — collapse it and stay put.
     /// 2. Otherwise step the cursor to the nearest preceding shallower row,
@@ -218,6 +329,9 @@ impl FileTreeState {
     /// A top-level entry has no parent, so case 2 is a no-op there rather
     /// than an error: backing out of the workspace root means nowhere to go,
     /// and silently clamping is the honest answer.
+    ///
+    /// This is the `h` fallback at the workspace root, where
+    /// [`Self::ascend_root`] has nothing to do.
     pub fn leave_selected(&mut self) -> Option<String> {
         let rows = self.rows();
         let index = self.selected_index()?;
@@ -236,11 +350,15 @@ impl FileTreeState {
         Some(path)
     }
 
-    /// Apply a completed walk, if it belongs to the current generation and
-    /// root.
+    /// Apply a completed walk, if it belongs to the current generation, root,
+    /// and scope.
     ///
     /// A stale completion is dropped rather than applied, which is what keeps
-    /// a tree from rendering against a workspace the user has left.
+    /// a tree from rendering against a workspace the user has left. The
+    /// daemon echoes the prefix it answered for, so a listing that came back
+    /// for a *different* subtree is refused on the same grounds even when its
+    /// generation happens to match — `l` twice in quick succession issues two
+    /// requests, and only the scope identifies which one answered.
     pub fn apply_listing(
         &mut self,
         generation: u64,
@@ -252,6 +370,11 @@ impl FileTreeState {
             || self.root.as_ref() != Some(&root)
             || !self.request.finish(request_id)
         {
+            return false;
+        }
+        if listing.prefix != self.listing_prefix {
+            // The request id is spent, so this completion can never be
+            // re-applied: drop it and let the caller drive the next request.
             return false;
         }
         self.nodes = listing.nodes;
@@ -295,22 +418,26 @@ impl FileTreeState {
         true
     }
 
-    /// Begin a rebuild against `root`.
+    /// Begin a rebuild against the current root and current scope.
     ///
-    /// The generation bump is what invalidates any walk already in flight.
-    /// The previous walk's cooperative flag is set first, so a superseded
-    /// blocking scan exits at its next entry rather than running to the
-    /// examined-entry cap.
+    /// The generation bump is what invalidates any walk already in flight,
+    /// and the scope is captured here so an arriving completion can be
+    /// checked against what was actually asked for. The previous walk's
+    /// cooperative flag is set first, so a superseded blocking scan exits at
+    /// its next entry rather than running to the examined-entry cap.
     pub fn begin_rebuild(&mut self, root: PathBuf) -> (u64, u64) {
         self.cancel_in_flight();
         if self.root.as_deref() != Some(root.as_path()) {
             // A new workspace resets everything: a path from the previous
             // project is meaningless in the next.
-            self.expanded.clear();
-            self.selected = None;
-            self.scroll = 0;
+            self.root_history.clear();
+            self.reset_scope();
+        }
+        if self.root_history.is_empty() {
+            self.root_history.push(String::new());
         }
         self.root = Some(root);
+        self.listing_prefix = self.root_prefix().to_string();
         self.generation = self.generation.wrapping_add(1);
         self.status = FileTreeStatus::Loading;
         self.truncated = None;
@@ -344,11 +471,9 @@ impl FileTreeState {
         self.cancel_in_flight();
         self.generation = self.generation.wrapping_add(1);
         self.root = None;
-        self.nodes.clear();
-        self.expanded.clear();
-        self.selected = None;
-        self.scroll = 0;
-        self.truncated = None;
+        self.reset_scope();
+        self.root_history.clear();
+        self.listing_prefix.clear();
         self.status = FileTreeStatus::Idle;
     }
 }
@@ -470,53 +595,150 @@ mod tests {
     }
 
     #[test]
-    fn enter_steps_into_a_directory_and_onto_its_first_child() {
+    fn descending_makes_the_directory_the_pane_root_and_drops_the_old_rows() {
         let root = temp();
         write(root.path(), "dir/a.txt");
         write(root.path(), "dir/b.txt");
         write(root.path(), "top.txt");
 
         let mut state = state_with(root.path());
+        assert_eq!(state.root_prefix(), "");
         assert_eq!(state.selected.as_deref(), Some("dir"));
 
-        // `l` expands *and* moves the cursor, which is what distinguishes it
-        // from the Enter/toggle verb that leaves the cursor where it was.
-        assert_eq!(state.enter_selected().as_deref(), Some("dir"));
-        assert!(state.expanded.contains("dir"));
-        assert_eq!(state.selected.as_deref(), Some("dir/a.txt"));
-
-        // Expanding *without* moving (what Enter does) and then `l`: entering
-        // an already-open directory is idempotent, not a double-toggle that
-        // would collapse what the user just walked into.
-        state.expanded.insert("dir".to_string());
-        state.selected = Some("dir".to_string());
-        assert_eq!(state.enter_selected().as_deref(), Some("dir"));
+        assert!(state.set_root_prefix("dir"));
+        assert_eq!(state.root_prefix(), "dir");
         assert!(
-            state.expanded.contains("dir"),
-            "`l` must not collapse a directory it just walked into"
+            state.nodes.is_empty(),
+            "a scope change must not leave the old listing on screen under the new title"
         );
-        assert_eq!(state.selected.as_deref(), Some("dir/a.txt"));
+        assert_eq!(
+            state.selected, None,
+            "the cursor means nothing in a new root"
+        );
+        assert!(
+            state.expanded.is_empty(),
+            "expansions are re-derived from the new base, not inherited"
+        );
 
-        // A file has no directory to enter.
-        state.selected = Some("top.txt".to_string());
-        assert_eq!(state.enter_selected(), None);
-        assert_eq!(state.selected.as_deref(), Some("top.txt"));
+        // The daemon relists the subtree; the cursor lands on its first row.
+        let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
+        assert_eq!(state.listing_prefix, "dir", "the walk was issued for it");
+        state.apply_listing(
+            generation,
+            request_id,
+            root.path().to_path_buf(),
+            crate::tui::file_tree::build_tree(root.path()),
+        );
+        assert_eq!(
+            state.root_prefix(),
+            "dir",
+            "a relist does not move the root"
+        );
     }
 
     #[test]
-    fn enter_on_an_empty_directory_keeps_the_cursor_rather_than_dropping_it() {
+    fn descending_to_the_current_root_does_nothing_and_says_so() {
+        let root = temp();
+        write(root.path(), "dir/a.txt");
+
+        let mut state = state_with(root.path());
+        assert!(
+            !state.set_root_prefix(""),
+            "the workspace root is already the root; the caller must not relist"
+        );
+        assert!(state.set_root_prefix("dir"));
+        assert!(
+            !state.set_root_prefix("dir"),
+            "`l` on the root you are already listing is a no-op, not a round-trip"
+        );
+        assert_eq!(state.root_prefix(), "dir");
+    }
+
+    #[test]
+    fn descending_into_an_empty_directory_is_still_a_scope_change() {
         let root = temp();
         std::fs::create_dir_all(root.path().join("empty")).expect("mkdir");
 
         let mut state = state_with(root.path());
         assert_eq!(state.selected.as_deref(), Some("empty"));
-        assert_eq!(state.enter_selected().as_deref(), Some("empty"));
-        assert_eq!(
-            state.selected.as_deref(),
-            Some("empty"),
-            "an empty directory must stay selected so the cursor is never stranded"
+        assert!(state.set_root_prefix("empty"));
+        assert_eq!(state.root_prefix(), "empty");
+        assert!(
+            state.selected.is_none(),
+            "an empty root has no rows to select; the pane shows an empty listing, not a stranded cursor"
         );
-        assert!(state.expanded.contains("empty"));
+    }
+
+    #[test]
+    fn ascending_pops_one_level_and_lands_the_cursor_where_it_came_from() {
+        let root = temp();
+        write(root.path(), "a/b/c/deep.txt");
+
+        let mut state = state_with(root.path());
+        assert!(state.set_root_prefix("a"));
+        assert!(state.set_root_prefix("a/b"));
+        assert!(state.set_root_prefix("a/b/c"));
+        assert_eq!(state.root_prefix(), "a/b/c");
+
+        // Back out: the root is the parent and the cursor is the directory
+        // just left behind, which is a row again in the new listing.
+        assert!(state.ascend_root());
+        assert_eq!(state.root_prefix(), "a/b");
+        assert_eq!(state.selected.as_deref(), Some("a/b/c"));
+
+        assert!(state.ascend_root());
+        assert_eq!(state.root_prefix(), "a");
+        assert_eq!(state.selected.as_deref(), Some("a/b"));
+
+        assert!(state.ascend_root());
+        assert_eq!(state.root_prefix(), "");
+        assert_eq!(state.selected.as_deref(), Some("a"));
+
+        // At the workspace root there is no level to leave, and `h` must not
+        // be a key that quietly does nothing at the one depth every listing
+        // starts at — the command falls back to the in-scope verb.
+        assert!(!state.ascend_root(), "the workspace root has no parent");
+    }
+
+    #[test]
+    fn ancestry_is_kept_inside_the_current_root_and_reset_outside_it() {
+        let root = temp();
+        write(root.path(), "a/b/c.txt");
+
+        let mut state = state_with(root.path());
+        assert!(state.set_root_prefix("a"));
+        // A jump that skips a level is still a descent from `a`, so `h` can
+        // walk back out through `b` on the way it came.
+        assert!(state.set_root_prefix("a/b/c"));
+        assert_eq!(state.root_history, vec!["", "a", "a/b/c"]);
+
+        // Leaving the current root drops the way back: `h` would otherwise
+        // walk out through a directory the pane never listed.
+        assert!(state.set_root_prefix("other"));
+        assert_eq!(state.root_history, vec!["", "other"]);
+        assert_eq!(state.root_prefix(), "other");
+    }
+
+    #[test]
+    fn a_listing_for_another_scope_is_refused_even_at_the_current_generation() {
+        let root = temp();
+        write(root.path(), "a/inner.txt");
+
+        let mut state = state_with(root.path());
+        assert!(state.set_root_prefix("a"));
+        let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
+        let mut listing = crate::tui::file_tree::build_tree(root.path());
+        // A completion that came back for a different subtree than the one
+        // requested: `l` twice in quick succession produces exactly this,
+        // and only the echoed prefix says which one answered.
+        listing.prefix = "a/inner".to_string();
+
+        assert!(
+            !state.apply_listing(generation, request_id, root.path().to_path_buf(), listing),
+            "a mismatched scope must be dropped rather than painted"
+        );
+        assert!(state.nodes.is_empty());
+        assert_eq!(state.listing_prefix, "a");
     }
 
     #[test]
@@ -542,12 +764,7 @@ mod tests {
         let mut state = state_with(root.path());
         state.expanded.insert("dir".to_string());
         state.expanded.insert("dir/nested".to_string());
-        assert_eq!(state.selected.as_deref(), Some("dir"));
-
-        state.enter_selected();
-        assert_eq!(state.selected.as_deref(), Some("dir/nested"));
-        state.enter_selected();
-        assert_eq!(state.selected.as_deref(), Some("dir/nested/deep.txt"));
+        state.selected = Some("dir/nested/deep.txt".to_string());
 
         // From a nested file, `h` walks out one level at a time.
         assert_eq!(state.leave_selected().as_deref(), Some("dir/nested"));
@@ -652,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_projects_resets_selection_and_expansion() {
+    fn switching_projects_resets_selection_expansion_and_root() {
         let first = temp();
         let second = temp();
         write(first.path(), "a/b.txt");
@@ -661,6 +878,8 @@ mod tests {
         let mut state = state_with(first.path());
         state.toggle_selected();
         assert!(state.expanded.contains("a"));
+        assert!(state.set_root_prefix("a"));
+        assert_eq!(state.root_prefix(), "a");
 
         let (generation, request_id) = state.begin_rebuild(second.path().to_path_buf());
         state.apply_listing(
@@ -674,6 +893,102 @@ mod tests {
             "a path from the previous project must not survive"
         );
         assert_eq!(state.selected.as_deref(), Some("c.txt"));
+        assert!(
+            state.at_workspace_root(),
+            "a directory from the previous project is meaningless in the next"
+        );
+    }
+
+    #[test]
+    fn descending_from_a_never_rebuilt_pane_can_still_walk_back_out() {
+        // `Default` has an empty root history, so `root_prefix()` reads as the
+        // workspace root without one having been pushed. The first `l` must
+        // still leave a chain that `h` can pop — otherwise the very first
+        // descent in a pane is one-way.
+        let mut state = FileTreeState::default();
+        assert!(state.at_workspace_root());
+        assert!(state.set_root_prefix("src"));
+        assert_eq!(state.root_history, vec!["", "src"]);
+        assert!(state.ascend_root());
+        assert_eq!(state.root_prefix(), "");
+        assert!(!state.ascend_root());
+    }
+
+    #[test]
+    fn paging_moves_the_cursor_and_the_scroll_together() {
+        let root = temp();
+        for index in 0..40 {
+            write(root.path(), &format!("file{index:02}.txt"));
+        }
+
+        let mut state = state_with(root.path());
+        state.viewport_rows = 10;
+        assert_eq!(state.page_step(), 6, "two thirds of a ten-row pane");
+
+        assert_eq!(state.selected_index(), Some(0));
+        assert_eq!(state.scroll, 0);
+
+        state.page_selection(1);
+        assert_eq!(state.selected_index(), Some(6));
+        assert_eq!(
+            state.scroll, 0,
+            "the first page still fits without scrolling"
+        );
+
+        state.page_selection(1);
+        assert_eq!(state.selected_index(), Some(12));
+        assert_eq!(
+            state.scroll, 3,
+            "the listing scrolls to keep the cursor on screen"
+        );
+
+        // Paging back is the same minimal scroll in reverse: row 6 is still
+        // inside the rows on screen, so the listing holds still instead of
+        // jumping a whole page for a cursor that never left it.
+        state.page_selection(-1);
+        assert_eq!(state.selected_index(), Some(6));
+        assert_eq!(state.scroll, 3);
+
+        state.page_selection(-1);
+        assert_eq!(state.selected_index(), Some(0));
+        assert_eq!(state.scroll, 0);
+
+        // Clamped at the top rather than wrapping or panicking.
+        state.page_selection(-1);
+        assert_eq!(state.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn paging_without_a_measured_viewport_still_moves() {
+        let root = temp();
+        for index in 0..30 {
+            write(root.path(), &format!("file{index:02}.txt"));
+        }
+
+        let mut state = state_with(root.path());
+        assert_eq!(state.viewport_rows, 0, "nothing has rendered yet");
+        assert_eq!(state.page_step(), FALLBACK_PAGE_ROWS as isize * 2 / 3);
+
+        // A keypress can arrive before the first frame; a page verb that is a
+        // no-op there is worse than an approximate step.
+        state.page_selection(1);
+        assert!(state.selected_index().unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn paging_an_empty_or_short_listing_is_harmless() {
+        let root = temp();
+        let mut empty = FileTreeState::default();
+        empty.page_selection(1);
+        empty.page_selection(-1);
+
+        write(root.path(), "only.txt");
+        let mut short = state_with(root.path());
+        short.viewport_rows = 40;
+        short.page_selection(1);
+        assert_eq!(short.selected_index(), Some(0));
+        short.page_selection(-1);
+        assert_eq!(short.selected_index(), Some(0));
     }
 
     #[test]

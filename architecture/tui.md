@@ -41,7 +41,7 @@ failure exist **only** on this stream.
 | `TurnFailed` | `Error` + the daemon message as a toast |
 | `Error` | `Error` + `code: message` as a toast |
 | `PermissionPending` / `QuestionPending` | open the matching dialog |
-| `SessionUpdated` | spawn a bounded single-session metadata refresh (title) |
+| `SessionUpdated` | apply the carried title directly; id-only events fall back to a bounded single-session metadata refresh |
 
 Usage reaches the footer on `TurnCompleted`, not on
 `AppEvent::AgentFinished`: that bus event is intentionally not mapped across
@@ -65,9 +65,12 @@ confident percentage against a window the selected model may not have. The
 number is deliberately the one that gates compaction, so the meter cannot
 disagree with the behaviour it describes.
 
-`SessionUpdated` carries only a session id, so the daemon-side auto-titler
-(which writes the title and publishes the event) still requires a re-read.
-That re-read is the `SessionRefreshed` command: it is generation-guarded,
+`SessionUpdated` carries an optional title: auto-title events publish
+`Some(title)` and the TUI applies it directly with no round trip.
+Id-only events (`title: None` — agent/model selection, legacy publishers)
+still require a re-read. That re-read is the `SessionRefreshed` command:
+it is generation-guarded, carries the active tab's project key (an empty
+id is never sent — the daemon rejects it with `project_context_required`),
 updates only the title, and deliberately avoids `App::set_session` — that
 would navigate and re-arm the event stream on a background metadata refresh.
 It must write to both `dialog_state.session_dialog` and the focus-manager
@@ -129,6 +132,17 @@ locally. Remote/team transports carrying a team principal receive the
 canonical daemon denial (`authorization_scope_required`) as a bounded picker
 error rather than a silent fallback to local path interpretation; no process
 `cwd` inference is reintroduced.
+
+The project picker uses the help-dialog layout: title, bounded filter/count
+row with an `INS`/`NOR` badge, result rows, and a mode-specific footer. It
+opens in the caller's input mode. In Normal mode, printable keys filter while
+`j`/`k` navigate even with a query; `i` enters Insert so those letters can
+be typed, and `Esc` steps Insert -> Normal -> clear filter -> close. The
+picker remains capped and preserves its async generation guards. Active
+projects sort before archived projects, with fuzzy score ordering retained
+within each group. The status bar and sessions dialog show the active tab's
+project name and workspace-root context, resolved from tab/catalog state.
+They never derive a root from process cwd.
 
 The command catalog follows the same boundary: built-ins/global definitions
 remain shared, while project-local command files are loaded by the active
@@ -616,7 +630,37 @@ and their hit rects are rebuilt every frame in `UiState::working_area` /
 `SubagentState::hits`, so a click resolves against the geometry the user saw.
 `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
 strip is carved out of the prompt chunk, so the reverse order would resolve
-every subagent click to click-to-focus. Rows are bounded by
+every subagent click to click-to-focus.
+
+**Side panels are mouse surfaces like the buffer.** Every occupied column
+records its rect on each render (`App::panel_areas`), and
+`ClickTarget::Panel { placement }` resolves a click inside one. A panel that is
+not painted is not clickable, because the list is rebuilt from the same
+`regions.occupied()` pass that drew them — a click can never name a column that
+has moved or closed.
+
+Three gestures, and each one has to be right:
+
+- **Click focuses the column** — `TuiMsg::FocusPanelAt`, the pointer's answer to
+  `Shift+H/J/K/L`, going through the same composer-mode park/restore so pointer
+  and keyboard cannot leave the composer in different modes. Deliberately focus
+  *only*: a click must not also fire a panel's row activation, which would make
+  one press open something the user only pointed at.
+- **Drag selects, and release copies** — panel columns join the viewport in the
+  deferred-press arm of `on_mouse`, because they are the same *kind* of region
+  (text being read, possibly wanted). The highlight sweep in `finish_render` and
+  `selection::extract` are already region-agnostic, so this needed no new copy
+  machinery. Excluding them is what made a docked terminal — the densest output
+  in the app — look unselectable next to a buffer that was not.
+- **Wheel scrolls that column**, via `App::scroll_panel`. Falling through to the
+  transcript — which an unhandled target did — moved a buffer the user was not
+  pointing at, so scrolling a terminal column appeared to scroll the
+  conversation. Only the Terminal panel has its own scrollback today; for the
+  rest this is a no-op rather than a fallback, because the wrong surface moving
+  is worse than nothing moving.
+
+`ClickTarget::Sidebar` is still resolved first, so the Session panel keeps its
+own hover, collapse and scroll behaviour untouched. Rows are bounded by
 `MAX_WORKING_STRIP_SUBAGENTS` and truncation is announced with a `… +N more`
 row, which `working_strip_rows` reserves space for.
 
@@ -651,6 +695,77 @@ titles are ellipsized (display-width aware) rather than wrapped, so the strip
 height is predictable. The strip's rows are added to the prompt allocation in
 `session_layout` and then carved back off, so the input box keeps the height it
 requested and the viewport absorbs the difference.
+
+**Tasks overlay** (`Shift+T`, `state/tasks.rs`). One overlay over todos,
+subagents, and jobs in that fixed order, each under its own header. A group
+with nothing in it contributes **no header at all** — the alternative, an
+empty "Jobs" heading above nothing, is what makes an overlay feel broken even
+when it is accurate. Group order is a property of `build_task_rows`, not of the
+order the sources happen to arrive in.
+
+Filtering here is by *liveness*, and it is deliberately different from the
+session panel's (§ "Keyboard sidebar and agent-tree inspection"). The overlay
+answers "what is this turn waiting on", so finished subagents and completed
+jobs are dropped; the panel is a persistent index, where a row disappearing
+while you read it would be worse than a stale one. `is_live_state` is the
+shared rule and it is asymmetric on purpose: an empty or unrecognised state
+counts as **live**, because showing a job that turns out to be done costs a
+glance while hiding a running one costs the fact the user asked for.
+
+`bounded` applies one global row budget across all three groups rather than a
+per-group cap, so a turn with sixty todos cannot starve the two subagent rows
+that explain what the sixty todos are waiting on.
+
+The overlay's keyboard path is gated on `InputMode::Normal` and sits **above**
+the subagent-tab `Esc` arm, because the overlay is the topmost thing on screen
+and `Esc` must dismiss what the user is looking at. The gate is load-bearing
+rather than cosmetic: the user switches back to `INS` to keep typing with the
+overlay open, and an ungated `j`/`k`/`Enter` there would break the composer.
+
+`move_tasks_selection` starts at row 0 with no cursor yet **in both
+directions**. Starting at the second row on `j` would silently swallow the top
+item on an overlay that has only ever been opened once, and the user would
+`Enter` the wrong subagent.
+
+`open_selected_task` only succeeds for rows `activatable_target` recognises —
+subagent rows. A todo or job row returns `false` and the overlay stays open,
+rather than inventing a destination. On success the overlay **closes**: the
+thing the user asked to look at now owns the main buffer, and a selection cursor
+left behind it would be a control they are no longer looking at.
+
+**Subagent tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
+`state/subagent_tabs.rs`). Three properties are load-bearing and each closes a
+hole the obvious implementation leaves:
+
+- **Identity is the projection's `task_id`**, not a fresh UUID. A subagent
+  already carries a stable snapshot-derived identity; minting a second one
+  would mean carrying a mapping between the two for no benefit. It is also why
+  the module can promise nothing across a restart: `task_id` is a daemon-local
+  `u64`, and the per-turn tree is cleared when the turn ends.
+- **`active_tab_id == None` *is* the main conversation.** The direct analogue
+  of `ProjectTabs::close_fallback_tab`: projects must always have some tab to
+  render, but the main buffer already has a surface, so the fallback is to stop
+  selecting a subagent. Closing the last tab needs no special case and cannot
+  leave the renderer with nothing to draw.
+- **`SubagentTabLiveness::Detached` is a state, not an error.** Because the
+  tree is per-turn, a tab's subject can vanish while the tab is open.
+  `is_running` refuses to report `true` for a detached tab, so the buffer can
+  never keep claiming a run is live after the projection stopped vouching for
+  it. A tab that outlives its subject is exactly the "panel outliving the
+  tree" shape D3 asks to watch for, so it is modelled rather than papered over.
+
+`MAX_OPEN_SUBAGENT_TABS` (16) **refuses** a new tab rather than evicting one.
+Silently closing a tab the user is reading is a worse failure than declining
+the open, and the caller then has a defined outcome to report — `App::
+open_subagent_tab` toasts only when a row exists *and* the set is at capacity.
+Note that `open_task` requires the row to still exist: a panel row alone cannot
+open a tab, because a tab with nothing to render is not a tab.
+
+These keys name the buffer itself, adjacent to `Tab` for project tabs, but the
+two axes never consult each other — subagents are inside one session, projects
+are beside it. Reusing `Ctrl+Alt+N`/`Ctrl+Alt+B` would have collapsed two
+independent navigations onto one gesture and made project-tab muscle memory
+fire a subagent switch instead.
 
 ### Viewport click vs. drag
 
@@ -832,16 +947,31 @@ through the TUI `CoreClient`.
   `/terminal-resize <handle> <cols> <rows>`, `/terminal-resume [handle]`,
   `/terminal-detach [handle]`, `/terminal-terminate [handle]`,
   `/terminal-remove [handle]`, `/terminal-clear [handle]`.
-- **Focus gate**: the dialog opens in viewing mode; `i` focuses (keys go
-  to the process). Leaving focus is `Esc Esc` or `Ctrl-]`; in viewing mode a
-  single `Esc` closes with detach.
-  A lone `Esc` **is** forwarded to the PTY (full-screen programs own it), and a
-  prompt is never submitted from terminal focus (`classify_key_stateful`, via
-  `InteractiveTerminalController::classify_focused`). `Esc Esc` exists because
-  `Ctrl-]` alone is untypeable on a US Mac keyboard, which left macOS users
-  with no reachable exit and a TUI that looked frozen; the pair is cleared by
-  any intervening key and by every focus transition, so only a *consecutive*
-  pair escapes.
+- **Focus gate — one key per meaning.** `/terminal` opens the box **already in
+  INS**, so the first character a user types reaches the process. This is the
+  contract, and it is deliberately stateless:
+
+  | Mode | Meaning | Keys |
+  |---|---|---|
+  | **INS** | the process owns the keyboard | every printable key, `Enter`, `Backspace`, `Tab`, arrows, `Ctrl-C`/`Ctrl-D` → PTY. `Esc` → NOR. `Ctrl+]` → forward a real `0x1b` and stay in INS |
+  | **NOR** | the reader owns the keyboard | `hjkl`/arrows move, `Ctrl+u/d` page, `e`/`b` word, `v` chars, `x` lines, `d` delete, `space+y` yank, `C` clear, `D` diagnostics. `i`/`Enter` → INS. `Esc` closes with detach (or drops an armed selection first) |
+
+  `Esc` used to be both a mode key and a pass-through byte, disambiguated by a
+  hidden `pending_escape` latch: one `Esc` went to the program, two left. That
+  made the destination of a keystroke depend on state the user could not see,
+  which is the specific reason the surface read as unusable — there was no way
+  to tell from what you pressed where your keys were going. The latch is gone;
+  the capability it protected is not. A full-screen program that needs its own
+  escape gets `Ctrl+]`, so `Esc` is free to mean exactly one thing on every
+  keyboard.
+
+  A prompt is never submitted from terminal focus (`classify_key`, via
+  `InteractiveTerminalController::classify_focused`).
+- **Cursor**: INS draws the *program's* cursor (`TerminalScreen::program_cursor`
+  — where the child accepts the next character); NOR draws the *reader's*
+  (`hjkl`/`v`/`x` move it). `styled_lines` paints the cursor cell even when it
+  is blank, because a shell prompt's cursor sits on an empty cell by definition
+  and trimming trailing blanks hid the caret exactly when the user was typing.
 - **Bounds**: 64 KiB scrollback window per view (matches the M002
   default read), ≤16 views (matches the per-client attachment cap),
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
@@ -1084,19 +1214,38 @@ in all three.
 | Key | Meaning |
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
+| `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
 | `Enter` on a directory | expand/collapse **in place** — the cursor does not move |
-| `l` / `→` | **enter** the directory: expand it and step onto its first child |
-| `h` / `←` | **back one level**: collapse an open directory in place, otherwise step to the parent |
+| `l` / `→` | **make that directory the listing's root** and list its contents |
+| `h` / `←` | **back one level**: leave the current root; at the workspace root, collapse an open directory in place, otherwise step to the parent row |
 | `Enter` on a file | open it in the editor |
-| `r` | re-walk the workspace |
+| `r` | re-walk the current root |
 | `Esc` | close |
 
-Enter and `l` both expand a directory, but they are deliberately different
-verbs: Enter reveals contents and leaves the cursor where the user put it,
-while `l` moves the cursor in. Collapsing them would mean one of the two
-intentions could not be expressed. `h` on an already-expanded directory
-collapses it rather than jumping to the parent — backing *out of* a directory
-means closing it, and only a closed one steps further out.
+Enter and `l` are deliberately different verbs: Enter reveals contents and
+leaves the cursor where the user put it, while `l` moves the *pane*. Making a
+directory the root means the listing has a top level again, so entering a
+deeply nested structure is the same operation at every depth — there is no
+"walked down six expanded folders" mode to keep coherent, and no cursor that
+has to survive a relist.
+
+That also means the pane has **one** keyboard axis for scope
+(`FileTreeState::root_history`, whose last entry is the current root) rather
+than a prefix field and an expansion set that can disagree. `h` pops the
+chain and lands the cursor on the directory just left behind, so stepping
+out and back in returns to the same place. A jump deeper than one level keeps
+the ancestry (`h` walks back out along the way it came); a jump outside the
+current root resets it, because a chain claiming the pane arrived from a
+directory it never listed would make `h` go somewhere unpredictable.
+
+Re-rooting is a **daemon round-trip**, not a local filter. The scope travels
+as `WorkspaceDirectoryListRequestDto::prefix`, the daemon walks that subtree
+with the same bounded walker, and the echoed prefix is checked against the
+one the request asked for — `l` twice in quick succession issues two requests
+whose generations may both still be current, and only the scope says which
+answered. Filtering the already-loaded listing would have been free, and
+wrong: it would silently drop everything the original walk hit its bounds on
+and present the remainder as if it were the directory.
 
 Three rules keep this a navigator rather than a second document surface:
 
@@ -1108,7 +1257,9 @@ Three rules keep this a navigator rather than a second document surface:
    `TuiMsg::FilesOpenSelected { path }`, handled in `App::process_msg` by
    calling `open_editor` — the same seam `/open` and the Ctrl+T pane use, so
    lexical validation and daemon authorization are not restated here. Only a
-   *file* emits an intent; a directory has no document to open.
+   *file* emits an intent; a directory has no document to open. Re-rooting is
+   an intent for the same reason: `l`/`h` emit `TuiMsg::FilesDescend` /
+   `TuiMsg::FilesAscend` rather than mutating the box's own copy.
 3. **A widget cannot reach `App` from `render`, so the box holds a copy of the
    shared state**, seeded from `App::file_tree_state` at open time — which is
    why `/files` resumes where a previous browse left off — and re-synced from
@@ -1380,18 +1531,36 @@ object the `/terminal` box drives, because two VT parsers for one PTY would
 disagree about what is on screen. That grant carries presentation state only:
 no client, no locator, no authority to choose a project or a terminal.
 
-**A focused PTY claims the host's exit keys.** `owns_exit_key` takes `ctx`
+**A focused PTY claims `Esc`, but never `q`.** `owns_exit_key` takes `ctx`
 because the claim depends on state the panel does not own. The Terminal panel
-returns true for `Esc`/`q` **only while its view is focused**, so those keys
-route into `handle_key` instead of `SidePanelHost::blur`. Declining them split
-the two focus flags: the host dropped panel focus while
-`TerminalFocus::Focused` stayed set on the view, so `q` looked like it left and
-the PTY still held the keyboard — and because `panel_active` requires
-`is_focused()`, the panel then saw no keys at all while still reporting INS.
-That is the reported "no key combo lets me leave": the keyboard was already
-gone before `Esc Esc` could ever be pressed. `handle_key` owns the exit and ends
-in `TuiMsg::TerminalPanelBlur`, the one call that clears the view's focus. In
-Normal mode the panel declines, so `Esc`/`q` remain cheap focus exits.
+returns true for `Esc` **only while its view is focused**, so it routes into
+`handle_key` instead of `SidePanelHost::blur`. Declining it split the two focus
+flags: the host dropped panel focus while `TerminalFocus::Focused` stayed set on
+the view, so `Esc` looked like it left and the PTY still held the keyboard — and
+because `panel_active` requires `is_focused()`, the panel then saw no keys at
+all while still reporting INS.
+
+`q` was claimed alongside it, which is why this section could not simply keep
+the old pair: in INS the panel *is* a terminal, and `q` is a character the user
+is typing. Claiming it meant the shell could never receive the most common
+letter in most commands. Only the mode key is claimed now.
+
+**A panel that fronts a process claims Insert-mode keys.**
+`SidePanel::claims_insert_keys` is the opt-in that makes `panel_active` consult
+a focused panel in Insert as well as Normal. The host's default is right for
+every panel that renders its own text field — there, Insert means "type into
+that field" and the composer is the correct target — but it is exactly wrong
+for the Terminal panel, which renders a *process`. Without the opt-in, docking
+the terminal with `Shift+L` and typing sent every keystroke to a composer the
+user was not looking at, and the panel looked frozen. The claim is scoped to
+the focused panel only, so it cannot take keys from an unrelated surface, and
+it is keyed on `ctx.terminal.is_focused(...)` so a terminal that is still
+attaching or has exited leaves those keys visible and recoverable in the
+composer instead of dropping them.
+
+`handle_key` owns the exit and ends in `TuiMsg::TerminalPanelBlur`, the one call
+that clears the view's focus. In NOR the panel declines, so `Esc`/`q` remain
+cheap focus exits.
 
 **A focused panel owns navigation, not text — and only in Normal mode.** Two
 rules replace the original "consumes every key" contract:
@@ -1472,6 +1641,34 @@ terminals disagree about how to encode a shifted letter. Binding both is safe
 (uppercase `H`/`L` are otherwise unbound in Normal mode) and is the same
 legacy-encoding hazard that made every `Ctrl+Shift+X` chord undecodable — see
 `tests/modifier_chords.rs`.
+
+**A built-in `Shift+<capital>` is composed text in Insert mode.** Every mnemonic
+in this file is a single capital letter, which is exactly what makes it
+dangerous: it is a letter the user is in the middle of typing. Two separate
+guards keep that true, and they are not interchangeable.
+
+`is_normal_only` is keyed on the **action**, so it can only say "this action is
+Normal-only" — it cannot say "this *spelling* is". It is right for the panel
+directions and for `x`/`ToggleAgentRun`, which binds no modifier at all. It is
+wrong for `OpenProjectPicker` and `OpenWorkspaceDashboard`, because those
+actions also own a `Ctrl` chord (`Ctrl+\`, `Ctrl+O`) that must keep working in
+Insert mode; listing them would have silently taken the chord out too.
+
+The shifted-capitals rule therefore lives in the Insert branch of
+`handle_key_with_bindings`, at the **key**: a text-modifier key whose binding
+matches either shipped map (`DEFAULT_BINDINGS` or `VIM_BINDINGS`) is text.
+Both maps matter — `Shift+G` exists only in the vim one. Comparing the binding
+rather than the map's identity is what keeps the neighbouring arm's promise: an
+explicit *user* binding for a shifted capital still fires. The old gate was
+`bindings.is_none()`, which is dead in the real app: `App::on_key` always passes
+`Some(&self.ui_state.bindings)`, so the guard never ran and a capital `F`
+mid-word opened the project picker in the **default** configuration.
+`builtin_shift_letters_are_composed_text_in_insert_mode` sweeps both keymaps so
+the next mnemonic inherits the fix rather than rediscovering the hole; the
+sweep also asserts it saw all thirteen letters, so deleting a binding cannot
+make it pass vacuously, and
+`a_user_binding_for_a_shift_letter_still_fires_in_insert_mode` asserts the fix
+was not bought by making text unwinnable.
 
 **The composer is the only input surface.** The chat panel holds no composer
 buffer; verbs that need text hand the keyboard to the bottom composer. The
@@ -1816,6 +2013,49 @@ Detached durable runs remain inspectable. Enter delegates to the existing lazy
 `OpenRunDetail`/RunStore surface and never copies transcripts, logs, or diffs
 into sidebar state. The tree is capped independently at 64 source nodes and
 inherits the projection's reconnect/replay bounds.
+
+**Subagent and job sections** sit between `Todos` and the file-change/MCP
+sections, so the three "what is this waiting on" surfaces read as one block and
+match the overlay's todos → subagents → jobs order. Rows come from the **same
+`SubagentRow` vector** already handed to `SubagentState::set_rows` for the main
+buffer strip and the overlay: one derived value rendered three ways, which is
+what guarantees one name per subagent across surfaces. Jobs come from
+`snapshot.jobs` filtered by the shared `state::tasks::is_live_state`, so
+"waiting on" is one rule rather than two that drift.
+
+Four properties here are deliberate, and each has a test named after it:
+
+- **The agent tree keeps `Enter`.** Adding a second adjacent subagent surface
+  made reusing `Enter` on the tree rows tempting; refusing it keeps a working
+  surface working. "What happened to this run" (run-detail dialog) and "show me
+  its transcript" (buffer tab) stay separate questions on separate rows
+  (`the_new_sections_do_not_take_over_the_agent_tree_activation`).
+- **A job row activates to nothing.** There is no job transcript and no job
+  dialog, so `Enter` consumes the key via `SidebarActivation::None` rather than
+  fabricating a destination
+  (`a_job_row_is_read_only_and_never_reaches_the_composer`).
+- **Job focus targets key on `job_id`, not list index.** Jobs are upserted
+  *and* filtered to live states, so an earlier job finishing shifts every
+  later index down by one; an index-keyed target would silently move focus onto
+  a different job and then activate it. Todos and file changes still use
+  indices because the projection only appends to them.
+- **The subagent section keeps terminal rows.** Filtering here — as the overlay
+  does — would make a finished subagent vanish while its tab may still be open,
+  which is the exact failure D3 asks to watch for. Status is drawn per row
+  instead, and when the tree drops the node the row goes and the tab shows its
+  `Detached` state. This settles D3 in favour of agreement with the tab set.
+
+A missing snapshot does **not** clear the subagent section: `set_subagents` is
+called only with rows an arriving snapshot reported, matching
+`SubagentState::set_rows`. A projection that has not spoken is not evidence that
+no subagents exist. Jobs do clear, consistent with the sidebar's neighbouring
+setters.
+
+Routing is the ordinary panel path — `SidebarActivation::InspectSubagent` →
+`PanelKey::Intent(TuiMsg::OpenSubagentTab)` → `App::open_subagent_tab`. The
+panel never calls `process_msg` itself; only `App::on_mouse`'s
+`ClickTarget::Sidebar` arm does, which is what keeps the click and Enter routes
+identical (`a_clicked_subagent_row_opens_the_same_tab_as_enter`).
 
 ### UiState (`src/tui/app/state/ui.rs:40`)
 
@@ -2253,11 +2493,53 @@ so undo stays meaningful. A divergent draft is retained by the controller in
 a recovery state; the editor surfaces that state and never auto-reloads,
 auto-replays, or auto-discards.
 
-**Focus model.** `EditorFocus` is `Composer` or `Buffer`. The composer is the
-default, matching `Route::Workspace`, so opening the editor does not disturb
-session composition. `Ctrl+E` focuses the buffer; `Esc` walks back out —
-insert mode, then focus, then the view. Keys the buffer does not claim fall
-through to the composer.
+**One mode axis, not two.** The editor route used to carry an `EditorFocus`
+(`Composer`/`Buffer`) *beside* `EditorMode`, and the two could disagree. They
+did: a fresh open defaulted to `Composer`, which made `handle_editor_key` claim
+nothing except `Ctrl+E` while the bare-text gate swallowed every printable —
+so the file rendered and no key reached it, which reads as "the editor does not
+work" rather than as two toggles. `EditorFocus` is gone.
+
+The single axis is `App::ui_state.input_mode`, the same `NOR`/`INS` the
+composer badge and every dockable box already show. On `Route::Editor`:
+
+| Mode | Keyboard | Typing goes to |
+|---|---|---|
+| `Insert` | the document | the text box — the cursor is drawn there |
+| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `i/a/I/A/o/O`, `u`, `Ctrl+r`) | the bottom input box |
+
+**Normal returns `BufferKey::Unhandled` for every key it does not own**, which
+is the mechanism, not a fallback: the editor claims navigation and editing and
+everything else stays a composer keystroke. This is the same contract the
+interactive terminal runs on — NOR reads, INS types — and the same rule
+`focus_panel` follows for a side panel.
+
+`Esc` is a **mode step, never an exit**. Insert → Normal. Normal → a toast
+naming `:q`. It never leaves the route: the only ways out are `:q` and `:wq`,
+and the frame says so. `Esc` closes an open `:` command line first.
+
+Insertion entries (`i`/`a`/`I`/`A`/`o`/`O`) return `BufferKey::EnterInsert`
+and the App layer adopts `Insert` mode; a read-only attachment returns
+`Unhandled` so the refusal is visible rather than a dead key.
+
+**Helix, not vi.** The buffer speaks the same dialect `/terminal` speaks in its
+viewing mode, so the two surfaces share one set of instincts. vi's `dd`/`dw`
+are gone — `x` then `d` is the same gesture in Helix — and `D` stays as
+delete-to-end-of-line because it has no Helix meaning here. Bare `d` is
+**claimed even with nothing selected**: an unclaimed `d` escapes to the global
+`OpenDiff` binding. `space y` is remembered prefix state, not a chord, because
+legacy xterm encoding delivers it as two events.
+
+**Selection is the shared state machine.** `tui::helix_selection::SelectionState`
+is instantiated with `EditorPoint { byte, line }` — byte offsets plus the line
+each byte sits on — and `SelectionState::restore` lets the editor drive it
+while keeping its own byte-offset cursor. The *rules* (`v` is a mode, `x` is an
+action, movement extends only in character mode) therefore cannot drift from
+the terminal; `editor.rs` owns only the geometry, which is what the shared
+module deliberately does not know. `editor::selection_range` resolves a held
+`Selection` to the byte range the two effects and the renderer consume:
+character mode is inclusive of the head, line mode spans whole lines including
+their terminators so a delete leaves no trailing blank line.
 
 **Hard wrap.** One logical line is exactly one screen row, with horizontal
 scrolling for long lines. This is what makes the line-number gutter, the
@@ -2335,22 +2617,47 @@ fencing state (which workspace the pane believes it shows). There is no
 
 **Focus and layout.** The layout split degrades to the full-width editor on a
 narrow terminal rather than producing a degenerate pane. While the tree is
-focused it claims a strict subset of keys — `j`/`k` to move, `h`/`l` to
-collapse or expand, `Enter` to open a file or expand a directory, `r` to
-re-walk, `Esc` to leave the tree — and every other key falls through
-unchanged, so a focused tree never swallows composer or editor input. `Esc`
-returns focus to the editor buffer without changing the route, preserving
-the non-modal composer contract.
+focused it claims a strict subset of keys — `j`/`k` to move, `Ctrl+d`/`Ctrl+u`
+to page, `l`/`→` to make the selected directory the pane's root, `h`/`←` to go
+back one level, `Enter` to open a file or expand a directory, `r` to re-walk,
+`Esc` to leave the tree — and every other key falls through unchanged, so a
+focused tree never swallows composer or editor input. `Esc` returns focus to
+the editor buffer without changing the route, preserving the non-modal
+composer contract.
+
+`Ctrl+d`/`Ctrl+u` carry `Char('d')`/`Char('u')` codes, so the tree's modifier
+check runs before its character arms; the editor's own half-page motions are
+untouched because the tree only claims keys while focused. A page is two
+thirds of the pane, from the viewport the renderer measured and published as
+`FileTreeState::viewport_rows` — the widget returns its `PaneLayout` rather
+than writing into the state it borrows, so the number stays next to the
+layout that produced it. An unmeasured pane (a key arriving before the first
+frame) falls back to `FALLBACK_PAGE_ROWS` rather than making the verb inert.
+
+**The pane has a root, and it says which one.** `root_history`'s last entry
+is the directory being listed; the title leads with it and names the
+workspace after it, because a pane scoped with `l` showing a workspace-root
+title would misdescribe every row under it. Rows carry a per-type icon from
+the one table in `src/tui/file_icons.rs` — the folder glyph doubles as the
+expansion state, so there is no second caret column in a 22-column pane — and
+the selected row repaints rather than recolors, so the type colour that
+distinguishes a `.rs` from a `.md` survives the cursor landing on it. Icons
+are Nerd Font glyphs by default and `CODEGG_FILE_ICONS=plain` selects the
+pre-Nerd caret markers for a terminal without a patched font; that is an
+environment switch rather than a config key because it answers a
+terminal-capability question, and a wrong-shaped key in a layered config
+discards more than it selects.
 
 **Async discipline.** The listing is a daemon round-trip on a scoped
 `TuiTaskKind::FileTree` task. A completion carries the request id, the
-tree generation, and the root it was issued for; a completion that is stale,
-cancelled, for another workspace, or answered for a different daemon scope
-is discarded rather than rendered. Failures arrive as an explicit
-`FileTreeFailed` completion and are fail-visible in the pane. Switching
-projects resets selection and expansion, because a path from the previous
-project is meaningless in the next. Advisory daemon statuses stay visible:
-`busy` names the retry key, and bound hits carry their truncation reason.
+tree generation, the root it was issued for, and the scope it was issued for;
+a completion that is stale, cancelled, for another workspace, or answered for
+a different subtree is discarded rather than rendered. Failures arrive as an
+explicit `FileTreeFailed` completion and are fail-visible in the pane.
+Switching projects resets selection, expansion, and the root, because a path
+from the previous project is meaningless in the next. Advisory daemon
+statuses stay visible: `busy` names the retry key, and bound hits carry their
+truncation reason.
 
 ### Command mode and agent management (M006-F)
 
@@ -2427,7 +2734,7 @@ that refusal exists.
 
 #### The editor replaces the main buffer; the composer arms with `:`
 
-While `Route::Editor` is active and the buffer does **not** hold focus,
+While `Route::Editor` is active and the route is in **Normal** mode,
 `composer_refuses_bare_text()` is true and `App::on_key` turns the first
 character into `:` + that character. The gate sits on the single
 `InputAction::Char` arm, so every path that could type a character is
@@ -2435,7 +2742,8 @@ covered by one rule rather than by the keymap alone.
 
 It is scoped narrowly on purpose: a focused side panel is a *different*
 destination with its own composer, and chat is a conversation, so both stay
-freely typeable.
+freely typeable. The test is `input_mode == Normal` because the buffer holds
+the keyboard exactly when it is `Insert` — the one axis, read once.
 
 #### The directionals stay live in the buffer
 
@@ -2792,7 +3100,7 @@ tui/
 │   ├── prompt_turn.rs      # Prompt submit and route-safe turn start
 │   ├── modal.rs            # FocusManager-backed modal lifecycle
 │   ├── plugin_ui.rs        # Validated plugin UI effect application
-│   └── state/              # 27 state domain modules + mod.rs
+│   └── state/              # 31 state domain modules + mod.rs
 │       ├── agent.rs        # AgentState (models, agents, snapshot)
 │       ├── async_request.rs # AsyncUiRequestState
 │       ├── change_review.rs # M006-E review state machine
@@ -2805,6 +3113,7 @@ tui/
 │       ├── manifest.rs     # Manifest handling
 │       ├── messages.rs     # MessagesState (messages, toasts, spinner)
 │       ├── observe.rs      # Read-only session observation
+│       ├── panel_hotkeys.rs # Side-panel Ctrl+digit hotkey bindings
 │       ├── persistence.rs  # State persistence
 │       ├── plugin_ui.rs    # PluginUiState
 │       ├── presence.rs     # Collaborator presence projection
@@ -2816,11 +3125,14 @@ tui/
 │       ├── routing.rs      # Route routing helpers
 │       ├── session.rs      # SessionState (session, history, git info)
 │       ├── snapshot.rs     # Remote snapshot building
+│       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
+│       ├── subagents.rs    # SubagentRow projection rows + strip/buffer view state
+│       ├── tasks.rs        # Shift+T tasks overlay rows (todos, subagents, jobs)
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
 │       ├── view_switch.rs  # Active-view switch coordinator
 │       ├── work_orders.rs  # Task/work-order state, ComposerMode
 │       └── workspace_dashboard.rs # M005 Workspace primary-view cache
-├── commands/               # 35 command handler submodules + mod.rs
+├── commands/               # 37 command handler submodules + mod.rs
 │   ├── mod.rs              # Re-exports
 │   ├── agents.rs           # Asset refresh, agent operations
 │   ├── change_review.rs    # M006-E review commands
@@ -2866,7 +3178,7 @@ tui/
 │   ├── component/
 │   │   ├── focus.rs        # FocusManager for modal focus stack
 │   │   └── context.rs      # AppContext for overlay dialogs
-│   ├── dialogs/            # 34 modal dialogs + mod.rs (all implement Component)
+│   ├── dialogs/            # 40 modal dialogs + mod.rs (all implement Component)
 │   │   ├── agent.rs        # AgentDialog
 │   │   ├── command.rs      # CommandPalette (query/selection model only —
 │   │   │                     # it no longer renders; see "One popup" below)
@@ -2946,7 +3258,7 @@ tui/
 ├── unified_diff.rs         # Bounded patch/hunk parser
 ├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
 ├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
-├── command.rs              # Slash command registry (153 built-in)
+├── command.rs              # Slash command registry (164 built-in)
 ├── ui_builders/            # Pure UiNode builder functions
 │   ├── mod.rs
 │   ├── stats.rs            # stats_node for /tui-stats
@@ -3285,6 +3597,16 @@ five `.await` points in `dispatch_tui_command`
 (`runtime/command_dispatch.rs:84`). Render-regression test count (99
 `#[test]` in `tests/tui_render.rs`) confirmed.
 
+Re-verified during the subagent/job visibility roadmap against `src/tui/`:
+`app/mod.rs` line count (18,815), the **31** `app/state/` modules (32 `.rs`
+files incl. `mod.rs`), `TuiMsg` (149 variants) at `app/types.rs:123`,
+`InputAction` (62) at `input.rs`, and the render-regression test count (111
+`#[test]` in `tests/tui_render.rs`). The Directory Structure counts below were
+corrected in the same pass: `commands/` (37 submodules), `components/dialogs/`
+(40 dialogs), `command.rs` (164 built-ins), and `app/state/` — which had been
+missing `panel_hotkeys.rs`, `subagents.rs`, `subagent_tabs.rs`, and `tasks.rs`
+entirely, so the map silently understated the module count.
+
 Re-verified 2026-10-06 against `src/tui/` and
 `scripts/check_tui_*`. Corrected the Invariants entry that placed
 `DialogType` at `src/tui/components/component/component.rs` — that path does
@@ -3332,10 +3654,12 @@ TUI retains no document text outside the controller snapshot.
 ### Completion popup and transactional acceptance (M004)
 
 The completion popup consumes the M003 `LspCompletionGet` surface and
-nothing else. The trigger is `F8` with the buffer focused (claimed inside
-`handle_editor_key`, so it never falls through to the global bindings) and
+nothing else. The trigger is `F8` (claimed inside `handle_editor_key` in
+**both** modes, so it never falls through to the global bindings) and
 `:complete` from Normal mode; terminals that cannot send `F8` always have
-the command spelling. While open, the popup owns exactly `Up`/`Down`
+the command spelling. `F8` is spoken for here — the syntax-highlight
+retry is `F9`, because a highlight refresh that silently took `F8` would
+make completion unreachable from a terminal that can send function keys. While open, the popup owns exactly `Up`/`Down`
 (`j`/`k` only in Normal mode, where they are navigation rather than text),
 `Enter`, and `Esc`; every other key dismisses first and processes normally,
 so a keystroke is never both typed and interpreted as popup input. `Esc`

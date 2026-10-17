@@ -31,7 +31,7 @@ It consumes project-catalog protocol operations, session APIs, workspace-service
 
 ### Capabilities
 
-- `Space f` opens a project picker.
+- `Ctrl+\` (both modes), `\` (vim Normal), or `/projects` opens a project picker (`Space f` proved infeasible in Insert mode and was never bound).
 - Projects open as tabs and support next/previous/close/restoration behavior.
 - Each project has several sessions and independent selected session/model/agent state.
 - Several TUIs can use different projects through one daemon.
@@ -97,7 +97,7 @@ ProjectTabState
 
 Heavy messages, artifacts, diff bodies, and services remain daemon-side or load on demand. Events route by project/session identity before touching tab state. Tab IDs remain stable across reorder during one process; persistent restoration revalidates canonical daemon IDs and does not treat frontend tab IDs as durable authority.
 
-`Space f` opens a searchable project picker backed by the catalog. Opening a project acquires only the minimal activation/session data needed. Session open/attach triggers asset refresh and waits for a valid generation before creating the next turn runtime.
+`Ctrl+\` (both modes), `\` (vim Normal), or `/projects` opens a searchable project picker backed by the catalog. Opening a project acquires only the minimal activation/session data needed. Session open/attach triggers asset refresh and waits for a valid generation before creating the next turn runtime.
 
 ## 6. Dependency graph
 

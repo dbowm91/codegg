@@ -126,6 +126,8 @@ pub fn rebuild(app: &mut App) {
             // first so the registry count reflects live workers, not
             // retained completions.
             app.task_registry.reap_finished();
+            // Read after `begin_rebuild`, which normalizes the root history.
+            let prefix = app.file_tree_state.root_prefix().to_string();
             spawn_listing(
                 app,
                 tx,
@@ -133,6 +135,7 @@ pub fn rebuild(app: &mut App) {
                 generation,
                 request_id,
                 root,
+                prefix,
                 tab_id,
                 project_id,
                 workspace_id,
@@ -163,6 +166,7 @@ fn spawn_listing(
     generation: u64,
     request_id: u64,
     root: std::path::PathBuf,
+    prefix: String,
     tab_id: Option<String>,
     project_id: String,
     workspace_id: String,
@@ -180,13 +184,18 @@ fn spawn_listing(
             // Round-trip accounting: released on return *and* on panic
             // unwind. Never logs paths or entry names.
             let _running = coordinator.track_enter();
+            // The pane's current scope travels with the request. The daemon
+            // validates it, walks that subtree with the same bounded walker,
+            // and echoes it back so the completion can be matched to what was
+            // asked for — there is no client-side filter that could show a
+            // subtree the daemon never listed.
             let request = crate::core::new_request(
                 format!("file-tree-{request_id}"),
                 crate::protocol::core::CoreRequest::WorkspaceDirectoryList {
                     request: codegg_protocol::document::WorkspaceDirectoryListRequestDto {
                         project_id,
                         workspace_id: workspace_id.clone(),
-                        prefix: String::new(),
+                        prefix,
                     },
                 },
             );
@@ -251,6 +260,7 @@ fn listing_from_daemon(
     use codegg_protocol::document::WorkspaceDirectoryListStatusDto;
     match result.status {
         WorkspaceDirectoryListStatusDto::Ready => crate::tui::file_tree::TreeListing {
+            prefix: result.prefix.clone(),
             nodes: result
                 .nodes
                 .iter()
@@ -333,6 +343,10 @@ fn launch_taken_pending(app: &mut App, pending: crate::tui::file_tree_coordinato
                 pending.generation,
                 pending.request_id,
                 pending.root,
+                // The generation check above already proved this pending is
+                // the latest intent, so the pane's current scope is the one
+                // it was admitted for.
+                app.file_tree_state.root_prefix().to_string(),
                 tab_id,
                 pending.project_id,
                 pending.workspace_id,
@@ -431,19 +445,48 @@ pub fn move_selection(app: &mut App, delta: isize) {
     app.file_tree_state.move_selection(delta);
 }
 
-/// Enter the selected directory: `l`/right arrow.
+/// Page the tree selection: `Ctrl+d` down, `Ctrl+u` up.
 ///
-/// Expand it and step the cursor onto its first child. Distinct from
-/// [`toggle_selected`], which is what Enter uses — both expand the same
-/// directory, but only this one moves the cursor.
-pub fn enter_selected(app: &mut App) {
-    app.file_tree_state.enter_selected();
+/// A full listing of a large workspace does not fit in a pane, and `j`/`k`
+/// are one row at a time. The step comes from the measured viewport
+/// ([`FileTreeState::viewport_rows`]), so a taller terminal pages further.
+pub fn page_selection(app: &mut App, direction: isize) {
+    app.file_tree_state.page_selection(direction);
 }
 
-/// Go back one level: `h`/left arrow.
+/// Make `path` the pane's root and list it: the `l`/right-arrow verb.
 ///
-/// Collapse the selected directory in place, or step to the parent when the
-/// selection is not an open directory.
+/// A daemon round-trip, not a local filter — see the module note in
+/// [`crate::tui::app::state::file_tree`]. A path that is not a directory in
+/// the current listing, or is already the root, does nothing at all rather
+/// than issuing a request the daemon would answer with nothing.
+pub fn descend_to(app: &mut App, path: &str) {
+    if !app.file_tree_state.set_root_prefix(path) {
+        return;
+    }
+    rebuild(app);
+}
+
+/// Go back one level: the `h`/left-arrow verb.
+///
+/// Leaves the current root and lists its parent. At the workspace root there
+/// is no level to leave, so this falls back to the in-scope verb
+/// ([`leave_selected`]) rather than making the key inert at the one depth
+/// every listing starts at — collapse an open directory in place, otherwise
+/// step the cursor to the parent row.
+pub fn ascend_one_level(app: &mut App) {
+    if !app.file_tree_state.ascend_root() {
+        leave_selected(app);
+        return;
+    }
+    rebuild(app);
+}
+
+/// Go back one level *within* the current listing: collapse an open
+/// directory in place, or step the cursor to the parent row.
+///
+/// The `h` fallback at the workspace root, where [`ascend_one_level`] has
+/// nowhere to go.
 pub fn leave_selected(app: &mut App) {
     app.file_tree_state.leave_selected();
 }
@@ -471,13 +514,22 @@ pub fn activate_selected(app: &mut App) {
 ///
 /// Focus leaves the tree on `Esc`, which keeps the non-modal contract: the
 /// composer is reachable again without a route change.
+///
+/// Focusing the tree parks the route in Normal. The tree holds no text buffer
+/// of its own, so leaving the keyboard in Insert would mean typing a path
+/// prefix into the document while the user is looking at the tree — and the
+/// tree's own keys are then free to be navigation. This is the same rule
+/// `focus_panel` follows for a side panel, and it is why focus and mode are
+/// set together: a focused tree with the document still in Insert is the
+/// half-state that made the editor look dead.
 pub fn set_focus(app: &mut App, focused: bool) {
     let focused = focused && app.file_tree_state.visible;
     app.ui_state.tree_focused = focused;
     if focused {
-        crate::tui::commands::editor::focus_editor_composer(&mut app.editor_state);
-    } else {
-        crate::tui::commands::editor::focus_editor_buffer(&mut app.editor_state);
+        app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+        if let Some(session) = app.editor_state.session.as_mut() {
+            session.presentation_mut().mode = crate::tui::editor::EditorMode::Normal;
+        }
     }
 }
 
@@ -494,11 +546,17 @@ mod tests {
     use std::sync::Mutex;
 
     /// Scripted daemon: answers `WorkspaceDirectoryList` from canned
-    /// results keyed by workspace id. It never touches the filesystem,
-    /// so any rendered entry provably came from the "daemon", not from a
-    /// local walk — the decoy tests rely on exactly this.
+    /// results keyed by workspace id, plus an optional per-prefix table for
+    /// scope-aware answers. It never touches the filesystem, so any rendered
+    /// entry provably came from the "daemon", not from a local walk — the
+    /// decoy tests rely on exactly this.
     struct FakeListingClient {
         results: Mutex<HashMap<String, WorkspaceDirectoryListResultDto>>,
+        /// Answers keyed by listing prefix, consulted before the
+        /// workspace-wide table so a subtree request can be scripted.
+        scoped: Mutex<HashMap<String, WorkspaceDirectoryListResultDto>>,
+        /// Every `(workspace_id, prefix)` pair actually requested.
+        prefixes: Mutex<Vec<(String, String)>>,
         requests: std::sync::atomic::AtomicUsize,
     }
 
@@ -508,8 +566,26 @@ mod tests {
             results.insert(workspace_id.to_owned(), result);
             Self {
                 results: Mutex::new(results),
+                scoped: Mutex::new(HashMap::new()),
+                prefixes: Mutex::new(Vec::new()),
                 requests: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        fn with_scoped(&self, prefix: &str, result: WorkspaceDirectoryListResultDto) {
+            self.scoped
+                .lock()
+                .expect("scoped lock")
+                .insert(prefix.to_owned(), result);
+        }
+
+        fn requested_prefixes(&self) -> Vec<String> {
+            self.prefixes
+                .lock()
+                .expect("prefixes lock")
+                .iter()
+                .map(|(_, prefix)| prefix.clone())
+                .collect()
         }
 
         fn ready_listing(workspace_id: &str, names: &[&str]) -> WorkspaceDirectoryListResultDto {
@@ -550,11 +626,22 @@ mod tests {
                     message: "fake listing client".to_string(),
                 });
             };
-            self.results
+            self.prefixes
                 .lock()
-                .expect("results lock")
-                .get(&request.workspace_id)
+                .expect("prefixes lock")
+                .push((request.workspace_id.clone(), request.prefix.clone()));
+            self.scoped
+                .lock()
+                .expect("scoped lock")
+                .get(&request.prefix)
                 .cloned()
+                .or_else(|| {
+                    self.results
+                        .lock()
+                        .expect("results lock")
+                        .get(&request.workspace_id)
+                        .cloned()
+                })
                 .map(
                     |result| crate::protocol::core::CoreResponse::WorkspaceDirectoryList { result },
                 )
@@ -597,6 +684,13 @@ mod tests {
         rx: &mut tokio::sync::mpsc::Receiver<crate::tui::app::TuiCommand>,
     ) {
         rebuild(app);
+        drain_completion(app, rx).await;
+    }
+
+    async fn drain_completion(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::Receiver<crate::tui::app::TuiCommand>,
+    ) {
         let completion = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
             .await
             .expect("the listing round-trip completes")
@@ -616,6 +710,177 @@ mod tests {
             } => apply_failure(app, request_id, generation, root, message),
             other => panic!("expected a file-tree completion, got {other:?}"),
         }
+    }
+
+    /// A workspace listing containing one directory and one file.
+    fn root_listing_with_a_directory() -> WorkspaceDirectoryListResultDto {
+        WorkspaceDirectoryListResultDto {
+            nodes: vec![
+                WorkspaceDirectoryNodeDto {
+                    name: "src".to_string(),
+                    path: "src".to_string(),
+                    depth: 1,
+                    kind: WorkspaceDirectoryNodeKindDto::Directory,
+                    children: Some(vec![WorkspaceDirectoryNodeDto {
+                        name: "lib.rs".to_string(),
+                        path: "src/lib.rs".to_string(),
+                        depth: 2,
+                        kind: WorkspaceDirectoryNodeKindDto::File,
+                        children: None,
+                    }]),
+                },
+                WorkspaceDirectoryNodeDto {
+                    name: "top.rs".to_string(),
+                    path: "top.rs".to_string(),
+                    depth: 1,
+                    kind: WorkspaceDirectoryNodeKindDto::File,
+                    children: None,
+                },
+            ],
+            examined: 2,
+            ..FakeListingClient::ready_listing("workspace-test", &[])
+        }
+    }
+
+    /// The subtree listing the daemon answers `l` with.
+    fn scoped_listing(prefix: &str, names: &[&str]) -> WorkspaceDirectoryListResultDto {
+        WorkspaceDirectoryListResultDto {
+            prefix: prefix.to_string(),
+            nodes: names
+                .iter()
+                .map(|name| WorkspaceDirectoryNodeDto {
+                    name: (*name).to_string(),
+                    path: format!("{prefix}/{name}"),
+                    depth: 1,
+                    kind: WorkspaceDirectoryNodeKindDto::File,
+                    children: None,
+                })
+                .collect(),
+            examined: names.len(),
+            ..FakeListingClient::ready_listing("workspace-test", &[])
+        }
+    }
+
+    #[tokio::test]
+    async fn descending_sends_the_pane_scope_to_the_daemon_and_relists_it() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, client) =
+            app_with_listing_client(root.path(), root_listing_with_a_directory());
+        client.with_scoped("src", scoped_listing("src", &["lib.rs", "app.rs"]));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+
+        rebuild_once(&mut app, &mut rx).await;
+        assert_eq!(app.file_tree_state.root_prefix(), "");
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src"),
+            "the walk is unscripted as a directory first"
+        );
+
+        descend_to(&mut app, "src");
+        assert_eq!(app.file_tree_state.root_prefix(), "src");
+        drain_completion(&mut app, &mut rx).await;
+
+        assert_eq!(
+            client.requested_prefixes(),
+            vec!["".to_string(), "src".to_string()],
+            "the scope travels with the request; the pane never filters a local walk"
+        );
+        assert_eq!(
+            app.file_tree_state
+                .rows()
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/lib.rs", "src/app.rs"],
+            "the pane shows the daemon's answer for that subtree, in the daemon's order"
+        );
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/lib.rs"));
+    }
+
+    #[tokio::test]
+    async fn descending_where_the_user_already_is_issues_no_request() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, client) =
+            app_with_listing_client(root.path(), root_listing_with_a_directory());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        rebuild_once(&mut app, &mut rx).await;
+
+        let before = client.requests.load(std::sync::atomic::Ordering::SeqCst);
+        descend_to(&mut app, "");
+        assert_eq!(
+            client.requests.load(std::sync::atomic::Ordering::SeqCst),
+            before,
+            "re-rooting at the directory already being listed must not round-trip"
+        );
+        assert!(rx.try_recv().is_err(), "and must leave nothing pending");
+    }
+
+    #[tokio::test]
+    async fn ascending_lists_the_parent_and_lands_the_cursor_where_it_came_from() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mut app, client) =
+            app_with_listing_client(root.path(), root_listing_with_a_directory());
+        client.with_scoped("src", scoped_listing("src", &["lib.rs"]));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        rebuild_once(&mut app, &mut rx).await;
+
+        descend_to(&mut app, "src");
+        drain_completion(&mut app, &mut rx).await;
+
+        ascend_one_level(&mut app);
+        assert_eq!(app.file_tree_state.root_prefix(), "");
+        drain_completion(&mut app, &mut rx).await;
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src"),
+            "stepping back out puts the cursor on the directory just left behind"
+        );
+        assert_eq!(
+            client.requested_prefixes(),
+            vec!["".to_string(), "src".to_string(), "".to_string()]
+        );
+    }
+
+    #[test]
+    fn ascending_at_the_workspace_root_falls_back_to_the_in_listing_verb() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // No command channel: if the fallback issued a walk it would fail
+        // loudly, which is how this asserts that it did not.
+        let mut app = app_with_root(root.path());
+        let listing = crate::tui::file_tree::TreeListing {
+            nodes: vec![crate::tui::file_tree::TreeNode {
+                name: "src".to_string(),
+                path: "src".to_string(),
+                depth: 1,
+                kind: TreeNodeKind::Directory,
+                children: Some(Vec::new()),
+            }],
+            examined: 1,
+            ..Default::default()
+        };
+        let (generation, request_id) = app.file_tree_state.begin_rebuild(root.path().to_path_buf());
+        assert!(app.file_tree_state.apply_listing(
+            generation,
+            request_id,
+            root.path().to_path_buf(),
+            listing
+        ));
+
+        ascend_one_level(&mut app);
+        assert!(
+            app.file_tree_state.at_workspace_root(),
+            "there is no level above the workspace root"
+        );
+        assert_eq!(app.file_tree_state.status, FileTreeStatus::Ready);
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src"),
+            "`h` must not become a key that does nothing at the top"
+        );
     }
 
     #[test]
