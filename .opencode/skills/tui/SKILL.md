@@ -878,6 +878,26 @@ model to the wrong connection.
   back to INS, `Esc` detaches. `/terminal` opens the box **already in INS**.
   Terminal output is interpreted by bounded VT screen state before Ratatui
   rendering; never write raw child escape sequences to the host terminal.
+- **A surface with the keyboard is not a viewer.** The dock gesture (`H`/`J`/`K`/
+  `L`, `Shift`+arrows) must be gated on "nothing is being typed", and for a
+  terminal that question is `TerminalFocus`, **not** `InputMode` — a terminal in
+  INS still reports the app's `Normal` mode, so a Normal-only gate let an
+  ordinary shell letter be read as "move the panel". The character never reached
+  the process and the column moved out from under the user, which is
+  indistinguishable from the terminal eating their command. Every other surface
+  already gates this on its own text buffer; the two terminal surfaces were the
+  ones missing it (`claims_panel_directions` for the panel host, and the
+  `DialogType::Terminal` pre-check in `App::on_key` for the box).
+- **Output is pulled on the existing cadence, and input is serialized — both are
+  correctness, not polish.** `service_terminal_output_pull` rides the same pump
+  tick as the editor's semantic refresh (never a second timer) and skips unless a
+  mounted surface holds a live attachment with no read outstanding. Flushing
+  input per keystroke spawned one concurrent daemon request per character, and
+  those raced, so fast typing arrived **scrambled**. `queue_resize` must no-op on
+  an unchanged size: a PTY resize flushes tty pending input, so a per-frame
+  resize storm eats the half-typed word. And a stale test is a finding, not
+  noise — a red assertion left behind by a deliberate contract change reads as
+  "pre-existing bug" and ships.
 - **Never make one key answer two questions.** `Esc` used to be both "leave
   insert" and "pass an escape byte through", disambiguated by a hidden
   `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's

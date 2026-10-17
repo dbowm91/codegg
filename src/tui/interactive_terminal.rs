@@ -213,9 +213,15 @@ impl Redactions {
 /// Explicit keyboard-focus state for one terminal view.
 ///
 /// Input bytes are produced by [`classify_key`] only in
-/// [`TerminalFocus::Focused`]. Opening a terminal always starts in
-/// [`TerminalFocus::Viewing`] so stray keystrokes keep going to the
-/// prompt until the user explicitly focuses the terminal.
+/// [`TerminalFocus::Focused`].
+///
+/// Where a terminal *starts* depends on the surface, and the difference is
+/// deliberate. The terminal **box** opens in [`TerminalFocus::Focused`]: it is
+/// a modal the user opened to run a command, and a focus gesture in front of
+/// the first keystroke swallowed characters with nowhere for them to go. The
+/// docked **panel** opens in [`TerminalFocus::Viewing`]: it is a surface the
+/// user is looking at beside their work, so it must not take the keyboard
+/// until they ask with `i`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalFocus {
     /// Terminal is not the active view; keys belong to the prompt/dialog.
@@ -543,6 +549,8 @@ pub struct InteractiveTerminalView {
     /// This attachment's cadence-read slot. Never shared with
     /// `dialog_state.terminal_request`.
     read: TerminalReadState,
+    /// One input operation at a time, so keystrokes cannot race each other.
+    input_in_flight: bool,
 }
 
 impl InteractiveTerminalView {
@@ -567,6 +575,7 @@ impl InteractiveTerminalView {
             pending_prefix: false,
             diagnostics: false,
             read: TerminalReadState::default(),
+            input_in_flight: false,
         }
     }
 
@@ -1536,6 +1545,40 @@ impl InteractiveTerminalController {
         Some(std::mem::take(&mut view.pending_input))
     }
 
+    /// Claim the single input slot for `handle`.
+    ///
+    /// Returns the attachment to write to, or `None` when an input operation
+    /// is already outstanding. Input is ordered: every keystroke the user
+    /// typed between two ticks becomes one operation, and the next one waits
+    /// for this one to land. Without this, each keystroke spawned its own
+    /// concurrent daemon request, so fast typing arrived **scrambled** —
+    /// `ls -la` could reach the shell as `lsa- l`. That is the same silent
+    /// character loss as the resize storm above, and it is not something the
+    /// user can see the cause of.
+    pub fn begin_input(&mut self, handle: &str) -> Option<String> {
+        let view = self.views.get_mut(handle)?;
+        if view.input_in_flight || !view.link.allows_mutation() {
+            return None;
+        }
+        let attachment_id = view.attachment_id.clone()?;
+        view.input_in_flight = true;
+        Some(attachment_id)
+    }
+
+    /// Release the single input slot for `handle`.
+    pub fn finish_input(&mut self, handle: &str) {
+        if let Some(view) = self.views.get_mut(handle) {
+            view.input_in_flight = false;
+        }
+    }
+
+    /// Whether an input operation is outstanding for `handle`.
+    pub fn input_in_flight(&self, handle: &str) -> bool {
+        self.views
+            .get(handle)
+            .is_some_and(|view| view.input_in_flight)
+    }
+
     /// Queue a resize for a live terminal. Rapid resizes coalesce:
     /// only the newest size is kept until drained.
     pub fn queue_resize(
@@ -1557,6 +1600,17 @@ impl InteractiveTerminalController {
             .ok_or(TerminalResizeError::UnknownHandle)?;
         if !view.link.allows_mutation() {
             return Err(TerminalResizeError::NotLive(view.link.label()));
+        }
+        // Resizing to the size you are already at is a no-op, and it must be a
+        // *client-side* no-op: the render path queues the panel's geometry on
+        // every frame, so queueing unconditionally turns a steady surface into
+        // a resize storm. A PTY resize flushes the tty's pending input, which
+        // drops the half-typed word the user is in the middle of — the keystroke
+        // is lost with no error anywhere, and the shell looks like it is eating
+        // characters. Coalescing here is what makes the geometry track the panel
+        // without standing between the user and their own typing.
+        if view.pending_resize == Some((cols, rows)) || (view.cols, view.rows) == (cols, rows) {
+            return Ok(());
         }
         view.pending_resize = Some((cols, rows));
         Ok(())

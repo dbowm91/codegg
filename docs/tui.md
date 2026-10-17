@@ -510,6 +510,17 @@ want to run a specific program instead.
 
 The box opens **already taking your keys**, so you can type straight away.
 
+Once it is taking your keys, every key is your program's — including `H`, `J`,
+`K` and `L`, and `Shift`+arrows. Those are the panel-docking gesture everywhere
+else, but a terminal that owns the keyboard is not a viewer, so the gesture is
+turned off while you are typing. `i` is only a focus gesture while the surface is
+in viewing mode (`NOR`); in the box the surface is never in `NOR` to begin with.
+
+Output keeps up on its own: the TUI reads the PTY on its normal refresh tick, so
+anything the command prints appears without you doing anything. You do not need
+`/terminal-resume` to see live output — it is a recovery affordance for a view
+whose read fell behind, not a step in the normal flow.
+
 There are two modes, and each key means exactly one thing:
 
 - **INS** — the process owns the keyboard. Everything you type, plus `Enter`,

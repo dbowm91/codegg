@@ -669,7 +669,9 @@ impl App {
                 crate::tui::commands::interactive_terminal::blur_terminal_panel(self, &handle)
             }
             TuiMsg::TerminalPanelInput { handle, bytes } => {
-                crate::tui::commands::interactive_terminal::send_terminal_input(self, handle, bytes)
+                crate::tui::commands::interactive_terminal::queue_terminal_input(
+                    self, handle, bytes,
+                )
             }
             TuiMsg::TerminalPanelClear { handle } => {
                 crate::tui::commands::interactive_terminal::clear_terminal(self, &handle)

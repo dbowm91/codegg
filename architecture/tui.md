@@ -1014,6 +1014,40 @@ through the TUI `CoreClient`.
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
   constants). Rapid input coalesces; rapid resize is last-wins.
 
+**Liveness is a bounded pull on the existing event-loop cadence.** Neither
+surface may show a terminal it cannot read: `service_terminal_output_pull`
+runs from the pump tick that already services the editor's semantic refresh —
+one cadence for the TUI, never a second timer for the terminal. It skips
+unless a *mounted* surface holds a view with a live attachment and no read is
+outstanding for that attachment, and it issues the byte-identical
+`InteractiveProcessResume` with the daemon's own default byte cap and the view's
+current cursor. An idle shell costs one bounded request per tick and no bytes,
+because the ring answers `Resumed` with an empty chunk for an unchanged cursor.
+There is no push channel: the daemon's only interactive event,
+`CoreEvent::InteractiveProcessExited`, is bytes-free by contract, and output
+never enters the bus, a projection, the transcript, or session observation.
+
+Three consequences are load-bearing rules rather than details:
+
+- **A surface with the keyboard is not a viewer.** `H`/`J`/`K`/`L` and
+  Shift+arrows are the panel-docking gesture, and every other surface gates
+  that gesture on "nothing is being typed" — the session dialog on its filter
+  being empty, the help panel on Normal mode, the panel host on Normal mode.
+  The terminal box and the docked panel were the two that did not, so in INS
+  an ordinary shell letter was read as "move the panel": the character never
+  reached the process and the column moved out from under the user. The gate
+  has to consult `TerminalFocus`, not `InputMode`, because a terminal in INS
+  still reports the app's `Normal` mode.
+- **Keystrokes are ordered, one operation at a time.** `begin_input` claims a
+  single slot per attachment and the cadence drains pending input into it.
+  Flushing per keystroke spawned one concurrent daemon request per character,
+  and those requests raced, so fast typing could arrive scrambled — silent,
+  character-level loss with no error to point at.
+- **Resize to the size you already are is a client-side no-op.**
+  `queue_resize` drops an unchanged size, and the cadence drains what remains.
+  A PTY resize flushes the tty's pending input, so a per-frame resize storm is
+  indistinguishable from the shell eating the user's half-typed word.
+
 **The VT screen retains a bounded history, and the viewport is a controller
 concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to
 `vt100::Parser::new`. A zero-length history is not a tuning choice: it destroys

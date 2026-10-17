@@ -978,6 +978,24 @@ pub trait SidePanel {
         ctx: &mut PanelCtx<'_>,
     ) -> PanelKey;
 
+    /// Whether this panel claims the host's directional gesture
+    /// (`Shift`+arrows, `H`/`J`/`K`/`L`).
+    ///
+    /// The host answers the directions before consulting the panel, because
+    /// they are the only way out of a focused panel. That is right for a
+    /// *viewer* and wrong for a surface with the keyboard: the Terminal panel
+    /// in INS mode is a live PTY, and the app's `InputMode` is still `Normal`
+    /// there, so a `Normal`-mode gate alone let an uppercase `H`/`J`/`K`/`L`
+    /// be read as "move the panel" instead of a character the user typed. In a
+    /// shell those are ordinary letters, so a command containing one lost the
+    /// character and the column moved out from under the user.
+    ///
+    /// Takes `ctx` for the same reason [`Self::owns_exit_key`] does: the answer
+    /// depends on controller state the panel does not own.
+    fn claims_panel_directions(&self, _ctx: &PanelCtx<'_>) -> bool {
+        true
+    }
+
     /// Whether the panel claims one of the host's exit keys
     /// (`Esc`/`q`) before the host drops focus.
     ///
@@ -1850,7 +1868,9 @@ impl SidePanelHost {
         // `MoveDirection` rather than as a resolved focus change so the
         // contextual dispatcher still sees the whole picture — including the
         // fact that no box is open, which is what makes this a pane move.
-        if ctx.input_mode == crate::tui::input::InputMode::Normal {
+        if ctx.input_mode == crate::tui::input::InputMode::Normal
+            && self.panel().claims_panel_directions(ctx)
+        {
             let dir = match action {
                 Some(InputAction::DirectionLeft) => Some(PanelDirection::Left),
                 Some(InputAction::DirectionRight) => Some(PanelDirection::Right),

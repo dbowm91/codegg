@@ -4004,7 +4004,28 @@ impl App {
         // those four dialogs keep their own Normal/Insert split — the same
         // contract `HelpDialog` already follows. Without the gate this would
         // silently break typing an uppercase letter into a filter.
-        if self.focus_manager.top_docks_as_viewer() && self.dock_target().is_some() {
+        // While a terminal box owns the keyboard in INS mode the PTY owns it,
+        // not the docking gesture. `direction_of` matches bare uppercase
+        // `H`/`J`/`K`/`L` without a SHIFT qualifier, and those are ordinary
+        // characters in a shell command (`ls`, `git`, `grep`, env vars). A
+        // command containing one of them would be swallowed here and dock the
+        // box instead of typing — the character never reaches the process and
+        // the surface the user opened disappears mid-command. The viewer gate
+        // above does not cover this: it asks whether the box owns a *filter
+        // buffer*, and a live terminal owns neither a filter buffer nor the
+        // keyboard. Focus is the real question, and the terminal's own reader
+        // path already handles the gesture in viewing mode.
+        let terminal_owns_keyboard = self.focus_manager.active_dialog_type()
+            == DialogType::Terminal
+            && self
+                .dialog_state
+                .terminal_detail_handle
+                .as_deref()
+                .is_some_and(|handle| self.interactive_terminals.is_focused(handle));
+        if !terminal_owns_keyboard
+            && self.focus_manager.top_docks_as_viewer()
+            && self.dock_target().is_some()
+        {
             if let Some(dir) = crate::tui::panels::direction_of(key) {
                 crate::tui::commands::panels::move_directionally(self, dir);
                 return;

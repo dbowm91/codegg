@@ -776,7 +776,9 @@ pub(crate) fn service_terminal_output_pull(app: &mut App) -> bool {
     // docked terminal the user never types into therefore stayed at its
     // create-time 80x24 and would wrap once liveness landed. Draining here
     // decouples the resize from typing without a second timer.
-    flush_terminal_resize(app, &handle);
+    // Keystrokes drain here rather than per keypress: one ordered operation
+    // per tick, never one racing request per character.
+    flush_terminal_input(app, handle.clone());
     let Some(core_client) = app.core_client.clone() else {
         // No daemon: there is no PTY to read, and nothing to say about it.
         return false;
@@ -864,13 +866,29 @@ pub(crate) fn service_terminal_output_pull(app: &mut App) -> bool {
 // ── Input / resize (bounded, coalesced) ─────────────────────────────
 
 /// Queue explicit input bytes and flush them through one bounded M002
-/// input operation. Used by `/terminal-send` and the focus key router.
+/// input operation. Used by `/terminal-send`, which is an explicit command
+/// with a completion the caller is waiting on.
 pub(crate) fn send_terminal_input(app: &mut App, handle: String, bytes: Vec<u8>) {
     if let Err(error) = app.interactive_terminals.queue_input(&handle, &bytes) {
         app.messages_state.toasts.warning(&error.to_string());
         return;
     }
     flush_terminal_input(app, handle);
+}
+
+/// Route keystroke bytes to the PTY.
+///
+/// Identical to [`send_terminal_input`], and kept as the named seam both key
+/// routers use because *why* it is safe is not obvious from the name. Flushing
+/// per keystroke used to spawn one concurrent daemon request per character and
+/// those raced, so a typed command could reach the shell scrambled. The
+/// ordering now comes from the single input slot rather than from coalescing:
+/// the first keystroke sends immediately, and any keystrokes typed while it is
+/// outstanding stay queued in order and go out behind it on the next cadence
+/// pass. That keeps the send synchronous — no beat of latency on the character
+/// the user is watching for — without ever running two writes at once.
+pub(crate) fn queue_terminal_input(app: &mut App, handle: String, bytes: Vec<u8>) {
+    send_terminal_input(app, handle, bytes);
 }
 
 /// Drain coalesced pending input into one bounded input operation.
@@ -881,10 +899,18 @@ pub(crate) fn send_terminal_input(app: &mut App, handle: String, bytes: Vec<u8>)
 /// user happened to type something.
 pub(crate) fn flush_terminal_input(app: &mut App, handle: String) {
     flush_terminal_resize(app, &handle);
-    let (Some(attachment_id), Some(pending)) = (
-        app.interactive_terminals.attachment_id(&handle),
-        app.interactive_terminals.take_pending_input(&handle),
-    ) else {
+    if app.interactive_terminals.input_in_flight(&handle) {
+        // An operation is already outstanding. Leave the bytes queued: the
+        // next tick sends them, in order, behind this one. Dropping them here
+        // is how a keystroke disappears with no error anywhere.
+        return;
+    }
+    let Some(pending) = app.interactive_terminals.take_pending_input(&handle) else {
+        return;
+    };
+    let Some(attachment_id) = app.interactive_terminals.begin_input(&handle) else {
+        // Lost the race between the check and the claim. Put the bytes back.
+        let _ = app.interactive_terminals.queue_input(&handle, &pending);
         return;
     };
     let Some(core_client) = app.core_client.clone() else {
@@ -1343,6 +1369,13 @@ pub(crate) fn apply_terminal_op_finished(
     rows: Option<u16>,
     error: Option<String>,
 ) {
+    // The input slot is released by the *arrival* of its completion, not by a
+    // successful one, and not only when the completion is current: a stale or
+    // failed input must still free the slot or every later keystroke waits
+    // behind a gate that will never open.
+    if op == "input" {
+        app.interactive_terminals.finish_input(&handle);
+    }
     if let Some(error) = error {
         if app
             .dialog_state
@@ -1487,6 +1520,26 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
         .interactive_terminals
         .render_view(handle, 200, selection_style)
         .unwrap_or_default();
+    // The box mounts the emulator's whole screen as scrollable content and
+    // then follows the end of it. Trailing blank rows are not content: on a
+    // fresh shell the prompt sits on row 0 of an 80x24 screen, so the end of
+    // the buffer is nineteen empty lines and a window pinned to the end shows
+    // the user nothing but blank space — which is indistinguishable from a
+    // terminal that accepted their command and produced no output. Trimming
+    // them keeps the window over the rows the program actually wrote. A
+    // full-screen program that paints every row is unaffected, because there
+    // are no trailing blanks to trim.
+    let last_used = output
+        .iter()
+        .rposition(|line| {
+            line.spans
+                .iter()
+                .any(|span| !span.content.trim().is_empty())
+        })
+        .map(|index| index + 1)
+        .unwrap_or(1)
+        .max(1);
+    let output = output[..last_used].to_vec();
     if output.is_empty() {
         styled_content.push(ratatui::text::Line::from("(no output yet)"));
     } else {
@@ -1705,7 +1758,7 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
             true
         }
         TerminalKeyAction::Forward(bytes) => {
-            send_terminal_input(app, handle.clone(), bytes);
+            queue_terminal_input(app, handle.clone(), bytes);
             refresh_terminal_dialog(app, &handle);
             true
         }
@@ -2070,12 +2123,23 @@ mod tests {
         assert!(!app.dialog_state.terminal_request.is_loading());
     }
 
-    /// A live, attached terminal is exactly the state `/terminal` leaves the
-    /// box in, and `i` is the only advertised route into INS mode. Every
-    /// failure this guards is silent in the field: the box opens, shows
-    /// output, docks, and simply never takes the keyboard.
+    /// The box and the docked panel disagree about the keyboard on purpose, and
+    /// this pins both halves of that decision.
+    ///
+    /// The **box** opens already in INS: someone who typed `/terminal` wants a
+    /// shell, and a second `i` before the first character meant keys typed in
+    /// that gap went nowhere at all — neither draft nor process. That gap is
+    /// what made the box feel broken, so `i` there is *program input*, not a
+    /// focus gesture.
+    ///
+    /// The **panel** is a docked surface the user is only looking at, so it
+    /// must never steal the keyboard; `i` is how they ask for it.
+    ///
+    /// The assertion this replaces ("a freshly opened box starts viewing, never
+    /// focused") was left red by the deliberate change in `01db38bd5` and was
+    /// not the behaviour any user is served by.
     #[test]
-    fn pressing_i_on_the_open_box_enters_focused_input() {
+    fn the_box_opens_in_insert_while_the_docked_panel_still_needs_i() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = test_app();
         let request_id = app.dialog_state.terminal_request.begin();
@@ -2094,15 +2158,42 @@ mod tests {
             "the box must be open before the keystroke is meaningful"
         );
         assert!(
-            !app.interactive_terminals.is_focused("h-test"),
-            "a freshly opened box starts viewing, never focused"
+            app.interactive_terminals.is_focused("h-test"),
+            "a freshly opened, attached box owns the keyboard: the first character a user \
+             types must reach the process, not wait behind a focus gesture"
         );
 
+        // `i` is the character `i` here. The panel's focus gesture must not leak
+        // onto a surface where the process is already reading.
         app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-
         assert!(
             app.interactive_terminals.is_focused("h-test"),
-            "`i` is the documented INS-mode entry; a live attached terminal must take the keyboard"
+            "typing at a focused terminal leaves it focused; `i` is program input, not a toggle"
+        );
+
+        // The panel half: same gesture, opposite meaning, because a docked
+        // surface is something the user is looking at rather than typing into.
+        // `terminal_panel_spawn` is the one bit of correlation the panel route
+        // uses, so it has to be set before the attach lands.
+        let mut app = test_app();
+        app.terminal_panel_spawn = true;
+        let request_id = app.dialog_state.terminal_request.begin();
+        apply_terminal_attach_finished(
+            &mut app,
+            request_id,
+            "h-panel".to_string(),
+            Some("a-2".to_string()),
+            Some(test_chunk("$ ")),
+            None,
+            None,
+        );
+        assert!(
+            !app.interactive_terminals.is_focused("h-panel"),
+            "a terminal handed to the docked panel must not arrive holding the keyboard"
+        );
+        assert!(
+            app.ui_state.dialog != crate::tui::Dialog::Terminal,
+            "the panel route must not also raise the box"
         );
     }
 
@@ -2561,11 +2652,13 @@ mod tests {
     /// A bound session so `resolve_terminal_workspace` has its canonical
     /// workspace. Terminals never fall back to ambient cwd.
     fn bind_workspace_session(app: &mut App, workspace_id: &str, directory: &Path) {
-        let mut session = crate::session::models::Session::default();
-        session.id = "s-c001".to_string();
-        session.project_id = "p-c001".to_string();
-        session.workspace_id = Some(workspace_id.to_string());
-        session.directory = directory.display().to_string();
+        let session = crate::session::models::Session {
+            id: "s-c001".to_string(),
+            project_id: "p-c001".to_string(),
+            workspace_id: Some(workspace_id.to_string()),
+            directory: directory.display().to_string(),
+            ..Default::default()
+        };
         app.session_state.session = Some(session);
     }
 
@@ -2631,6 +2724,13 @@ mod tests {
             // command drain the `cmd_rx` arm performs.
             service_terminal_output_pull(app);
             drain_tui_commands(app).await;
+            // Transient notifications are cleared before asserting. Toasts
+            // expire on wall-clock in production and this loop runs faster than
+            // that, so an INFO left behind by the INS gesture or the first
+            // resize sits on top of the panel and hides the very output this
+            // test exists to see. The terminal's steady-state surface is the
+            // subject; the notification layer is not.
+            app.messages_state.toasts = crate::tui::components::toast::ToastManager::new();
             let rendered = render_buffer_text(app, width, height);
             if rendered.contains(marker) {
                 return rendered;
@@ -2782,8 +2882,18 @@ mod tests {
         // resize does to a half-typed line.
         service_terminal_output_pull(&mut app);
         drain_tui_commands(&mut app).await;
+        assert_eq!(
+            app.ui_state.dialog,
+            crate::tui::Dialog::Terminal,
+            "one cadence pass must not unmount the box it is reading for"
+        );
 
         type_through_app(&mut app, marker);
+        assert_eq!(
+            app.ui_state.dialog,
+            crate::tui::Dialog::Terminal,
+            "typing at the PTY must not unmount the box either"
+        );
         let rendered = pull_until_rendered(&mut app, &handle, marker, 120, 40).await;
 
         assert!(
@@ -2817,6 +2927,13 @@ mod tests {
             app.interactive_terminals.is_focused(&handle),
             "`i` on a docked live terminal is the documented route into INS mode"
         );
+
+        // Let the panel's first geometry resize land *before* typing, for the
+        // same reason the box does: a PTY resize flushes the tty's pending
+        // input, so a resize issued mid-word is indistinguishable from lost
+        // keystrokes.
+        service_terminal_output_pull(&mut app);
+        drain_tui_commands(&mut app).await;
 
         type_through_app(&mut app, marker);
         let rendered = pull_until_rendered(&mut app, &handle, marker, 120, 40).await;

@@ -337,6 +337,20 @@ impl SidePanel for TerminalPanel {
         }
     }
 
+    /// Decline the host's directional gesture while the PTY owns the keyboard.
+    ///
+    /// In INS every key is program input. `H`/`J`/`K`/`L` are letters the user
+    /// types — in commands, paths and environment variables — so letting the
+    /// host read them as "move this panel" drops the character and relocates
+    /// the column. The gesture belongs to reading, where there is no keyboard
+    /// to protect.
+    fn claims_panel_directions(&self, ctx: &PanelCtx<'_>) -> bool {
+        !self
+            .handle
+            .as_deref()
+            .is_some_and(|handle| ctx.terminal.is_focused(handle))
+    }
+
     /// Claim `Esc` while the PTY is focused (INS).
     ///
     /// The host drops panel focus on `Esc`/`q` *without consulting the
