@@ -642,5 +642,24 @@
       "feature_enabled_codegg_nextest": "11,335 passed; 6 skipped"
     },
     "qualification_scope": "Exact source head before this documentation-only evidence update; no implementation source changes followed."
+  },
+  "exact_head_qualification_after_receipt_schema_reconstruction_2026_10_18": {
+    "source_head": "7bdfaa18dfb5bbec6bb887adb140d51573e15c76",
+    "reconciled_with_main": true,
+    "hosted_ci": {
+      "run_id": "39112674196",
+      "result": "success",
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39112674196",
+      "checks": ["guards", "formatting", "workspace_clippy", "workspace_tests"]
+    },
+    "windows_managed_worktree": {
+      "run_id": "39112675703",
+      "result": "success",
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39112675703",
+      "checks": ["deep_path_linked_worktree_materialization"]
+    },
+    "qualification_scope": "Exact implementation source head; the evidence update changes documentation only.",
+    "comparative_trials": "S2 remains non-qualifying because the persisted Python result does not retain the permission/tool error trace; S2/S3 and expansion strata remain open.",
+    "downstream_audit": "M005 remains separate and unqualified; no downstream plan was unblocked."
   }
 }

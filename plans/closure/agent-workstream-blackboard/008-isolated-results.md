@@ -360,3 +360,29 @@ This attempt remains non-qualifying. The child write denial requires a
 deterministic root-cause check under the isolated trial policy before another
 provider run. S2/S3 and overlapping Rust/dependency-heavy trials remain open;
 M005 stays independent and S4 remains unavailable.
+
+## 14. Exact-head CI after receipt-schema reconstruction (2026-10-18)
+
+The frozen M003 tool-schema receipt failure was resolved by restoring the
+historical opaque `spawn_many` item schema during receipt recomputation while
+asserting the current expanded schema separately. The immutable receipt itself
+was not changed. The resulting source head is
+`7bdfaa18dfb5bbec6bb887adb140d51573e15c76`.
+
+Hosted CI run
+[39112674196](https://github.com/dbowm91/codegg/actions/runs/39112674196)
+passed on that exact source SHA, including workspace Clippy and workspace
+tests. Windows managed-worktree qualification
+[39112675703](https://github.com/dbowm91/codegg/actions/runs/39112675703)
+also passed on the same SHA, including deep-path linked-worktree materialization.
+The feature branch contains `origin/main` as an ancestor. This evidence update
+changes documentation only; no implementation source changed after the
+qualified SHA.
+
+These results qualify the integrated source head, not the provider-backed
+comparative trials. The available child result still lacks a permission/tool
+error trace for the first Python write, so its cause is not established and a
+safe S2 rerun is not yet justified. S2/S3, overlapping Rust API and
+dependency-heavy strata remain open. M005 remains separate with its Darwin
+escaped-descendant failure; no shared-worktree capability or downstream plan
+was unblocked.

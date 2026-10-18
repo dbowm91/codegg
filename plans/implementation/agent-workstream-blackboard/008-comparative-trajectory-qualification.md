@@ -300,3 +300,24 @@ paths are fixed and focused tests pass, but the write denial still requires a
 deterministic root-cause check. Do not start S3 or expand task strata until a
 bounded S2 can write, run tests, commit, and pass the frozen evaluator. M005
 remains separate; no downstream plan is unblocked.
+
+### Exact-head qualification after M003 receipt reconstruction (2026-10-18)
+
+The historical M003 receipt now reconstructs the old opaque
+`spawn_many` item schema while separately asserting the live expanded schema;
+the frozen receipt was not modified. Hosted CI passed on exact implementation
+SHA `7bdfaa18dfb5bbec6bb887adb140d51573e15c76` (run
+[39112674196](https://github.com/dbowm91/codegg/actions/runs/39112674196)),
+including guards, formatting, workspace Clippy, and workspace tests. Windows
+deep-path linked-worktree qualification passed on the same SHA (run
+[39112675703](https://github.com/dbowm91/codegg/actions/runs/39112675703)).
+The branch includes `origin/main` as an ancestor.
+
+This closes exact-head integrated qualification for the current implementation
+source. It does not close S2/S3: the persisted Python child summary says its
+workspace write was denied but contains no permission decision, tool name, or
+error trace, and the daemon log does not retain one. Do not rerun provider
+trials or expand into overlapping Rust APIs/dependency-heavy tasks until that
+denial can be reproduced deterministically and a bounded S2 passes tests,
+commit, and the frozen evaluator. M005 remains independent and its native
+escaped-descendant finding still blocks S4; no future plan is newly unblocked.
