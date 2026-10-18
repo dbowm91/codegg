@@ -22,6 +22,8 @@ An opt-in end-to-end cost pilot was added at `tests/linux_git_c002_performance.r
 
 The first origin-matrix rerun exposed four Bash fixture rows missing an explicit session workspace root; those failed before Git launch with `MissingWorkspaceRoot`. The fixtures now bind their fresh repository via `BashTool::with_workspace_root`. On exact source `62799c3c`, `cargo test --locked --test git_execution_origin_matrix -- --test-threads=1` passed 28/28; `cargo test --locked -p egggit -- --test-threads=1` passed 108 with one ignored; `cargo test --locked --test git_mutations_integration -- --test-threads=1` passed 12/12; `cargo test --locked --test git_network_integration -- --test-threads=1` passed 29/29; `cargo test --locked --test sandbox_landlock -- --test-threads=1` passed 3/3; `scripts/verify.sh quick` passed on the same source tree plus the documentation update. These results repair the test context and do not alter production routing or close M005.
 
+The first `POSIX_FADV_DONTNEED`-advised rerun, hosted run `39136814321` on `d1e0bb16`, failed during fragmented fixture copying when a metadata entry disappeared between directory enumeration and stat; it produced no benchmark artifact and is not qualification evidence. The fixture now disables Git automatic gc/maintenance before adding objects so its source store cannot be rewritten by background housekeeping during repeated cold copies. This corrective requires a fresh exact-source hosted run.
+
 ## Invariants / non-goals
 
 - Typed operation and authenticated parent/child lease stay daemon-owned; no plain `GitEnvPolicy` call silently promotes to host execution.

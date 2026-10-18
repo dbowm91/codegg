@@ -132,6 +132,11 @@ fn object_store_stats(object_dir: &Path) -> (u64, u64, u64) {
 fn create_fixture(git: &Path, root: &Path, packed: bool) -> (u64, u64, u64) {
     fs::create_dir_all(root.join("objects-data")).expect("create fixture worktree");
     git_ok(git, root, &["init", "--quiet"]);
+    // Keep the source ODB stable while cold copies are repeated. Automatic
+    // maintenance is outside the measured routes and could rewrite/remove
+    // fixture metadata between an entry's read_dir and stat calls.
+    git_ok(git, root, &["config", "gc.auto", "0"]);
+    git_ok(git, root, &["config", "maintenance.auto", "false"]);
     for index in 0..OBJECT_COUNT {
         let path = root
             .join("objects-data")
