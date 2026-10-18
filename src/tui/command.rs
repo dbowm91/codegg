@@ -621,7 +621,8 @@ impl CommandRegistry {
                 .with_description("View session analytics and cost breakdown"),
             Command::new("/queue", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Queue))
                 .with_description(
-                    "Show prompts waiting for this session's next turn (j/k move, r refresh, d delete)",
+                    "Open this session's waiting-prompt box: j/k move, r refresh, a add, \
+                     e edit, [ ] reorder, d delete, s send now",
                 ),
             Command::new("/tui", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tui))
                 .with_aliases(&["fullscreen"])
@@ -1198,7 +1199,11 @@ mod tests {
         // of `⇧S` that stays typeable mid-prompt); 159th and 158th are
         // `/terminal` (bare interactive terminal box) and `/terminal-clear`.
         // Keep `architecture/command.md` counts in sync when adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 164);
+        //
+        // This number moved 164 -> 165 for **M004's `/queue`**, which was
+        // registered without updating this pin or `architecture/command.md`.
+        // Both are now in step; the tripwire itself is unchanged.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 165);
     }
 
     #[test]
@@ -1350,6 +1355,9 @@ mod tests {
     fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
         use BuiltinSlashAction as B;
         vec![
+            // M004: `/queue`. The variant was added to the enum and to the
+            // registry but omitted here, so this test failed to notice it.
+            B::Queue,
             B::ProjectInit,
             B::Reload,
             B::Skills,

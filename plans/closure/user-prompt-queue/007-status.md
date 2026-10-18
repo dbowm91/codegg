@@ -126,6 +126,52 @@ Fixed by correcting the list to what the box still **cannot** do (`adopt`,
 `transfer`, `timer`, `later`) and asserting the implemented verbs are advertised.
 This was a real defect that would have reddened CI, not a cosmetic one.
 
+## 7a. Two more real defects, found by the full workspace suite
+
+M006's verification ran the box tests and clippy but not the whole lib target,
+so M004's `/queue` command left **three** tripwires failing for days:
+
+- `architecture/command.md` documented **164** built-ins across six places
+  while the registry held 165. Guard: `command_docs_count_matches_registry`.
+- `built_in_command_count_matches_release_docs` pinned 164 in `src/tui/command.rs`.
+- `every_builtin_action_is_referenced_by_a_canonical_command` compared the
+  registry against an exhaustive `BuiltinSlashAction` list that never gained
+  `Queue` — so the test's own "no surplus" arm could not see it.
+
+All three are fixed: the count moved to 165 in the doc and in the pin, `Queue`
+is in the exhaustive list, and `/queue` now has a table row in
+`architecture/command.md`. Its registered **description** was also stale — it
+still said "j/k move, r refresh, d delete", omitting M005's add/edit/reorder and
+M006's send-now — and now names the whole keymap.
+
+**The lesson is the one M006 already recorded and then repeated.** A milestone's
+verification is only as wide as the commands it chose to run; `verify.sh quick`
+does not execute workspace tests, and the lib target was never in M006's sweep.
+
+## 7b. Pre-existing environment failures on this host
+
+The full workspace suite (`cargo nextest run --workspace --locked --profile ci`)
+reports 14,606 tests with **75 failures and 1 timeout**, of which only the three
+above are attributable to this workstream. The remaining ~72 share one cause and
+one shape:
+
+    MissingWorkspaceRoot { context: "managed shell dispatch has no canonical workdir" }
+    Execution("no workspace root was resolved for this call (the tool was
+              constructed without a workspace root); refusing to substitute the
+              process working directory)")
+    workspace register failed: "workspace root '/tmp' must be an absolute,
+                                non-symlink path"
+    test workspace registration: InvalidRootPath("/tmp")
+
+Those tests hard-code `/tmp` (or a `TMPDIR` temp path) as a workspace root, and
+**`/tmp` is a symlink to `private/tmp` on this macOS host**. The root validator
+rejects symlinked roots by design — that refusal is the AGENTS.md
+"missing workspace root is a refusal, never a cue to read the process cwd" rule
+working as intended. Every failing file (`tests/lsp.rs`, `tests/tool_execution.rs`,
+`tests/workspace_isolation.rs`, `tests/session_family/`, and others) is **absent
+from this change's diff**. These are expected to pass on Linux CI, where `/tmp`
+is a real directory.
+
 ## 8. Guards
 
 `scripts/check_queue_delivery_callsites.py`:
