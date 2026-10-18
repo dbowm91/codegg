@@ -69,6 +69,7 @@ fn ctx_for(effect: &str, submission_key: Option<String>) -> BrokerInvocationCont
         authority: codegg::tool::BrokerAuthority::from_grant(make_grant(effect)),
         cancellation: None,
         deadline: None,
+        origin_principal: None,
         principal_ref: None,
         workspace_path_policy_id: None,
         allowed_tools: None,

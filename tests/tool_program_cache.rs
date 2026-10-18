@@ -132,6 +132,7 @@ fn program_ctx() -> BrokerInvocationContext {
         )),
         cancellation: None,
         deadline: None,
+        origin_principal: None,
         principal_ref: None,
         workspace_path_policy_id: None,
         allowed_tools: None,
