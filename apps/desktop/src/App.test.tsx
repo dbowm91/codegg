@@ -46,6 +46,7 @@ const projectList = () =>
   }));
 
 beforeEach(() => {
+  vi.resetAllMocks();
   vi.mocked(bridge.snapshot).mockResolvedValue(connected(1));
   vi.mocked(bridge.connect).mockResolvedValue(connected(1));
   vi.mocked(bridge.projects).mockResolvedValue(projectList());
@@ -60,7 +61,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
 });
 
 describe('desktop shell', () => {

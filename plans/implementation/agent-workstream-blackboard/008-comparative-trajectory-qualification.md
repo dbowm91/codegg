@@ -473,3 +473,8 @@ relaxed only for validated workspace and authorized scratch roots, while
 explicit Ask/Deny decisions and path rules remain authoritative. The existing
 permission regression suite covers these cases. These runtime and test changes
 do not qualify an S2/S3 provider pair. No downstream plan is unblocked.
+
+The draft PR's first Desktop E2E run found that failed route tests could leave
+one-time Vitest bridge mocks queued for later tests. The suite now resets mock
+implementations before each test; local `npm test` passes 18/18. The updated
+hosted E2E run is pending.
