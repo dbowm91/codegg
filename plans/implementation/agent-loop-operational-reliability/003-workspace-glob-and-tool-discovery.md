@@ -1,6 +1,6 @@
 # Agent Loop Operational Reliability M003 — Workspace Glob and Tool Discovery
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (main; verify at implementation start)
 

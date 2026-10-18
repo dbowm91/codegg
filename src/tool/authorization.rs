@@ -8,6 +8,9 @@ use crate::permission::{approval::ExecutionPolicySnapshot, PermissionDecisionRec
 /// result. It is advisory and never grants or denies resource authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPreflightResult {
+    /// True only when the configured preflight caller policy requires refusal.
+    /// Findings by themselves remain advisory and never confer authority.
+    pub blocked: bool,
     pub summary: Option<String>,
 }
 

@@ -1,6 +1,6 @@
 # ADR-0040: Evidence-based agent recovery and terminal-stall authority
 
-Status: proposed
+Status: accepted
 
 Date: 2026-10-18
 
@@ -44,9 +44,9 @@ Keep bounded diagnostic incidents and graduated model guidance. A repeated call 
 
 Makes false stalls disappear but permits unlimited retries until a budget burns. Rejected for the default.
 
-## Proposed decision
+## Decision
 
-**Propose Option B; not yet accepted.** No implementation may declare the changed terminal semantics architecturally approved until the maintainer accepts this ADR or records a different decision. Under Option B:
+**Accepted Option B — evidence-gated, scope-aware recovery.** Accepted by the maintainer on 2026-10-18. Under Option B:
 1. Recovery is an advisory and adaptive mechanism until there is *affirmative*, correlated evidence of stagnation for the same work identity and state revision.
 2. Tool novelty is evidence, but inability to observe a write, external transition, or progress is *unknown*, not no-progress proof.
 3. Confirmed, consecutive no-progress cycles remain bounded. Budget exhaustion remains a separate typed termination condition, not reported as a "stalled" tool.
@@ -74,6 +74,6 @@ Do not move trust from daemon to model. Never credit volatile timestamp output o
 
 Acceptance requires deterministic replay fixtures for repeated read/tool output, identical `cargo test` before/after edits, stable no-op retries, volatile output, external job/child progression, denied/timeout/cancelled errors, context truncation, multi-call batches and unrelated incidents; a confirmed endless cycle must still stop under a documented bound. Existing C001 regression tests must remain green. Do not add a new permanent CI lane or live-provider requirement; optional manual model-backed qualification is explicitly separate.
 
-## Status / decision needed
+## Status / decision record
 
-**Proposed.** Maintainer decision required between Options A/B (B recommended) and the confirmed-stagnation/compatibility defaults before Milestone M002 modifies termination authority.
+**Accepted: Option B.** The maintainer selected evidence-gated termination on 2026-10-18. Repeated call identity or absent progress observation alone is not terminal evidence. The implementation must keep existing turn/run budgets authoritative while any missing evidence producer remains explicit; it must not fabricate confirmed stagnation to satisfy a recovery cap.

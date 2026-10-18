@@ -40,6 +40,29 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn keyword_score(tool: &ToolMetadata, terms: &[String]) -> Option<usize> {
+    let name = tokenize(&tool.name);
+    let description = tokenize(&tool.description);
+    let phrase = terms.join(" ");
+    let exact_phrase = tool.name.to_lowercase().contains(&phrase)
+        || tool.description.to_lowercase().contains(&phrase);
+    let mut score = if exact_phrase { terms.len() * 4 } else { 0 };
+    let mut matched = 0;
+    for term in terms {
+        let name_match = name
+            .iter()
+            .any(|candidate| candidate == term || candidate.starts_with(term));
+        let description_match = description
+            .iter()
+            .any(|candidate| candidate == term || candidate.starts_with(term));
+        if name_match || description_match {
+            matched += 1;
+            score += if name_match { 4 } else { 1 };
+        }
+    }
+    (matched > 0).then_some(score)
+}
+
 /// Compute IDF (Inverse Document Frequency) for a set of tool documents.
 fn compute_idf(tools: &[&ToolMetadata]) -> HashMap<String, f64> {
     let n = tools.len() as f64;
@@ -200,17 +223,21 @@ impl ToolCatalog {
         mode: SearchMode,
     ) -> Vec<ToolMetadata> {
         if mode == SearchMode::Keyword {
-            let query_lower = query.to_lowercase();
-            let mut results: Vec<_> = metadata
+            let terms = tokenize(query);
+            if terms.is_empty() {
+                return Vec::new();
+            }
+            let mut scored: Vec<_> = metadata
                 .iter()
-                .filter(|metadata| {
-                    metadata.name.to_lowercase().contains(&query_lower)
-                        || metadata.description.to_lowercase().contains(&query_lower)
-                })
-                .cloned()
+                .filter_map(|tool| keyword_score(tool, &terms).map(|score| (tool.clone(), score)))
                 .collect();
-            results.sort_by(|left, right| left.name.cmp(&right.name));
-            return results;
+            scored.sort_by(|left, right| {
+                right
+                    .1
+                    .cmp(&left.1)
+                    .then_with(|| left.0.name.cmp(&right.0.name))
+            });
+            return scored.into_iter().map(|(tool, _)| tool).collect();
         }
         if query.trim().is_empty() || metadata.is_empty() {
             return Vec::new();
@@ -323,20 +350,23 @@ impl ToolCatalog {
 
     /// Simple case-insensitive substring search (original behavior).
     fn keyword_search(&self, query: &str) -> Vec<ToolMetadata> {
-        let query_lower = query.to_lowercase();
-
+        let terms = tokenize(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
         let mut results: Vec<_> = self
             .read()
             .tools
             .values()
-            .filter(|metadata| {
-                metadata.name.to_lowercase().contains(&query_lower)
-                    || metadata.description.to_lowercase().contains(&query_lower)
-            })
-            .cloned()
+            .filter_map(|tool| keyword_score(tool, &terms).map(|score| (tool.clone(), score)))
             .collect();
-        results.sort_by(|left, right| left.name.cmp(&right.name));
-        results
+        results.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| left.0.name.cmp(&right.0.name))
+        });
+        results.into_iter().map(|(tool, _)| tool).collect()
     }
 
     /// BM25 ranked search.
@@ -506,6 +536,24 @@ mod tests {
         let catalog = ToolCatalog::new();
         let results = catalog.search("nonexistent");
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn keyword_search_ranks_multiword_task_phrases_deterministically() {
+        let mut catalog = ToolCatalog::new();
+        catalog.register(&MockTool::new(
+            "write",
+            "Write or edit files in the workspace",
+        ));
+        catalog.register(&MockTool::new("test", "Run tests and compile the project"));
+        catalog.register(&MockTool::new("weather", "Look up current weather"));
+
+        let results = catalog.search("file write edit tools available");
+        assert_eq!(
+            results.first().map(|tool| tool.name.as_str()),
+            Some("write")
+        );
+        assert!(!results.iter().any(|tool| tool.name == "test"));
     }
 
     // --- BM25 search tests ---

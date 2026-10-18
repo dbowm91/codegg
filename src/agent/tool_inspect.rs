@@ -333,6 +333,15 @@ pub(super) fn compute_model_flags(
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_stop_and_end_turn_are_post_tool_soft_finishes() {
+        assert!(is_soft_stop_reason(Some("stop")));
+        assert!(is_soft_stop_reason(Some("end_turn")));
+        assert!(!is_soft_stop_reason(Some("tool_calls")));
+        assert!(!is_soft_stop_reason(Some("length")));
+        assert!(!is_soft_stop_reason(None));
+    }
+
     /// `terminal` is `ToolCategory::ShellExec` but carries its payload as
     /// `command` + `args`. Compose it before the permission layer evaluates
     /// operator rules and bounded risk hints. Command-substitution syntax by

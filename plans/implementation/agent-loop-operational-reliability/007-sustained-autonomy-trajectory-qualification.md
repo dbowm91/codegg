@@ -32,13 +32,13 @@ No hanging background worker or endless polling; no hidden tool denial or author
 
 ## 5. Scope
 
-In: scripted-provider and fake tool-surface scenario suite over **real production wiring**, optional manually initiated model-backed smoke with exact model/provider/version, failure taxonomy and retry/rollback audit; operator guidance for making long runs observable; concise closure evidence.
+In: a composed deterministic scenario suite over **real production wiring** (bounded multi-stage harness scenarios plus focused store/provider/projection fixtures); optional manually initiated model-backed smoke with exact model/provider/version; failure taxonomy and retry/rollback audit; operator guidance for making long runs observable; concise closure evidence. The bounded scenario equivalent may be several tightly scoped fixtures when a single 100-step transcript would duplicate existing independent failure-injection owners.
 
 Out: a permanent CI stress lane, live-model nightly, benchmark competition, requiring 30–60-minute CI, SBC compilation, release gate, new agent scheduler or optimization ungrounded in measured runs.
 
 ## 6. Required production changes
 
-Do not introduce feature changes here except tiny instrumentation or regression fixes within established owners. Add deterministic fixtures that exercise `AgentLoop` + `ToolBroker` + projection + recovery, tool_search/glob, SQLite AgentRunStore + task notifications, and provider wire validation. Reuse existing `Goal`/`WorkPlan`/context-epoch controls and scheduler to test long job vs interactive turn limits separately.
+Do not introduce feature changes here except tiny instrumentation or regression fixes within established owners. Qualify the existing deterministic fixtures that exercise `AgentLoop` + `ToolBroker` + projection + recovery, tool_search/glob, SQLite AgentRunStore + task notifications, and provider wire validation. Reuse existing `Goal`/`WorkPlan`/context-epoch controls and scheduler to test long job vs interactive turn limits separately.
 
 Expose a bounded redacted event timeline: sequence, model ID and version/provenance, call identity, output requested/visible/recovered bytes, state/progress signal, recovery action, provider HTTP failure class, child run status, budget/cancellation, checkpoint ID. Do not log secrets or full hidden reasoning.
 
@@ -82,7 +82,7 @@ Update only affected `architecture/` and `docs/` surfaces; record any compatibil
 ## 13. Acceptance criteria
 
 1. Scripted multi-stage agent completes without false `ShortCycle`/`EquivalentResult` stall, missing tool description, lost paged source or undisclosed child failure.
-2. An actual confirmed stagnant cycle remains bounded and yields an explicit reason; budgets/cancellation remain independent.
+2. Repeated outcomes with unknown progress remain recoverable until an existing hard limit ends the run with its budget reason; no unsupported `stagnated` claim is emitted. Cancellation and policy denial remain independent.
 3. Simulated provider/schema and transient SQLite failures recover where safe, never duplicate a side effect and always leave the parent informed.
 4. Exact-head focused and ordinary broad checks are recorded truthfully; any unavailable platform/model test is listed, not called passed.
 5. All M001–M006 closure records and ADR-0040 disposition exist before the roadmap is marked closed.

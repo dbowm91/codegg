@@ -186,6 +186,12 @@ fn preflight_requires_escalation(
     command_preflight.is_some_and(|result| result.summary.is_some())
 }
 
+fn preflight_policy_denies_execution(
+    command_preflight: Option<&crate::tool::authorization::CommandPreflightResult>,
+) -> bool {
+    command_preflight.is_some_and(|result| result.blocked)
+}
+
 pub(super) struct ToolBatchExecutor<'a> {
     loop_: &'a mut AgentLoop,
 }
@@ -550,6 +556,7 @@ impl AgentLoop {
         ) {
             let decision = preflight.check_command(command).await;
             Some(crate::tool::authorization::CommandPreflightResult {
+                blocked: decision.is_blocked(),
                 summary: (!decision.findings().is_empty()).then(|| decision.summary()),
             })
         } else {
@@ -576,7 +583,18 @@ impl AgentLoop {
                 source: approval_source::PERMISSION_DENY.to_owned(),
             },
             PermissionResult::Allow | PermissionResult::Ask(_) => {
-                if matches!(
+                if preflight_policy_denies_execution(command_preflight.as_ref()) {
+                    DeterministicVerdict::Deny {
+                        reason: command_preflight
+                            .as_ref()
+                            .and_then(|result| result.summary.as_deref())
+                            .map(|summary| {
+                                format!("command preflight policy denied execution: {summary}")
+                            })
+                            .unwrap_or_else(|| "command preflight policy denied execution".into()),
+                        source: "command_preflight_policy".to_owned(),
+                    }
+                } else if matches!(
                     security_hint.action,
                     crate::security::policy::SecurityAction::Deny
                 ) {
@@ -2388,7 +2406,8 @@ fn truncate_for_audit(value: &str) -> String {
 #[cfg(test)]
 mod invocation_tests {
     use super::{
-        invocation_key_for, is_affirmatively_read_only_name, preflight_requires_escalation,
+        invocation_key_for, is_affirmatively_read_only_name, preflight_policy_denies_execution,
+        preflight_requires_escalation,
     };
     use crate::tool::authorization::CommandPreflightResult;
     use codegg_core::identity::AgentRunId;
@@ -2401,7 +2420,10 @@ mod invocation_tests {
         // prompt and silently outrank a stored `AlwaysAllow` grant.
         assert!(!preflight_requires_escalation(None));
         assert!(!preflight_requires_escalation(Some(
-            &CommandPreflightResult { summary: None }
+            &CommandPreflightResult {
+                blocked: false,
+                summary: None
+            }
         )));
     }
 
@@ -2409,9 +2431,25 @@ mod invocation_tests {
     fn a_command_preflight_finding_still_forces_a_human_decision() {
         assert!(preflight_requires_escalation(Some(
             &CommandPreflightResult {
+                blocked: false,
                 summary: Some("writes outside the workspace".to_string()),
             }
         )));
+    }
+
+    #[test]
+    fn configured_preflight_block_is_distinct_from_an_advisory_finding() {
+        let advisory = CommandPreflightResult {
+            blocked: false,
+            summary: Some("definite shell risk".to_string()),
+        };
+        let block_policy = CommandPreflightResult {
+            blocked: true,
+            summary: Some("definite shell risk".to_string()),
+        };
+        assert!(!preflight_policy_denies_execution(Some(&advisory)));
+        assert!(preflight_requires_escalation(Some(&advisory)));
+        assert!(preflight_policy_denies_execution(Some(&block_policy)));
     }
 
     #[test]

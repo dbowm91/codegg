@@ -1481,6 +1481,7 @@ mod tests {
                     Some("policy-r7".into()),
                 ),
                 command_preflight: Some(super::super::authorization::CommandPreflightResult {
+                    blocked: false,
                     summary: Some("bounded advisory".into()),
                 }),
             });

@@ -1,6 +1,6 @@
 # Agent Loop Operational Reliability Roadmap
 
-Status: active planning; implementation not started
+Status: active implementation and closure
 
 Audit baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (main, 2026-10-18)
 
@@ -14,7 +14,7 @@ Long-term references:
 - `plans/002-long-term-roadmap.md`
 - `plans/003-planning-process.md`
 
-Decision gate: `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md` (proposed; gates M002 termination semantics). Existing accepted shell policy ADR-0028 remains authoritative.
+Decision: `plans/adrs/ADR-0040-evidence-based-agent-recovery-termination.md` (accepted Option B on 2026-10-18; M002 must keep unknown progress nonterminal). Existing accepted shell policy ADR-0028 remains authoritative.
 
 Prior foundations, not reopened:
 - `plans/closure/agent-recovery-escalation-authority/001-status.md` (C001: removed tool-only ShortCycle, corrected equivalent-error action key and per-incident reset)
@@ -77,21 +77,21 @@ M003 discovery and glob correction ───────────┤
 M004 preflight authority clarity ─────────────┤
 M005 subagent durable admission/errors ───────┼──> M007 sustained qualification
 M006 provider/tool wire compatibility ────────┤
-ADR-0040 acceptance ──> M002 recovery ───────┘
+ADR-0040 Option B accepted ──> M002 recovery ┘
 ```
 
-M001, M003, M004, M005 and M006 are independently **ready**. M002 is **blocked** by the proposed ADR's decision on termination authority (evidence gathering/tests may be prepared but behavior must not be shipped as accepted). M007 is **blocked** until M001–M006 close with evidence. M005/M006 may run independently but must share one final subagent scenario for M007. No mandatory external dependency.
+M001–M006 are independently active. M007 remains **blocked** until M001–M006 have closure records and M002's evidence-gated behavior has been qualified. M005/M006 may run independently but must share one final subagent scenario for M007. No mandatory external dependency.
 
 ## 7. Milestones
 
 | Milestone | Class | Status | Deliverable / exit condition |
 |---|---|---|---|
-| M001 | capability | **ready** | `plans/implementation/agent-loop-operational-reliability/001-tool-aware-projection-and-artifact-paging.md`; recoverable contiguous source and artifact reads, nonrecursive paging, bounded budgets. |
-| M002 | invariant | **blocked: ADR-0040** | `plans/implementation/agent-loop-operational-reliability/002-progress-aware-recovery-and-terminal-stall-policy.md`; no false terminal stalls in revision-aware trajectories; confirmed no-op loop still bounded. |
-| M003 | polish | **ready** | `plans/implementation/agent-loop-operational-reliability/003-workspace-glob-and-tool-discovery.md`; real relative glob hits and authorized natural-language discovery. |
-| M004 | invariant | **ready** | `plans/implementation/agent-loop-operational-reliability/004-preflight-and-shell-authorization-semantics.md`; diagnostics and allow/ask/deny agree across entrypoints. |
-| M005 | infrastructure | **ready** | `plans/implementation/agent-loop-operational-reliability/005-subagent-admission-and-failure-visibility.md`; bounded busy-snapshot recovery, idempotent spawn, actionable child termination details. |
-| M006 | infrastructure | **ready** | `plans/implementation/agent-loop-operational-reliability/006-provider-tool-schema-compatibility.md`; no unsupported deferred-tool wire and bounded safe request downgrade. |
+| M001 | capability | **active** | `plans/implementation/agent-loop-operational-reliability/001-tool-aware-projection-and-artifact-paging.md`; recoverable contiguous source and artifact reads, nonrecursive paging, bounded budgets. |
+| M002 | invariant | **active** | `plans/implementation/agent-loop-operational-reliability/002-progress-aware-recovery-and-terminal-stall-policy.md`; ADR-0040 Option B accepted; unknown progress remains nonterminal and the hard run/turn budget remains authoritative. |
+| M003 | polish | **active** | `plans/implementation/agent-loop-operational-reliability/003-workspace-glob-and-tool-discovery.md`; real relative glob hits and authorized natural-language discovery. |
+| M004 | invariant | **active** | `plans/implementation/agent-loop-operational-reliability/004-preflight-and-shell-authorization-semantics.md`; diagnostics and allow/ask/deny agree across entrypoints. |
+| M005 | infrastructure | **active** | `plans/implementation/agent-loop-operational-reliability/005-subagent-admission-and-failure-visibility.md`; bounded busy-snapshot recovery, idempotent spawn, actionable child termination details. |
+| M006 | infrastructure | **active** | `plans/implementation/agent-loop-operational-reliability/006-provider-tool-schema-compatibility.md`; no unsupported deferred-tool wire and bounded safe request downgrade. |
 | M007 | capability | **blocked: M001–M006** | `plans/implementation/agent-loop-operational-reliability/007-sustained-autonomy-trajectory-qualification.md`; deterministic end-to-end replay and optional manual duration run; no permanent new CI lane. |
 
 ## 8. Cross-cutting requirements
@@ -106,7 +106,7 @@ M001, M003, M004, M005 and M006 are independently **ready**. M002 is **blocked**
 
 ## 9. Verification and closure policy
 
-Each milestone's implementation plan defines required focused tests, a native integration path, cancellation/restart/security negatives, and commands. Baseline canonical checks are `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `scripts/verify.sh quick`, proportionate to changed scope. No command is claimed executed by this planning commit. M007 owns a reproducible deterministic scripted-model workload and manual optional 30–60-minute model-backed smoke, *not* a fixed CI duration gate. No SBC compile/startup benchmark.
+Each milestone's implementation plan defines required focused tests, a native integration path, cancellation/restart/security negatives, and commands. Baseline checks are `cargo fmt --all -- --check`, clippy with the supported feature set (never `--all-features` for workspace sweeps), and `scripts/verify.sh quick`, proportionate to changed scope. M007 owns a reproducible deterministic scripted-model workload and manual optional 30–60-minute model-backed smoke, *not* a fixed CI duration gate. No SBC compile/startup benchmark.
 
 ## 10. Risks and deferred work
 

@@ -1026,6 +1026,45 @@ impl Tool for ReadProbeTool {
     }
 }
 
+/// A source read whose numbered output passes through the production
+/// projection path in `AgentLoop`.
+struct LargeSourceReadTool;
+
+#[async_trait]
+impl Tool for LargeSourceReadTool {
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Reads a source file"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"],
+        })
+    }
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        Ok((1..=1_000)
+            .map(|line| format!("{line:>6}: source line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+    fn category(&self) -> codegg::tool::ToolCategory {
+        codegg::tool::ToolCategory::ReadOnly
+    }
+    fn contract(
+        &self,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> codegg::tool::contract::ToolContract {
+        let mut contract = codegg::tool::contract::ToolContract::legacy(tool_name, input_schema);
+        contract.effect_class = codegg::tool::contract::ToolEffectClass::ReadOnly;
+        contract
+    }
+}
+
 /// A mutating probe that always fails, with a process-class contract.
 struct FailingBuildTool;
 
@@ -1106,6 +1145,110 @@ fn recovery_registry() -> ToolRegistry {
     registry.register(FailingBuildTool);
     registry.register(ShellProbeTool);
     registry
+}
+
+struct DeferredSchemaTool;
+
+#[async_trait]
+impl Tool for DeferredSchemaTool {
+    fn name(&self) -> &str {
+        "deferred_probe"
+    }
+    fn description(&self) -> &str {
+        "A deferred schema used by provider compatibility tests"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{}})
+    }
+    fn defer_loading(&self) -> bool {
+        true
+    }
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        Ok("unused".into())
+    }
+}
+
+#[derive(Clone)]
+struct DeferredSchemaRejectingProvider {
+    requests: Arc<Mutex<Vec<ChatRequest>>>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for DeferredSchemaRejectingProvider {
+    fn id(&self) -> &str {
+        // Deliberately claims the provider-family capability. The fake
+        // endpoint below is stricter and rejects the extension field.
+        "anthropic"
+    }
+    fn name(&self) -> &str {
+        "deferred-schema-rejecting fake gateway"
+    }
+    fn clone_box(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        self.requests.lock().await.push(request.clone());
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(ProviderError::api(
+                "400",
+                "Unsupported field defer_loading in tool definition",
+            ));
+        }
+        Ok(Box::pin(futures_util::stream::iter(vec![
+            Ok(ChatEvent::TextDelta("done".to_string().into())),
+            Ok(finish_event()),
+        ])))
+    }
+    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![ModelInfo {
+            id: "test/model".into(),
+            name: "Test Model".into(),
+            provider: "anthropic".into(),
+            context_window: 4096,
+            max_output_tokens: Some(2048),
+            supports_tools: true,
+            supports_vision: false,
+            variants: vec![],
+        }])
+    }
+}
+
+#[tokio::test]
+async fn deferred_schema_400_retries_once_without_changing_authorized_tools() {
+    let provider = DeferredSchemaRejectingProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let requests = Arc::clone(&provider.requests);
+    let mut registry = ToolRegistry::new();
+    registry.register(DeferredSchemaTool);
+    let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Allow,
+        tool_rules: vec![],
+        path_rules: vec![],
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+    agent_loop
+        .run(make_chat_request("Use the deferred probe"))
+        .await
+        .expect("the request-only compatibility retry should complete");
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].model, requests[1].model);
+    let first_tools = requests[0].tools.as_ref().expect("initial tool surface");
+    assert!(first_tools
+        .iter()
+        .any(|tool| tool.name == "deferred_probe" && tool.defer_loading == Some(true)));
+    let fallback_tools = requests[1].tools.as_ref().expect("fallback tool surface");
+    assert!(fallback_tools
+        .iter()
+        .any(|tool| tool.name == "deferred_probe"));
+    assert!(fallback_tools
+        .iter()
+        .all(|tool| tool.defer_loading.is_none()));
 }
 
 fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider) {
@@ -1236,14 +1379,13 @@ async fn exploring_with_alternating_reads_and_shell_never_stalls() {
     );
 }
 
-/// The true positive through the real loop: the identical failing call repeated
-/// must still terminate the turn, and the ladder must break out rather than
-/// consuming every scripted turn. Narrowing what counts as an incident must not
-/// make a real loop survivable.
+/// Repeated identical outcomes without a correlated state revision are unknown,
+/// not affirmative stagnation. They may trigger bounded guidance, but the turn
+/// remains governed by its ordinary hard execution budget.
 #[tokio::test]
-async fn an_identical_repeated_failure_still_stalls_the_turn() {
+async fn an_identical_repeated_failure_does_not_claim_confirmed_stagnation() {
     const SCRIPTED_TURNS: usize = 12;
-    let responses = (0..SCRIPTED_TURNS)
+    let mut responses = (0..SCRIPTED_TURNS)
         .map(|_| {
             vec![
                 tool_call_event(
@@ -1255,22 +1397,140 @@ async fn an_identical_repeated_failure_still_stalls_the_turn() {
             ]
         })
         .collect::<Vec<_>>();
+    responses.push(vec![
+        ChatEvent::TextDelta("done".to_string().into()),
+        finish_event(),
+    ]);
 
     let (mut agent_loop, provider) = recovery_loop(responses);
     agent_loop
         .run(make_chat_request("Fix the build"))
         .await
-        .expect("a stalled turn still returns rather than hanging");
+        .expect("unconfirmed repeated work must remain recoverable");
 
     let consumed = provider.request_count().await;
     assert!(
-        consumed < SCRIPTED_TURNS,
-        "the bounded ladder must break the turn before every scripted turn: {consumed}"
+        consumed > SCRIPTED_TURNS,
+        "the turn should continue to the scripted completion after repeated unknown outcomes: {consumed}"
     );
+}
+
+#[tokio::test]
+async fn repeated_unknown_outcomes_remain_bounded_by_the_hard_turn_limit() {
+    let responses = (0..8)
+        .map(|_| {
+            vec![
+                tool_call_event(
+                    "build-same",
+                    "probe_build",
+                    serde_json::json!({ "crate": "core" }),
+                ),
+                finish_event(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let (mut agent_loop, provider) = recovery_loop(responses);
+    agent_loop.set_max_turns(3);
+    agent_loop
+        .run(make_chat_request("Repeat a build observation"))
+        .await
+        .expect("hard turn exhaustion is a normal bounded completion");
+    assert_eq!(
+        provider.request_count().await,
+        3,
+        "unknown repeated outcomes must reach, then stop at, the hard turn cap"
+    );
+}
+
+#[tokio::test]
+async fn large_source_read_reaches_the_next_model_request_as_a_contiguous_page() {
+    let responses = vec![
+        vec![
+            tool_call_event(
+                "large-source-read",
+                "read",
+                serde_json::json!({ "path": "src/large.rs" }),
+            ),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("I have enough source context.".to_string().into()),
+            finish_event(),
+        ],
+    ];
+    let provider = ScriptedProvider::new(responses);
+    let mut registry = ToolRegistry::new();
+    registry.register(LargeSourceReadTool);
+    let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Allow,
+        tool_rules: vec![],
+        path_rules: vec![],
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(Box::new(provider.clone()), registry, permissions);
+    agent_loop
+        .run(make_chat_request("Inspect the large source file"))
+        .await
+        .expect("the source-read trajectory should complete");
+
+    let requests = provider.get_requests().await;
     assert!(
-        consumed >= 2,
-        "the identical repeat must still be detected, not ignored: {consumed}"
+        requests.len() >= 2,
+        "the provider must receive the read result"
     );
+    let tool_result = requests[1]
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            Message::Tool { content, .. } => Some(content.as_ref()),
+            _ => None,
+        })
+        .expect("the second model request must contain the source result");
+    let visible_lines = tool_result
+        .lines()
+        .filter(|line| line.contains(": source line "))
+        .collect::<Vec<_>>();
+    assert!(
+        visible_lines.len() > 20,
+        "only {} source lines reached the model",
+        visible_lines.len()
+    );
+    assert!(visible_lines[0].contains("1: source line 1"));
+    assert!(visible_lines.windows(2).all(|pair| {
+        let line_number = |line: &str| {
+            line.split_once(':')
+                .and_then(|(number, _)| number.trim().parse::<usize>().ok())
+                .expect("projected source line has a number")
+        };
+        line_number(pair[1]) == line_number(pair[0]) + 1
+    }));
+    assert!(tool_result.contains("Continue with read offset="));
+    assert!(!tool_result.contains("1000: source line 1000"));
+    let calls = requests
+        .last()
+        .expect("the completed turn has a provider request")
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Assistant { tool_calls, .. } => Some(tool_calls.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.name.as_ref() == "read")
+            .count(),
+        1,
+        "the model-visible page must avoid a forced second source read"
+    );
+    assert!(!calls
+        .iter()
+        .any(|call| call.name.as_ref() == "context_read"));
 }
 
 #[tokio::test]
