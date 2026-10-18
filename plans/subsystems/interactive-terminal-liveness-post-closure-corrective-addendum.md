@@ -1,6 +1,6 @@
 # Interactive Terminal Liveness Post-Closure Corrective Addendum
 
-Status: active (C001 and C002 closed; C003 deliberately unopened)
+Status: **complete** (C001 conditionally closed — condition discharged by C003; C002 closed; C003 closed; C004 closed 2026-10-17)
 
 Long-term references:
 - `plans/000-long-term-specification.md#45-locality-by-default` — PTYs execute on the node owning the workspace; the coordinator receives **structured events and bounded output** rather than proxying local operation synchronously.
@@ -58,10 +58,15 @@ Ownership boundary:
 
 ### Capabilities
 
-- **K1 — C001.** Typing a command into the box or the panel produces visible output on that
-  surface without any manual recovery action.
+- **K1 — C001 (conditionally closed).** Typing a command into the box or the panel produces
+  visible output on that surface without any manual recovery action. **Falsified for the idle
+  state** at baseline `18c3dca92`: the cadence arm is dark unless something else is animating the
+  frame, so output appears only when the user presses another key. C003 owns the repair.
 - **K2 — C002.** The interactive terminal is available on every supported frontend transport,
   or an honest typed refusal explains why it is not.
+- **K3 — C003.** A mounted, live terminal surface keeps producing output while the user is idle,
+  and the canonical mode badge and contextual hint line both report the surface that actually owns
+  the keyboard.
 
 ### Infrastructure
 
@@ -72,7 +77,12 @@ Ownership boundary:
 
 - Surface status text ("no output yet", "attach to follow", resize state) must not claim
   liveness the code does not deliver. Polish, and it is inseparable from K1 here because the
-  false text is part of the reported defect.
+  false text is part of the reported defect. The same reasoning moved the canonical `[NOR]`/`[INS]`
+  badge into C003 (K3) rather than polish: a badge that reports the wrong keyboard owner is false
+  state text, not ergonomics.
+- The hint row's visibility when the panel is unfocused, the Insert-mode cursor blink, the prompt
+  line after a new or cleared terminal, and reader-cursor placement on `Esc` are C004 polish —
+  correctly ordered after C003, since the blink is unimplementable before the loop is armed.
 
 ## 3. Non-goals
 
@@ -278,15 +288,113 @@ The frontend boundary is now stated in `architecture/tui.md`, `docs/tui.md`, and
 TUI skill. As required, none of them claims that remote principals are prevented from
 creating interactive processes; `/core` still routes that family and R001 owns it.
 
-### C003 — Terminal surface polish follow-ups
+### C003 — Live-surface cadence arming and honest mode state
+
+Class: **capability** (K1), corrective against C001's strict closure claim.
+
+**Reclassified 2026-10-17.** C003 was previously scoped as the polish slot ("any residual
+ergonomics surfaced by C001"). That classification was wrong, and the research that produced this
+milestone is the reason. At baseline `18c3dca92` K1 is **not** delivered in the state a docked
+terminal spends most of its life, and the residue is not ergonomics — it is a false capability
+claim plus a false mode claim, both of which `plans/003-planning-process.md` §3 treats as
+correctness rather than polish.
+
+**Finding 1 — the pull is reachable only from a dark arm.**
+`service_terminal_output_pull` has exactly one call site, inside the timed arm of the `select!`
+at `src/tui/runtime/event_loop.rs:457`. That arm runs only when `next_wake` is `Some`
+(`:288-292`), which requires an animation source. When `!streaming_active`,
+`render_interval` is `Duration::ZERO` (`:150-154`) and `render_delay_after(last_render, ZERO)`
+returns `None`, because `elapsed < ZERO` is never true; `animation_interval` is `Some` only while
+a turn is streaming, a turn is working, or a toast is alive (`:262-264`). With `next_wake == None`
+the arm parks on `futures_util::future::pending()` (`:423-428`) indefinitely. So a mounted, live
+terminal surface is read only while a toast is alive, a keystroke arrives, or a resize is
+debouncing — and a command's output appears only when the user presses the next key. Reported as
+"exceptionally laggy and slow, to the point that I thought it was not actually working". A fresh
+shell's `bash-3.2$` prompt is subject to the same defect, which is the "new terminal is blank"
+half of the report.
+
+**Why C001's evidence did not catch it.** The C001 acceptance tests call the pull **directly** —
+`service_terminal_output_pull(&mut app)` at
+`src/tui/commands/interactive_terminal.rs:2975` — so they prove the pull issues a bounded read,
+that the completion applies, and that both surfaces repaint. They do not prove the loop arms it,
+because the test harness supplies the polling loop the production loop withholds.
+`tests/interactive_terminal_tui.rs:83` likewise calls `protocol.resume` outside `App`. No test in
+the tree drives the real `select!` with a live surface and an idle frame budget. C001's closure
+record §2 row "Bounded pull on the existing cadence, no second timer" and §4 "Both surfaces
+repaint on chunk" are therefore not established for the idle state. Per `plans/registry.md`
+maintenance rule 6, C001 moves to **conditionally closed**; its closure record is **not** edited.
+
+**Finding 2 — the canonical badge cannot report the terminal's INS state.** The badge reads
+`ui_state.input_mode` directly (`src/tui/app/render.rs:1929-1940`); `focus_panel` forces
+`input_mode = Normal` whenever a panel takes the keyboard
+(`src/tui/commands/panels.rs:692-702`); `focus_terminal_panel`/`blur_terminal_panel` mutate only
+the controller and never touch `ui_state.input_mode`; and the only writer of `InputMode::Insert`
+is the composer's `i` (`src/tui/app/mod.rs:3987-3991`), which a focused terminal panel
+pre-empts. The badge is pinned to `[NOR]` in both modes and the row reads
+`[NOR] [build] [TERM]` while the user types into a shell. The same cause makes the INS branch of
+`TerminalPanel::composer_hints` (`src/tui/panels/terminal.rs:409`) **unreachable**, so the hint
+line describes reader navigation precisely while the user is typing. This is false state text,
+which §2 already classifies as inseparable from K1 ("must not claim liveness the code does not
+deliver").
+
+Objective: make the cadence reachable while the user is idle, and make one derived mode answer
+feed both the badge and the hint line.
+
+Deliverable boundary: TUI frontend only — an arming change in the event loop that reuses the
+existing tick, one derived "effective input mode" accessor consumed by both surfaces, and
+end-to-end evidence driven through the **real** event loop. No transport, no protocol variant, no
+storage, no bus event, and no change to what a key means.
+
+Exit conditions: every acceptance criterion in
+`plans/implementation/interactive-terminal-liveness-post-closure-corrective/003-live-surface-cadence-and-honest-mode-state.md`
+§13, with the Work package A baseline failure recorded before any production change.
+
+Plan: `plans/implementation/interactive-terminal-liveness-post-closure-corrective/003-live-surface-cadence-and-honest-mode-state.md`.
+
+### C004 — Terminal surface ergonomics
 
 Class: **polish**.
 
-Objective: any residual ergonomics surfaced by C001 — hint-row wording, focus-ring parity
-between box and panel, scrollback affordances.
+Objective: the affordances the earlier milestones left — the contextual hint row when the panel is
+unfocused, an Insert-mode cursor blink, a usable prompt line for a new or cleared terminal, and
+reader-cursor placement when leaving Insert. The polish work C003 previously held.
 
-Deliberately **not opened**, and ordered after C001 and C002 per `plans/003-planning-process.md`
-§3 (polish follows functional and correctness closure).
+**Unblocked 2026-10-17** by C003's closure, which delivered the armed cadence this milestone's
+blink depends on; the loop now wakes for a mounted surface, so a time-varying render has a frame
+to land on. The dependency was technical rather than conventional: a blink is a time-varying
+render, and the loop only repaints while something arms it, so before C003 a blinking cursor
+would have advanced only while a toast or keystroke happened to drive the frame — a worse symptom
+than no blink. The hint-row change is also a layout change to the same
+`composer_hint_text` and reserved-row arithmetic C003's derived-mode work touches; doing both in
+one milestone makes a one-row reflow indistinguishable from a mode-reporting regression.
+
+Two decisions are recorded here rather than left implicit:
+
+- **The unfocused hint row.** `TerminalPanel::composer_hints` returns `Some` even when unfocused
+  (`src/tui/panels/terminal.rs:397-414`), where every other panel returns `None`, so the TERM line
+  persists above a composer the terminal no longer owns. This reverses the seam's own documented
+  rationale (`src/tui/panels/mod.rs:1519-1527`: "a docked panel names itself and the gesture that
+  enters it"). C004's default is to return `None` when unfocused and narrow the seam's contract
+  rather than delete it; the seam documentation must be updated in the same change.
+- **Clear.** `clear_scrollback` wipes the emulator locally and tells nothing
+  (`src/tui/interactive_terminal.rs:1482-1504`), so the shell never re-prints `PS1` and the panel
+  stays blank. C004's default is to drive the shell's own clear through the existing typed input
+  path, because synthesizing a prompt fabricates a line the process never emitted — the same
+  reasoning that already forbids manufacturing a resync.
+
+`escape` (`src/tui/interactive_terminal.rs:1440-1451`) never moves `nav`, so leaving Insert leaves
+the reader cursor wherever `sync_viewport` clamped it — the bottom of live output. C004 owns the
+placement rule and must record which rule it chose for a multi-line output block.
+
+**Closed 2026-10-17** at `plans/closure/interactive-terminal-liveness-post-closure-corrective/004-status.md`,
+all four items delivered, each falsified on baseline first. The two decisions recorded above were
+taken as written (the unfocused row returns `None`; the shell's own clear is driven rather than a
+prompt synthesized), and the placement rule resolved as **the last row that has content, or row 0
+when nothing has** — superseding the plan's default wording of "the line above the last one",
+which trades one wrong place for another on the common case of a prompt sitting on row 0 of an
+otherwise blank screen.
+
+Plan: `plans/implementation/interactive-terminal-liveness-post-closure-corrective/004-terminal-surface-ergonomics.md`.
 
 ## 8. Cross-cutting requirements
 
@@ -332,21 +440,40 @@ Deliberately **not opened**, and ordered after C001 and C002 per `plans/003-plan
 | WS-attach parity gets bundled into C001 | Prohibited. C002 owns the transport boundary; C001 stops at the socket-daemon frontend and says so |
 | Option A (routing terminal bytes) gets bundled into C002 | Prohibited. It is ADR-gated and belongs to a new milestone; C002 delivers the typed refusal (Option B) only |
 | C002's closure is read as "remote principals cannot get a PTY" | Prohibited. C002 closes the **frontend** half only; `/core` already routes `InteractiveProcess*`, tracked by `plans/subsystems/remote-interactive-process-authorization-corrective-roadmap.md` |
+| The pull service is reachable from a test but not from the loop | **This is why C001's strict claim failed.** A cadence service called directly by a test proves the function, not the wiring; the harness supplied the loop the production loop withholds. C003 Work package A must drive the real `select!` and fail on baseline first |
+| Arming the cadence grows into a second timer, thread, or interval | Prohibited by I4. Reuse the existing tick. Stop and report rather than add a cadence |
+| Arming the loop turns every mounted terminal into an unbounded poller | The arm reuses `mounted_terminal_surface`, whose visibility rule is what makes an unmounted surface cost nothing, and the one-in-flight-read gate bounds request rate. Re-deriving liveness from `link == Live` at the loop is the mistake its doc comment warns against |
+| The mode badge is "fixed" by writing `ui_state.input_mode` from render | Prohibited. The badge must read a derived answer; render may not move the keyboard. `Route::Editor` (`src/tui/app/render.rs:767-788`) is the precedent |
+| The derived mode fix reopens what a key means | Prohibited by I3. Reporting mode is in scope; changing key classification is not. Stop and report |
+| C003's reclassification is read as reopening closed polish scope | Not a reopening. C003 was never opened; its *classification* was wrong. Polish moves to C004 and stays correctly ordered after correctness (`plans/003-planning-process.md` §3) |
+| C004's blink is implemented before C003 closes | Prohibited and technically unsound: with the loop parked, the cursor would advance only while a toast or keystroke drove the frame |
+| C004 fabricates a prompt line on clear | Prohibited without an explicit recorded decision. The default is to drive the shell's own clear; a synthesized prompt is a product decision, not an implementation detail |
+| C004's hint-row change silently alters other panels | Prohibited. The shared seam (`src/tui/panels/mod.rs:1519-1527`) is documented; overturning it requires updating that documentation in the same change |
 
 ## 11. Completion definition
 
 This workstream completes when a user, on the socket-daemon frontend, can create an
 interactive terminal, type arbitrary commands, and see the resulting output in the box and in
-the docked panel without any manual recovery action (K1); when every terminal surface states
-what it is actually doing; when no milestone here has left the read side unreached; and when
-K2 is either delivered or recorded as an explicit, typed transport refusal. The closure record
-must also additively record that C001 falsifies the liveness implication in the two predecessor
-closure records named in §Predecessor closures, **without editing those records**.
+the docked panel without any manual recovery action **and without typing another key to
+provoke it** (K1, as repaired by C003); when that same surface keeps producing output while the
+user is idle, and when the canonical mode badge and contextual hint line agree about which
+surface owns the keyboard (K3); when every terminal surface states what it is actually doing;
+when no milestone here has left the read side unreached; and when K2 is either delivered or
+recorded as an explicit, typed transport refusal. Every acceptance signal must be driven through
+the **real** event loop — §9's "the harness must not supply the loop the production loop
+withholds" is now a standing requirement of this workstream, not only of C003.
+
+Closure also requires the C004 polish boundary to be either delivered or explicitly deferred
+with a recorded reason, so that no part of the reported user-facing surface is left silently
+unowned. The closure record must additively record that C001 falsifies the liveness implication in
+the two predecessor closure records named in §Predecessor closures **and in C001's own strict
+claim**, without editing those records.
 
 ## 12. Milestone status table
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | closed | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/001-live-output-pull-and-terminal-liveness-closure.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/001-status.md` | none |
+| C001 | **conditionally closed** — condition **discharged** by C003's closure 2026-10-17 (strict liveness claim was falsified 2026-10-17) | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/001-live-output-pull-and-terminal-liveness-closure.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/001-status.md` | none; the record is **not** edited — the correction is additive, per registry rule 6, and C003's closure discharges the condition rather than reopening it |
 | C002 | closed (Option B — honest typed refusal) | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/002-honest-transport-refusal-and-capability-boundary.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/002-status.md` | none; no ADR required — C002 delivered no transport |
-| C003 | not opened | — | — | polish, ordered after C001/C002 |
+| C003 | **closed 2026-10-17** (reclassified from polish to capability 2026-10-17) | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/003-live-surface-cadence-and-honest-mode-state.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/003-status.md` | none; conformance against the closed event loop and panel-key interfaces. No ADR required; no second timer (I4); no terminal bytes on the bus (I2) |
+| C004 | **closed 2026-10-17** | `plans/implementation/interactive-terminal-liveness-post-closure-corrective/004-terminal-surface-ergonomics.md` | `plans/closure/interactive-terminal-liveness-post-closure-corrective/004-status.md` | none; both former blockers were discharged by C003's closure — the loop is now armed for a mounted surface, and the derived-mode work has landed. No ADR required. The only item left open is the box's viewport plumbing, deferred with a recorded reason in the closure record |

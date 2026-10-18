@@ -30,7 +30,7 @@ use crate::protocol::interactive_process::{
 use crate::tui::app::TerminalResumeRequest;
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_registered_tui_task;
-use crate::tui::interactive_terminal::{TerminalKey, TerminalKeyAction};
+use crate::tui::interactive_terminal::{TerminalInputError, TerminalKey, TerminalKeyAction};
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// Resolve the canonical workspace for a new terminal from the active
@@ -857,6 +857,49 @@ fn mounted_terminal_surface(app: &App) -> Option<String> {
     app.panel_host.visible_terminal_handle()
 }
 
+/// The event-loop interval at which a mounted terminal surface is polled.
+///
+/// A sibling of the loop's other render cadences rather than a timer of its
+/// own: the terminal reads through the pump tick that already services the
+/// editor's semantic refresh, and one cadence for the TUI is the whole point
+/// (I4). 100ms is the same order as the working strip's and far below the
+/// point at which a shell's output reads as arriving in steps.
+pub(crate) const TERMINAL_PULL_RENDER_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+/// Whether the pump tick has a reason to stay awake on a mounted terminal's
+/// behalf.
+///
+/// The loop asks this **before** it selects, and `None` here is not "sleep for
+/// a while" — it is `futures_util::future::pending()` at the timed arm, so
+/// every service reached only from that arm is unreachable. When the only
+/// contributors were a streaming turn, a working turn and a live toast, a
+/// mounted terminal was read only while one of those happened to be true:
+/// output became visible when the user pressed the next key, a toast was
+/// alive, or a resize was debouncing.
+///
+/// Two rules make this correct rather than merely present:
+///
+/// - **Mount, never read state.** This must *not* consult
+///   `begin_output_read`, `output_read_in_flight`, the recorded refusal, or
+///   `TerminalLinkState`. Gating the arm on any of those latches the loop off:
+///   the arm goes dark, so nothing ever wakes it to issue the read that would
+///   clear the condition, and the surface is dead until a keystroke arrives.
+///   Those checks belong to the pull, where refusing one pass is harmless.
+/// - **Mirror the pull's free early returns only.** It mirrors the two guards
+///   `service_terminal_output_pull` passes through *without doing work* — a
+///   mounted surface, and a client to read with. Everything else the pull
+///   checks means "do not issue anything this pass", which is the pull's
+///   business. Re-deriving any of it here would be a second liveness rule
+///   free to drift from the first.
+pub(crate) fn terminal_pull_armed(app: &App) -> bool {
+    // `mounted_terminal_surface` allocates one `String` for the handle. That is
+    // bounded, once per iteration, and only reached when a terminal exists;
+    // splitting it into an allocation-free twin would be a second copy of the
+    // visibility rule, which is the more expensive kind of cheap.
+    mounted_terminal_surface(app).is_some() && app.core_client.is_some()
+}
+
 /// Pull live output for the mounted terminal surface, if it needs it.
 ///
 /// Called from the event loop's pump tick. Returns `true` when it issued a
@@ -1610,7 +1653,20 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
     let selection_style = ratatui::style::Style::default().bg(app.ui_state.theme.selection);
     let output = app
         .interactive_terminals
-        .render_view(handle, 200, selection_style)
+        .render_view(
+            handle,
+            200,
+            // The box is a *pushed* dialog: its content is styled here and
+            // re-read when this runs, not every frame. That is enough because
+            // the armed cadence (C003) re-runs this on every output pull, so
+            // while the box is up it is repainted at the same 100ms tick the
+            // blink is measured in — five ticks per phase. A box whose link
+            // stopped reading does not repaint, and its caret holds its last
+            // phase; the same frame also shows that read stopped, so the frozen
+            // caret is explained rather than mysterious.
+            crate::tui::components::spinner::cursor_blink_visible_now(),
+            selection_style,
+        )
         .unwrap_or_default();
     // The box mounts the emulator's whole screen as scrollable content and
     // then follows the end of it. Trailing blank rows are not content: on a
@@ -1735,23 +1791,83 @@ pub(crate) fn blur_terminal_panel(app: &mut App, handle: &str) {
         .info("Terminal NOR: keys move the cursor here. i types; Shift+← leaves the panel");
 }
 
-/// Clear the local scrollback and screen for `handle`.
+/// The bytes a clear sends to the process so it repaints its own prompt.
 ///
-/// Local only: the process keeps running and the daemon keeps streaming.
-/// Sequence tracking is preserved by `clear_scrollback`, so the next chunk
-/// arrives as an ordinary continuation rather than a gap the user cannot
-/// explain.
+/// Erase-display + cursor-home, then a bare newline. Both halves are needed
+/// and neither is enough alone:
+///
+/// - **ED 2 + CUP** is what a terminal means by "clear", and it is what the
+///   process's own terminal and our emulator both understand. Sent alone it
+///   leaves the screen blank, because nothing told the shell a command
+///   finished — a shell draws `PS1` after a *command*, not after an escape.
+/// - **The newline** completes an empty command line, so the shell draws a
+///   fresh `PS1` at the new home row.
+///
+/// Sent as the literal command `clear\r` instead? It would work, and it is
+/// what a user types, but it depends on a `clear` binary existing on the
+/// child's `PATH` — and when it does not, the user is shown `clear: command not
+/// found`, an error for a keystroke they never typed. The escape sequence has
+/// no such dependency and works for `sh`, `zsh`, `fish` and a custom `PS1`
+/// alike. Nothing here is synthesised on our side: every byte the reader ends
+/// up looking at came out of the process.
+const CLEAR_THROUGH_PROCESS: &[u8] = b"\x1b[2J\x1b[H\r";
+
+/// Clear the local scrollback and screen for `handle`, and ask the process to
+/// repaint.
+///
+/// Two halves, and the order between them is the whole decision:
+///
+/// 1. **Queue the clear for the process first.** It goes through the same
+///    bounded, permissioned, live-link path as any keystroke — the one thing
+///    this may never become is a privileged write that bypasses input gating.
+///    A typed refusal here reports itself and leaves the screen alone, because
+///    a local wipe whose repaint never arrived is a blank screen the user did
+///    not ask for.
+/// 2. **Then wipe locally.** `clear_scrollback` still drops the retained
+///    scrollback and the selection, and still preserves `next_seq`, so the
+///    next honest chunk arrives as an ordinary continuation. It is also what
+///    makes the clear immediate: the process's own prompt is one round trip
+///    away, and until it lands the local wipe is the only thing that has
+///    happened.
+///
+/// A view with **no live process** — exited, gone, or detached — takes the
+/// local wipe alone and is not refused. The plan's failure semantics suggested
+/// leaving the screen intact whenever the input path refuses, and that is right
+/// for every refusal *except* this one: there is no process left to print a
+/// prompt, so nothing is being suppressed, and refusing would take away the
+/// only way to clear the output of a shell that has finished. The blank screen
+/// it leaves is the truth about a dead process rather than a fabricated one.
+///
+/// Local only in the sense that nothing reaches the daemon: the process keeps
+/// running and the daemon keeps streaming, so sequence tracking is preserved
+/// and a clear can never manufacture a resync.
 pub(crate) fn clear_terminal(app: &mut App, handle: &str) {
+    if app.interactive_terminals.view(handle).is_none() {
+        app.messages_state
+            .toasts
+            .warning("No terminal selected to clear");
+        return;
+    }
+    match app
+        .interactive_terminals
+        .queue_input(handle, CLEAR_THROUGH_PROCESS)
+    {
+        Ok(()) | Err(TerminalInputError::NotLive(_)) => {}
+        Err(error) => {
+            app.messages_state.toasts.warning(&error.to_string());
+            return;
+        }
+    }
     if app.interactive_terminals.clear_scrollback(handle) {
         // A box may be showing the same view; repaint it so the clear is
         // visible in whichever surface the user is actually looking at.
         if app.dialog_state.terminal_detail_handle.as_deref() == Some(handle) {
             refresh_terminal_dialog(app, handle);
         }
-    } else {
-        app.messages_state
-            .toasts
-            .warning("No terminal selected to clear");
+        // Out the bytes now rather than waiting for the cadence's next pass:
+        // the clear is the one input whose result the user is watching for,
+        // and the panel's own path already flushes per keystroke.
+        flush_terminal_input(app, handle.to_string());
     }
 }
 
@@ -2911,6 +3027,68 @@ mod tests {
     /// Select the terminal panel through the panel manager — the same keystrokes a
     /// user presses — and put the app in Normal mode, which is the only mode in
     /// which a panel holds the keyboard.
+    /// Wait until the create command has been **applied** to `app`, and return the
+    /// handle it produced.
+    ///
+    /// One [`drain_tui_commands`] is not enough, and the gap is invisible. It stops
+    /// at the first 25ms silence in the command channel, but the *create* is what
+    /// materialises the view, opens the box and gives the panel something to adopt.
+    /// A drain that consumes the create and then finds the channel quiet for 25ms
+    /// returns with no terminal at all, and the test that reads
+    /// `panel_host.terminal_handle()` or `ui_state.dialog` next fails on an
+    /// assertion that has nothing to do with the behaviour it means to pin.
+    ///
+    /// This is the same defect, one step earlier than [`await_live_attachment`]:
+    /// that one waits for the attach, this one waits for the create that spawns
+    /// it. Both are latent in the C003 fixtures and both surface as "the premise
+    /// failed" rather than as a race, which is why they are worth naming.
+    async fn await_terminal_create(app: &mut App) -> String {
+        let started = Instant::now();
+        loop {
+            if let Some(handle) = app.interactive_terminals.active_handle() {
+                return handle.to_string();
+            }
+            assert!(
+                started.elapsed() <= PULL_TIMEOUT,
+                "the terminal create never landed; toasts={:?}",
+                toast_messages(app)
+            );
+            drain_tui_commands(app).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Wait until `handle` holds a live attachment.
+    ///
+    /// **A single [`drain_tui_commands`] is not enough, and the gap is invisible.**
+    /// It stops at the first 25ms silence, but the attach is spawned *by* the
+    /// create completion — so a drain that consumed the create and then found the
+    /// channel quiet for 25ms returns with a view that exists and has no
+    /// attachment. `i` against such a view is refused by
+    /// [`InteractiveTerminalController::focus`], the refusal re-attaches instead of
+    /// focusing, and the test that pressed `i` "to take the PTY" silently went on
+    /// to assert against a terminal nobody was typing into.
+    ///
+    /// That was a latent race in the fixtures until the hint row narrowed to
+    /// `None`: a panel that never got the keyboard looks exactly like a panel that
+    /// just handed it back, so the stale fixture kept passing and reported the
+    /// failure somewhere else entirely.
+    async fn await_live_attachment(app: &mut App, handle: &str) {
+        let started = Instant::now();
+        while app.interactive_terminals.attachment_id(handle).is_none() {
+            assert!(
+                started.elapsed() <= PULL_TIMEOUT,
+                "the attachment for {handle} never landed; view={:?}",
+                app.interactive_terminals
+                    .view(handle)
+                    .map(|view| view.status_line())
+            );
+            service_terminal_output_pull(app);
+            drain_tui_commands(app).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     fn select_terminal_panel(app: &mut App) {
         use crate::tui::panels::SidePanelId;
         app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
@@ -2948,7 +3126,7 @@ mod tests {
         let marker = "CODEGG-LIVE-PULL-BOX";
         let mut app = pull_test_app(dir.path(), marker_shell()).await;
 
-        drain_tui_commands(&mut app).await;
+        await_terminal_create(&mut app).await;
         assert_eq!(
             app.ui_state.dialog,
             crate::tui::Dialog::Terminal,
@@ -3036,6 +3214,464 @@ mod tests {
         );
     }
 
+    // --- C003: the loop has to actually reach the pull -------------------
+    //
+    // Everything above drives `service_terminal_output_pull` itself. That
+    // proves the pull issues a bounded read, that the completion is applied,
+    // and that both surfaces repaint — and it proves none of the thing a user
+    // actually complained about, which is that the bytes arrive on their own.
+    //
+    // The gap is one layer up. `service_terminal_output_pull` has exactly one
+    // call site, in the timed arm of the loop's `select!`, and that arm parks
+    // on `futures_util::future::pending()` whenever `next_wake` is `None`.
+    // `next_wake` is built from `animation_interval`, which used to answer
+    // `None` for a completely idle frame: not streaming, no turn running, no
+    // toast. A mounted, live terminal was therefore read only while a toast
+    // happened to be alive, a keystroke arrived, or a resize was debouncing —
+    // so a shell's output became visible when the user pressed the *next*
+    // key. The tests above supply the polling loop from the harness, which is
+    // exactly the gap: they stand in for the arm they were meant to check.
+
+    /// Assert the frame is idle in every way the loop already knows about, so
+    /// a passing [`animation_interval`] can only be the terminal's doing.
+    fn assert_the_frame_is_idle_except_for_the_terminal(app: &App) {
+        assert!(
+            !app.streaming_active,
+            "a streaming turn is one of the loop's pre-existing wake sources; it would \
+             mask the terminal's"
+        );
+        assert!(
+            !matches!(
+                app.session_state.session_status,
+                crate::tui::app::SessionStatus::Working
+            ),
+            "a working turn is one of the loop's pre-existing wake sources; it would \
+             mask the terminal's"
+        );
+        assert!(
+            app.messages_state.toasts.is_empty(),
+            "a live toast is one of the loop's pre-existing wake sources; it would \
+             mask the terminal's"
+        );
+        assert!(
+            app.ui_state.resize_debounce.is_none(),
+            "a pending resize debounce is a pre-existing wake source; it would mask \
+             the terminal's"
+        );
+    }
+
+    /// Spin the **production** arming decision plus the production pull, and
+    /// stop as soon as `marker` is visible.
+    ///
+    /// What the harness still supplies is the tick itself — the loop's sleep
+    /// and `select!` cannot run without a real terminal. What it no longer
+    /// supplies is the decision that decides whether the tick happens: every
+    /// pass asserts [`animation_interval`] first, with all three pre-existing
+    /// contributors explicitly absent. A pull that works while nothing arms it
+    /// cannot pass this, which is the whole point.
+    async fn pull_until_rendered_armed(
+        app: &mut App,
+        handle: &str,
+        marker: &str,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let started = Instant::now();
+        loop {
+            // Clear toasts *before* the assertion, not after the render: a toast
+            // produced by the previous pass must not be able to arm the loop on
+            // this one's behalf.
+            app.messages_state.toasts = crate::tui::components::toast::ToastManager::new();
+            assert_the_frame_is_idle_except_for_the_terminal(app);
+            assert!(
+                crate::tui::runtime::event_loop::animation_interval(app).is_some(),
+                "the event loop is not armed for a mounted live terminal surface.\n\
+                 `animation_interval` returned None, so the loop's timed arm selects \
+                 `futures_util::future::pending()` and `service_terminal_output_pull` \
+                 is never reached: output can only appear when the user presses the \
+                 next key, a toast happens to be alive, or a resize debounces.\n\
+                 streaming_active={} status={:?} toasts={} resize_debounce={:?} \
+                 mounted={:?}",
+                app.streaming_active,
+                app.session_state.session_status,
+                app.messages_state.toasts.len(),
+                app.ui_state.resize_debounce,
+                mounted_terminal_surface(app),
+            );
+
+            service_terminal_output_pull(app);
+            drain_tui_commands(app).await;
+            // Transient notifications are cleared before rendering for the same
+            // reason the sibling helper does: they cover the surface under test.
+            app.messages_state.toasts = crate::tui::components::toast::ToastManager::new();
+            let rendered = render_buffer_text(app, width, height);
+            if rendered.contains(marker) {
+                return rendered;
+            }
+            if started.elapsed() > PULL_TIMEOUT {
+                let projected = app
+                    .interactive_terminals
+                    .view(handle)
+                    .map(|view| {
+                        format!(
+                            "{}\nprojected rows: {:#?}",
+                            view.status_line(),
+                            app.interactive_terminals.render_lines(handle, 40)
+                        )
+                    })
+                    .unwrap_or_else(|| "<no view>".to_string());
+                panic!(
+                    "the armed cadence never made {marker:?} visible in the rendered \
+                     buffer.\nview: {projected}\nlast rendered surface:\n{rendered}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// The headline acceptance test, and the one that fails at baseline.
+    ///
+    /// A shell is attached, a command is typed through the real key router, and
+    /// then the app is left strictly alone. Output must reach the rendered
+    /// surface anyway. The only thing driving it is the loop's own arming
+    /// decision and its own pull — no keystroke, no injected toast, no resize,
+    /// no turn event.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_live_terminal_surface_repaints_with_no_further_user_input() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let marker = "CODEGG-IDLE-LIVENESS";
+        let mut app = pull_test_app(dir.path(), marker_shell()).await;
+
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+        assert!(
+            app.interactive_terminals.is_focused(&handle),
+            "the box opens in insert, so the keystrokes below are meaningful"
+        );
+
+        // Let the viewport resize land before typing: a PTY resize flushes the
+        // tty's pending input, so a resize issued mid-word is
+        // indistinguishable from lost keystrokes, and this test is about
+        // liveness rather than about what a resize does to a half-typed line.
+        service_terminal_output_pull(&mut app);
+        drain_tui_commands(&mut app).await;
+
+        // The last keystroke of the whole test.
+        type_through_app(&mut app, marker);
+        // Named here so a later failure cannot be mistaken for a liveness one:
+        // if the surface was not taking input, these bytes went to the composer,
+        // which submits a turn and leaves the session `Working` — and the
+        // arming assertion would then be reporting a fixture problem as a
+        // cadence problem.
+        assert!(
+            app.interactive_terminals.is_focused(&handle),
+            "the box must still hold the keyboard for the process, or the marker was \
+             typed into the composer instead of the PTY"
+        );
+        app.messages_state.toasts = crate::tui::components::toast::ToastManager::new();
+
+        let rendered = pull_until_rendered_armed(&mut app, &handle, marker, 120, 40).await;
+        assert!(
+            rendered.contains(marker),
+            "a live mounted terminal must show its output without the user touching \
+             anything; rendered surface:\n{rendered}"
+        );
+    }
+
+    /// The reported case: a docked panel that has given the keyboard back.
+    ///
+    /// `Shift+Left` from a right-docked panel is how the user returns to the
+    /// main buffer, and this asserts that the surface stays live afterwards.
+    /// That is the case the arm used to fail, and the reason the contributor
+    /// is keyed on **mount** rather than focus: focus is the one thing that
+    /// changes exactly when nobody is looking at the panel.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_docked_terminal_keeps_output_after_the_keyboard_leaves_the_panel() {
+        let dir = tempfile::tempdir().expect("workspace");
+        // Short: the docked column is narrower than the box, and a marker that
+        // wraps mid-word would prove the cadence while failing the substring.
+        let marker = "IDLE-PANEL-LIVE";
+        let mut app = pull_test_panel_app(dir.path(), marker_shell()).await;
+
+        await_terminal_create(&mut app).await;
+        select_terminal_panel(&mut app);
+        let handle = app
+            .panel_host
+            .terminal_handle()
+            .expect("the panel adopted the new terminal")
+            .to_string();
+
+        app.on_key(key(crossterm::event::KeyCode::Char('i'))); // Insert: reach the PTY below.
+        service_terminal_output_pull(&mut app);
+        drain_tui_commands(&mut app).await;
+        type_through_app(&mut app, marker);
+        assert!(
+            app.interactive_terminals.is_focused(&handle),
+            "the panel must still hold the keyboard for the process, or the marker was \
+             typed into the composer — which would submit a turn, park the session in \
+             `Working`, and make the arming assertion below report a fixture problem \
+             as a cadence problem"
+        );
+        app.messages_state.toasts = crate::tui::components::toast::ToastManager::new();
+
+        // Hand the keyboard back: `Esc` leaves Insert, then `Shift+Left` off
+        // the panel's inner edge returns the keyboard to the main buffer.
+        app.on_key(key(crossterm::event::KeyCode::Esc));
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('H'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ));
+        assert!(
+            !app.panel_host.is_focused(),
+            "the main buffer owns the keyboard again"
+        );
+        assert!(
+            app.panel_host
+                .terminal_handle()
+                .is_some_and(|h| mounted_terminal_surface(&app).as_deref() == Some(h)),
+            "and the terminal is still on the panel"
+        );
+
+        // Nothing between here and the first assertion but the app being
+        // alive: no keystroke, no toast, no resize, no turn event.
+        let rendered = pull_until_rendered_armed(&mut app, &handle, marker, 120, 40).await;
+        assert!(
+            rendered.contains(marker),
+            "a docked terminal must keep producing output after the keyboard leaves it; \
+             rendered surface:\n{rendered}"
+        );
+    }
+
+    /// The visibility rule still bounds the arm.
+    ///
+    /// A terminal that is attached and alive but on nobody's screen must cost
+    /// nothing. Treating "adopted" as "mounted" is how a background terminal
+    /// ends up polling forever for a user who cannot see it, so this pins the
+    /// negative alongside the positives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hidden_terminal_surface_does_not_arm_the_loop() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), marker_shell()).await;
+
+        drain_tui_commands(&mut app).await;
+        assert!(
+            mounted_terminal_surface(&app).is_some(),
+            "the fixture must start with a mounted surface"
+        );
+
+        // Close the box: attached, alive, and on no surface at all.
+        app.ui_state.dialog = crate::tui::Dialog::None;
+        app.dialog_state.terminal_detail_handle = None;
+        assert!(
+            mounted_terminal_surface(&app).is_none(),
+            "a closed box is not on anyone's screen"
+        );
+        assert!(
+            crate::tui::runtime::event_loop::animation_interval(&app).is_none(),
+            "an unmounted surface must cost nothing: the loop parks exactly as it \
+             did before any terminal existed"
+        );
+    }
+
+    // --- C003: one derived answer for the mode the user is in ------------
+    //
+    // `ui_state.input_mode` is the *composer's* mode and `focus_panel` forces
+    // it to `Normal` whenever a panel takes the keyboard, so the badge and the
+    // hint line both read the wrong field while the user was typing into a
+    // shell. One accessor now resolves it for both.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_badge_names_insert_while_the_terminal_box_takes_keystrokes() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), marker_shell()).await;
+
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+        assert!(
+            app.interactive_terminals.is_focused(&handle),
+            "the box opens in insert, so this is a surface with live input"
+        );
+
+        assert_eq!(
+            app.composer_input_mode(),
+            crate::tui::input::InputMode::Insert,
+            "a surface taking keystrokes for a process is in Insert"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_badge_returns_to_normal_after_esc_even_though_the_composer_forgot() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), marker_shell()).await;
+
+        drain_tui_commands(&mut app).await;
+        app.on_key(key(crossterm::event::KeyCode::Esc));
+
+        // The composer's private mode was never touched by the box, so it still
+        // claims Insert. Reporting it would be reporting a field nothing on
+        // screen is using.
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Insert,
+            "the box never writes the composer's mode, so this stale field is the trap"
+        );
+        assert_eq!(
+            app.composer_input_mode(),
+            crate::tui::input::InputMode::Normal,
+            "Esc handed the keyboard to the reader, and Normal is then the honest answer"
+        );
+    }
+
+    /// The reported symptom, pinned at its source.
+    ///
+    /// `focus_panel` forces `Normal` on panel focus, so a docked terminal in
+    /// Insert leaves `ui_state.input_mode` reading `Normal` while the user types
+    /// into a shell. The badge rendered that field, and the terminal panel's own
+    /// Insert hint branch — which branches on the same field — was unreachable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_docked_terminal_in_insert_is_reported_as_insert() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_panel_app(dir.path(), marker_shell()).await;
+
+        await_terminal_create(&mut app).await;
+        select_terminal_panel(&mut app);
+        app.on_key(key(crossterm::event::KeyCode::Char('i')));
+        let handle = app
+            .panel_host
+            .terminal_handle()
+            .expect("the panel adopted the new terminal")
+            .to_string();
+        assert!(
+            app.interactive_terminals.is_focused(&handle),
+            "the panel now holds the keyboard for the process"
+        );
+        assert_eq!(
+            app.ui_state.input_mode,
+            crate::tui::input::InputMode::Normal,
+            "focus_panel pinned the composer's own mode to Normal: this is the field \
+             the badge used to render, and it is wrong here"
+        );
+
+        assert_eq!(
+            app.composer_input_mode(),
+            crate::tui::input::InputMode::Insert,
+            "a panel holding a live PTY for typing is in Insert regardless of what the \
+             composer privately believes"
+        );
+
+        let hints = app
+            .composer_hint_text()
+            .expect("a visible terminal panel always names itself");
+        assert!(
+            hints.contains("INS typing to the shell"),
+            "the terminal's own Insert hint must be reachable, not dead code: {hints}"
+        );
+        assert!(
+            !hints.contains("hjkl move"),
+            "and it must not advertise reader navigation to someone typing: {hints}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_docked_terminal_reads_normal_once_it_lets_go() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_panel_app(dir.path(), marker_shell()).await;
+
+        await_terminal_create(&mut app).await;
+        select_terminal_panel(&mut app);
+        // The attachment is awaited rather than assumed. See
+        // `await_live_attachment`: one drain cannot cover a create whose
+        // completion is what spawns the attach.
+        let handle = app
+            .panel_host
+            .terminal_handle()
+            .expect("the panel adopted the new terminal")
+            .to_string();
+        await_live_attachment(&mut app, &handle).await;
+        app.on_key(key(crossterm::event::KeyCode::Char('i')));
+        app.on_key(key(crossterm::event::KeyCode::Esc));
+        assert!(
+            app.panel_host.is_focused(),
+            "Esc leaves the PTY, not the panel: the reader still holds the keyboard"
+        );
+
+        assert_eq!(
+            app.composer_input_mode(),
+            crate::tui::input::InputMode::Normal,
+            "Esc handed the keys back and the reader holds them"
+        );
+        let hints = app
+            .composer_hint_text()
+            .expect("a focused terminal panel always names itself");
+        assert!(
+            hints.contains("hjkl move"),
+            "reader navigation is the hint that applies now: {hints}"
+        );
+        assert!(
+            !hints.contains("INS typing"),
+            "and it must not tell someone reading a shell that they are typing into it: \
+             {hints}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_badge_reports_the_composers_own_mode_when_no_surface_holds_it() {
+        let mut app = test_app();
+        app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
+
+        assert_eq!(
+            app.composer_input_mode(),
+            crate::tui::input::InputMode::Insert,
+            "with nothing else holding the keyboard the composer's mode is the truth"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reporting_the_mode_never_moves_the_keyboard() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), marker_shell()).await;
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+
+        let before = (
+            app.composer_input_mode(),
+            app.panel_host.is_focused(),
+            app.interactive_terminals.is_focused(&handle),
+            app.ui_state.input_mode,
+        );
+
+        // Read it repeatedly, then render the real frame that draws the badge.
+        for _ in 0..3 {
+            let _ = app.composer_input_mode();
+            let _ = app.composer_hint_text();
+        }
+        let _ = render_buffer_text(&mut app, 120, 40);
+
+        assert_eq!(
+            (
+                app.composer_input_mode(),
+                app.panel_host.is_focused(),
+                app.interactive_terminals.is_focused(&handle),
+                app.ui_state.input_mode,
+            ),
+            before,
+            "reading the effective mode must not change focus, the terminal, or the \
+             composer's private mode"
+        );
+    }
+
     // --- C002: the refusal must name the transport, not the daemon ---------
     //
     // The daemon on the `/tui` attach frontend is present and healthy; it just
@@ -3047,6 +3683,230 @@ mod tests {
     // thing pinned, deleting the connection wording would still pass; the
     // second test below is what keeps "Daemon connection unavailable" honest
     // for the frontend where it *is* the truth.
+
+    // ── A prompt line after new and after clear ───────────────────────
+
+    /// A real shell that paints a prompt and repaints it after every line it
+    /// reads.
+    ///
+    /// The marker matters more than the shell: what these tests assert is that
+    /// a line the *process* printed reaches the screen. A fixture that echoed
+    /// the clear back would pass with a local wipe and no process interaction
+    /// at all, which is the exact fabrication the milestone forbids.
+    fn prompt_shell() -> Vec<String> {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf 'CLEAR-PROMPT> '; while IFS= read -r line; do printf 'CLEAR-PROMPT> '; done"
+                .to_string(),
+        ]
+    }
+
+    /// A newly created terminal must reach its own prompt with no keystroke.
+    ///
+    /// This is the "new" half of the reported defect and it is C003's armed
+    /// cadence doing the work: the prompt was already arriving on attach, but
+    /// nothing read it until the user pressed a key. Asserted through the
+    /// armed helper, which also fails if the loop stops being armed — so this
+    /// cannot pass by accidentally introducing a second wake source.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_new_terminal_shows_the_processes_own_prompt_without_a_keystroke() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), prompt_shell()).await;
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+        await_live_attachment(&mut app, &handle).await;
+
+        let rendered = pull_until_rendered_armed(&mut app, &handle, "CLEAR-PROMPT", 120, 40).await;
+
+        assert!(
+            rendered.contains("CLEAR-PROMPT"),
+            "a fresh terminal must show the prompt its shell printed; rendered:\n{rendered}"
+        );
+    }
+
+    /// The reported defect: `C` blanked the screen and left it blank, because
+    /// the wipe was entirely local and the shell had no reason to redraw.
+    ///
+    /// The assertion is on *where the prompt came from*: the shell is a real
+    /// `sh` reading a real PTY, and the prompt it prints after the clear is
+    /// what lands on screen. A synthesised line would satisfy a weaker test and
+    /// would also be a lie for any non-default `PS1`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cleared_terminal_is_replaced_by_a_prompt_the_process_printed() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_panel_app(dir.path(), prompt_shell()).await;
+        await_terminal_create(&mut app).await;
+        select_terminal_panel(&mut app);
+        let handle = app
+            .panel_host
+            .terminal_handle()
+            .expect("the panel adopted the new terminal")
+            .to_string();
+        await_live_attachment(&mut app, &handle).await;
+        pull_until_rendered_armed(&mut app, &handle, "CLEAR-PROMPT", 120, 40).await;
+
+        app.on_key(key(crossterm::event::KeyCode::Char('i')));
+        assert!(app.interactive_terminals.is_focused(&handle));
+        // Let the panel's first geometry resize land before typing: a PTY
+        // resize flushes the tty's pending input.
+        service_terminal_output_pull(&mut app);
+        drain_tui_commands(&mut app).await;
+        // Short: the docked column is 28 wide and already spends 14 of them on
+        // the prompt, so a longer marker wraps mid-word and proves the clear
+        // while failing the substring.
+        type_through_app(&mut app, "PRECLR");
+        pull_until_rendered(&mut app, &handle, "PRECLR", 120, 40).await;
+
+        // Back to reading, then clear.
+        app.on_key(key(crossterm::event::KeyCode::Esc));
+        assert!(!app.interactive_terminals.is_focused(&handle));
+        app.on_key(key(crossterm::event::KeyCode::Char('C')));
+
+        let rendered = pull_until_rendered_armed(&mut app, &handle, "CLEAR-PROMPT", 120, 40).await;
+        assert!(
+            !rendered.contains("PRECLR"),
+            "clear must actually clear; rendered:\n{rendered}"
+        );
+    }
+
+    /// The clear may not manufacture a resync: the daemon keeps streaming
+    /// from wherever it was, and a reset sequence cursor would make the very
+    /// next honest chunk fail its gap check and print a "history expired"
+    /// notice the reader did not cause.
+    #[tokio::test(flavor = "current_thread")]
+    async fn clear_preserves_the_sequence_cursor() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), prompt_shell()).await;
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+        await_live_attachment(&mut app, &handle).await;
+        pull_until_rendered(&mut app, &handle, "CLEAR-PROMPT", 120, 40).await;
+
+        let status = |app: &App| {
+            app.interactive_terminals
+                .view(&handle)
+                .map(|view| view.status_line())
+                .unwrap_or_default()
+        };
+        let before = status(&app);
+        clear_terminal(&mut app, &handle);
+        let after = status(&app);
+        let seq = |line: &str| {
+            line.split("seq=")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(str::to_string)
+        };
+        assert_eq!(
+            seq(&after),
+            seq(&before),
+            "clear must not move the sequence cursor (before {before:?}, after {after:?})"
+        );
+        assert!(
+            !after.contains("resync"),
+            "clear must not manufacture a resync: {after:?}"
+        );
+    }
+
+    /// A view with no live process behind it still clears, and is not made to
+    /// claim otherwise.
+    ///
+    /// The plan's failure semantics suggested leaving the screen intact on any
+    /// input refusal. That is wrong for exactly this case: there is no process
+    /// left to print a prompt, so nothing is being suppressed, and refusing
+    /// would take away the only way to clear the output of a shell that has
+    /// finished. What must not happen is a *pretence* — no warning about a
+    /// refused write, because none was attempted.
+    #[tokio::test(flavor = "current_thread")]
+    async fn clear_on_a_detached_view_clears_locally_without_a_false_refusal() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), prompt_shell()).await;
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+        await_live_attachment(&mut app, &handle).await;
+        pull_until_rendered(&mut app, &handle, "CLEAR-PROMPT", 120, 40).await;
+
+        // The attachment is released: the process runs on, and nothing can be
+        // sent to it from here.
+        app.interactive_terminals.apply_detached(&handle);
+        clear_terminal(&mut app, &handle);
+
+        let remaining = app
+            .interactive_terminals
+            .render_lines(&handle, 40)
+            .expect("render")
+            .join("\n")
+            .trim()
+            .to_string();
+        assert!(
+            remaining.is_empty(),
+            "a detached view must still be clearable, got {remaining:?}"
+        );
+        assert!(
+            toast_messages(&app).is_empty(),
+            "no write was attempted, so nothing may be reported as refused: {:?}",
+            toast_messages(&app)
+        );
+    }
+
+    /// A clear that *is* refused must say so, and must not blank the screen on
+    /// the strength of a repaint that was never sent.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_refused_clear_reports_itself_and_leaves_the_screen_intact() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_app(dir.path(), prompt_shell()).await;
+        drain_tui_commands(&mut app).await;
+        let handle = app
+            .dialog_state
+            .terminal_detail_handle
+            .clone()
+            .expect("the box is showing a terminal");
+        await_live_attachment(&mut app, &handle).await;
+        pull_until_rendered(&mut app, &handle, "CLEAR-PROMPT", 120, 40).await;
+
+        // Fill the coalescing buffer to within the clear's own length, so the
+        // clear's bytes cannot be admitted. This is the only refusal path that
+        // is not "there is no process", and it is the one that must not wipe.
+        let filler = vec![b'x'; crate::tui::interactive_terminal::MAX_TERMINAL_INPUT_BYTES - 1];
+        assert!(
+            app.interactive_terminals
+                .queue_input(&handle, &filler)
+                .is_ok(),
+            "the premise: the buffer is full but not yet over the bound"
+        );
+
+        clear_terminal(&mut app, &handle);
+
+        assert!(
+            toast_messages(&app)
+                .iter()
+                .any(|message| message.contains("exceeds the")),
+            "a refused clear must name its refusal: {:?}",
+            toast_messages(&app)
+        );
+        let remaining = app
+            .interactive_terminals
+            .render_lines(&handle, 40)
+            .expect("render")
+            .join("\n");
+        assert!(
+            remaining.contains("CLEAR-PROMPT"),
+            "a refused clear must leave the screen intact, got {remaining:?}"
+        );
+    }
 
     /// The `/tui` WebSocket attach frontend: `AppMode::RemoteCore`, an owned
     /// `remote_send_tx`, and — the fact that matters here — no `CoreClient`.

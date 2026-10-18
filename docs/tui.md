@@ -526,22 +526,38 @@ else, but a terminal that owns the keyboard is not a viewer, so the gesture is
 turned off while you are typing. `i` is only a focus gesture while the surface is
 in viewing mode (`NOR`); in the box the surface is never in `NOR` to begin with.
 
-Output keeps up on its own: the TUI reads the PTY on its normal refresh tick, so
-anything the command prints appears without you doing anything. You do not need
-`/terminal-resume` to see live output — it is a recovery affordance for a view
-whose read fell behind, not a step in the normal flow.
+Output keeps up on its own: the TUI reads the PTY on its own refresh tick while the
+terminal is on screen, so anything the command prints appears without you doing
+anything. That includes after you hand the keyboard back to the main buffer with
+`Shift`+an arrow — a docked terminal keeps producing output while it is merely
+visible. You do not need `/terminal-resume` to see live output — it is a recovery
+affordance for a view whose read fell behind, not a step in the normal flow.
+
+The `[NOR]` / `[INS]` badge above the main input shows where your keystrokes are
+actually going, whichever surface has them. It reads `[INS]` while a terminal is
+taking your keys — in the box or in the docked panel — and `[NOR]` once `Esc` has
+handed them back, so the badge never claims you are reading a shell you are
+typing into.
 
 There are two modes, and each key means exactly one thing:
 
 - **INS** — the process owns the keyboard. Everything you type, plus `Enter`,
   `Backspace`, `Tab`, the arrow keys and `Ctrl-C`/`Ctrl-D`, goes to the
   terminal. The cursor is drawn where the shell is accepting the next
-  character. Press `Esc` to stop typing and read.
+  character, and it blinks while it is there — so a glance is enough to see
+  that the terminal is live rather than frozen. Press `Esc` to stop typing and
+  read.
 - **NOR** — the reader owns the keyboard. `hjkl` and the arrows move, `Ctrl+u`
   and `Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x` selects
   whole lines, `d` deletes the selection, `space+y` copies it, `C` clears the
   screen, `D` folds in diagnostics. Press `i` or `Enter` to start typing again.
   Press `Esc` to close and detach — or to drop an armed selection first.
+
+While reading, the cursor sits on the last line the process actually printed —
+the prompt after a short command, the last line of the output after a long one.
+`Esc` puts it there for you, so the first `k` moves from where you were working
+rather than from the bottom of an empty screen. The reader cursor does not
+blink: it is what `x`, `v` and `d` act on, so it stays put and stays legible.
 
 If you are running a full-screen program that needs its own escape (Vim, less,
 tmux), press `Ctrl+]` to send it a real `Esc` byte and stay in INS. `Esc` itself
@@ -556,8 +572,21 @@ same way. You can also **click** a panel column to focus it, **drag** across one
 to select its text and copy it with `Ctrl+C`, and **scroll** the wheel over one
 to move that column's own content. If the process behind the panel has exited,
 `i` starts a fresh shell instead — the panel never leaves you staring at a dead
-one. `/terminal-clear` wipes the local scrollback and screen while the process
-keeps running.
+one.
+
+The line of keys above the composer describes whatever is holding your keyboard,
+so it appears while the terminal panel has it and leaves with it: once you have
+handed the keyboard back to the conversation, the terminal's own verbs are gone
+from the frame, and the row they occupied goes back to the transcript. Press
+`Shift`+`←` (or whichever edge the panel is on) to take the keyboard back, and
+the line returns.
+
+A new shell shows its prompt as soon as it prints one — you do not have to press
+a key to see it. `C` clears the screen by asking the shell to clear itself, so
+what comes back is a fresh prompt from *your* shell, with your `PS1`, rather than
+an empty panel; the process keeps running and so does anything it was doing.
+`/terminal-clear` does the same. A terminal whose process has already exited has
+no prompt left to print, so clearing one just empties it.
 
 The box opens with one header line — the command, the link state, and whether
 it is taking your keys. Press `D` while viewing to fold in the full diagnostics

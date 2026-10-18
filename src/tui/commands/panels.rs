@@ -1387,6 +1387,10 @@ fn panel_ctx<'a>(
         // context is alive, so the host's focus flag cannot be read here.
         focused,
         input_mode,
+        // Presentation only, read from the one frame clock rather than from
+        // the caller: this context exists for key routing, and a phase a key
+        // path could influence would be a phase a keystroke could move.
+        caret_blink_on: crate::tui::components::spinner::cursor_blink_visible_now(),
     }
 }
 
