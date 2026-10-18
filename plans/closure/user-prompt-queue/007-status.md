@@ -282,6 +282,13 @@ Run locally against the working tree; no hosted CI claim is made or implied.
 | `check_audit_coverage` | pass |
 | `check_adr_integrity` | pass |
 | `scripts/verify.sh quick` | pass |
+| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` | **14,641 run: 14,568 passed, 72 failed, 1 timed out, 6 skipped** — see §7b for the 72 |
+
+The full-suite line is reported as measured, including its failures. Every one
+of the 72 is in the `/tmp`-symlink workspace-root family of §7b, in a file this
+change does not touch; the run was repeated after fixing the three §7a defects
+and the count moved 75 -> 72 with **no new failures**, which is the evidence
+that the fixes were complete and introduced nothing.
 
 `scripts/verify.sh quick` does not run workspace tests, so the M003 deadlock
 will surface in CI rather than here (§10).
