@@ -180,6 +180,8 @@ fn audited_executor(
 async fn bash_shell_success_emits_one_structural_event() {
     let pool = test_pool().await;
     let mut ctx = tool_ctx(&pool, "corr-bash-ok", "inv-bash-ok");
+    let root = tempfile::tempdir().expect("workspace tempdir");
+    ctx.cwd = root.path().to_path_buf();
     ctx.execution_authorization =
         Some(codegg::tool::authorization::ExecutionAuthorizationContext {
             snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
@@ -455,6 +457,7 @@ async fn bash_failure_timeout_and_denial_matrix() {
     // command syntax alone is advisory in the current policy.
     let ctx = tool_ctx(&pool, "corr-bash-denied", "inv-bash-denied");
     let err = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(root.path().to_path_buf())
         .with_deny_all()
         .execute_structured(serde_json::json!({"command": "echo denied"}), Some(ctx))
         .await
@@ -1156,6 +1159,7 @@ async fn bash_routed_git_mutation_emits_single_git_event() {
         ..Default::default()
     };
     let tool = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(repo_root.clone())
         .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost)
         .with_routing_disabled_env(false)
         .with_command_intent_config(cic);
@@ -1229,6 +1233,7 @@ async fn bash_managed_git_plumbing_emits_single_shell_event() {
         ..Default::default()
     };
     let tool = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(repo.path().to_path_buf())
         .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost)
         .with_routing_disabled_env(false)
         .with_command_intent_config(cic);
