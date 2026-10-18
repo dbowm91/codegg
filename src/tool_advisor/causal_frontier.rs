@@ -5901,11 +5901,10 @@ mod tests {
                 "expected post-M003 task input field {field}"
             );
         }
-        // The bounded child tool-call cap was added to `spawn` and
-        // `spawn_many` after M003. Remove only those new input fields and
-        // restore the frozen description while checking the live wording, so
-        // the historical receipt stays immutable and schema drift remains
-        // explicit.
+        // The bounded child tool-call cap and richer spawn_many item schema
+        // were added after M003. Restore the frozen requests shape and
+        // description while asserting the live schema, so the historical
+        // receipt stays immutable and schema drift remains explicit.
         let live_spawn_many_description = task_properties["requests"]["description"]
             .as_str()
             .expect("spawn_many requests description");
@@ -5915,19 +5914,38 @@ mod tests {
             "unexpected post-M003 spawn_many request description"
         );
         task_properties["requests"]["description"] = serde_json::json!(
-            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, model, and allowed_paths."
+            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, and optional allowed_paths."
         );
+        let request_items = task_properties["requests"]["items"]
+            .as_object()
+            .expect("spawn_many request item schema");
+        assert_eq!(
+            request_items.get("type"),
+            Some(&serde_json::json!("object")),
+            "unexpected post-M003 spawn_many request item type"
+        );
+        let request_item_properties = request_items
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("post-M003 spawn_many request item properties");
+        for field in [
+            "description",
+            "prompt",
+            "agent",
+            "model",
+            "allowed_paths",
+            "max_tool_calls",
+        ] {
+            assert!(
+                request_item_properties.contains_key(field),
+                "expected post-M003 spawn_many request field {field}"
+            );
+        }
         assert!(
             task_properties.remove("max_tool_calls").is_some(),
             "expected post-M003 spawn max_tool_calls field"
         );
-        let request_item_properties = task_properties["requests"]["items"]["properties"]
-            .as_object_mut()
-            .expect("spawn_many request item properties");
-        assert!(
-            request_item_properties.remove("max_tool_calls").is_some(),
-            "expected post-M003 spawn_many max_tool_calls field"
-        );
+        task_properties["requests"]["items"] = serde_json::json!({"type": "object"});
         historical_schemas.insert("task".to_string(), historical_task_schema);
 
         // Reconstruct the frozen test-tool schema. These two fields were
