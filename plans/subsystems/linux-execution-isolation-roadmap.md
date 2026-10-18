@@ -2,6 +2,8 @@
 
 Status: active (command policy M001–M003 closed; M002 launch contract conditional; C004–C013 bounded slices closed or conditionally closed; M003 production is not admitted; M004 closed; M005–M008 remain unqualified)
 
+**New planning-only Git-cost corrective (2026-10-18):** `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md` registers C001–C005 under a **distinct** corrective workstream. Proposed ADR-0036 would distinguish a sandbox-contained *mutable live-object read* from the current immutable-object-view guarantee. The C012 rejection of using Codegg's in-process lock as a no-writer proof stands; C010/M003 no-admission, Linux C002/C003 blocks, M005 and M008 gates remain unchanged. Only test-only adversarial/benchmark work is ready; no backend route is promoted.
+
 **Independent CI test-contract note (2026-10-14):** `plans/subsystems/git-clean-authorization-ci-corrective-addendum.md` owns the stale `tests/git_network_integration.rs::clean_removes_untracked_files` expectation for unauthenticated destructive cleanup, and `plans/subsystems/git-reset-remote-test-contract-ci-corrective-addendum.md` owns the stale reset positives (`reset_hard_moves_head_and_drops_changes`, `reset_soft_keeps_working_tree` → typed `RequiresAdditionalAuthorization`) and the stale remote positives (`fetch/push/pull_from_local_bare_remote_succeeds` → typed `BackendUnavailable`, file remotes not yet qualified). All five are reconciled as typed-unavailable fixtures citing C002 (reset) / C003 (remote) as the positive-path owners. These are test-contract/CI correctives only: they do **not** unblock contained local Git C002, remote Git C003, or the M001 native backend, nor do they promote the accepted ADR-0035 candidate. Preserve `DestructiveRepositoryChange` as a typed authorization requirement.
 
 Long-term references:
@@ -121,6 +123,18 @@ Use focused kernel-faithful child probes in `tests/sandbox_containment.rs` / `te
 - Rust/Cargo builds, Git worktrees, LSP/PTY and Python subprocesses need actual tool compatibility evidence; scoped scratch avoids global cache writes, not infinite compatibility.
 - A proxy can become an exfiltration authority unless domain/DNS, redirects, IP literals, UDP, socket families and local destinations are tightly mediated.
 - cgroup v2 delegation is not universal; optional limits must report the absence and required limits fail closed.
+
+## 10A. Trusted Git cost successor — separate candidate, unchanged admission
+
+The parent Linux roadmap continues to own M003 protected-mount backend admission, M004/M005 enforcement, local Git C002, remote C003 and M008 release qualification. The linked [trusted Git cost corrective](linux-trusted-git-cost-corrective-roadmap.md) plans:
+
+- C001 test-only live-ODB authority/consistency threat model and negative proof (**ready**).
+- C002 sandboxed Git read candidate using original ODB (**blocked on C001**, no production activation without accepted proposed ADR-0036 and obtained M004/M005).
+- C003 bounded native Git-vs-gix benchmark/semantic comparison (**ready**, no default new dependency).
+- C004 private index/new-objects plus broker-published staging prototype (**blocked on C001 and separate ADR/host gates**).
+- C005 local workflow parity, quantitative cost and independent M003/C010/old C002 admission review (**blocked**).
+
+The proposed live-read guarantee explicitly does **not** claim an immutable repository generation. The existing C012 evidence remains a sound rejection of treating a live bind mount or process-local lock as a snapshot. No historical closure is changed or reinterpreted, no implicit C002/C003 unblocking occurs, and the new plans cannot change Codegg defaults without separate acceptance.
 
 ## 11. Completion definition
 
