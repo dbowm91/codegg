@@ -417,7 +417,8 @@ async fn test_only_contained_git_reads_live_objects_and_contains_configured_comm
         .tempdir_in(home)
         .expect("host-only sentinel directory");
     let secret = host_only.path().join("credential-sentinel");
-    let secret_leak = host_only.path().join("credential-leak");
+    let secret_leak = repository.join("credential-leak");
+    let proc_leak = repository.join("host-proc-leak");
     std::fs::write(&secret, "host-secret-marker").expect("write host-only secret sentinel");
 
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host TCP fixture");
@@ -433,6 +434,7 @@ async fn test_only_contained_git_reads_live_objects_and_contains_configured_comm
     let workspace_marker = repository.join("contained-command-ran");
     let network_marker = repository.join("network-escape");
     let child_netns = repository.join("child-netns-inode");
+    let host_pid = std::process::id();
     let python = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
         .map(|directory| directory.join("python3"))
         .find(|candidate| candidate.is_file())
@@ -447,12 +449,15 @@ async fn test_only_contained_git_reads_live_objects_and_contains_configured_comm
     );
     let script = repository.join("configured-command.sh");
     let script_text = format!(
-        "#!/bin/sh\nprintf ran > {}\n/usr/bin/stat -Lc '%i' /proc/self/ns/net > {}\nif test -r {}; then cat {} > {}; fi\n{} -c {} 2>/dev/null || true\n",
+        "#!/bin/sh\nprintf ran > {}\n/usr/bin/stat -Lc '%i' /proc/self/ns/net > {}\nif test -r {}; then cat {} > {}; fi\nif test -r /proc/{}/cmdline; then cat /proc/{}/cmdline > {}; fi\n{} -c {} 2>/dev/null || true\n",
         shell_quote(&workspace_marker.to_string_lossy()),
         shell_quote(&child_netns.to_string_lossy()),
         shell_quote(&secret.to_string_lossy()),
         shell_quote(&secret.to_string_lossy()),
         shell_quote(&secret_leak.to_string_lossy()),
+        host_pid,
+        host_pid,
+        shell_quote(&proc_leak.to_string_lossy()),
         shell_quote(&python.to_string_lossy()),
         shell_quote(&python_probe)
     );
@@ -469,6 +474,17 @@ async fn test_only_contained_git_reads_live_objects_and_contains_configured_comm
         "configure repository-local Git command: {}",
         String::from_utf8_lossy(&configure.stderr)
     );
+    let configure_diff = setup(&["config", "diff.external", &script.to_string_lossy()]);
+    assert!(
+        configure_diff.status.success(),
+        "configure repository-local external diff: {}",
+        String::from_utf8_lossy(&configure_diff.stderr)
+    );
+    std::fs::write(
+        repository.join("tracked.txt"),
+        "dirty live worktree payload\n",
+    )
+    .expect("make the tracked fixture dirty");
 
     async fn contained_git(
         git: &Path,
@@ -514,6 +530,27 @@ async fn test_only_contained_git_reads_live_objects_and_contains_configured_comm
         SandboxExecutionOutcome::Enforced { .. }
     ));
 
+    let diff = contained_git(
+        &git,
+        repository,
+        &["diff", "--", "tracked.txt"],
+        "external-diff",
+    )
+    .await;
+    assert!(
+        diff.exit_status.success(),
+        "contained git diff failed: {}",
+        diff.stderr.to_string_lossy()
+    );
+    assert!(
+        workspace_marker.exists(),
+        "repository-configured external diff did not execute"
+    );
+    assert!(matches!(
+        diff.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
+
     let configured = contained_git(&git, repository, &["authority-probe"], "config-command").await;
     assert!(
         configured.exit_status.success(),
@@ -539,6 +576,10 @@ async fn test_only_contained_git_reads_live_objects_and_contains_configured_comm
     assert!(
         !secret_leak.exists(),
         "configured command read a host-only credential sentinel"
+    );
+    assert!(
+        !proc_leak.exists(),
+        "configured command read a host /proc process"
     );
     assert!(
         !network_marker.exists(),
