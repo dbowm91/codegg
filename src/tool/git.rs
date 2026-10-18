@@ -20,6 +20,19 @@ pub enum ChildGitPolicy {
     LocalCommitOnly,
 }
 
+fn commit_selection_for_child(
+    child_policy: Option<ChildGitPolicy>,
+    paths: Vec<String>,
+) -> crate::git_mutations::CommitSelection {
+    if matches!(child_policy, Some(ChildGitPolicy::LocalCommitOnly)) {
+        crate::git_mutations::CommitSelection::AlreadyStaged
+    } else if !paths.is_empty() {
+        crate::git_mutations::CommitSelection::StagePaths(paths)
+    } else {
+        crate::git_mutations::CommitSelection::StageAll
+    }
+}
+
 pub struct GitTool {
     timeout: Duration,
     workdir: PathBuf,
@@ -596,11 +609,7 @@ impl GitTool {
             "unstage_paths" => gm_ops::unstage_paths(&exec, workdir, paths()).await,
             "unstage_all" => gm_ops::unstage_all(&exec, workdir).await,
             "commit" => {
-                let sel = if !paths().is_empty() {
-                    crate::git_mutations::CommitSelection::StagePaths(paths())
-                } else {
-                    crate::git_mutations::CommitSelection::StageAll
-                };
+                let sel = commit_selection_for_child(self.child_policy, paths());
                 let msg = message
                     .ok_or_else(|| {
                         ToolError::Execution("commit requires 'message' parameter".to_string())
@@ -1206,6 +1215,22 @@ mod schema_tests {
 
     fn params() -> Value {
         GitTool::new().parameters()
+    }
+
+    #[test]
+    fn isolated_child_commit_uses_only_the_authorized_existing_index() {
+        assert_eq!(
+            commit_selection_for_child(Some(ChildGitPolicy::LocalCommitOnly), Vec::new()),
+            crate::git_mutations::CommitSelection::AlreadyStaged
+        );
+        assert_eq!(
+            commit_selection_for_child(None, Vec::new()),
+            crate::git_mutations::CommitSelection::StageAll
+        );
+        assert_eq!(
+            commit_selection_for_child(None, vec!["src/lib.rs".into()]),
+            crate::git_mutations::CommitSelection::StagePaths(vec!["src/lib.rs".into()])
+        );
     }
 
     #[test]

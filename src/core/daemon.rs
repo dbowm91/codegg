@@ -6524,14 +6524,22 @@ mod tests {
     impl PromptSubmitCredentialHome {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("temporary credential home");
-            let config_home = dir.path().join("config");
+            // macOS exposes the temp root through /var, which is a symlink to
+            // /private/var. Managed scratch deliberately rejects symlinked
+            // path components, so give the daemon the canonical temporary
+            // home just as a real home directory would be resolved.
+            let home = dir
+                .path()
+                .canonicalize()
+                .expect("canonicalize temporary credential home");
+            let config_home = home.join("config");
             std::fs::create_dir_all(&config_home).expect("create temporary config home");
             let names = ["HOME", "XDG_CONFIG_HOME", "APPDATA"];
             let previous = names
                 .into_iter()
                 .map(|name| (name, std::env::var_os(name)))
                 .collect();
-            std::env::set_var("HOME", dir.path());
+            std::env::set_var("HOME", &home);
             std::env::set_var("XDG_CONFIG_HOME", &config_home);
             std::env::set_var("APPDATA", &config_home);
             Self {

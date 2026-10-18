@@ -406,3 +406,70 @@ overlapping Rust APIs or dependency-heavy tasks until both conditions have
 Git-verified integrated acceptance. M005 remains separate: writer inventory
 is complete, but the Darwin escaped-descendant finding still blocks S4. No
 downstream plan is unblocked.
+
+### Reconciled-branch S2 startup, Git-result, and retry follow-up (2026-10-18)
+
+The shared-interface fixture was recreated from its frozen source in a clean
+disposable Git repository with digest
+`b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1` and baseline
+`382c2978b21fb2ae27dad5094aea8285c89bb13c`. A new project/workspace/repository
+identity and managed parent worktree were used; retained dirty checkouts from
+earlier trials were left intact. Group membership was visible to child startup
+before the model execution began.
+
+Three bounded S2 attempts did not qualify:
+
+| Group | Child evidence | Outcome |
+|---|---|---|
+| `agent-group-f7ada846109fd169821a67179f33b65c46989cb0ea125c54116c21f6042be42e` | Rust `8cf6f7d1-17f4-42a6-9ea2-dfe42374f2ee`: 382,779/5,902 tokens; Python `d4ab8b1a-3c49-4585-8513-62fd8c34f170`: 372,820/5,021; provider/catalog cost unavailable | Both runs completed, but each structured result had `result_commit: null`; neither exposed test evidence. `task.get` exposed the exact child worktree, base commit, changed paths, and dirty repository state. No integration. |
+| `agent-group-b72218ce8277f8258e5668552b8675bf3d1806895c6e1409c8a6a3b1768fca1a` | Accepted Python child `c4282b9b-a08a-4dda-8de7-3c9b6f75c024`: 83,646/3,858 tokens; cost unavailable | Only one member was admitted; the sibling request failed with SQLite database-lock contention. The accepted child produced no change, test evidence, or commit. |
+| `agent-group-d4719b1744f94b106aca2ec8a060cfe73e28983b2718c7915049e0facd48a7b6` | Rust `1c5b7b27-a505-4e4d-8e4b-c9da3860031d`: 2,591,151/21,869; Python `a84f2b98-2db4-4acf-8717-993c3f71a44b`: 490,614/7,899; cost unavailable | Both completed. Rust tests passed 7/7 and `rust/src/lib.rs` was staged, but typed commit failed with `Git backend unavailable for [CleanSmudgeFilter]`. Python produced its source change but no test/commit evidence. No result commit and no integration. |
+
+The SQLite admission failure led to a bounded retry around idempotent
+`AgentRunStore::create_or_get`; a focused classifier test passes. The Git
+failure showed that child `commit` with no explicit paths was being interpreted
+as `StageAll`, re-entering ordinary content-filtered staging after the child
+had staged its explicit path. Isolated-child commits now use the already-staged
+index only; a regression test passes. These fixes are in the current uncommitted
+source and have not yet been provider-qualified.
+
+A fourth S2 group,
+`agent-group-20c90a40a3cd81431237d49dff8ae3f239355ec3550d0caf0451863b91196f53`,
+admitted two children with 128-call caps, but the isolated trial daemon was
+killed with exit 137 before results: Rust had 32,959/306 tokens (3 rows),
+Python 57,164/492 (5 rows), both at cost unavailable. The durable group and
+parent turn were still nonterminal when inspected. No source/test/commit result
+or integration is claimed from this run. This host was concurrently running
+the active user daemon; it was not stopped or modified.
+
+The reconciled branch reran M005's independent Darwin suites: attach/resume
+19/19, interactive sessions 11/11, managed descendants 6/6. The final suite
+passes by observing that a `setsid()` descendant outlives the managed job and
+writes afterward. This corroborates the M005 no-go for S4; it does not block
+isolated S2/S3 or qualify shared writes. M005 evidence is recorded in its plan.
+
+S2 and S3 still have no pair with two passing child suites, two typed commits,
+an authorized combined Git result, and a passing frozen evaluator. Therefore
+the controlled S0-S3 comparison and additional overlapping API, sequential,
+and dependency-heavy Rust strata remain unrun. M008 stays active; M005 stays
+active independently; S4 stays unavailable. No downstream plan is unblocked.
+
+### Local verification of child startup and result follow-up (2026-10-18)
+
+After the group-readiness, typed child commit, bounded SQLite retry, and
+child-specific usage-accounting changes, `scripts/verify.sh full` passed its
+quick checks and all-target Clippy with `-D warnings`. The focused Darwin
+`managed_process_descendants` suite passed 6/6 after canonicalizing temporary
+paths in the test fixtures. A repeated full run then stopped during root test
+harness compilation: the worktree's `target/` directory disappeared while
+rustc was writing dependency metadata. Nextest did not begin on that run, so
+this is not recorded as a completed exact-head suite. The prior run exposed a
+probabilistic name-pool assertion; that test now checks deterministic lease
+release/reassignment, and its focused rerun passed. Hosted CI on the pushed
+revision remains required.
+
+The local changes establish the intended write guidance: implicit `Ask` is
+relaxed only for validated workspace and authorized scratch roots, while
+explicit Ask/Deny decisions and path rules remain authoritative. The existing
+permission regression suite covers these cases. These runtime and test changes
+do not qualify an S2/S3 provider pair. No downstream plan is unblocked.

@@ -1003,5 +1003,206 @@
     },
     "fixture_correction": "Add canonical workspace root to bash_shell_success_emits_one_structural_event; test-only.",
     "qualification_scope": "Hosted CI and Windows checks passed on integrated M008 implementation head. S2/S3 comparative acceptance remains incomplete; not M008 closure."
+  },
+  "follow_up_trials_2026_10_18_reconciled_branch": {
+    "evidence_kind": "non-qualifying S2 diagnostic attempts after mainline reconciliation; no integrated source result; no S3 run",
+    "implementation_base": "65c048f7f8a36fb33fb820df2d0366df9129c00f",
+    "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+    "fixture_baseline_commit": "382c2978b21fb2ae27dad5094aea8285c89bb13c",
+    "provider_model": "opencode_go/gpt-6-luna",
+    "provider_cost": "unavailable; provider reported 0.0 and the local catalog has no matching price; zero is not interpreted as free",
+    "child_call_caps": [
+      32,
+      64,
+      128
+    ],
+    "trials": [
+      {
+        "group_id": "agent-group-f7ada846109fd169821a67179f33b65c46989cb0ea125c54116c21f6042be42e",
+        "join_policy": "all",
+        "group_status": "completed",
+        "requested_members": 2,
+        "accepted_members": 2,
+        "parent_usage": {
+          "input_tokens": 308950,
+          "output_tokens": 4182,
+          "usage_rows": 19,
+          "cost": "unavailable"
+        },
+        "children": [
+          {
+            "role": "rust",
+            "run_id": "8cf6f7d1-17f4-42a6-9ea2-dfe42374f2ee",
+            "input_tokens": 382779,
+            "output_tokens": 5902,
+            "usage_rows": 19,
+            "cost": "unavailable",
+            "status": "completed",
+            "result_commit": null,
+            "tests": "not reported",
+            "changed_paths": [
+              "rust/src/lib.rs",
+              "rust/.codegg/",
+              "target/"
+            ],
+            "repository_state": "dirty"
+          },
+          {
+            "role": "python",
+            "run_id": "d4ab8b1a-3c49-4585-8513-62fd8c34f170",
+            "input_tokens": 372820,
+            "output_tokens": 5021,
+            "usage_rows": 20,
+            "cost": "unavailable",
+            "status": "completed",
+            "result_commit": null,
+            "tests": "not reported",
+            "changed_paths": [
+              "python/summary_report/consumer.py",
+              "python/.codegg/",
+              "python/summary_report/__pycache__/",
+              "python/tests/__pycache__/"
+            ],
+            "repository_state": "dirty"
+          }
+        ],
+        "integrated_evaluator": "not run; neither child supplied a commit"
+      },
+      {
+        "group_id": "agent-group-b72218ce8277f8258e5668552b8675bf3d1806895c6e1409c8a6a3b1768fca1a",
+        "join_policy": "all",
+        "group_status": "completed",
+        "requested_members": 2,
+        "accepted_members": 1,
+        "rejected_reason": "second child request failed with SQLite database-lock contention",
+        "parent_usage": {
+          "input_tokens": 203019,
+          "output_tokens": 3801,
+          "usage_rows": 13,
+          "cost": "unavailable"
+        },
+        "children": [
+          {
+            "role": "python",
+            "run_id": "c4282b9b-a08a-4dda-8de7-3c9b6f75c024",
+            "input_tokens": 83646,
+            "output_tokens": 3858,
+            "usage_rows": 6,
+            "cost": "unavailable",
+            "status": "completed",
+            "result_commit": null,
+            "tests": "not reported",
+            "changed_paths": [],
+            "repository_state": "clean"
+          }
+        ],
+        "integrated_evaluator": "not run; one-member group and no child artifact"
+      },
+      {
+        "group_id": "agent-group-d4719b1744f94b106aca2ec8a060cfe73e28983b2718c7915049e0facd48a7b6",
+        "join_policy": "all",
+        "group_status": "completed",
+        "requested_members": 2,
+        "accepted_members": 2,
+        "parent_usage": {
+          "input_tokens": 430426,
+          "output_tokens": 5277,
+          "usage_rows": 24,
+          "cost": "unavailable"
+        },
+        "children": [
+          {
+            "role": "rust",
+            "run_id": "1c5b7b27-a505-4e4d-8e4b-c9da3860031d",
+            "input_tokens": 2591151,
+            "output_tokens": 21869,
+            "usage_rows": 65,
+            "cost": "unavailable",
+            "status": "completed",
+            "result_commit": null,
+            "tests": "CARGO_TARGET_DIR=rust/target cargo test --locked --workspace: exit 0, 7 passed",
+            "changed_paths": [
+              "rust/src/lib.rs"
+            ],
+            "repository_state": "dirty; explicit source path staged; commit failed because StageAll entered the filter backend"
+          },
+          {
+            "role": "python",
+            "run_id": "a84f2b98-2db4-4acf-8717-993c3f71a44b",
+            "input_tokens": 490614,
+            "output_tokens": 7899,
+            "usage_rows": 24,
+            "cost": "unavailable",
+            "status": "completed",
+            "result_commit": null,
+            "tests": "not reported",
+            "changed_paths": [
+              "python/summary_report/consumer.py"
+            ],
+            "repository_state": "dirty"
+          }
+        ],
+        "integrated_evaluator": "not run; no pair of typed commits"
+      },
+      {
+        "group_id": "agent-group-20c90a40a3cd81431237d49dff8ae3f239355ec3550d0caf0451863b91196f53",
+        "join_policy": "all",
+        "group_status_at_inspection": "running",
+        "requested_members": 2,
+        "accepted_members": 2,
+        "parent_usage": {
+          "input_tokens": 64167,
+          "output_tokens": 1965,
+          "usage_rows": 5,
+          "cost": "unavailable"
+        },
+        "children": [
+          {
+            "role": "rust",
+            "run_id": "ffb5668c-f505-4107-b786-f29f24ee8621",
+            "input_tokens": 32959,
+            "output_tokens": 306,
+            "usage_rows": 3,
+            "cost": "unavailable",
+            "status_at_inspection": "running",
+            "result_commit": null,
+            "tests": "not reached",
+            "changed_paths": []
+          },
+          {
+            "role": "python",
+            "run_id": "49a3cc57-6997-4bef-a7c8-a4e9daf8ab88",
+            "input_tokens": 57164,
+            "output_tokens": 492,
+            "usage_rows": 5,
+            "cost": "unavailable",
+            "status_at_inspection": "running",
+            "result_commit": null,
+            "tests": "not reached",
+            "changed_paths": []
+          }
+        ],
+        "daemon_exit": "137 (SIGKILL) before child results; parent turn receipt and group remained nonterminal at inspection",
+        "integrated_evaluator": "not run"
+      }
+    ],
+    "follow_up_source_fixes": [
+      {
+        "file": "src/tool/task.rs",
+        "change": "bounded retries for idempotent durable child creation on transient SQLite busy/locked errors",
+        "test": "tool::task::tests::only_transient_sqlite_lock_errors_are_retried passed"
+      },
+      {
+        "file": "src/tool/git.rs",
+        "change": "isolated-child commit now uses the already-staged index and does not imply StageAll",
+        "test": "tool::git::schema_tests::isolated_child_commit_uses_only_the_authorized_existing_index passed"
+      }
+    ],
+    "limitations": [
+      "No complete S2 pair or S3 trial qualified.",
+      "No integrated evaluator was run.",
+      "Costs unavailable.",
+      "The fourth run was terminated before useful work; do not count its terminal state as a successful comparison."
+    ]
   }
 }

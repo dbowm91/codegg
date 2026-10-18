@@ -443,3 +443,72 @@ async fn v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel() {
         "the due index must stay partial over scheduled pending rows, got: {index_sql}"
     );
 }
+
+#[tokio::test]
+async fn legacy_m008_v81_schema_gets_missing_prompt_queue_tables() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("failed to connect test sqlite pool");
+    sqlx::query(
+        "CREATE TABLE migration_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create migration marker");
+    sqlx::query("INSERT INTO migration_version (id, version) VALUES (1, 81)")
+        .execute(&pool)
+        .await
+        .expect("seed legacy M008 v81 marker");
+    sqlx::query("CREATE TABLE session (id TEXT PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .expect("create session table");
+    sqlx::query(
+        "CREATE TABLE agent_run (run_id TEXT PRIMARY KEY, shared_scratch_json TEXT NOT NULL DEFAULT '[]')",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy M008 agent_run table");
+    sqlx::query(
+        "CREATE TABLE usage (id INTEGER PRIMARY KEY, agent_run_id TEXT REFERENCES agent_run(run_id))",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy M008 usage table");
+
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("mainline migration must repair the old v81 number collision");
+
+    for table in ["user_prompt_queue_entry", "user_prompt_queue_owner"] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect migrated table");
+        assert_eq!(exists, 1, "legacy v81 schema is missing {table}");
+    }
+    let due_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('user_prompt_queue_entry') WHERE name = 'run_at_ms'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect due column");
+    assert_eq!(due_column, 1);
+    let scratch_table: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_scratch_resource'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect scratch table");
+    assert_eq!(scratch_table, 1, "legacy scratch schema must be retained");
+    let version: i64 = sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .expect("read final version");
+    assert_eq!(version, 84);
+}

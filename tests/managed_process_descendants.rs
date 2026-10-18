@@ -95,13 +95,17 @@ async fn setup_workspace() -> (
     tempfile::TempDir,
 ) {
     let root = tempfile::tempdir().expect("temp workspace");
+    let canonical_root = root
+        .path()
+        .canonicalize()
+        .expect("canonical temp workspace");
     let workspace_registry = codegg_core::workspace::WorkspaceRegistry::load(Arc::new(
         codegg_core::workspace::InMemoryWorkspaceStore::new(),
     ))
     .await
     .expect("workspace registry");
     let ws_record = workspace_registry
-        .get_or_register(root.path())
+        .get_or_register(&canonical_root)
         .await
         .expect("register workspace");
     let ws_id = ws_record.id.clone();
@@ -111,6 +115,10 @@ async fn setup_workspace() -> (
         codegg_core::workspace_services::WorkspaceServicePolicy::default(),
     );
     (workspace_registry, services, ws_id, root)
+}
+
+fn canonical_tempdir_path(dir: &tempfile::TempDir) -> PathBuf {
+    dir.path().canonicalize().expect("canonical temp directory")
 }
 
 /// Set up scheduler + submission service with a real ManagedArgvExecutor.
@@ -170,7 +178,12 @@ async fn wait_for_terminal(
 }
 
 /// Poll a PID file until it appears or timeout.
-async fn wait_for_pid_file(path: &Path, timeout_d: Duration) -> i32 {
+async fn wait_for_pid_file(
+    path: &Path,
+    timeout_d: Duration,
+    store: Option<&Arc<dyn JobStore>>,
+    job_id: Option<&codegg_core::jobs::JobId>,
+) -> i32 {
     let start = std::time::Instant::now();
     loop {
         if let Ok(content) = std::fs::read_to_string(path) {
@@ -181,7 +194,14 @@ async fn wait_for_pid_file(path: &Path, timeout_d: Duration) -> i32 {
             }
         }
         if start.elapsed() > timeout_d {
-            panic!("timeout waiting for PID file {} to appear", path.display());
+            let job = match (store, job_id) {
+                (Some(store), Some(job_id)) => store.get_job(job_id).await.ok().flatten(),
+                _ => None,
+            };
+            panic!(
+                "timeout waiting for PID file {} to appear; job: {job:#?}",
+                path.display()
+            );
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -356,8 +376,8 @@ head -c 10485760 /dev/zero | tr '\0' 'A'
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_terminates_descendants() {
     let tmp = tempfile::tempdir().unwrap();
-    let script = write_stubborn_grandchild_script(tmp.path());
-    let pid_dir = tmp.path().to_path_buf();
+    let pid_dir = canonical_tempdir_path(&tmp);
+    let script = write_stubborn_grandchild_script(&pid_dir);
     let argv = vec![
         script.to_string_lossy().to_string(),
         pid_dir.to_string_lossy().to_string(),
@@ -373,9 +393,20 @@ async fn cancel_terminates_descendants() {
         .expect("submit");
 
     // Wait for both PIDs to appear.
-    let child_pid = wait_for_pid_file(&pid_dir.join("child.pid"), Duration::from_secs(5)).await;
-    let grandchild_pid =
-        wait_for_pid_file(&pid_dir.join("grandchild.pid"), Duration::from_secs(5)).await;
+    let child_pid = wait_for_pid_file(
+        &pid_dir.join("child.pid"),
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
+    let grandchild_pid = wait_for_pid_file(
+        &pid_dir.join("grandchild.pid"),
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
     assert!(child_pid > 0 && grandchild_pid > 0);
     let _cleanup = PidCleanup(vec![child_pid, grandchild_pid]);
 
@@ -418,10 +449,10 @@ async fn cancel_terminates_descendants() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sigterm_escalates_to_sigkill_for_stubborn_grandchild() {
     let tmp = tempfile::tempdir().unwrap();
+    let pid_dir = canonical_tempdir_path(&tmp);
     // Both child and grandchild ignore SIGTERM, so the managed process
     // service must escalate to SIGKILL.
-    let script = write_both_stubborn_script(tmp.path());
-    let pid_dir = tmp.path().to_path_buf();
+    let script = write_both_stubborn_script(&pid_dir);
     let argv = vec![
         script.to_string_lossy().to_string(),
         pid_dir.to_string_lossy().to_string(),
@@ -436,9 +467,20 @@ async fn sigterm_escalates_to_sigkill_for_stubborn_grandchild() {
         .await
         .expect("submit");
 
-    let child_pid = wait_for_pid_file(&pid_dir.join("child.pid"), Duration::from_secs(5)).await;
-    let grandchild_pid =
-        wait_for_pid_file(&pid_dir.join("grandchild.pid"), Duration::from_secs(5)).await;
+    let child_pid = wait_for_pid_file(
+        &pid_dir.join("child.pid"),
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
+    let grandchild_pid = wait_for_pid_file(
+        &pid_dir.join("grandchild.pid"),
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
     assert!(child_pid > 0 && grandchild_pid > 0);
     let _cleanup = PidCleanup(vec![child_pid, grandchild_pid]);
 
@@ -497,8 +539,8 @@ async fn sigterm_escalates_to_sigkill_for_stubborn_grandchild() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn timeout_terminates_descendants() {
     let tmp = tempfile::tempdir().unwrap();
-    let script = write_stubborn_grandchild_script(tmp.path());
-    let pid_dir = tmp.path().to_path_buf();
+    let pid_dir = canonical_tempdir_path(&tmp);
+    let script = write_stubborn_grandchild_script(&pid_dir);
     let argv = vec![
         script.to_string_lossy().to_string(),
         pid_dir.to_string_lossy().to_string(),
@@ -517,9 +559,20 @@ async fn timeout_terminates_descendants() {
         .await
         .expect("submit");
 
-    let child_pid = wait_for_pid_file(&pid_dir.join("child.pid"), Duration::from_secs(5)).await;
-    let grandchild_pid =
-        wait_for_pid_file(&pid_dir.join("grandchild.pid"), Duration::from_secs(5)).await;
+    let child_pid = wait_for_pid_file(
+        &pid_dir.join("child.pid"),
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
+    let grandchild_pid = wait_for_pid_file(
+        &pid_dir.join("grandchild.pid"),
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
     assert!(child_pid > 0 && grandchild_pid > 0);
     let _cleanup = PidCleanup(vec![child_pid, grandchild_pid]);
 
@@ -560,8 +613,8 @@ async fn process_group_created_for_descendants() {
     // the PGID of the child the script wrote to self.pid, which
     // avoids the file-flushing race from inside the bash subshell.
     let tmp = tempfile::tempdir().unwrap();
-    let script = write_pgid_script(tmp.path());
-    let pid_dir = tmp.path().to_path_buf();
+    let pid_dir = canonical_tempdir_path(&tmp);
+    let script = write_pgid_script(&pid_dir);
     let argv = vec![
         script.to_string_lossy().to_string(),
         pid_dir.to_string_lossy().to_string(),
@@ -577,7 +630,13 @@ async fn process_group_created_for_descendants() {
         .expect("submit");
 
     // Wait for the script to write its own PID file.
-    let child_pid = wait_for_pid_file(&pid_dir.join("self.pid"), Duration::from_secs(5)).await;
+    let child_pid = wait_for_pid_file(
+        &pid_dir.join("self.pid"),
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
     assert!(child_pid > 0);
 
     // Read PGID from outside the script via ps. `ps -o pgid= -p
@@ -623,8 +682,9 @@ async fn escaped_set_sid_descendant_outlives_managed_job() {
     // after the managed parent has exited. This records why a checkout-writer
     // lease cannot be released on job completion alone.
     let tmp = tempfile::tempdir().unwrap();
-    let pid_path = tmp.path().join("escaped.pid");
-    let marker_path = tmp.path().join("escaped-write.txt");
+    let tmp_path = canonical_tempdir_path(&tmp);
+    let pid_path = tmp_path.join("escaped.pid");
+    let marker_path = tmp_path.join("escaped-write.txt");
     let python = r#"
 import os, sys, time
 pid_path, marker_path = sys.argv[1:]
@@ -659,7 +719,13 @@ os._exit(0)
     let job = wait_for_terminal(&store, &submitted.job_id, Duration::from_secs(10)).await;
     assert_eq!(job.state, JobState::Completed);
 
-    let escaped_pid = wait_for_pid_file(&pid_path, Duration::from_secs(5)).await;
+    let escaped_pid = wait_for_pid_file(
+        &pid_path,
+        Duration::from_secs(5),
+        Some(&store),
+        Some(&submitted.job_id),
+    )
+    .await;
     let _cleanup = PidCleanup(vec![escaped_pid]);
     assert!(
         is_pid_alive(escaped_pid),
@@ -694,7 +760,8 @@ os._exit(0)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn managed_process_output_is_bounded() {
     let tmp = tempfile::tempdir().unwrap();
-    let script = write_bounded_output_script(tmp.path());
+    let tmp_path = canonical_tempdir_path(&tmp);
+    let script = write_bounded_output_script(&tmp_path);
     let argv = vec![script.to_string_lossy().to_string()];
 
     let (scheduler, submission, store, ws_id, _root) = setup_managed_argv().await;

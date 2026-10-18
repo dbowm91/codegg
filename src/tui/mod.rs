@@ -1122,6 +1122,27 @@ mod async_cmd_tests {
     };
     use std::collections::HashMap;
 
+    struct StubTurnClient;
+
+    #[async_trait::async_trait]
+    impl crate::core::CoreClient for StubTurnClient {
+        async fn request(
+            &self,
+            _request: crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>,
+        ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+            Ok(crate::protocol::core::CoreResponse::Ack)
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
     fn make_test_app() -> App {
         App::new_for_testing("/tmp".into())
     }
@@ -2147,6 +2168,7 @@ mod async_cmd_tests {
         let mut app = socket_daemon_app_with_tab();
         // The socket path owns a core client, never a remote TUI channel.
         assert!(app.remote_send_tx.is_none());
+        app.core_client = Some(std::sync::Arc::new(StubTurnClient));
         // Pre-existing session: submit straight into it.
         app.session_state.session = Some(crate::session::Session {
             id: "shell-test-session".into(),

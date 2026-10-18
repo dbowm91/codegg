@@ -465,6 +465,9 @@ async fn model_facing_ci_watch_reaches_authenticated_idle_resume_without_injecte
     let config_dir = tempfile::tempdir().expect("config tempdir");
     let isolated_home = config_dir.path().join("home");
     std::fs::create_dir_all(&isolated_home).expect("create isolated config home");
+    let isolated_home = isolated_home
+        .canonicalize()
+        .expect("canonicalize isolated config home");
     let config_path = config_dir.path().join("codegg.json");
     std::fs::write(
         &config_path,
@@ -772,6 +775,9 @@ async fn model_facing_background_bash_completes_via_scheduler_without_autonomous
     let config_dir = tempfile::tempdir().expect("config tempdir");
     let isolated_home = config_dir.path().join("home");
     std::fs::create_dir_all(&isolated_home).expect("create isolated config home");
+    let isolated_home = isolated_home
+        .canonicalize()
+        .expect("canonicalize isolated config home");
     let config_path = config_dir.path().join("codegg.json");
     std::fs::write(
         &config_path,

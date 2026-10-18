@@ -347,7 +347,7 @@ Key storage-layout migrations:
 - **v68**: `work_plan_eggplan_binding`, `work_plan_eggplan_item_binding`, `work_order_eggplan_binding` (M003; append/replace only). No migration for C001: the physical `source_subject_json` column already stores versioned JSON, and the nested `ExecutionSubjectRevision` evolved additively from schema v1 (native `dirty_digest` only) to schema v2 (plus optional `eggplan_dirty_digest` in `sha256:<hex>` form). Historical v1 rows stay readable; dirty v1 fails closed for bound exact-subject evidence. The v2 Eggplan-compatible digest is captured through `eggplan_repo::capture_git_subject_fingerprint` (Eggplan pin `0dd33b761e85f1364320a9208aaebd5be281c6a5`), so the persisted value is the exact byte string Eggplan repository assessment compares against, and the column remains the only execution-subject persistence owner.
 - **v80**: `user_prompt_queue_entry` (user-prompt-queue M002a)
 - **v81**: `user_prompt_queue_owner` (user-prompt-queue M002b)
-- **v82**: `user_prompt_queue_entry.run_at_ms` and its due index (user-prompt-queue M007)
+- **v82**: `user_prompt_queue_entry.run_at_ms` and its due index (user-prompt-queue M007); idempotently restores the v80/v81 queue tables for databases whose pre-merge M008 branch had reused those version numbers
 - **v83**: `agent_scratch_resource`, `agent_scratch_attempt_lease`, and `agent_run.shared_scratch_json` (managed-agent-scratch M002; renumbered during mainline reconciliation)
 - **v84**: `usage.agent_run_id` and its index (M008 child-specific usage attribution; renumbered during mainline reconciliation)
 

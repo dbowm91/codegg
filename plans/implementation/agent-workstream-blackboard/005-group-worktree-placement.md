@@ -374,3 +374,21 @@ Stop shared-placement enablement if accepted ADR is missing, if any enabled muta
 ## Closure
 
 plans/closure/agent-workstream-blackboard/005-status.md must include accepted-ADR identity and approval, pre/post architecture, mutex/lease state machine, negative bypass and race matrix, native containment evidence by platform, nested/advancing integration results, performance cost, exact commits/commands, residual risks and unblock audit.
+
+### Additional Darwin lifecycle evidence (2026-10-18)
+
+On the reconciled M008 branch, the x86_64 macOS host under Rosetta reran the
+focused native process suites:
+
+| Command | Result | Qualification impact |
+|---|---:|---|
+| `cargo test --locked -p codegg --test interactive_process_attach_resume` | 19/19 passed | Attach/resume and daemon process lifecycle remain functional on this host. |
+| `cargo test --locked -p codegg --test interactive_process_sessions` | 11/11 passed | PTY lifecycle tests pass; they do not prove checkout quiescence after a persistent process is disconnected. |
+| `cargo test --locked -p codegg --test managed_process_descendants` | 6/6 passed | The adversarial `escaped_set_sid_descendant_outlives_managed_job` test passes by observing the descendant write after the managed job ends. This is a negative containment result. |
+
+These runs corroborate the earlier arm64 Darwin finding on a second architecture
+mode. They do not qualify a shared-worktree writer permit. M005 remains active;
+S4 remains unavailable until every enabled writer has a bounded, native
+quiescence boundary or is denied. The source inventory is unchanged and remains
+complete at the family level; exact per-capability containment qualification
+is still open.

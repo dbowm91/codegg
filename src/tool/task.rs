@@ -11,13 +11,43 @@ use tokio::sync::Mutex;
 
 const MAX_REQUESTED_CHILD_TOOL_CALLS: u32 = 128;
 
+async fn create_agent_task_with_busy_retry(
+    store: &dyn AgentRunStore,
+    task: NewAgentTask,
+    run: NewAgentRun,
+) -> Result<AgentRunSubmission, AgentRunStoreError> {
+    const RETRIES: usize = 8;
+    for attempt in 0..RETRIES {
+        match store.create_or_get(task.clone(), run.clone()).await {
+            Ok(submission) => return Ok(submission),
+            Err(error) if attempt + 1 < RETRIES && is_transient_sqlite_lock(&error.to_string()) => {
+                let delay_ms = 25_u64.saturating_mul(1_u64 << attempt.min(6));
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the final retry either returns or exits with its error")
+}
+
+fn is_transient_sqlite_lock(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("database is locked")
+        || normalized.contains("database table is locked")
+        || normalized.contains("sqlite_busy")
+        || normalized.contains("sqlite busy")
+}
+
 use crate::agent::run_control::{ControlActor, ControlOutcome, RunControlService};
 use crate::agent::worker::{SubAgentRequest, SubAgentSpawner};
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 use codegg_core::agent_convergence::ConvergenceStore;
-use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
+use codegg_core::agent_run::{
+    AgentRunBudget, AgentRunStore, AgentRunStoreError, AgentRunSubmission, NewAgentRun,
+    NewAgentTask,
+};
 use codegg_core::agent_run_control::AgentRunControlKind;
 use codegg_core::agent_run_group::{
     AgentRunGroupOwner, AgentRunGroupService, AgentRunGroupSummary, GroupActor, NewAgentRunGroup,
@@ -1996,54 +2026,49 @@ impl TaskTool {
                         self.max_depth,
                     )
                     .map_err(ToolError::Execution)?;
-                    let created = agent_runs
-                        .create_or_get(
-                            NewAgentTask {
-                                task_id: AgentTaskId::new(),
-                                parent_task_id: if let Some(parent_run_id) = parent_run_id.as_ref()
-                                {
-                                    agent_runs
-                                        .get_run(parent_run_id)
-                                        .await
-                                        .ok()
-                                        .flatten()
-                                        .map(|run| run.task_id)
-                                } else {
-                                    None
-                                },
-                                originating_session_id: self
-                                    .parent_session_id
-                                    .clone()
-                                    .unwrap_or_default(),
-                                originating_turn_id: self.parent_turn_id.clone(),
-                                project_id,
-                                repository_id: self.repository_id.clone(),
-                                workspace_id: workspace_id.clone(),
-                                requested_agent: agent.clone(),
-                                delegation_key: delegation_key.clone(),
-                                request_fingerprint,
-                                description: description.clone(),
-                            },
-                            NewAgentRun {
-                                run_id: AgentRunId::new(),
-                                parent_run_id,
-                                workspace_id: workspace_id.clone(),
-                                agent_name: agent.clone(),
-                                agent_digest: None,
-                                provider,
-                                model: child_model.clone().unwrap_or_default(),
-                                authority_digest,
-                                budget: AgentRunBudget {
-                                    max_tool_calls,
-                                    max_depth: Some(self.max_depth),
-                                    ..Default::default()
-                                },
-                                shared_scratch: shared_scratch.clone(),
-                                depth,
-                            },
-                        )
-                        .await
-                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    let new_task = NewAgentTask {
+                        task_id: AgentTaskId::new(),
+                        parent_task_id: if let Some(parent_run_id) = parent_run_id.as_ref() {
+                            agent_runs
+                                .get_run(parent_run_id)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|run| run.task_id)
+                        } else {
+                            None
+                        },
+                        originating_session_id: self.parent_session_id.clone().unwrap_or_default(),
+                        originating_turn_id: self.parent_turn_id.clone(),
+                        project_id,
+                        repository_id: self.repository_id.clone(),
+                        workspace_id: workspace_id.clone(),
+                        requested_agent: agent.clone(),
+                        delegation_key: delegation_key.clone(),
+                        request_fingerprint,
+                        description: description.clone(),
+                    };
+                    let new_run = NewAgentRun {
+                        run_id: AgentRunId::new(),
+                        parent_run_id,
+                        workspace_id: workspace_id.clone(),
+                        agent_name: agent.clone(),
+                        agent_digest: None,
+                        provider,
+                        model: child_model.clone().unwrap_or_default(),
+                        authority_digest,
+                        budget: AgentRunBudget {
+                            max_tool_calls,
+                            max_depth: Some(self.max_depth),
+                            ..Default::default()
+                        },
+                        shared_scratch: shared_scratch.clone(),
+                        depth,
+                    };
+                    let created =
+                        create_agent_task_with_busy_retry(agent_runs.as_ref(), new_task, new_run)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?;
                     if created.created {
                         if let Some(control) = self.run_control.as_ref() {
                             control
@@ -2668,6 +2693,20 @@ fn authority_digest(denied_tools: &[String], allowed_paths: &[String]) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_transient_sqlite_lock_errors_are_retried() {
+        assert!(is_transient_sqlite_lock(
+            "storage failure: database is locked"
+        ));
+        assert!(is_transient_sqlite_lock(
+            "SQLITE_BUSY: database table is locked"
+        ));
+        assert!(!is_transient_sqlite_lock(
+            "delegation key already belongs to another task"
+        ));
+        assert!(!is_transient_sqlite_lock("permission denied"));
+    }
 
     #[test]
     fn call_identity_prefers_explicit_key_then_context_then_fresh_legacy_key() {

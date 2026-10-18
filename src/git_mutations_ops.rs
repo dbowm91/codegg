@@ -928,6 +928,21 @@ pub(crate) async fn run_raw_mutation(
     })
 }
 
+// Re-exports for tests / sibling modules.
+pub use crate::git_mutations::RepoSnapshot;
+
+// Avoid an unused-import warning on `RepoRoot` when no test code uses it.
+#[allow(dead_code)]
+fn _root_marker(_: &RepoRoot) {}
+
+// Avoid unused-import warnings.
+#[allow(dead_code)]
+fn _env_marker(_: &GitEnvPolicy) {}
+#[allow(dead_code)]
+fn _outcome_marker(_: &MutationOutcome) {}
+#[allow(dead_code)]
+fn _state_marker(_: &StateDelta) {}
+
 #[cfg(test)]
 mod child_filter_free_stage_tests {
     use super::*;
@@ -994,18 +1009,3 @@ mod child_filter_free_stage_tests {
         assert!(index.get_path(Path::new("filtered.txt"), 0).is_none());
     }
 }
-
-// Re-exports for tests / sibling modules.
-pub use crate::git_mutations::RepoSnapshot;
-
-// Avoid an unused-import warning on `RepoRoot` when no test code uses it.
-#[allow(dead_code)]
-fn _root_marker(_: &RepoRoot) {}
-
-// Avoid unused-import warnings.
-#[allow(dead_code)]
-fn _env_marker(_: &GitEnvPolicy) {}
-#[allow(dead_code)]
-fn _outcome_marker(_: &MutationOutcome) {}
-#[allow(dead_code)]
-fn _state_marker(_: &StateDelta) {}

@@ -3476,6 +3476,13 @@ async fn migrate_v81(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// still filters due-ness through v80's index, scanning at most one queue's
 /// worth of pending rows.
 async fn migrate_v82(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    // The agent-workstream branch previously allocated v80/v81 to scratch
+    // resources and usage attribution. Those databases can arrive here with a
+    // marker that says v81 while the prompt-queue tables are absent. Replaying
+    // the queue's idempotent base migrations here repairs that schema collision
+    // without changing the shipped v80/v81 migration records.
+    migrate_v80(tx).await?;
+    migrate_v81(tx).await?;
     add_column_ignore_duplicate(
         &mut *tx,
         "ALTER TABLE user_prompt_queue_entry ADD COLUMN run_at_ms INTEGER".to_string(),
