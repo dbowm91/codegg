@@ -735,25 +735,20 @@ mod tests {
         std::fs::write(&external_file, "outside file content").unwrap();
         std::fs::write(&external_nested, "outside directory content").unwrap();
 
-        let junction_id = codegg_core::identity::ScratchId::new();
-        let junction_root = shared_scratch_dir(&session_id, &junction_id).unwrap();
-        let junction = junction_root.join("external-junction");
-        let mklink = format!(
-            "mklink /J \"{}\" \"{}\"",
-            junction.display(),
-            external_dir.display()
-        );
-        let status = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", &mklink])
-            .status()
-            .expect("create native directory junction");
-        assert!(status.success(), "mklink /J failed with {status}");
-        assert!(reclaim_shared_scratch_dir(&session_id, &junction_id).is_err());
+        let reparse_id = codegg_core::identity::ScratchId::new();
+        let reparse_root = shared_scratch_dir(&session_id, &reparse_id).unwrap();
+        let reparse_path = reparse_root.join("external-reparse-point");
+        // Windows CI runs with an elevated disposable token, so the standard
+        // library can create a native directory-symlink reparse point without
+        // passing paths through cmd.exe's separate command-line parser.
+        std::os::windows::fs::symlink_dir(&external_dir, &reparse_path)
+            .expect("create native directory reparse point");
+        assert!(reclaim_shared_scratch_dir(&session_id, &reparse_id).is_err());
         assert_eq!(
             std::fs::read_to_string(&external_nested).unwrap(),
             "outside directory content"
         );
-        let shared_parent = junction_root.parent().unwrap();
+        let shared_parent = reparse_root.parent().unwrap();
         let tombstone = std::fs::read_dir(shared_parent)
             .unwrap()
             .filter_map(Result::ok)
