@@ -620,6 +620,180 @@
       "integrated_checks": "not run; no child commits; no changes integrated",
       "source_checkout_mutated": false,
       "notes": "The trial was stopped after 273.5 seconds because the Rust run continued with no finite tool-call budget and had accumulated 1,650,511 input tokens. Provider cost was not reported; stored 0.0 is not evidence of zero cost. Daemon recovery interrupted Rust but left the join_policy=all group running. Both dirty child worktrees are preserved for diagnosis."
+    },
+    {
+      "id": "S2-S3-integrated-branch-followup-2026-10-18",
+      "source_head": "ee3d79cdfc440fafb54546d0462899df08e65edb",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "provider_model": "opencode_go/gpt-6-luna",
+      "approval": "yolo",
+      "sandbox": "workspace_write",
+      "per_child_tool_call_cap": 32,
+      "provider_cost": "unavailable; provider returned no cost and stored cost_usd=0.0 is not treated as a price",
+      "arms": [
+        {
+          "condition": "S2: two isolated children, factual peer observations, no claims",
+          "group_id": "27e06ee8-e8f0-4b49-8404-df6d3feda89b",
+          "group_status": "completed",
+          "join_policy": "all",
+          "children": [
+            {
+              "assignment": "Rust producer",
+              "agent_run_id": "1d60c921-c897-450b-9dcf-84ec66bb170b",
+              "worktree_id": "44c545ea-9469-4b18-bb3d-8924b91451e9",
+              "status": "completed",
+              "queue_delay_seconds": 1.614,
+              "wall_seconds": 88.888,
+              "usage_rows": 15,
+              "input_tokens": 198759,
+              "output_tokens": 4708,
+              "reported_usd": null,
+              "child_commit": null,
+              "worktree": "rust/src/lib.rs modified"
+            },
+            {
+              "assignment": "Python consumer",
+              "agent_run_id": "57990b21-3f09-4f2c-80d1-ccdc1ee95c80",
+              "worktree_id": "69868501-9db7-4998-84a7-455049fdf705",
+              "status": "completed",
+              "queue_delay_seconds": 0.469,
+              "wall_seconds": 119.362,
+              "usage_rows": 23,
+              "input_tokens": 413407,
+              "output_tokens": 9894,
+              "reported_usd": null,
+              "child_commit": null,
+              "worktree": "python/summary_report/consumer.py modified"
+            }
+          ],
+          "integrated_checks": "Independent evaluator copy of only the two assigned source files: cargo test --locked --workspace passed (7 producer tests); python3 -m unittest discover -s python/tests -v passed (7 tests); python3 scripts/check_cross_language_golden.py passed.",
+          "git_integration": "not performed; no child commits; evaluator copied only assigned source files to a disposable integration copy",
+          "qualification": "functional S2 trajectory passed frozen acceptance, but does not satisfy the plan's Git-verified commit/integration criterion and is not an effectiveness claim",
+          "coordination": "Parent did not retrieve the durable child result summaries. The parent-surfaced summaries and independent evaluator confirmed the listed tests. No claims were created."
+        },
+        {
+          "condition": "S3: observations plus atomic path claims",
+          "result": "non_qualifying",
+          "attempts": [
+            {
+              "group_ids": [
+                "5b76cb17-a2a8-4283-a3fd-eb401767741f",
+                "01c21e1f-3184-4658-b1bf-9cdd6608666b"
+              ],
+              "run_ids": [
+                "41906752-35d4-4364-b1af-9110565412cd",
+                "2808ef11-505d-4541-852c-876fe6f0dc84"
+              ],
+              "statuses": [
+                "cancelled",
+                "cancelled"
+              ],
+              "grouping": "one child per group",
+              "claims": [
+                "rust/src/lib.rs in 5b76cb17-a2a8-4283-a3fd-eb401767741f"
+              ],
+              "usage": [
+                {
+                  "run_id": "41906752-35d4-4364-b1af-9110565412cd",
+                  "input_tokens": 501104,
+                  "output_tokens": 5909,
+                  "reported_usd": null
+                },
+                {
+                  "run_id": "2808ef11-505d-4541-852c-876fe6f0dc84",
+                  "input_tokens": 69390,
+                  "output_tokens": 1761,
+                  "reported_usd": null
+                }
+              ]
+            },
+            {
+              "group_ids": [
+                "b255b89d-79ab-46af-a2ae-ff24ad02abd0",
+                "be17cbc5-126c-4121-aa7e-bd6c54c705aa"
+              ],
+              "run_ids": [
+                "2da4993f-bd6b-483a-b532-1cfbe94a13a7",
+                "e7149db5-a98e-4b28-8738-82302a19f317"
+              ],
+              "statuses": [
+                "interrupted",
+                "interrupted"
+              ],
+              "grouping": "one child per group; daemon recovery left both all-join groups running",
+              "claims": [
+                "rust/src/lib.rs in b255b89d-79ab-46af-a2ae-ff24ad02abd0",
+                "python/summary_report/consumer.py in be17cbc5-126c-4121-aa7e-bd6c54c705aa"
+              ],
+              "usage": [
+                {
+                  "run_id": "2da4993f-bd6b-483a-b532-1cfbe94a13a7",
+                  "input_tokens": 163500,
+                  "output_tokens": 6345,
+                  "reported_usd": null
+                },
+                {
+                  "run_id": "e7149db5-a98e-4b28-8738-82302a19f317",
+                  "input_tokens": 170516,
+                  "output_tokens": 3033,
+                  "reported_usd": null
+                }
+              ]
+            },
+            {
+              "group_ids": [
+                "5d388739-384b-464a-b61e-f6a0b34b6ffe"
+              ],
+              "run_ids": [
+                "a99b2785-6f2f-43f9-84fe-70d7f87c275f",
+                "0f21099b-680b-41f3-b133-65663e9b4257"
+              ],
+              "statuses": [
+                "interrupted",
+                "interrupted after recovery"
+              ],
+              "grouping": "one shared two-member group",
+              "requested_cap": 32,
+              "persisted_cap": null,
+              "claims": [
+                "rust/src/lib.rs only; Python claim absent"
+              ],
+              "usage": [
+                {
+                  "run_id": "a99b2785-6f2f-43f9-84fe-70d7f87c275f",
+                  "input_tokens": 113234,
+                  "output_tokens": 1136,
+                  "reported_usd": null
+                },
+                {
+                  "run_id": "0f21099b-680b-41f3-b133-65663e9b4257",
+                  "input_tokens": 9260,
+                  "output_tokens": 127,
+                  "reported_usd": null
+                }
+              ],
+              "stop_reason": "Stopped isolated daemon after the missing per-child cap was detected; no tests or integration were counted."
+            }
+          ],
+          "integrated_checks": "not run",
+          "qualification": "no qualifying S3 result; separated groups cannot share a claim board; the one same-group attempt had no persisted tool-call cap and only one of two claims",
+          "downstream": "do not expand into overlapping Rust APIs or dependency-heavy strata until one S2 and one S3 pair use equal persisted caps, one two-child group each, both claims where applicable, Git-verified commits, and passing integrated evaluators"
+        }
+      ],
+      "exact_head_qualification": {
+        "source_head": "ee3d79cdfc440fafb54546d0462899df08e65edb",
+        "hosted_ci": {
+          "run_id": "39122595764",
+          "result": "success",
+          "url": "https://github.com/dbowm91/codegg/actions/runs/39122595764"
+        },
+        "windows_managed_worktree": {
+          "run_id": "39122598187",
+          "result": "success",
+          "url": "https://github.com/dbowm91/codegg/actions/runs/39122598187"
+        },
+        "qualification_scope": "Exact integrated source SHA; this evidence-only update adds no code changes."
+      }
     }
   ],
   "exact_head_qualification_2026_10_18": {
@@ -650,13 +824,20 @@
       "run_id": "39112674196",
       "result": "success",
       "url": "https://github.com/dbowm91/codegg/actions/runs/39112674196",
-      "checks": ["guards", "formatting", "workspace_clippy", "workspace_tests"]
+      "checks": [
+        "guards",
+        "formatting",
+        "workspace_clippy",
+        "workspace_tests"
+      ]
     },
     "windows_managed_worktree": {
       "run_id": "39112675703",
       "result": "success",
       "url": "https://github.com/dbowm91/codegg/actions/runs/39112675703",
-      "checks": ["deep_path_linked_worktree_materialization"]
+      "checks": [
+        "deep_path_linked_worktree_materialization"
+      ]
     },
     "qualification_scope": "Exact implementation source head; the evidence update changes documentation only.",
     "comparative_trials": "S2 remains non-qualifying because the persisted Python result does not retain the permission/tool error trace; S2/S3 and expansion strata remain open.",
