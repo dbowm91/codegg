@@ -8,7 +8,7 @@ Source roadmap: `plans/subsystems/agent-loop-operational-reliability-roadmap.md#
 
 Long-term requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`; `plans/000-long-term-specification.md#28-observability`; `plans/000-long-term-specification.md#29-system-invariants`; `plans/001-terminology-and-domain-model.md#7-agent-terms`.
 
-Applicable ADRs: `plans/adrs/ADR-0028-...` accepted command-policy direction (resolve exact filename before implementation). ADR-0040 does not gate this milestone.
+Applicable ADRs: `plans/adrs/ADR-0028-command-syntax-and-execution-authority.md` (accepted command-authority direction). ADR-0040 does not gate this milestone.
 
 Primary class: invariant
 
