@@ -39,7 +39,7 @@ C002 + C004 + C003 findings + Linux C002/M005 ─────> C005 parity/admis
 Linux C003 remote transport retains its independent M006/credential gate.
 ```
 
-A plan may use an **interface** contract or a test-only harness before a hard production dependency closes; this is not authority to dispatch a new backend. `C001` and `C003` are immediately ready. C002 test-only implementation follows C001; production activation requires ADR-0036 acceptance, full obtained M004/M005 guarantees and independent admission. C004 production promotion additionally waits on broker safety tests. Existing Linux C002 remains the authoritative positive local-mutation exit; this corrective supplies prerequisites and must not claim to close it automatically.
+A plan may use an **interface** contract or a test-only harness before a hard production dependency closes; this is not authority to dispatch a new backend. C001 remains in progress on hosted test-only evidence. C003 is closed with a negative gix decision for status. C002 test-only implementation follows C001; production activation requires ADR-0036 acceptance, full obtained M004/M005 guarantees and independent admission. C004 production promotion additionally waits on broker safety tests. Existing Linux C002 remains the authoritative positive local-mutation exit; this corrective supplies prerequisites and must not claim to close it automatically.
 
 ## 6. Milestones and handoffs
 
@@ -47,7 +47,7 @@ A plan may use an **interface** contract or a test-only harness before a hard pr
 |---|---|---|---|---|
 | C001 | invariant | `plans/implementation/linux-trusted-git-cost-corrective/001-live-odb-trust-model-and-negative-probes.md` | **in progress, test-only** | Threat matrix and real-child negative probes; no live-ODB production call |
 | C002 | capability | `plans/implementation/linux-trusted-git-cost-corrective/002-contained-live-odb-read-pilot.md` | **blocked on C001; test-only eligible after C001** | Native contained CLI reads and explicit non-snapshot receipt; promotion gated by ADR-0036 and M005 |
-| C003 | infrastructure | `plans/implementation/linux-trusted-git-cost-corrective/003-gix-versus-cli-benchmark.md` | **ready, comparison-only** | Portable command-parity/latency/build-footprint matrix; no new production dependency or API |
+| C003 | infrastructure | `plans/archive/implementation/linux-trusted-git-cost-corrective/003-gix-versus-cli-benchmark.md` | **closed (negative gix decision)** | Closure `plans/closure/linux-trusted-git-cost-corrective/003-status.md`; gix deferred after packed/fragmented status comparison; production snapshot route unchanged |
 | C004 | invariant | `plans/implementation/linux-trusted-git-cost-corrective/004-private-index-odb-promotion-prototype.md` | **blocked on C001, ADR-0036 for production; test design parallel** | Operation-scoped staging with validated publication, conflict and crash handling |
 | C005 | capability | `plans/implementation/linux-trusted-git-cost-corrective/005-local-git-recovery-and-admission.md` | **blocked on C002/C004, Linux M005 and ADR acceptance** | Positive local Git parity, independent security review and C010/M003/C002 handoffs; no implicit release admission |
 
