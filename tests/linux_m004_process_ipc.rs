@@ -1508,6 +1508,28 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         std::fs::read(&recovery_expected_index).expect("read expected recovery index"),
         "recovery must reject an externally changed source index"
     );
+
+    // A path replacement between publisher exit and recovery must not redirect
+    // the broker to an attacker-selected file. Verify the no-follow open
+    // rejects a symlink at Git's conventional lock path, then restore the
+    // exact durable lock created by the interrupted publisher.
+    let displaced_lock = recovery_dir.join("displaced-index-lock");
+    std::fs::rename(&source_index_lock, &displaced_lock)
+        .expect("move interrupted lock for symlink replacement probe");
+    std::os::unix::fs::symlink(&recovery_publish_index, &source_index_lock)
+        .expect("replace Git index lock with a symlink probe");
+    let symlink_open = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&source_index_lock);
+    assert!(
+        symlink_open.is_err(),
+        "recovery followed a symlink at the Git index lock path"
+    );
+    std::fs::remove_file(&source_index_lock).expect("remove symlink lock probe");
+    std::fs::rename(&displaced_lock, &source_index_lock)
+        .expect("restore interrupted Git index lock");
+
     let recovered_index =
         std::fs::read(&recovery_publish_index).expect("read validated recovery index");
     let lock_file = OpenOptions::new()
