@@ -848,13 +848,49 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         }
     }
 
-    // Git's own repack is a supported external writer to the live ODB. Race
-    // repeated contained reads against pack replacement and require either
-    // successful exact output or an assertion failure; this pilot does not
-    // claim immutable-generation semantics for arbitrary writers.
-    let expected_log = String::from_utf8(setup(&["log", "-1", "--oneline"]).stdout)
-        .expect("fixture log output is UTF-8");
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    // Race live reads against Git's own pack replacement and atomic ref
+    // movement. A read may observe either committed HEAD, but never a mixed
+    // result. This does not claim immutable-generation semantics for
+    // arbitrary writers.
+    let first_commit = String::from_utf8(setup(&["rev-parse", "HEAD"]).stdout)
+        .expect("first commit id is UTF-8")
+        .trim()
+        .to_owned();
+    std::fs::write(repository.join("race.txt"), "second committed generation\n")
+        .expect("write second commit fixture");
+    assert!(setup(&["add", "race.txt"]).status.success());
+    let second_commit = setup(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "concurrent ref fixture",
+        "--",
+        "race.txt",
+    ]);
+    assert!(
+        second_commit.status.success(),
+        "second Git fixture commit failed: {}",
+        String::from_utf8_lossy(&second_commit.stderr)
+    );
+    let second_commit = String::from_utf8(setup(&["rev-parse", "HEAD"]).stdout)
+        .expect("second commit id is UTF-8")
+        .trim()
+        .to_owned();
+    let branch = String::from_utf8(setup(&["symbolic-ref", "--short", "HEAD"]).stdout)
+        .expect("branch name is UTF-8")
+        .trim()
+        .to_owned();
+    let branch_ref = format!("refs/heads/{branch}");
+    let expected_logs = [first_commit.as_str(), second_commit.as_str()].map(|commit| {
+        String::from_utf8(setup(&["show", "-s", "--oneline", commit]).stdout)
+            .expect("commit log output is UTF-8")
+    });
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
     let repack_barrier = std::sync::Arc::clone(&barrier);
     let repack_git = git.clone();
     let repack_repository = repository.to_path_buf();
@@ -875,6 +911,29 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             );
         }
     });
+    let ref_barrier = std::sync::Arc::clone(&barrier);
+    let ref_git = git.clone();
+    let ref_repository = repository.to_path_buf();
+    let ref_worker = tokio::task::spawn_blocking(move || {
+        ref_barrier.wait();
+        let mut old_commit = second_commit;
+        let mut new_commit = first_commit;
+        for iteration in 0..32 {
+            let output = Command::new(&ref_git)
+                .args(["update-ref", &branch_ref, &new_commit, &old_commit])
+                .current_dir(&ref_repository)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("run concurrent external Git ref update");
+            assert!(
+                output.status.success(),
+                "external ref update {iteration} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            std::mem::swap(&mut old_commit, &mut new_commit);
+        }
+    });
     barrier.wait();
     let log_operation = codegg_git::GitOperation::Log {
         oneline: true,
@@ -892,20 +951,21 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         .await;
         assert!(
             live.exit_status.success(),
-            "contained live log failed during external repack {iteration}: {}",
+            "contained live log failed during external repack/ref update {iteration}: {}",
             live.stderr.to_string_lossy()
         );
         assert!(
             matches!(live.sandbox, SandboxExecutionOutcome::Enforced { .. }),
-            "concurrent repack read lacked obtained sandbox enforcement"
+            "concurrent read lacked obtained sandbox enforcement"
         );
-        assert_eq!(
-            live.stdout.to_string_lossy(),
-            expected_log,
-            "live ODB read observed a partial or inconsistent pack generation"
+        let actual = live.stdout.to_string_lossy();
+        assert!(
+            expected_logs.iter().any(|expected| expected == &*actual),
+            "live Git read observed neither committed ref generation: {actual:?}"
         );
     }
     repacker.await.expect("join external repack worker");
+    ref_worker.await.expect("join external ref-update worker");
     let gitdir_after_race = std::fs::metadata(&selected_gitdir).expect("stat Git directory");
     let odb_after_race = std::fs::metadata(&selected_odb).expect("stat ODB after repack race");
     assert_eq!(
