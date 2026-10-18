@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -21,6 +22,7 @@ const OBJECT_COUNT: usize = 4096;
 const BYTES_PER_OBJECT: usize = 25_600;
 const COLD_SAMPLES: usize = 30;
 const WARM_SAMPLES: usize = 100;
+const CONTENTION_BATCHES: usize = 30;
 
 #[derive(Debug, Serialize)]
 struct RouteReport {
@@ -30,6 +32,22 @@ struct RouteReport {
     warm_us: Vec<u128>,
     warm_p50_us: u128,
     warm_p95_us: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct ContentionRouteReport {
+    p50_us: u128,
+    p95_us: u128,
+    max_us: u128,
+    samples: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ContentionReport {
+    concurrent_calls: usize,
+    native_git: ContentionRouteReport,
+    immutable_snapshot: ContentionRouteReport,
+    contained_live_odb: ContentionRouteReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +62,7 @@ struct FixtureReport {
     native_git: RouteReport,
     immutable_snapshot: RouteReport,
     contained_live_odb: RouteReport,
+    warm_contention: Vec<ContentionReport>,
 }
 
 fn git_binary() -> PathBuf {
@@ -271,6 +290,98 @@ async fn immutable_snapshot(
     result.stdout
 }
 
+async fn concurrent_native_batch(
+    git: &Path,
+    repository: &Path,
+    argv: &[String],
+    expected: &[u8],
+    concurrency: usize,
+) -> Vec<u128> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..concurrency {
+        let git = git.to_path_buf();
+        let repository = repository.to_path_buf();
+        let argv = argv.to_vec();
+        let expected = expected.to_vec();
+        tasks.spawn_blocking(move || {
+            let started = Instant::now();
+            let output = native_git(&git, &repository, &argv);
+            assert_eq!(output.stdout, expected, "concurrent native Git parity");
+            elapsed_us(started)
+        });
+    }
+    let mut samples = Vec::with_capacity(concurrency);
+    while let Some(result) = tasks.join_next().await {
+        samples.push(result.expect("join concurrent native Git read"));
+    }
+    samples
+}
+
+async fn concurrent_snapshot_batch(
+    service: Arc<GitExecutionService>,
+    operation: &codegg_git::GitOperation,
+    repository: &Path,
+    expected: &[u8],
+    concurrency: usize,
+) -> Vec<u128> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..concurrency {
+        let service = Arc::clone(&service);
+        let operation = operation.clone();
+        let repository = repository.to_path_buf();
+        let expected = expected.to_vec();
+        tasks.spawn(async move {
+            let started = Instant::now();
+            let result = service
+                .execute(&operation, &repository)
+                .await
+                .expect("concurrent immutable-snapshot Git read");
+            assert!(result.success, "concurrent snapshot read failed");
+            assert!(matches!(result.payload, Some(GitPayload::Log(_))));
+            assert_eq!(result.stdout.as_bytes(), expected);
+            elapsed_us(started)
+        });
+    }
+    let mut samples = Vec::with_capacity(concurrency);
+    while let Some(result) = tasks.join_next().await {
+        samples.push(result.expect("join concurrent immutable-snapshot read"));
+    }
+    samples
+}
+
+async fn concurrent_live_batch(
+    git: &Path,
+    repository: &Path,
+    argv: &[String],
+    expected: &[u8],
+    concurrency: usize,
+) -> Vec<u128> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..concurrency {
+        let git = git.to_path_buf();
+        let repository = repository.to_path_buf();
+        let argv = argv.to_vec();
+        let expected = expected.to_vec();
+        tasks.spawn(async move {
+            let started = Instant::now();
+            let result = contained_live_git(
+                &git,
+                &repository,
+                &argv,
+                &format!("contention-{concurrency}-{index}"),
+            )
+            .await;
+            assert_eq!(output_bytes(&result.stdout), expected);
+            elapsed_us(started)
+        });
+    }
+    let mut samples = Vec::with_capacity(concurrency);
+    while let Some(result) = tasks.join_next().await {
+        samples.push(result.expect("join concurrent contained Git read"));
+    }
+    samples
+}
+
 async fn contained_live_git(
     git: &Path,
     repository: &Path,
@@ -329,6 +440,15 @@ fn route_report(cold: Vec<u128>, warm: Vec<u128>) -> RouteReport {
         warm_p95_us: percentile(&warm, 95),
         cold_us: cold,
         warm_us: warm,
+    }
+}
+
+fn contention_route_report(samples: Vec<u128>) -> ContentionRouteReport {
+    ContentionRouteReport {
+        p50_us: percentile(&samples, 50),
+        p95_us: percentile(&samples, 95),
+        max_us: samples.iter().copied().max().unwrap_or_default(),
+        samples: samples.len(),
     }
 }
 
@@ -422,6 +542,41 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         assert_eq!(output_bytes(&live.stdout), expected);
     }
 
+    // Measure warm-path contention with concurrent calls against the same
+    // repository. Each percentile uses 30 batches at the selected fan-out;
+    // per-call latency includes queueing, launcher setup and child execution.
+    let typed_service = Arc::new(typed_service);
+    let mut warm_contention = Vec::with_capacity(3);
+    for concurrent_calls in [1, 4, 8] {
+        let mut native = Vec::with_capacity(CONTENTION_BATCHES * concurrent_calls);
+        let mut snapshot = Vec::with_capacity(CONTENTION_BATCHES * concurrent_calls);
+        let mut live = Vec::with_capacity(CONTENTION_BATCHES * concurrent_calls);
+        for _ in 0..CONTENTION_BATCHES {
+            native.extend(
+                concurrent_native_batch(git, &repository, &argv, &expected, concurrent_calls).await,
+            );
+            snapshot.extend(
+                concurrent_snapshot_batch(
+                    Arc::clone(&typed_service),
+                    &op,
+                    &repository,
+                    &expected,
+                    concurrent_calls,
+                )
+                .await,
+            );
+            live.extend(
+                concurrent_live_batch(git, &repository, &argv, &expected, concurrent_calls).await,
+            );
+        }
+        warm_contention.push(ContentionReport {
+            concurrent_calls,
+            native_git: contention_route_report(native),
+            immutable_snapshot: contention_route_report(snapshot),
+            contained_live_odb: contention_route_report(live),
+        });
+    }
+
     let filesystem =
         std::env::var("CODEGG_GIT_COST_FILESYSTEM").unwrap_or_else(|_| "unspecified".into());
     FixtureReport {
@@ -435,6 +590,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         native_git: route_report(native_cold, native_warm),
         immutable_snapshot: route_report(snapshot_cold, snapshot_warm),
         contained_live_odb: route_report(live_cold, live_warm),
+        warm_contention,
     }
 }
 
