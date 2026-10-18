@@ -17,7 +17,7 @@
 //! actor, credential-like Git URL, secret-looking command text, and
 //! terminal input content.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -916,7 +916,7 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
     let secret = "ghp_m004secretvalue123456";
     let broker_ctx = BrokerInvocationContext {
         caller: ToolCaller::Agent,
-        cwd: PathBuf::from("."),
+        cwd: repo.path().to_path_buf(),
         session_id: Some("session-m004-secret".to_owned()),
         workspace_id: None,
         agent_id: None,
