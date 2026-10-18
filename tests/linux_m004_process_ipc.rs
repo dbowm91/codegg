@@ -763,6 +763,273 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the contained Git staging pilot");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path().join("repository");
+    std::fs::create_dir(&repository).expect("create repository root");
+    let operation_scratch = tempfile::tempdir().expect("operation-owned Git scratch");
+    let private_gitdir = operation_scratch.path().join("private.gitdir");
+    let empty_hooks = operation_scratch.path().join("empty-hooks");
+    std::fs::create_dir(&empty_hooks).expect("create empty hook directory");
+
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+    let setup = |cwd: &Path, args: &[String]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git staging fixture")
+    };
+
+    let init = setup(&repository, &["init".into(), "--quiet".into()]);
+    assert!(init.status.success(), "git init failed: {init:?}");
+    std::fs::write(repository.join("tracked.txt"), "committed base\n")
+        .expect("write committed fixture");
+    std::fs::write(
+        repository.join(".gitattributes"),
+        "tracked.txt filter=probe\n",
+    )
+    .expect("write repository-controlled filter attribute");
+    assert!(setup(
+        &repository,
+        &[
+            "add".into(),
+            "--".into(),
+            ".gitattributes".into(),
+            "tracked.txt".into(),
+        ]
+    )
+    .status
+    .success());
+    let commit = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "user.name=Fixture".into(),
+            "-c".into(),
+            "user.email=fixture@example.invalid".into(),
+            "commit".into(),
+            "--quiet".into(),
+            "-m".into(),
+            "private staging fixture".into(),
+        ],
+    );
+    assert!(
+        commit.status.success(),
+        "fixture commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let filter_marker = repository.join("source-filter-ran");
+    let filter_script = operation_scratch.path().join("source-filter.sh");
+    std::fs::write(
+        &filter_script,
+        format!(
+            "#!/bin/sh\nprintf ran > {}\ncat\n",
+            shell_quote(&filter_marker.to_string_lossy())
+        ),
+    )
+    .expect("write source-configured filter probe");
+    let mut filter_permissions = std::fs::metadata(&filter_script)
+        .expect("stat source-configured filter probe")
+        .permissions();
+    filter_permissions.set_mode(0o755);
+    std::fs::set_permissions(&filter_script, filter_permissions)
+        .expect("make source-configured filter executable");
+    let configure_filter = setup(
+        &repository,
+        &[
+            "config".into(),
+            "filter.probe.clean".into(),
+            filter_script.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        configure_filter.status.success(),
+        "configure source repository filter: {}",
+        String::from_utf8_lossy(&configure_filter.stderr)
+    );
+    let source_gitdir = repository.join(".git");
+    let original_index =
+        std::fs::read(source_gitdir.join("index")).expect("capture source index before staging");
+    let head = setup(&repository, &["rev-parse".into(), "HEAD".into()]);
+    assert!(
+        head.status.success(),
+        "resolve source HEAD failed: {head:?}"
+    );
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+
+    // The alternate is broker-authored in operation scratch and points only
+    // at this ordinary repository's captured object directory. The source
+    // repository's own config, index and alternate files are not consulted.
+    let private_init = setup(
+        operation_scratch.path(),
+        &[
+            "init".into(),
+            "--bare".into(),
+            private_gitdir.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        private_init.status.success(),
+        "private gitdir init failed: {}",
+        String::from_utf8_lossy(&private_init.stderr)
+    );
+    let alternates = private_gitdir.join("objects/info/alternates");
+    std::fs::write(
+        &alternates,
+        format!("{}\n", source_gitdir.join("objects").display()),
+    )
+    .expect("write operation-owned alternate view");
+    for args in [
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "update-ref".into(),
+            "refs/heads/main".into(),
+            head.clone(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "symbolic-ref".into(),
+            "HEAD".into(),
+            "refs/heads/main".into(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "read-tree".into(),
+            "HEAD".into(),
+        ],
+    ] {
+        let prepared = setup(&repository, &args);
+        assert!(
+            prepared.status.success(),
+            "private index baseline setup failed for {args:?}: {}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+    }
+
+    std::fs::write(
+        repository.join("tracked.txt"),
+        "new content must stay in private object storage\n",
+    )
+    .expect("write changed worktree content");
+    let changed_blob = setup(&repository, &["hash-object".into(), "tracked.txt".into()]);
+    assert!(changed_blob.status.success(), "hash changed blob failed");
+    let changed_blob = String::from_utf8_lossy(&changed_blob.stdout)
+        .trim()
+        .to_owned();
+
+    let args = vec![
+        format!("--git-dir={}", private_gitdir.display()),
+        format!("--work-tree={}", repository.display()),
+        "-c".into(),
+        format!("core.hooksPath={}", empty_hooks.display()),
+        "-c".into(),
+        "core.fsmonitor=false".into(),
+        "add".into(),
+        "--".into(),
+        "tracked.txt".into(),
+    ];
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_allowed_paths(vec![
+            repository.to_string_lossy().into_owned(),
+            operation_scratch.path().to_string_lossy().into_owned(),
+        ])
+        .with_linux_offline_network(true)
+        .launch_spec(&git, &args, Some(&repository))
+        .expect("construct scoped M004/M005 Git staging launch spec");
+    let argv = std::iter::once(spec.target.as_os_str().to_owned())
+        .chain(spec.args.iter().map(OsString::from))
+        .collect();
+    let mut request = ManagedProcessRequest::new(
+        argv,
+        repository.clone(),
+        ProcessProvenance::new("linux-trusted-git-c004", "private-add-staging"),
+    );
+    request.timeout = Some(Duration::from_secs(15));
+    request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+        .with_var("GIT_CONFIG_NOSYSTEM", "1")
+        .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+        .with_var("HOME", "/tmp/codegg-empty-home");
+    request.sandbox = SandboxRequest::Required(spec);
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("required contained staging must run or fail closed");
+    assert!(
+        result.exit_status.success(),
+        "contained git add failed: {}",
+        result.stderr.to_string_lossy()
+    );
+    assert!(
+        matches!(result.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+        "staging did not report obtained enforcement"
+    );
+    assert!(
+        !filter_marker.exists(),
+        "staging loaded the original repository's filter command"
+    );
+
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("source index remains readable"),
+        original_index,
+        "contained git add changed the protected source index"
+    );
+    assert!(
+        !source_gitdir.join("index.lock").exists(),
+        "contained git add created a source index lock"
+    );
+    let staged = setup(
+        &repository,
+        &[
+            format!("--git-dir={}", private_gitdir.display()),
+            "ls-files".into(),
+            "--stage".into(),
+            "--".into(),
+            "tracked.txt".into(),
+        ],
+    );
+    assert!(staged.status.success(), "read private staged index failed");
+    assert!(
+        String::from_utf8_lossy(&staged.stdout).contains(&changed_blob),
+        "private index does not reference the changed blob: {}",
+        String::from_utf8_lossy(&staged.stdout)
+    );
+    let private_object = private_gitdir
+        .join("objects")
+        .join(&changed_blob[..2])
+        .join(&changed_blob[2..]);
+    assert!(
+        private_object.is_file(),
+        "changed blob was not written to the operation-owned object store"
+    );
+    let source_object = source_gitdir
+        .join("objects")
+        .join(&changed_blob[..2])
+        .join(&changed_blob[2..]);
+    assert!(
+        !source_object.exists(),
+        "contained git add wrote the new object into the protected source ODB"
+    );
+    assert!(
+        !private_gitdir.join("index.lock").exists(),
+        "staging left a private index lock behind"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_network_runs_cargo_metadata_and_check_without_network() {
     if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
         eprintln!("skipped: set {M005_OPT_IN}=1 for the native M005 toolchain probe");

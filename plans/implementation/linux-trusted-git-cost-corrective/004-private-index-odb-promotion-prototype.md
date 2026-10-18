@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C004 — Private Index/Object Staging and Broker Promotion
 
-Status: ready for test-only transaction modeling against C001's closed test boundary; **production publication remains blocked on independent ADR-0036 acceptance and broker safety proof**
+Status: active — test-only private index/object staging prototype; **publication and production mutation remain blocked on independent ADR-0036 acceptance and broker safety proof**
 Primary class: invariant
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`, parent Linux execution isolation roadmap and Linux C002 contained-local-Git recovery plan `plans/implementation/linux-execution-isolation/010-m001-contained-local-git-recovery.md`.
@@ -14,6 +14,8 @@ Prototype an authorized Git mutation transaction that reads existing repository 
 ## Current evidence / problem
 
 The current contained Git plan denies arbitrary `.git`/common-dir writes and treats clean/smudge filters, merge drivers, hooks and other configuration-triggered programs as needing contained execution. The private immutable object view is read-only and cannot satisfy routine object/index writes; C002 cannot be closed simply by allowing the entire protected `.git` as a writable mount. `WorkspaceLockTable` is process-local and cannot fence IDEs or external git. Git worktrees share objects/refs but have distinct per-worktree gitdir/index. Index, worktree and refs are **not one atomic resource**.
+
+The first native test-only prototype initializes an operation-owned gitdir, writes a broker-authored alternate to the selected repository's ordinary ODB, and runs one contained `git add` with the repository metadata protected by M004's read-only mount overlay. It checks that the source index and ODB remain unchanged while the staged index and new blob reside in private scratch. It does not publish any state and does not yet test writer contention, crashes, cancellation, cleanup/restart, path races, or broker recovery.
 
 ## Invariants and limits
 

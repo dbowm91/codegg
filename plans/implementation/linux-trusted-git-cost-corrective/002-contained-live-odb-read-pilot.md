@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C002 — Contained Live-ODB Read Pilot
 
-Status: in progress — internal test-only typed-payload parity pilot; **production route remains blocked on ADR-0036 acceptance and M005 native/owner admission**
+Status: active — internal test-only typed-payload parity pilot; **production route remains blocked on ADR-0036 acceptance and M005 native/owner admission**
 Primary class: capability
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source roadmap: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`; parent `plans/subsystems/linux-execution-isolation-roadmap.md`.
@@ -15,6 +15,8 @@ Build and qualify an **internal opt-in, test-only** contained native-Git read ad
 ## Current code and issues
 
 `egggit::process::GitEnvPolicy::apply` and `apply_sync` still build Git `Command` plus a private ODB lease. They are used by structured reads, mutation pre/post snapshots and many callers. M004's helper/PTY/LSP orchestration uses `ManagedProcessService`, but `egggit` cannot independently adopt Codegg daemon authority. Avoid a second launcher hidden within `egggit`. Historic `tests/git_execution_origin_matrix.rs` and structured ChangedFiles/log outputs have intermittent `BackendUnavailable[RepositoryAlias]` or payload failures; diagnose reproducibly, do not work around by returning empty data.
+
+The current native test-only pilot compares contained `status`, `diff`, `log`, and `show` stdout with typed immutable-snapshot results and checks typed payload semantics. It does not yet provide a production `GitReadBackend`, immutable repository identity receipt, race/staleness classification, crash/cancellation cleanup evidence, concurrency data, or M005 owner coverage. The separate C004 staging probe is not a C002 route or promotion mechanism.
 
 ## Invariants / non-goals
 
