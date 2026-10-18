@@ -257,7 +257,10 @@ impl SidePanel for TerminalPanel {
         );
 
         let highlight = Style::default().bg(theme.selection);
-        match ctx.terminal.render_view(&handle, body_height, highlight) {
+        match ctx
+            .terminal
+            .render_view(&handle, body_height, ctx.caret_blink_on, highlight)
+        {
             Some(lines) if !lines.is_empty() => Paragraph::new(lines).render(rows[1], buf),
             _ => Paragraph::new(Line::from(Span::styled(
                 " no output — press i to type",
@@ -337,6 +340,20 @@ impl SidePanel for TerminalPanel {
         }
     }
 
+    /// Decline the host's directional gesture while the PTY owns the keyboard.
+    ///
+    /// In INS every key is program input. `H`/`J`/`K`/`L` are letters the user
+    /// types — in commands, paths and environment variables — so letting the
+    /// host read them as "move this panel" drops the character and relocates
+    /// the column. The gesture belongs to reading, where there is no keyboard
+    /// to protect.
+    fn claims_panel_directions(&self, ctx: &PanelCtx<'_>) -> bool {
+        !self
+            .handle
+            .as_deref()
+            .is_some_and(|handle| ctx.terminal.is_focused(handle))
+    }
+
     /// Claim `Esc` while the PTY is focused (INS).
     ///
     /// The host drops panel focus on `Esc`/`q` *without consulting the
@@ -381,15 +398,25 @@ impl SidePanel for TerminalPanel {
     }
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
-        Some(if !hints.focused {
-            // Unfocused: navigation is still this panel's business, so the
-            // line is not empty — but `i` only works with the keyboard, and
-            // saying so is the difference between a dead key and a mode.
-            match self.handle {
-                None => "TERM · focus to start a shell".to_string(),
-                Some(_) => "TERM · focus to scroll, select and type".to_string(),
-            }
-        } else if self.handle.is_none() {
+        // Unfocused: `None`.
+        //
+        // This used to answer `"TERM · focus to scroll, select and type"`,
+        // keeping the row alive above a composer that had the keyboard. The
+        // row exists to name whoever holds the keyboard, and every verb in it
+        // — including the gesture that would reclaim them — needs the keyboard
+        // it had just given up. So the line sat under the LLM buffer describing
+        // a terminal nobody was in, and the `Shift+←/→` gesture that would have
+        // brought it back was itself the thing the line was advertising.
+        //
+        // Nothing is lost. The panel's own chrome still says a terminal is
+        // docked and which one, the `[TERM]` badge names the destination, and
+        // the row comes back the moment the panel takes the keyboard again.
+        // See `SidePanelHost::composer_hints` for why this panel — a *bespoke*
+        // one — declines while a hosted `/files` panel still advertises.
+        if !hints.focused {
+            return None;
+        }
+        Some(if self.handle.is_none() {
             "TERM · i start a shell · v chars · x lines · d delete · space+y copy · C clear"
                 .to_string()
         } else if hints.input_mode == InputMode::Insert {
@@ -408,5 +435,170 @@ impl SidePanel for TerminalPanel {
         if self.handle.is_none() {
             self.show(ctx.terminal.active_handle());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::panels::PanelPlacement;
+    use std::sync::Arc;
+
+    fn hints(focused: bool) -> PanelHints<'static> {
+        PanelHints {
+            focused,
+            placement: PanelPlacement::Right,
+            chat_project: None,
+            input_mode: InputMode::Normal,
+        }
+    }
+
+    /// The reported defect, at the seam: the row above the composer must
+    /// describe whoever holds the keyboard, and after a `Shift+←/→` swap the
+    /// terminal no longer holds it. Every branch of the old answer named
+    /// *terminal* verbs — `focus to scroll, select and type` — at a user whose
+    /// keys were going to the LLM buffer, which is the one thing that line
+    /// exists to prevent.
+    #[test]
+    fn the_panel_declines_the_row_when_another_surface_holds_the_keyboard() {
+        let mut panel = TerminalPanel::default();
+        assert_eq!(
+            panel.composer_hints(&hints(false)),
+            None,
+            "an unfocused panel with no terminal must not claim the row either"
+        );
+        panel.show(Some("t-1"));
+        assert_eq!(
+            panel.composer_hints(&hints(false)),
+            None,
+            "a hint describing the terminal's own verbs must not survive losing the keyboard"
+        );
+    }
+
+    /// The other half of the same rule, so the fix cannot be "always `None`".
+    /// Both modes are claimed from here, and neither depends on the view's own
+    /// focus flag — the derived mode is the answer, not `is_focused`.
+    #[test]
+    fn the_panel_describes_its_verbs_while_it_holds_the_keyboard() {
+        let mut panel = TerminalPanel::default();
+        assert!(
+            panel.composer_hints(&hints(true)).is_some(),
+            "a focused panel with no terminal must still name `i`"
+        );
+        panel.show(Some("t-1"));
+
+        let mut insert = hints(true);
+        insert.input_mode = InputMode::Insert;
+        let typing = panel
+            .composer_hints(&insert)
+            .expect("focused panel advertises");
+        assert!(
+            typing.contains("INS typing to the shell"),
+            "Insert must describe the shell, got {typing:?}"
+        );
+
+        let reading = panel
+            .composer_hints(&hints(true))
+            .expect("focused panel advertises");
+        assert!(
+            reading.contains("i type"),
+            "Normal must describe the reader verbs, got {reading:?}"
+        );
+    }
+
+    // ── Caret blink ───────────────────────────────────────────────────
+
+    /// Cells carrying `REVERSED` in a rendered frame.
+    ///
+    /// The caret is the only thing here that paints it: the fixture's text is
+    /// plain, so a reversed cell is the caret and nothing else.
+    fn reversed_cells(buffer: &Buffer) -> usize {
+        buffer
+            .content
+            .iter()
+            .filter(|cell| cell.modifier.contains(Modifier::REVERSED))
+            .count()
+    }
+
+    /// A live PTY behind `handle`, in Insert, with one line of output.
+    fn live_focused_terminal(
+        handle: &str,
+    ) -> crate::tui::interactive_terminal::InteractiveTerminalController {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+
+        let mut terminal = crate::tui::interactive_terminal::InteractiveTerminalController::new();
+        assert!(terminal.apply_created(
+            handle.to_string(),
+            "ws-1".to_string(),
+            "sh".to_string(),
+            40,
+            4
+        ));
+        let body = crate::protocol::interactive_process::InteractiveOutputChunk {
+            handle: handle.to_string(),
+            from_seq: 0,
+            next_seq: 5,
+            gap: false,
+            data_b64: B64.encode(b"alpha"),
+        };
+        assert!(terminal
+            .apply_attached(handle, "a-1".to_string(), &body, None)
+            .expect("attach")
+            .is_none());
+        assert!(
+            terminal.focus(handle),
+            "a live attached view takes the keyboard"
+        );
+        terminal
+    }
+
+    /// Render the panel into a fresh buffer at a pinned blink phase.
+    ///
+    /// Pinned, not sampled: the phase arrives as a grant on [`PanelCtx`], which
+    /// is the only reason this can be asserted without racing a live clock — and
+    /// the reason the panel cannot quietly read a clock of its own.
+    fn rendered_with_phase(handle: &str, caret_blink_on: bool) -> Buffer {
+        use crate::tui::components::sidebar::SidebarWidget;
+
+        let theme = Arc::new(Theme::default());
+        let mut session = SidebarWidget::new(Arc::clone(&theme));
+        let mut chat = crate::tui::app::state::ChatState::default();
+        let mut terminal = live_focused_terminal(handle);
+        let mut panel = TerminalPanel::default();
+        panel.show(Some(handle));
+        let mut ctx = PanelCtx {
+            theme,
+            now_ms: 0,
+            session: &mut session,
+            chat: &mut chat,
+            terminal: &mut terminal,
+            vim_mode: false,
+            chat_project: None,
+            area: Rect::new(0, 0, 40, 10),
+            focused: true,
+            input_mode: InputMode::Insert,
+            caret_blink_on,
+        };
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let area = ctx.area;
+        panel.render(&mut ctx, &mut buffer, area);
+        buffer
+    }
+
+    /// The reported defect at the surface the user is actually looking at:
+    /// the docked caret was painted once and never changed, so a user could
+    /// not tell from the column that the PTY was live.
+    #[test]
+    fn the_docked_caret_blinks_on_the_phase_the_host_grants() {
+        assert_eq!(
+            reversed_cells(&rendered_with_phase("t-blink", true)),
+            1,
+            "the visible phase paints the caret"
+        );
+        assert_eq!(
+            reversed_cells(&rendered_with_phase("t-blink", false)),
+            0,
+            "the hidden phase paints it dark"
+        );
     }
 }

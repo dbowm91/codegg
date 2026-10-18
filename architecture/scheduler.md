@@ -226,6 +226,31 @@ child can still be rejected by explicit semantic delegation policy, but it is
 not rejected merely because the compatibility pool's local semaphore is full.
 The pool remains only a child-runtime/semantic-admission adapter on this path;
 it does not perform a second machine-capacity admission.
+
+### Workspace root binding (every executor)
+
+`JobExecutionContext.workspace_root` is documented as the canonical root
+captured from the scheduler-owned lease, with the instruction that executors
+must use it instead of consulting process-global CWD. Every executor honours
+that:
+
+| Executor | Binding |
+|---|---|
+| `TestJobExecutor` | `workdir: ctx.workspace_root` |
+| `PythonJobExecutor` | canonical workdir, else `ctx.workspace_root`; **errors** if neither |
+| `ToolProgramExecutor` | `job_tool_context(&ctx.workspace_root)` |
+| `SubagentJobExecutor` | `allowed_paths.first()`, else `ctx.workspace_root` |
+
+`SubagentJobExecutor` was the outlier: it derived the child's root solely from
+the payload's `allowed_paths`, so a job with an empty list produced
+`workspace_root: None` and `SubAgentPool` refused the run outright ("subagent
+execution requires an explicit workspace root") even though the daemon held the
+correct root. Empty `allowed_paths` is a live production state — the daemon's
+chat-collaboration action and the schedule materializer both emit it — and
+`tool/task.rs` already substitutes the parent root at the agent-facing edge.
+An empty `allowed_paths` now means "the job's own workspace" and resolves to
+`ctx.workspace_root`; an unresolved root fails the attempt rather than
+substituting the daemon's launch directory.
 `JobRecord`/`JobAttempt` remain authoritative for queue state and retry/recovery;
 the run record is the attributable delegated-agent ownership layer.
 

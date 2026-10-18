@@ -19,17 +19,15 @@ pub struct UiNodeDialog {
     title: String,
     body: UiNode,
     scroll: usize,
-    theme: Arc<Theme>,
 }
 
 impl UiNodeDialog {
-    pub fn new(id: String, title: String, body: UiNode, theme: Arc<Theme>) -> Self {
+    pub fn new(id: String, title: String, body: UiNode) -> Self {
         Self {
             id,
             title,
             body,
             scroll: 0,
-            theme,
         }
     }
 
@@ -48,10 +46,6 @@ impl UiNodeDialog {
 
     pub fn set_title(&mut self, title: String) {
         self.title = title;
-    }
-
-    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
     }
 
     pub fn lines(&self) -> Vec<String> {
@@ -110,13 +104,13 @@ impl Component for UiNodeDialog {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, _theme: &Arc<Theme>) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let lines = self.lines();
 
         let title_block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} ", self.title))
-            .border_style(Style::default().fg(self.theme.border));
+            .border_style(Style::default().fg(theme.border));
 
         let visible_lines = (area.height as usize).saturating_sub(6);
         let total_lines = lines.len();
@@ -130,7 +124,7 @@ impl Component for UiNodeDialog {
             .map(|s| {
                 Line::from(Span::styled(
                     s.as_str(),
-                    Style::default().fg(self.theme.foreground),
+                    Style::default().fg(theme.foreground),
                 ))
             })
             .collect();
@@ -140,7 +134,7 @@ impl Component for UiNodeDialog {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border)),
+                    .border_style(Style::default().fg(theme.border)),
             );
 
         let scroll_indicator = if total_lines > visible_lines {
@@ -160,12 +154,12 @@ impl Component for UiNodeDialog {
 
         let footer_block = Paragraph::new(Line::from(Span::styled(
             footer_text,
-            Style::default().fg(self.theme.secondary),
+            Style::default().fg(theme.secondary),
         )))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border)),
+                .border_style(Style::default().fg(theme.border)),
         );
 
         let chunks = Layout::vertical([
@@ -199,9 +193,8 @@ mod tests {
 
     #[test]
     fn test_new_dialog_stores_fields() {
-        let theme = test_theme();
         let body = make_text_node("hello");
-        let dialog = UiNodeDialog::new("id1".into(), "Title".into(), body, Arc::clone(&theme));
+        let dialog = UiNodeDialog::new("id1".into(), "Title".into(), body);
         assert_eq!(dialog.id(), "id1");
         assert_eq!(dialog.title(), "Title");
         assert_eq!(dialog.lines(), vec!["hello"]);
@@ -209,7 +202,6 @@ mod tests {
 
     #[test]
     fn test_scroll_down_increments() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..20)
@@ -220,7 +212,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         assert_eq!(dialog.scroll, 0);
         dialog.handle_key(crossterm::event::KeyEvent::new(
@@ -232,7 +224,6 @@ mod tests {
 
     #[test]
     fn test_scroll_up_decrements() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..20)
@@ -243,7 +234,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
         dialog.scroll = 5;
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
@@ -255,7 +246,6 @@ mod tests {
 
     #[test]
     fn test_scroll_down_capped_at_last_line() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..3)
@@ -266,7 +256,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
         dialog.scroll = 2;
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
@@ -278,9 +268,8 @@ mod tests {
 
     #[test]
     fn test_scroll_up_capped_at_zero() {
-        let theme = test_theme();
         let body = make_text_node("line");
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Up,
@@ -291,9 +280,8 @@ mod tests {
 
     #[test]
     fn test_esc_closes() {
-        let theme = test_theme();
         let body = make_text_node("hello");
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         let msg = dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Esc,
@@ -304,9 +292,8 @@ mod tests {
 
     #[test]
     fn test_enter_closes() {
-        let theme = test_theme();
         let body = make_text_node("hello");
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         let msg = dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Enter,
@@ -317,7 +304,6 @@ mod tests {
 
     #[test]
     fn test_page_down_jumps_10() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..50)
@@ -328,7 +314,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::PageDown,
@@ -339,7 +325,6 @@ mod tests {
 
     #[test]
     fn test_page_up_jumps_10() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..50)
@@ -350,7 +335,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
         dialog.scroll = 25;
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
@@ -362,7 +347,6 @@ mod tests {
 
     #[test]
     fn test_home_jumps_to_zero() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..20)
@@ -373,7 +357,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
         dialog.scroll = 15;
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
@@ -385,7 +369,6 @@ mod tests {
 
     #[test]
     fn test_end_jumps_to_last() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..20)
@@ -396,7 +379,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::End,
@@ -407,7 +390,6 @@ mod tests {
 
     #[test]
     fn test_update_content_resets_scroll() {
-        let theme = test_theme();
         let body1 = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..20)
@@ -418,7 +400,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body1, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body1);
         dialog.scroll = 10;
 
         let body2 = UiNode::Container(codegg_protocol::ui::ContainerNode {
@@ -440,7 +422,6 @@ mod tests {
 
     #[test]
     fn test_lines_flattens_ui_node() {
-        let theme = test_theme();
         let node = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: Some("Header".into()),
             children: vec![
@@ -452,31 +433,28 @@ mod tests {
                 }),
             ],
         });
-        let dialog = UiNodeDialog::new("id".into(), "Title".into(), node, Arc::clone(&theme));
+        let dialog = UiNodeDialog::new("id".into(), "Title".into(), node);
         assert_eq!(dialog.lines(), vec!["Header:", "line1", "line2"]);
     }
 
     #[test]
     fn test_lines_strips_ansi_from_text() {
-        let theme = test_theme();
         let body = UiNode::Text(TextNode {
             text: "\x1b[31mred\x1b[0m".into(),
         });
-        let dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
         assert_eq!(dialog.lines(), vec!["red"]);
     }
 
     #[test]
     fn test_dialog_type_is_plugin() {
-        let theme = test_theme();
         let body = make_text_node("hello");
-        let dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
         assert_eq!(dialog.dialog_type(), DialogType::Stats);
     }
 
     #[test]
     fn test_render_does_not_panic() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: Some("Test".into()),
             children: vec![
@@ -492,33 +470,29 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                let mut dialog =
-                    UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+                let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
                 let area = frame.area();
-                dialog.render(frame, area, &theme);
+                dialog.render(frame, area, &test_theme());
             })
             .unwrap();
     }
 
     #[test]
     fn test_render_empty_node_does_not_panic() {
-        let theme = test_theme();
         let body = UiNode::Empty;
         let backend = ratatui::backend::TestBackend::new(40, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                let mut dialog =
-                    UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+                let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
                 let area = frame.area();
-                dialog.render(frame, area, &theme);
+                dialog.render(frame, area, &test_theme());
             })
             .unwrap();
     }
 
     #[test]
     fn test_page_down_capped_at_end() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..5)
@@ -529,7 +503,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::PageDown,
@@ -540,7 +514,6 @@ mod tests {
 
     #[test]
     fn test_page_up_capped_at_zero() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..20)
@@ -551,7 +524,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
         dialog.scroll = 5;
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
@@ -563,9 +536,8 @@ mod tests {
 
     #[test]
     fn test_end_on_empty_does_not_underflow() {
-        let theme = test_theme();
         let body = UiNode::Empty;
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::End,
@@ -576,7 +548,6 @@ mod tests {
 
     #[test]
     fn test_vim_j_k() {
-        let theme = test_theme();
         let body = UiNode::Container(codegg_protocol::ui::ContainerNode {
             title: None,
             children: (0..20)
@@ -587,7 +558,7 @@ mod tests {
                 })
                 .collect(),
         });
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
+        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
 
         dialog.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('j'),
@@ -603,14 +574,18 @@ mod tests {
     }
 
     #[test]
-    fn test_set_theme() {
-        let theme1 = test_theme();
-        let theme2 = Arc::new(Theme::dark());
+    fn the_dialog_holds_no_theme_of_its_own() {
+        // This asserted that `set_theme` swapped the cached `Arc` by pointer
+        // identity. There is no cache left to assert on: `UiNodeDialog::render`
+        // takes the live theme from the `Component` seam and every span resolves
+        // against it, so the only state that could go stale is gone. Keeping the
+        // test as the assertion that the fields the constructor still takes are
+        // the fields it has — the compile-time half of the contract. The
+        // rendered half lives in `tests/tui_theme_source_of_truth.rs` for the
+        // dockable boxes.
         let body = make_text_node("hello");
-        let mut dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme1));
-        assert!(Arc::ptr_eq(&dialog.theme, &theme1));
-
-        dialog.set_theme(&theme2);
-        assert!(Arc::ptr_eq(&dialog.theme, &theme2));
+        let dialog = UiNodeDialog::new("id".into(), "Title".into(), body);
+        assert_eq!(dialog.id(), "id");
+        assert_eq!(dialog.lines(), vec!["hello"]);
     }
 }

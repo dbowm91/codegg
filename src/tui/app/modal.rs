@@ -172,15 +172,9 @@ impl App {
                 .with_component_mut::<UiNodeDialog, _>(|dialog| {
                     dialog.update_content(body);
                     dialog.set_title(title);
-                    dialog.set_theme(&self.ui_state.theme);
                 });
         } else {
-            let dialog = UiNodeDialog::new(
-                "stats".into(),
-                title,
-                body,
-                Arc::clone(&self.ui_state.theme),
-            );
+            let dialog = UiNodeDialog::new("stats".into(), title, body);
             self.push_dialog(Dialog::Stats, Box::new(dialog));
         }
     }
@@ -377,9 +371,7 @@ impl App {
             Dialog::Mcp => {
                 if self.dialog_state.mcp_dialog.is_none() {
                     self.dialog_state.mcp_dialog =
-                        Some(crate::tui::components::dialogs::mcp::McpDialog::new(
-                            Arc::clone(&self.ui_state.theme),
-                        ));
+                        Some(crate::tui::components::dialogs::mcp::McpDialog::new());
                 }
                 if let Some(ref mut mcp_dialog) = self.dialog_state.mcp_dialog {
                     let servers: Vec<crate::tui::components::dialogs::mcp::McpServerInfo> = self
@@ -453,7 +445,6 @@ impl App {
                     }
                 }
                 if let Some(ref mut dialog) = self.dialog_state.template_dialog {
-                    dialog.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }
             }
@@ -504,13 +495,10 @@ impl App {
                     .collect();
                 if self.dialog_state.review_dialog.is_none() {
                     self.dialog_state.review_dialog =
-                        Some(crate::tui::components::dialogs::review::ReviewDialog::new(
-                            Arc::clone(&self.ui_state.theme),
-                        ));
+                        Some(crate::tui::components::dialogs::review::ReviewDialog::new());
                 }
                 if let Some(ref mut review_dialog) = self.dialog_state.review_dialog {
                     review_dialog.set_items(items);
-                    review_dialog.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(review_dialog.clone()));
                 }
             }
@@ -523,13 +511,10 @@ impl App {
             Dialog::ResearchBrowser => {
                 if self.dialog_state.research_browser.is_none() {
                     self.dialog_state.research_browser = Some(
-                        crate::tui::components::dialogs::research::ResearchBrowserDialog::new(
-                            Arc::clone(&self.ui_state.theme),
-                        ),
+                        crate::tui::components::dialogs::research::ResearchBrowserDialog::new(),
                     );
                 }
                 if let Some(ref mut browser) = self.dialog_state.research_browser {
-                    browser.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(browser.clone()));
                 }
             }
@@ -537,7 +522,6 @@ impl App {
                 if self.dialog_state.security_review_dialog.is_none() {
                     let mut dialog =
                         crate::tui::components::dialogs::security_review::SecurityReviewDialog::new(
-                            Arc::clone(&self.ui_state.theme),
                         );
                     if let Some(ref receipt) = self.latest_security_review {
                         dialog.set_receipt(Some(receipt.clone()));
@@ -549,7 +533,6 @@ impl App {
                     }
                 }
                 if let Some(ref mut dialog) = self.dialog_state.security_review_dialog {
-                    dialog.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }
             }
@@ -589,7 +572,6 @@ impl App {
                         spec.id.clone(),
                         spec.title.clone(),
                         lines,
-                        Arc::clone(&self.ui_state.theme),
                     );
                     self.focus_manager.push(Box::new(dialog));
                 }

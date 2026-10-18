@@ -153,12 +153,24 @@ staged labels that also do not restore bypass.
    not bless the call). The recognized reasons
    are `scheduler-owned`, `standalone-compat`, `definition-site`, and
    `test-only`.
-9. **Execution ownership manifest.** `docs/execution-ownership.toml`
+9. **Bind the lease root; never read the process cwd.** Every executor takes
+   its working directory from `JobExecutionContext.workspace_root`, whose own
+   field docs state that executors "must use this instead of consulting
+   process-global CWD". `TestJobExecutor` and `ToolProgramExecutor` bind it
+   directly; `PythonJobExecutor` falls back to it and **errors** when neither
+   a canonical workdir nor the lease root resolves. `SubagentJobExecutor`
+   resolves `allowed_paths.first()` and falls back to `ctx.workspace_root`;
+   an empty `allowed_paths` is a live production state (the daemon's
+   chat-collaboration action and the schedule materializer both emit it), so
+   it must not mean "no root". `scripts/check_daemon_cwd_usage.py` enforces
+   this and has no line-pattern allowlist; see `architecture/scheduler.md`
+   "Workspace root binding (every executor)".
+10. **Execution ownership manifest.** `docs/execution-ownership.toml`
    is the machine-readable inventory of all production process-spawn
    sites. `scripts/check_execution_ownership.py` greps for spawn
    patterns and fails CI on unclassified sites. New production spawn
    sites must be declared in the manifest before they pass CI.
-10. **`deferred_domain_executor` is not coverage.** The manifest's six
+11. **`deferred_domain_executor` is not coverage.** The manifest's six
    owner classifications include `deferred_domain_executor` — a typed
    subsystem scheduled for future migration, currently a documented
    compatibility path. 8 of the 54 declared sites carry it

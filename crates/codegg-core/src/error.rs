@@ -157,6 +157,17 @@ pub enum ToolError {
     #[error("tool disabled: {0}")]
     Disabled(String),
 
+    /// A workspace-scoped tool was reached with no resolved workspace root.
+    ///
+    /// Deliberately distinct from [`ToolError::Execution`] (a failure *inside*
+    /// a rooted call) and [`ToolError::Disabled`] (operator configuration):
+    /// here the caller supplied no root at all, so there is no directory the
+    /// call could legitimately be bounded to. The daemon's process working
+    /// directory is never an acceptable substitute — it is wherever the
+    /// user happened to launch it, which is unrelated to the job being run.
+    #[error("no workspace root was resolved for this call ({context}); refusing to substitute the process working directory")]
+    MissingWorkspaceRoot { context: String },
+
     #[error("I/O error: {0}")]
     Io(String),
 

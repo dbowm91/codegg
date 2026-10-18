@@ -50,6 +50,13 @@ pub struct NativeUi {
     pub border_focused: Option<String>,
     pub selection: Option<String>,
     pub selection_dim: Option<String>,
+    /// Optional override for the derived on-selection foreground. Omitting it
+    /// derives the token, which is what every theme should do; the key exists
+    /// so a hand-written theme can pin it when the derivation picks the wrong
+    /// one of the theme's two body colours.
+    pub selection_text: Option<String>,
+    /// Optional override for the derived on-accent foreground. Same rule.
+    pub accent_text: Option<String>,
     pub panel_background: Option<String>,
     pub input_background: Option<String>,
     pub title_background: Option<String>,
@@ -121,7 +128,11 @@ pub fn parse_native_theme(
     Ok(resolve(file, source, fallback))
 }
 
-fn resolve(file: NativeThemeFile, source: ThemeSource, fallback: &SemanticTheme) -> SemanticTheme {
+fn resolve(
+    mut file: NativeThemeFile,
+    source: ThemeSource,
+    fallback: &SemanticTheme,
+) -> SemanticTheme {
     let id = file
         .meta
         .id
@@ -142,7 +153,15 @@ fn resolve(file: NativeThemeFile, source: ThemeSource, fallback: &SemanticTheme)
 
     let name = file.meta.name.unwrap_or_else(|| id.clone());
 
-    SemanticTheme {
+    // The two selection foregrounds are derived from *this file's own* resolved
+    // `base` and `ui` values, so a theme that overrides `selection` derives
+    // against its own selection rather than inheriting a token computed from
+    // the fallback's. They are derived after the literal is built; the explicit
+    // keys are captured here because `file` is consumed by it.
+    let explicit_selection_text = file.ui.selection_text.take();
+    let explicit_accent_text = file.ui.accent_text.take();
+
+    let mut theme = SemanticTheme {
         id: id.clone(),
         name,
         source,
@@ -157,6 +176,8 @@ fn resolve(file: NativeThemeFile, source: ThemeSource, fallback: &SemanticTheme)
             border_focused: pick(file.ui.border_focused, fallback.ui.border_focused),
             selection: pick(file.ui.selection, fallback.ui.selection),
             selection_dim: pick(file.ui.selection_dim, fallback.ui.selection_dim),
+            selection_text: fallback.ui.selection_text,
+            accent_text: fallback.ui.accent_text,
             panel_background: pick(file.ui.panel_background, fallback.ui.panel_background),
             input_background: pick(file.ui.input_background, fallback.ui.input_background),
             title_background: pick(file.ui.title_background, fallback.ui.title_background),
@@ -203,7 +224,26 @@ fn resolve(file: NativeThemeFile, source: ThemeSource, fallback: &SemanticTheme)
             tester: pick(file.agents.tester, fallback.agents.tester),
             security: pick(file.agents.security, fallback.agents.security),
         },
+    };
+
+    theme
+        .ui
+        .derive_selection_texts(theme.base.foreground, theme.base.background);
+    // An explicit key is an author overriding the derivation, so it wins. A
+    // malformed value is dropped rather than rejected: the derivation is
+    // already a usable answer, and failing the whole file over an optional
+    // convenience key would be the wrong trade.
+    if let Some(explicit) = explicit_selection_text.as_deref().and_then(parse_ok) {
+        theme.ui.selection_text = explicit;
     }
+    if let Some(explicit) = explicit_accent_text.as_deref().and_then(parse_ok) {
+        theme.ui.accent_text = explicit;
+    }
+    theme
+}
+
+fn parse_ok(raw: &str) -> Option<Rgb> {
+    Rgb::from_hex(raw).ok()
 }
 
 fn pick(value: Option<String>, fallback: Rgb) -> Rgb {

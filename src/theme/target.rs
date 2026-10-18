@@ -65,6 +65,8 @@ impl From<&SemanticTheme> for Theme {
             border: rgb(s.ui.border),
             selection: rgb(s.ui.selection),
             selection_dim: rgb(s.ui.selection_dim),
+            selection_text: rgb(s.ui.selection_text),
+            accent_text: rgb(s.ui.accent_text),
             alternate_bg: rgb(s.ui.panel_background),
             input_bg: rgb(s.ui.input_background),
             code_theme: select_code_theme(s),

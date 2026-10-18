@@ -294,6 +294,13 @@ pub struct EditorState {
     /// See [`EditorState::arm_semantic_refresh`]. `None` means nothing is
     /// pending, so the render pump does no work at all in the common case.
     pub semantic_refresh_due_at: Option<std::time::Instant>,
+    /// Server-free syntax highlighting for the attached document.
+    ///
+    /// The always-available floor under the LSP semantic tokens: a bounded
+    /// `syntect` scan keyed by path, theme and revision, so a machine with
+    /// no language server installed still renders files coloured. Holds no
+    /// document text — only byte ranges and colors.
+    pub highlight: crate::tui::editor_highlight::EditorHighlight,
 }
 
 impl Default for EditorState {
@@ -312,6 +319,7 @@ impl Default for EditorState {
             close_after_save: false,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
             completion: crate::tui::editor_completion::EditorCompletionState::default(),
+            highlight: crate::tui::editor_highlight::EditorHighlight::default(),
         }
     }
 }
@@ -396,6 +404,19 @@ impl EditorState {
         }
     }
 
+    /// Disarm any armed multi-key prefix.
+    ///
+    /// Called wherever the surface the pending key was aimed at stops being the
+    /// one on screen: leaving the editor route and moving focus to the tree
+    /// pane. A `g` armed over one buffer and answered over another would jump
+    /// the cursor somewhere the user never asked for, which is the same
+    /// defect as resolving a relative path against the wrong root.
+    pub fn disarm_prefix(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            session.presentation_mut().disarm_prefix();
+        }
+    }
+
     /// Invalidate every in-flight completion and detach the session.
     ///
     /// Called when the editor closes or switches documents. Bumping the
@@ -417,6 +438,12 @@ impl EditorState {
         self.close_after_save = false;
         self.lsp.reset();
         self.completion.clear();
+        // The built-in highlighter keys on path, code theme, and revision —
+        // and a fresh attachment to an unmodified file is *revision 0*, so
+        // reopening the same path after discarding edits would otherwise
+        // hand the new document the previous one's colors. Detaching is the
+        // one point that unambiguously means "a different document".
+        self.highlight.reset();
     }
 }
 

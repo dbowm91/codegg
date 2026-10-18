@@ -248,6 +248,43 @@ Raw event forwarders explicitly discard
 originate only from the receiver owned by the matching authenticated
 connection.
 
+Discarding is a **transport boundary** rule, not a rule that projection
+data is never consumed. A generic forwarder must not carry one
+connection's envelopes into another connection's frame, because the
+envelopes are scoped to a subscription that connection itself
+established and the daemon authorized. The frontend that *owns* such a
+subscription is required to consume its envelopes — it is the only party
+allowed to see them.
+
+### Daemon-attached seeding and live delivery
+
+Two frontends consume projections and they must both seed the controller:
+
+- **WS-attach** receives `ProjectionReplay` / `ProjectionEvent` frames on
+  `remote_event_rx` and installs them via `install_replay`.
+- **Daemon socket** (`codegg`, the default) establishes the subscription
+  through `ProjectionSubscribe` and receives live envelopes as
+  `CoreEvent::ProjectionStreamEvent` on the core-event channel.
+
+`ProjectionSubscribed` carries an authoritative
+`ProjectionSnapshotBundle`. That snapshot must be installed, not
+discarded: the daemon sends current state *at subscribe time*, so a
+frontend that drops it knows only what changed after it attached, and an
+otherwise healthy session projects as empty until some unrelated live
+event happens to arrive.
+
+Two consequences are load-bearing:
+
+- `apply_core_event` must have a `ProjectionStreamEvent` arm. Falling
+  through to a catch-all `_ => false` silently discards live envelopes,
+  which looks identical to a projection that has nothing to report.
+- `active_snapshot()` must not require `active_tab_id`. The
+  daemon-attached TUI subscribes per session and never switches a project
+  tab, so that id is legitimately `None`. With exactly one live
+  subscription the stream is unambiguous and must be returned; with two or
+  more it must stay `None`, because guessing would attribute another
+  session's jobs to the visible one.
+
 ### Atomic Control Delivery (M006)
 
 Remote projection control responses are critical writer operations.
@@ -424,12 +461,25 @@ already persisted (cross-instance duplicate absorption).
 
 5. **Transport isolation**: Raw event forwarders discard
    `ProjectionStreamEvent`. Projection-private envelopes originate
-   only from the matching authenticated connection's receiver.
+   only from the matching authenticated connection's receiver. The
+   connection's **own** frontend still consumes them — see "Daemon-attached
+   seeding and live delivery".
 
-6. **RenderFrame unsupported**: The `/tui` protocol does not support
+6. **Publication is retried, not dropped**: `SeamProjectionSink::publish`
+   retries bounded times (3 attempts, 50 ms apart) when the failure is
+   transient SQLite lock contention, and gives up immediately otherwise.
+   The daemon's pool runs several connections against one WAL database, so
+   a writer can collide with a reader's snapshot; `busy_timeout` does not
+   cover the WAL snapshot-conflict variant (`SQLITE_BUSY_SNAPSHOT`, 517).
+   Logging a warning and discarding was how the projection ended up
+   permanently short of job and subagent lifecycle events: `JobUpserted`
+   stopped appearing entirely while jobs kept being created, and the
+   frontend then had nothing to show for work that was genuinely running.
+
+7. **RenderFrame unsupported**: The `/tui` protocol does not support
    `RenderFrame`. It is event/state-driven via `TuiCommand`.
 
-7. **Protocol version 5**: The `/tui` protocol version is 5.
+8. **Protocol version 5**: The `/tui` protocol version is 5.
    Projection-primary clients negotiate before using resume,
    acknowledgement, or unsubscribe.
 

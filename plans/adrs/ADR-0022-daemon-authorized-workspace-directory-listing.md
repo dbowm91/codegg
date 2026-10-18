@@ -155,3 +155,46 @@ implements strictly within that frozen contract (worker-owned permit,
 full-response 512 KiB bound, trailing-top-level trim to zero) and
 escalates the provenance question to maintainers for an explicit
 decision or a superseding ADR correction.
+
+## Amendment: the depth window is 3, not 12
+
+The frozen scanner contract above records "Bounds preserved: depth 12, nodes
+4096, examined 100000, names 255B". The depth figure is now **3**. Every other
+bound, and the whole delivery/authorization design, is unchanged.
+
+This is the *tighten* direction §4 permits, and it was forced by the wire cap
+this same ADR introduced. C006's trailing-top-level trim keeps the longest
+prefix that fits `MAX_DIRECTORY_LISTING_RESPONSE_BYTES`, so a single directory
+with a deep subtree consumes the budget and every sibling root is trimmed
+away. ADR-0022 already names the worst case — "trailing-top-level trim to
+zero" — without a reachable user-visible consequence having been established.
+One now is: on a 75,956-entry repository whose first alphabetical directory
+was a large one, a 512 KiB budget retained **one** root node out of 37.
+`/files` rendered a single row that could not be selected, because selection
+clamps at `rows.len() - 1`, with the only affordance a truncation notice
+naming a bound the user could do nothing about.
+
+Measured on that repository, varying the embed depth alone:
+
+| embed depth | retained roots (of 37) | serialized |
+|---|---|---|
+| 12 (as frozen) | 1 | 614 KB, over cap |
+| 3 (this amendment) | 37 | 290 KB |
+
+Raising `MAX_LISTING_NODES` does not help and is **not** the fix: at 65,536
+nodes the same response is 5.9 MiB and the prefix trim still retains 4 roots.
+The binding constraint was bytes, not node count, so the node budget is
+unchanged at 4096 — against a single *directory scope*, which `l` re-walks
+independently. Depth 3 is a window on one response, not a limit on how deep
+the user can browse.
+
+`LISTING_IGNORED_DIRS` additionally gains `.codegg`. It is this application's
+own per-project runtime state and lives inside the tree it describes; in a
+CodeGG checkout it was 21,482 entries and, being second alphabetically, it
+consumed the entire retained-node budget before any source directory was
+walked. `python_script::snapshot`, `python_script::executor`, and
+`research::sources::local_repo` already skipped it — the listing list had
+drifted from the other three walkers. The composer's `@` indexer skip list is
+updated with it so the two keep describing the same workspace.
+
+The ADR's provenance question above is unaffected and remains escalated.

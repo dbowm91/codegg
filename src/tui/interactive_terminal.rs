@@ -213,9 +213,15 @@ impl Redactions {
 /// Explicit keyboard-focus state for one terminal view.
 ///
 /// Input bytes are produced by [`classify_key`] only in
-/// [`TerminalFocus::Focused`]. Opening a terminal always starts in
-/// [`TerminalFocus::Viewing`] so stray keystrokes keep going to the
-/// prompt until the user explicitly focuses the terminal.
+/// [`TerminalFocus::Focused`].
+///
+/// Where a terminal *starts* depends on the surface, and the difference is
+/// deliberate. The terminal **box** opens in [`TerminalFocus::Focused`]: it is
+/// a modal the user opened to run a command, and a focus gesture in front of
+/// the first keystroke swallowed characters with nowhere for them to go. The
+/// docked **panel** opens in [`TerminalFocus::Viewing`]: it is a surface the
+/// user is looking at beside their work, so it must not take the keyboard
+/// until they ask with `i`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalFocus {
     /// Terminal is not the active view; keys belong to the prompt/dialog.
@@ -224,6 +230,17 @@ pub enum TerminalFocus {
     Viewing,
     /// Terminal owns the keyboard; Ctrl-] is reserved to leave focus.
     Focused,
+}
+
+impl TerminalFocus {
+    /// Short status label for `/terminal-list` and panel status rows.
+    pub fn label(&self) -> &'static str {
+        match self {
+            TerminalFocus::Hidden => "hidden",
+            TerminalFocus::Viewing => "viewing",
+            TerminalFocus::Focused => "focused",
+        }
+    }
 }
 
 /// Daemon-link state for one terminal view.
@@ -529,6 +546,11 @@ pub struct InteractiveTerminalView {
     /// first thing on screen for someone who just asked for a shell — and it
     /// pushed the actual terminal rows off a small dialog. `D` restores it.
     diagnostics: bool,
+    /// This attachment's cadence-read slot. Never shared with
+    /// `dialog_state.terminal_request`.
+    read: TerminalReadState,
+    /// One input operation at a time, so keystrokes cannot race each other.
+    input_in_flight: bool,
 }
 
 impl InteractiveTerminalView {
@@ -552,6 +574,8 @@ impl InteractiveTerminalView {
             redactions: Redactions::default(),
             pending_prefix: false,
             diagnostics: false,
+            read: TerminalReadState::default(),
+            input_in_flight: false,
         }
     }
 
@@ -588,6 +612,39 @@ impl InteractiveTerminalView {
             .translate(|(row, col)| (shift_row(row, delta, rows), col));
     }
 
+    /// Put the reader's cursor where the reader was working.
+    ///
+    /// Called on the way *out* of Insert, and the only place the cursor is
+    /// placed rather than kept — while Insert is live the program's cursor is
+    /// the truth and the reader's is parked at whatever the last clear left it
+    /// on, which is the bottom row. `Esc` then handed back a keyboard and a
+    /// cursor parked at the bottom of a mostly-empty screen, so the first `k`
+    /// appeared to do nothing and the first `x` armed a line the reader could
+    /// not see.
+    ///
+    /// **The rule: the last row that has content, or row 0 when nothing has.**
+    /// A fixed "one row above the bottom" was rejected because the common case
+    /// is a shell whose prompt sits on row 0 of a 24-row screen — the cursor
+    /// would have been parked in blank space *below* the only line on screen,
+    /// trading one wrong place for another. Anchoring on content instead puts
+    /// it on the prompt line after a short command and on the last line of the
+    /// block after a long one, which is where the reader was either way.
+    ///
+    /// `sync_viewport` first, so the row is measured against the offset the
+    /// screen is actually parked at; `set_cursor` rather than `move_to`, because
+    /// placement is bookkeeping and must not count as a deliberate movement
+    /// that extends a `v` selection. An armed selection keeps its own anchor:
+    /// the reader built it, and Esc from Insert is not a gesture against it.
+    fn place_reader_cursor_after_insert(&mut self) {
+        self.sync_viewport();
+        let max_row = self.rows.saturating_sub(1);
+        let row = (0..=max_row)
+            .rev()
+            .find(|row| !self.screen.row_text(*row).is_empty())
+            .unwrap_or(0);
+        self.nav.set_cursor((row, 0));
+    }
+
     /// Current daemon-link state for the view.
     pub fn link_state(&self) -> &TerminalLinkState {
         &self.link
@@ -595,25 +652,26 @@ impl InteractiveTerminalView {
 
     /// One-line status for dialog headers and `/terminal-list` output.
     pub fn status_line(&self) -> String {
-        let focus = match self.focus {
-            TerminalFocus::Hidden => "hidden",
-            TerminalFocus::Viewing => "viewing",
-            TerminalFocus::Focused => "focused",
-        };
         let attached = if self.attachment_id.is_some() {
             "attached"
         } else {
             "detached"
         };
+        let read = match self.read.refused.as_deref() {
+            Some(refusal) => format!(" read-stopped:{refusal}"),
+            None if self.read.in_flight.is_some() => " reading".to_string(),
+            None => String::new(),
+        };
         format!(
-            "{} [{}] {} {} {}x{} seq={} {}",
+            "{} [{}] {} {} {}x{} seq={}{} {}",
             self.handle,
             self.link.label(),
             attached,
-            focus,
+            self.focus.label(),
             self.cols,
             self.rows,
             self.scrollback.next_seq,
+            read,
             self.command,
         )
     }
@@ -818,12 +876,19 @@ impl TerminalScreen {
     /// head is pinned and the cursor is free to wander) or `v` (where the head
     /// tracks the cursor). `redactions` is the resolved `d` scrub, one entry
     /// per viewport row.
+    ///
+    /// `cursor_visible` is the *blink* phase, and it changes the modifier only
+    /// — never the caret's position. The cell stays painted while the caret is
+    /// dark, because a cursor that stops reserving its own cell would let the
+    /// line trim back to its last character and then re-extend on the next
+    /// phase: the text would appear to flicker instead of the caret.
     fn styled_lines(
         &self,
         max_lines: usize,
         selection: Option<Selection<TerminalPoint>>,
         redactions: &[Vec<(u16, u16)>],
         cursor: Option<TerminalPoint>,
+        cursor_visible: bool,
         highlight: ratatui::style::Style,
     ) -> Vec<ratatui::text::Line<'static>> {
         use ratatui::style::{Modifier, Style};
@@ -922,7 +987,7 @@ impl TerminalScreen {
                     }
                 }
                 if let Some((cur_row, cur_col)) = cursor {
-                    if cur_row == row && cur_col == col {
+                    if cur_row == row && cur_col == col && cursor_visible {
                         style = style.add_modifier(Modifier::REVERSED);
                     }
                 }
@@ -1041,6 +1106,9 @@ fn previous_word_start(text: &str, from: u16) -> Option<usize> {
 pub struct InteractiveTerminalController {
     views: BTreeMap<String, InteractiveTerminalView>,
     active: Option<String>,
+    /// Source of cadence read ids. Controller-wide so two terminals polling in
+    /// the same frame cannot mint the same id.
+    read_counter: u64,
 }
 
 impl InteractiveTerminalController {
@@ -1048,6 +1116,7 @@ impl InteractiveTerminalController {
         Self {
             views: BTreeMap::new(),
             active: None,
+            read_counter: 0,
         }
     }
 
@@ -1187,6 +1256,14 @@ impl InteractiveTerminalController {
             .get_mut(handle)
             .ok_or_else(|| format!("unknown terminal handle: {handle}"))?;
         view.attachment_id = Some(attachment_id);
+        // A fresh attachment is a fresh read: the slot is re-armed and any
+        // refusal recorded against the previous one no longer describes this
+        // link.
+        view.read = TerminalReadState {
+            attachment_id: None,
+            in_flight: None,
+            refused: None,
+        };
         if view.scrollback.apply_chunk(chunk, &raw) {
             view.screen.reset(view.rows, view.cols);
             view.screen_degraded = true;
@@ -1242,6 +1319,10 @@ impl InteractiveTerminalController {
                     reason: "handle gone: removed or daemon restarted".to_string(),
                 };
                 view.attachment_id = None;
+                // A gone handle has no attachment to resume. The cadence stops
+                // on its own here rather than by being refused one poll later,
+                // which is the same outcome with one fewer doomed round trip.
+                view.read = TerminalReadState::default();
             } else {
                 view.screen.reset(view.rows, view.cols);
                 view.screen_degraded = true;
@@ -1256,6 +1337,10 @@ impl InteractiveTerminalController {
         if let Some(view) = self.views.get_mut(handle) {
             view.attachment_id = None;
             view.focus = TerminalFocus::Viewing;
+            // The attachment a read was issued against is gone, so its
+            // completion is superseded whatever id it carries. Clearing the
+            // slot stops a stale answer from landing on the next attachment.
+            view.read = TerminalReadState::default();
         }
     }
 
@@ -1278,6 +1363,9 @@ impl InteractiveTerminalController {
             view.focus = TerminalFocus::Viewing;
             view.pending_input.clear();
             view.pending_resize = None;
+            // An exited process has no attachment to resume; releasing the slot
+            // keeps one outstanding read from looking live forever.
+            view.read = TerminalReadState::default();
         }
     }
 
@@ -1319,6 +1407,7 @@ impl InteractiveTerminalController {
             view.focus = TerminalFocus::Viewing;
             view.pending_input.clear();
             view.pending_resize = None;
+            view.read = TerminalReadState::default();
             if matches!(view.link, TerminalLinkState::Live)
                 || matches!(view.link, TerminalLinkState::ResyncRequired(_))
             {
@@ -1336,6 +1425,7 @@ impl InteractiveTerminalController {
             view.focus = TerminalFocus::Viewing;
             view.pending_input.clear();
             view.pending_resize = None;
+            view.read = TerminalReadState::default();
             if !view.link.is_exited() {
                 view.link = TerminalLinkState::Gone {
                     reason: "daemon restarted: ephemeral handles invalidated".to_string(),
@@ -1387,12 +1477,22 @@ impl InteractiveTerminalController {
 
     /// Leave keyboard focus on `handle` (back to viewing). Never forwards
     /// bytes and never submits anything: this is the escape path.
+    ///
+    /// Leaving Insert is the one moment the reader's cursor is placed rather
+    /// than merely kept, and it is placed here so both surfaces get it from
+    /// one call. See [`TerminalView::place_reader_cursor_after_insert`].
     pub fn escape(&mut self, handle: &str) {
         if let Some(view) = self.views.get_mut(handle) {
             if view.focus == TerminalFocus::Focused {
                 view.focus = TerminalFocus::Viewing;
+                view.place_reader_cursor_after_insert();
             }
         }
+        // The sweep stays a second, separate pass and deliberately never
+        // touches `nav`. A hidden view becoming visible is not a gesture the
+        // reader made, so it must not move a cursor they did not move — and
+        // folding this into the block above is how one gesture's placement ends
+        // up being applied to every view on screen.
         for other in self.views.values_mut() {
             if other.focus == TerminalFocus::Hidden {
                 other.focus = TerminalFocus::Viewing;
@@ -1495,6 +1595,40 @@ impl InteractiveTerminalController {
         Some(std::mem::take(&mut view.pending_input))
     }
 
+    /// Claim the single input slot for `handle`.
+    ///
+    /// Returns the attachment to write to, or `None` when an input operation
+    /// is already outstanding. Input is ordered: every keystroke the user
+    /// typed between two ticks becomes one operation, and the next one waits
+    /// for this one to land. Without this, each keystroke spawned its own
+    /// concurrent daemon request, so fast typing arrived **scrambled** —
+    /// `ls -la` could reach the shell as `lsa- l`. That is the same silent
+    /// character loss as the resize storm above, and it is not something the
+    /// user can see the cause of.
+    pub fn begin_input(&mut self, handle: &str) -> Option<String> {
+        let view = self.views.get_mut(handle)?;
+        if view.input_in_flight || !view.link.allows_mutation() {
+            return None;
+        }
+        let attachment_id = view.attachment_id.clone()?;
+        view.input_in_flight = true;
+        Some(attachment_id)
+    }
+
+    /// Release the single input slot for `handle`.
+    pub fn finish_input(&mut self, handle: &str) {
+        if let Some(view) = self.views.get_mut(handle) {
+            view.input_in_flight = false;
+        }
+    }
+
+    /// Whether an input operation is outstanding for `handle`.
+    pub fn input_in_flight(&self, handle: &str) -> bool {
+        self.views
+            .get(handle)
+            .is_some_and(|view| view.input_in_flight)
+    }
+
     /// Queue a resize for a live terminal. Rapid resizes coalesce:
     /// only the newest size is kept until drained.
     pub fn queue_resize(
@@ -1516,6 +1650,17 @@ impl InteractiveTerminalController {
             .ok_or(TerminalResizeError::UnknownHandle)?;
         if !view.link.allows_mutation() {
             return Err(TerminalResizeError::NotLive(view.link.label()));
+        }
+        // Resizing to the size you are already at is a no-op, and it must be a
+        // *client-side* no-op: the render path queues the panel's geometry on
+        // every frame, so queueing unconditionally turns a steady surface into
+        // a resize storm. A PTY resize flushes the tty's pending input, which
+        // drops the half-typed word the user is in the middle of — the keystroke
+        // is lost with no error anywhere, and the shell looks like it is eating
+        // characters. Coalescing here is what makes the geometry track the panel
+        // without standing between the user and their own typing.
+        if view.pending_resize == Some((cols, rows)) || (view.cols, view.rows) == (cols, rows) {
+            return Ok(());
         }
         view.pending_resize = Some((cols, rows));
         Ok(())
@@ -1873,10 +2018,16 @@ impl InteractiveTerminalController {
     ///
     /// Both cells exist at once; showing the wrong one is what made an
     /// otherwise-correct focus flag look like a lie.
+    ///
+    /// `caret_blink_on` is the phase from the one frame clock, and it is
+    /// consulted **only** in INS. The reader's cursor is a selection anchor, so
+    /// a NOR surface ignores the phase entirely and keeps a solid cursor: a
+    /// blinking anchor makes `x` and `d` guesswork about which line is armed.
     pub fn render_view(
         &mut self,
         handle: &str,
         max_lines: usize,
+        caret_blink_on: bool,
         highlight: ratatui::style::Style,
     ) -> Option<Vec<ratatui::text::Line<'static>>> {
         let view = self.views.get_mut(handle)?;
@@ -1887,10 +2038,15 @@ impl InteractiveTerminalController {
             TerminalFocus::Focused => Some(view.screen.program_cursor()),
             _ => Some(view.nav.cursor()),
         };
-        Some(
-            view.screen
-                .styled_lines(max_lines, selection, &redactions, cursor, highlight),
-        )
+        let caret_visible = !matches!(view.focus, TerminalFocus::Focused) || caret_blink_on;
+        Some(view.screen.styled_lines(
+            max_lines,
+            selection,
+            &redactions,
+            cursor,
+            caret_visible,
+            highlight,
+        ))
     }
 
     /// Render the newest lines from the bounded VT screen for one view.
@@ -1911,7 +2067,14 @@ impl InteractiveTerminalController {
         handle: &str,
         max_lines: usize,
     ) -> Option<Vec<ratatui::text::Line<'static>>> {
-        self.render_view(handle, max_lines, ratatui::style::Style::default())
+        self.render_view(
+            handle,
+            max_lines,
+            // No clock in this path: it is the read-only projection API, not a
+            // surface a user is typing into, so the caret is simply present.
+            true,
+            ratatui::style::Style::default(),
+        )
     }
 
     /// Header lines describing one terminal for the dialog view, never
@@ -1965,6 +2128,23 @@ impl InteractiveTerminalController {
             )),
             TerminalLinkState::Gone { reason } => lines.push(format!("gone: {reason}")),
             TerminalLinkState::Live | TerminalLinkState::Reconnecting => {}
+        }
+        // A live link with no attachment reads as a live session on screen and
+        // is not one: nothing is reading the PTY, so no output can arrive. Say
+        // so rather than leaving an empty box that looks merely quiet, and
+        // keep the recovery on the same line as the diagnosis.
+        if view.attachment_id.is_none() && !view.link.is_exited() {
+            lines.push(format!(
+                "no attachment — output is not being read; use /terminal-attach {}",
+                view.handle
+            ));
+        }
+        // A typed daemon refusal that stopped the cadence, verbatim. The class
+        // is the useful part, so it is never flattened into a generic message.
+        if let Some(refusal) = view.read.refused.as_deref() {
+            lines.push(format!(
+                "live output stopped: {refusal} (re-attach, or /terminal-resume to retry)"
+            ));
         }
         Some(lines)
     }
@@ -2084,6 +2264,142 @@ impl InteractiveTerminalController {
             .get(handle)
             .and_then(|view| view.attachment_id.clone())
     }
+
+    // ── Cadence output read ───────────────────────────────────────────
+    //
+    // The read is bounded by construction: it is an
+    // `InteractiveProcessResume` at an explicit cursor. There is no
+    // "read everything" entry point here, no second byte cap, and no path
+    // that shifts history silently — a cursor the daemon no longer retains
+    // comes back as its own typed resync and is applied as one.
+
+    /// Mint the next read id.
+    ///
+    /// Monotonic and never zero: `0` is what a caller that has no read to
+    /// identify passes, and a wrapped counter must not be able to produce it.
+    pub fn next_read_id(&mut self) -> u64 {
+        self.read_counter = self.read_counter.wrapping_add(1).max(1);
+        self.read_counter
+    }
+
+    /// Whether a cadence read is already outstanding for `handle`.
+    pub fn output_read_in_flight(&self, handle: &str) -> bool {
+        self.views
+            .get(handle)
+            .is_some_and(|view| view.read.in_flight.is_some())
+    }
+
+    /// Claim the read slot for `handle` and return what to resume.
+    ///
+    /// Returns `None` — issuing nothing — when the view is unknown, has no
+    /// attachment, is not [`TerminalLinkState::Live`], has been refused by the
+    /// daemon (see [`Self::note_read_refusal`]), or already has a read
+    /// outstanding. One read per attachment at a time is what keeps a cadence
+    /// poll from racing itself.
+    pub fn begin_output_read(&mut self, handle: &str, read_id: u64) -> Option<TerminalOutputRead> {
+        let view = self.views.get_mut(handle)?;
+        if view.read.in_flight.is_some() || view.read.refused.is_some() {
+            return None;
+        }
+        let attachment_id = view.attachment_id.clone()?;
+        if !matches!(view.link, TerminalLinkState::Live) {
+            return None;
+        }
+        let read = TerminalOutputRead {
+            attachment_id: attachment_id.clone(),
+            from_seq: view.scrollback.next_seq,
+            read_id,
+        };
+        view.read.in_flight = Some(read_id);
+        view.read.attachment_id = Some(attachment_id);
+        Some(read)
+    }
+
+    /// Release the read slot for `handle`, reporting whether the completion
+    /// still owns it.
+    ///
+    /// `false` means the read was superseded: a different read holds the slot,
+    /// or the attachment changed under it. The caller must then discard the
+    /// answer — applying it would mix one attachment's output into another.
+    /// The slot is cleared either way that it owns, so a lost completion can
+    /// never pin the cadence off permanently.
+    pub fn finish_output_read(&mut self, handle: &str, read_id: u64, attachment_id: &str) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        let owned = view.read.in_flight == Some(read_id)
+            && view.read.attachment_id.as_deref() == Some(attachment_id);
+        if owned {
+            view.read.in_flight = None;
+        }
+        owned
+    }
+
+    /// Record a typed daemon refusal against `handle` and stop the cadence.
+    ///
+    /// A pull that keeps re-issuing against a process that has exited, or a
+    /// handle that is gone, is the silent retry loop this state exists to end:
+    /// the error is kept verbatim — code and message — so the surface can
+    /// report the class it actually got, and the cadence stays off until a
+    /// user-driven action re-arms it.
+    pub fn note_read_refusal(&mut self, handle: &str, error: String) {
+        if let Some(view) = self.views.get_mut(handle) {
+            view.read.refused = Some(error);
+        }
+    }
+
+    /// Re-arm a refused cadence read.
+    ///
+    /// Only reached from user-driven recovery — a fresh attach, or the
+    /// documented `/terminal-resume`. The cadence never re-arms itself,
+    /// because a self-re-arming refusal is the retry loop.
+    pub fn clear_read_refusal(&mut self, handle: &str) {
+        if let Some(view) = self.views.get_mut(handle) {
+            view.read.refused = None;
+        }
+    }
+
+    /// The typed refusal currently stopping this view's cadence, if any.
+    pub fn read_refusal(&self, handle: &str) -> Option<&str> {
+        self.views
+            .get(handle)
+            .and_then(|view| view.read.refused.as_deref())
+    }
+}
+
+/// One bounded output read the cadence is permitted to issue.
+///
+/// `from_seq` is the view's own cursor, so the read is always incremental from
+/// what is already on screen. It is not an adjustable knob: the cadence cannot
+/// widen its own window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalOutputRead {
+    /// The caller-owned attachment to resume.
+    pub attachment_id: String,
+    /// Explicit resume cursor.
+    pub from_seq: u64,
+    /// This read's identity, for matching its completion.
+    pub read_id: u64,
+}
+
+/// Per-attachment output-read bookkeeping.
+///
+/// Deliberately **not** `dialog_state.terminal_request`: that is one shared
+/// slot behind a single generation counter for all nine terminal operations, so
+/// a cadence read that called `begin()` there would supersede an in-flight
+/// input, resize, detach or terminate completion and drop it on the floor.
+/// Keeping the read's identity here makes "a background read must not
+/// invalidate a user action" structural rather than a matter of timing.
+#[derive(Debug, Clone, Default)]
+struct TerminalReadState {
+    /// Attachment this slot is currently reading. A completion whose
+    /// attachment no longer matches is superseded whatever its id.
+    attachment_id: Option<String>,
+    /// Id of the outstanding read, if any.
+    in_flight: Option<u64>,
+    /// Typed daemon refusal that stops the cadence until a user-driven action
+    /// re-arms it.
+    refused: Option<String>,
 }
 
 fn decode_chunk(chunk: &InteractiveOutputChunk) -> Result<Vec<u8>, String> {
@@ -2949,6 +3265,205 @@ mod tests {
             "clear rebuilds the screen, so a held selection would name other text"
         );
         assert_eq!(controller.viewport_offset("h"), Some(0));
+    }
+
+    // ── Caret blink ─────────────────────────────────────────────────────
+
+    /// Cells carrying the caret's `REVERSED` modifier in one rendered frame.
+    ///
+    /// Counted rather than addressed: the blink's contract is "a phase changes
+    /// whether the caret is painted", and a count says that directly. Nothing
+    /// here paints an inverse cell of its own — the fixtures are plain text —
+    /// so a reversed cell can only be the caret.
+    fn reversed_cells(lines: &[ratatui::text::Line<'_>]) -> usize {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| {
+                span.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+            .count()
+    }
+
+    fn rendered(blink_on: bool) -> Vec<ratatui::text::Line<'static>> {
+        let mut controller = scrolled_history(3, &["alpha", "bravo"]);
+        assert!(controller.focus("h"), "the fixture is live and attached");
+        controller
+            .render_view("h", 200, blink_on, ratatui::style::Style::default())
+            .expect("render")
+    }
+
+    /// The reported defect: the caret was painted `REVERSED` and nothing
+    /// changed it, so a user could not tell from the terminal that the PTY was
+    /// live — the one thing the `[INS]` badge claims on the frame above.
+    ///
+    /// Both phases are *pinned*, so this pins the production decision rather
+    /// than sampling a live clock: `render_view` takes the phase as an input,
+    /// which is the only reason a blink can be asserted at all.
+    #[test]
+    fn the_insert_caret_blinks_on_the_phase_it_is_given() {
+        assert_eq!(
+            reversed_cells(&rendered(true)),
+            1,
+            "the visible phase paints exactly one caret cell"
+        );
+        assert_eq!(
+            reversed_cells(&rendered(false)),
+            0,
+            "the hidden phase paints none"
+        );
+    }
+
+    /// The dark phase must not change the *text*.
+    ///
+    /// A cursor that stopped reserving its cell would let `styled_lines` trim
+    /// the line back to its last character, and the next visible phase would
+    /// re-extend it — the line would appear to flicker instead of the caret,
+    /// and at the end of a prompt the whole line would vanish for half of every
+    /// second.
+    #[test]
+    fn the_hidden_phase_keeps_the_caret_cell_it_reserves() {
+        let on = rendered(true);
+        let off = rendered(false);
+        assert_eq!(
+            on.iter().map(|line| line.to_string()).collect::<Vec<_>>(),
+            off.iter().map(|line| line.to_string()).collect::<Vec<_>>(),
+            "the blink must change the modifier and nothing else"
+        );
+    }
+
+    /// NOR is a selection anchor, not a caret: `x`, `v` and `d` all act from
+    /// wherever it sits, so a blinking anchor would make "which line am I about
+    /// to delete" a coin flip. The phase is ignored there entirely.
+    #[test]
+    fn the_reader_cursor_never_blinks() {
+        let mut controller = scrolled_history(3, &["alpha", "bravo"]);
+        assert!(!controller.is_focused("h"), "the premise: reading");
+        for blink_on in [true, false] {
+            let lines = controller
+                .render_view("h", 200, blink_on, ratatui::style::Style::default())
+                .expect("render");
+            assert_eq!(
+                reversed_cells(&lines),
+                1,
+                "a NOR cursor is an anchor and stays solid (blink_on={blink_on})"
+            );
+        }
+    }
+
+    // ── Leaving Insert ────────────────────────────────────────────────
+
+    /// The reported defect: `Esc` handed the keyboard back and left the reader's
+    /// cursor where the last clear had parked it — the bottom row — so the
+    /// first `k` looked inert and the first `x` armed a line nobody could see.
+    ///
+    /// Anchored on *content*, so a short command puts the cursor on the prompt
+    /// line rather than in the blank space under it.
+    #[test]
+    fn leaving_insert_lands_the_reader_cursor_on_the_last_line_with_content() {
+        let mut controller = scrolled_history(6, &["one", "two", "three"]);
+        assert!(controller.focus("h"));
+        assert_eq!(
+            controller.cursor("h"),
+            Some((5, 0)),
+            "the premise: Insert leaves the reader parked at the bottom"
+        );
+
+        controller.escape("h");
+
+        assert!(!controller.is_focused("h"));
+        assert_eq!(
+            controller.cursor("h"),
+            Some((2, 0)),
+            "the cursor belongs on the last line the process painted"
+        );
+    }
+
+    /// A full screen is the other end of the same rule: the block's last line
+    /// *is* the last row, so placement must not underflow past it or stop one
+    /// row short of the output the reader just produced.
+    #[test]
+    fn leaving_insert_on_a_full_screen_lands_on_the_last_row() {
+        let rows = 4;
+        let lines = ["l0", "l1", "l2", "l3"];
+        let mut controller = scrolled_history(rows, &lines);
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert_eq!(controller.cursor("h"), Some((3, 0)));
+    }
+
+    /// Nothing has been printed yet — a shell that has not echoed its prompt,
+    /// or a screen cleared a moment ago. Row 0 is the only honest answer; the
+    /// bottom row is the placement this rule exists to stop.
+    #[test]
+    fn leaving_insert_on_an_empty_screen_lands_on_row_zero() {
+        let mut controller = scrolled_history(5, &["", "", "", "", ""]);
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert_eq!(controller.cursor("h"), Some((0, 0)));
+    }
+
+    /// A one-row screen is the degenerate geometry: `rows.saturating_sub(1)` is
+    /// 0 and the cursor must stay there rather than wrapping.
+    #[test]
+    fn leaving_insert_cannot_underflow_on_a_one_row_screen() {
+        let mut controller = scrolled_history(1, &["only"]);
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert_eq!(controller.cursor("h"), Some((0, 0)));
+    }
+
+    /// The sweep that reveals a hidden view is not a gesture the reader made,
+    /// so it must not move a cursor they did not move. A hidden view reaching
+    /// `Viewing` is the one part of `escape` with no user behind it.
+    #[test]
+    fn an_unrelated_escape_does_not_move_a_hidden_views_cursor() {
+        let mut controller = scrolled_history(4, &["one", "two", "three"]);
+        // A second view, focused, so the first one is hidden by the sweep's
+        // own rule.
+        assert!(controller.apply_created(
+            "h2".to_string(),
+            "ws-1".to_string(),
+            "cat".to_string(),
+            40,
+            4
+        ));
+        let other = chunk(0, 3, false, "two");
+        assert!(controller
+            .apply_attached("h2", "a-2".to_string(), &other, None)
+            .expect("attach")
+            .is_none());
+        assert!(controller.focus("h2"));
+        assert!(!controller.is_focused("h"));
+
+        // The reader presses Esc in the *box*, aimed at nothing this view did.
+        controller.escape("h2");
+        assert!(
+            !controller.is_focused("h"),
+            "the premise: `h` was hidden and stayed hidden until the sweep"
+        );
+        assert_eq!(
+            controller.cursor("h"),
+            Some((3, 0)),
+            "being swept out of Hidden must not place a cursor this reader never asked for"
+        );
+    }
+
+    /// Placement is bookkeeping, so it must not read as a deliberate movement.
+    /// A `v` selection armed before Insert is still armed after it, anchored
+    /// where the reader put it.
+    #[test]
+    fn leaving_insert_keeps_the_selection_the_reader_built() {
+        let mut controller = scrolled_history(4, &["alpha", "bravo"]);
+        assert!(controller.begin_selection("h", SelectionMode::Char));
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert!(
+            controller.selection("h").is_some(),
+            "Esc from Insert is not a gesture against a selection the reader built"
+        );
     }
 
     #[test]

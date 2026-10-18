@@ -22,7 +22,7 @@ use codegg_protocol::document::DocumentScope;
 
 use crate::core::CoreClient;
 
-use super::editor::{EditorMode, EditorPoint, EditorUndoEntry};
+use super::editor::{EditorMode, EditorPoint, EditorPrefix, EditorUndoEntry, FindMotion, FindNote};
 use super::helix_selection::Selection;
 
 struct CoreClientTransport(Arc<dyn CoreClient>);
@@ -73,26 +73,65 @@ pub struct TuiDocumentPresentation {
     pub viewport_column: usize,
     /// Buffer edit mode.
     pub mode: EditorMode,
-    /// Multi-key normal-mode command prefix (`g`). Bounded to
-    /// [`MAX_EDITOR_PENDING_COMMAND`](super::editor::MAX_EDITOR_PENDING_COMMAND).
-    pub pending_command: String,
-    /// Whether a Helix `space` prefix is armed awaiting `y`.
+    /// The multi-key grammar the editor is waiting on.
     ///
-    /// Remembered state rather than a chord: `space y` arrives as two key
-    /// events in legacy xterm encoding, exactly as it does in `/terminal`.
-    pub yank_prefix_pending: bool,
+    /// Idle, or one armed [`EditorPrefix`] consumed by the next key. See that
+    /// type for the grammar rule — one pending prefix, one terminal key, and
+    /// a disarm whenever the thing it was aimed at changes.
+    pub pending_prefix: EditorPrefix,
+    /// The find-char motion `Alt-.` repeats, or `None` when there is none.
+    ///
+    /// Helix keeps one *motion* slot that every motion overwrites, so this
+    /// is cleared by any other motion rather than only by another find — the
+    /// gap between `f x`, `j`, and `Alt-.` is exactly what makes `Alt-.`
+    /// predictable. A reconciliation clears it for the same reason
+    /// `disarm_prefix` exists: the character it was aimed at may not be in
+    /// the text any more.
+    pub last_find: Option<FindMotion>,
+    /// Why the last find motion did not land, if it did not.
+    ///
+    /// Disclosed in the status row. A find that stops because the character
+    /// is absent and one that stops at [`MAX_EDITOR_FIND_BYTES`] otherwise
+    /// look identical — like a dropped keypress — and they call for
+    /// different answers, so the bound is stated rather than hidden.
+    pub find_note: FindNote,
     /// The `:` command line while command mode is open, without the leading
     /// `:`. Empty when command mode is closed.
     ///
     /// Bounded to [`MAX_EDITOR_COMMAND_LINE`](super::editor::MAX_EDITOR_COMMAND_LINE).
     /// This is a command *name*, never document text, so it is exempt from
-    /// the text-authority guard for the same reason `pending_command` is.
+    /// the text-authority guard for the same reason
+    /// [`pending_prefix`](Self::pending_prefix) is.
     pub command_line: String,
     /// Whether the `:` command line is open.
     pub command_active: bool,
     /// Index into [`complete_editor_command`](super::editor::complete_editor_command)
     /// for the highlighted palette row.
     pub command_selection: usize,
+    /// The `/` search line while search mode is open, without the leading
+    /// `/`. Empty when search mode is closed.
+    ///
+    /// A *needle*, never document text: it is bounded by
+    /// [`MAX_EDITOR_SEARCH_LINE`](super::editor::MAX_EDITOR_SEARCH_LINE) and
+    /// capped at the keystroke, so it cannot grow into a second buffer.
+    pub search_line: String,
+    /// Whether the `/` search line is open and owns the keyboard.
+    pub search_active: bool,
+    /// Absolute byte offsets of every retained match for
+    /// [`search_line`](Self::search_line), ascending.
+    ///
+    /// Positions, not text — the renderer resolves each against the row it is
+    /// painting. Bounded by
+    /// [`MAX_EDITOR_SEARCH_MATCHES`](super::editor::MAX_EDITOR_SEARCH_MATCHES).
+    pub search_matches: Vec<usize>,
+    /// Index into [`search_matches`](Self::search_matches) the cursor is
+    /// parked on. Only meaningful when there is at least one match.
+    pub search_index: usize,
+    /// Whether a search dropped matches past its bound or stopped scanning
+    /// before the end of the document. Disclosed in the status row: a
+    /// partial match list that reads as complete is the same defect as
+    /// unvalidated LSP coverage.
+    pub search_partial: bool,
     /// Frontend-local undo history of inverse transactions.
     pub undo: Vec<EditorUndoEntry>,
     /// Frontend-local redo history of inverse transactions.
@@ -121,9 +160,44 @@ impl TuiDocumentPresentation {
         self.viewport_line = 0;
         self.viewport_column = 0;
         self.mode = EditorMode::Normal;
-        self.yank_prefix_pending = false;
+        self.disarm_prefix();
         super::editor::clear_history(self);
         self.close_command_line();
+        self.cancel_search();
+    }
+
+    /// Arm `prefix`, waiting for its next key.
+    ///
+    /// Replacing rather than stacking is the grammar: one pending prefix at a
+    /// time, so no gesture can ever need a third key.
+    pub fn arm_prefix(&mut self, prefix: EditorPrefix) {
+        self.pending_prefix = prefix;
+    }
+
+    /// Disarm any armed prefix, leaving the key that armed it unaffected.
+    ///
+    /// Called wherever the pending key's target stops being the thing on
+    /// screen: opening a document, leaving the editor route, moving focus to
+    /// the tree pane, and every reconciliation that rewrites the text.
+    pub fn disarm_prefix(&mut self) {
+        self.pending_prefix = EditorPrefix::Idle;
+    }
+
+    /// Forget the repeatable find and clear its disclosure.
+    ///
+    /// Called whenever something else becomes the last motion, which is how
+    /// Helix's single repeat slot behaves: `f x`, `j`, `Alt-.` finds nothing
+    /// to repeat, because `j` overwrote the motion `f x` recorded. Also
+    /// called on a reconciliation, where the recorded character may no longer
+    /// exist in the text at all.
+    ///
+    /// Kept as one operation rather than two assignments because the two
+    /// halves have no meaning apart from each other: a disclosure about a
+    /// find that cannot be repeated, or a repeatable find whose disclosure is
+    /// missing, are both a status row lying about the last keystroke.
+    pub fn forget_find(&mut self) {
+        self.last_find = None;
+        self.find_note = FindNote::None;
     }
 
     /// Open the `:` command line, optionally seeded with `prefix`.
@@ -193,6 +267,104 @@ impl TuiDocumentPresentation {
     pub fn accept_command_completion(&mut self, value: &str) {
         self.command_line = value.to_string();
         self.command_selection = 0;
+    }
+
+    // ── `/` search ──────────────────────────────────────────────────────────
+    //
+    // Mirrors the `:` command line's shape on purpose: both are modal input
+    // lines owned by the editor that appear in the status row, so a reader
+    // who learned where to look for `:` already knows where to look for `/`.
+
+    /// Open the `/` search line, seeded with `seed`.
+    ///
+    /// Seeding is why `host_status` on the cursor and `/` are the same
+    /// gesture: the common case is refining a word you are already looking
+    /// at, and starting from an empty line makes the first keystrokes
+    /// redundant.
+    pub fn open_search_line(&mut self, seed: &str) {
+        self.search_active = true;
+        self.search_line = seed
+            .chars()
+            .take(super::editor::MAX_EDITOR_SEARCH_LINE)
+            .collect();
+        self.search_index = 0;
+    }
+
+    /// Close the `/` line and keep the highlight.
+    ///
+    /// What `Enter` does: the search is a thing you did, not a thing you
+    /// cancelled, so the matches stay painted and `n`/`N` keep working.
+    pub fn close_search_line(&mut self) {
+        self.search_active = false;
+    }
+
+    /// Close the `/` line and drop the highlight entirely.
+    ///
+    /// What `Esc` does. The match set is derived state — leaving it behind
+    /// would highlight text the user has explicitly disowned.
+    pub fn cancel_search(&mut self) {
+        self.search_active = false;
+        self.search_line.clear();
+        self.search_matches.clear();
+        self.search_index = 0;
+        self.search_partial = false;
+    }
+
+    /// Append one character to the search line, bounded by
+    /// [`MAX_EDITOR_SEARCH_LINE`](super::editor::MAX_EDITOR_SEARCH_LINE).
+    ///
+    /// Returns `false` at the bound so the caller can leave the line
+    /// untouched rather than dropping the keystroke after mutating it.
+    pub fn push_search_char(&mut self, ch: char) -> bool {
+        if self.search_line.chars().count() >= super::editor::MAX_EDITOR_SEARCH_LINE {
+            return false;
+        }
+        self.search_line.push(ch);
+        true
+    }
+
+    /// Delete the last character of the search line.
+    pub fn pop_search_char(&mut self) {
+        self.search_line.pop();
+    }
+
+    /// Adopt a resolved search and park the cursor on its first match.
+    ///
+    /// Returns the offset the cursor should move to, or `None` when nothing
+    /// matched — a search that finds nothing must leave the cursor alone
+    /// rather than yanking it to the top of the file.
+    pub fn adopt_search(
+        &mut self,
+        outcome: super::editor::SearchOutcome,
+        cursor: usize,
+    ) -> Option<usize> {
+        self.search_matches = outcome.matches;
+        self.search_partial = outcome.truncated || outcome.bounded;
+        // `first_match_index`, not `next_match_index`: a cursor already
+        // sitting on a match must stay on it while the needle is being
+        // refined, or every keystroke walks the search further away.
+        self.search_index =
+            super::editor::first_match_index(&self.search_matches, cursor).unwrap_or(0);
+        self.search_matches.get(self.search_index).copied()
+    }
+
+    /// Move to the next/previous match, wrapping at either end.
+    ///
+    /// Returns the new offset so the caller can move the cursor and scroll
+    /// the viewport; `None` means there is nothing to move to.
+    pub fn step_search(&mut self, forward: bool) -> Option<usize> {
+        let index = if forward {
+            super::editor::next_match_index(&self.search_matches, self.cursor_byte)
+        } else {
+            super::editor::previous_match_index(&self.search_matches, self.cursor_byte)
+        }?;
+        self.search_index = index;
+        self.search_matches.get(index).copied()
+    }
+
+    /// Whether a search highlight is currently painted.
+    pub fn has_search(&self) -> bool {
+        !self.search_matches.is_empty()
     }
 }
 
@@ -384,6 +556,58 @@ mod tests {
         assert_eq!(
             session.controller().snapshot().await.unwrap().0.to_string(),
             "text"
+        );
+    }
+
+    #[test]
+    fn a_reset_presentation_opens_in_normal_and_the_two_axes_agree() {
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: 9,
+            mode: EditorMode::Insert,
+            ..TuiDocumentPresentation::default()
+        };
+        presentation.reset_for_open();
+
+        // A file opens in Normal, like every other reader surface. The
+        // danger is not the value itself but that there are two axes: the
+        // route's `input_mode` and this presentation's `mode`. A reset that
+        // sets one and not the other is exactly the drift that once let a
+        // document render with the keyboard nowhere in it.
+        assert_eq!(presentation.mode, EditorMode::Normal);
+        assert_eq!(presentation.cursor_byte, 0);
+        assert_eq!(presentation.viewport_line, 0);
+        assert!(presentation.selection.is_none());
+    }
+
+    #[test]
+    fn a_reset_presentation_drops_a_carried_over_search() {
+        let mut presentation = TuiDocumentPresentation::default();
+        presentation.open_search_line("needle");
+        presentation.search_matches = vec![0, 4];
+        presentation.search_index = 1;
+        presentation.search_partial = true;
+        presentation.reset_for_open();
+        assert!(!presentation.has_search());
+        assert!(!presentation.search_active);
+        assert!(presentation.search_line.is_empty());
+        assert!(!presentation.search_partial);
+    }
+
+    #[test]
+    fn the_search_line_is_a_needle_and_never_grows_into_a_buffer() {
+        let mut presentation = TuiDocumentPresentation::default();
+        presentation.open_search_line("");
+        for _ in 0..(super::super::editor::MAX_EDITOR_SEARCH_LINE * 2) {
+            presentation.push_search_char('x');
+        }
+        assert_eq!(
+            presentation.search_line.chars().count(),
+            super::super::editor::MAX_EDITOR_SEARCH_LINE
+        );
+        presentation.pop_search_char();
+        assert_eq!(
+            presentation.search_line.chars().count(),
+            super::super::editor::MAX_EDITOR_SEARCH_LINE - 1
         );
     }
 }

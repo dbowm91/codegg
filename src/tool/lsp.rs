@@ -661,7 +661,7 @@ impl LspTool {
     ) -> Self {
         Self {
             service,
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: crate::tool::util::unresolved_workspace_root(),
             preview_registry: Arc::new(parking_lot::Mutex::new(
                 egglsp::preview_registry::PreviewArtifactRegistry::new(),
             )),
@@ -5079,7 +5079,11 @@ mod tests {
     fn lsp_tool_name() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         assert_eq!(tool.name(), "lsp");
         assert!(!tool.description().is_empty());
     }
@@ -5088,7 +5092,11 @@ mod tests {
     fn lsp_parameters_schema_snapshot() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let params = tool.parameters();
         let expected = json!({
             "type": "object",
@@ -5250,7 +5258,11 @@ mod tests {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let content = "fn main() { println!(\"hi\"); }".to_string();
         let resolved = tool
             .resolve_semantic_check_content(&path, Some(&content), None)
@@ -5264,7 +5276,11 @@ mod tests {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let err = tool
             .resolve_semantic_check_content(
                 &path,
@@ -5283,7 +5299,11 @@ mod tests {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let err = tool
             .resolve_semantic_check_content(&path, None, None)
             .await
@@ -5299,7 +5319,11 @@ mod tests {
         let original = std::fs::read_to_string(&path).unwrap();
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let patch = "\
 --- a/src/main.rs
 +++ b/src/main.rs
@@ -5324,7 +5348,11 @@ mod tests {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let err = tool
             .resolve_semantic_check_content(&path, None, Some(&"@@ -1,1 +1,1 @@\n x\n".to_string()))
             .await
@@ -5339,7 +5367,11 @@ mod tests {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let patch = "\
 diff --git a/src/main.rs b/src/main.rs
 --- a/src/main.rs
@@ -5383,7 +5415,11 @@ diff --git a/src/lib.rs b/src/lib.rs
         use crate::tool::Tool;
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let res = tool
             .execute_structured(json!({"operation": "no_such_op"}), None)
             .await;
@@ -5396,7 +5432,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn semantic_context_schema_includes_operation() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let params = tool.parameters();
         let ops = params["properties"]["operation"]["enum"]
             .as_array()
@@ -5408,7 +5448,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn semantic_context_requires_file_path_execution() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let err = tool
             .execute(json!({
                 "operation": "semanticContext"
@@ -5425,7 +5469,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn semantic_context_requires_line_and_column_together() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let err = tool
             .execute(json!({
                 "operation": "semanticContext",
@@ -5444,7 +5492,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn semantic_context_rejects_content_and_patch() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let err = tool
             .execute(json!({
                 "operation": "semanticContext",
@@ -5797,7 +5849,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn lsp_schema_descriptions_include_security_context_overlay() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let params = tool.parameters();
         let content_desc = params["properties"]["content"]["description"]
             .as_str()
@@ -5831,10 +5887,14 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     // ── securityContext preset tests ─────────────────────────────────────
 
+    /// W001: these tests pass repo-relative `file_path`s, so the allowed root
+    /// must be the repo rather than the process cwd they used to inherit
+    /// implicitly through `LspTool::default()`.
     fn live_security_tool() -> LspTool {
         LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
         ))
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -5928,7 +5988,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn security_preset_schema_includes_enum() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let params = tool.parameters();
         let prop = params["properties"]["security_preset"]
             .as_object()
@@ -6122,7 +6186,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn security_context_dependency_review_omits_call_hierarchy_by_default() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -6400,7 +6468,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn security_context_schema_includes_call_expansion_inputs() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let params = tool.parameters();
         assert!(
             params["properties"].get("call_depth").is_some(),
@@ -8839,7 +8911,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn lsp_restart_server_invalid_key_returns_failure_message() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+        // W001: these tests resolve *repo-relative* paths (e.g.
+        // `src/tool/mod.rs`), so the allowed root must be the repo, not
+        // the process cwd they used to inherit implicitly.
+        .with_allowed_root(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let result = tool.lsp_restart_server("nonexistent_key").await;
         assert!(
             result.starts_with("Restart failed for nonexistent_key:"),

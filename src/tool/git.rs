@@ -41,7 +41,7 @@ impl GitTool {
     pub fn new() -> Self {
         Self {
             timeout: Duration::from_secs(30),
-            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            workdir: crate::tool::util::unresolved_workspace_root(),
             run_store: None,
             child_policy: None,
             read_only_only: false,

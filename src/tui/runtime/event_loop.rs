@@ -50,6 +50,44 @@ fn render_delay_after(last_render: Option<Instant>, render_interval: Duration) -
     })
 }
 
+/// How long the loop is allowed to sleep before it owes itself a frame, or
+/// `None` when nothing at all is animating the frame.
+///
+/// This is the single decision that decides whether the loop is ever awake.
+/// `None` is not "sleep for a while" — it is
+/// `futures_util::future::pending()` at the timed arm, so every service
+/// reached only from that arm (the stall watchdog, the editor's semantic
+/// refresh, the terminal output pull) is unreachable for exactly as long as
+/// this returns `None`.
+///
+/// Extracted as a pure function of `&App` so that fact is testable. It was
+/// inline in the loop, where the only way to observe it was to run a real
+/// terminal — which is why a surface whose liveness depended on it could be
+/// declared working while the arm carrying it was dark.
+pub(crate) fn animation_interval(app: &app::App) -> Option<Duration> {
+    if app.streaming_active || matches!(app.session_state.session_status, SessionStatus::Working) {
+        Some(if app.streaming_active {
+            STREAM_RENDER_INTERVAL
+        } else {
+            SPINNER_RENDER_INTERVAL
+        })
+    } else if !app.messages_state.toasts.is_empty() {
+        Some(TOAST_RENDER_INTERVAL)
+    } else if crate::tui::commands::interactive_terminal::terminal_pull_armed(app) {
+        // A mounted terminal is the fourth contributor, and it is the one that
+        // decides the case a user actually notices: everything above is
+        // transient. A turn finishes, its toast expires, and the frame goes
+        // completely idle — at which point this used to return `None`, the
+        // timed arm parked on `pending()`, and the terminal stopped being read
+        // even though it was on screen and attached. The bytes were already in
+        // the daemon's ring; the panel just showed them when the user next
+        // pressed something. Same tick, no timer of its own (I4).
+        Some(crate::tui::commands::interactive_terminal::TERMINAL_PULL_RENDER_INTERVAL)
+    } else {
+        None
+    }
+}
+
 fn render_app(
     terminal: &mut AppTerminal,
     app: &mut app::App,
@@ -259,19 +297,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
             }
         }
 
-        let animation_interval = if app.streaming_active
-            || matches!(app.session_state.session_status, SessionStatus::Working)
-        {
-            Some(if app.streaming_active {
-                STREAM_RENDER_INTERVAL
-            } else {
-                SPINNER_RENDER_INTERVAL
-            })
-        } else if !app.messages_state.toasts.is_empty() {
-            Some(TOAST_RENDER_INTERVAL)
-        } else {
-            None
-        };
+        let animation_interval = animation_interval(app);
         let render_delay = if needs_render {
             render_delay_after(last_render, render_interval)
         } else {
@@ -448,6 +474,14 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                     app,
                     std::time::Instant::now(),
                 ) {
+                    needs_render = true;
+                }
+                // Live output for the mounted terminal surface. Rides this
+                // same tick on purpose: the interactive surface is a bounded
+                // pull, not a push, so a second timer or a second spinner would
+                // be a second cadence for one subsystem.
+                if crate::tui::commands::interactive_terminal::service_terminal_output_pull(app)
+                {
                     needs_render = true;
                 }
                 if app.streaming_active

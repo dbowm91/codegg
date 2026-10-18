@@ -411,12 +411,14 @@ impl ToolProgramTool {
             ));
         }
 
+        // W001: the parent session context is the only source of a root.
+        // The check above already refused execution without one.
         let workspace_root = execution_context
             .as_ref()
             .map(|context| context.cwd.clone())
-            .unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
+            .ok_or_else(|| crate::error::ToolError::MissingWorkspaceRoot {
+                context: "background Tool Program has no parent execution context".to_string(),
+            })?;
         let workspace_id = submission
             .workspace_id_for_root(&workspace_root)
             .await

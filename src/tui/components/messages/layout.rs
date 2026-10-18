@@ -70,6 +70,25 @@ impl MessageLayoutCache {
         self.rows[start..end].to_vec()
     }
 
+    /// Rows belonging to one message, from the offsets recorded when it was
+    /// emitted.
+    ///
+    /// Read the same rows the renderer drew rather than re-deriving them, so a
+    /// test asserting on what a message looks like cannot pass while the
+    /// rendered row says something else. Test-only: production scroll and
+    /// selection work from absolute row ranges.
+    #[cfg(test)]
+    pub fn rows_of_message(&self, msg_idx: usize) -> Vec<Line<'static>> {
+        match self
+            .message_offsets
+            .iter()
+            .find(|(idx, _, _)| *idx == msg_idx)
+        {
+            Some(&(_, start, count)) => self.rows_from(start, start + count),
+            None => Vec::new(),
+        }
+    }
+
     /// The message whose rows cover `target`, as `(msg_idx, row within msg)`.
     pub fn find_message_at_line(&self, target: usize) -> Option<(usize, usize)> {
         if self.message_offsets.is_empty() || target >= self.total_lines {

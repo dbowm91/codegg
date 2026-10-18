@@ -117,6 +117,12 @@ jobs:
       - name: TUI editor text-authority guard
         run: python3 scripts/check_tui_editor_text_authority.py
 
+      - name: TUI editor key-authority guard
+        run: python3 scripts/check_tui_editor_key_authority.py
+
+      - name: TUI editor prefix-state guard
+        run: python3 scripts/check_tui_editor_prefix_state.py
+
       - name: TUI transport-authority guard
         run: python3 scripts/check_tui_transport_authority.py
 

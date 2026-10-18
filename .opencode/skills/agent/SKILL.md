@@ -77,6 +77,16 @@ instructions into the candidate. See `architecture/agent.md`.
    system/developer instructions, and never wake an idle session. On a gap,
    direct the model to re-read the canonical board. This does not serialize
    filesystem writers.
+9. **Every progress-recovery incident keys on the whole `action_key()`**, and
+   ladder state belongs to one incident (`src/agent/progress_recovery.rs`).
+   Two tool-name-only arms got this wrong and each killed ordinary turns:
+   `ShortCycle` fired on the same tool with *different* arguments, and
+   `EquivalentError` fired on the same tool with the same error class — so a
+   model bisecting a build failure stalled for work it never repeated. A
+   successful read-only call the turn has never made is `NewEvidence`; a
+   successful mutating or process-class call is **not** progress on its own,
+   because `state_changed` needs a drained file-change bus event. A
+   `ProgressSignal` variant with no producer is a claim, not a hook.
 
 ## Orientation Facts
 

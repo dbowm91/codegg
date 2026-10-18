@@ -3,7 +3,7 @@
 //! This module provides the Component trait and FocusManager for decoupled UI architecture.
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::Frame;
 use std::any::Any;
 use std::sync::Arc;
@@ -221,6 +221,29 @@ pub trait Component: Send + Any + AsAny {
     fn docks_as_viewer(&self) -> bool {
         false
     }
+    /// The verbs this widget owns, spelled the way this widget spells them.
+    ///
+    /// The panel host asks for this so the shared hint line above the composer
+    /// can describe **this box** rather than a host-side paraphrase of it. The
+    /// keymap is written next to the `handle_key` arms that implement it and
+    /// read from the same place, which is what makes "the box, its panel, and
+    /// the hint line cannot disagree" true rather than aspirational.
+    ///
+    /// `None` means "the host's generic line is correct for me" — the default,
+    /// so a widget with nothing distinctive to say is unchanged.
+    fn keymap_hint(&self) -> Option<String> {
+        None
+    }
+    /// Render into a side-panel column.
+    ///
+    /// Defaults to the modal render, so a widget that draws no chrome of its
+    /// own keeps working when the host adopts it. A widget that *does* — a
+    /// border, a title, a keymap footer — overrides this instead of `render`,
+    /// because the host has already painted a border and a title into the same
+    /// rect and a second set of chrome overwrites it, focus dot included.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render(frame, area, theme);
+    }
     fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> {
         None
     }
@@ -251,7 +274,40 @@ pub trait Component: Send + Any + AsAny {
     fn set_focused(&mut self, _idx: usize) {}
 }
 
-/// Object-safe type erasure used by the narrow typed modal accessors.
+/// A centred `Rect` of `percent_x` × `percent_y` inside `area`.
+///
+/// The one definition of this shape. It was duplicated in
+/// `src/tui/app/mod.rs` and `src/tui/components/dialogs/run_detail.rs` — not
+/// byte-for-byte identical (one copy qualified `Direction::Vertical`, the other
+/// did not, and the third parameter was named `area` in one and `r` in the
+/// other), but semantically the same function, so a fix to one would have left
+/// the other drawing a differently-sized popup.
+///
+/// It lives here rather than in either caller because `component.rs` is the one
+/// module both `app` and the dialogs already depend on. A dialog reaching into
+/// `app::centered_rect` would invert the dependency, which is how the
+/// duplication started.
+pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+/// A component that can be drawn either as a modal box or as a docked panel
 pub trait AsAny {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;

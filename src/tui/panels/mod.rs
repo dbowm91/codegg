@@ -88,6 +88,17 @@ use crate::tui::theme::Theme;
 /// allowed, so a widget that needs real cursor or clipping semantics inside
 /// the column can grow a native `render_into(&mut Buffer, ..)` — as
 /// `HelpDialog` did — and the host can prefer it.
+///
+/// ## The host owns the chrome
+///
+/// The block painted here is the panel's identity: the name, and the `●` that
+/// marks which panel has the keyboard. A widget that then painted its own
+/// border over the same rect did not layer, it overwrote — the title and the
+/// focus dot included, so a focused panel and an unfocused one rendered
+/// identically and the one piece of information the title carried was the one
+/// thing destroyed. Hence [`Component::render_in_panel`], which defaults to
+/// `render` for every widget that draws no chrome and is overridden by the ones
+/// that do.
 pub fn render_hosted(
     widget: &mut dyn crate::tui::components::component::Component,
     buf: &mut Buffer,
@@ -126,7 +137,7 @@ pub fn render_hosted(
                 .border_style(ratatui::style::Style::default().fg(theme.border)),
             frame.area(),
         );
-        widget.render(frame, frame.area(), theme);
+        widget.render_in_panel(frame, frame.area(), theme);
     });
 
     // Copy the origin-based scratch into `buf` at `area`'s screen position.
@@ -186,6 +197,22 @@ impl PanelDirection {
             Self::Up => "K",
             Self::Down => "J",
         }
+    }
+
+    /// How this direction is spelled in a key hint: `Shift+→/Shift+L`.
+    ///
+    /// Both accepted forms, because the arrow is the one every terminal
+    /// reports with the modifier set, while the letter is what a vim hand
+    /// reaches for. The letter is taken from [`gesture`](Self::gesture) so this
+    /// cannot drift from the dispatcher that parses it.
+    pub fn gesture_key(self) -> String {
+        let arrow = match self {
+            Self::Left => "←",
+            Self::Right => "→",
+            Self::Up => "↑",
+            Self::Down => "↓",
+        };
+        format!("Shift+{arrow}/Shift+{}", self.gesture())
     }
 
     /// Prose for the same explanations ("no panel on the left yet").
@@ -486,8 +513,6 @@ pub enum SidePanelId {
     Team,
     /// `/control` — active-turn controller.
     Control,
-    /// `/workspace` — global Workspace dashboard.
-    Workspace,
     /// `/task` — the project Task view (WorkOrders).
     TaskView,
     /// `/diff` — diff for a file.
@@ -509,9 +534,12 @@ impl SidePanelId {
     /// The bespoke panels lead, then every box that can dock into the
     /// column. Bespoke means "owns its own implementation" — see
     /// [`is_bespoke`](Self::is_bespoke), which is what `SidePanelHost` filters
-    /// on. A panel appears here only if it is reachable: either the box
-    /// that fills it exists, or selecting it renders a placeholder that names
-    /// the command to run.
+    /// on. **A panel appears here only if selecting it does something**:
+    /// either the box that fills it exists, or selecting it states the reason
+    /// it cannot act. A row that could only ever render an empty placeholder
+    /// was a promise the manager could not keep — `Workspace` was one, and was
+    /// removed for it. The Workspace *view* is untouched and still opens with
+    /// `Ctrl+O` / `/workspace`; it was never a panel.
     pub const ALL: &'static [SidePanelId] = &[
         SidePanelId::Session,
         SidePanelId::Chat,
@@ -541,7 +569,6 @@ impl SidePanelId {
         SidePanelId::Plugins,
         SidePanelId::Team,
         SidePanelId::Control,
-        SidePanelId::Workspace,
         SidePanelId::TaskView,
         SidePanelId::Diff,
         SidePanelId::Review,
@@ -580,7 +607,6 @@ impl SidePanelId {
             SidePanelId::Plugins => "Plugins",
             SidePanelId::Team => "Team",
             SidePanelId::Control => "Control",
-            SidePanelId::Workspace => "Workspace",
             SidePanelId::TaskView => "Task View",
             SidePanelId::Diff => "Diff",
             SidePanelId::Review => "Review",
@@ -624,53 +650,9 @@ impl SidePanelId {
             SidePanelId::Plugins => "PLUGINS",
             SidePanelId::Team => "TEAM",
             SidePanelId::Control => "CONTROL",
-            SidePanelId::Workspace => "WORKSPACE",
             SidePanelId::TaskView => "ORDERS",
             SidePanelId::Diff => "DIFF",
             SidePanelId::Review => "REVIEW",
-        }
-    }
-
-    /// The `/` command whose box fills this panel.
-    ///
-    /// Used by the placeholder a panel shows before anything is docked into
-    /// it. A panel that cannot name its own loader cannot tell the user how to
-    /// make itself useful.
-    pub fn load_command(self) -> &'static str {
-        match self {
-            SidePanelId::Session => "/sidebar",
-            SidePanelId::Chat => "/chat",
-            SidePanelId::Terminal => "/terminal",
-            SidePanelId::Help => "/help",
-            SidePanelId::Tree => "/tree",
-            SidePanelId::Files => "/files",
-            SidePanelId::Sessions => "/sessions",
-            SidePanelId::Tasks => "/tasks",
-            SidePanelId::Plan => "/plan",
-            SidePanelId::Goal => "/goal show",
-            SidePanelId::Collaborators => "/collaborators",
-            SidePanelId::Memory => "/memory-search",
-            SidePanelId::Research => "/research-show",
-            SidePanelId::Logs => "/logs",
-            SidePanelId::Context => "/context",
-            SidePanelId::Cost => "/cost",
-            SidePanelId::Usage => "/usage",
-            SidePanelId::Stats => "/stats",
-            SidePanelId::Doctor => "/doctor",
-            SidePanelId::ShellShow => "/shell-list",
-            SidePanelId::Security => "/security-review-show",
-            SidePanelId::Models => "/models",
-            SidePanelId::Agents => "/agents",
-            SidePanelId::Mcp => "/mcps",
-            SidePanelId::Keybinds => "/keybinds",
-            SidePanelId::Themes => "/themes",
-            SidePanelId::Plugins => "/plugins",
-            SidePanelId::Team => "/team",
-            SidePanelId::Control => "/control",
-            SidePanelId::Workspace => "/workspace",
-            SidePanelId::TaskView => "/task",
-            SidePanelId::Diff => "/diff",
-            SidePanelId::Review => "/review",
         }
     }
 
@@ -716,7 +698,6 @@ impl SidePanelId {
             SidePanelId::Plugins => "plugins",
             SidePanelId::Team => "team",
             SidePanelId::Control => "control",
-            SidePanelId::Workspace => "workspace",
             SidePanelId::TaskView => "task_view",
             SidePanelId::Diff => "diff",
             SidePanelId::Review => "review",
@@ -744,6 +725,24 @@ impl SidePanelId {
             self,
             Self::Session | Self::Agents | Self::Chat | Self::Terminal | Self::Help
         )
+    }
+
+    /// Whether docking a box into this panel would **throw the box away**.
+    ///
+    /// Deliberately *not* [`is_bespoke`](Self::is_bespoke). A bespoke panel
+    /// holds no adopted component because it builds or shares its own: `Help`
+    /// owns a `HelpDialog`, `Terminal` owns a terminal, and `Chat` reads the
+    /// shared `ChatState` the box was already writing to. Docking those boxes
+    /// changes the frame and loses nothing — `SidePanelHost::adopt` answering
+    /// `false` for them is by design, not a failure.
+    ///
+    /// `Agents` is the one that does not line up. The panel is the management
+    /// **rows** list; `Dialog::Agent` is the agent **editor**. Docking closed
+    /// the editor, discarded the component `adopt` had just refused, and
+    /// focused a panel showing something else — silently, because the `bool`
+    /// went unread. Hence the pre-check in `dock_open_box`.
+    pub fn discards_a_docked_box(self) -> bool {
+        matches!(self, Self::Agents)
     }
 
     /// Position in [`SidePanelId::ALL`].
@@ -798,12 +797,59 @@ impl SidePanelId {
             SidePanelId::Plugins => "installed · trust",
             SidePanelId::Team => "members · roles",
             SidePanelId::Control => "turn · handoff",
-            SidePanelId::Workspace => "projects · attention",
             SidePanelId::TaskView => "orders · triggers",
             SidePanelId::Diff => "hunks · files",
             SidePanelId::Review => "changed files",
         }
     }
+}
+
+/// What selecting a panel from the manager actually did.
+///
+/// This used to be an inference. `materialize_hosted_panel` called the arm,
+/// then re-read `App::dock_target()` and guessed from the answer which of
+/// three things had happened — and a fourth, the panel that had silently done
+/// nothing, looked exactly like the first. The guess about which boxes were
+/// mid-load lived in `matches!(id, Research | TaskView)` at the call site, so a
+/// new panel arm could not state its own answer and had to be added to a list
+/// somewhere else entirely.
+///
+/// Each arm of `open_panel_box` now returns one of these instead. That is the
+/// whole point: **a panel that cannot be filled says so here**, next to the
+/// work that could not do it, rather than leaving a caller to infer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelFill {
+    /// A box whose content is already resolved is mounted, and it belongs to
+    /// the panel that was asked for. Adopt it.
+    Filled,
+    /// A load started and **nothing is mounted yet**. Select the panel and
+    /// show a progress state; the box arrives through its own completion path,
+    /// which is where it has always docked.
+    Loading,
+    /// A box is mounted but its data has not arrived. Leave it live.
+    ///
+    /// This is the protection the `Research` / `TaskView` literal list used to
+    /// provide: adopting a box at this point would freeze it on its spinner
+    /// and cancel the load running behind it.
+    StillLoading,
+    /// A box was mounted, but it belongs to `other` rather than to the panel
+    /// that was asked for. The box keeps the keyboard and names its own panel.
+    OpenedAs(SidePanelId),
+    /// The panel cannot act without something the manager cannot supply.
+    ///
+    /// The reason is a *why*, never a command to run: naming a `/` command
+    /// here is what told the user to leave a panel that was already in place.
+    /// The toast still says what to do — it is transient, and by the time the
+    /// user looks at the column again it is gone.
+    Cannot(&'static str),
+    /// The panel owns its own live projection, so there was nothing to fill
+    /// and no box to adopt.
+    ///
+    /// Unreachable from the manager, which returns before calling the arm for
+    /// a panel that is not hosted. It exists because "nothing to do" and
+    /// "could not act" are different answers and [`Cannot`] would have claimed
+    /// the second.
+    Bespoke,
 }
 
 /// Result of routing one key to the active panel.
@@ -863,6 +909,19 @@ pub struct PanelCtx<'a> {
     /// `DirectionLeft`/`DirectionRight`/… are Normal-mode gestures by
     /// contract, and this is what enforces that even while a panel is focused.
     pub input_mode: crate::tui::input::InputMode,
+    /// Whether the terminal caret's blink is in its visible phase this frame.
+    ///
+    /// Granted from the one frame clock
+    /// ([`spinner::cursor_blink_visible_now`](crate::tui::components::spinner::cursor_blink_visible_now))
+    /// rather than read inside the panel, for the same reason `now_ms` is:
+    /// the host owns time, the panel owns presentation. It also makes the
+    /// phase *pinnable* — a test can render both phases of the blink without
+    /// racing the clock, where a panel that called the seam itself could only
+    /// be asserted by sampling it.
+    ///
+    /// Presentation only, like everything else in this context: reporting a
+    /// phase may not move the keyboard.
+    pub caret_blink_on: bool,
 }
 
 /// A swappable side panel. See [`SidePanelId`] for the extension procedure.
@@ -875,7 +934,19 @@ pub struct PanelCtx<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct PanelHints<'a> {
     /// Whether the panel currently owns the keyboard.
+    ///
+    /// Real focus state, not a hardcoded `true`. A panel that will describe
+    /// verbs which are *not* currently live has to be able to tell that, and
+    /// hardcoding the flag made every panel's unfocused branch dead code.
     pub focused: bool,
+    /// Which edge this panel is docked to.
+    ///
+    /// The gesture that hands the keyboard to a panel depends on it —
+    /// `Shift+→` for a right column, `Shift+←` for a left one, `Shift+↓` for
+    /// the bottom row — so a hint naming "press this to go in" cannot be
+    /// written without it. Passing the placement rather than a finished string
+    /// keeps the wording in the panel and the meaning in the geometry.
+    pub placement: PanelPlacement,
     /// Daemon project id the chat panel is bound to, if any.
     pub chat_project: Option<&'a str>,
     /// The app's current mode.
@@ -884,6 +955,18 @@ pub struct PanelHints<'a> {
     /// has to say so on the hint line, or the user is reading a mode they are
     /// not actually in.
     pub input_mode: InputMode,
+}
+
+impl<'a> PanelHints<'a> {
+    /// The gesture that hands the keyboard to a panel on this edge.
+    pub fn enter_gesture(&self) -> String {
+        self.placement.toward().gesture_key()
+    }
+
+    /// The gesture that takes the keyboard back to the main buffer.
+    pub fn exit_gesture(&self) -> String {
+        self.placement.away().gesture_key()
+    }
 }
 
 pub trait SidePanel {
@@ -907,6 +990,24 @@ pub trait SidePanel {
         action: Option<InputAction>,
         ctx: &mut PanelCtx<'_>,
     ) -> PanelKey;
+
+    /// Whether this panel claims the host's directional gesture
+    /// (`Shift`+arrows, `H`/`J`/`K`/`L`).
+    ///
+    /// The host answers the directions before consulting the panel, because
+    /// they are the only way out of a focused panel. That is right for a
+    /// *viewer* and wrong for a surface with the keyboard: the Terminal panel
+    /// in INS mode is a live PTY, and the app's `InputMode` is still `Normal`
+    /// there, so a `Normal`-mode gate alone let an uppercase `H`/`J`/`K`/`L`
+    /// be read as "move the panel" instead of a character the user typed. In a
+    /// shell those are ordinary letters, so a command containing one lost the
+    /// character and the column moved out from under the user.
+    ///
+    /// Takes `ctx` for the same reason [`Self::owns_exit_key`] does: the answer
+    /// depends on controller state the panel does not own.
+    fn claims_panel_directions(&self, _ctx: &PanelCtx<'_>) -> bool {
+        true
+    }
 
     /// Whether the panel claims one of the host's exit keys
     /// (`Esc`/`q`) before the host drops focus.
@@ -1330,6 +1431,17 @@ impl SidePanelHost {
             .map(hosted::HostPanel::has_content)
     }
 
+    /// Record what happened when the command layer last tried to fill `id`.
+    ///
+    /// The placeholder is how a panel admits that it did nothing, so the layer
+    /// that just tried has to be the one saying what it did. A no-op for the
+    /// bespoke panels, which are not hosted and never show a placeholder.
+    pub fn set_placeholder_state(&mut self, id: SidePanelId, state: hosted::PlaceholderState) {
+        if let Some(panel) = self.hosted_mut(id) {
+            panel.set_placeholder_state(state);
+        }
+    }
+
     /// Hand a just-unmounted box to the panel that can hold it.
     ///
     /// This is what makes docking a *move* rather than a copy: the component
@@ -1386,11 +1498,6 @@ impl SidePanelHost {
         }
     }
 
-    /// The contextual key line for whatever currently owns the keyboard.
-    ///
-    /// `None` when no panel is focused: the composer is aimed at the agent
-    /// session, and its hints belong to the session surface, not to a panel
-    /// the user is not in.
     /// Selected-message index of the chat panel.
     ///
     /// Exposed so a caller can describe chat position (and so the parity
@@ -1400,21 +1507,48 @@ impl SidePanelHost {
         self.chat.cursor()
     }
 
+    /// The contextual key line for the active panel.
+    ///
+    /// The composer is aimed at the agent session whenever no panel has
+    /// focus, so a panel whose verbs are only live *with* the keyboard has
+    /// nothing to say then — `None` is the correct answer for the session,
+    /// chat, help, agents and terminal surfaces.
     pub fn composer_hints(
         &self,
         chat_project: Option<&str>,
         input_mode: InputMode,
     ) -> Option<String> {
-        if !self.is_focused() {
-            return None;
-        }
         let hints = PanelHints {
-            focused: true,
+            focused: self.is_focused(),
+            placement: self.selected,
             chat_project,
             input_mode,
         };
         // Read-only dispatch: a hint must not require an exclusive borrow of
         // the panel, or the composer row could not ask for it during render.
+        //
+        // Asked whether or not this panel is focused, on purpose, and the two
+        // answers differ by *kind* rather than by accident:
+        //
+        // - A **hosted** panel is a box the user adopted. Its verbs are
+        //   undiscoverable any other way — the `/files` keymap exists only in
+        //   this line — so an unfocused hosted panel advertises itself and the
+        //   gesture that enters it. Those verbs are inert without the keyboard,
+        //   and the line says so (`"/shift+→ in"` leads, `back` does not
+        //   appear).
+        // - A **bespoke** panel holds a live projection the user can already
+        //   see and whose chrome names it, so an unfocused one declines and
+        //   the row goes away entirely.
+        //
+        // The gate that once lived here — no hint from any panel until it had
+        // the keyboard — answered the `/files` case wrongly, and the terminal
+        // panel was the one panel that kept an unfocused branch to exploit it.
+        // That branch then outlived its reasoning: every verb in
+        // `"TERM · focus to scroll, select and type"`, including the
+        // `Shift+←/→` gesture it advertised, needs the keyboard the composer
+        // had taken, so the row persisted above the LLM buffer describing a
+        // terminal the user was not in. Bespoke panels now decline; hosted
+        // panels still speak.
         match self.active() {
             SidePanelId::Session => self.session.composer_hints(&hints),
             SidePanelId::Chat => self.chat.composer_hints(&hints),
@@ -1495,6 +1629,27 @@ impl SidePanelHost {
     /// created or attached so docking `/terminal` shows something.
     pub fn show_terminal(&mut self, handle: Option<&str>) {
         self.terminal.show(handle);
+    }
+
+    /// The terminal the panel is *currently showing*, if that panel is docked
+    /// and visible on screen.
+    ///
+    /// Visibility is part of the answer on purpose. A terminal adopted by a
+    /// panel that is collapsed, swapped out for another panel, or moved off
+    /// the edge is not on anyone's screen, so nothing it produces is worth a
+    /// read; treating "adopted" as "mounted" is how a background terminal ends
+    /// up polling forever for nobody.
+    pub fn visible_terminal_handle(&self) -> Option<String> {
+        if !self.terminal.is_empty() && self.panel_is_terminal_visible() {
+            return self.terminal.handle().map(str::to_string);
+        }
+        None
+    }
+
+    fn panel_is_terminal_visible(&self) -> bool {
+        PanelPlacement::ALL.iter().any(|placement| {
+            self.panel_at(*placement) == SidePanelId::Terminal && self.is_visible_at(*placement)
+        })
     }
 
     /// Drop the terminal panel's handle when its view disappears.
@@ -1737,7 +1892,9 @@ impl SidePanelHost {
         // `MoveDirection` rather than as a resolved focus change so the
         // contextual dispatcher still sees the whole picture — including the
         // fact that no box is open, which is what makes this a pane move.
-        if ctx.input_mode == crate::tui::input::InputMode::Normal {
+        if ctx.input_mode == crate::tui::input::InputMode::Normal
+            && self.panel().claims_panel_directions(ctx)
+        {
             let dir = match action {
                 Some(InputAction::DirectionLeft) => Some(PanelDirection::Left),
                 Some(InputAction::DirectionRight) => Some(PanelDirection::Right),
@@ -2114,20 +2271,19 @@ mod tests {
         assert_eq!(shown, vec![PanelPlacement::Right]);
     }
 
-    /// Every panel must be constructible by name and nameable on disk.
+    /// Every panel must be nameable on disk and describable in the manager.
     ///
-    /// `load_command` is what a placeholder tells the user to run, and
-    /// `config_key` is what a persisted `Ctrl+digit` binding is stored under.
-    /// A variant that forgets either one is reachable from the manager but
-    /// cannot say how to fill itself or survive a restart.
+    /// `config_key` is what a persisted `Ctrl+digit` binding is stored under, and
+    /// `label`/`hint` are what the manager row reads. A variant that forgets
+    /// them is reachable but cannot be bound or identified.
+    ///
+    /// This used to also pin a `load_command` per panel, back when the placeholder
+    /// named that command. It does not any more: a panel describes its *state*,
+    /// and the only consumer of a per-panel command string was the copy that told
+    /// the user to go and run it.
     #[test]
-    fn every_panel_names_its_loader_and_its_config_spelling() {
+    fn every_panel_names_its_config_spelling_and_itself() {
         for panel in SidePanelId::ALL.iter().copied() {
-            let command = panel.load_command();
-            assert!(
-                command.starts_with('/'),
-                "{panel:?} has no `/` loader, got {command:?}"
-            );
             assert!(
                 !panel.config_key().is_empty(),
                 "{panel:?} has no persisted config spelling"
@@ -2139,6 +2295,11 @@ mod tests {
                     .all(|c| c.is_ascii_lowercase() || c == '_'),
                 "{panel:?} config spelling must be snake_case"
             );
+            assert!(
+                !panel.label().is_empty(),
+                "{panel:?} has no title-bar label"
+            );
+            assert!(!panel.hint().is_empty(), "{panel:?} has no manager hint");
         }
     }
 
@@ -2261,5 +2422,227 @@ mod tests {
                  materialize_hosted_panel into open_panel_box and back again"
             );
         }
+    }
+
+    // ---------------------------------------------- panel keymaps (M001)
+
+    /// A widget that says nothing about its keys, so the host's generic
+    /// fallback is what shows. Stands in for the boxes that have not yet
+    /// answered [`Component::keymap_hint`].
+    struct Keyless;
+    impl crate::tui::components::component::Component for Keyless {
+        fn handle_key(&mut self, _key: KeyEvent) -> Option<TuiMsg> {
+            None
+        }
+        fn update(&mut self, _msg: TuiMsg) -> Option<TuiMsg> {
+            None
+        }
+        fn render(&mut self, _frame: &mut ratatui::Frame, _area: Rect, _theme: &Arc<Theme>) {}
+        fn dialog_type(&self) -> crate::tui::components::component::DialogType {
+            crate::tui::components::component::DialogType::None
+        }
+    }
+
+    /// A host showing `id` on the given edge, with `widget` adopted into it.
+    ///
+    /// Focus is left off: the requirement is that a docked panel advertises
+    /// its keys *before* the user goes in, and every assertion here depends on
+    /// the host reporting focus honestly rather than assuming it.
+    fn host_showing(id: SidePanelId, placement: PanelPlacement) -> SidePanelHost {
+        let mut host = SidePanelHost::new();
+        host.selected = placement;
+        host.slots[placement.index()] = PanelSlot::new(id, true);
+        host.focused = false;
+        host
+    }
+
+    fn files_widget() -> Box<dyn crate::tui::components::component::Component> {
+        use crate::tui::components::dialogs::files::FilesDialog;
+        let mut state = crate::tui::app::state::file_tree::FileTreeState::default();
+        let root = std::env::temp_dir();
+        let (generation, request_id) = state.begin_rebuild(root.clone());
+        state.apply_listing(
+            generation,
+            request_id,
+            root,
+            crate::tui::file_tree::build_tree(&std::env::temp_dir()),
+        );
+        Box::new(FilesDialog::new(Arc::new(Theme::default()), state))
+    }
+
+    /// The reported defect, as an assertion: a `/files` box docked in a side
+    /// panel showed no keymap anywhere until the user had already guessed the
+    /// keys correctly. The line must appear the moment the box is docked,
+    /// keyboard or no keyboard.
+    #[test]
+    fn a_docked_files_panel_advertises_its_own_keymap_without_the_keyboard() {
+        let mut host = host_showing(SidePanelId::Files, PanelPlacement::Right);
+        assert!(
+            host.adopt(SidePanelId::Files, files_widget()),
+            "the files panel takes an adopted box"
+        );
+        assert!(
+            !host.is_focused(),
+            "the premise: the composer still owns the keyboard"
+        );
+
+        let hint = host
+            .composer_hints(None, InputMode::Normal)
+            .expect("a docked panel with content always advertises its keys");
+
+        assert!(
+            !hint.contains("i act"),
+            "the host's generic line describes a verb `/files` does not have, got {hint:?}"
+        );
+        for verb in ["enter open", "l/→ root at dir", "^d/^u page"] {
+            assert!(hint.contains(verb), "missing {verb:?} in {hint:?}");
+        }
+    }
+
+    /// The verbs are not live until the panel has the keyboard, so an unfocused
+    /// line leads with the gesture that makes them live — and that gesture is
+    /// different on every edge.
+    #[test]
+    fn an_unfocused_panel_names_the_placement_correct_entry_gesture() {
+        let expected = [
+            (PanelPlacement::Right, "Shift+→/Shift+L"),
+            (PanelPlacement::Left, "Shift+←/Shift+H"),
+            (PanelPlacement::Bottom, "Shift+↓/Shift+J"),
+        ];
+        for (placement, gesture) in expected {
+            let mut host = host_showing(SidePanelId::Files, placement);
+            assert!(host.adopt(SidePanelId::Files, files_widget()));
+            let hint = host
+                .composer_hints(None, InputMode::Normal)
+                .expect("a docked panel with content always advertises its keys");
+            assert!(
+                hint.contains(&format!("{gesture} in")),
+                "{placement:?} must name {gesture} as the way in, got {hint:?}"
+            );
+            assert!(
+                !hint.contains("back"),
+                "an unfocused panel has not been entered, so there is nothing to go back from, got {hint:?}"
+            );
+        }
+    }
+
+    /// Focused, the line gains the way out instead of the way in.
+    #[test]
+    fn a_focused_panel_names_the_way_back_to_the_composer() {
+        let mut host = host_showing(SidePanelId::Files, PanelPlacement::Right);
+        assert!(host.adopt(SidePanelId::Files, files_widget()));
+        assert!(host.focus(), "a visible panel takes the keyboard");
+
+        let hint = host
+            .composer_hints(None, InputMode::Normal)
+            .expect("a focused panel advertises its keys");
+        assert!(hint.contains("Shift+← back"), "got {hint:?}");
+        assert!(
+            !hint.contains("Shift+→"),
+            "a panel that already has the keyboard does not need the way in, got {hint:?}"
+        );
+    }
+
+    /// Every other hosted panel's line is byte-identical to what shipped. The
+    /// generic fallback still exists for widgets that have no keymap of their
+    /// own, and this is the line it produces.
+    #[test]
+    fn every_other_hosted_panel_keeps_its_original_hint_line() {
+        for id in SidePanelId::ALL
+            .iter()
+            .copied()
+            .filter(|id| !id.is_bespoke() && *id != SidePanelId::Files)
+        {
+            let mut host = host_showing(id, PanelPlacement::Right);
+            assert!(host.adopt(id, Box::new(Keyless)));
+            assert!(host.focus());
+            assert_eq!(
+                host.composer_hints(None, InputMode::Normal).as_deref(),
+                Some(format!("{} · j/k scroll · i act · Shift+← back", id.title()).as_str()),
+                "{id:?} must keep the line it shipped with"
+            );
+        }
+    }
+
+    /// A panel with nothing in it has no verbs, and cannot be given the keyboard
+    /// to discover them with — so it says nothing in either state. The
+    /// placeholder itself names the command; the hint row is not a second place
+    /// to have to keep that in sync.
+    #[test]
+    fn an_unloaded_panel_is_quiet_and_refuses_the_keyboard() {
+        let mut host = host_showing(SidePanelId::Files, PanelPlacement::Right);
+        assert_eq!(
+            host.hosted_panel_has_content(SidePanelId::Files),
+            Some(false),
+            "the precondition: nothing is adopted yet"
+        );
+        assert_eq!(
+            host.composer_hints(None, InputMode::Normal),
+            None,
+            "an empty panel has no keys to teach"
+        );
+        assert!(
+            !host.focus(),
+            "and it cannot take the keyboard, so there is no focused reading either"
+        );
+        assert_eq!(host.composer_hints(None, InputMode::Normal), None);
+    }
+
+    /// The columns nobody docked stay quiet. A pre-docked session column is on
+    /// screen from the first frame of every session; making it announce itself
+    /// would put a key line on screen that no one asked for, permanently.
+    #[test]
+    fn a_column_the_user_never_entered_does_not_announce_itself() {
+        let host = SidePanelHost::new();
+        assert!(!host.is_focused());
+        assert_eq!(
+            host.composer_hints(None, InputMode::Normal),
+            None,
+            "the session panel is visible but not entered, so it has nothing to say"
+        );
+    }
+
+    /// The host's border and title are the panel's identity, including the
+    /// focus dot that distinguishes a focused panel from an unfocused one. A
+    /// widget that repaints its own chrome over them destroys the only signal
+    /// the column had — which is why `render_in_panel` exists.
+    #[test]
+    fn a_hosted_widget_does_not_paint_over_the_hosts_title() {
+        use crate::tui::components::dialogs::files::FilesDialog;
+
+        let theme = Arc::new(Theme::default());
+        let mut dialog = FilesDialog::new(Arc::clone(&theme), Default::default());
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 8));
+        render_hosted(&mut dialog, &mut buf, area, &theme, " ● Files ");
+
+        let title_row: String = (0..30)
+            .map(|x| buf.cell((x, 0)).expect("in bounds").symbol().to_string())
+            .collect();
+        assert!(
+            title_row.contains("● Files"),
+            "the host's title and focus dot must survive the widget, got {title_row:?}"
+        );
+    }
+
+    /// The host's own block is the default contract: a widget that paints no
+    /// chrome keeps working when adopted, which is why `render_in_panel`
+    /// defaults to `render` rather than being required.
+    #[test]
+    fn a_widget_that_draws_no_chrome_renders_unchanged_in_the_column() {
+        let theme = Arc::new(Theme::default());
+        let mut widget = Keyless;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 6));
+        render_hosted(
+            &mut widget,
+            &mut buf,
+            Rect::new(0, 0, 20, 6),
+            &theme,
+            " Keyless ",
+        );
+        let row: String = (0..20)
+            .map(|x| buf.cell((x, 0)).expect("in bounds").symbol().to_string())
+            .collect();
+        assert!(row.contains("Keyless"), "got {row:?}");
     }
 }

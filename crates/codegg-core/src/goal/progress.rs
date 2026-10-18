@@ -5,9 +5,9 @@
 //! `Progress`, `VerifiedWait`, or `NoProgress`.
 //!
 //! The assessment reuses the `ProgressSignal` / `RecoveryController` vocabulary
-//! from the turn-local recovery path (`NewEvidence`, `StateChanged`,
-//! `ChildAdvanced`, graduated `Nudge -> Correct -> Replan -> Stall`) without
-//! creating a second general recovery controller. The durable layer here is a
+//! from the turn-local recovery path (`NewEvidence`, `StateChanged`, graduated
+//! `Nudge -> Correct -> Replan -> Stall`) without creating a second general
+//! recovery controller. The durable layer here is a
 //! small typed disposition plus a deterministic fingerprint over bounded
 //! host-observable metadata only.
 //!
@@ -261,8 +261,8 @@ fn bounded_status(status: &str) -> String {
 /// Classify the current boundary against the previous boundary.
 ///
 /// - Any todo status-distribution change or any execution set/status change
-///   is authoritative progress (`NewEvidence` / `StateChanged` /
-///   `ChildAdvanced` in `ProgressSignal` vocabulary).
+///   is authoritative progress (`NewEvidence` / `StateChanged` in
+///   `ProgressSignal` vocabulary).
 /// - Otherwise a live goal-owned `InProgress` execution is a verified wait.
 /// - Otherwise a growing open-question count is a structured blocker report
 ///   (`NoProgress` with `BlockerReported`).

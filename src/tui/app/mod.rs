@@ -21,7 +21,9 @@ mod render;
 mod types;
 
 pub(crate) use commands::send_tui;
-pub use commands::{SessionMutationOp, ShellPromotionStageResult, TuiCommand};
+pub use commands::{
+    SessionMutationOp, ShellPromotionStageResult, TerminalResumeRequest, TuiCommand,
+};
 pub use types::{
     CompletionType, ConnectionLifecycleAction, Dialog, HistoryEntry, SessionStatus, TodoEntry,
     TuiMsg,
@@ -140,6 +142,16 @@ pub const MAX_TODO_STRIP_TASKS: usize = 9;
 /// adds a `… +N more` row when it truncates, so the count the user sees is
 /// never silently wrong.
 pub const MAX_WORKING_STRIP_SUBAGENTS: usize = 6;
+
+/// Tab key used for projection cursors and per-tab summaries when the TUI
+/// has no project tab to attribute a subscription to.
+///
+/// The daemon-attached frontend subscribes per session and never switches a
+/// project tab, so `projection_client.active_tab_id()` is legitimately
+/// `None`. Cursor bookkeeping still needs a stable key; it is never matched
+/// against a stream id, and `active_snapshot` resolves the stream from the
+/// controller directly.
+pub const DEFAULT_PROJECTION_TAB: &str = "default";
 
 /// Maximum serialized size of a `UiNode` body included in a remote
 /// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
@@ -1939,6 +1951,24 @@ impl App {
         }
         use crate::protocol::core::CoreEvent as E;
         match event {
+            E::ProjectionStreamEvent {
+                subscription_id,
+                stream_id: _,
+                envelope,
+            } => {
+                // The daemon forwards live projection envelopes on this
+                // event. It had no arm here, so every one fell through to
+                // `_ => false` and was discarded: the projection controller
+                // only ever learned what happened before it attached, which
+                // is why subagent and job status never appeared live.
+                let tab_id = self
+                    .projection_client
+                    .active_tab_id()
+                    .unwrap_or(DEFAULT_PROJECTION_TAB)
+                    .to_string();
+                let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                true
+            }
             E::TurnStarted { turn_id, .. } => {
                 self.messages_state.messages.finalize_streaming();
                 // The daemon mints this id and `TurnCancel` rejects a
@@ -3303,7 +3333,7 @@ impl App {
                 let tab_id = self
                     .projection_client
                     .active_tab_id()
-                    .unwrap_or("default")
+                    .unwrap_or(DEFAULT_PROJECTION_TAB)
                     .to_string();
                 let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
             }
@@ -4002,7 +4032,21 @@ impl App {
         // those four dialogs keep their own Normal/Insert split — the same
         // contract `HelpDialog` already follows. Without the gate this would
         // silently break typing an uppercase letter into a filter.
-        if self.focus_manager.top_docks_as_viewer() && self.dock_target().is_some() {
+        // While a terminal box owns the keyboard in INS mode the PTY owns it,
+        // not the docking gesture. `direction_of` matches bare uppercase
+        // `H`/`J`/`K`/`L` without a SHIFT qualifier, and those are ordinary
+        // characters in a shell command (`ls`, `git`, `grep`, env vars). A
+        // command containing one of them would be swallowed here and dock the
+        // box instead of typing — the character never reaches the process and
+        // the surface the user opened disappears mid-command. The viewer gate
+        // above does not cover this: it asks whether the box owns a *filter
+        // buffer*, and a live terminal owns neither a filter buffer nor the
+        // keyboard. Focus is the real question, and the terminal's own reader
+        // path already handles the gesture in viewing mode.
+        if !self.terminal_box_owns_keyboard()
+            && self.focus_manager.top_docks_as_viewer()
+            && self.dock_target().is_some()
+        {
             if let Some(dir) = crate::tui::panels::direction_of(key) {
                 crate::tui::commands::panels::move_directionally(self, dir);
                 return;
@@ -10492,7 +10536,14 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) {
+    /// Show the diff for `path`, or the whole working tree when it is `None`.
+    ///
+    /// Returns whether a diff box was actually opened. Four of the paths below
+    /// return without mounting anything — no git root, no changes, a failed
+    /// `git diff` — and the caller needs to be able to say so. It used to
+    /// re-read `dock_target()` to find out, which is the inference this return
+    /// value replaces.
+    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) -> bool {
         let project_dir = self.active_workspace_root().unwrap_or_default();
         let git_root = match crate::worktree::find_git_root(&project_dir) {
             Some(r) => r,
@@ -10500,7 +10551,7 @@ impl App {
                 self.messages_state
                     .toasts
                     .info("Not in a git repository - showing text diff");
-                return;
+                return false;
             }
         };
 
@@ -10525,7 +10576,7 @@ impl App {
 
             if old_content == new_content {
                 self.messages_state.toasts.info("No changes detected");
-                return;
+                return false;
             }
 
             let title = format!("Diff: {}", file_path);
@@ -10534,6 +10585,7 @@ impl App {
                 new_content: new_content.into_boxed_str(),
                 title: title.into_boxed_str(),
             });
+            true
         } else {
             let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
             let output = crate::git_mutations::GitEnvPolicy::default()
@@ -10546,24 +10598,27 @@ impl App {
                     let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
                     if diff_text.is_empty() {
                         self.messages_state.toasts.info("No changes detected");
-                        return;
+                        return false;
                     }
                     self.process_msg(TuiMsg::OpenDiffDialog {
                         old_content: String::new().into_boxed_str(),
                         new_content: diff_text.into_boxed_str(),
                         title: "Repository Diff".to_string().into_boxed_str(),
                     });
+                    true
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                     self.messages_state
                         .toasts
                         .error(&format!("git diff failed: {}", stderr));
+                    false
                 }
                 Err(e) => {
                     self.messages_state
                         .toasts
                         .error(&format!("Failed to run git diff: {}", e));
+                    false
                 }
             }
         }
@@ -12157,6 +12212,98 @@ impl App {
         self.panel_host.destination_title()
     }
 
+    /// Whether the open terminal **box** is the current keyboard destination.
+    ///
+    /// The box is modal: while it is up with a mounted handle, its state *is*
+    /// the mode, whatever the composer thinks. This is deliberately weaker than
+    /// [`Self::terminal_box_owns_keyboard`] — that one asks whether the box is
+    /// consuming keys **as input for the process** (`TerminalFocus::Focused`),
+    /// which is the narrower question the docking gesture asks; this one asks
+    /// whether the box is where keys go at all, which is true in viewing mode
+    /// too. Reporting needs the wider one, because after `Esc` the box still has
+    /// the keyboard and the composer's private mode has nothing to say about it.
+    pub fn terminal_box_has_keyboard(&self) -> bool {
+        self.focus_manager.active_dialog_type() == DialogType::Terminal
+            && self.dialog_state.terminal_detail_handle.is_some()
+    }
+
+    /// Whether the open terminal box is holding the keyboard **for the
+    /// process**.
+    ///
+    /// Two independent facts, not one: the box must be the active dialog
+    /// (a terminal behind another dialog is not receiving keystrokes, whatever
+    /// its `TerminalFocus` says), and that handle must actually be focused in
+    /// the controller (`Esc` drops the keyboard to the reader while the box
+    /// stays open).
+    ///
+    /// The docking gesture in [`App::on_key`] and [`Self::composer_input_mode`]
+    /// both ask this rather than each re-deriving it. The panel host has the
+    /// mirror-image rule for the docked surface — a focused panel whose
+    /// `claims_insert_keys` holds — and those two together are what
+    /// `composer_input_mode` resolves over; neither can answer the other's half
+    /// of the question, because a box is not in the panel host and a panel is
+    /// not a dialog.
+    pub fn terminal_box_owns_keyboard(&self) -> bool {
+        self.terminal_box_has_keyboard()
+            && self
+                .dialog_state
+                .terminal_detail_handle
+                .as_deref()
+                .is_some_and(|handle| self.interactive_terminals.is_focused(handle))
+    }
+
+    /// The input mode the user is **actually** in, for everything that reports
+    /// it rather than enforces it.
+    ///
+    /// `ui_state.input_mode` is the composer's own mode, and it is the wrong
+    /// answer whenever the keyboard is somewhere else — which is most of the
+    /// time. `focus_panel` forces it to `Normal` whenever a panel takes focus
+    /// and `blur_panel` restores the parked mode, so a terminal panel holding a
+    /// live PTY in Insert reported `Normal` for as long as the user typed into
+    /// it. The composer badge read that raw field, so a user with the keyboard
+    /// in a shell watched `[NOR]` above the input — and the terminal panel's own
+    /// Insert hint branch was unreachable dead code, because the same field is
+    /// what it branched on.
+    ///
+    /// Resolution order, each half a seam key routing already reads rather than
+    /// a third definition of its own:
+    ///
+    /// 1. **The terminal box, either way.** A modal surface owns the keyboard,
+    ///    so it reports `Insert` while `TerminalFocus::Focused` and `Normal`
+    ///    after `Esc`. This half is why the composer's private mode cannot be
+    ///    the fallback here: the box never touches it, so it is still whatever
+    ///    it was before the box opened.
+    /// 2. **A focused panel that claims Insert** → `Insert`.
+    /// 3. **Otherwise `ui_state.input_mode`**, which is authoritative for every
+    ///    case where the composer really does have the keyboard. A panel that
+    ///    *declines* the Insert claim has genuinely handed the keys back, and
+    ///    `focus_panel` already parked the composer at `Normal` — reporting
+    ///    Insert there would be the same lie in the other direction.
+    ///
+    /// That is the same shape as [`Self::composer_destination_title`] and as
+    /// the editor route's `buffer_focused(input_mode)` badge, so this is the
+    /// third instance of one rule rather than a new mechanism.
+    ///
+    /// A pure read. It takes `&mut self` only because
+    /// `panel_claims_insert_keys` has to build a `PanelCtx`, whose grants are
+    /// `&mut`; **it writes nothing.** The frame must never be able to move the
+    /// keyboard by describing it — a badge that forced `input_mode` to match
+    /// what it displays would turn the state it reported into the state it
+    /// caused.
+    pub fn composer_input_mode(&mut self) -> InputMode {
+        if self.terminal_box_has_keyboard() {
+            return if self.terminal_box_owns_keyboard() {
+                InputMode::Insert
+            } else {
+                InputMode::Normal
+            };
+        }
+        if crate::tui::commands::panels::panel_claims_insert_keys(self) {
+            return InputMode::Insert;
+        }
+        self.ui_state.input_mode
+    }
+
     /// The side panel that can hold the currently open box, if any.
     ///
     /// The single place a box is associated with a panel, and the reason the
@@ -12200,7 +12347,6 @@ impl App {
             DialogType::Plugin => Some(P::Plugins),
             DialogType::Team => Some(P::Team),
             DialogType::Control => Some(P::Control),
-            DialogType::WorkspaceDashboard => Some(P::Workspace),
             DialogType::TaskView => Some(P::TaskView),
             DialogType::Diff => Some(P::Diff),
             DialogType::Review => Some(P::Review),
@@ -12208,6 +12354,12 @@ impl App {
             // gesture must say so rather than silently selecting a pane the
             // user did not ask for. Everything here is a *modal* box — the
             // session sidebar has no box because it is always present.
+            //
+            // `WorkspaceDashboard` is here because its box cannot exist: the
+            // Workspace view is `Route::Workspace` and `open_workspace_dashboard`
+            // pushes no dialog. It was mapped to a panel that could therefore
+            // never hold content, and the panel was removed rather than the
+            // mapping left to rot.
             _ => None,
         }
     }
@@ -12220,7 +12372,7 @@ impl App {
     ///
     /// `None` when no panel is focused and nothing is armed — the row is not
     /// reserved at all in that case, so the prompt keeps its height.
-    pub fn composer_hint_text(&self) -> Option<String> {
+    pub fn composer_hint_text(&mut self) -> Option<String> {
         // Resize mode owns the frame, so it outranks every surface hint: the
         // keys that just changed meaning are `h/j/k/l`, and a reader who sees
         // "j/k scroll" while resize mode is armed has been told something
@@ -12246,13 +12398,24 @@ impl App {
         // runs long, and the one surface with nothing written above the input.
         // Only during a turn — an idle buffer has nothing to stop.
         //
-        // The turn keys come first but never gate the panel's own hints: a
-        // focused panel advertises its keys whether a turn is running or not,
-        // and only a composer with neither shows no row at all.
+        // The turn keys come first but never gate the panel's own hints: the
+        // active panel advertises its keys whether a turn is running or not,
+        // and only a composer with neither shows no row at all. The panel may
+        // not have the keyboard either — a bespoke panel then declines, so the
+        // row still describes whoever holds it rather than the panel the user
+        // just walked away from.
         let agent_keys = self.llm_buffer_key_hints();
+        // The same derived answer the `[NOR]`/`[INS]` badge renders, not the raw
+        // composer field. The two were separate reads of `ui_state.input_mode`,
+        // which is pinned to `Normal` whenever a panel holds the keyboard — so
+        // while a terminal panel owned a live PTY in Insert, the badge said
+        // `[NOR]` and this line advertised reader navigation (`i type · hjkl
+        // move`) at a user who was typing into a shell. One answer, both
+        // surfaces, and they cannot disagree again.
+        let input_mode = self.composer_input_mode();
         let panel = self
             .panel_host
-            .composer_hints(self.chat_panel_project.as_deref(), self.ui_state.input_mode);
+            .composer_hints(self.chat_panel_project.as_deref(), input_mode);
         match (agent_keys, panel) {
             (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
             (Some(agent_keys), None) => Some(agent_keys),
@@ -12499,6 +12662,10 @@ impl App {
         session_id: String,
         subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
         cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        projection: Option<(
+            crate::protocol::projection::replay::ProjectionStreamDescriptor,
+            crate::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
         error: Option<String>,
         unauthorized: bool,
         unsupported: bool,
@@ -12511,6 +12678,7 @@ impl App {
             session_id,
             subscription_id,
             cursor,
+            projection,
             error,
             unauthorized,
             unsupported,
@@ -14069,24 +14237,49 @@ impl App {
         }
     }
 
+    /// Delegated work the main agent is blocked on right now.
+    ///
+    /// Counts live subagents and live jobs using the *same* predicates the
+    /// tasks overlay renders from (`SubagentRow::is_running` and
+    /// `tasks::is_live_state`), so the working strip can never disagree with
+    /// the list the user checks to confirm it.
+    ///
+    /// This is derived rather than announced by a `SubagentStarted` /
+    /// `JobStarted` event on purpose: the indicator has to be right on the one
+    /// occasion it matters — the main agent has fanned out and is now silent —
+    /// and an event that is dropped, coalesced, or simply not wired to the
+    /// phase leaves the strip reading `idle` for the entire wait. Deriving it
+    /// from the same projection the overlay reads cannot drift.
+    pub fn awaiting_task_counts(&self) -> (usize, usize) {
+        let subagents = self.ui_state.subagents.running_count();
+        let jobs = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| {
+                snapshot
+                    .jobs
+                    .iter()
+                    .filter(|job| crate::tui::app::state::tasks::is_live_state(&job.state))
+                    .count()
+            })
+            .unwrap_or(0);
+        (subagents, jobs)
+    }
+
     /// Rows the unified tasks overlay needs, including its per-group headers.
     ///
-    /// Returns 0 when collapsed *or* when there is genuinely nothing to show,
-    /// so the input keeps the space in both cases. The height is deliberately
-    /// independent of `todo_strip_height`: the overlay is on-demand, and
-    /// coupling them would make expanding one reflow the other's rows.
+    /// Returns 0 only when collapsed. An expanded overlay always claims at
+    /// least one row, which is the "Nothing pending" line: with every group
+    /// empty there are no headers to draw, and reserving nothing made `Shift+T`
+    /// a silently dead key on an idle session — the very first thing a user
+    /// tries. The height is deliberately independent of `todo_strip_height`:
+    /// the overlay is on-demand, and coupling them would make expanding one
+    /// reflow the other's rows.
     pub fn tasks_strip_height(&self) -> u16 {
         if !self.tasks_expanded {
             return 0;
         }
-        let rows = self.bounded_task_rows();
-        if rows.is_empty() {
-            return 0;
-        }
-        // Header + rows + the "nothing here" line when the overlay is open but
-        // every group was empty. Without that last row an expanded-but-empty
-        // overlay would collapse to nothing and the toggle would appear broken.
-        rows.len() as u16
+        self.bounded_task_rows().len().max(1) as u16
     }
 
     /// Build the tasks overlay rows from the three projection-backed sources.
@@ -14600,7 +14793,7 @@ impl App {
         let max_visible = 15.min(count as u16);
         let height = max_visible + 4;
 
-        let timeline_area = centered_rect(75, height, area);
+        let timeline_area = crate::tui::components::component::centered_rect(75, height, area);
 
         let block = Block::default()
             .title(" Timeline ")
@@ -15090,6 +15283,11 @@ fn index_files_recursive(
         ".cargo",
         "dist",
         "build",
+        // Mirrors `directory_listing::LISTING_IGNORED_DIRS`. Kept in step on
+        // purpose: the file tree and the `@` completions describe the same
+        // workspace, so a directory offered by one and hidden by the other
+        // reads as a bug in whichever one the user is looking at.
+        ".codegg",
     ];
 
     if let Ok(entries) = std::fs::read_dir(current_dir) {
@@ -15123,26 +15321,6 @@ fn index_files_recursive(
             }
         }
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 fn format_key_event(key: &crossterm::event::KeyEvent) -> String {

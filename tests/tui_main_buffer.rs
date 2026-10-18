@@ -483,6 +483,180 @@ fn a_long_fan_out_is_truncated_with_an_honest_count() {
     );
 }
 
+/// Regression: a main agent blocked on delegated work must not read as idle.
+///
+/// The main agent fans out and then goes silent while it waits for a subagent
+/// or a job. `ActivityPhase::WaitingOnSubagent` existed for this the whole time
+/// and was never constructed by anything, so row 0 fell through to the literal
+/// word `idle` for the entire wait — which is indistinguishable from a hung
+/// session. The wait is now derived from the projection.
+#[test]
+fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
+    let mut app = test_app();
+    // The main agent's own stream is finished; it is blocked on the subagent.
+    app.session_state.session_status = SessionStatus::Idle;
+    app.ui_state.subagents.set_rows(vec![
+        SubagentRow {
+            task_id: "t1".into(),
+            run_id: None,
+            display_name: None,
+            agent: "explore".into(),
+            description: "map the thing".into(),
+            status: "running".into(),
+        },
+        SubagentRow {
+            task_id: "t2".into(),
+            run_id: None,
+            display_name: None,
+            agent: "explore".into(),
+            description: "already done".into(),
+            status: "completed".into(),
+        },
+    ]);
+
+    assert_eq!(app.awaiting_task_counts().0, 1, "only the live row counts");
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    // Row 0 is the status surface under test. The footer separately renders the
+    // session's own status word, so assert on the strip rather than the frame.
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.contains("awaiting 1 task"),
+        "a blocked main agent must name the wait: {strip}"
+    );
+    assert!(
+        !strip.lines().next().unwrap_or_default().contains(" idle"),
+        "`idle` is the wrong answer while work is in flight: {strip}"
+    );
+    assert!(
+        strip.contains("1 subagent"),
+        "the row must break the wait down by kind: {strip}"
+    );
+}
+
+#[test]
+fn an_actually_idle_session_still_reads_idle() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    app.ui_state.subagents.set_rows(vec![SubagentRow {
+        task_id: "t1".into(),
+        run_id: None,
+        display_name: None,
+        agent: "explore".into(),
+        description: "done".into(),
+        status: "completed".into(),
+    }]);
+
+    assert_eq!(app.awaiting_task_counts(), (0, 0));
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.lines().next().unwrap_or_default().contains("idle"),
+        "with no live work, idle is the honest answer: {strip}"
+    );
+}
+
+/// Seed the projection controller the way the daemon-attached path does: one
+/// session subscription holding an authoritative snapshot with a live job.
+fn seed_projection_with_live_job(app: &mut App) {
+    use codegg::protocol::projection::dto::JobProjection;
+    use codegg::protocol::projection::replay::{
+        ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+        ProjectionSubscriptionId,
+    };
+    use codegg::protocol::projection::snapshot::SessionProjectionSnapshot;
+
+    let mut snapshot = SessionProjectionSnapshot::empty("sess", "proj", "ws");
+    snapshot.jobs.push_back(JobProjection {
+        job_id: "job-1".into(),
+        workspace_id: "ws".into(),
+        kind: "subagent".into(),
+        state: "running".into(),
+        summary: "map the subsystem".into(),
+        session_id: Some("sess".into()),
+        turn_id: None,
+        active_attempt_id: None,
+        error_class: None,
+        updated_at: 0,
+    });
+    let descriptor = ProjectionStreamDescriptor {
+        stream_id: ProjectionStreamId::new("stream-sess").expect("valid stream id"),
+        kind: ProjectionStreamKind::Session,
+        project_id: "proj".into(),
+        workspace_id: Some("ws".into()),
+        session_id: Some("sess".into()),
+        projection_version: 1,
+        retention_floor_seq: 0,
+        high_water_seq: 0,
+        latest_checkpoint_seq: None,
+    };
+    app.projection_client.controller_mut().install_subscription(
+        ProjectionSubscriptionId::new("sub-1"),
+        descriptor,
+        snapshot,
+    );
+}
+
+/// Regression: a live job must reach the status row through the projection.
+///
+/// Every other test here sets `ui_state.subagents` directly, which is exactly
+/// how the original tests passed while the real daemon-attached TUI showed
+/// `idle`: nothing in production ever put rows there. The daemon-attached
+/// frontend subscribes per session and never switches a project tab, so
+/// `active_tab_id` is `None` — and `active_snapshot` used to bail out on
+/// exactly that, reporting "no snapshot" for a session with a job running.
+#[test]
+fn a_live_job_in_the_projection_reaches_the_status_row() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    seed_projection_with_live_job(&mut app);
+
+    // The daemon-attached TUI has no active tab; the single subscription is
+    // unambiguous, so the status surfaces must still see it.
+    assert_eq!(
+        app.projection_client.active_tab_id(),
+        None,
+        "precondition: the daemon-socket path never sets a tab"
+    );
+    assert_eq!(
+        app.awaiting_task_counts(),
+        (0, 1),
+        "one live job must be counted straight from the projection"
+    );
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.contains("awaiting 1 task"),
+        "a session waiting on a job must name the wait: {strip}"
+    );
+    assert!(
+        strip.contains("1 job"),
+        "the row must break the wait down by kind: {strip}"
+    );
+}
+
+/// Regression: the projection must reach the status row without the sidebar.
+///
+/// `ui_state.subagents` was previously written only from the session-panel
+/// render path, so a layout that does not draw the panel left the count at
+/// zero. Row 0 is the strip's own status surface and must not depend on some
+/// other widget being visible.
+#[test]
+fn the_status_row_counts_live_work_without_the_sidebar() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    seed_projection_with_live_job(&mut app);
+
+    // No panel draw happens here; the render pass alone must establish the
+    // job count that row 0 reads.
+    let _ = render_to_buffer(&mut app, 100, 30);
+    assert_eq!(
+        app.awaiting_task_counts().1,
+        1,
+        "the job count must survive a render that never draws the panel"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3. Subagent buffer
 // ---------------------------------------------------------------------------
@@ -1002,6 +1176,41 @@ fn a_collapsed_tasks_overlay_reserves_nothing() {
     assert!(
         app.tasks_area.is_none(),
         "a collapsed overlay must not paint"
+    );
+}
+
+/// Regression: an expanded-but-empty overlay must still claim a row.
+///
+/// The renderer has a "Nothing pending" line for exactly this state, but it
+/// could never paint: `tasks_strip_height` returned 0, so no rows were carved,
+/// so `tasks_area` was `None`, so `render_tasks_strip` returned before reaching
+/// it. `Shift+T` was therefore a silently dead key on an idle session — which is
+/// the first thing a user tries when they go looking for the feature.
+#[test]
+fn an_expanded_but_empty_tasks_overlay_confirms_the_key_worked() {
+    let mut app = test_app();
+    app.set_todos(vec![]);
+    app.tasks_expanded = true;
+
+    assert!(
+        app.task_rows().is_empty(),
+        "precondition: an idle session has nothing to list"
+    );
+    assert_eq!(
+        app.tasks_strip_height(),
+        1,
+        "an expanded overlay must reserve the 'Nothing pending' row"
+    );
+
+    render_to_buffer(&mut app, 100, 30);
+    assert!(
+        app.tasks_area.is_some(),
+        "the overlay must be given space so it can confirm the toggle"
+    );
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
+    assert!(
+        text.contains("Nothing pending"),
+        "the confirmation line must actually paint:\n{text}"
     );
 }
 

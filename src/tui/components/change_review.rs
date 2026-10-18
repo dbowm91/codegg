@@ -144,8 +144,10 @@ impl<'a> ChangeReviewView<'a> {
             patch.path.clone().into_boxed_str(),
         );
         viewer.hunks = patch.hunks.clone();
-        viewer.set_theme(&theme);
-        frame.render_widget(&viewer, body);
+        // The theme is passed rather than stored: `ChangeReview` already holds
+        // the live one, and caching it on the viewer meant a review opened
+        // before a theme change kept drawing the old palette.
+        viewer.render_in(body, frame.buffer_mut(), &theme);
     }
 
     fn header_lines(&self) -> Vec<Line<'static>> {

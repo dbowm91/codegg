@@ -715,6 +715,11 @@ fn placeholder_fallback() -> SemanticTheme {
             border_focused: Rgb::new(120, 180, 255),
             selection: Rgb::new(40, 60, 90),
             selection_dim: Rgb::new(50, 70, 100),
+            // Derived, not authored: see `UiColors::derive_selection_texts`.
+            // Seeded here so the struct literal stays total; every importer
+            // overwrites both by deriving from this theme's own body colours.
+            selection_text: Rgb::new(220, 220, 225),
+            accent_text: Rgb::new(15, 15, 20),
             panel_background: Rgb::new(18, 18, 24),
             input_background: Rgb::new(8, 8, 12),
             title_background: Rgb::new(18, 18, 24),

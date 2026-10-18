@@ -18,6 +18,40 @@ const MACOS_SYSTEM_ALIASES: &[&str] = &[
     "/private/etc",
 ];
 
+/// Sentinel `allowed_root` for a workspace-scoped tool that was constructed
+/// without a resolved workspace root.
+///
+/// It replaces what used to be `std::env::current_dir()` in the tool
+/// `Default` constructors. Reading the process directory there was wrong twice
+/// over: the daemon's cwd is wherever the user launched it, unrelated to the
+/// session being run, and a failing `current_dir()` used to degrade to `"."` —
+/// which is the same directory by a different route.
+///
+/// This value is deliberately not a usable path. [`validate_path`] and
+/// [`validate_target_path`] recognise it and fail with
+/// [`ToolError::MissingWorkspaceRoot`], so the single choke point turns every
+/// such tool into a typed refusal instead of a silent retarget.
+const UNRESOLVED_WORKSPACE_ROOT: &str = "\0codegg:no-workspace-root";
+
+/// The `allowed_root` to use for a workspace-scoped tool built without one.
+///
+/// See [`UNRESOLVED_WORKSPACE_ROOT`].
+pub fn unresolved_workspace_root() -> PathBuf {
+    PathBuf::from(UNRESOLVED_WORKSPACE_ROOT)
+}
+
+/// Whether `root` is the sentinel returned by [`unresolved_workspace_root`].
+pub fn is_unresolved_workspace_root(root: &Path) -> bool {
+    root == Path::new(UNRESOLVED_WORKSPACE_ROOT)
+}
+
+/// The error a workspace-scoped tool must return when it has no root.
+fn missing_root_error() -> ToolError {
+    ToolError::MissingWorkspaceRoot {
+        context: "the tool was constructed without a workspace root".to_string(),
+    }
+}
+
 /// Resolve an existing path against the workspace root.
 ///
 /// A **relative** path is relative to `allowed_root`, never to the process
@@ -36,6 +70,10 @@ const MACOS_SYSTEM_ALIASES: &[&str] = &[
 /// did not, so a write→read round-trip of one relative path could not read
 /// back what it had just written.
 pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
+    if is_unresolved_workspace_root(allowed_root) {
+        return Err(missing_root_error());
+    }
+
     let root_canonical = allowed_root
         .canonicalize()
         .map_err(|_| ToolError::Execution("invalid allowed root".to_string()))?;
@@ -72,6 +110,10 @@ pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolEr
 /// Existing path prefixes are canonicalized so symlinks and `..` cannot escape
 /// the allowed root, while the missing suffix is resolved lexically.
 pub fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
+    if is_unresolved_workspace_root(allowed_root) {
+        return Err(missing_root_error());
+    }
+
     let root_canonical = allowed_root
         .canonicalize()
         .map_err(|_| ToolError::Execution("invalid allowed root".to_string()))?;

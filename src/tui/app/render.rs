@@ -410,7 +410,7 @@ impl App {
                         area,
                     )
                 }
-                _ => centered_rect(60, 50, area),
+                _ => crate::tui::components::component::centered_rect(60, 50, area),
             };
             self.dialog_area = Some(popup_area);
             let dialog_result =
@@ -576,7 +576,7 @@ impl App {
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Center);
 
-        let center_area = centered_rect(60, 40, area);
+        let center_area = crate::tui::components::component::centered_rect(60, 40, area);
         frame.render_widget(Clear, center_area);
         frame.render_widget(paragraph, center_area);
     }
@@ -964,14 +964,27 @@ impl App {
         let cursor = presentation.cursor_byte;
         let mode = presentation.mode;
         let focus = self.editor_state.buffer_focused(self.ui_state.input_mode);
-        let pending = presentation
-            .pending_command
-            .get(..crate::tui::editor::MAX_EDITOR_PENDING_COMMAND)
-            .unwrap_or("")
-            .to_string();
+        // Hoisted like the search fields below: `EditorPrefix` is `Copy`, and
+        // reading it here rather than inside the widget literal ends the
+        // shared borrow of `session` before the tree pane is painted.
+        let pending_prefix = presentation.pending_prefix;
+        // `EditorPrefix` and `FindNote` are `Copy`, and reading them here
+        // rather than inside the widget literal ends the shared borrow of
+        // `session` before the tree pane is painted. `FindNote::label`
+        // allocates, so it is done once per frame here instead of per banner
+        // line inside the widget.
+        let find_note = presentation.find_note.label();
         let command_active = presentation.command_active;
         let command_line = presentation.command_line.clone();
         let command_selection = presentation.command_selection;
+        // Hoisted out of the widget construction below: it needs the mutable
+        // `session`, and holding the shared borrow this function started
+        // with across that point would be the same borrow the whole call is
+        // built around.
+        let search_active = presentation.search_active;
+        let search_line = presentation.search_line.clone();
+        let search_count = presentation.search_matches.len();
+        let search_partial = presentation.search_partial;
         let scope = self.editor_state.scope;
         let path = self
             .editor_state
@@ -992,12 +1005,17 @@ impl App {
                 path: &path,
                 status: status.label(),
                 notice: notice.as_deref(),
+                find_note: &find_note,
                 mode,
                 buffer_focused: focus,
-                pending_command: &pending,
+                pending_prefix,
                 command_active,
                 command_line: &command_line,
                 command_selection,
+                search_active,
+                search_line: &search_line,
+                search_count,
+                search_partial,
                 scope,
                 cursor_byte: cursor,
                 writable,
@@ -1005,6 +1023,7 @@ impl App {
                 snapshot: &snapshot,
                 lsp: &self.editor_state.lsp,
                 completion: &self.editor_state.completion,
+                highlight: &mut self.editor_state.highlight,
                 presentation: session.presentation_mut(),
                 theme,
             }
@@ -1637,6 +1656,12 @@ impl App {
         // user walked away from clears itself instead of waiting to be
         // overwritten by whatever they type next.
         crate::tui::commands::turn_control::expire_pending_stop_armed(self);
+        // The status row reads `ui_state.subagents`, which the sidebar render
+        // path also fills. Syncing here as well is what makes the row
+        // independent of the panel being drawn: a layout that hides the
+        // sidebar used to leave the count at zero and report a busy session
+        // as idle.
+        self.sync_subagent_rows_from_projection();
         let Some(area) = chunk else {
             self.ui_state.working_area = None;
             self.ui_state.subagents.hits.clear();
@@ -1700,9 +1725,28 @@ impl App {
                 .unwrap_or_else(|| self.working_elapsed_fallback());
             (line, theme.primary)
         } else {
-            // Idle is an answer, not an absence. Naming it is what lets row 0
-            // be reserved permanently without reading as a broken widget.
-            ("idle".to_string(), theme.muted)
+            // The main agent blocked on delegated work is NOT idle, even though
+            // nothing is arriving on its own stream. Reading `idle` here is
+            // what made a long fan-out look like a dead session: the agent is
+            // waiting, and saying so is the difference between "this will
+            // finish" and "this hung". Derived from the projection rather than
+            // announced by a start event, because the wait is exactly the
+            // window in which a dropped or unwired event would go unnoticed.
+            // The per-kind counts are appended by the shared suffix below, so
+            // this body is only the headline.
+            let (awaiting_subs, awaiting_jobs) = self.awaiting_task_counts();
+            let awaiting = awaiting_subs + awaiting_jobs;
+            if awaiting > 0 {
+                let mut label = format!("awaiting {awaiting} task");
+                if awaiting != 1 {
+                    label.push('s');
+                }
+                (label, theme.primary)
+            } else {
+                // Idle is an answer, not an absence. Naming it is what lets row 0
+                // be reserved permanently without reading as a broken widget.
+                ("idle".to_string(), theme.muted)
+            }
         };
 
         let mut head = body;
@@ -1710,11 +1754,23 @@ impl App {
             head.push_str(" · ");
             head.push_str(&hint);
         }
-        let running_subs = self.ui_state.subagents.running_count();
-        if running_subs > 0 && !self.session_state.stopped_turn {
-            head.push_str(&format!(" · {running_subs} subagent"));
-            if running_subs != 1 {
-                head.push('s');
+        let (running_subs, running_jobs) = self.awaiting_task_counts();
+        if !self.session_state.stopped_turn {
+            if running_subs > 0 {
+                head.push_str(&format!(" · {running_subs} subagent"));
+                if running_subs != 1 {
+                    head.push('s');
+                }
+            }
+            // Jobs get the same treatment as subagents: a durable job running
+            // under the main agent is exactly as much a reason the session is
+            // not idle, and it was the one kind of delegated work this row
+            // could not name at all.
+            if running_jobs > 0 {
+                head.push_str(&format!(" · {running_jobs} job"));
+                if running_jobs != 1 {
+                    head.push('s');
+                }
             }
         }
         lines.push(Line::from(Span::styled(
@@ -1835,6 +1891,15 @@ impl App {
         // without opening the agent picker. Bounded so a long agent name
         // cannot crowd out the prompt's own prefix row.
         //
+        // The mode comes from `App::composer_input_mode`, not from
+        // `ui_state.input_mode`. The raw field is the *composer's* mode, and
+        // `focus_panel` forces it to `Normal` whenever a panel takes the
+        // keyboard — so a terminal panel holding a live PTY in Insert rendered
+        // `[NOR]` above the input while the user was typing into a shell. The
+        // badge and the contextual hint line read this one derived answer, so
+        // a surface that owns the keyboard is named by both or by neither. The
+        // derivation is a read: the render pass never moves the keyboard.
+        //
         // The destination badge names the surface that currently has the
         // keyboard — `[LLM]`, `[CHAT]`, `[SESSIONS]` — rather than listing
         // every reachable destination. Showing both send targets at once was
@@ -1870,7 +1935,8 @@ impl App {
                 })
                 .unwrap_or_default(),
         };
-        let mode_span_style = match self.ui_state.input_mode {
+        let input_mode = self.composer_input_mode();
+        let mode_span_style = match input_mode {
             InputMode::Insert => Style::default()
                 .fg(self.ui_state.theme.secondary)
                 .add_modifier(Modifier::BOLD),
@@ -1878,7 +1944,7 @@ impl App {
                 .fg(self.ui_state.theme.primary)
                 .add_modifier(Modifier::BOLD),
         };
-        let mode_label = match self.ui_state.input_mode {
+        let mode_label = match input_mode {
             InputMode::Insert => "[INS]",
             InputMode::Normal => "[NOR]",
         };
@@ -2261,6 +2327,10 @@ impl App {
             area,
             focused: self.panel_host.is_focused_at(placement),
             input_mode: self.ui_state.input_mode,
+            // The one frame clock decides, once, for every surface this frame
+            // paints — so the docked panel and the box cannot show the caret in
+            // opposite phases.
+            caret_blink_on: crate::tui::components::spinner::cursor_blink_visible_now(),
         };
         // `Clear` first: the previous panel's pixels must not show through
         // a narrower panel (the chat panel is shorter than the sidebar).
@@ -2482,6 +2552,25 @@ impl App {
     /// a row rather than being hidden, because the agent tree is the
     /// authoritative record that the task was dispatched.
     ///
+    /// Refresh the shared subagent rows from the active projection snapshot.
+    ///
+    /// This is the one place the working strip's count and the sidebar's list
+    /// are both written from, so they cannot disagree. It is deliberately
+    /// independent of whether the session panel is being drawn this frame:
+    /// row 0 of the strip reports `awaiting N tasks` from this vector, and a
+    /// hidden sidebar must not turn that into `idle`.
+    ///
+    /// A snapshot that has not arrived yet is not evidence of emptiness, so
+    /// the rows are left alone rather than cleared.
+    fn sync_subagent_rows_from_projection(&mut self) {
+        let Some((_, snapshot)) = self.projection_client.active_snapshot() else {
+            return;
+        };
+        if let Some(rows) = Self::sync_subagents_from_snapshot(snapshot) {
+            self.ui_state.subagents.set_rows(rows);
+        }
+    }
+
     /// Returns `None` when there is no snapshot to read at all, which is not
     /// the same as an empty tree: the caller keeps the rows it already has
     /// rather than blanking the strip mid-turn.
@@ -2545,7 +2634,7 @@ impl App {
             return;
         }
 
-        let popup_area = centered_rect(60, 50, area);
+        let popup_area = crate::tui::components::component::centered_rect(60, 50, area);
         frame.render_widget(Clear, popup_area);
 
         if !self.focus_manager.is_empty() {

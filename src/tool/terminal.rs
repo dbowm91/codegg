@@ -273,8 +273,9 @@ impl TerminalTool {
         let cwd = self
             .workdir
             .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .ok_or_else(|| ToolError::Execution("terminal cwd could not be resolved".into()))?;
+            .ok_or_else(|| ToolError::MissingWorkspaceRoot {
+                context: "terminal tool was constructed without a workdir".to_string(),
+            })?;
         let mut environment_policy = crate::managed_process::EnvironmentPolicy::sanitized();
         for (key, value) in env_vars {
             environment_policy = environment_policy.with_var(key, value);

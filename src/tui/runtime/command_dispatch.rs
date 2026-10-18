@@ -342,6 +342,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             session_id,
             subscription_id,
             cursor,
+            projection,
             error,
             unauthorized,
             unsupported,
@@ -354,6 +355,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 session_id,
                 subscription_id,
                 cursor,
+                projection,
                 error,
                 unauthorized,
                 unsupported,
@@ -779,8 +781,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ResearchLoadSection { run_id, section } => {
             start_research_load_section(app, run_id, section);
         }
-        TuiCommand::OpenRunDetailLoaded { mut dialog } => {
-            dialog.set_theme(&app.ui_state.theme);
+        TuiCommand::OpenRunDetailLoaded { dialog } => {
             app.push_dialog(crate::tui::Dialog::RunDetail, Box::new(dialog));
         }
         TuiCommand::OpenRunDetailError { error } => {
@@ -2074,13 +2075,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             );
         }
         TuiCommand::TerminalResumeFinished {
-            request_id,
+            request,
             handle,
             chunk,
             resync,
             error,
         } => {
-            apply_terminal_resume_finished(app, request_id, handle, chunk, resync, error);
+            apply_terminal_resume_finished(app, request, handle, chunk, resync, error);
         }
         TuiCommand::TerminalOpFinished {
             request_id,

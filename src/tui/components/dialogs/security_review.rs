@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -16,6 +16,41 @@ use crate::security::workflow::{
     SecurityReviewPanelItemKind, SecurityReviewReceipt,
 };
 use crate::tui::app::TuiMsg;
+
+/// Who owns this render's chrome.
+///
+/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
+/// draws its own border, section titles and keymap footer; [`Chrome::Hosted`]
+/// is a column in a side panel, where the host has already painted a border, a
+/// title and the `●` focus marker into the same rect.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    Owned,
+    Hosted,
+}
+
+/// The verbs this box implements, for the panel host to reuse verbatim.
+///
+/// `handle_key` is the implementation and this is the advertisement. Two of
+/// the old footer's tokens are deliberately absent even though the arms exist:
+///
+/// - `Esc close` never fires from a panel.
+///   [`SidePanelHost::handle_key`](crate::tui::panels::SidePanelHost) claims
+///   `Esc`/`q` as its universal exits and blurs *without* consulting the
+///   widget, so the pair below `PgUp/PgDn` in the retired footer was teaching
+///   a docked box a key the host had already answered.
+/// - `H copy hunk` cannot fire at all. `handle_key` has a real `Char('H')`
+///   arm, but `insert_panel_direction_bindings` binds **bare uppercase `H`** as
+///   `InputAction::DirectionLeft`, unmodified and shifted, so the host claims
+///   the keystroke first and the arm is unreachable from a column — dead code
+///   that reads exactly like a working key. That is the reason this hint is
+///   written next to the arms rather than next to the footer.
+///
+/// Everything else below is dispatched: `j/k` move, `^d`/`^u` page the detail,
+/// `f` cycles the filter, `n` and `p` pin it to notes and prompts, `enter`
+/// previews, `h` jumps to the hunk, and `]`/`[` step between hunk-backed
+/// items.
+const HINT: &str = "j/k move · ^d/^u page · f filter · n notes · p prompts · enter preview · h jump hunk · ]/[ hunk nav";
 
 /// Which section of the detail pane is currently focused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +68,10 @@ pub struct SecurityReviewDialog {
     pub detail_scroll: u16,
     pub detail_section: SecurityReviewDetailSection,
     pub filter: SecurityReviewFilter,
-    pub theme: Arc<Theme>,
 }
 
 impl SecurityReviewDialog {
-    pub fn new(theme: Arc<Theme>) -> Self {
+    pub fn new() -> Self {
         Self {
             receipt: Box::new(None),
             all_items: Vec::new(),
@@ -46,11 +80,10 @@ impl SecurityReviewDialog {
             detail_scroll: 0,
             detail_section: SecurityReviewDetailSection::Summary,
             filter: SecurityReviewFilter::All,
-            theme,
         }
     }
 
-    pub fn with_receipt(theme: Arc<Theme>, receipt: SecurityReviewReceipt) -> Self {
+    pub fn with_receipt(receipt: SecurityReviewReceipt) -> Self {
         let all_items = project_receipt_to_panel_items(&receipt);
         let visible_items = filter_panel_items(&all_items, SecurityReviewFilter::All);
         Self {
@@ -61,17 +94,12 @@ impl SecurityReviewDialog {
             detail_scroll: 0,
             detail_section: SecurityReviewDetailSection::Summary,
             filter: SecurityReviewFilter::All,
-            theme,
         }
     }
 
     pub fn update_receipt(&mut self, receipt: SecurityReviewReceipt) {
         self.all_items = project_receipt_to_panel_items(&receipt);
         self.recompute_visible();
-    }
-
-    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
     }
 
     pub fn set_receipt(&mut self, receipt: Option<SecurityReviewReceipt>) {
@@ -357,20 +385,61 @@ impl Component for SecurityReviewDialog {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, _theme: &Arc<Theme>) {
+    /// The verbs this box owns, spelled the way this box spells them.
+    ///
+    /// Short of the retired footer's `Esc close` and `H copy hunk`, both of
+    /// which the host answers before this widget is consulted — see [`HINT`].
+    fn keymap_hint(&self) -> Option<String> {
+        Some(HINT.to_string())
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render_body(frame, area, theme, Chrome::Owned);
+    }
+
+    /// The panes alone, inside the frame the host already drew.
+    ///
+    /// `Component::render` drew four bordered blocks — a header, the item
+    /// list, the detail pane and a footer — over the host's border, its title
+    /// and the `●` focus marker. All three of the host's are overwritten, not
+    /// layered, which is why a focused column and an unfocused one rendered
+    /// identically. What is left is the *same* routine the modal path uses.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let inner = area.inner(Margin::new(1, 1));
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        self.render_body(frame, inner, theme, Chrome::Hosted);
+    }
+
+    fn dialog_type(&self) -> DialogType {
+        DialogType::SecurityReview
+    }
+}
+
+impl SecurityReviewDialog {
+    /// One body routine for both render paths, including the empty-receipt
+    /// branch — which is a render path too, and the one most easily left
+    /// behind: it has its own block and would otherwise have been the one
+    /// corner of this box that still drew a box over the host's.
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
         if area.height < 6 || area.width < 20 {
             return;
         }
         let Some(ref receipt) = *self.receipt else {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border))
-                .title(" Security Review ");
-            let para = Paragraph::new(Line::from(Span::styled(
+            let message = Line::from(Span::styled(
                 "No security review result available.",
-                Style::default().fg(self.theme.muted),
-            )))
-            .block(block);
+                Style::default().fg(theme.muted),
+            ));
+            let para = match chrome {
+                Chrome::Owned => Paragraph::new(message).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.border))
+                        .title(" Security Review "),
+                ),
+                Chrome::Hosted => Paragraph::new(message),
+            };
             frame.render_widget(para, area);
             return;
         };
@@ -392,69 +461,104 @@ impl Component for SecurityReviewDialog {
             enrichment,
         );
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(5),
-                Constraint::Length(3),
-            ])
-            .split(area);
+        let (body_area, status_area) = match chrome {
+            Chrome::Owned => {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Min(5),
+                        Constraint::Length(3),
+                    ])
+                    .split(area);
 
-        let header_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .title(" Security Review ");
-        let header_para = Paragraph::new(Line::from(Span::styled(
-            header_text,
-            Style::default().fg(self.theme.foreground),
-        )))
-        .block(header_block);
-        frame.render_widget(header_para, chunks[0]);
+                let header_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(" Security Review ");
+                let header_para = Paragraph::new(Line::from(Span::styled(
+                    header_text,
+                    Style::default().fg(theme.foreground),
+                )))
+                .block(header_block);
+                frame.render_widget(header_para, chunks[0]);
+
+                (chunks[1], Some(chunks[2]))
+            }
+            Chrome::Hosted => {
+                // The header is a count of findings, prompts and notes, so it
+                // is content and stays — but the border it was drawn inside
+                // does not, and with it the two rows it spent on one. The
+                // footer rows go with it: the verbs they listed moved to
+                // `keymap_hint`, and `Esc close` and `H copy hunk` in it
+                // cannot fire from a column in any case.
+                let header = Rect {
+                    height: 1.min(area.height),
+                    ..area
+                };
+                let body = Rect {
+                    y: area.y.saturating_add(header.height),
+                    height: area.height.saturating_sub(header.height),
+                    ..area
+                };
+                let header_para = Paragraph::new(Line::from(Span::styled(
+                    header_text,
+                    Style::default().fg(theme.foreground),
+                )));
+                frame.render_widget(header_para, header);
+                (body, None)
+            }
+        };
 
         let split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(chunks[1]);
+            .split(body_area);
 
-        self.render_list(frame, split[0]);
-        self.render_detail(frame, split[1]);
+        self.render_list(frame, split[0], theme, chrome);
+        self.render_detail(frame, split[1], theme, chrome);
 
-        let footer_text = format!(
-            "j/k move | PgUp/PgDn page | f filter ({}) | ]/[ hunk nav | h jump hunk | H copy hunk | Enter preview | Esc close",
-            self.filter.label(),
-        );
-        let footer = Paragraph::new(Line::from(Span::styled(
-            footer_text,
-            Style::default().fg(self.theme.muted),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border)),
-        );
-        frame.render_widget(footer, chunks[2]);
+        if let Some(status_area) = status_area {
+            let footer_text = format!(
+                "j/k move | PgUp/PgDn page | f filter ({}) | ]/[ hunk nav | h jump hunk | H copy hunk | Enter preview | Esc close",
+                self.filter.label(),
+            );
+            let footer = Paragraph::new(Line::from(Span::styled(
+                footer_text,
+                Style::default().fg(theme.muted),
+            )))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border)),
+            );
+            frame.render_widget(footer, status_area);
+        }
     }
 
-    fn dialog_type(&self) -> DialogType {
-        DialogType::SecurityReview
-    }
-}
+    fn render_list(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+        let block = match chrome {
+            Chrome::Owned => Some(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(format!(" Items ({}) ", self.visible_items.len())),
+            ),
+            Chrome::Hosted => None,
+        };
 
-impl SecurityReviewDialog {
-    fn render_list(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .title(format!(" Items ({}) ", self.visible_items.len()));
-
-        let inner = block.inner(area);
-        block.render(area, frame.buffer_mut());
+        let inner = match &block {
+            Some(block) => block.inner(area),
+            None => area,
+        };
+        if let Some(block) = &block {
+            block.render(area, frame.buffer_mut());
+        }
 
         if self.visible_items.is_empty() {
             let empty = Line::from(Span::styled(
                 "No items match the current filter",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             ));
             let empty_area = Rect::new(inner.x, inner.y, inner.width, 1);
             frame.render_widget(empty, empty_area);
@@ -469,45 +573,41 @@ impl SecurityReviewDialog {
                 let is_selected = i == self.selected_index;
                 let base_style = if is_selected {
                     Style::default()
-                        .bg(self.theme.selection)
-                        .fg(self.theme.primary)
+                        .bg(theme.selection)
+                        .fg(theme.primary)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(self.theme.foreground)
+                    Style::default().fg(theme.foreground)
                 };
                 let marker = match item.kind {
                     SecurityReviewPanelItemKind::Finding => {
                         let color = match item.severity {
                             Some(crate::security::workflow::SecuritySeverity::Critical) => {
-                                self.theme.error
+                                theme.error
                             }
-                            Some(crate::security::workflow::SecuritySeverity::High) => {
-                                self.theme.error
-                            }
+                            Some(crate::security::workflow::SecuritySeverity::High) => theme.error,
                             Some(crate::security::workflow::SecuritySeverity::Medium) => {
-                                self.theme.warning
+                                theme.warning
                             }
                             Some(crate::security::workflow::SecuritySeverity::Low) => {
-                                self.theme.secondary
+                                theme.secondary
                             }
-                            Some(crate::security::workflow::SecuritySeverity::Info) => {
-                                self.theme.muted
-                            }
-                            None => self.theme.foreground,
+                            Some(crate::security::workflow::SecuritySeverity::Info) => theme.muted,
+                            None => theme.foreground,
                         };
                         Span::styled("[FINDING] ", Style::default().fg(color))
                     }
                     SecurityReviewPanelItemKind::Prompt => Span::styled(
                         "⚠ [PROMPT] ",
                         Style::default()
-                            .fg(self.theme.warning)
+                            .fg(theme.warning)
                             .add_modifier(Modifier::BOLD),
                     ),
                     SecurityReviewPanelItemKind::Note => {
-                        Span::styled("[NOTE] ", Style::default().fg(self.theme.muted))
+                        Span::styled("[NOTE] ", Style::default().fg(theme.muted))
                     }
                     SecurityReviewPanelItemKind::Preflight => {
-                        Span::styled("[PREFLIGHT] ", Style::default().fg(self.theme.warning))
+                        Span::styled("[PREFLIGHT] ", Style::default().fg(theme.warning))
                     }
                 };
                 Line::from(vec![marker, Span::styled(item.title.clone(), base_style)])
@@ -519,18 +619,29 @@ impl SecurityReviewDialog {
         frame.render_widget(list, inner);
     }
 
-    fn render_detail(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .title(" Detail ");
-        let inner = block.inner(area);
-        block.render(area, frame.buffer_mut());
+    fn render_detail(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+        let block = match chrome {
+            Chrome::Owned => Some(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(" Detail "),
+            ),
+            Chrome::Hosted => None,
+        };
+
+        let inner = match &block {
+            Some(block) => block.inner(area),
+            None => area,
+        };
+        if let Some(block) = &block {
+            block.render(area, frame.buffer_mut());
+        }
 
         let Some(item) = self.selected_item() else {
             let empty = Line::from(Span::styled(
                 "No item selected",
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             ));
             let empty_area = Rect::new(inner.x, inner.y, inner.width, 1);
             frame.render_widget(empty, empty_area);
@@ -543,7 +654,7 @@ impl SecurityReviewDialog {
             lines.push(Line::from(Span::styled(
                 "⚠ Review prompt only — not a confirmed finding",
                 Style::default()
-                    .fg(self.theme.warning)
+                    .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             )));
         }
@@ -551,7 +662,7 @@ impl SecurityReviewDialog {
         lines.push(Line::from(Span::styled(
             item.title.clone(),
             Style::default()
-                .fg(self.theme.primary)
+                .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         )));
 
@@ -561,13 +672,13 @@ impl SecurityReviewDialog {
             let line_str = item.line.map(|l| format!(":{}", l)).unwrap_or_default();
             lines.push(Line::from(Span::styled(
                 format!("Location: {}{}", path.display(), line_str),
-                Style::default().fg(self.theme.muted),
+                Style::default().fg(theme.muted),
             )));
         }
         if !item.summary.is_empty() {
             lines.push(Line::from(Span::styled(
                 format!("Summary: {}", item.summary),
-                Style::default().fg(self.theme.foreground),
+                Style::default().fg(theme.foreground),
             )));
         }
 
@@ -577,19 +688,19 @@ impl SecurityReviewDialog {
 
         for d in &item.detail {
             let color = if d.starts_with("Severity:") || d.starts_with("Confidence:") {
-                self.theme.secondary
+                theme.secondary
             } else if d.starts_with("Category:") {
-                self.theme.muted
+                theme.muted
             } else if d.starts_with("Recommendation:") {
-                self.theme.success
+                theme.success
             } else if d.starts_with("Evidence") {
-                self.theme.secondary
+                theme.secondary
             } else if d.starts_with("Not a confirmed finding") {
-                self.theme.warning
+                theme.warning
             } else if d.starts_with("Preset:") || d.starts_with("Rationale:") {
-                self.theme.muted
+                theme.muted
             } else {
-                self.theme.foreground
+                theme.foreground
             };
             lines.push(Line::from(Span::styled(
                 d.clone(),
@@ -602,14 +713,14 @@ impl SecurityReviewDialog {
             lines.push(Line::from(Span::styled(
                 format!("Hunk: {}", hunk.header),
                 Style::default()
-                    .fg(self.theme.secondary)
+                    .fg(theme.secondary)
                     .add_modifier(Modifier::BOLD),
             )));
             for hunk_line in &hunk.lines {
                 let (prefix, color) = match hunk_line.kind {
-                    SecurityReviewHunkLineKind::Added => ("+", self.theme.success),
-                    SecurityReviewHunkLineKind::Removed => ("-", self.theme.error),
-                    SecurityReviewHunkLineKind::Context => (" ", self.theme.muted),
+                    SecurityReviewHunkLineKind::Added => ("+", theme.success),
+                    SecurityReviewHunkLineKind::Removed => ("-", theme.error),
+                    SecurityReviewHunkLineKind::Context => (" ", theme.muted),
                 };
                 let line_num = match (hunk_line.old_line, hunk_line.new_line) {
                     (Some(o), Some(n)) => format!("{:>4} {:>4}", o, n),
@@ -622,7 +733,7 @@ impl SecurityReviewDialog {
                     .is_some_and(|line| hunk_line.new_line == Some(line));
                 let style = if is_focus {
                     Style::default()
-                        .fg(self.theme.primary)
+                        .fg(theme.primary)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(color)
@@ -630,7 +741,7 @@ impl SecurityReviewDialog {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{line_num} {prefix} "),
-                        Style::default().fg(self.theme.muted),
+                        Style::default().fg(theme.muted),
                     ),
                     Span::styled(hunk_line.text.clone(), style),
                 ]));
@@ -649,5 +760,13 @@ impl SecurityReviewDialog {
 
         let para = Paragraph::new(visible);
         frame.render_widget(para, inner);
+    }
+}
+
+/// These constructors lost their theme parameter when the render body stopped
+/// caching one, which leaves `new()` shaped like `Default` — so it has one.
+impl Default for SecurityReviewDialog {
+    fn default() -> Self {
+        Self::new()
     }
 }

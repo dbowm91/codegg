@@ -2448,7 +2448,12 @@ pub fn qualify_m002(
         qualification.abstention_violations == 0,
     );
     let candidates = historical_label_candidates(relevance_json)?;
-    let registry = crate::tool::ToolRegistry::with_defaults();
+    // W001: a registry built with `workspace_root: None` registers
+    // fail-closed stubs, so contract snapshots need a real root.
+    let registry = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+        workspace_root: Some(std::env::temp_dir()),
+        ..crate::tool::ToolRegistryOptions::default()
+    });
     let known: BTreeSet<String> = registry
         .list()
         .into_iter()
@@ -2820,7 +2825,12 @@ fn effect_binding_registry() -> crate::tool::ToolRegistry {
             None
         };
     let _context_guard = owned_runtime.as_ref().map(|runtime| runtime.enter());
-    let mut registry = crate::tool::ToolRegistry::with_defaults();
+    // W001: a registry built with `workspace_root: None` registers
+    // fail-closed stubs, so contract snapshots need a real root.
+    let mut registry = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+        workspace_root: Some(std::env::temp_dir()),
+        ..crate::tool::ToolRegistryOptions::default()
+    });
     let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:")
         .expect("lazy pool construction performs no I/O");
     registry.register(crate::tool::goal::GoalGetTool::new(
@@ -4545,7 +4555,12 @@ mod tests {
         // first-class state that implies nothing about authorization.
         let tool = crate::tool::bash::BashTool::new();
         assert!(crate::tool::Tool::causal_contract(&tool).is_none());
-        let registry = crate::tool::ToolRegistry::with_defaults();
+        // W001: a registry built with `workspace_root: None` registers
+        // fail-closed stubs, so contract snapshots need a real root.
+        let registry = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+            workspace_root: Some(std::env::temp_dir()),
+            ..crate::tool::ToolRegistryOptions::default()
+        });
         assert!(registry.contains("bash"));
         assert!(registry.causal_contract_of("bash").is_none());
         assert!(registry.causal_contract_of("no_such_tool").is_none());
@@ -4555,7 +4570,12 @@ mod tests {
     async fn registry_seam_matches_native_table() {
         // Every tool in the default registry agrees with the native table:
         // overrides cannot silently disagree with the frozen catalog.
-        let registry = crate::tool::ToolRegistry::with_defaults();
+        // W001: a registry built with `workspace_root: None` registers
+        // fail-closed stubs, so contract snapshots need a real root.
+        let registry = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+            workspace_root: Some(std::env::temp_dir()),
+            ..crate::tool::ToolRegistryOptions::default()
+        });
         for tool in registry.list() {
             assert_eq!(
                 tool.causal_contract().as_ref(),
@@ -4574,7 +4594,12 @@ mod tests {
         // pool never connects: construction alone exercises the seam.
         let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:")
             .expect("lazy pool connects without I/O");
-        let mut gated = crate::tool::ToolRegistry::new();
+        // W001: a registry built with `workspace_root: None` registers
+        // fail-closed stubs, so contract snapshots need a real root.
+        let mut gated = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+            workspace_root: Some(std::env::temp_dir()),
+            ..crate::tool::ToolRegistryOptions::default()
+        });
         gated.register(crate::tool::goal::GoalGetTool::new(
             pool.clone(),
             "session_test".to_string(),
@@ -5055,7 +5080,12 @@ mod tests {
         let candidates =
             historical_label_candidates(RELEVANCE_JSON).expect("relevance view parses");
         assert!(!candidates.is_empty());
-        let registry = crate::tool::ToolRegistry::with_defaults();
+        // W001: a registry built with `workspace_root: None` registers
+        // fail-closed stubs, so contract snapshots need a real root.
+        let registry = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+            workspace_root: Some(std::env::temp_dir()),
+            ..crate::tool::ToolRegistryOptions::default()
+        });
         let known: BTreeSet<String> = registry
             .list()
             .into_iter()

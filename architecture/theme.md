@@ -130,8 +130,8 @@ pub enum ThemeSource {
 
 - **BaseColors**: `background`, `foreground`
 - **UiColors**: `accent_primary`, `accent_secondary`, `border`,
-  `border_focused`, `selection`, `selection_dim`, `panel_background`,
-  `input_background`, `title_background`
+  `border_focused`, `selection`, `selection_dim`, `selection_text`,
+  `accent_text`, `panel_background`, `input_background`, `title_background`
 - **TextColors**: `muted`, `link`
 - **StatusColors**: `success`, `warning`, `error`, `info`, `debug`, `trace`
 - **ConversationColors**: `user`, `assistant`, `system`, `tool_call`,
@@ -139,6 +139,18 @@ pub enum ThemeSource {
 - **CodeColors**: `foreground`, `syntect_theme`
 - **DiffColors**: `added`, `removed`, `modified`
 - **AgentColors**: `planner`, `coder`, `reviewer`, `tester`, `security`
+
+#### The two derived selection foregrounds
+
+`selection_text` and `accent_text` are the foregrounds to draw **on** a filled
+surface — `selection_text` over `selection`, `accent_text` over
+`accent_primary`. They are **derived, never authored**; see "Derived tokens" in
+the Invariants section for why the Halloy format cannot supply them.
+
+`Theme::selection_style()` and `Theme::highlight_style()` return
+`fg(selection_text).bg(selection)`. Painting the *accent* as a foreground over a
+different fill was the previous behaviour and it made a selected row's text the
+same colour as the accents around it.
 
 ### ThemeRegistry (`src/theme/registry.rs`)
 
@@ -230,6 +242,33 @@ the last-resort placeholder.
   `builtins_load` asserts the exact count so a dropped or renamed asset
   fails loudly; `every_builtin_display_name_resolves` asserts all 50 are
   reachable by the name the picker renders.
+- **Derived tokens (`selection_text`, `accent_text`) must stay derived.**
+  A selected row is a filled surface and needs a foreground that reads on
+  *that fill*, which is a different question from "what is this theme's body
+  text". Halloy declares a slot for it — `buttons.primary.foreground_selected`
+  — and **0 of the 50 bundled themes set it**, while all 50 set
+  `background_selected` and `buffer.selection`. Sourcing from the declared slot
+  would return `None` for every real theme and every theme authored upstream:
+  code that looks correct in review and is empty in the product. Deriving from
+  `text.primary` / `general.background`, which the format does guarantee, asks
+  no theme author for anything — that is what keeps "any Halloy theme ingests
+  unchanged" true. `UiColors::derive_selection_texts` does it, both importers
+  call it *after* `base` and `ui` resolve (so a theme overriding `selection`
+  derives against its own value), and `tests/theme_selection_tokens.rs` asserts
+  the 0-of-50 measurement so the "simplification" back to a dead read fails.
+- **A render path reads the theme it is handed; it does not cache one.** A box
+  that stores an `Arc<Theme>` and refreshes it only when opened paints the old
+  palette after a theme change while the rest of the UI follows the new one.
+  `Component::render` / `render_in_panel` pass the live `&Arc<Theme>` every
+  frame; a body that keeps its own copy must at minimum refresh it inside the
+  render that reads it, and that is a bug waiting to happen. A `Widget` impl
+  cannot receive a theme at all — that is why `DiffViewer` and the legacy
+  `DiffDialog`/`PlanDialog` paths are inherent methods rather than trait impls.
+  Enforced behaviourally by `tests/tui_theme_source_of_truth.rs`.
+- **The theme picker's column is allowed to paint other themes' colours.**
+  `/theme` previews each candidate palette, so it deliberately shows colours
+  that are not the active theme's. "Everything follows the live theme" would
+  destroy the feature.
 - **Syntect theme luminance fallback**: Dark/light code theme is
   selected based on background luminance, not user preference.
 - **Persistence is downstream of a successful apply**:
@@ -268,7 +307,7 @@ Verified 2026-10-06 against `src/theme/` (10 source files, as stated) and
 (`registry.rs:36`); `DEFAULT_THEME_ID = "cyber-red"` (`registry.rs:652`);
 `SemanticTheme` (`schema.rs:17`) and all 11 of its fields; `ThemeSource`
 (`schema.rs:32`); every color group field list (`BaseColors` 2,
-`UiColors` 9, `TextColors` 2, `StatusColors` 6, `ConversationColors` 6,
+`UiColors` 11 (9 authored + `selection_text` and `accent_text`, both derived), `TextColors` 2, `StatusColors` 6, `ConversationColors` 6,
 `CodeColors` 2, `DiffColors` 3, `AgentColors` 5); `ThemeResolutionConfig`
 (`registry.rs:313`) with exactly the six documented fields; registry
 entry points `load_builtins` (`:363`), `load_with_config` (`:411`),
@@ -278,3 +317,35 @@ entry points `load_builtins` (`:363`), `load_with_config` (`:411`),
 (`target.rs:52`); and contrast checking (`validate.rs:148`). The only
 correction was `ThemeDiagnostic`'s optional field, which is a color-field
 name rather than a file path.
+
+### 2026-10-17 — selection foregrounds (M003)
+
+Verified against `src/theme/` and `assets/themes/halloy/`:
+
+- `UiColors` now carries 11 fields: `selection_text` and `accent_text` join the
+  nine authored ones. Both are **derived**, never read from the file.
+- `derive_text_on` / `UiColors::derive_selection_texts`
+  (`src/theme/schema.rs`) derive each from the theme's own `foreground` /
+  `background`, taking whichever reads better on the target fill. When neither
+  clears `MIN_DERIVED_TEXT_RATIO` (3.0), it falls back to whichever of black or
+  white contrasts more — a maximum, which guarantees ≥ 4.5:1. Picking by
+  luminance instead would leave a surface at relative luminance 0.3 with white
+  at 2.1:1.
+- Measured across all 50 bundled themes: worst `selection_text` 3.36:1
+  (`macaw-dark`), worst `accent_text` 3.07:1 (`broc`) — both above the bar, with
+  the margins that motivated choosing 3.0 rather than 4.5.
+- `foreground_selected` is set by **0 of 50** bundled themes; `background_selected`
+  by 50/50. This is the measurement behind deriving instead of reading.
+- Both importers derive after `base`/`ui` resolve: `parse_halloy_theme`
+  (`halloy.rs`), and `native::resolve` (`native.rs`). The native importer also
+  accepts optional `ui.selection_text` / `ui.accent_text` keys as author
+  overrides; a malformed value is dropped, not fatal, because the derivation is
+  already a usable answer.
+- `ThemeData::to_theme` derives both for all **31** static palettes in
+  `src/tui/theme.rs` (the M003 plan recorded 32; verified 31 `ThemeData {`
+  literals and 31 `THEMES[n]` accessors).
+
+Tests: `tests/theme_selection_tokens.rs` (9 tests, incl. the 50-theme sweep),
+`tests/tui_theme_source_of_truth.rs` (render-level staleness),
+`scripts/check_no_hardcoded_selection_colours.py` (source guard, wired into
+`verify.sh quick`).

@@ -881,6 +881,10 @@ impl ToolBroker {
                         ToolError::NotFound(_) => "not_found",
                         ToolError::Format(_) => "validation",
                         ToolError::Execution(_) => "execution",
+                        // A refused call, not a failed one: the tool had no
+                        // workspace root to act in. Retryable only by
+                        // resolving a root, never by re-running.
+                        ToolError::MissingWorkspaceRoot { .. } => "missing_workspace_root",
                     };
                     // Legacy single-attempt path: map directly, no chain
                     // accounting, identical to the pre-M002 behavior.

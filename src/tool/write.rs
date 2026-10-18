@@ -15,7 +15,7 @@ pub struct WriteTool {
 impl WriteTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: crate::tool::util::unresolved_workspace_root(),
             unrestricted: false,
         }
     }
@@ -212,7 +212,7 @@ fn temp_path_recovery_error(path: &Path, private_scratch: Option<&Path>) -> Opti
 impl Default for WriteTool {
     fn default() -> Self {
         Self {
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: crate::tool::util::unresolved_workspace_root(),
             unrestricted: false,
         }
     }

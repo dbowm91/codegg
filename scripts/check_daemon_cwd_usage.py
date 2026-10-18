@@ -1,181 +1,277 @@
 #!/usr/bin/env python3
-"""Static guard that rejects new uses of std::env::current_dir() in daemon execution modules.
+"""Guard: daemon-owned execution must not take its directory from the process.
 
-Phase 2 of the single-daemon plan requires that daemon-owned execution
-paths derive their working directory from a propagated
-`ExecutionContext::workspace_root` rather than from process-global cwd.
-This script scans protected source files and fails CI if new calls to
-`std::env::current_dir()` or `std::env::set_current_dir()` are added.
+The CodeGG daemon is a user-scoped singleton. It inherits whatever directory the
+user happened to launch it from and keeps that directory for its whole lifetime
+(ADR-0033). Any daemon-owned code path that resolves a working directory from
+`std::env::current_dir()` therefore resolves it against an unrelated tree, not
+against the session's workspace.
 
-Allowed exceptions (exempt patterns):
-  - CLI bootstrap code in `src/main.rs` and `src/exec.rs` is allowed to
-    read cwd once at startup to derive the project root for non-daemon
-    invocations (`--standalone`, `core-stdio`).
-  - `src/tool/factory.rs` lines containing the legacy fallback constructor
-    are exempt during the deprecation window.
-  - Test modules (`#[cfg(test)]`) and test files are exempt.
-  - `crates/codegg-config/src/paths.rs` config resolution is exempt.
+This script enforces the invariant statically: inside daemon-owned execution
+surfaces, a working directory must come from propagated workspace state.
 
-All exemptions are listed in the allowlist below; new exemptions must be
-justified in a PR comment and added to this file.
+Design note — why this script is shaped the way it is
+-----------------------------------------------------
+The predecessor of this script suppressed findings with a regex allowlist
+matched against each offending *line* (`allowed_root: std::env::current_dir`,
+`let cwd = std::env::current_dir`, ...). That pattern matched the production
+sites themselves, so the script exited 0 with every violation still present: it
+was reporting on its own allowlist rather than on the code. A guard that passes
+while the defect is live is worse than no guard, because it is cited as evidence.
 
-Exit code 1 if violations are found.
+Two rules follow:
+
+  1. Exemptions are *file-scoped* and each must carry a written justification.
+     There is no line-pattern allowlist, because a pattern that matches a real
+     violation is indistinguishable from one that does not.
+  2. The script self-tests. `--self-test` feeds synthetic sources through the
+     same detector used against the real tree and fails if a planted violation
+     is not reported. A guard that cannot be shown to fail on an injected
+     violation is not accepted as evidence.
+
+Usage:
+    python3 scripts/check_daemon_cwd_usage.py            # scan the tree
+    python3 scripts/check_daemon_cwd_usage.py --self-test
+Exit codes: 0 clean, 1 violations found, 2 self-test failure.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# ── Configuration ────────────────────────────────────────────────────
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC = REPO_ROOT / "src"
 
-# Glob patterns for files that are scanned for violations.
-PROTECTED_GLOBS: list[str] = [
-    "core/**/*.rs",
-    "agent/turn_runtime.rs",
-    "agent/worker.rs",
-    "tool/bash.rs",
-    "tool/bash/*.rs",
-    "tool/test.rs",
-    "tool/git.rs",
-    "tool/read.rs",
-    "tool/write.rs",
-    "tool/edit.rs",
-    "tool/glob.rs",
-    "tool/grep.rs",
-    "tool/list.rs",
-    "tool/apply_patch.rs",
-    "tool/diff.rs",
-    "tool/replace.rs",
-    "tool/multiedit.rs",
-    "tool/lsp.rs",
-    "tool/factory.rs",
-    "tool/commit.rs",
-    "tool/review.rs",
-    "tool/research.rs",
-    "tool/skill.rs",
-    "tool/backend.rs",
-    "test_runner/**/*.rs",
-    "python_script/**/*.rs",
-    "git_service.rs",
-    "git_mutations.rs",
-    "git_recovery.rs",
-]
-
-# Compiled regex: matches calls to std::env::current_dir() or
-# std::env::set_current_dir(...). The leading `std::env::` is optional
-# because `use std::env;` may be in scope.
-ENV_CWD_RE = re.compile(r"std::env::(current_dir|set_current_dir)\s*\(")
-
-# ── Allowlist ────────────────────────────────────────────────────────
-# Regex patterns matched against each *matched line*. If the line matches
-# any allowlist entry, the finding is suppressed.
+# ── Scanned surfaces ─────────────────────────────────────────────────
 #
-# Rationale for each entry is in the comment beside it.
+# Daemon-owned code that can resolve or hand out a working directory. This is
+# deliberately broader than the predecessor's list: that list omitted
+# `tool/terminal.rs`, `tool/formatter.rs`, `tool/tool_program.rs`,
+# `tool/lsp_read.rs`, `tool/git_read.rs` and `tool/mod.rs`, all of which carry
+# workspace-scoped defaults.
 
-ALLOWLIST: list[re.Pattern] = [
-    re.compile(r"#\[cfg\(test\)\]"),                  # test module guard
-    re.compile(r"#\[test\]"),                          # unit test function
-    re.compile(r"#\[tokio::test"),                     # async unit test
-    re.compile(r"mod tests\s*\{"),                     # test module open
-    # Legacy factory fallback — will be removed once all call sites
-    # propagate ExecutionContext.
-    re.compile(r"build_session_tool_registry_legacy"),
-    # Doc comments mentioning current_dir (e.g. on the new
-    # ExecutionContext field itself).
-    re.compile(r"///.*current_dir"),
-    # Tool default() constructors. These are used by subagents and
-    # standalone callers that don't have access to a registry. The
-    # canonical daemon path populates them via ToolRegistryOptions
-    # workspace_root.
-    re.compile(r"ToolRegistryOptions::default\(\)"),
-    re.compile(r"allowed_root:\s*std::env::current_dir"),
-    re.compile(r"workdir:\s*std::env::current_dir"),
-    re.compile(r"let project_root\s*=\s*std::env::current_dir"),
-    re.compile(r"let project_dir\s*=\s*std::env::current_dir"),
-    re.compile(r"let default_root\s*=\s*std::env::current_dir"),
-    re.compile(r"or_else\(\|\|\s*std::env::current_dir\(\)\.ok\(\)\)"),
-    re.compile(r"\.or_else\(\|\| std::env::current_dir"),
-    re.compile(r"let cwd = std::env::current_dir"),
-    re.compile(r"\.unwrap_or_else\(\|\| std::env::current_dir"),
-    re.compile(r"std::env::current_dir\(\)\.map_err"),
-    re.compile(r"std::env::current_dir\(\)\s*\."),
-    # Multiedit tool's relative path resolution — same pattern as
-    # other tools; will receive workspace_root from registry.
-    re.compile(r"std::env::current_dir\(\)\s*$"),
+SCANNED_TREES: list[str] = [
+    "src/tool",
+    "src/scheduler",
+    "src/core",
 ]
+SCANNED_FILES: list[str] = [
+    "src/agent/worker.rs",
+    "src/agent/turn_runtime.rs",
+    "src/git_service.rs",
+    "src/git_mutations.rs",
+    "src/git_recovery.rs",
+]
+
+# ── Exemptions ───────────────────────────────────────────────────────
+#
+# Whole files, each with the reason it is permitted. Reading the process
+# directory is legitimate exactly once per process — at bootstrap, before any
+# session exists — and never afterwards.
+
+EXEMPT_FILES: dict[str, str] = {
+    "src/main.rs": "CLI bootstrap: derives the project root before any daemon or session exists.",
+    "src/exec.rs": "CLI bootstrap: same pre-session entry point as src/main.rs.",
+}
+
+# ── Detection ────────────────────────────────────────────────────────
+
+# Matches std::env::current_dir()/set_current_dir(), and the bare forms used
+# where `use std::env;` is in scope.
+CWD_RE = re.compile(r"(?:std::)?env::(?:current_dir|set_current_dir)\s*\(")
+# A bare `current_dir(` with no `env::` qualifier, e.g. after
+# `use std::env::current_dir;`. The leading lookbehind rejects a preceding `.`
+# so `Command::current_dir(cwd)` — which *sets* a child's directory from an
+# explicit argument — is not mistaken for reading the process's own.
+BARE_CWD_RE = re.compile(r"(?<![:\w.])current_dir\s*\(")
+# `#[cfg(test)]`, `#[test]`, `#[tokio::test]`, or a `mod tests {` open.
+TEST_MARKER_RE = re.compile(r"#\[cfg\(test\)\]|#\[(?:tokio::)?test|mod\s+tests\s*\{")
 
 
 @dataclass(frozen=True)
 class Finding:
-    file: Path
+    file: str
     line_no: int
     line_text: str
 
 
-def collect_findings() -> list[Finding]:
-    """Scan protected files for env::current_dir usage."""
+def _strip_comment(line: str) -> str:
+    """Drop a trailing line comment so prose about cwd is not a violation."""
+    idx = line.find("//")
+    return line if idx < 0 else line[:idx]
+
+
+def scan_source(rel_path: str, source: str) -> list[Finding]:
+    """Return cwd violations in one source file.
+
+    `#[cfg(test)]` modules are skipped: they run in a test process whose cwd is
+    the harness's, and a test asserting on a relative path is not a daemon
+    execution path.
+    """
+    if rel_path in EXEMPT_FILES:
+        return []
+
     findings: list[Finding] = []
+    in_test_module = False
+    test_module_indent = 0
 
-    for pattern in PROTECTED_GLOBS:
-        for path in SRC.glob(pattern):
-            if not path.is_file():
-                continue
-            try:
-                lines = path.read_text().splitlines()
-            except UnicodeDecodeError:
-                continue
+    for line_no, raw in enumerate(source.splitlines(), 1):
+        indent = len(raw) - len(raw.lstrip())
+        code = _strip_comment(raw)
 
+        if in_test_module and raw.strip() and indent <= test_module_indent:
             in_test_module = False
-            for i, line in enumerate(lines, 1):
-                # Track test modules for whole-module exemption.
-                if re.search(r"mod tests\s*\{", line):
-                    in_test_module = True
 
-                # Exit test module on un-indent back to top level.
-                if in_test_module and line and not line[0].isspace() and "mod" not in line:
-                    in_test_module = False
+        if not in_test_module and TEST_MARKER_RE.search(code):
+            in_test_module = True
+            test_module_indent = indent
+            continue
 
-                if in_test_module:
-                    continue
+        if in_test_module:
+            continue
 
-                if not ENV_CWD_RE.search(line):
-                    continue
-
-                # Check explicit allowlist patterns.
-                if any(pat.search(line) for pat in ALLOWLIST):
-                    continue
-
-                findings.append(Finding(path, i, line.strip()))
+        if CWD_RE.search(code) or BARE_CWD_RE.search(code):
+            findings.append(Finding(rel_path, line_no, code.strip()))
 
     return findings
 
 
-def main() -> int:
+def _iter_sources() -> list[tuple[str, str]]:
+    sources: list[tuple[str, str]] = []
+
+    for tree in SCANNED_TREES:
+        root = REPO_ROOT / tree
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            sources.append((str(path.relative_to(REPO_ROOT)), path.read_text()))
+
+    for rel in SCANNED_FILES:
+        path = REPO_ROOT / rel
+        if path.is_file():
+            sources.append((rel, path.read_text()))
+
+    return sources
+
+
+def collect_findings() -> list[Finding]:
+    findings: list[Finding] = []
+    for rel_path, source in _iter_sources():
+        findings.extend(scan_source(rel_path, source))
+    return findings
+
+
+# ── Self-test ────────────────────────────────────────────────────────
+#
+# Exercises the exact detector used above. Each case states what it proves.
+
+SELF_TEST_CASES: list[tuple[str, str, str, int]] = [
+    (
+        "a production line that defaults a tool root to the process cwd is caught",
+        "src/tool/hypothetical.rs",
+        "pub fn new() -> Self {\n"
+        "    Self { allowed_root: std::env::current_dir().unwrap_or_default() }\n"
+        "}\n",
+        1,
+    ),
+    (
+        "a bare current_dir() call is caught too",
+        "src/tool/hypothetical.rs",
+        "pub fn root() -> PathBuf {\n"
+        "    current_dir().unwrap_or_default()\n"
+        "}\n",
+        1,
+    ),
+    (
+        "set_current_dir (a daemon-wide chdir) is caught",
+        "src/scheduler/hypothetical.rs",
+        "pub fn go(p: &Path) { std::env::set_current_dir(p).ok(); }\n",
+        1,
+    ),
+    (
+        "the same call inside a #[cfg(test)] module is not a violation",
+        "src/tool/hypothetical.rs",
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    fn t() { std::env::current_dir().unwrap(); }\n"
+        "}\n",
+        0,
+    ),
+    (
+        "a comment describing the old behaviour is not a violation",
+        "src/tool/hypothetical.rs",
+        "/// Used to call std::env::current_dir() here.\n"
+        "pub fn new() -> Self { Self {} }\n",
+        0,
+    ),
+    (
+        "the declared bootstrap file is exempt",
+        "src/main.rs",
+        "fn root() -> PathBuf { std::env::current_dir().unwrap_or_default() }\n",
+        0,
+    ),
+    (
+        "a file not on the exemption list is still checked even next to one",
+        "src/tool/hypothetical.rs",
+        "fn root() -> PathBuf { std::env::current_dir().unwrap_or_default() }\n",
+        1,
+    ),
+    (
+        "a normal rooted call is not a violation",
+        "src/tool/hypothetical.rs",
+        "pub fn new(root: PathBuf) -> Self { Self { allowed_root: root } }\n",
+        0,
+    ),
+]
+
+
+def run_self_test() -> int:
+    failures = 0
+    for description, rel_path, source, expected in SELF_TEST_CASES:
+        found = scan_source(rel_path, source)
+        actual = len(found)
+        if actual == expected:
+            print(f"  ok   {description}")
+        else:
+            failures += 1
+            print(f"  FAIL {description}: expected {expected}, found {actual}")
+            for f in found:
+                print(f"         {f.file}:{f.line_no}: {f.line_text}")
+
+    if failures:
+        print(f"\nself-test FAILED: {failures} case(s) — the detector does not discriminate.")
+        return 2
+
+    print(f"\nself-test passed: {len(SELF_TEST_CASES)} case(s).")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if "--self-test" in argv:
+        return run_self_test()
+
     findings = collect_findings()
 
     if findings:
         print(
-            "std::env::current_dir() found in daemon execution modules.\n"
-            "Phase 2 requires that working directories come from ExecutionContext.\n"
-            "Use ExecutionContext.workspace_root or pass cwd explicitly.\n"
-            "Add an allowlist exemption if this is CLI/bootstrap/standalone code.\n"
+            "std::env::current_dir()/set_current_dir() in daemon-owned execution.\n"
+            "A working directory must come from propagated workspace state\n"
+            "(ExecutionContext.workspace_root or JobExecutionContext.workspace_root).\n"
+            "The daemon's process directory is where the user launched it and is\n"
+            "unrelated to the session being run; it is never an acceptable root.\n"
+            "\nIf this really is pre-session bootstrap, exempt the whole file in\n"
+            "EXEMPT_FILES above with a written justification.\n"
         )
         for f in findings:
-            rel = f.file.relative_to(REPO_ROOT)
-            print(f"  {rel}:{f.line_no}: {f.line_text}")
+            print(f"  {f.file}:{f.line_no}: {f.line_text}")
         print(f"\n{len(findings)} violation(s) found.")
         return 1
 
-    print("cwd usage check passed — no std::env::current_dir() in protected modules")
+    print("cwd usage check passed — no process-cwd reads in daemon-owned execution")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
