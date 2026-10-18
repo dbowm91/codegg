@@ -1681,7 +1681,7 @@ mod timeout_execution_tests {
         let mut ctx =
             ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
         ctx.session_id = Some(session_id);
-        let tool = BashTool::new();
+        let tool = rooted_bash();
         tool.execute_inner(
             serde_json::json!({
                 "command": "printf session-scratch-ok > \"$CODEGG_SCRATCH_DIR/trajectory.txt\""
