@@ -5830,9 +5830,10 @@ mod tests {
         let registry = effect_binding_registry();
         let mut historical_schemas = BTreeMap::new();
 
-        // Workstream peer observation and claims extended TaskTool after the
-        // M003 receipt was frozen. Reconstruct the original action set and
-        // remove only those added input fields; the receipt remains immutable.
+        // Workstream coordination and managed scratch extended TaskTool
+        // after the M003 receipt was frozen. Reconstruct the original action
+        // set and remove only those added input fields; the receipt remains
+        // immutable.
         let mut historical_task_schema = registry
             .get("task")
             .expect("task tool remains registered")
@@ -5840,12 +5841,17 @@ mod tests {
         let task_properties = historical_task_schema["properties"]
             .as_object_mut()
             .expect("task input schema properties");
+        task_properties.remove("scratch_alias");
+        task_properties.remove("scratch_id");
+        task_properties.remove("shared_scratch");
         let task_action = task_properties
             .get_mut("action")
             .expect("task action schema");
         assert_eq!(
             task_action["enum"],
             serde_json::json!([
+                "scratch_create",
+                "scratch_revoke",
                 "spawn",
                 "converge",
                 "convergence_status",
@@ -5868,6 +5874,11 @@ mod tests {
                 "request_handoff"
             ]),
             "unexpected post-M003 task action schema"
+        );
+        assert_eq!(
+            task_action["description"],
+            serde_json::json!("Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims"),
+            "unexpected post-M003 task action description"
         );
         task_action["description"] = serde_json::json!("Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group");
         task_action["enum"] = serde_json::json!([
@@ -5901,6 +5912,29 @@ mod tests {
                 "expected post-M003 task input field {field}"
             );
         }
+        // Shared-scratch grants were added to spawn_many after M003. Restore
+        // the frozen request description and opaque item schema while
+        // asserting the live extension, so the receipt remains immutable.
+        let live_spawn_many_description = task_properties["requests"]["description"]
+            .as_str()
+            .expect("spawn_many requests description");
+        assert_eq!(
+            live_spawn_many_description,
+            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, allowed_paths, and explicitly granted shared_scratch.",
+            "unexpected post-M003 spawn_many request description"
+        );
+        task_properties["requests"]["description"] = serde_json::json!(
+            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, and optional allowed_paths."
+        );
+        let request_items = task_properties["requests"]["items"]
+            .as_object()
+            .expect("spawn_many request item schema");
+        assert_eq!(
+            request_items.get("type"),
+            Some(&serde_json::json!("object")),
+            "unexpected post-M003 spawn_many request item type"
+        );
+        task_properties["requests"]["items"] = serde_json::json!({"type": "object"});
         historical_schemas.insert("task".to_string(), historical_task_schema);
 
         // Reconstruct the frozen test-tool schema. These two fields were
