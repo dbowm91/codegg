@@ -179,6 +179,7 @@ async fn bash_shell_success_emits_one_structural_event() {
             scratch_scope: None,
         });
     let tool = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf())
         .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, &ctx.cwd);
     let out = tool
         .execute_structured(serde_json::json!({"command": "echo m002-ok"}), Some(ctx))
