@@ -46,6 +46,12 @@ skill covers the ordering and isolation invariants that are easy to break.
   process runs under. Never derive one from the other.
 - **Ceilings still apply in `Yolo`.** `yolo` auto-allows escalations *within
   the authority ceiling*; an explicit deterministic `Deny` still denies.
+- **Native file mutations use authenticated roots.** `write`, `edit`,
+  `apply_patch`, and `replace` may write inside the resolved workspace or the
+  session's private/shared scratch grants without the general permission
+  default, including `permission.default = "ask"`. Explicit tool/path `Ask`
+  and `Deny` rules still win. Keep scratch authority session scoped and host
+  validated; shell and Git do not inherit it.
 - **Carry the accepted decision through execution.** Agent tool calls pass an
   immutable `ExecutionAuthorizationContext` (snapshot, receipt, bounded
   command-preflight result) through the broker and retries. Bash must consume

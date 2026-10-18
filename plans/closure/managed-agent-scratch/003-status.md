@@ -30,7 +30,7 @@ Session and run-private roots remain disposable per-user cache data. CodeGG does
 |---|---|---|---|
 | Known temp write offers private scratch without rewriting | `tool::write::delegated_scratch_tests::unauthorized_temp_write_suggests_private_scratch_without_rewriting`; `tool::util::tests::temp_guidance_uses_path_components_and_rejects_traversal` | pass | Original file and scratch remain unchanged; traversal, root-only and prefix lookalikes are rejected. |
 | Actual temp reads and workspace writes retain their semantics | Same write test; `workspace_write_under_host_temp_is_not_misclassified_as_unauthorized` | pass | Read targets the real temp file; a workspace nested under the host temp root remains writable. |
-| Explicit Ask/Deny and permission precedence remain authoritative | `permission::tests::trusted_root_write_relaxes_only_the_default_ask`; `tests/tool_execution.rs::test_bash_explicit_deny_wins_and_allow_excuses_heuristic` | pass | Configured Ask and Deny remain in force; only default Ask is relaxed for trusted workspace/scratch roots. |
+| Explicit tool/path Ask and Deny precedence remain authoritative | `permission::tests::trusted_root_write_relaxes_only_the_default_ask`; `tests/tool_execution.rs::test_bash_explicit_deny_wins_and_allow_excuses_heuristic` | pass | Explicit tool/path Ask and Deny remain in force; only the general default Ask is relaxed for trusted workspace/scratch roots. |
 | FullHost shell temp access is not represented as intercepted | `src/tool/mod.rs` FullHost wiring; `architecture/permission.md`; `docs/tools.md` | pass | M003 adds no shell path scanning or rewriting. FullHost has no CodeGG filesystem containment; syntax inspection is advisory. |
 | Revoked cleanup refuses links and ambiguous trees | `scratch::tests::revoked_shared_cleanup_quarantines_symlinks_and_hardlinks` | pass on Unix | External symlink target and hardlink content remain intact; the unsafe tree remains under a tombstone. |
 | Daemon interruption and concurrent cleanup | `scratch::tests::revoked_cleanup_recovers_an_orphaned_tombstone_after_restart`; `scratch::tests::concurrent_revocation_cleanup_reclaims_one_resource_once` | pass on Unix | Restart is simulated by leaving an orphan tombstone; two concurrent callers reclaim one resource once. Scheduler startup recovery revisits revoked shared resources for recovered runs. |
@@ -85,7 +85,7 @@ rtk git diff --check
 ## 5. Invariant review
 
 - No absolute temp path is silently rewritten and no hint creates a grant.
-- Explicit Deny remains final; configured Ask remains Ask. Workspace and private/explicit shared scratch writes do not inherit default Ask.
+- Explicit tool/path Ask and Deny remain final. Workspace and private/explicit shared scratch mutations do not inherit the general default Ask.
 - The original host temp path remains the read target. Shell commands retain selected sandbox behavior; FullHost is not claimed to intercept filesystem writes.
 - Cleanup reconstructs the leaf from typed `ScratchId`; model-provided paths are not cleanup inputs.
 - Unix cleanup claims a tombstone before validation, does not follow symlinks, rejects hardlinks, and leaves malformed or unsafe content quarantined.
@@ -128,3 +128,24 @@ M003 is conditionally closed. Its structured-write guidance and Unix revoked-sha
 - Mark M003 conditionally closed in its implementation plan, subsystem roadmap and `plans/registry.md`.
 - Record this exact-head closure and the conditional platform/retention evidence above.
 - Re-audit found no successor milestone or other registered plan in this line to unblock.
+
+## 13. Factual correction — authenticated native mutation defaults (2026-10-18)
+
+The original closure described the no-prompt behavior primarily for structured
+`write`. The accepted product correction is that writes inside the authenticated
+workspace or authorized private/shared scratch roots must not trigger the
+general permission default, including `permission.default = "ask"`. The
+permission boundary now applies this behavior consistently to `write`, `edit`,
+`apply_patch`, and `replace`, while retaining stored decisions, explicit
+tool/path Ask and Deny rules, hard policy denials, and host path validation.
+Shared scratch remains limited to explicit grants. This does not grant
+scratch authority to shell, Git, another session, or unlisted paths.
+
+Added verification:
+
+- `permission::tests::global_ask_default_does_not_prompt_for_authenticated_file_mutations`
+- `permission::tests::trusted_root_path_ask_keeps_the_mutation_tool_identity`
+- Final-head `permission::tests::` suite: 62 passed on ARM64 macOS.
+- `cargo fmt --all -- --check` and `git diff --check`: passed after the correction.
+- `scripts/verify.sh quick`: passed on ARM64 macOS after the correction.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed on ARM64 macOS.
