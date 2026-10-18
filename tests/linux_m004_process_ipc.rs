@@ -851,6 +851,28 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir() {
+    // A second invocation of this test binary models the daemon process that
+    // crashes after making an index lock durable. The parent test starts that
+    // process below, waits for it to exit, and then exercises recovery from
+    // only the persisted intent and files.
+    if let (Ok(source_gitdir), Ok(publish_index)) = (
+        std::env::var("CODEGG_C004_RECOVERY_WORKER_GITDIR"),
+        std::env::var("CODEGG_C004_RECOVERY_WORKER_INDEX"),
+    ) {
+        let lock_path = PathBuf::from(source_gitdir).join("index.lock");
+        let bytes = std::fs::read(publish_index).expect("worker reads broker-authored index");
+        let mut lock = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock_path)
+            .expect("worker creates Git-compatible index lock");
+        lock.write_all(&bytes)
+            .expect("worker writes broker-authored index");
+        lock.sync_all()
+            .expect("worker syncs interrupted index lock");
+        return;
+    }
+
     if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
         eprintln!("skipped: set {M005_OPT_IN}=1 to run the contained Git staging pilot");
         return;
@@ -1300,27 +1322,34 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         .and_then(|directory| directory.sync_all())
         .expect("sync operation recovery directory");
 
-    let mut publish_lock = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&source_index_lock)
-        .expect("acquire Git-compatible index publication lock");
     assert_eq!(
         std::fs::read(source_gitdir.join("index")).expect("revalidate source index"),
         original_index,
         "source index changed between broker validation and lock acquisition"
     );
-    publish_lock
-        .write_all(&private_index)
-        .expect("write verified staged index to lock file");
-    publish_lock.sync_all().expect("sync verified staged index");
-    drop(publish_lock);
 
-    // Model daemon termination after the lock file is durable but before its
-    // atomic rename. Recovery must reacquire all authority from the durable
-    // intent, validate the selected gitdir identity and expected index, then
-    // finish only the exact broker-authored replacement.
+    // Terminate a separate process after the lock file is durable but before
+    // its atomic rename. Recovery must reacquire all authority from the
+    // durable intent, validate the selected gitdir identity and expected
+    // index, then finish only the exact broker-authored replacement.
     drop(private_index);
+    let worker = std::env::current_exe().expect("resolve test binary for recovery worker");
+    let interrupted = Command::new(worker)
+        .args([
+            "--exact",
+            "test_only_contained_git_add_stages_index_and_objects_in_private_gitdir",
+            "--nocapture",
+        ])
+        .env("CODEGG_C004_RECOVERY_WORKER_GITDIR", &source_gitdir)
+        .env("CODEGG_C004_RECOVERY_WORKER_INDEX", &recovery_publish_index)
+        .output()
+        .expect("start isolated interrupted-publisher process");
+    assert!(
+        interrupted.status.success(),
+        "interrupted-publisher process failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&interrupted.stdout),
+        String::from_utf8_lossy(&interrupted.stderr)
+    );
     let intent = std::fs::read_to_string(&recovery_intent).expect("read recovery intent");
     let mut intent_lines = intent.lines();
     assert_eq!(intent_lines.next(), Some("index-v1"));
