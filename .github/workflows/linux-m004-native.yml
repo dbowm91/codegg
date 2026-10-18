@@ -2,6 +2,12 @@ name: Linux M004 process and IPC qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      run_git_cost_pilot:
+        description: Run the C002 packed/fragmented cold-warm Git cost pilot only
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - '.github/workflows/linux-m004-native.yml'
@@ -46,6 +52,7 @@ concurrency:
 
 jobs:
   process-ipc:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_git_cost_pilot != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -113,6 +120,7 @@ jobs:
           cargo test -p egggit --locked trusted_git -- --test-threads=1
 
   restricted-userns-fails-closed:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_git_cost_pilot != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -149,3 +157,51 @@ jobs:
 
       - name: Constrained LSP launch refuses before target under host userns policy
         run: cargo test --locked -p codegg --lib lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted --features lsp-test-support -- --test-threads=1 --nocapture
+
+  git-cost-pilot:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_git_cost_pilot == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: 4
+      CODEGG_RUN_LINUX_GIT_COST_PERF: '1'
+      CODEGG_RUN_M005_OFFLINE_NATIVE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Bubblewrap
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+
+      - name: Qualify Bubblewrap host policy
+        run: |
+          uname -a
+          bwrap --version
+          id
+          stat -f -c 'filesystem=%T' "$GITHUB_WORKSPACE"
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Build trusted sandbox helper
+        run: cargo build --locked --bin codegg-sandbox-helper
+
+      - name: Measure packed and fragmented cold/warm Git reads
+        run: |
+          CODEGG_GIT_COST_FILESYSTEM="$(stat -f -c %T "$GITHUB_WORKSPACE")" \
+            cargo test --locked --test linux_git_c002_performance -- --nocapture
+
+      - name: Upload C002 performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-git-c002-performance-${{ github.sha }}
+          path: linux-git-c002-performance.json
+          if-no-files-found: warn
+          retention-days: 7
