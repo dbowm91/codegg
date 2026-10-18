@@ -1500,7 +1500,12 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
     // Recovery must bind to the original gitdir inode, not merely trust the
     // configured path. Replace that path after the publisher exits and prove
     // the identity check rejects the replacement before it can touch it.
-    let displaced_gitdir = recovery_dir.join("displaced-source-gitdir");
+    let displaced_gitdir =
+        source_gitdir.with_file_name(format!(".git-c004-displaced-{}", std::process::id()));
+    assert!(
+        !displaced_gitdir.exists(),
+        "gitdir identity probe path already exists"
+    );
     std::fs::rename(&source_gitdir, &displaced_gitdir)
         .expect("displace source gitdir for identity substitution probe");
     std::fs::create_dir(&source_gitdir).expect("install replacement source gitdir path");
