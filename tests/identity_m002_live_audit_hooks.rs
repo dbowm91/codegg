@@ -377,7 +377,9 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
 #[tokio::test(flavor = "current_thread")]
 async fn bash_failure_timeout_and_denial_matrix() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
+    let tool = codegg::tool::bash::BashTool::new().with_workspace_root(
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+    );
 
     // Failure: real dispatch, nonzero exit, distinguishable outcome.
     let ctx = tool_ctx(&pool, "corr-bash-fail", "inv-bash-fail");
@@ -449,7 +451,9 @@ async fn bash_failure_timeout_and_denial_matrix() {
 #[tokio::test(flavor = "current_thread")]
 async fn bash_retry_with_same_invocation_key_does_not_duplicate() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
+    let tool = codegg::tool::bash::BashTool::new().with_workspace_root(
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+    );
     for _ in 0..2 {
         // One logical idempotent invocation, replayed: same key,
         // same command, same terminal outcome.
