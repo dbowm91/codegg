@@ -34,6 +34,28 @@ struct RouteReport {
     warm_p95_us: u128,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+struct ChildResourceSample {
+    user_cpu_us: u64,
+    system_cpu_us: u64,
+    max_rss_kib: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceMetricSummary {
+    p50: u64,
+    p95: u64,
+    max: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ChildResourceSummary {
+    samples: usize,
+    user_cpu_us: ResourceMetricSummary,
+    system_cpu_us: ResourceMetricSummary,
+    max_rss_kib: ResourceMetricSummary,
+}
+
 #[derive(Debug, Serialize)]
 struct ContentionRouteReport {
     p50_us: u128,
@@ -62,6 +84,8 @@ struct FixtureReport {
     native_git: RouteReport,
     immutable_snapshot: RouteReport,
     contained_live_odb: RouteReport,
+    contained_live_child_resources_cold: ChildResourceSummary,
+    contained_live_child_resources_warm: ChildResourceSummary,
     warm_contention: Vec<ContentionReport>,
 }
 
@@ -388,12 +412,23 @@ async fn contained_live_git(
     argv: &[String],
     label: &str,
 ) -> ManagedProcessResult {
-    let args = argv.iter().skip(1).cloned().collect::<Vec<_>>();
+    let (target, args) = if std::env::var(BENCH_OPT_IN).as_deref() == Ok("1") {
+        let mut args = vec![
+            "-f".to_owned(),
+            "CODEGG_TIME\\t%U\\t%S\\t%M".to_owned(),
+            "--".to_owned(),
+            git.display().to_string(),
+        ];
+        args.extend(argv.iter().skip(1).cloned());
+        (PathBuf::from("/usr/bin/time"), args)
+    } else {
+        (git.to_path_buf(), argv.iter().skip(1).cloned().collect())
+    };
     let spec = SandboxConfig::new()
         .with_enabled(true)
         .with_mode(SandboxMode::WorkspaceWrite)
         .with_linux_offline_network(true)
-        .launch_spec(git, &args, Some(repository))
+        .launch_spec(target, &args, Some(repository))
         .expect("construct required contained-Git launch spec");
     let command = std::iter::once(spec.target.as_os_str().to_owned())
         .chain(spec.args.iter().map(OsString::from))
@@ -408,7 +443,8 @@ async fn contained_live_git(
         .with_var("GIT_CONFIG_NOSYSTEM", "1")
         .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
         .with_var("GIT_TERMINAL_PROMPT", "0")
-        .with_var("HOME", "/tmp/codegg-empty-home");
+        .with_var("HOME", "/tmp/codegg-empty-home")
+        .with_var("LC_ALL", "C");
     request.sandbox = SandboxRequest::Required(spec);
     let result = ManagedProcessService::run(request)
         .await
@@ -423,6 +459,28 @@ async fn contained_live_git(
         "contained Git read lacks obtained sandbox enforcement"
     );
     result
+}
+
+fn child_resource_sample(output: &BoundedOutput) -> ChildResourceSample {
+    let stderr = output.to_string_lossy();
+    let fields = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("CODEGG_TIME\t"))
+        .expect("GNU time resource marker is present")
+        .split('\t')
+        .collect::<Vec<_>>();
+    assert_eq!(fields.len(), 3, "GNU time resource marker has three fields");
+    let cpu_us = |value: &str| {
+        (value
+            .parse::<f64>()
+            .expect("GNU time CPU seconds are numeric")
+            * 1_000_000.0) as u64
+    };
+    ChildResourceSample {
+        user_cpu_us: cpu_us(fields[0]),
+        system_cpu_us: cpu_us(fields[1]),
+        max_rss_kib: fields[2].parse().expect("GNU time peak RSS is numeric"),
+    }
 }
 
 fn percentile(samples: &[u128], percent: usize) -> u128 {
@@ -449,6 +507,45 @@ fn contention_route_report(samples: Vec<u128>) -> ContentionRouteReport {
         p95_us: percentile(&samples, 95),
         max_us: samples.iter().copied().max().unwrap_or_default(),
         samples: samples.len(),
+    }
+}
+
+fn resource_metric_summary(samples: &[u64]) -> ResourceMetricSummary {
+    ResourceMetricSummary {
+        p50: percentile_u64(samples, 50),
+        p95: percentile_u64(samples, 95),
+        max: samples.iter().copied().max().unwrap_or_default(),
+    }
+}
+
+fn percentile_u64(samples: &[u64], percent: usize) -> u64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let rank = (sorted.len() * percent).div_ceil(100).saturating_sub(1);
+    sorted[rank]
+}
+
+fn child_resource_summary(samples: &[ChildResourceSample]) -> ChildResourceSummary {
+    ChildResourceSummary {
+        samples: samples.len(),
+        user_cpu_us: resource_metric_summary(
+            &samples
+                .iter()
+                .map(|sample| sample.user_cpu_us)
+                .collect::<Vec<_>>(),
+        ),
+        system_cpu_us: resource_metric_summary(
+            &samples
+                .iter()
+                .map(|sample| sample.system_cpu_us)
+                .collect::<Vec<_>>(),
+        ),
+        max_rss_kib: resource_metric_summary(
+            &samples
+                .iter()
+                .map(|sample| sample.max_rss_kib)
+                .collect::<Vec<_>>(),
+        ),
     }
 }
 
@@ -480,6 +577,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
     let mut native_cold = Vec::with_capacity(COLD_SAMPLES);
     let mut snapshot_cold = Vec::with_capacity(COLD_SAMPLES);
     let mut live_cold = Vec::with_capacity(COLD_SAMPLES);
+    let mut live_cold_resources = Vec::with_capacity(COLD_SAMPLES);
     for index in 0..COLD_SAMPLES {
         let sample = tempfile::tempdir().expect("cold sample directory");
         let cold_repository = sample.path().join("repository");
@@ -502,6 +600,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         let started = Instant::now();
         let live = contained_live_git(git, &cold_repository, &argv, &format!("cold-{index}")).await;
         live_cold.push(elapsed_us(started));
+        live_cold_resources.push(child_resource_sample(&live.stderr));
         assert_eq!(output_bytes(&live.stdout), native.stdout);
     }
 
@@ -525,6 +624,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
     let mut native_warm = Vec::with_capacity(WARM_SAMPLES);
     let mut snapshot_warm = Vec::with_capacity(WARM_SAMPLES);
     let mut live_warm = Vec::with_capacity(WARM_SAMPLES);
+    let mut live_warm_resources = Vec::with_capacity(WARM_SAMPLES);
     for index in 0..WARM_SAMPLES {
         let started = Instant::now();
         let native = native_git(git, &repository, &argv);
@@ -539,6 +639,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         let started = Instant::now();
         let live = contained_live_git(git, &repository, &argv, &format!("warm-{index}")).await;
         live_warm.push(elapsed_us(started));
+        live_warm_resources.push(child_resource_sample(&live.stderr));
         assert_eq!(output_bytes(&live.stdout), expected);
     }
 
@@ -590,6 +691,8 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         native_git: route_report(native_cold, native_warm),
         immutable_snapshot: route_report(snapshot_cold, snapshot_warm),
         contained_live_odb: route_report(live_cold, live_warm),
+        contained_live_child_resources_cold: child_resource_summary(&live_cold_resources),
+        contained_live_child_resources_warm: child_resource_summary(&live_warm_resources),
         warm_contention,
     }
 }
@@ -607,6 +710,10 @@ async fn c002_packed_and_fragmented_cold_warm_git_cost_qualification() {
     );
 
     let git = git_binary();
+    assert!(
+        Path::new("/usr/bin/time").is_file(),
+        "qualified runner must provide GNU time at /usr/bin/time"
+    );
     let reports = vec![
         benchmark_fixture(&git, true).await,
         benchmark_fixture(&git, false).await,
@@ -622,7 +729,8 @@ async fn c002_packed_and_fragmented_cold_warm_git_cost_qualification() {
         "results": reports,
         "limits": [
             "wall time includes canonical service/launcher overhead",
-            "CPU time and peak RSS are not measured by this pilot",
+            "CPU time and peak RSS are not measured comparatively for native Git or the typed-snapshot route",
+            "GNU time reports child CPU and max RSS only for the contained-live route; native and typed-snapshot child resources are not instrumented",
             "POSIX_FADV_DONTNEED is advisory and does not prove true cold cache",
             "warm contention measures 1, 4, and 8 simultaneous calls using 30 batches per level; it does not model separate agent identities",
             "setup-only and child-only time are not separated",
