@@ -341,6 +341,11 @@ owner = "test_only"
 reason = "Windows junction policy fixture invokes cmd.exe only inside a Windows-only unit test"
 
 [[site]]
+path = "src/scratch.rs"
+owner = "test_only"
+reason = "Windows junction cleanup fixture invokes cmd.exe only inside a Windows-only unit test; production scratch cleanup does not spawn processes"
+
+[[site]]
 path = "src/git_service.rs"
 owner = "definition_or_adapter"
 reason = "GitExecutionService is the canonical read executor; test fixtures in this file are gated by #[cfg(test)]"
