@@ -847,6 +847,77 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             (label, payload) => panic!("unexpected typed {label} payload: {payload:?}"),
         }
     }
+
+    // Git's own repack is a supported external writer to the live ODB. Race
+    // repeated contained reads against pack replacement and require either
+    // successful exact output or an assertion failure; this pilot does not
+    // claim immutable-generation semantics for arbitrary writers.
+    let expected_log = String::from_utf8(setup(&["log", "-1", "--oneline"]).stdout)
+        .expect("fixture log output is UTF-8");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let repack_barrier = std::sync::Arc::clone(&barrier);
+    let repack_git = git.clone();
+    let repack_repository = repository.to_path_buf();
+    let repacker = tokio::task::spawn_blocking(move || {
+        repack_barrier.wait();
+        for iteration in 0..32 {
+            let output = Command::new(&repack_git)
+                .args(["repack", "-adf"])
+                .current_dir(&repack_repository)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("run concurrent external Git repack");
+            assert!(
+                output.status.success(),
+                "external repack {iteration} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    });
+    barrier.wait();
+    let log_operation = codegg_git::GitOperation::Log {
+        oneline: true,
+        max_count: Some(1),
+        paths: vec![],
+    };
+    for iteration in 0..16 {
+        let live = contained_read(
+            &git,
+            repository,
+            &selected_gitdir,
+            &log_operation,
+            &format!("concurrent-repack-{iteration}"),
+        )
+        .await;
+        assert!(
+            live.exit_status.success(),
+            "contained live log failed during external repack {iteration}: {}",
+            live.stderr.to_string_lossy()
+        );
+        assert!(
+            matches!(live.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+            "concurrent repack read lacked obtained sandbox enforcement"
+        );
+        assert_eq!(
+            live.stdout.to_string_lossy(),
+            expected_log,
+            "live ODB read observed a partial or inconsistent pack generation"
+        );
+    }
+    repacker.await.expect("join external repack worker");
+    let gitdir_after_race = std::fs::metadata(&selected_gitdir).expect("stat Git directory");
+    let odb_after_race = std::fs::metadata(&selected_odb).expect("stat ODB after repack race");
+    assert_eq!(
+        (gitdir_after_race.dev(), gitdir_after_race.ino()),
+        gitdir_identity,
+        "external repack replaced the selected gitdir"
+    );
+    assert_eq!(
+        (odb_after_race.dev(), odb_after_race.ino()),
+        odb_identity,
+        "external repack replaced the selected ODB directory"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
