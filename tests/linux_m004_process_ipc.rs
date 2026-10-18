@@ -694,7 +694,7 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         (
             "log",
             codegg_git::GitOperation::Log {
-                oneline: false,
+                oneline: true,
                 max_count: Some(1),
                 paths: vec![],
             },
