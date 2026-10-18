@@ -76,41 +76,70 @@ fn todo_strip_reserves_no_rows_without_a_todo_list() {
 }
 
 #[test]
-fn todo_strip_is_one_row_compact_and_expands_on_toggle() {
+fn todo_strip_is_one_row_whatever_the_list_length() {
+    // D-C7 retired the strip's in-place expanded form. The full list is a
+    // group inside the tasks overlay now, so the strip's height depends only
+    // on *whether* a list exists — which is what keeps row 0 reserved and the
+    // transcript above it from jumping when a turn publishes its first todo.
     let mut app = App::new_for_testing("/tmp/codegg-regression-todo-expand".to_string());
     app.set_todos(entries(&[
         ("one", "pending"),
         ("two", "in_progress"),
         ("three", "completed"),
     ]));
+    assert_eq!(app.todo_strip_height(), 1, "strip is a single summary line");
 
-    assert_eq!(app.todo_strip_height(), 1, "compact form is a single line");
-
-    app.process_msg(TuiMsg::ToggleTodoList);
-    assert!(app.todo_expanded);
+    let many: Vec<(&str, &str)> = (0..40).map(|_| ("task", "pending")).collect();
+    app.set_todos(entries(&many));
     assert_eq!(
         app.todo_strip_height(),
-        4,
-        "expanded form is a header plus one row per task"
+        1,
+        "a long list must not grow the strip: the overlay is the full view"
     );
-
-    app.process_msg(TuiMsg::ToggleTodoList);
-    assert!(!app.todo_expanded);
-    assert_eq!(app.todo_strip_height(), 1);
 }
 
 #[test]
-fn expanded_todo_strip_is_bounded_for_long_lists() {
-    let mut app = App::new_for_testing("/tmp/codegg-regression-todo-bounded".to_string());
-    let many: Vec<(&str, &str)> = (0..40).map(|_| ("task", "pending")).collect();
-    app.set_todos(entries(&many));
-    app.process_msg(TuiMsg::ToggleTodoList);
+fn opening_the_tasks_overlay_from_insert_hands_composition_mode_back() {
+    use codegg::tui::input::InputMode;
+    let mut app = App::new_for_testing("/tmp/codegg-regression-overlay-mode".to_string());
 
-    let cap = codegg::tui::app::MAX_TODO_STRIP_TASKS as u16;
+    // The app boots in Insert, which is exactly why the overlay has to work
+    // from there. Its own keys are Normal-mode gestures, so opening takes
+    // Normal mode with it...
+    assert_eq!(app.ui_state.input_mode, InputMode::Insert);
+    app.process_msg(TuiMsg::ToggleTasksList);
+    assert!(app.tasks_expanded);
     assert_eq!(
-        app.todo_strip_height(),
-        cap + 1,
-        "a long list must not grow the strip without bound"
+        app.ui_state.input_mode,
+        InputMode::Normal,
+        "an overlay opened from the composer must be navigable, not decorative"
+    );
+
+    // ...and closing gives the composer back the mode it was in. Peeking at
+    // pending work must not end composition mode.
+    app.process_msg(TuiMsg::ToggleTasksList);
+    assert!(!app.tasks_expanded);
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Insert,
+        "closing the overlay must not leave the user out of composition mode"
+    );
+}
+
+#[test]
+fn opening_the_tasks_overlay_from_normal_does_not_move_modes() {
+    use codegg::tui::input::InputMode;
+    let mut app = App::new_for_testing("/tmp/codegg-regression-overlay-normal".to_string());
+    app.ui_state.input_mode = InputMode::Normal;
+
+    app.process_msg(TuiMsg::ToggleTasksList);
+    assert!(app.tasks_expanded);
+    app.process_msg(TuiMsg::ToggleTasksList);
+
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Normal,
+        "a Normal-mode round trip must be a no-op on the mode"
     );
 }
 

@@ -73,10 +73,6 @@ pub enum Dialog {
     /// `/approval` + `/sandbox` fast-select. FocusManager-owned; see
     /// `policy_selector.rs`.
     PolicySelector,
-    /// "Which panel should this content go in?" — opened by `/agents` and
-    /// shared with the panel manager's list mechanics. See
-    /// `components/dialogs/panel_picker.rs`.
-    PanelPicker,
     /// M004: the session's waiting prompts. FocusManager-owned; see
     /// `components/dialogs/queue.rs`. `dock_target` has no queue arm, so this
     /// box is a modal and never docks.
@@ -135,7 +131,6 @@ impl Dialog {
                 | Self::TriggerSecret
                 | Self::WorkspaceDashboard
                 | Self::PolicySelector
-                | Self::PanelPicker
                 | Self::Queue
         )
     }
@@ -263,7 +258,6 @@ pub enum TuiMsg {
         panel: crate::tui::panels::SidePanelId,
         placement: crate::tui::panels::PanelPlacement,
     },
-    ToggleTodoList,
     /// Open the unified tasks overlay: todos, subagents, jobs.
     ToggleTasksList,
     ToggleFullscreen,

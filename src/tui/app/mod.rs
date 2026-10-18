@@ -132,11 +132,6 @@ pub const TURN_STALL_TOOL_GRACE: Duration = Duration::from_secs(3600);
 /// event loop is running; `run_event_loop` reuses the same channel.
 pub const TUI_CMD_CHANNEL_CAPACITY: usize = 100;
 
-/// Maximum task rows drawn when the above-input todo list is expanded.
-/// Bounds the strip so a long list cannot crowd out the chat viewport; the
-/// header always reports the true total.
-pub const MAX_TODO_STRIP_TASKS: usize = 9;
-
 /// Maximum subagent rows drawn in the working strip above the composer.
 ///
 /// Bounded so a wide fan-out cannot crowd out the chat viewport. The strip
@@ -364,16 +359,15 @@ pub struct App {
     /// envelope has landed. Tracking the revision keeps the visible list
     /// monotonic instead of letting the stale snapshot win.
     pub todo_revision: u64,
-    /// Whether the above-input todo strip shows the full list or only the
-    /// one-line `n/m completed` summary. Toggled with Ctrl+T.
-    pub todo_expanded: bool,
-    /// Whether the unified tasks overlay is expanded. Toggled with Shift+T.
+    /// Whether the unified tasks overlay is expanded. Toggled with `Ctrl+T`.
     ///
-    /// Separate from [`App::todo_expanded`] because the two answer different
-    /// questions. `Ctrl+T` owns the always-visible compact progress line; this
-    /// owns the on-demand block that adds in-flight subagents and jobs beneath
-    /// it. Collapsing them would take away the one-line summary that is legible
-    /// without expanding anything.
+    /// The above-input todo strip is a separate, always-visible one-line
+    /// summary; it has no expanded form of its own. `Ctrl+T` opens *this*
+    /// block, which carries the full todo list alongside in-flight subagents
+    /// and jobs. Collapsing the two into one key is deliberate: "what is this
+    /// session waiting on" is one question, and answering it in two places
+    /// meant the compact progress line and the full list could disagree about
+    /// which todos exist.
     pub tasks_expanded: bool,
     /// Row the overlay's selection cursor rests on, as an index into the
     /// *bounded* row list the overlay actually renders.
@@ -386,6 +380,16 @@ pub struct App {
     /// `task_rows()`, so the cursor can never point at a row that truncation
     /// removed — which would make `Enter` open a subagent the user cannot see.
     pub tasks_selected: Option<usize>,
+    /// Input mode to restore when the overlay closes, when opening it moved
+    /// the app into [`InputMode::Normal`].
+    ///
+    /// `None` when the overlay was opened from Normal mode, or is closed.
+    /// The overlay's own keys (`j`/`k`/`Enter`/`Esc`) are Normal-mode gestures
+    /// on purpose — claiming bare letters while composing would break the
+    /// composer — so opening it from Insert has to take Normal mode with it,
+    /// and closing it has to give the user's mode back. Without the restore,
+    /// peeking at pending work would silently end composition mode.
+    tasks_restore_mode: Option<InputMode>,
     /// Rows the todo strip occupies on the last render pass.
     pub todo_area: Option<Rect>,
     /// Rows the unified tasks overlay occupies on the last render pass.
@@ -658,7 +662,6 @@ pub struct App {
     /// tell them apart — so the picker records its intent here and the message
     /// handler spends it. Cleared on every commit, so a picker the user
     /// abandoned cannot load its content into the next panel they pick.
-    pub pending_panel_picker_subject: Option<&'static str>,
     /// User-saved `Ctrl+digit` panel bindings, loaded from `codegg.json`
     /// and written back when the manager changes one.
     ///
@@ -1163,9 +1166,9 @@ impl App {
             completion_scroll_offset: 0,
             todos: Vec::new(),
             todo_revision: 0,
-            todo_expanded: false,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
             sidebar_area: None,
@@ -1277,7 +1280,6 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
-            pending_panel_picker_subject: None,
             panel_hotkeys: saved_panel_hotkeys,
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -1748,9 +1750,9 @@ impl App {
             completion_scroll_offset: 0,
             todos: Vec::new(),
             todo_revision: 0,
-            todo_expanded: false,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
             sidebar_area: None,
@@ -1832,7 +1834,6 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
-            pending_panel_picker_subject: None,
             panel_hotkeys: Default::default(),
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -3843,10 +3844,12 @@ impl App {
         // overlay.
         //
         // Normal mode only, and that gate is load-bearing rather than
-        // cosmetic. The overlay is opened by `Shift+T`, which is itself
-        // Normal-only, but the user switches back to Insert to keep typing
-        // while it is up. Claiming `j`/`k`/`Enter` there would break the
-        // composer outright.
+        // cosmetic. `Ctrl+T` opens the overlay from either mode and takes
+        // Normal mode with it, but the user can press `i` and go back to
+        // composing while it stays up — the composer is the thing they are
+        // actually doing. Claiming `j`/`k`/`Enter` there would break it
+        // outright, so these keys are the overlay's only while nothing is
+        // being typed.
         if self.tasks_expanded && self.ui_state.input_mode == InputMode::Normal {
             let action = crate::tui::input::handle_key_with_bindings(
                 key,
@@ -4125,9 +4128,6 @@ impl App {
             }
             Some(InputAction::ToggleTasksList) => {
                 self.toggle_tasks_list();
-            }
-            Some(InputAction::ToggleTodoList) => {
-                self.toggle_todo_list();
             }
             Some(InputAction::FocusSidebar) => {
                 if workspace_active {
@@ -5528,16 +5528,21 @@ impl App {
                     .to_string();
 
                 if args.is_empty() {
-                    // Bare `/agents`: open a box, like every other `/` command
-                    // that brings up a surface, and let the user say which
-                    // panel it should go to. It used to jump straight into the
-                    // side column, so the command had no box of its own and
-                    // no way to ask where its content belonged — and a list
-                    // that is already the whole answer looks like nothing
-                    // happened. The *text* listing stays on `/agents show`
-                    // and `/agents --all` below, so nothing that was
-                    // reachable before becomes unreachable.
-                    crate::tui::commands::panels::open_panel_picker(self, "agents");
+                    // Bare `/agents` opens **agents**, the same surface `/agent`
+                    // opens. It used to open the panel picker instead — "where
+                    // should this panel live?" — which answered a question the
+                    // user did not ask: someone typing `/agents` wants to see
+                    // agents, and asking them to choose a placement first made
+                    // the command look broken.
+                    //
+                    // Panel *placement* is a real question and stays reachable
+                    // through `/panels`; the two are different questions and
+                    // should not share an entry point. Everything below here —
+                    // `/agents show`, `--all`, `diff`, `validate`, `reload` —
+                    // is unchanged, so nothing that worked before is now
+                    // harder to reach.
+                    self.ui_state.command_mode = false;
+                    self.open_dialog(Dialog::Agent);
                     return;
                 }
 
@@ -14343,32 +14348,36 @@ impl App {
         self.sidebar.set_todos(todos);
     }
 
-    /// Toggle the expanded/compact form of the above-input todo strip.
-    fn toggle_todo_list(&mut self) {
-        if self.todos.is_empty() {
-            // Nothing to expand; still give feedback so the key is not
-            // silently dead.
-            self.messages_state
-                .toasts
-                .info("No todo list for this session yet.");
-            return;
-        }
-        self.todo_expanded = !self.todo_expanded;
-    }
-
     /// Toggle the unified tasks overlay (todos, subagents, jobs).
     ///
-    /// Unlike `toggle_todo_list`, this one is *not* short-circuited when the
-    /// list is empty. An empty overlay is a legitimate answer — "you asked
-    /// what the session is waiting on and the answer is nothing" — and
-    /// swallowing the key would leave the user pressing a key that appears
-    /// dead. The overlay still reports the groups it found nothing in.
+    /// Not short-circuited when the list is empty. An empty overlay is a
+    /// legitimate answer — "you asked what the session is waiting on and the
+    /// answer is nothing" — and swallowing the key would leave the user
+    /// pressing a key that appears dead. The overlay still reports the groups
+    /// it found nothing in.
     pub fn toggle_tasks_list(&mut self) {
         self.tasks_expanded = !self.tasks_expanded;
         // A cursor left pointing at yesterday's row index would select
         // whatever happens to sit there now — or nothing at all — the next
         // time the overlay opens. Reopening starts at the top.
         self.tasks_selected = None;
+        if self.tasks_expanded {
+            // Opening from Insert takes Normal mode with it, because the
+            // overlay's own keys are Normal-mode gestures. Without this the
+            // overlay would open from the composer looking navigable while
+            // `j`/`k` silently typed into the prompt — the same "the feature
+            // is dead" symptom the consolidated chord existed to kill.
+            if self.ui_state.input_mode == InputMode::Insert {
+                self.tasks_restore_mode = Some(InputMode::Insert);
+                self.ui_state.input_mode = InputMode::Normal;
+            }
+        } else {
+            // Closing hands the composer back the mode it was in, not the
+            // mode the overlay borrowed.
+            if let Some(restore) = self.tasks_restore_mode.take() {
+                self.ui_state.input_mode = restore;
+            }
+        }
     }
 
     /// The overlay rows actually rendered, bounded to what fits.
@@ -14440,9 +14449,9 @@ impl App {
         if self.open_subagent_tab(&target) {
             // Opening closes the overlay: the thing the user asked to look at
             // now owns the main buffer, and leaving a selection cursor behind
-            // it would be a control they are no longer looking at.
-            self.tasks_expanded = false;
-            self.tasks_selected = None;
+            // it would be a control they are no longer looking at. Closed
+            // through the toggle so the borrowed input mode is handed back.
+            self.toggle_tasks_list();
         }
         true
     }
@@ -14463,13 +14472,11 @@ impl App {
         if self.todos.is_empty() {
             return 0;
         }
-        if !self.todo_expanded {
-            return 1;
-        }
-        // Header + as many tasks as fit, bounded so a long list cannot eat
-        // the viewport. `Ctrl+T` still reports the true totals in the header.
-        let tasks = self.todos.len().min(MAX_TODO_STRIP_TASKS) as u16;
-        tasks.saturating_add(1)
+        // Always the one-line summary. The full list lives in the tasks
+        // overlay (`Ctrl+T`), so there is no in-place expanded form to size:
+        // the strip's height is a function of *whether* a list exists and
+        // nothing else, which is what keeps row 0 stable while composing.
+        1
     }
 
     /// Rows the main buffer's subagent tab bar needs.

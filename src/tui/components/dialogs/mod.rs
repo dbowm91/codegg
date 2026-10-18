@@ -16,7 +16,6 @@ pub mod mcp;
 pub mod model;
 pub mod panel_list;
 pub mod panel_manager;
-pub mod panel_picker;
 pub mod permission;
 pub mod plan;
 pub mod plugin;

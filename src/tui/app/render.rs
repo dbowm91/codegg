@@ -163,11 +163,11 @@ impl App {
 
         let todo_rows = self.todo_strip_height();
         let max_prompt_height = (area.height * 40 / 100).max(3);
-        // Reserve the strip's rows *inside* the prompt allocation so the
-        // input box keeps the height it asked for and the chat viewport
-        // absorbs the difference. Carving them back out of the prompt chunk
-        // instead would silently shrink the input by up to
-        // `MAX_TODO_STRIP_TASKS` rows every time the list was expanded.
+        // Reserve the strip's row *inside* the prompt allocation so the input
+        // box keeps the height it asked for and the chat viewport absorbs the
+        // difference. Carving it back out of the prompt chunk instead would
+        // silently shrink the input whenever a todo list exists — and the
+        // strip appears mid-turn, so the transcript would jump under the user.
         // The contextual key line sits directly above the input and is
         // reserved from the prompt allocation for the same reason the todo
         // strip is: carving it out afterwards would shrink the input every
@@ -1258,11 +1258,11 @@ impl App {
 
     /// Draw the todo strip directly above the input box.
     ///
-    /// Compact form is a single `n/m completed` progress line. Expanded form
-    /// adds one status-bubbled row per task, bounded by
-    /// `MAX_TODO_STRIP_TASKS`; task titles are ellipsized to the available
-    /// width rather than wrapped, so a long title can never push the input
-    /// off screen or change the layout height.
+    /// Always a single `n/m completed` progress line. The strip has no
+    /// expanded form: the full todo list is a group inside the tasks overlay
+    /// (`Ctrl+T`), next to the subagents and jobs the session is also waiting
+    /// on. Keeping it to one row is what lets row 0 stay reserved and the
+    /// transcript above it stay put while a turn composes.
     fn render_todo_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
         let Some(area) = area else { return };
         if area.width == 0 || area.height == 0 || self.todos.is_empty() {
@@ -1274,34 +1274,12 @@ impl App {
         let remaining = total.saturating_sub(done);
         let theme = self.ui_state.theme.clone();
 
-        let mut lines: Vec<Line> = Vec::new();
-        if self.todo_expanded {
-            lines.push(Line::from(Span::styled(
-                format!(" Todo list {done}/{total} · {remaining} remaining · Ctrl+T compact "),
-                Style::default().fg(theme.muted),
-            )));
-            for todo in self
-                .todos
-                .iter()
-                .take(crate::tui::app::MAX_TODO_STRIP_TASKS)
-            {
-                let bubble = format!(" {} ", Self::todo_bubble(&todo.status));
-                // 3 columns of leading indent, minus the bubble and its spaces.
-                let budget = (area.width as usize)
-                    .saturating_sub(3 + unicode_width::UnicodeWidthStr::width(bubble.as_str()));
-                let title = crate::tui::wrap::ellipsize_to_width(&todo.content, budget);
-                lines.push(Line::from(vec![
-                    Span::styled("   ", Style::default()),
-                    Span::styled(bubble, Style::default().fg(theme.primary)),
-                    Span::styled(title, Style::default().fg(theme.foreground)),
-                ]));
-            }
-        } else {
-            lines.push(Line::from(Span::styled(
-                format!(" Todo list: {done}/{total} completed · Ctrl+T expand "),
-                Style::default().fg(theme.muted),
-            )));
-        }
+        let lines: Vec<Line> = vec![Line::from(Span::styled(
+            format!(
+                " Todo list: {done}/{total} completed · {remaining} remaining · Ctrl+T for all pending work "
+            ),
+            Style::default().fg(theme.muted),
+        ))];
 
         let shown = (area.height as usize).min(lines.len());
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
@@ -2887,5 +2865,165 @@ impl App {
         self.completion_area = Some(compl_area);
         self.completion_visible_rows = visible;
         self.completion_scroll_offset = start;
+    }
+}
+
+#[cfg(test)]
+mod subagent_row_chain_tests {
+    //! C004: the untested middle of the subagent naming chain.
+    //!
+    //! Every TUI test that shows a named subagent hand-seeds `display_name`,
+    //! which means the chain
+    //! `CoreEvent::SubagentStarted -> adapter -> reducer -> snapshot -> row`
+    //! had **no** coverage at all: every one of those links could drop the
+    //! name and the suite would stay green while the feature stopped working.
+    //! The user-visible symptom is a subagent row that shows its agent type
+    //! instead of `Sally`, with nothing failing.
+
+    use super::App;
+    use crate::protocol::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
+    use crate::protocol::projection::fixtures::active_turn_snapshot;
+    use crate::protocol::projection::reducer::{ProjectionReducer, ReducerEventInput};
+    use crate::protocol::projection::ProjectionEvent;
+    use crate::protocol::projection::ProjectionState;
+
+    /// Drives a named `SubagentStarted` all the way through the real adapter
+    /// and reducer, and asserts the row the TUI would render carries it.
+    #[test]
+    fn a_named_subagent_reaches_the_rendered_row() {
+        let node = |name: Option<&str>| AgentTreeNodeProjection {
+            task_id: 7,
+            agent: "explore".into(),
+            description: "walking the tree".into(),
+            status: AgentTreeStatus::Running,
+            parent_task_id: None,
+            created_at: 4,
+            completed_at: None,
+            result_summary: None,
+            display_name: name.map(str::to_string),
+            run_id: Some("018f-run-7".into()),
+        };
+
+        let mut snapshot = active_turn_snapshot();
+        ProjectionReducer::default().apply_all(
+            &mut snapshot,
+            vec![ReducerEventInput::session(
+                4,
+                4,
+                crate::protocol::projection::fixtures::FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: node(Some("Sally")),
+                },
+            )],
+        );
+
+        let rows = App::sync_subagents_from_snapshot(&snapshot)
+            .expect("a snapshot with an active turn always yields rows");
+        let row = rows
+            .iter()
+            .find(|r| r.task_id == "7")
+            .unwrap_or_else(|| panic!("row for task 7 missing: {rows:?}"));
+        assert_eq!(
+            row.display_name.as_deref(),
+            Some("Sally"),
+            "the name dropped between the snapshot and the row"
+        );
+        assert_eq!(row.run_id.as_deref(), Some("018f-run-7"));
+        assert_eq!(row.agent, "explore");
+        assert_eq!(row.status, "running");
+    }
+
+    /// A node recorded before names existed still renders — as its agent type,
+    /// never as a blank row.
+    #[test]
+    fn an_unnamed_node_still_renders_a_row() {
+        let mut snapshot = active_turn_snapshot();
+        ProjectionReducer::default().apply_all(
+            &mut snapshot,
+            vec![ReducerEventInput::session(
+                4,
+                4,
+                crate::protocol::projection::fixtures::FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: AgentTreeNodeProjection {
+                        task_id: 9,
+                        agent: "review".into(),
+                        description: "reading".into(),
+                        status: AgentTreeStatus::Running,
+                        parent_task_id: None,
+                        created_at: 4,
+                        completed_at: None,
+                        result_summary: None,
+                        display_name: None,
+                        run_id: None,
+                    },
+                },
+            )],
+        );
+        let rows = App::sync_subagents_from_snapshot(&snapshot).expect("rows");
+        let row = rows.iter().find(|r| r.task_id == "9").expect("row 9");
+        assert!(row.display_name.is_none());
+        assert!(
+            !row.label().is_empty(),
+            "an unnamed subagent must still be identifiable"
+        );
+    }
+
+    /// Rows survive the parent turn completing.
+    ///
+    /// `sync_subagents_from_snapshot` reads `active_turn` and falls back to the
+    /// newest `recent_turns`. Without that fallback a subagent would vanish the
+    /// moment its turn ended, which is the "row disappeared" report this
+    /// fallback exists to prevent.
+    #[test]
+    fn rows_survive_the_parent_turn_completing() {
+        let mut snapshot = active_turn_snapshot();
+        ProjectionReducer::default().apply_all(
+            &mut snapshot,
+            vec![ReducerEventInput::session(
+                4,
+                4,
+                crate::protocol::projection::fixtures::FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: AgentTreeNodeProjection {
+                        task_id: 11,
+                        agent: "explore".into(),
+                        description: "walking".into(),
+                        status: AgentTreeStatus::Running,
+                        parent_task_id: None,
+                        created_at: 4,
+                        completed_at: None,
+                        result_summary: None,
+                        display_name: Some("Ada".into()),
+                        run_id: None,
+                    },
+                },
+            )],
+        );
+        // Move the finished turn out of `active_turn`, exactly as the reducer
+        // does on TurnCompleted.
+        let finished = snapshot.active_turn.take().expect("an active turn");
+        snapshot.push_recent_turn(finished);
+
+        let rows = App::sync_subagents_from_snapshot(&snapshot)
+            .expect("a snapshot with no active turn still yields rows");
+        let row = rows
+            .iter()
+            .find(|r| r.task_id == "11")
+            .unwrap_or_else(|| panic!("row vanished when its turn completed: {rows:?}"));
+        assert_eq!(row.display_name.as_deref(), Some("Ada"));
+    }
+
+    /// A snapshot that carries no turn at all yields *no rows* rather than an
+    /// error — and, per the module's own contract, a missing snapshot (`None`)
+    /// is distinct from an empty one, so the caller keeps what it had.
+    #[test]
+    fn an_empty_snapshot_yields_no_rows() {
+        let snapshot = crate::protocol::projection::fixtures::idle_snapshot();
+        let rows = App::sync_subagents_from_snapshot(&snapshot).expect("Some, not None");
+        assert!(rows.is_empty(), "no turn means no rows: {rows:?}");
     }
 }

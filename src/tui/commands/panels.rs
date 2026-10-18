@@ -86,30 +86,6 @@ pub(crate) fn open_panel_manager(app: &mut App) {
     app.push_dialog(crate::tui::app::Dialog::PanelManager, Box::new(dialog));
 }
 
-/// Open the "which panel should this go in?" box.
-///
-/// Shared by every `/` command whose content is a panel rather than a modal:
-/// the box answers exactly one question and commits through the same
-/// [`crate::tui::app::TuiMsg::SelectPanel`] the manager emits, so there is only
-/// one route into panel selection and a box and its panel cannot drift.
-///
-/// `subject` names what is being routed so the box reads as itself rather than
-/// as a copy of the manager.
-///
-/// The pending-routing flag is what makes the selection *mean* something: the
-/// manager selects a panel and stops, while this box exists to have the chosen
-/// content loaded into the chosen panel afterwards.
-pub(crate) fn open_panel_picker(app: &mut App, subject: &'static str) {
-    sync_chat_panel_project(app);
-    let dialog = crate::tui::components::dialogs::panel_picker::PanelPickerDialog::new(
-        Arc::clone(&app.ui_state.theme),
-        app.panel_host.active(),
-        subject,
-    );
-    app.pending_panel_picker_subject = Some(subject);
-    app.push_dialog(crate::tui::app::Dialog::PanelPicker, Box::new(dialog));
-}
-
 /// Push an applied placement back into the mounted manager.
 ///
 /// `TuiMsg` handling runs outside the mounted component, so the box cannot

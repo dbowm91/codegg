@@ -1992,4 +1992,140 @@ mod tests {
         assert!(!serialized.contains("prompt"));
         assert!(!serialized.contains("reasoning"));
     }
+
+    /// C004: the reducer must not re-draw a subagent's name.
+    ///
+    /// The name is chosen once at spawn and travels in the event. If the
+    /// reducer invented one, replay of a durable event log would produce a
+    /// different name than the live view showed, and the two would disagree
+    /// about what a given subagent was called — which is precisely the bug the
+    /// field was moved into the event to prevent.
+    #[test]
+    fn a_subagent_node_keeps_the_name_it_arrived_with() {
+        use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
+        use crate::projection::fixtures::active_turn_snapshot;
+
+        let mut snap = active_turn_snapshot();
+        let reducer = ProjectionReducer::default();
+        reducer.apply_all(
+            &mut snap,
+            vec![ReducerEventInput::session(
+                4,
+                4,
+                crate::projection::fixtures::FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: AgentTreeNodeProjection {
+                        task_id: 7,
+                        agent: "explorer".into(),
+                        description: "exploring".into(),
+                        status: AgentTreeStatus::Running,
+                        parent_task_id: None,
+                        created_at: 4,
+                        completed_at: None,
+                        result_summary: None,
+                        display_name: Some("Sally".into()),
+                        run_id: Some("018f-run-7".into()),
+                    },
+                },
+            )],
+        );
+        let node = snap
+            .active_turn
+            .as_ref()
+            .and_then(|t| t.agent_tree.iter().find(|n| n.task_id == 7))
+            .expect("node must be in the active turn's tree");
+        assert_eq!(node.display_name.as_deref(), Some("Sally"));
+        assert_eq!(node.run_id.as_deref(), Some("018f-run-7"));
+    }
+
+    /// Replaying the same script twice must produce byte-identical agent trees.
+    ///
+    /// Determinism is the whole justification for carrying the name in the
+    /// event, and it is only observable by doing it twice.
+    #[test]
+    fn replaying_a_subagent_script_is_deterministic() {
+        use crate::projection::fixtures::subagent_event_script;
+
+        let run_once = || {
+            let mut snap = crate::projection::fixtures::idle_snapshot();
+            ProjectionReducer::default().apply_all(&mut snap, subagent_event_script());
+            snap.active_turn
+                .as_ref()
+                .map(|t| t.agent_tree.clone())
+                .unwrap_or_default()
+        };
+        let first = run_once();
+        let second = run_once();
+        assert!(
+            !first.is_empty(),
+            "the fixture must actually produce a node, or this proves nothing"
+        );
+        assert_eq!(
+            first, second,
+            "replay diverged: the same log produced two trees"
+        );
+    }
+
+    /// C006: a `SubagentStarted` with no active turn is **correctly** dropped.
+    ///
+    /// The reducer records `orphan_subagent_started` and does not attach the
+    /// node, which looks like data loss until you check who publishes the
+    /// event. The only publisher is `src/agent/worker.rs`, and it publishes
+    /// from inside a subagent execution the parent turn is still awaiting
+    /// (`execution.await`, optionally under a wall-clock timeout). A turn that
+    /// has already completed is therefore not a turn a subagent can start
+    /// under, so the drop is a guard against a malformed log rather than a
+    /// missing branch.
+    ///
+    /// This test pins that reasoning. If a future change lets a delegated run
+    /// outlive — or start after — its parent turn, this fails and the reducer
+    /// has to grow a real place to put the node instead of silently dropping
+    /// the work the user asked for.
+    #[test]
+    fn a_subagent_started_without_an_active_turn_is_diagnosed_not_applied() {
+        use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
+        use crate::projection::fixtures::idle_snapshot;
+
+        let mut snap = idle_snapshot();
+        let reducer = ProjectionReducer::default();
+        let outcome = reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                4,
+                4,
+                crate::projection::fixtures::FIXTURE_SESSION_ID,
+                None,
+                ProjectionEvent::SubagentStarted {
+                    node: AgentTreeNodeProjection {
+                        task_id: 7,
+                        agent: "explorer".into(),
+                        description: "exploring".into(),
+                        status: AgentTreeStatus::Running,
+                        parent_task_id: None,
+                        created_at: 4,
+                        completed_at: None,
+                        result_summary: None,
+                        display_name: Some("Sally".into()),
+                        run_id: None,
+                    },
+                },
+            ),
+        );
+        assert!(
+            !matches!(outcome, ApplyOutcome::Applied),
+            "an orphan subagent node must not be applied onto a turn that does not exist"
+        );
+        assert!(
+            snap.active_turn.is_none(),
+            "the snapshot must not grow an active turn to host the node"
+        );
+        assert!(
+            snap.diagnostics
+                .iter()
+                .any(|d| d.code == "orphan_subagent_started"),
+            "the drop must stay observable: got {:?}",
+            snap.diagnostics
+        );
+    }
 }

@@ -24,8 +24,7 @@
 //! | Ctrl+K | ClearSession |
 //! | n | NewSession (Normal only) |
 //! | Ctrl+N | Toggle panel resize mode |
-//! | Ctrl+T | ToggleTodoList |
-//! | Shift+T | ToggleTasksList (todos + subagents + jobs) |
+//! | Ctrl+T | ToggleTasksList (todos + subagents + jobs) |
 //! | Shift+N / Shift+P | Next / previous subagent tab (main buffer) |
 //! | Shift+X | Close subagent tab (main buffer) |
 //! | Ctrl+B | ToggleSidebar |
@@ -156,7 +155,6 @@ pub enum InputAction {
     DirectionRight,
     DirectionUp,
     DirectionDown,
-    ToggleTodoList,
     /// Expand the unified tasks overlay: todos, then in-flight
     /// subagents, then jobs the session is waiting on.
     ///
@@ -266,7 +264,6 @@ pub enum ActionKey {
     DirectionRight,
     DirectionUp,
     DirectionDown,
-    ToggleTodoList,
     /// Expand the unified tasks overlay: todos, then in-flight
     /// subagents, then jobs the session is waiting on.
     ///
@@ -386,7 +383,6 @@ impl ActionKey {
             Self::CloseSubagentTab,
             Self::ToggleComposerMode,
             Self::OpenWorkspaceDashboard,
-            Self::ToggleTodoList,
             Self::ToggleTasksList,
         ]
     }
@@ -452,9 +448,86 @@ impl ActionKey {
             Self::CloseSubagentTab => InputAction::CloseSubagentTab,
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
             Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
-            Self::ToggleTodoList => InputAction::ToggleTodoList,
             Self::ToggleTasksList => InputAction::ToggleTasksList,
         }
+    }
+
+    /// Canonical [`ActionKey`] for a resolved [`InputAction`], or `None` for
+    /// an action that is not addressable as a binding (a typed character).
+    ///
+    /// This is the single place the two enums are reconciled. The help table
+    /// advertises prose and the binding table stores actions, so without one
+    /// shared naming authority the two drift apart silently — which is exactly
+    /// how a live `Ctrl+T` row kept advertising "Toggle sidebar" for two days
+    /// behind a green suite: the old guard only asserted that the key resolved
+    /// to *something*. `documented_keys_resolve_in_the_active_map` now resolves
+    /// an advertised key through the real keymaps and compares the advertised
+    /// prose against [`ActionKey::label`] for whatever came back.
+    pub fn from_input_action(action: &InputAction) -> Option<Self> {
+        let candidate = match action {
+            InputAction::Char(_) => return None,
+            InputAction::Send => Self::Send,
+            InputAction::Newline => Self::Newline,
+            InputAction::Cancel => Self::Cancel,
+            InputAction::NavigateUp => Self::NavigateUp,
+            InputAction::NavigateDown => Self::NavigateDown,
+            InputAction::SwitchAgent => Self::SwitchAgent,
+            InputAction::SelectModel => Self::SelectModel,
+            InputAction::ClearSession => Self::ClearSession,
+            InputAction::NewSession => Self::NewSession,
+            InputAction::ToggleAgentRun => Self::ToggleAgentRun,
+            InputAction::ToggleSidebar => Self::ToggleSidebar,
+            InputAction::FocusSidebar => Self::FocusSidebar,
+            InputAction::OpenPanelManager => Self::OpenPanelManager,
+            InputAction::DirectionLeft => Self::DirectionLeft,
+            InputAction::DirectionRight => Self::DirectionRight,
+            InputAction::DirectionUp => Self::DirectionUp,
+            InputAction::DirectionDown => Self::DirectionDown,
+            InputAction::ToggleTasksList => Self::ToggleTasksList,
+            InputAction::ToggleSection => Self::ToggleSection,
+            InputAction::CloseSession => Self::CloseSession,
+            InputAction::Help => Self::Help,
+            InputAction::FocusPrompt => Self::FocusPrompt,
+            InputAction::StashPrompt => Self::StashPrompt,
+            InputAction::RestorePrompt => Self::RestorePrompt,
+            InputAction::CopyMessage => Self::CopyMessage,
+            InputAction::CycleModelForward => Self::CycleModelForward,
+            InputAction::CycleModelBackward => Self::CycleModelBackward,
+            InputAction::ToggleReasoning => Self::ToggleReasoning,
+            InputAction::Quit => Self::Quit,
+            InputAction::ForceQuit => Self::ForceQuit,
+            InputAction::ExternalEditor => Self::ExternalEditor,
+            InputAction::Backspace => Self::Backspace,
+            InputAction::Delete => Self::Delete,
+            InputAction::Left => Self::Left,
+            InputAction::Right => Self::Right,
+            InputAction::Home => Self::Home,
+            InputAction::End => Self::End,
+            InputAction::PageUp => Self::PageUp,
+            InputAction::PageDown => Self::PageDown,
+            InputAction::Search => Self::Search,
+            InputAction::SearchNext => Self::SearchNext,
+            InputAction::SearchPrev => Self::SearchPrev,
+            InputAction::ClearSearch => Self::ClearSearch,
+            InputAction::Command => Self::Command,
+            InputAction::ToggleTts => Self::ToggleTts,
+            InputAction::StopTts => Self::StopTts,
+            InputAction::ToggleFullscreen => Self::ToggleFullscreen,
+            InputAction::TogglePermissionMode => Self::TogglePermissionMode,
+            InputAction::OpenDiff => Self::OpenDiff,
+            InputAction::GoToTop => Self::GoToTop,
+            InputAction::GoToBottom => Self::GoToBottom,
+            InputAction::OpenProjectPicker => Self::OpenProjectPicker,
+            InputAction::NextProjectTab => Self::NextProjectTab,
+            InputAction::PreviousProjectTab => Self::PreviousProjectTab,
+            InputAction::CloseProjectTab => Self::CloseProjectTab,
+            InputAction::NextSubagentTab => Self::NextSubagentTab,
+            InputAction::PreviousSubagentTab => Self::PreviousSubagentTab,
+            InputAction::CloseSubagentTab => Self::CloseSubagentTab,
+            InputAction::ToggleComposerMode => Self::ToggleComposerMode,
+            InputAction::OpenWorkspaceDashboard => Self::OpenWorkspaceDashboard,
+        };
+        Some(candidate)
     }
 
     pub const fn label(self) -> &'static str {
@@ -518,8 +591,7 @@ impl ActionKey {
             Self::CloseSubagentTab => "Close subagent tab (Shift+X)",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
             Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
-            Self::ToggleTodoList => "Toggle todo list (expand above input)",
-            Self::ToggleTasksList => "Toggle tasks (todos, subagents, jobs) (Shift+T)",
+            Self::ToggleTasksList => "Toggle tasks (todos, subagents, jobs) (Ctrl+T)",
         }
     }
 
@@ -558,6 +630,13 @@ static DEFAULT_BINDINGS: Lazy<HashMap<(KeyModifiers, KeyCode), InputAction>> =
 /// that `Shift+Left`/`Shift+Right` performs while composing and stealing the
 /// letter itself for `Shift+H`/`Shift+L`. `handle_key_with_bindings` consults
 /// this so those keys stay ordinary text/caret input in Insert.
+///
+/// **An action whose only spelling is a `Ctrl` chord must not be listed here.**
+/// Such a chord cannot be composed as text, so it is already unambiguous in
+/// Insert; listing it would take the action out of the mode the app boots in.
+/// `ToggleTasksList` is the live example: it was gated here solely because
+/// `Shift+T` was one of its spellings, and `Ctrl+T` — its only spelling now —
+/// is why the entry is gone rather than the bug being documented.
 pub(crate) fn is_normal_only(action: &InputAction) -> bool {
     matches!(
         action,
@@ -577,11 +656,6 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // chord out of Insert mode too. Built-in shifted capitals are
             // handled in the Insert branch instead, at the key.)
             | InputAction::OpenPanelManager
-            // `Shift+T` claims an uppercase letter, which is text the user is
-            // actively typing. Without this entry Insert mode would treat a
-            // capital `T` mid-word as "open the overlay" instead of composing
-            // it — the same class of bug the `Shift+S` entry above prevents.
-            | InputAction::ToggleTasksList
             // `Shift+N` / `Shift+P` / `Shift+X` claim three more uppercase
             // letters, and `N` and `X` are among the most common capitals in
             // ordinary prose. Without these entries Insert mode would read a
@@ -664,21 +738,14 @@ fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), In
         (KeyModifiers::NONE, KeyCode::Char('F')),
         InputAction::OpenProjectPicker,
     );
-    // `Shift+T` opens the unified tasks overlay (todos, subagents, jobs).
-    // Under both encodings for the same legacy reason as the letters above.
-    //
-    // It deliberately does NOT reuse `Ctrl+T`, which stays with the todo
-    // strip. The two surfaces overlap by design — todos appear in both — but
-    // collapsing them would take away the compact progress line that `Ctrl+T`
-    // keeps on screen at all times.
-    map.insert(
-        (KeyModifiers::SHIFT, KeyCode::Char('T')),
-        InputAction::ToggleTasksList,
-    );
-    map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('T')),
-        InputAction::ToggleTasksList,
-    );
+    // `Shift+T` used to open the unified tasks overlay under both encodings.
+    // It is retired: a capital `T` mid-word is text the user is actively
+    // typing, so the action had to be `is_normal_only`, and the app boots in
+    // Insert — the first press composed a literal `T` and the overlay looked
+    // broken. `Ctrl+T` now owns the overlay and needs no mode gate, because a
+    // CONTROL chord is never composable text. Re-adding a shifted capital here
+    // would require re-adding the gate, and re-adding the gate would make the
+    // overlay unreachable from Insert again.
     // `Shift+N` / `Shift+P` / `Shift+X` drive the subagent tab set in the main
     // buffer: next, previous, close. All three are uppercase letters that were
     // unbound in every keymap, and all three are bound under both encodings for
@@ -763,11 +830,21 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // gesture rather than a composable action, so it names itself on the
     // composer line when armed (and in `docs/tui.md`) instead of pretending to
     // be a binding.
-    // Ctrl+T expands the todo list above the input; the sidebar moved to
-    // Ctrl+B so both panels stay independently reachable.
+    // Ctrl+T opens the unified tasks overlay: todos, then in-flight
+    // subagents, then jobs the session is waiting on. One chord, three
+    // groups, and a group with no rows is omitted rather than drawn empty.
+    //
+    // This replaced a two-key arrangement (`Ctrl+T` for the compact todo
+    // strip, `Shift+T` for the overlay) that was unreachable in practice:
+    // `Shift+T` is spelled as a capital, so it was `is_normal_only`, and the
+    // app boots in Insert — the first press composed a literal `T`. Because
+    // `Ctrl+T` carries CONTROL it is never composable text, so the action
+    // needs no mode gate at all and the overlay is reachable from the mode
+    // the user is actually in. The sidebar stayed on Ctrl+B so both panels
+    // remain independently reachable.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
-        InputAction::ToggleTodoList,
+        InputAction::ToggleTasksList,
     );
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('b')),
@@ -888,11 +965,21 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('q')),
         InputAction::Quit,
     );
-    // Ctrl+T expands the todo list above the input; the sidebar moved to
-    // Ctrl+B so both panels stay independently reachable.
+    // Ctrl+T opens the unified tasks overlay: todos, then in-flight
+    // subagents, then jobs the session is waiting on. One chord, three
+    // groups, and a group with no rows is omitted rather than drawn empty.
+    //
+    // This replaced a two-key arrangement (`Ctrl+T` for the compact todo
+    // strip, `Shift+T` for the overlay) that was unreachable in practice:
+    // `Shift+T` is spelled as a capital, so it was `is_normal_only`, and the
+    // app boots in Insert — the first press composed a literal `T`. Because
+    // `Ctrl+T` carries CONTROL it is never composable text, so the action
+    // needs no mode gate at all and the overlay is reachable from the mode
+    // the user is actually in. The sidebar stayed on Ctrl+B so both panels
+    // remain independently reachable.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
-        InputAction::ToggleTodoList,
+        InputAction::ToggleTasksList,
     );
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('b')),
@@ -1054,11 +1141,21 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
     map.insert((KeyModifiers::NONE, KeyCode::Char('?')), InputAction::Help);
 
-    // Ctrl+T expands the todo list above the input; the sidebar moved to
-    // Ctrl+B so both panels stay independently reachable.
+    // Ctrl+T opens the unified tasks overlay: todos, then in-flight
+    // subagents, then jobs the session is waiting on. One chord, three
+    // groups, and a group with no rows is omitted rather than drawn empty.
+    //
+    // This replaced a two-key arrangement (`Ctrl+T` for the compact todo
+    // strip, `Shift+T` for the overlay) that was unreachable in practice:
+    // `Shift+T` is spelled as a capital, so it was `is_normal_only`, and the
+    // app boots in Insert — the first press composed a literal `T`. Because
+    // `Ctrl+T` carries CONTROL it is never composable text, so the action
+    // needs no mode gate at all and the overlay is reachable from the mode
+    // the user is actually in. The sidebar stayed on Ctrl+B so both panels
+    // remain independently reachable.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
-        InputAction::ToggleTodoList,
+        InputAction::ToggleTasksList,
     );
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('b')),
@@ -1195,19 +1292,22 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Shift+Enter",
-            action: "New line in prompt",
+            action: "Newline in prompt",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Esc",
-            action: "Switch to normal mode",
+            // One action, several effects: `Esc` is always `Cancel`, and
+            // what it cancels depends on what is on screen. Naming the action
+            // keeps the row honest without flattening the useful detail.
+            action: "Cancel — switch to normal mode",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Ctrl+L",
-            action: "Model selector",
+            action: "Select model",
             condition: None,
         },
         HelpEntry {
@@ -1231,7 +1331,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Ctrl+T",
-            action: "Toggle todo list",
+            action: "Toggle tasks (todos, subagents, jobs)",
             condition: None,
         },
         HelpEntry {
@@ -1259,7 +1359,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Space",
-            action: "Help",
+            action: "Show help",
             condition: None,
         },
         HelpEntry {
@@ -1337,7 +1437,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Ctrl+C",
-            action: "Quit",
+            action: "Force quit — unwind like Esc, then exit",
             condition: None,
         },
         HelpEntry {
@@ -1410,7 +1510,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Space",
-            action: "Focus sidebar (agent tree)",
+            action: "Show help",
             condition: None,
         },
         HelpEntry {
@@ -1445,7 +1545,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Esc",
-            action: "Leave sidebar focus",
+            action: "Cancel — leave sidebar focus",
             condition: Some("sidebar focus"),
         },
         HelpEntry {
@@ -1457,7 +1557,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "?",
-            action: "Help",
+            action: "Show help",
             condition: None,
         },
         HelpEntry {
@@ -1559,13 +1659,13 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Esc",
-            action: "Clear draft / close popup (never exits)",
+            action: "Cancel — clear draft / close popup (never exits)",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Ctrl+C",
-            action: "Quit / clear input",
+            action: "Force quit — unwind like Esc, then exit",
             condition: None,
         },
         HelpEntry {
@@ -1583,19 +1683,36 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Ctrl+L",
-            action: "Model selector",
+            action: "Select model",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Ctrl+T",
-            action: "Toggle sidebar",
+            action: "Toggle tasks (todos, subagents, jobs)",
             condition: None,
         },
+        // The Editor route claims `Ctrl+T` for its file tree and never reaches
+        // the binding table (`commands::editor` intercepts it above the
+        // resolver), so the same key means two different things depending on
+        // which screen is up. That is survivable only while help says so —
+        // D-C8 keeps the editor's long-established tree toggle rather than
+        // moving it here, and records the difference instead.
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+T",
+            action: "Toggle the file tree instead of the tasks overlay",
+            condition: Some("editor route"),
+        },
+        // `Ctrl+S` stashes the composed prompt everywhere except the Editor
+        // route, where the buffer owns it as *save*. The override is
+        // documented here (D-C8) rather than left for a user to discover:
+        // a chord that means two different things depending on the screen is
+        // only acceptable while help says so out loud.
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Ctrl+S",
-            action: "Stash prompt",
+            action: "Stash prompt (saves the buffer on the Editor route)",
             condition: None,
         },
         HelpEntry {
@@ -1717,37 +1834,31 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+L / Shift+Right",
-            action: "Dock the open box into the side panel, or select a pane when none is open",
+            action: "Pane right — dock the open box into the side panel, or select a pane when none is open",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+Left / Shift+H",
-            action: "Return the keyboard to the main buffer",
+            action: "Pane left — return the keyboard to the main buffer",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+Up / Shift+Down",
-            action: "Cycle which panel is loaded in the side column",
+            action: "Next panel — cycle which panel is loaded in the side column",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+S",
-            action: "Open the side-panel manager: pick which panel the side column holds, and bind its Ctrl+1..Ctrl+0 hotkey",
+            action: "Open panel manager — pick which panel the side column holds, and bind its Ctrl+1..Ctrl+0 hotkey",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+F",
-            action: "Open the project picker; /projects also works mid-prompt",
-            condition: None,
-        },
-        HelpEntry {
-            mode: HelpMode::Normal,
-            key: "Shift+T",
-            action: "Open the tasks overlay: todos, subagents, and jobs together, with empty groups hidden",
+            action: "Open project picker; /projects also works mid-prompt",
             condition: None,
         },
         HelpEntry {
@@ -1765,7 +1876,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+X",
-            action: "Close the active subagent tab; the run keeps going either way",
+            action: "Close subagent tab — the run keeps going either way",
             condition: None,
         },
         HelpEntry {
@@ -2525,49 +2636,90 @@ mod tests {
         assert_eq!(result, Some(InputAction::SelectModel));
     }
 
+    /// `Ctrl+T` is the single key that answers "what is this session waiting
+    /// on" — todos, subagents, and jobs together.
+    ///
+    /// It must work from Insert mode specifically. The app boots in Insert, so
+    /// a chord that needs a prior `Esc` is a chord most users never reach; the
+    /// surface it opens used to be behind `Shift+T`, which was Normal-only and
+    /// therefore composited a literal `T` on first press.
     #[test]
-    fn test_ctrl_t_returns_toggle_todo_list_in_insert_mode() {
-        let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
-        let result = handle_key_with_bindings(key, None, InputMode::Insert);
-        assert_eq!(result, Some(InputAction::ToggleTodoList));
+    fn ctrl_t_opens_the_tasks_overlay_in_both_modes() {
+        for mode in [InputMode::Insert, InputMode::Normal] {
+            let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
+            assert_eq!(
+                handle_key_with_bindings(key, None, mode),
+                Some(InputAction::ToggleTasksList),
+                "Ctrl+T must open the tasks overlay in {mode:?}"
+            );
+        }
     }
 
+    /// Regression: `Shift+T` is retired, so a capital `T` is text again.
+    ///
+    /// This is the test that fails if someone re-binds the shifted capital
+    /// *and* relaxes `is_normal_only` — the combination silently breaks the
+    /// composer for every word containing a `T`, which is most of them. The
+    /// two facts are coupled on purpose and must be changed together.
     #[test]
-    fn shift_t_opens_the_tasks_overlay_under_both_encodings() {
-        // Terminals disagree about how a shifted letter arrives: some send
-        // `Char('T') + SHIFT`, others a bare `Char('T')`. Binding only one
-        // spelling means the key silently does nothing on the other half of
-        // the terminals a user might be on.
+    fn capital_t_composes_text_in_insert_mode() {
         for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
             let key = make_key(KeyCode::Char('T'), modifiers);
             assert_eq!(
-                handle_key_with_bindings(key, None, InputMode::Normal),
-                Some(InputAction::ToggleTasksList),
-                "Shift+T must resolve with modifiers {modifiers:?}"
+                handle_key_with_bindings(key, None, InputMode::Insert),
+                Some(InputAction::Char('T')),
+                "a capital T must compose text, not open the overlay \
+                 (modifiers {modifiers:?})"
             );
         }
     }
 
     #[test]
     fn lowercase_t_is_not_the_tasks_overlay() {
-        // The binding is Normal-mode-only and case-sensitive on purpose: a
-        // bare `t` is a prompt character and must never open the overlay.
-        let key = make_key(KeyCode::Char('t'), KeyModifiers::NONE);
-        assert_ne!(
-            handle_key_with_bindings(key, None, InputMode::Normal),
-            Some(InputAction::ToggleTasksList),
-            "lowercase t must not open the tasks overlay"
-        );
+        // The chord is the only spelling: a bare `t` is a prompt character in
+        // both modes and must never open the overlay.
+        for mode in [InputMode::Insert, InputMode::Normal] {
+            let key = make_key(KeyCode::Char('t'), KeyModifiers::NONE);
+            assert_ne!(
+                handle_key_with_bindings(key, None, mode),
+                Some(InputAction::ToggleTasksList),
+                "lowercase t must not open the tasks overlay in {mode:?}"
+            );
+        }
     }
 
+    /// `Ctrl+T` must be the *only* spelling that opens the pending-work
+    /// overlay.
+    ///
+    /// D-C7 retired the in-place todo-strip toggle rather than leaving it
+    /// reachable by a second, undiscoverable spelling. If a future change adds
+    /// another chord for `ToggleTasksList` — or re-binds a shifted capital to
+    /// it — the composer breaks again for whichever letter it claimed, and the
+    /// binding table is the only place that is visible.
     #[test]
-    fn ctrl_t_still_owns_the_todo_strip() {
-        // The two surfaces overlap by design but must not share a key: Ctrl+T
-        // owns the always-visible compact progress line.
-        let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
+    fn ctrl_t_is_the_only_spelling_of_the_tasks_overlay() {
+        for vim_mode in [false, true] {
+            let map = build_bindings(None, vim_mode);
+            let spellings: Vec<(KeyModifiers, KeyCode)> = map
+                .iter()
+                .filter(|(_, action)| **action == InputAction::ToggleTasksList)
+                .map(|(key, _)| *key)
+                .collect();
+            assert_eq!(
+                spellings,
+                vec![(KeyModifiers::CONTROL, KeyCode::Char('t'))],
+                "vim_mode={vim_mode}: the overlay must have exactly one spelling, \\
+                 Ctrl+T; found {spellings:?}"
+            );
+        }
+        // The compact todo strip is not an action at all any more: it is a row
+        // derived from the todo list, and the overlay is its full view. The
+        // action keeps its configurable name so existing keybind configs keep
+        // loading.
         assert_eq!(
-            handle_key_with_bindings(key, None, InputMode::Normal),
-            Some(InputAction::ToggleTodoList)
+            ActionKey::from_input_action(&InputAction::ToggleTasksList),
+            Some(ActionKey::ToggleTasksList),
+            "the tasks overlay keeps its configurable action name"
         );
     }
 
@@ -2695,7 +2847,7 @@ mod tests {
         // default-map-only check would have missed.
         assert_eq!(
             seen,
-            ['F', 'G', 'H', 'J', 'K', 'L', 'N', 'P', 'Q', 'S', 'T', 'W', 'X']
+            ['F', 'G', 'H', 'J', 'K', 'L', 'N', 'P', 'Q', 'S', 'W', 'X']
                 .into_iter()
                 .collect::<BTreeSet<char>>(),
             "the sweep must observe every built-in Shift-letter mnemonic"
@@ -2752,17 +2904,36 @@ mod tests {
         );
     }
 
-    /// Regression: the in-TUI help advertised bare `\`, `}`, `{`, `Q` and the
-    /// sidebar `a`/`h`/`l` keys unconditionally, but they exist only in the vim
-    /// map. Under the default config (`vim_mode=false`) Normal mode consults the
-    /// Insert map, which never bound them, so those keys did nothing.
+    /// Invariant **I6**: every advertised chord resolves to the action it
+    /// advertises, in the mode it is advertised under.
     ///
-    /// Every entry that survives configuration gating must resolve through the
-    /// real key resolver in the mode it is documented under. Resolution goes
-    /// through `handle_key_with_bindings` rather than a direct map lookup so the
-    /// production `DEFAULT_BINDINGS` fallback is modelled correctly.
+    /// The previous version of this guard asserted only that an advertised key
+    /// resolved to *something*. That is what let a live `Ctrl+T` row keep
+    /// advertising "Toggle sidebar" — the sidebar moved to `Ctrl+B` — while
+    /// the key actually performed the todo toggle. A key that is bound to the
+    /// wrong thing is exactly as broken as a key that is unbound, and the
+    /// guard could not tell the difference.
+    ///
+    /// The comparison is against [`ActionKey::label`] — the same canonical
+    /// naming authority that already produces `ActionDescriptor` — rather than
+    /// against a second hand-kept table. Asserting against a second list would
+    /// relocate the drift instead of removing it.
+    ///
+    /// Two exemptions, both deliberate:
+    ///
+    /// - A **conditional** entry (`condition: Some(..)`) describes behaviour
+    ///   that depends on where focus is — "vim mode", "sidebar focus", "some
+    ///   dialogs" — so its prose is deliberately more specific than the
+    ///   action's name. It is still required to resolve.
+    /// - A key that resolves to [`InputAction::Char`] is *typing*, not an
+    ///   advertised action; `/` and `?` are documented as text.
     #[test]
     fn documented_keys_resolve_in_the_active_map() {
+        // Collect every violation before asserting. A guard that stops at the
+        // first mismatch turns a five-row help table into five runs, which is
+        // how a check like this quietly stops being run.
+        let mut unbound: Vec<String> = Vec::new();
+        let mut mislabelled: Vec<String> = Vec::new();
         for mode in [HelpMode::Normal, HelpMode::Insert] {
             for vim_mode in [false, true] {
                 let active = build_bindings(None, vim_mode);
@@ -2782,37 +2953,124 @@ mod tests {
                     // SHIFT, and the maps store either form. Try the plausible
                     // spellings so this audits the binding table rather than
                     // terminal trivia.
-                    let mut spellings: Vec<(KeyModifiers, KeyCode)> = vec![(modifiers, code)];
-                    if let KeyCode::Char(c) = code {
-                        if c.is_ascii_alphabetic() {
-                            let upper = KeyCode::Char(c.to_ascii_uppercase());
-                            spellings.push((modifiers, upper));
-                            if !modifiers.contains(KeyModifiers::SHIFT) {
-                                spellings.push((modifiers | KeyModifiers::SHIFT, upper));
-                            }
-                        }
-                    }
+                    let spellings = key_spellings(modifiers, code);
                     let input_mode = match mode {
                         HelpMode::Normal => InputMode::Normal,
                         _ => InputMode::Insert,
                     };
-                    let resolved = spellings.iter().any(|(mods, candidate)| {
-                        handle_key_with_bindings(
-                            KeyEvent::new(*candidate, *mods),
+                    let mut resolved: Vec<InputAction> = Vec::new();
+                    for (mods, candidate) in spellings {
+                        if let Some(action) = handle_key_with_bindings(
+                            KeyEvent::new(candidate, mods),
                             Some(&active),
                             input_mode,
-                        )
-                        .is_some()
-                    });
-                    assert!(
-                        resolved,
-                        "{mode:?} help advertises {:?} ({}) for vim_mode={vim_mode} \
-                         but it is unbound in the active map",
-                        entry.key, entry.action
-                    );
+                        ) {
+                            if !resolved.contains(&action) {
+                                resolved.push(action);
+                            }
+                        }
+                    }
+                    if resolved.is_empty() {
+                        unbound.push(format!(
+                            "{mode:?} {:?} ({:?}, vim_mode={vim_mode}) is unbound",
+                            entry.key, entry.action
+                        ));
+                        continue;
+                    }
+                    // Conditional rows describe behaviour that depends on
+                    // where focus is, so their prose is deliberately more
+                    // specific than the action's name. They still had to
+                    // resolve, which is checked above.
+                    if entry.condition.is_some() {
+                        continue;
+                    }
+                    if !resolved.iter().any(|a| advertises(entry.action, a)) {
+                        mislabelled.push(format!(
+                            "{mode:?} {:?} advertises {:?} but performs {} \
+                             (vim_mode={vim_mode})",
+                            entry.key,
+                            entry.action,
+                            resolved
+                                .iter()
+                                .map(|a| format!("{a:?}"))
+                                .collect::<Vec<_>>()
+                                .join(" or "),
+                        ));
+                    }
                 }
             }
         }
+        assert!(
+            unbound.is_empty() && mislabelled.is_empty(),
+            "help rows that do not match the binding table:\n  unbound: {:#?}\n  \
+             mislabelled: {:#?}",
+            unbound,
+            mislabelled
+        );
+    }
+
+    /// The spellings a shifted letter may plausibly arrive as.
+    ///
+    /// Some terminals send `Char('W') + SHIFT`, others `Char('w') + SHIFT`, and
+    /// legacy shifted-capital bindings are stored under `NONE` as well as
+    /// `SHIFT`. Auditing one spelling would audit terminal trivia instead of
+    /// the binding table.
+    fn key_spellings(modifiers: KeyModifiers, code: KeyCode) -> Vec<(KeyModifiers, KeyCode)> {
+        let mut spellings: Vec<(KeyModifiers, KeyCode)> = vec![(modifiers, code)];
+        if let KeyCode::Char(c) = code {
+            if c.is_ascii_alphabetic() {
+                let upper = KeyCode::Char(c.to_ascii_uppercase());
+                spellings.push((modifiers, upper));
+                if !modifiers.contains(KeyModifiers::SHIFT) {
+                    spellings.push((modifiers | KeyModifiers::SHIFT, upper));
+                }
+            }
+        }
+        spellings
+    }
+
+    /// Whether `advertised` help prose names `action`.
+    ///
+    /// Compares on the canonical label with any trailing key hint stripped
+    /// ("Open panel manager (Shift+S)" -> "Open panel manager") so the help
+    /// table is free to spell the hint out or leave it to the key column
+    /// beside it. Substring rather than equality: rows legitimately carry a
+    /// qualifier ("Newline in prompt", not "Newline").
+    fn advertises(advertised: &str, action: &InputAction) -> bool {
+        // A typed character is text, not an advertised action.
+        let Some(key) = ActionKey::from_input_action(action) else {
+            return true;
+        };
+        let label = key.label();
+        let core = label.split(" (").next().unwrap_or(label).trim();
+        advertised
+            .to_ascii_lowercase()
+            .contains(&core.to_ascii_lowercase())
+    }
+
+    /// Proves the I6 assertion is not vacuous.
+    ///
+    /// A guard that cannot fail is worse than no guard, because it reads as
+    /// coverage. `check_daemon_cwd_usage.py` sets the precedent in this repo:
+    /// prove the check fails on a deliberately wrong input rather than
+    /// asserting that it exists.
+    #[test]
+    fn i6_advertisement_check_rejects_a_mislabelled_action() {
+        // The real defect this guard now catches: `Ctrl+T` performs the tasks
+        // toggle, and this is the sidebar's label.
+        assert!(
+            !advertises("Toggle sidebar", &InputAction::ToggleTasksList),
+            "advertises() must reject prose naming a different action"
+        );
+        assert!(
+            advertises(
+                "Toggle tasks (todos, subagents, jobs)",
+                &InputAction::ToggleTasksList
+            ),
+            "advertises() must accept prose naming the action"
+        );
+        // Typed characters are exempt by construction, not by omission.
+        assert!(advertises("Type ?", &InputAction::Char('?')));
     }
 
     #[test]
@@ -2862,11 +3120,17 @@ mod tests {
             q_entry.unwrap().action
         );
 
-        // In normal mode, bare '?' should say "Help"
+        // In normal mode, bare '?' names the action it performs. The canonical
+        // string is `ActionKey::Help`'s label, so the help table and the
+        // binding table cannot call the same key by two different names.
         let entries = help_entries_for_mode(HelpMode::Normal);
         let q_entry = entries.iter().find(|e| e.key == "?");
         assert!(q_entry.is_some(), "normal mode should document '?'");
-        assert_eq!(q_entry.unwrap().action, "Help");
+        assert_eq!(
+            q_entry.unwrap().action,
+            ActionKey::Help.label(),
+            "normal mode '?' must use the canonical label"
+        );
 
         // In insert mode, bare '/' should say "Type /" not "Focus prompt"
         let entries = help_entries_for_mode(HelpMode::Insert);

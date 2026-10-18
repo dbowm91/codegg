@@ -39,17 +39,45 @@ fn type_command(app: &mut App, command: &str) {
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
 }
 
-/// Drive the picker bare `/agents` opens and commit the Agents panel.
-///
-/// Asserts the picker itself opens: a `/agents` that selects nothing and
-/// opens nothing is the "routed nowhere" regression wearing a passing
-/// select assertion.
-fn pick_agents_panel(app: &mut App) {
-    type_command(app, "/agents");
+/// Bare `/agents` must open **agents**.
+#[test]
+fn bare_agents_opens_the_agent_dialog() {
+    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
+    type_command(&mut app, "/agents");
     assert_eq!(
         app.focus_manager.active_dialog_type(),
-        DialogType::PanelPicker,
-        "bare /agents opens the panel picker"
+        DialogType::Agent,
+        "bare /agents asks to see agents, so it must open agents — \
+         not a question about which panel should hold them"
+    );
+}
+
+/// `/agents` and `/agent` are the same command wearing two spellings; they must
+/// not disagree about what a user gets.
+#[test]
+fn agents_and_agent_open_the_same_surface() {
+    let mut via_plural = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
+    type_command(&mut via_plural, "/agents");
+    let mut via_singular = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
+    type_command(&mut via_singular, "/agent");
+    assert_eq!(
+        via_plural.focus_manager.active_dialog_type(),
+        via_singular.focus_manager.active_dialog_type(),
+        "/agents and /agent must open the same surface"
+    );
+}
+
+/// Selecting the Agents *panel* is still a real thing; it just lives on the
+/// panel manager now, where every other panel selection lives. This is the
+/// capability the retired picker used to be the only entry point to.
+#[test]
+fn the_panel_manager_still_loads_and_focuses_the_agents_panel() {
+    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
+    type_command(&mut app, "/panels");
+    assert_eq!(
+        app.focus_manager.active_dialog_type(),
+        DialogType::PanelManager,
+        "/panels is where panel placement is answered"
     );
     let steps = SidePanelId::Agents
         .index()
@@ -58,33 +86,14 @@ fn pick_agents_panel(app: &mut App) {
         app.on_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
     }
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
-}
-
-/// The crash itself, through the picker. A stack overflow aborts the process,
-/// so "this test finishes with the management panel selected" is the
-/// assertion: the picker commit must land on Agents, not recurse through a
-/// hosted placeholder and not strand the selection on the previous panel.
-#[test]
-fn the_agents_command_loads_its_panel_instead_of_recursing() {
-    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    pick_agents_panel(&mut app);
     assert_eq!(
         app.panel_host.active(),
         SidePanelId::Agents,
-        "/agents selects the management panel"
+        "the manager must still be able to select the management panel"
     );
-}
-
-/// `/agents` opens the panel to be *used*. Selecting without focusing left the
-/// keyboard in the composer and then warned that the panel had not taken
-/// focus — true of the keyboard, false of the panel.
-#[test]
-fn the_agents_panel_takes_the_keyboard() {
-    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    pick_agents_panel(&mut app);
     assert!(
         app.panel_host.is_focused(),
-        "the panel the user just opened should have the keyboard"
+        "the panel the user just selected should have the keyboard"
     );
 }
 

@@ -711,10 +711,17 @@ stays in the toast, and `/logs` retains 50 of them via `ToastManager::history`.
 
 Rows come from `sync_subagents_from_snapshot`, which reads the same
 `active_turn` (falling back to the newest `recent_turns`) agent tree the
-sidebar renders, joined to durable runs by exact canonical task id only to
-attach a `run_id`. A snapshot that *arrives* replaces the rows; **a missing
-snapshot does not**, because absence is not evidence that no subagents exist
-and clearing on it would blank the strip mid-turn.
+sidebar renders. Every field on a row — including `run_id` and `display_name` —
+is copied **verbatim off the projected node**; nothing is joined, looked up, or
+synthesized here. An earlier revision described this as being "joined to durable
+runs by exact canonical task id only to attach a `run_id`", and that join never
+worked: the node's `task_id` is a daemon-local `u64` rendered in decimal while
+`AgentRunSummary::task_id` is a UUID string, so the two could never match and
+`run_id` was permanently `None`. The durable id now arrives inside
+`CoreEvent::SubagentStarted` and is carried through the projection as a field.
+A snapshot that *arrives* replaces the rows; **a missing snapshot does not**,
+because absence is not evidence that no subagents exist and clearing on it
+would blank the strip mid-turn.
 
 **Subagent buffer** (`SubagentState::open`). Clicking a row replaces the
 transcript in the viewport rect rather than opening a modal, so `Esc` has one
@@ -732,7 +739,7 @@ height is predictable. The strip's rows are added to the prompt allocation in
 `session_layout` and then carved back off, so the input box keeps the height it
 requested and the viewport absorbs the difference.
 
-**Tasks overlay** (`Shift+T`, `state/tasks.rs`). One overlay over todos,
+**Tasks overlay** (`Ctrl+T`, `state/tasks.rs`). One overlay over todos,
 subagents, and jobs in that fixed order, each under its own header. A group
 with nothing in it contributes **no header at all** — the alternative, an
 empty "Jobs" heading above nothing, is what makes an overlay feel broken even
@@ -774,7 +781,7 @@ returns 0 only when collapsed; an expanded-but-empty overlay reserves the row
 for `render_tasks_strip`'s `Nothing pending` line. Height, not content, decides
 whether that line can paint — the render is handed `tasks_area`, and it returns
 at `None` before reaching the empty branch. Returning 0 for "nothing to show"
-therefore made the line unreachable *and* `Shift+T` a silently dead key on an
+therefore made the line unreachable *and* `Ctrl+T` a silently dead key on an
 idle session, which is the first thing a user tries. The same trap applies to
 any "draw an empty-state message" affordance: **reserve the row, then draw the
 message into it.**
@@ -2305,10 +2312,9 @@ hint: `/project-init`'s `"a: publish   Esc: cancel"` and `/shell-show`'s
 six-verb footer describe the modal box, where `Esc` really does close.
 Reusing them would re-advertise exactly the dead `Esc` the hint exists to stop
 describing. M002b retired twelve in-panel footers and four copies of a
-border-title keymap on the same reasoning, and the one widget that keeps its
-footer is `PanelPicker`, which declares `docks_as_viewer() == true` but has no
-`App::dock_target` arm and therefore never docks — its footer is its only
-affordance.
+border-title keymap on the same reasoning. The one widget that used to keep a
+footer this way — `PanelPicker` — was retired with its last caller, so there is
+no surviving exception.
 
 **The host owns the chrome, the widget owns the rows.** `render_hosted` paints
 the border and the ` ● Files ` title — the `●` being the only thing on screen
@@ -3213,7 +3219,7 @@ dialogs.
 | Dialog selection | `SelectModel`, `SelectAgent`, `SelectSession`, `SelectTheme`, `ThemePreviewChanged`, `ThemeCommit`, `ThemeRevert`, `KeybindChanged`, `SelectTemplate`, `GotoMessage`, `CopyShareUrl`, `McpAction`, `ConnectionLifecycle`, `ProviderConnectionsUpdated`, `ProviderConnectionModelsUpdated`, `OpenConnectionRotation` |
 | Dialog submit/confirm | `SubmitConnect`, `SubmitPermission`, `SubmitQuestionAnswers`, `SubmitImportPreview`, `ConfirmImport`, `ConfirmResult`, `ConfirmDeleteSession`, `ConfirmArchiveSession`, `ConfirmBulkDelete`, `ConfirmBulkArchive`, `SubmitSelectionUpdate`, `SessionSelectionUpdated` |
 | Session lifecycle | `NewSession`, `CloseSession`, `ClearSession`, `CycleAgent`, `CycleModelForward`, `CycleModelBackward`, `ForkSession`, `ForkTreeSession`, `SelectTreeSession`, `UndoDelete`, `Quit` |
-| Toggles | `ToggleSidebar`, `ToggleTodoList`, `ToggleFullscreen`, `ToggleReasoning`, `ToggleTts`, `ToggleComposerMode` |
+| Toggles | `ToggleSidebar`, `ToggleTasksList`, `ToggleFullscreen`, `ToggleReasoning`, `ToggleTts`, `ToggleComposerMode` |
 | Project tabs | `NextProjectTab`, `PreviousProjectTab`, `CloseProjectTab`, `SelectProjectTabByIndex` |
 | Research/shell/git | `ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`, `SecurityReviewJump`, `ReviewOpenDiff`, `ExternalEditor`, `CopyMessage`, `ShellInclude`, `ShellAsk`, `ShellRerun`, `ShellKill`, `RunRerun`, `RunPromote`, `RunCopyId` |
 | Workspace dashboard | `WorkspaceDashboardMove`, `WorkspaceDashboardOpen`, `WorkspaceDashboardRefresh`, `WorkspaceDashboardToggleExpand` |
@@ -3849,23 +3855,22 @@ truncation reason.
 M006-F adds the `:` command line to the editor buffer and turns `/agents`
 into a management panel.
 
-#### `/agents` opens a box, and `Enter` opens the editor
+#### `/agents` opens agents, and `Enter` opens the editor
 
-Bare `/agents` opens `PanelPickerDialog` ("which panel should this go in?")
-rather than jumping straight into the side column. Every other `/` command
-that brings up a surface has a box of its own, and a list that *is* already
-the whole answer looks like nothing happened — which is exactly the "selecting
-an agent does not appear to do anything" symptom. The text listing is still
-reachable at `/agents show` and `/agents --all`.
+Bare `/agents` opens the **agent dialog** (`Dialog::Agent`) — the same surface
+`/agent` opens. It previously opened `PanelPickerDialog` ("which panel should
+this go in?") instead, which answered a question nobody asked: someone typing
+`/agents` wants to see agents. Panel *placement* is a different question and
+stays on `/panels`.
 
-`PanelPickerDialog` shares its query/cursor/scroll/mode/keymap with the manager
-through `PanelListState` (`components/dialogs/panel_list.rs`). Two boxes that
-both list panels must agree on what `j` does, where the filter goes, and what
-`Enter` commits; the alternative is a third copy of `move_cursor`/`scroll`/
-`matches`/`mode_badge`, which is how a box and its panel drift. The cursor is
-an index into `SidePanelId::ALL`, never into the filtered view — filtering
-narrows visibility without renumbering what `Enter` acts on, pinned by
-`typing_narrows_what_is_visible_without_moving_the_highlight`.
+`PanelPickerDialog` was **retired** with that route. It had exactly one caller,
+and its selection half hard-coded `SidePanelId::Agents`, so it was a one-off
+shim for `/agents` rather than a general placement tool; leaving it in place
+would have been dead code that clippy's `-D warnings` rejects and that no
+surface could reach. Its list mechanics were never duplicated: the manager
+shares `PanelListState` (`components/dialogs/panel_list.rs`) directly, which is
+where the shared `move_cursor`/`scroll`/`matches`/`mode_badge` behavior now
+lives alone.
 
 The picker commits through the **same** `TuiMsg::SelectPanel` the manager
 emits; there is no second route into panel selection.
@@ -4175,7 +4180,7 @@ root routing.
 
 52 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
 `NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
-`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTodoList`, `ToggleSection`,
+`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTasksList`, `ToggleSection`,
 `CloseSession`, `Help`, `FocusPrompt`, `StashPrompt`, `RestorePrompt`,
 `CopyMessage`, `CycleModelForward`, `CycleModelBackward`, `ToggleReasoning`,
 `Quit`, `ForceQuit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`,
@@ -4312,7 +4317,7 @@ tui/
 │       ├── snapshot.rs     # Remote snapshot building
 │       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
 │       ├── subagents.rs    # SubagentRow projection rows + strip/buffer view state
-│       ├── tasks.rs        # Shift+T tasks overlay rows (todos, subagents, jobs)
+│       ├── tasks.rs        # Ctrl+T tasks overlay rows (todos, subagents, jobs)
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
 │       ├── view_switch.rs  # Active-view switch coordinator
 │       ├── work_orders.rs  # Task/work-order state, ComposerMode

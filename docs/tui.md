@@ -438,19 +438,22 @@ Three surfaces show this, and all three read one projection:
 
 | Surface | Open it with | What it shows |
 |---|---|---|
-| Tasks overlay | `Shift+T` in `NOR` | Todos, subagents, and jobs together |
+| Tasks overlay | `Ctrl+T` in `INS` or `NOR` | Todos, subagents, and jobs together |
 | Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
 | Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's transcript per tab, in the main buffer |
 
-All four keys are `[NOR]`-only. In `[INS]` they are ordinary capital letters,
-so composing a word containing `T`, `N`, `P`, or `X` never triggers them — and
-neither does any other capital letter. `Shift+F` (project picker) and `Ctrl+O`
-(Workspace view) work the same way round: the shifted letter is `[NOR]`-only,
-the chord is live in both modes.
+`Ctrl+T` works in **both** modes — the app boots in `[INS]`, and a chord that
+first needs an `Esc` is a chord most people never find.
+
+`Shift+N`, `Shift+P`, and `Shift+X` are `[NOR]`-only. In `[INS]` they are
+ordinary capital letters, so composing a word containing `N`, `P`, or `X` never
+triggers them — and neither does any other capital letter. `Shift+F` (project
+picker) and `Ctrl+O` (Workspace view) work the same way round: the shifted
+letter is `[NOR]`-only, the chord is live in both modes.
 
 ### The tasks overlay
 
-`Shift+T` opens a single overlay listing **todos, then subagents, then jobs**,
+`Ctrl+T` opens a single overlay listing **todos, then subagents, then jobs**,
 each under its own heading. A group with nothing in it is left out entirely —
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
 and `Esc` closes the overlay. With nothing in any group the overlay says
@@ -463,13 +466,16 @@ build does not recognise it is shown rather than hidden, because showing
 finished work costs a glance and hiding live work costs you the thing you
 asked for.
 
-The overlay is driven by `[NOR]` keys only, so you can press `i` and keep
-typing with it open.
+Opening it from `[INS]` switches to `[NOR]`, because the overlay's own keys —
+`j`/`k`, `Enter`, `Esc` — are `[NOR]` gestures and must never be claimed while
+you are composing. Closing it hands `[INS]` straight back, so peeking at pending
+work never ends composition mode. You can also press `i` to go back to typing
+with the overlay left open.
 
-`Ctrl+T` is unaffected and still owns the compact todo strip above the input.
-The two surfaces overlap by design — todos appear in both — because the strip is
-a progress line that stays on screen at all times, and the overlay is a
-fuller list you open when you want it.
+Above the input, the one-line todo strip stays on screen at all times. It has no
+expanded form of its own any more: the full list is the overlay's first group,
+next to the subagents and jobs, because "what is this session waiting on" is one
+question and answering it in two places meant the two could disagree.
 
 ### When the agent is waiting on other work
 
@@ -504,7 +510,7 @@ move through them, `Space` collapses a section, and `Enter` (or a click) acts on
 the selected row:
 
 - a **subagent** row opens that subagent's transcript as a tab in the main
-  buffer, the same tab `Shift+T` would have opened;
+  buffer, the same tab `Ctrl+T` would have opened;
 - a **job** row does nothing. Jobs have no transcript to show yet, so the key
   is consumed rather than sending you somewhere arbitrary;
 - the **Agent Runs tree** further down the panel keeps its own behaviour:
@@ -1029,6 +1035,35 @@ why. Listings unavailable from the daemon are explicit errors — the tree
 never falls back to reading the local machine's own files, so a
 same-spelled local directory can never masquerade as the workspace. A busy
 daemon asks for an explicit retry with `r`.
+
+### Editing in the buffer
+
+The Editor route owns its own keys rather than routing them through the global
+binding table, because what a key means depends on whether the buffer has focus
+and which mode it is in.
+
+| Key | What it does |
+|---|---|
+| `Ctrl+E` | focus the buffer (`Esc` returns to the composer) |
+| `Esc` | leave insert mode, then drop buffer focus, then leave the view |
+| `Ctrl+S` | save the document through the controller |
+| `Ctrl+R` | resync the replica after a transport failure |
+| `Ctrl+R` (redo) | redo the last undone local edit |
+| `R` | reload from disk, discarding the local draft |
+| `h` `j` `k` `l` | move by character or line |
+| `0` / `$` | start or end of line |
+| `gg` / `G` | start or end of buffer |
+| `w` / `b` | move by word |
+| `PgUp` / `PgDn` | move by half a page |
+| `i` `a` `I` `A` | enter insert mode at the cursor or line end |
+| `o` / `O` | open a line below or above |
+| `x` / `D` | delete a character, or to end of line |
+| `dd` / `dw` | delete a line or a word |
+| `u` | undo the last local edit |
+
+`Ctrl+S` is the one chord whose meaning changes with the route: on the composer
+it stashes the prompt, and here it saves the document. `Ctrl+T` is the other —
+it toggles this route's file tree rather than opening the tasks overlay.
 
 ## Browsing files
 

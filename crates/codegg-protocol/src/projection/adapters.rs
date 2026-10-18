@@ -1043,4 +1043,60 @@ mod tests {
         let multi = projection_envelopes_from_core(&env);
         assert_eq!(multi.primary.event_seq, 42);
     }
+
+    /// C004: the name and the durable run id must survive the adapter.
+    ///
+    /// These two fields are copied from the event and never re-derived. That is
+    /// the whole reason they exist — a name re-drawn here would make replay
+    /// diverge from live — and it is exactly the kind of field that silently
+    /// stops being copied without any other test noticing, because nothing
+    /// else in the adapter's output depends on it.
+    #[test]
+    fn subagent_started_carries_name_and_run_id_into_the_node() {
+        let env = envelope(
+            CoreEvent::SubagentStarted {
+                session_id: "s1".into(),
+                task_id: 7,
+                agent: "explorer".into(),
+                description: "exploring the tree".into(),
+                display_name: Some("Sally".into()),
+                run_id: Some("018f-run-7".into()),
+            },
+            9,
+        );
+        let events = projection_events_from_core(&env);
+        match &events[0] {
+            ProjectionEvent::SubagentStarted { node } => {
+                assert_eq!(node.display_name.as_deref(), Some("Sally"));
+                assert_eq!(node.run_id.as_deref(), Some("018f-run-7"));
+                assert_eq!(node.task_id, 7);
+            }
+            other => panic!("expected a subagent node, got {other:?}"),
+        }
+    }
+
+    /// A node recorded before display names existed decodes as unnamed rather
+    /// than failing: the field is additive and defaulted for exactly this.
+    #[test]
+    fn subagent_started_without_a_name_is_still_a_node() {
+        let env = envelope(
+            CoreEvent::SubagentStarted {
+                session_id: "s1".into(),
+                task_id: 8,
+                agent: "explorer".into(),
+                description: "no name yet".into(),
+                display_name: None,
+                run_id: None,
+            },
+            10,
+        );
+        let events = projection_events_from_core(&env);
+        match &events[0] {
+            ProjectionEvent::SubagentStarted { node } => {
+                assert!(node.display_name.is_none());
+                assert!(node.run_id.is_none());
+            }
+            other => panic!("expected a subagent node, got {other:?}"),
+        }
+    }
 }
