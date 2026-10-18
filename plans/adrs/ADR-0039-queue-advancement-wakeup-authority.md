@@ -1,15 +1,14 @@
 # ADR-0039: Queue Advancement Wakeup Authority
 
-Status: **proposed**
+Status: **accepted**
 
-Date: 2026-10-18 (authored). **Acceptance is a maintainer action** — see
-[Acceptance](#acceptance).
+Date: 2026-10-18 (authored and accepted).
 
 **Supersedes nothing.** ADR-0038 decided *as whom* a due entry is submitted. It
 explicitly left *when* an entry becomes due undecided, and
-`plans/implementation/user-prompt-queue/007-delayed-queue-delivery.md` (M007) is
-blocked on that question. This ADR selects **Option A**, the bounded
-queue-scoped advance tick, and authorizes M007.
+`plans/implementation/user-prompt-queue/007-delayed-queue-delivery.md` (M007) was
+blocked on that question. This ADR selects **Option A**, the bounded queue-scoped
+advance tick, and authorized M007.
 
 Decision owners: project maintainers
 
@@ -165,15 +164,22 @@ guarantee it cannot make.
 
 ## Acceptance
 
-This ADR is **proposed**, not accepted. Per the M007 plan's stop conditions, an
-acceptance is a maintainer action: the implementation of the wakeup is
-authorized by that acceptance, not by this document's existence.
+**Accepted 2026-10-18** as a maintainer action. Option A is authorized; M007's
+implementation of the wakeup — the bounded queue-scoped advance tick, the park
+condition with no timer armed, and the `Notify` wake from a successful
+`add`/`edit` — is the implementation of this decision, not a separate one.
 
-On acceptance, this ADR's status becomes **accepted**, the date line records the
-acceptance, and the following must be updated in the same change:
+The acceptance discharged the four items this document listed as its
+acceptance conditions, in the same change:
 
-- `plans/subsystems/user-prompt-queue-roadmap.md` — the Milestone 7 row and the
-  §5 basis statement, which still claims an existing periodic observation point.
-- `plans/registry.md` — the M007 row.
+- `plans/subsystems/user-prompt-queue-roadmap.md` — the Milestone 7 row and §5, the
+  latter's corrected basis now naming this ADR as the wakeup owner rather than an
+  open decision.
+- `plans/registry.md` — the M007 row, moved off its named-decision blocker.
 - `plans/implementation/user-prompt-queue/007-delayed-queue-delivery.md` — the
   status line.
+
+Acceptance does not reopen ADR-0038. The caller-set widening (two → three, in
+`scripts/check_queue_delivery_callsites.py`) is authorized here; the *authority*
+ADR-0038 decided is unchanged, and a fourth caller remains a defect the guard
+must reject.

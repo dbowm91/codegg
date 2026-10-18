@@ -229,20 +229,22 @@ reason.
 the submission id is a deterministic hash of the entry id alone, so a retry
 re-derives the same receipt and receives `Duplicate`.
 
-**Two triggers, and only two** — `scripts/check_queue_delivery_callsites.py`,
-which also fails when neither is wired (a guard that passes on an unwired
-feature constrains nothing):
+**Three triggers, and only three** — `scripts/check_queue_delivery_callsites.py`,
+which also fails when none is wired (a guard that passes on an unwired feature
+constrains nothing):
 
 | Caller | When | Why there |
 |---|---|---|
 | `deliver_next_queued_prompt` | after `spawn_turn_reaper` observes a terminal event, the lease is released, and the runtime is parked `Idle` | Both preconditions for delivery — free session and no lease row — are established there, which is why it is not on the terminal event itself |
 | `reconcile_stranded_queue_deliveries` | once per daemon start, after `interrupt_incomplete_turn_receipts` and after `reconcile_session_controllers` | A restart is the second moment a session is reliably free; before the controller reconciliation a stale lease would release every entry it tried to deliver |
+| `advance_due_queue_entries` | on the bounded queue advance tick, when `run_queue_advance_task` wakes at the earliest due instant across all sessions | **M007, authorized by ADR-0039 (accepted).** A scheduled entry on an idle session has no terminal transition and no restart to wait for; without this it would deliver late, or never within the session |
 
-Neither is a poller. The daemon has **no periodic session-observation loop** —
-its three `tokio::time` intervals are projection retention (300s), opt-in
-provider refresh (30s), and opt-in TTS drain (500ms) — and M003 adds none.
-Delivery runs on a terminal transition and at restart, which are the only two
-moments a session is free by construction.
+None of the three is a poller. The daemon has **no periodic session-observation
+loop** — its three `tokio::time` intervals are projection retention (300s),
+opt-in provider refresh (30s), and opt-in TTS drain (500ms) — and M003 adds
+none. M007 adds one wakeup source and no loop: the tick computes the earliest
+due instant, sleeps exactly until it, and **parks on a `Notify` with no timer
+armed** when nothing is scheduled, so an idle daemon stays idle.
 
 Stranded `delivering` rows are resolved **from the receipt**, never from the
 entry, because the receipt is the only evidence of whether a turn actually
@@ -502,7 +504,7 @@ transport from the underlying agent and session logic.
 | `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 234 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. Also owns `spawn_turn_reaper`, whose post-terminal hook is M003's queue-delivery wake, and `publish_queue_changed`. |
-| `core::daemon_queue_delivery` | `CoreDaemon::submit_queued_prompt_turn`, `reconcile_stranded_queue_deliveries` | M003 (ADR-0038): the single daemon-internal queue-delivery entry and its bounded restart twin. Restricted to two callers by `scripts/check_queue_delivery_callsites.py`. |
+| `core::daemon_queue_delivery` | `CoreDaemon::submit_queued_prompt_turn`, `reconcile_stranded_queue_deliveries`, `advance_due_queue_entries` | M003 (ADR-0038): the single daemon-internal queue-delivery entry, its bounded restart twin, and M007's bounded advance tick (ADR-0039, accepted). Restricted to three callers by `scripts/check_queue_delivery_callsites.py`. |
 | `core::daemon_documents` | `handle_document_request` | Open/close/reload document operations over daemon-owned document state. |
 | `core::daemon_project_init` | `handle_project_init_request` | Bounded `/init` evidence preview and one-use, project-scoped guarded publication of root `AGENTS.md`. |
 | `core::daemon_lsp` | `handle_lsp_request` | LSP status/operations plus diagnostics-store reads. |

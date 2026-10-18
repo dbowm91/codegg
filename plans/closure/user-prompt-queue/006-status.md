@@ -120,6 +120,12 @@ was found, at roughly **3 failures in 8 consecutive full-suite runs**. Every fai
 observed was M003's `concurrent_claims_admit_exactly_one_entry`. After M006's own test
 was hardened to the true contract it did not fail once.
 
+*(Annotated after closure: the M003 deadlock this repetition exposed was **closed by C002**
+on 2026-10-18 — `BEGIN IMMEDIATE` on every read-then-write queue path. Measured 204 of 256
+concurrent claim rounds failing before, 0 of 192 after. See
+`plans/closure/user-prompt-queue/C002-status.md`. The text above is left as written, because
+it was accurate when M006 closed.)*
+
 **Corrected after the fact:** an earlier draft of this section claimed "a further 8
 consecutive runs were green". That was written *before* those runs happened and was
 wrong — 3 of the 8 failed. The claim is corrected here rather than quietly dropped,

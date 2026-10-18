@@ -103,6 +103,9 @@ run_quick() {
     echo "==> python3 scripts/check_queue_delivery_callsites.py"
     (cd "$REPO_ROOT" && python3 scripts/check_queue_delivery_callsites.py)
 
+    echo "==> python3 scripts/check_queue_write_transaction_shape.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_queue_write_transaction_shape.py)
+
     echo "==> python3 scripts/check_scheduler_bypass.py"
     (cd "$REPO_ROOT" && python3 scripts/check_scheduler_bypass.py)
 

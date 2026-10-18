@@ -14,7 +14,7 @@
 //! Storage changes here are additive. No existing table is altered and no stored
 //! data is rewritten.
 
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, SqlitePool, TransactionManager};
 use thiserror::Error;
 
 use crate::error::StorageError;
@@ -647,7 +647,7 @@ impl UserPromptQueueStore {
         // refusing early keeps a bad due time from ever opening a write.
         let expires_at_ms = now_ms.saturating_add(USER_PROMPT_QUEUE_TTL_MS);
         validate_run_at(run_at_ms, expires_at_ms)?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = begin_immediate(&self.pool).await?;
 
         let ownership = resolve_ownership(&mut tx, session_id).await?;
         match &ownership {
@@ -677,7 +677,7 @@ impl UserPromptQueueStore {
             .bind(caller)
             .bind(now_ms)
             .bind(now_ms)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(storage_error)?;
         }
@@ -689,7 +689,7 @@ impl UserPromptQueueStore {
             "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM user_prompt_queue_entry WHERE session_id = ?",
         )
         .bind(session_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(storage_error)?;
 
@@ -710,7 +710,7 @@ impl UserPromptQueueStore {
         .bind(now_ms)
         .bind(expires_at_ms)
         .bind(run_at_ms)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
 
@@ -723,7 +723,7 @@ impl UserPromptQueueStore {
                 "SELECT {ENTRY_COLUMNS} FROM user_prompt_queue_entry WHERE id = ?"
             ))
             .bind(entry_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(storage_error)?;
             let existing = existing.ok_or(UserPromptQueueError::NotFound)?;
@@ -755,14 +755,14 @@ impl UserPromptQueueStore {
                 "SELECT {ENTRY_COLUMNS} FROM user_prompt_queue_entry WHERE id = ?"
             ))
             .bind(entry_id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await
             .map_err(storage_error)?;
             row
         };
 
         let record = UserPromptQueueEntryRecord::try_from(entry)?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit().await?;
         Ok(live_from(&record))
     }
 
@@ -789,7 +789,7 @@ impl UserPromptQueueStore {
     ) -> Result<UserPromptQueueLiveEntry, UserPromptQueueError> {
         validate_principal(caller)?;
         let text_bytes = Self::validate_entry(entry_id, session_id, text)?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = begin_immediate(&self.pool).await?;
         authorize_owned_queue(&mut tx, caller, session_id).await?;
         sweep_expired(&mut tx, session_id, now_ms).await?;
 
@@ -825,7 +825,7 @@ impl UserPromptQueueStore {
         .bind(entry_id)
         .bind(session_id)
         .bind(now_ms)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
 
@@ -840,7 +840,7 @@ impl UserPromptQueueStore {
             .await?
             .ok_or(UserPromptQueueError::NotFound)?;
         let record = UserPromptQueueEntryRecord::try_from(row)?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit().await?;
         Ok(live_from(&record))
     }
 
@@ -865,7 +865,7 @@ impl UserPromptQueueStore {
         validate_principal(caller)?;
         validate_entry_id(entry_id)?;
         validate_session_id(session_id)?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = begin_immediate(&self.pool).await?;
         authorize_owned_queue(&mut tx, caller, session_id).await?;
         sweep_expired(&mut tx, session_id, now_ms).await?;
 
@@ -875,7 +875,7 @@ impl UserPromptQueueStore {
         )
         .bind(entry_id)
         .bind(session_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
 
@@ -893,7 +893,7 @@ impl UserPromptQueueStore {
         renumber_dense(&mut tx, session_id, now_ms, &survivor_ids).await?;
 
         let projection = list_projected_in(&mut tx, session_id, now_ms).await?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit().await?;
         Ok(projection)
     }
 
@@ -925,7 +925,7 @@ impl UserPromptQueueStore {
         for entry_id in entry_ids {
             validate_entry_id(entry_id)?;
         }
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = begin_immediate(&self.pool).await?;
         authorize_owned_queue(&mut tx, caller, session_id).await?;
         sweep_expired(&mut tx, session_id, now_ms).await?;
 
@@ -937,7 +937,7 @@ impl UserPromptQueueStore {
         renumber_dense(&mut tx, session_id, now_ms, entry_ids).await?;
 
         let projection = list_projected_in(&mut tx, session_id, now_ms).await?;
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit().await?;
         Ok(projection)
     }
 
@@ -964,7 +964,7 @@ impl UserPromptQueueStore {
     ) -> Result<UserPromptQueueOwnerRecord, UserPromptQueueError> {
         validate_principal(caller)?;
         validate_session_id(session_id)?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = begin_immediate(&self.pool).await?;
         let record = match resolve_ownership(&mut tx, session_id).await? {
             UserPromptQueueOwnership::Owned(record) => {
                 if record.owner_principal != caller {
@@ -982,7 +982,7 @@ impl UserPromptQueueStore {
                 .bind(caller)
                 .bind(now_ms)
                 .bind(now_ms)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(storage_error)?;
                 load_owner(&mut tx, session_id)
@@ -990,7 +990,7 @@ impl UserPromptQueueStore {
                     .ok_or(UserPromptQueueError::NotFound)?
             }
         };
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit().await?;
         Ok(record)
     }
 
@@ -1017,7 +1017,7 @@ impl UserPromptQueueStore {
         validate_principal(recipient)?;
         validate_session_id(session_id)?;
         let expected = i64::try_from(expected_revision).unwrap_or(i64::MAX);
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = begin_immediate(&self.pool).await?;
 
         let current = match resolve_ownership(&mut tx, session_id).await? {
             UserPromptQueueOwnership::Owned(record) => record,
@@ -1041,7 +1041,7 @@ impl UserPromptQueueStore {
         .bind(session_id)
         .bind(caller)
         .bind(expected)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
 
@@ -1066,24 +1066,159 @@ impl UserPromptQueueStore {
             });
         };
 
-        tx.commit().await.map_err(storage_error)?;
+        tx.commit().await?;
         Ok(record)
+    }
+}
+
+/// Open a write transaction that takes SQLite's write lock **at `BEGIN`**.
+///
+/// Every read-then-write path in this store goes through here. See
+/// [`ImmediateWrite`] for why that is not the same as `pool.begin()`.
+///
+/// This is a plain function rather than an associated one so the call sites read
+/// `begin_immediate(&self.pool)` instead of naming the type twice.
+async fn begin_immediate(pool: &SqlitePool) -> Result<ImmediateWrite, UserPromptQueueError> {
+    ImmediateWrite::begin(pool).await
+}
+
+/// A write transaction that takes SQLite's write lock **at `BEGIN`**, rather than
+/// upgrading a read lock at the first write.
+///
+/// # C002 — why this type exists
+///
+/// [`sqlx::SqlitePool::begin`] issues a **deferred** `BEGIN`, which takes no lock
+/// at all. The first `SELECT` in that transaction then holds a shared read lock,
+/// and the first `UPDATE` has to *upgrade* it to a write lock. SQLite refuses
+/// that upgrade with `SQLITE_BUSY` — code 6, `database is deadlocked` — and does
+/// **not** call the busy handler, because waiting could deadlock. `busy_timeout`
+/// therefore never applies. Two connections that each read before either wrote
+/// could **both** fail, rather than one winning and the other waiting its turn.
+///
+/// Measured on this store before the change: **204 of 256** concurrent claim
+/// rounds returned that error to at least one caller
+/// (`user_prompt_queue_concurrent_claims_never_deadlock_on_lock_upgrade`).
+///
+/// `BEGIN IMMEDIATE` takes the write lock **before** any read, and that
+/// acquisition *does* honour `busy_timeout`. A second writer waits for the first
+/// to commit and then proceeds — which is the behavior every path here already
+/// assumed.
+///
+/// Holding the write lock for the whole transaction is the point, not a cost.
+/// Each path reads a row, decides from what it read, and writes a decision that
+/// must not be invalidated in between; the read-to-write window is precisely the
+/// gap a concurrent writer would use. Serializing the path closes it.
+///
+/// # Reads are deliberately excluded
+///
+/// `list_live` sweeps expired rows inside its transaction, so it does write — but
+/// its **first** statement is that sweep, which already takes the write lock at
+/// that statement and gains nothing from taking it earlier. The same is true of
+/// `mark_delivered`, `mark_delivery_failed`, `release_delivery`, and
+/// `retry_failed`: each is a single guarded `UPDATE` with no prior read, so
+/// there is no read lock to upgrade. Only the read-then-write paths need this.
+struct ImmediateWrite {
+    /// `Option` so [`Drop`] can take the connection out; it is `Some` for the
+    /// whole time the transaction is usable.
+    conn: Option<sqlx::pool::PoolConnection<sqlx::Sqlite>>,
+    settled: bool,
+}
+
+/// The one call that has to name sqlx's transaction machinery fully, three times
+/// per method, or once each here.
+type SqliteTx = sqlx::sqlite::SqliteTransactionManager;
+
+impl ImmediateWrite {
+    async fn begin(pool: &SqlitePool) -> Result<Self, UserPromptQueueError> {
+        let mut conn = pool.acquire().await.map_err(storage_error)?;
+        // `TransactionManager::begin` takes the statement to run. Handing it
+        // `BEGIN IMMEDIATE` is what makes this transaction immediate — and going
+        // through the manager rather than issuing raw SQL is what keeps sqlx's
+        // own transaction **depth** counter correct. A raw `BEGIN` leaves that
+        // counter at zero, so the queued rollback below became a no-op and the
+        // connection went back to the pool still holding its write lock.
+        SqliteTx::begin(
+            &mut conn,
+            Some(std::borrow::Cow::Borrowed("BEGIN IMMEDIATE")),
+        )
+        .await
+        .map_err(storage_error)?;
+        Ok(Self {
+            conn: Some(conn),
+            settled: false,
+        })
+    }
+
+    /// Commit, then hand the connection back to the pool.
+    ///
+    /// `settled` is set **after** the commit returns, not before. A failed commit
+    /// therefore leaves the connection unsettled, so [`Drop`] rolls it back —
+    /// rather than returning a connection that may still hold a write lock to
+    /// the next borrower.
+    async fn commit(mut self) -> Result<(), UserPromptQueueError> {
+        SqliteTx::commit(self.conn.as_mut().expect("live while committing"))
+            .await
+            .map_err(storage_error)?;
+        self.settled = true;
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for ImmediateWrite {
+    type Target = sqlx::pool::PoolConnection<sqlx::Sqlite>;
+
+    fn deref(&self) -> &Self::Target {
+        self.conn
+            .as_ref()
+            .expect("the connection is only taken in Drop")
+    }
+}
+
+impl std::ops::DerefMut for ImmediateWrite {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.conn
+            .as_mut()
+            .expect("the connection is only taken in Drop")
+    }
+}
+
+impl Drop for ImmediateWrite {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        // Every refusal below is a `return Err(..)` with nothing committed, and it
+        // arrives here as a drop. `Drop` cannot `await` a `ROLLBACK`, so this
+        // queues one on the connection's worker thread — the same thing
+        // `sqlx::Transaction` does on its own drop, and for the same reason: a
+        // future dropped at an arbitrary `.await` must not leave an open
+        // transaction for the next borrower of this connection.
+        //
+        // It deliberately does **not** close the connection to force the
+        // rollback. Closing works for a file-backed database and is destructive
+        // for a shared-cache in-memory one, where dropping the last connection
+        // destroys the database: the mutation suite caught exactly that, as an
+        // unowned-queue refusal turning into `no such table` two operations
+        // later.
+        if let Some(mut conn) = self.conn.take() {
+            SqliteTx::start_rollback(&mut conn);
+        }
     }
 }
 
 /// Resolve the three-valued ownership state on an open transaction.
 async fn resolve_ownership(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     session_id: &str,
 ) -> Result<UserPromptQueueOwnership, UserPromptQueueError> {
-    if let Some(record) = load_owner(tx, session_id).await? {
+    if let Some(record) = load_owner(conn, session_id).await? {
         return Ok(UserPromptQueueOwnership::Owned(record));
     }
     let has_entries: i64 = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM user_prompt_queue_entry WHERE session_id = ?)",
     )
     .bind(session_id)
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *conn)
     .await
     .map_err(storage_error)?;
     Ok(if has_entries == 1 {
@@ -1094,7 +1229,7 @@ async fn resolve_ownership(
 }
 
 async fn load_owner(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     session_id: &str,
 ) -> Result<Option<UserPromptQueueOwnerRecord>, UserPromptQueueError> {
     let row: Option<(String, String, i64, i64, i64)> = sqlx::query_as(
@@ -1102,7 +1237,7 @@ async fn load_owner(
          FROM user_prompt_queue_owner WHERE session_id = ?",
     )
     .bind(session_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(storage_error)?;
     row.map(
@@ -1123,14 +1258,14 @@ async fn load_owner(
 }
 
 async fn load_entry(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     entry_id: &str,
 ) -> Result<Option<QueueEntryRow>, UserPromptQueueError> {
     sqlx::query_as::<_, QueueEntryRow>(&format!(
         "SELECT {ENTRY_COLUMNS} FROM user_prompt_queue_entry WHERE id = ?"
     ))
     .bind(entry_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(storage_error)
 }
@@ -1142,11 +1277,11 @@ async fn load_entry(
 /// that is not the caller is `NotQueueOwner`. `add` states its own version
 /// because first-add is the one operation allowed on an `Absent` queue.
 async fn authorize_owned_queue(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     caller: &str,
     session_id: &str,
 ) -> Result<UserPromptQueueOwnership, UserPromptQueueError> {
-    match resolve_ownership(tx, session_id).await? {
+    match resolve_ownership(conn, session_id).await? {
         UserPromptQueueOwnership::Owned(record) => {
             if record.owner_principal != caller {
                 return Err(UserPromptQueueError::NotQueueOwner);
@@ -1166,7 +1301,7 @@ async fn authorize_owned_queue(
 /// **M003:** covers `delivering` as well as `pending`, for the same reason the
 /// read-path sweep does — a claim made under the TTL must not outlive it.
 async fn sweep_expired(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     session_id: &str,
     now_ms: i64,
 ) -> Result<(), UserPromptQueueError> {
@@ -1177,14 +1312,14 @@ async fn sweep_expired(
     .bind(now_ms)
     .bind(session_id)
     .bind(now_ms)
-    .execute(&mut **tx)
+    .execute(&mut *conn)
     .await
     .map_err(storage_error)?;
     Ok(())
 }
 
 async fn check_capacity_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     session_id: &str,
     now_ms: i64,
 ) -> Result<(), UserPromptQueueError> {
@@ -1194,7 +1329,7 @@ async fn check_capacity_in(
     )
     .bind(session_id)
     .bind(now_ms)
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *conn)
     .await
     .map_err(storage_error)?;
     if pending >= USER_PROMPT_QUEUE_MAX_PENDING {
@@ -1205,7 +1340,7 @@ async fn check_capacity_in(
     let retained: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM user_prompt_queue_entry WHERE session_id = ?")
             .bind(session_id)
-            .fetch_one(&mut **tx)
+            .fetch_one(&mut *conn)
             .await
             .map_err(storage_error)?;
     if retained >= USER_PROMPT_QUEUE_MAX_RETAINED_PER_SESSION {
@@ -1225,7 +1360,7 @@ async fn check_capacity_in(
 /// row into that set would either renumber a row whose ordinal is bound to an
 /// in-flight admission or force a client to submit an entry it cannot reorder.
 async fn list_live_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     session_id: &str,
     now_ms: i64,
 ) -> Result<Vec<UserPromptQueueLiveEntry>, UserPromptQueueError> {
@@ -1237,7 +1372,7 @@ async fn list_live_in(
     .bind(session_id)
     .bind(now_ms)
     .bind(USER_PROMPT_QUEUE_MAX_RETAINED_PER_SESSION)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *conn)
     .await
     .map_err(storage_error)?;
     rows.into_iter()
@@ -1252,7 +1387,7 @@ async fn list_live_in(
 /// the operable subset instead would make an untouched row vanish from the
 /// client's list as a side effect of an unrelated edit.
 async fn list_projected_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     session_id: &str,
     now_ms: i64,
 ) -> Result<Vec<UserPromptQueueLiveEntry>, UserPromptQueueError> {
@@ -1264,7 +1399,7 @@ async fn list_projected_in(
     .bind(session_id)
     .bind(now_ms)
     .bind(USER_PROMPT_QUEUE_MAX_RETAINED_PER_SESSION)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *conn)
     .await
     .map_err(storage_error)?;
     rows.into_iter()
@@ -1385,14 +1520,14 @@ fn merge_operable_into_live(
 /// not in the live set but still hold ordinals under a session-wide `UNIQUE`, so
 /// they must still be pushed clear of the band this function writes.
 async fn renumber_dense(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     session_id: &str,
     now_ms: i64,
     desired_operable: &[String],
 ) -> Result<(), UserPromptQueueError> {
     // Read before the displacement, so "the rank it already holds" is the rank
     // the caller saw rather than an artefact of the band offset.
-    let live = list_projected_in(tx, session_id, now_ms).await?;
+    let live = list_projected_in(conn, session_id, now_ms).await?;
     let merged = merge_operable_into_live(&live, desired_operable)?;
 
     // Displace first, uniformly. Distinct ordinals stay distinct under a
@@ -1403,7 +1538,7 @@ async fn renumber_dense(
     sqlx::query("UPDATE user_prompt_queue_entry SET ordinal = ordinal + ? WHERE session_id = ?")
         .bind(USER_PROMPT_QUEUE_RENUMBER_BAND_OFFSET)
         .bind(session_id)
-        .execute(&mut **tx)
+        .execute(&mut *conn)
         .await
         .map_err(storage_error)?;
     for (index, entry_id) in merged.iter().enumerate() {
@@ -1417,7 +1552,7 @@ async fn renumber_dense(
         .bind(ordinal)
         .bind(entry_id)
         .bind(session_id)
-        .execute(&mut **tx)
+        .execute(&mut *conn)
         .await
         .map_err(storage_error)?;
     }
@@ -1631,11 +1766,11 @@ impl UserPromptQueueStore {
         now_ms: i64,
     ) -> Result<Option<UserPromptQueueDeliveryClaim>, UserPromptQueueError> {
         validate_session_id(session_id)?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut conn = begin_immediate(&self.pool).await?;
 
         // Ownership is checked before the claim, inside the same transaction, so
         // a queue whose owner vanished is never claimed in the first place.
-        let owner = load_owner(&mut tx, session_id).await?;
+        let owner = load_owner(&mut conn, session_id).await?;
         let owner = match owner {
             Some(record) => record,
             // `Absent` means no queue has ever existed, and `Unowned` is the
@@ -1660,12 +1795,12 @@ impl UserPromptQueueStore {
         .bind(session_id)
         .bind(now_ms)
         .bind(now_ms)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **conn)
         .await
         .map_err(storage_error)?;
 
         let Some((candidate_id,)) = candidate else {
-            tx.commit().await.map_err(storage_error)?;
+            conn.commit().await?;
             return Ok(None);
         };
 
@@ -1679,16 +1814,16 @@ impl UserPromptQueueStore {
         .bind(now_ms)
         .bind(&candidate_id)
         .bind(session_id)
-        .execute(&mut *tx)
+        .execute(&mut **conn)
         .await
         .map_err(storage_error)?;
 
         if claimed.rows_affected() == 0 {
-            tx.commit().await.map_err(storage_error)?;
+            conn.commit().await?;
             return Ok(None);
         }
 
-        let entry = load_entry(&mut tx, &candidate_id)
+        let entry = load_entry(&mut conn, &candidate_id)
             .await?
             .map(UserPromptQueueEntryRecord::try_from)
             .transpose()?;
@@ -1697,12 +1832,12 @@ impl UserPromptQueueStore {
             None => {
                 // Unreachable: the row was just claimed in this transaction.
                 // Returning `None` rather than panicking keeps the store total.
-                tx.commit().await.map_err(storage_error)?;
+                conn.commit().await?;
                 return Ok(None);
             }
         };
 
-        tx.commit().await.map_err(storage_error)?;
+        conn.commit().await?;
         Ok(Some(UserPromptQueueDeliveryClaim {
             entry,
             owner_principal: owner.owner_principal,
@@ -1779,11 +1914,11 @@ impl UserPromptQueueStore {
         validate_entry_id(entry_id)?;
         validate_session_id(session_id)?;
         validate_turn_id(turn_id)?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        authorize_owned_queue(&mut tx, caller, session_id).await?;
+        let mut conn = begin_immediate(&self.pool).await?;
+        authorize_owned_queue(&mut conn, caller, session_id).await?;
         // A settlement must not be able to write a row the read projection would
         // already have hidden, for the same reason `delete` sweeps first.
-        sweep_expired(&mut tx, session_id, now_ms).await?;
+        sweep_expired(&mut conn, session_id, now_ms).await?;
 
         let settled = sqlx::query(
             "UPDATE user_prompt_queue_entry \
@@ -1796,7 +1931,7 @@ impl UserPromptQueueStore {
         .bind(now_ms)
         .bind(entry_id)
         .bind(session_id)
-        .execute(&mut *tx)
+        .execute(&mut **conn)
         .await
         .map_err(storage_error)?;
 
@@ -1804,13 +1939,13 @@ impl UserPromptQueueStore {
             // Returning without committing is the whole refusal: nothing was
             // written, so there is no partial state, and the caller learns which
             // condition it hit from the typed error rather than from a `false`.
-            let existing = load_entry(&mut tx, entry_id).await?;
+            let existing = load_entry(&mut conn, entry_id).await?;
             return Err(refusal_for(existing.as_ref(), session_id, now_ms));
         }
 
         // Durable, not a frontend projection: a daemon restart cannot lose a
         // settlement the user was already told about.
-        tx.commit().await.map_err(storage_error)?;
+        conn.commit().await?;
         Ok(())
     }
 
