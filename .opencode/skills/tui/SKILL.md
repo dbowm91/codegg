@@ -221,9 +221,31 @@ model to the wrong connection.
   `TuiMsg::ChatComposerSeed` instead, so the reply target or replaced body
   is not stranded. Panels get named borrows via `PanelCtx` (never `&App`)
   and express every mutation as a `TuiMsg` routed into an existing command
-  seam. A panel declares its own keys through `SidePanel::composer_hints`,
   which render on one contextual line directly above the composer — that is
   the seam for adding the next panel, so do not grow per-panel footers.
+  A panel declares its verbs through `SidePanel::composer_hints`. Read
+  `architecture/tui.md`'s "A docked panel advertises itself before you go in"
+  before changing that seam; two things about it are easy to get backwards:
+
+  - **The unfocused answer is not one answer.** A *hosted* panel (an adopted
+    box like `/files`) advertises without the keyboard, because its verbs exist
+    nowhere else and it leads with the gesture that makes them live. A
+    *bespoke* panel (session, chat, agents, help, **terminal**) answers `None`,
+    because the row is meant to describe whoever holds the keyboard and the
+    reader can already see the panel. The Terminal panel used to get this
+    wrong: it kept an unfocused branch whose every verb — including the
+    `Shift+←/→` it advertised — required the keyboard the composer had just
+    taken, so the line sat above the LLM buffer describing a terminal nobody
+    was in.
+  - **The row is a carved row, and the input box does not move with it.**
+    `session_layout` gives the prompt chunk a fixed, bottom-anchored height, and
+    the working strip, hint line and todo strip come off its **top** in that
+    order. So a panel that starts declining shrinks the carved region and hands
+    the row to the transcript (`Min(10)`), and the composer stays on its row —
+    the opposite of what the arithmetic looks like it should do. Pin it, because
+    a hint row that reflowed the input every time a panel took or lost focus
+    would be the same defect the working strip's reserved row 0 exists to
+    prevent. Nothing to do with that strip, which is reserved unconditionally.
   A **hosted** box gets its verbs from the box itself via
   `Component::keymap_hint()`, so the string sits next to the `handle_key`
   arms that implement it; the host's generic `j/k scroll · i act` is only
@@ -622,8 +644,10 @@ model to the wrong connection.
   the same reason walking the list never materializes an empty panel — a gesture
   that silently starts a daemon load is not a positioning gesture.
 - **Every surface the composer can target needs a name.** The badge row reads
-  `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. That
-  destination is `App::composer_destination_title`: the focused panel's
+  `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. The mode
+  is `App::composer_input_mode`, never the raw `ui_state.input_mode` (see the
+  terminal bullet below for why that field lies). That destination is
+  `App::composer_destination_title`: the focused panel's
   `SidePanelId::title`, or `MAIN_BUFFER_TITLE` (`LLM`) when nothing is focused,
   or `CHAT` while a seed is armed. It previously rendered `[BUILD]` *and*
   `[CHAT]` unconditionally, giving `[INS] [build][BUILD] [CHAT]` — two badges
@@ -977,6 +1001,38 @@ model to the wrong connection.
   resize storm eats the half-typed word. And a stale test is a finding, not
   noise — a red assertion left behind by a deliberate contract change reads as
   "pre-existing bug" and ships.
+- **"Rides the existing cadence" is a claim about the *arming*, and it was false
+  for the idle case.** The pull has exactly one call site: the timed arm of the
+  loop's `select!`. That arm parks on `futures_util::future::pending()` when
+  `next_wake` is `None`, and `None` does not mean "sleep a while" — the arm never
+  runs again until some *other* event wakes the loop. `next_wake` comes from
+  `runtime::event_loop::animation_interval`, whose contributors were all
+  transient (streaming, working, toast), so a mounted terminal was read only
+  while a toast happened to be alive, a keystroke arrived, or a resize was
+  debouncing: a shell's output became visible when the user pressed the **next**
+  key. When you add a service to that tick, assert the **arming decision**, not
+  just the function — a test that calls the service directly stands in for the
+  arm and proves nothing about reachability. `animation_interval` is now a pure
+  `&App` function precisely so that is testable. Two rules keep
+  `terminal_pull_armed` honest: never gate the arm on read state
+  (`begin_output_read`, refusals, `TerminalLinkState` — that latches the loop
+  off, because a dark arm means nothing wakes it to issue the read that would
+  clear the condition), and key it on **mount**, never focus, since focus is what
+  changes when nobody is looking.
+- **The `[NOR]`/`[INS]` badge reports where the keyboard is, not what the
+  composer thinks.** `ui_state.input_mode` is the composer's *own* mode, and it is
+  the wrong answer whenever the keyboard is elsewhere: `focus_panel` forces it to
+  `Normal` on panel focus, and the terminal box never touches it at all. So a
+  terminal in Insert rendered `[NOR]` above the input, and the terminal panel's
+  own Insert hint branch — which branches on that same field — was unreachable
+  dead code. One field, read twice, both wrong. Resolve it once in
+  `App::composer_input_mode` over two named seams that key routing already reads:
+  `App::terminal_box_has_keyboard` (a modal box owns the keyboard either way, so
+  it reports `Normal` after `Esc` even though the composer's field still claims
+  `Insert`) and `PanelHost::claims_insert_keys` for a docked panel. Neither half
+  can answer the other — a box is not a side panel, and a panel is not a dialog.
+  It is a **pure read**: a badge that forced `input_mode` to match what it
+  displays turns the state it reports into the state it causes.
 - **Never make one key answer two questions.** `Esc` used to be both "leave
   insert" and "pass an escape byte through", disambiguated by a hidden
   `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's

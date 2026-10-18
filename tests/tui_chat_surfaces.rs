@@ -463,7 +463,7 @@ async fn sending_consumes_the_seed_so_a_second_enter_is_a_plain_send() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_panel_focused_advertises_no_keys() {
-    let app = test_app();
+    let mut app = test_app();
     assert!(
         app.composer_hint_text().is_none(),
         "the row is not reserved at all when nothing is focused, so the \

@@ -1052,6 +1052,35 @@ and is not settled by anything here.
   (`hjkl`/`v`/`x` move it). `styled_lines` paints the cursor cell even when it
   is blank, because a shell prompt's cursor sits on an empty cell by definition
   and trimming trailing blanks hid the caret exactly when the user was typing.
+- **Caret blink (INS only).** The caret's visibility is
+  `spinner::cursor_blink_visible(elapsed)` — a pure sibling of `spinner_frame`
+  in the one frame table, half a second visible and half a second hidden. It is
+  threaded in as a phase (`PanelCtx::caret_blink_on`,
+  `render_view(.., caret_blink_on, ..)`) rather than counted on a view, so two
+  renders at one instant agree, a coalesced tick cannot desync, and nothing
+  survives an attachment change. **The hidden phase drops the `REVERSED`
+  modifier and nothing else**: the cell stays painted, because a caret that
+  stopped reserving its cell would let the line trim back to its last character
+  and re-extend, and at the end of a prompt the whole line would blink away.
+  **NOR never blinks.** There the cursor is a selection anchor — `x`, `v` and
+  `d` all act from it — so it stays solid; a blinking anchor turns "which line
+  am I about to delete" into a coin flip. This is a reading of the existing
+  100ms frame clock, not a second ticker: the armed pull (below) is what repaints
+  it, and no new interval, thread or `tokio::time::interval` exists for it.
+- **Reader-cursor placement on `Esc`.** Leaving Insert is the one moment the
+  reader's cursor is *placed* rather than kept, and it happens in
+  `InteractiveTerminalController::escape` so both surfaces get it from one call:
+  **the last row that has content, or row 0 when nothing has.** The rejected
+  alternative was a fixed "one row above the bottom", which trades one wrong
+  place for another — a shell whose prompt sits on row 0 of a 24-row screen
+  would have the cursor parked in blank space *below* the only line on screen.
+  Anchoring on content puts it on the prompt line after a short command and on
+  the last line of the block after a long one, which is where the reader was
+  either way. `set_cursor` is used, not `move_to`, so placement is bookkeeping
+  and does not extend a `v` selection; an armed selection keeps its anchor,
+  because Esc from Insert is not a gesture against it. The `Hidden → Viewing`
+  sweep stays a separate pass and never touches `nav`: a hidden view becoming
+  visible is not a gesture the reader made.
 - **Bounds**: 64 KiB scrollback window per view (matches the M002
   default read), ≤16 views (matches the per-client attachment cap),
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
@@ -1069,6 +1098,42 @@ because the ring answers `Resumed` with an empty chunk for an unchanged cursor.
 There is no push channel: the daemon's only interactive event,
 `CoreEvent::InteractiveProcessExited`, is bytes-free by contract, and output
 never enters the bus, a projection, the transcript, or session observation.
+
+**"On the existing cadence" is a claim about the *arming*, and the pull being
+reachable is the thing to check.** `service_terminal_output_pull` has exactly
+one call site: the timed arm of the loop's `select!`. That arm parks on
+`futures_util::future::pending()` whenever `next_wake` is `None`, and `None`
+does not mean "sleep a while" — it means the arm never runs again until some
+other event wakes the loop. `next_wake` is built from
+`runtime::event_loop::animation_interval`, which answers `Some` only for a
+streaming turn, a working turn, a live toast, or — since C003 — a mounted
+terminal surface. The first three are all transient: a turn finishes, its toast
+expires, and the frame goes completely idle. A terminal that was never listed
+there was therefore read only while a toast happened to be alive, a keystroke
+arrived, or a resize was debouncing, so a shell's output became visible when
+the user pressed the *next* key. The bytes were already in the daemon's ring the
+whole time; nothing was fetching them.
+
+`animation_interval` is a pure function of `&App` rather than an inline
+expression for exactly this reason: before it was extracted, the only way to
+observe the arming decision was to run a real terminal, which is how a surface
+could be declared live while the arm carrying it was dark. Two rules keep the
+contributor honest:
+
+- **Mount, never read state.** `terminal_pull_armed` must not consult
+  `begin_output_read`, `output_read_in_flight`, a recorded refusal, or
+  `TerminalLinkState`. Gating the arm on any of those latches the loop off — the
+  arm goes dark, so nothing wakes it to issue the read that would clear the
+  condition, and the surface is dead until a keystroke arrives. Those checks
+  belong to the pull, where refusing one pass is harmless.
+- **Mounted means on screen.** `mounted_terminal_surface` is box first, then
+  panel; a background view that is attached, alive, and on no surface is not
+  read, because nothing it produces would reach a screen. A test pins the
+  negative so "adopted" cannot silently widen into "mounted".
+
+The cadence is `TERMINAL_PULL_RENDER_INTERVAL` (100ms), keyed on visibility
+rather than focus. Focus is precisely what changes when nobody is looking at
+the panel, so keying on it is what made the docked panel stop.
 
 Three consequences are load-bearing rules rather than details:
 
@@ -1097,6 +1162,38 @@ Three consequences are load-bearing rules rather than details:
   `queue_resize` drops an unchanged size, and the cadence drains what remains.
   A PTY resize flushes the tty's pending input, so a per-frame resize storm is
   indistinguishable from the shell eating the user's half-typed word.
+
+**The badge reports the mode the user is in, not the mode the composer is
+in.** `[NOR]` / `[INS]` above the main input is a statement about *where the
+keyboard is*, and `App::ui_state.input_mode` is not that: `focus_panel` forces
+it to `Normal` whenever a panel takes focus and `blur_panel` restores the
+parked mode. A terminal holding a live PTY in Insert therefore reported `[NOR]`
+for as long as the user typed into it, and the terminal panel's own Insert hint
+branch was unreachable dead code, because that same field is what it branched
+on — one field, read twice, both wrong.
+
+`App::composer_input_mode` resolves it once. "Holds the keyboard" has two
+halves and neither can answer the other — a box is not a side panel, and a panel
+is not a dialog — so the accessor reads exactly the two facts key routing
+already reads:
+
+| Holder | Seam | Answers |
+|---|---|---|
+| terminal **box** | `App::terminal_box_owns_keyboard` | active dialog is `Terminal` **and** that handle is focused in the controller |
+| docked **panel** | `commands::panels::panel_claims_insert_keys` → `PanelHost::claims_insert_keys` | the host is focused **and** the panel's `claims_insert_keys` holds |
+
+Either one wins; otherwise `ui_state.input_mode` is the truth. That is the same
+shape as `composer_destination_title` and as the editor route's
+`buffer_focused(input_mode)` badge, so this is a third instance of one rule
+rather than a new mechanism. `terminal_box_owns_keyboard` is the extracted form
+of the gate the docking gesture in `on_key` already used inline — naming it is
+what let the badge reuse it instead of restating it.
+
+The accessor takes `&mut self` only because `panel_claims_insert_keys` has to
+build a `PanelCtx`, whose grants are `&mut`; **it writes nothing.** The frame
+must never be able to move the keyboard by describing it — a badge that forced
+`input_mode` to match what it displayed would make the state it reported into
+the state it caused.
 
 **The VT screen retains a bounded history, and the viewport is a controller
 concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to
@@ -1195,6 +1292,48 @@ and the size is drained by `flush_terminal_resize`, shared with the input flush 
 the render path has no `App`, so it cannot send it itself. `queue_resize`'s typed
 error is discarded there: a panel showing an exited process must keep rendering
 rather than toast every frame.
+
+**Clear asks the process to clear, then wipes locally — in that order.** `C`
+used to be a purely local wipe (`clear_scrollback` plus
+`screen.reset(rows, cols)`), which left a live shell sitting on a blank screen
+with no prompt: the shell had no reason to redraw, because nothing had been
+typed at it. `clear_terminal` now queues `CLEAR_THROUGH_PROCESS`
+(`ESC [ 2 J ESC [ H \r`) through `queue_input` — the same bounded, permissioned,
+live-link path as any keystroke, never a privileged write — **before** the local
+wipe, and only wipes once the bytes are admitted. A typed refusal reports itself
+and leaves the screen intact: a local wipe whose repaint was never sent is a
+blank screen the reader did not ask for.
+
+Both halves of the sequence are load-bearing. The erase-display plus cursor-home
+is what a terminal means by "clear", but sent alone it leaves the screen blank,
+because a shell draws `PS1` after a *command*, not after an escape; the newline
+completes an empty command line so the shell repaints its prompt. The literal
+command `clear` was rejected because it depends on a `clear` binary on the
+child's `PATH`, and its absence would show the reader `clear: command not
+found` — an error for a keystroke they never typed.
+
+**Nothing on the cleared screen is fabricated.** Every byte the reader ends up
+looking at came out of the process. The local wipe is retained because it is
+also the *history* semantic: `clear_scrollback` drops the retained scrollback,
+the selection and the scrub overlay, while preserving `next_seq` so the next
+honest chunk arrives as an ordinary continuation rather than a gap notice the
+reader did not cause.
+
+**A view with no live process still clears, and is not made to claim
+otherwise.** Exited, gone and detached views take the local wipe alone. The
+plan's failure semantics suggested refusing and leaving the screen intact on
+every input refusal, which is right for every refusal *except* this one: there
+is no process left to print a prompt, so nothing is being suppressed, and
+refusing would take away the only way to clear the output of a shell that has
+finished. What must not happen is a *pretence* — no warning about a refused
+write, because none was attempted.
+
+**A newly created terminal shows its own prompt with no keystroke.** The prompt
+was always arriving on attach; what was missing was anything *reading* it, and
+that is the armed pull above rather than work here. Until it arrives the panel
+keeps its labelled empty state (`" no output — press i to type"`) and the box
+`(no output yet)` — product text that says so, never a fake prompt.
+
 - **Reconnect/exit**: transport reconnect marks live views
   reconnecting with scrollback retained (`on_projection_reconnect`);
   re-attach resumes from the last cursor. Process exit renders the
@@ -2045,15 +2184,42 @@ allocation, so focusing a panel cannot shrink the input. Panels advertise
 their keys once, next to the input those keys modify, rather than growing
 per-panel footers.
 
-**A docked panel advertises itself before you go in.** The host used to return
-`None` for any unfocused panel, so a docked `/files` showed its keymap only
-after the user had already guessed the keys correctly. It now asks every panel
-regardless of focus and passes honest focus state plus the edge it is docked to,
-so the line can lead with the gesture that makes the verbs live —
-`Files · Shift+→/Shift+L in · j/k move · …` — and swap that for `Shift+← back`
-once the panel holds the keyboard. The gesture comes from
+**A docked panel advertises itself before you go in — but only a *hosted* one.**
+The host used to return `None` for any unfocused panel, so a docked `/files`
+showed its keymap only after the user had already guessed the keys correctly. It
+now asks every panel regardless of focus and passes honest focus state plus the
+edge it is docked to, so the line can lead with the gesture that makes the verbs
+live — `Files · Shift+→/Shift+L in · j/k move · …` — and swap that for
+`Shift+← back` once the panel holds the keyboard. The gesture comes from
 `PanelPlacement::toward`/`away` and `PanelDirection::gesture_key`, the same
 values the dispatcher parses, so it cannot name a key that does not work there.
+
+**The exception is by kind, and the Terminal panel is on the declining side.**
+That "advertise without the keyboard" contract belongs to a **hosted** panel —
+an adopted box whose verbs exist nowhere else. A **bespoke** panel holds a live
+projection the reader can already see and whose chrome names it, so it declines
+when it does not hold the keyboard, and the row goes away. The terminal panel
+was the one panel keeping an unfocused branch, and the branch outlived its
+reasoning: `"TERM · focus to scroll, select and type"` — and the
+`Shift+←/→` gesture it advertised — all need the keyboard the composer had just
+taken, so the row persisted above the LLM buffer describing a terminal the
+reader was not in. `TerminalPanel::composer_hints` now answers `None` when
+`!hints.focused`.
+
+Two things follow, and both are the point rather than a side effect:
+
+- **The input box does not move.** `session_layout` gives the prompt chunk a
+  fixed, bottom-anchored height, and the working strip, hint line and todo strip
+  are carved off its **top** in that order. Removing the hint therefore shrinks
+  the carved region and hands the row to the transcript (`Min(10)`) — the only
+  chunk that absorbs slack — while the composer stays on its row. Stated
+  explicitly because the arithmetic reads as though the opposite should happen:
+  a hint row that appeared or vanished and dragged the input with it would
+  reflow the frame under the user's hands every time a panel took or lost focus,
+  which is the same defect the working strip's reserved row 0 exists to prevent.
+- **The working strip's reserved row 0 is untouched.** It is reserved
+  unconditionally, and `Min(10)` for the transcript holds either way — the hint
+  row is a separate row carved from the prompt chunk.
 
 What each panel does when it does *not* have the keyboard is the panel's own
 decision, and the split is deliberate. The session, chat, help and agents

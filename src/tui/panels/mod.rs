@@ -909,6 +909,19 @@ pub struct PanelCtx<'a> {
     /// `DirectionLeft`/`DirectionRight`/… are Normal-mode gestures by
     /// contract, and this is what enforces that even while a panel is focused.
     pub input_mode: crate::tui::input::InputMode,
+    /// Whether the terminal caret's blink is in its visible phase this frame.
+    ///
+    /// Granted from the one frame clock
+    /// ([`spinner::cursor_blink_visible_now`](crate::tui::components::spinner::cursor_blink_visible_now))
+    /// rather than read inside the panel, for the same reason `now_ms` is:
+    /// the host owns time, the panel owns presentation. It also makes the
+    /// phase *pinnable* — a test can render both phases of the blink without
+    /// racing the clock, where a panel that called the seam itself could only
+    /// be asserted by sampling it.
+    ///
+    /// Presentation only, like everything else in this context: reporting a
+    /// phase may not move the keyboard.
+    pub caret_blink_on: bool,
 }
 
 /// A swappable side panel. See [`SidePanelId`] for the extension procedure.
@@ -1499,9 +1512,7 @@ impl SidePanelHost {
     /// The composer is aimed at the agent session whenever no panel has
     /// focus, so a panel whose verbs are only live *with* the keyboard has
     /// nothing to say then — `None` is the correct answer for the session,
-    /// chat, help and agents surfaces. A panel the user docked is the
-    /// exception: it advertises itself and the gesture that enters it, so the
-    /// keymap is readable before anyone presses the wrong key.
+    /// chat, help, agents and terminal surfaces.
     pub fn composer_hints(
         &self,
         chat_project: Option<&str>,
@@ -1516,15 +1527,28 @@ impl SidePanelHost {
         // Read-only dispatch: a hint must not require an exclusive borrow of
         // the panel, or the composer row could not ask for it during render.
         //
-        // Asked whether or not this panel is focused, on purpose. The gate
-        // lived here and meant an unfocused panel advertised nothing at all —
-        // so a docked `/files` panel, the one surface whose verbs the user
-        // cannot guess, showed a keymap only after they had already guessed
-        // right. Each panel decides what is honest to say without the
-        // keyboard: the session, chat, help and agents panels decline, so a
-        // pre-docked column that the user never went into stays quiet, and the
-        // terminal panel, which always had an unfocused branch, finally gets to
-        // use it.
+        // Asked whether or not this panel is focused, on purpose, and the two
+        // answers differ by *kind* rather than by accident:
+        //
+        // - A **hosted** panel is a box the user adopted. Its verbs are
+        //   undiscoverable any other way — the `/files` keymap exists only in
+        //   this line — so an unfocused hosted panel advertises itself and the
+        //   gesture that enters it. Those verbs are inert without the keyboard,
+        //   and the line says so (`"/shift+→ in"` leads, `back` does not
+        //   appear).
+        // - A **bespoke** panel holds a live projection the user can already
+        //   see and whose chrome names it, so an unfocused one declines and
+        //   the row goes away entirely.
+        //
+        // The gate that once lived here — no hint from any panel until it had
+        // the keyboard — answered the `/files` case wrongly, and the terminal
+        // panel was the one panel that kept an unfocused branch to exploit it.
+        // That branch then outlived its reasoning: every verb in
+        // `"TERM · focus to scroll, select and type"`, including the
+        // `Shift+←/→` gesture it advertised, needs the keyboard the composer
+        // had taken, so the row persisted above the LLM buffer describing a
+        // terminal the user was not in. Bespoke panels now decline; hosted
+        // panels still speak.
         match self.active() {
             SidePanelId::Session => self.session.composer_hints(&hints),
             SidePanelId::Chat => self.chat.composer_hints(&hints),
