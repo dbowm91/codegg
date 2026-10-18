@@ -206,6 +206,34 @@ fn copy_gitdir(source_repository: &Path, destination_repository: &Path) {
     );
 }
 
+fn advise_drop_object_cache(object_dir: &Path) {
+    use std::os::fd::AsRawFd;
+
+    let mut pending = vec![object_dir.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).expect("read object-store directory") {
+            let entry = entry.expect("read object-store entry");
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).expect("stat object-store entry");
+            assert!(
+                !metadata.file_type().is_symlink(),
+                "benchmark fixture unexpectedly contains an object-store symlink"
+            );
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if metadata.is_file() {
+                let file = fs::File::open(path).expect("open object-store file");
+                // SAFETY: the descriptor refers to this open regular file.
+                // DONTNEED is advisory and does not change repository content.
+                let result = unsafe {
+                    libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
+                };
+                assert_eq!(result, 0, "advise object-file page-cache eviction");
+            }
+        }
+    }
+}
+
 fn operation() -> codegg_git::GitOperation {
     codegg_git::GitOperation::Log {
         oneline: true,
@@ -332,16 +360,20 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         let cold_repository = sample.path().join("repository");
         copy_gitdir(&repository, &cold_repository);
         let cold_repository = fs::canonicalize(cold_repository).expect("canonical cold repository");
+        let cold_objects = cold_repository.join(".git/objects");
 
+        advise_drop_object_cache(&cold_objects);
         let started = Instant::now();
         let native = native_git(git, &cold_repository, &argv);
         native_cold.push(elapsed_us(started));
 
+        advise_drop_object_cache(&cold_objects);
         let started = Instant::now();
         let snapshot = immutable_snapshot(&typed_service, &op, &cold_repository).await;
         snapshot_cold.push(elapsed_us(started));
         assert_eq!(snapshot.as_bytes(), native.stdout.as_slice());
 
+        advise_drop_object_cache(&cold_objects);
         let started = Instant::now();
         let live = contained_live_git(git, &cold_repository, &argv, &format!("cold-{index}")).await;
         live_cold.push(elapsed_us(started));
@@ -390,8 +422,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
     FixtureReport {
         shape: if packed { "packed" } else { "fragmented-loose" }.into(),
         filesystem,
-        cold_condition: "unique repository path; operating-system page cache is uncontrolled"
-            .into(),
+        cold_condition: "unique repository path; POSIX_FADV_DONTNEED advised on each route, but eviction is not guaranteed".into(),
         object_store_bytes,
         snapshot_bytes_to_copy_cold_estimate: object_store_bytes,
         loose_objects,
@@ -431,6 +462,7 @@ async fn c002_packed_and_fragmented_cold_warm_git_cost_qualification() {
         "limits": [
             "wall time includes canonical service/launcher overhead",
             "CPU time and peak RSS are not measured by this pilot",
+            "POSIX_FADV_DONTNEED is advisory and does not prove true cold cache",
             "concurrent-agent contention is not measured by this pilot",
             "snapshot bytes copied are approximated by the fixture ODB size per cold sample"
         ]
