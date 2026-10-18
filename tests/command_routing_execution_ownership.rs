@@ -82,6 +82,9 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
         generation,
     );
     let mut tool = BashTool::new()
+        .with_workspace_root(
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+        )
         .with_run_store(store)
         .with_submission(submission)
         .with_workspace_root(workspace_root);
