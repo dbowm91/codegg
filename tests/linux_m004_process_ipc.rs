@@ -688,7 +688,7 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         selected_gitdir: &Path,
         operation: &codegg_git::GitOperation,
         label: &str,
-    ) -> ManagedProcessResult {
+    ) -> Result<ManagedProcessResult, codegg::managed_process::ManagedProcessError> {
         let argv = codegg_git::render_argv(operation);
         let args = argv.iter().skip(1).cloned().collect::<Vec<_>>();
         let spec = SandboxConfig::new()
@@ -723,9 +723,7 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
             .with_var("HOME", "/tmp/codegg-empty-home");
         request.sandbox = SandboxRequest::Required(spec);
-        ManagedProcessService::run(request)
-            .await
-            .expect("required contained Git read must run or fail closed")
+        ManagedProcessService::run(request).await
     }
 
     let typed = TypedGitExecutionService::new();
@@ -776,7 +774,9 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             .await
             .unwrap_or_else(|error| panic!("typed snapshot {label} failed: {error}"));
         assert!(snapshot.success, "typed snapshot {label} returned nonzero");
-        let live = contained_read(&git, repository, &selected_gitdir, operation, label).await;
+        let live = contained_read(&git, repository, &selected_gitdir, operation, label)
+            .await
+            .unwrap_or_else(|error| panic!("required contained Git read {label} failed: {error}"));
         assert!(
             live.exit_status.success(),
             "contained live {label} failed: {}",
@@ -940,8 +940,11 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         max_count: Some(1),
         paths: vec![],
     };
+    let mut successful_race_reads = 0usize;
+    let mut fail_closed_race_reads = 0usize;
+    let mut race_failure = None;
     for iteration in 0..16 {
-        let live = contained_read(
+        let attempt = contained_read(
             &git,
             repository,
             &selected_gitdir,
@@ -949,23 +952,59 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             &format!("concurrent-repack-{iteration}"),
         )
         .await;
-        assert!(
-            live.exit_status.success(),
-            "contained live log failed during external repack/ref update {iteration}: {}",
-            live.stderr.to_string_lossy()
-        );
-        assert!(
-            matches!(live.sandbox, SandboxExecutionOutcome::Enforced { .. }),
-            "concurrent read lacked obtained sandbox enforcement"
-        );
-        let actual = live.stdout.to_string_lossy();
-        assert!(
-            expected_logs.iter().any(|expected| expected == &*actual),
-            "live Git read observed neither committed ref generation: {actual:?}"
-        );
+        match attempt {
+            Ok(live) => {
+                if !live.exit_status.success() {
+                    race_failure = Some(format!(
+                        "contained live log failed during external repack/ref update {iteration}: {}",
+                        live.stderr.to_string_lossy()
+                    ));
+                    break;
+                }
+                if !matches!(live.sandbox, SandboxExecutionOutcome::Enforced { .. }) {
+                    race_failure =
+                        Some("concurrent read lacked obtained sandbox enforcement".into());
+                    break;
+                }
+                let actual = live.stdout.to_string_lossy();
+                if !expected_logs.iter().any(|expected| expected == &*actual) {
+                    race_failure = Some(format!(
+                        "live Git read observed neither committed ref generation: {actual:?}"
+                    ));
+                    break;
+                }
+                successful_race_reads += 1;
+            }
+            Err(codegg::managed_process::ManagedProcessError::SandboxFailed(message))
+                if message.contains("cannot inspect Git metadata identity")
+                    && message.contains("No such file or directory") =>
+            {
+                // Git may remove a pack between directory enumeration and the
+                // safety scan's no-follow identity check. The launcher refuses
+                // before spawning rather than weakening the protected-tree
+                // validation; count that typed refusal as fail-closed behavior.
+                fail_closed_race_reads += 1;
+            }
+            Err(error) => {
+                race_failure = Some(format!(
+                    "contained read {iteration} failed outside the sandbox fail-closed path: {error}"
+                ));
+                break;
+            }
+        }
     }
-    repacker.await.expect("join external repack worker");
-    ref_worker.await.expect("join external ref-update worker");
+    let repack_result = repacker.await;
+    let ref_result = ref_worker.await;
+    repack_result.expect("join external repack worker");
+    ref_result.expect("join external ref-update worker");
+    assert!(
+        successful_race_reads > 0,
+        "race probe obtained no contained reads ({} fail-closed refusals)",
+        fail_closed_race_reads
+    );
+    if let Some(failure) = race_failure {
+        panic!("contained Git read race failed: {failure}");
+    }
     let gitdir_after_race = std::fs::metadata(&selected_gitdir).expect("stat Git directory");
     let odb_after_race = std::fs::metadata(&selected_odb).expect("stat ODB after repack race");
     assert_eq!(
