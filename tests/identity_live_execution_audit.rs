@@ -901,7 +901,7 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
     // Secret-looking command text: digest only, never the secret.
     let tool_registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
         workspace_root: Some(
-            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("canonical test workspace"),
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
         ),
         ..Default::default()
     });
