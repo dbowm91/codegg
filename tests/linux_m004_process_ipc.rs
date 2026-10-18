@@ -1,7 +1,8 @@
 #![cfg(target_os = "linux")]
 
 use std::ffi::OsString;
-use std::io::Read;
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -1037,6 +1038,159 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
     assert!(
         !private_gitdir.join("index.lock").exists(),
         "staging left a private index lock behind"
+    );
+
+    // Test the broker's optimistic precondition: a concurrent Git index
+    // update after staging must be observed while holding the Git-compatible
+    // lock, and must prevent overwriting that update.
+    let external_index_update = setup(
+        &repository,
+        &[
+            format!("--git-dir={}", source_gitdir.display()),
+            "update-index".into(),
+            "--assume-unchanged".into(),
+            "--".into(),
+            "tracked.txt".into(),
+        ],
+    );
+    assert!(
+        external_index_update.status.success(),
+        "simulate concurrent source index update: {}",
+        String::from_utf8_lossy(&external_index_update.stderr)
+    );
+    let concurrently_updated_index =
+        std::fs::read(source_gitdir.join("index")).expect("read concurrent source index update");
+    assert_ne!(concurrently_updated_index, original_index);
+    let source_index_lock = source_gitdir.join("index.lock");
+    let conflict_lock = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source_index_lock)
+        .expect("acquire Git-compatible index lock for conflict check");
+    if std::fs::read(source_gitdir.join("index")).expect("recheck source index under lock")
+        != original_index
+    {
+        drop(conflict_lock);
+        std::fs::remove_file(&source_index_lock).expect("release conflict index lock");
+    } else {
+        panic!("broker model failed to reject a concurrently updated index");
+    }
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("concurrent index remains intact"),
+        concurrently_updated_index,
+        "conflict handling overwrote the concurrent index update"
+    );
+
+    // Restore this disposable fixture's baseline after the conflict probe.
+    // The publish prototype below uses the captured bytes as its expected
+    // index generation and exercises only this one index resource.
+    std::fs::write(source_gitdir.join("index"), &original_index)
+        .expect("restore disposable source index baseline");
+    let private_index =
+        std::fs::read(private_gitdir.join("index")).expect("read operation-private staged index");
+    let private_blob = Command::new(&git)
+        .args([
+            format!("--git-dir={}", private_gitdir.display()),
+            "cat-file".into(),
+            "blob".into(),
+            changed_blob.clone(),
+        ])
+        .current_dir(&repository)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .expect("read validated staged blob for broker import");
+    assert!(
+        private_blob.status.success(),
+        "read private staged blob failed: {}",
+        String::from_utf8_lossy(&private_blob.stderr)
+    );
+    assert_eq!(
+        private_blob.stdout, b"new content must stay in private object storage\n",
+        "private staged blob does not match the authorized worktree content"
+    );
+
+    let mut import = Command::new(&git)
+        .args([
+            format!("--git-dir={}", source_gitdir.display()),
+            "hash-object".into(),
+            "-w".into(),
+            "--stdin".into(),
+            "--no-filters".into(),
+        ])
+        .current_dir(&repository)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start trusted broker object import");
+    import
+        .stdin
+        .take()
+        .expect("broker object import stdin")
+        .write_all(&private_blob.stdout)
+        .expect("stream validated blob to source ODB");
+    let imported = import
+        .wait_with_output()
+        .expect("wait for trusted broker object import");
+    assert!(
+        imported.status.success(),
+        "broker object import failed: {}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&imported.stdout).trim(),
+        changed_blob,
+        "source ODB import returned a different object identity"
+    );
+
+    let mut publish_lock = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source_index_lock)
+        .expect("acquire Git-compatible index publication lock");
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("revalidate source index"),
+        original_index,
+        "source index changed between broker validation and lock acquisition"
+    );
+    publish_lock
+        .write_all(&private_index)
+        .expect("write verified staged index to lock file");
+    publish_lock.sync_all().expect("sync verified staged index");
+    drop(publish_lock);
+    std::fs::rename(&source_index_lock, source_gitdir.join("index"))
+        .expect("atomically publish validated staged index");
+    std::fs::File::open(&source_gitdir)
+        .and_then(|directory| directory.sync_all())
+        .expect("sync source gitdir after index publication");
+
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("read published source index"),
+        private_index,
+        "broker did not publish the exact validated private index"
+    );
+    let source_has_blob = Command::new(&git)
+        .args([
+            format!("--git-dir={}", source_gitdir.display()),
+            "cat-file".into(),
+            "-e".into(),
+            changed_blob.clone(),
+        ])
+        .current_dir(&repository)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status()
+        .expect("verify imported source object");
+    assert!(
+        source_has_blob.success(),
+        "imported source object is absent"
+    );
+    assert!(
+        !source_index_lock.exists(),
+        "broker promotion left the source index lock behind"
     );
 }
 
