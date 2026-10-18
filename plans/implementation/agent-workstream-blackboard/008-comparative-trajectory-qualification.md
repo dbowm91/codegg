@@ -481,3 +481,9 @@ projection mocks queued for later tests. The route fixture now waits for the
 connected state before project selection, and the suite resets mock
 implementations before each test. Local `npm test` passes 18/18; the updated
 hosted E2E run is pending.
+
+Hosted verify on `9ed8df7b` reached workspace tests and reported 12,456 passed,
+1 failed, 6 skipped before stopping. The failure was the old
+`user_prompt_queue` test pinning storage layout 82 after the new v83/v84
+migrations; the assertion now expects the current v84. The next exact-head CI
+run must confirm this correction.

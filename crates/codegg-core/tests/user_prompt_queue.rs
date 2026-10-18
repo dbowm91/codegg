@@ -207,10 +207,11 @@ async fn user_prompt_queue_v80_migration_creates_table_index_and_layout() {
         "layout constant must equal the highest wired migration"
     );
     // M002b bumped the layout to 81 for the queue-owner binding; M007 took v82
-    // for the optional due time. The constant is asserted against the wired
-    // migration above, which is the durable relationship; this line only pins the
-    // current number so a silent bump is visible in review.
-    assert_eq!(STORAGE_LAYOUT_VERSION, 82);
+    // for the optional due time. M008 added v83 for shared scratch and v84 for
+    // delegated usage attribution. The assertion above ties the constant to
+    // the latest wired migration; pin the number here so silent bumps remain
+    // visible in review.
+    assert_eq!(STORAGE_LAYOUT_VERSION, 84);
 
     let table: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='user_prompt_queue_entry'",
