@@ -273,6 +273,8 @@ impl TurnRuntime for DefaultTurnRuntime {
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
             .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
         let session_id = canonical_session_id.as_str().to_owned();
+        let session_scratch = crate::scratch::session_scratch_dir(&session_id)
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
         let mut provider_context = ProviderRequestContext {
             session_id: Some(Arc::from(canonical_session_id.as_str())),
             ..Default::default()
@@ -693,6 +695,14 @@ impl TurnRuntime for DefaultTurnRuntime {
         // PromptCompiler owns the only flattening step; the block metadata is
         // retained in the compiler fingerprint used by ContextPlan.
         let mut runtime_blocks = Vec::new();
+        runtime_blocks.push(crate::agent::prompt::PromptBlock::required(
+            crate::agent::prompt::PromptBlockKind::CapabilityContract,
+            "execution:private-session-scratch",
+            &format!(
+                "Private session scratch is available at `{}`. Use it for disposable intermediate artifacts that should persist across this session's tool calls. Structured writes inside the workspace or this scratch directory do not trigger the implicit default Ask; explicit permission rules still apply. Other paths follow the normal permission rules.",
+                session_scratch.display()
+            ),
+        ));
         if !memory_context.trim().is_empty() {
             runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
                 crate::agent::prompt::PromptBlockKind::MemorySummary,

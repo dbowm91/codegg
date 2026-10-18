@@ -362,6 +362,7 @@ impl AgentLoop {
                     snapshot: snapshot.clone(),
                     receipt: receipt.clone(),
                     command_preflight,
+                    scratch_scope: self.scratch_scope.clone(),
                 },
             ),
             timeout_ms,
@@ -530,25 +531,33 @@ impl AgentLoop {
             tc.name.as_str(),
             "write" | "edit" | "apply_patch" | "replace"
         ) {
-            let allowed_roots = [self.workspace_root.as_path()];
-            match path.as_deref() {
-                Some(path) => {
-                    self.services
-                        .permission_checker
-                        .check_trusted_root_mutation(
-                            tc.name.as_str(),
-                            path,
-                            &allowed_roots,
-                            Some(&self.session_id),
-                        )
-                        .await
+            if let Some(path) = path.as_deref() {
+                let session_scratch = if self.scratch_scope.is_none() {
+                    crate::scratch::session_scratch_dir(&self.session_id).ok()
+                } else {
+                    None
+                };
+                let mut allowed_roots = vec![self.workspace_root.as_path()];
+                if let Some(scope) = &self.scratch_scope {
+                    allowed_roots.push(scope.private_root.as_path());
+                    allowed_roots.extend(scope.shared.iter().map(|root| root.path.as_path()));
+                } else if let Some(root) = session_scratch.as_deref() {
+                    allowed_roots.push(root);
                 }
-                None => {
-                    self.services
-                        .permission_checker
-                        .check(&tc.name, None, Some(&self.session_id))
-                        .await
-                }
+                self.services
+                    .permission_checker
+                    .check_trusted_root_mutation(
+                        tc.name.as_str(),
+                        path,
+                        &allowed_roots,
+                        Some(&self.session_id),
+                    )
+                    .await
+            } else {
+                self.services
+                    .permission_checker
+                    .check(&tc.name, None, Some(&self.session_id))
+                    .await
             }
         } else {
             self.services

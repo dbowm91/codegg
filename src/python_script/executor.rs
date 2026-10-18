@@ -339,10 +339,25 @@ pub async fn execute_python_script_with_cancellation(
             script_file.to_string_lossy().to_string().into(),
         ],
         cwd.clone(),
-        crate::managed_process::ProcessProvenance::new(
-            "python-script",
-            request.session_id.clone().unwrap_or_default(),
-        ),
+        request
+            .session_id
+            .as_deref()
+            .filter(|session_id| !session_id.is_empty())
+            .map_or_else(
+                || {
+                    crate::managed_process::ProcessProvenance::new(
+                        "python-script",
+                        request.session_id.clone().unwrap_or_default(),
+                    )
+                },
+                |session_id| {
+                    crate::managed_process::ProcessProvenance::new(
+                        "python-script",
+                        session_id.to_owned(),
+                    )
+                    .with_session(session_id.to_owned())
+                },
+            ),
     );
     process.timeout = Some(timeout);
     process.cancellation = cancellation;
@@ -850,6 +865,27 @@ mod tests {
         let result = execute_python_script(&request).await;
         assert!(result.is_success(), "stderr: {}", result.stderr);
         assert!(result.stdout.contains("hello from python"));
+    }
+
+    #[tokio::test]
+    async fn python_tempfile_uses_the_persistent_session_scratch() {
+        let session_id = format!("python-scratch-{}", uuid::Uuid::new_v4());
+        let scratch = crate::scratch::session_scratch_dir(&session_id).unwrap();
+        let request = PythonScriptRequest {
+            code: "import os, tempfile; print(tempfile.gettempdir()); print(os.environ['CODEGG_SCRATCH_DIR'])".into(),
+            mode: PythonExecutionMode::Analyze,
+            cwd: test_cwd("session_scratch"),
+            workspace_root: None,
+            timeout_secs: Some(10),
+            session_id: Some(session_id),
+            intent: None,
+        };
+        let result = execute_python_script(&request).await;
+        assert!(result.is_success(), "stderr: {}", result.stderr);
+        let expected = scratch.to_string_lossy();
+        assert_eq!(result.stdout.lines().next(), Some(expected.as_ref()));
+        assert_eq!(result.stdout.lines().nth(1), Some(expected.as_ref()));
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     #[tokio::test]

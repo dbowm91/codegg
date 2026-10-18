@@ -2093,6 +2093,20 @@ impl JobScheduler {
         let Some(agent_runs) = self.agent_runs.lock().await.clone() else {
             return Ok(());
         };
+        match agent_runs.reconcile_scratch_attempt_leases().await {
+            Ok(reconciled) if reconciled > 0 => {
+                tracing::info!(
+                    reconciled,
+                    "stale managed scratch attempt leases reconciled"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // Retaining a stale lease only delays cache cleanup; deleting
+                // an ambiguous live lease could break an admitted process.
+                tracing::warn!(?error, "managed scratch lease recovery deferred");
+            }
+        }
         let jobs = self
             .store
             .list_job_records(codegg_core::jobs::store::JobStoreQuery {
@@ -2121,6 +2135,11 @@ impl JobScheduler {
                     )
                     .await;
             }
+            crate::scheduler::executors::reclaim_revoked_shared_for_run(
+                agent_runs.as_ref(),
+                &run_id,
+            )
+            .await;
         }
         Ok(())
     }

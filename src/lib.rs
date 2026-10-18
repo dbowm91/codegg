@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![recursion_limit = "256"]
 
 #[cfg(all(feature = "windows-sandbox-test-support", not(debug_assertions)))]
 compile_error!("windows-sandbox-test-support is restricted to debug/test builds");
@@ -68,6 +69,7 @@ pub mod python_script;
 pub mod research;
 pub mod run_rerun;
 pub mod scheduler;
+pub mod scratch;
 pub mod search_backend;
 pub mod security;
 pub mod shell;

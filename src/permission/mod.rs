@@ -220,6 +220,22 @@ pub enum PermissionResult {
     Ask(PermissionRequest),
 }
 
+fn permission_result_for_level(
+    tool: &str,
+    path: Option<&str>,
+    level: PermissionLevel,
+) -> PermissionResult {
+    match level {
+        PermissionLevel::Allow => PermissionResult::Allow,
+        PermissionLevel::Deny => PermissionResult::Deny,
+        PermissionLevel::Ask => PermissionResult::Ask(PermissionRequest {
+            tool: tool.to_string(),
+            path: path.map(str::to_string),
+            args: None,
+        }),
+    }
+}
+
 /// The ephemeral receipt produced when the permission boundary accepts a call.
 ///
 /// This deliberately contains only evaluated state.  In particular, callers
@@ -1002,6 +1018,7 @@ pub struct PermissionChecker {
     store: Arc<RwLock<PermissionStore>>,
     compiled_globs: Vec<(globset::GlobMatcher, PermissionLevel)>,
     canonicalized_config_tool_rules: Vec<CanonicalizedToolRule>,
+    canonicalized_explicit_config_tool_rules: Vec<CanonicalizedToolRule>,
     canonicalized_session_tool_rules: Vec<CanonicalizedToolRule>,
     canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
     legacy_exec_mode: bool,
@@ -1012,9 +1029,12 @@ pub struct PermissionChecker {
 impl PermissionChecker {
     pub fn new(config: Option<&Config>, store_path: Option<std::path::PathBuf>) -> Self {
         let config_rules = config_ruleset(config);
+        let explicit_config_rules = explicit_config_ruleset(config);
         let store = PermissionStore::new(store_path);
         let compiled_globs = compile_path_rules(&config_rules.path_rules);
         let canonicalized_config_tool_rules = canonicalize_tool_rules(&config_rules.tool_rules);
+        let canonicalized_explicit_config_tool_rules =
+            canonicalize_tool_rules(&explicit_config_rules.tool_rules);
 
         Self {
             config_rules,
@@ -1023,6 +1043,7 @@ impl PermissionChecker {
             store: Arc::new(RwLock::new(store)),
             compiled_globs,
             canonicalized_config_tool_rules,
+            canonicalized_explicit_config_tool_rules,
             canonicalized_session_tool_rules: Vec::new(),
             canonicalized_agent_tool_rules: Vec::new(),
             legacy_exec_mode: false,
@@ -1244,14 +1265,15 @@ impl PermissionChecker {
             return PermissionResult::Deny;
         }
         let ordinary = self.check(tool, Some(path), session_id).await;
-        if !matches!(ordinary, PermissionResult::Ask(_)) {
+        if !matches!(&ordinary, PermissionResult::Ask(_)) {
             return ordinary;
         }
 
         let requested = Path::new(path);
         let mut canonical_target = None;
         for (index, root) in allowed_roots.iter().enumerate() {
-            // Relative file targets always resolve from the workspace.
+            // Relative structured file paths resolve from the workspace root;
+            // never reinterpret one under scratch or another secondary root.
             if !requested.is_absolute() && index > 0 {
                 continue;
             }
@@ -1288,9 +1310,19 @@ impl PermissionChecker {
             return PermissionResult::Deny;
         }
 
-        if let Some(level) = self.effective_tool_rule(tool, Some(path)).await {
-            return permission_result_for_level(tool, Some(path), level);
+        let canonical_path = canonical_target.as_path();
+        for compiled in [
+            &self.canonicalized_agent_tool_rules,
+            &self.canonicalized_session_tool_rules,
+            &self.canonicalized_explicit_config_tool_rules,
+        ] {
+            if let Some(level) =
+                find_canonicalized_tool_rule(compiled, tool, Some(canonical_path)).await
+            {
+                return permission_result_for_level(tool, Some(path), level);
+            }
         }
+
         let canonical_string = canonical_target.to_string_lossy();
         for (matcher, level) in &self.compiled_globs {
             if matcher.is_match(canonical_string.as_ref()) {
@@ -1835,22 +1867,6 @@ async fn find_canonicalized_tool_rule(
                 None
             }
         })
-    }
-}
-
-fn permission_result_for_level(
-    tool: &str,
-    path: Option<&str>,
-    level: PermissionLevel,
-) -> PermissionResult {
-    match level {
-        PermissionLevel::Allow => PermissionResult::Allow,
-        PermissionLevel::Deny => PermissionResult::Deny,
-        PermissionLevel::Ask => PermissionResult::Ask(PermissionRequest {
-            tool: tool.to_string(),
-            path: path.map(str::to_string),
-            args: None,
-        }),
     }
 }
 
@@ -2682,6 +2698,161 @@ mod tests {
                 tool,
                 result
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_root_write_relaxes_only_the_default_ask() {
+        let scratch = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("artifact.txt");
+        let workspace_target = workspace.path().join("artifact.txt");
+        let default_checker = PermissionChecker::new(None, None);
+        assert!(matches!(
+            default_checker
+                .check_trusted_root_mutation(
+                    "write",
+                    target.to_str().unwrap(),
+                    &[scratch.path()],
+                    Some("scratch-session"),
+                )
+                .await,
+            PermissionResult::Allow
+        ));
+        for tool in ["edit", "apply_patch", "replace"] {
+            assert!(matches!(
+                default_checker
+                    .check_trusted_root_mutation(
+                        tool,
+                        target.to_str().unwrap(),
+                        &[scratch.path()],
+                        Some("scratch-session"),
+                    )
+                    .await,
+                PermissionResult::Allow
+            ));
+        }
+        assert!(matches!(
+            default_checker
+                .check_trusted_root_mutation(
+                    "write",
+                    workspace_target.to_str().unwrap(),
+                    &[workspace.path()],
+                    Some("scratch-session"),
+                )
+                .await,
+            PermissionResult::Allow
+        ));
+        assert!(matches!(
+            default_checker
+                .check_trusted_root_mutation(
+                    "write",
+                    "relative-artifact.txt",
+                    &[workspace.path()],
+                    Some("scratch-session"),
+                )
+                .await,
+            PermissionResult::Allow
+        ));
+        assert!(matches!(
+            default_checker
+                .check_trusted_root_mutation(
+                    "write",
+                    target.to_str().unwrap(),
+                    &[workspace.path()],
+                    Some("scratch-session"),
+                )
+                .await,
+            PermissionResult::Ask(_)
+        ));
+
+        for (tool, level, expected) in [
+            ("write", "ask", PermissionLevel::Ask),
+            ("edit", "ask", PermissionLevel::Ask),
+            ("apply_patch", "ask", PermissionLevel::Ask),
+            ("replace", "ask", PermissionLevel::Ask),
+            ("write", "deny", PermissionLevel::Deny),
+            ("edit", "deny", PermissionLevel::Deny),
+            ("apply_patch", "deny", PermissionLevel::Deny),
+            ("replace", "deny", PermissionLevel::Deny),
+        ] {
+            let config = crate::config::schema::Config {
+                permission: Some(crate::config::schema::PermissionConfig {
+                    tools: Some(HashMap::from([(tool.into(), level.into())])),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let checker = PermissionChecker::new(Some(&config), None);
+            let result = checker
+                .check_trusted_root_mutation(
+                    tool,
+                    target.to_str().unwrap(),
+                    &[scratch.path()],
+                    Some("scratch-session"),
+                )
+                .await;
+            match expected {
+                PermissionLevel::Ask => assert!(matches!(result, PermissionResult::Ask(_))),
+                PermissionLevel::Deny => assert!(matches!(result, PermissionResult::Deny)),
+                PermissionLevel::Allow => unreachable!(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_root_path_ask_keeps_the_mutation_tool_identity() {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("artifact.txt");
+        std::fs::write(&target, "original").unwrap();
+        let canonical_target = target.canonicalize().unwrap();
+        let checker = PermissionChecker::new(None, None).with_session_rules(PermissionRuleset {
+            default: PermissionLevel::Ask,
+            tool_rules: Vec::new(),
+            path_rules: vec![PathRule {
+                pattern: canonical_target.to_string_lossy().into_owned(),
+                level: PermissionLevel::Ask,
+            }],
+        });
+
+        let result = checker
+            .check_trusted_root_mutation(
+                "edit",
+                target.to_str().unwrap(),
+                &[scratch.path()],
+                Some("scratch-session"),
+            )
+            .await;
+        let PermissionResult::Ask(request) = result else {
+            panic!("explicit path Ask must remain authoritative: {result:?}");
+        };
+        assert_eq!(request.tool, "edit");
+    }
+
+    #[tokio::test]
+    async fn global_ask_default_does_not_prompt_for_authenticated_file_mutations() {
+        let scratch = tempfile::tempdir().unwrap();
+        let config = crate::config::schema::Config {
+            permission: Some(crate::config::schema::PermissionConfig {
+                default: Some("ask".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let checker = PermissionChecker::new(Some(&config), None);
+
+        for tool in ["write", "edit", "apply_patch", "replace"] {
+            assert!(matches!(
+                checker
+                    .check_trusted_root_mutation(
+                        tool,
+                        "relative.py",
+                        &[scratch.path()],
+                        Some("scratch-session"),
+                    )
+                    .await,
+                PermissionResult::Allow
+            ));
         }
     }
 

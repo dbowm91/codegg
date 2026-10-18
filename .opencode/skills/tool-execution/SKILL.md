@@ -27,6 +27,13 @@ preflight after approval or let an executor use a broader sandbox profile than
 the accepted snapshot; unavailable required containment is a typed refusal.
 
 `ManagedProcessService` remains the sole finite-process owner on every host.
+For model-owned work, a host-stamped session identity may carry the process
+through a persistent private session scratch root. The service injects its
+path after environment sanitization and adds it to Required sandbox grants;
+never derive it from command input or human-shell context. Structured `read`
+and `write` only accept absolute paths beneath that session root. Current
+cleanup intentionally retains these resources until lease-aware reclamation
+is qualified.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows

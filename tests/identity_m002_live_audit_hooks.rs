@@ -180,6 +180,7 @@ async fn bash_shell_success_emits_one_structural_event() {
                 Some("policy-r9".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     let tool = codegg::tool::bash::BashTool::new()
         .with_workspace_root(canonical_test_workspace())
@@ -299,6 +300,7 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
                 Some("policy-r10".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     let tool = codegg::tool::bash::BashTool::new()
         .with_sandbox_profile(

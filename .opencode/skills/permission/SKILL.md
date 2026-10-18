@@ -50,11 +50,12 @@ skill covers the ordering and isolation invariants that are easy to break.
   widening child tool/path rules or the narrowed sandbox ceiling.
 - **Ceilings still apply in `Yolo`.** `yolo` auto-allows escalations *within
   the authority ceiling*; an explicit deterministic `Deny` still denies.
-- **Direct file writes follow the bound workspace.** `write`, `edit`,
-  `apply_patch`, and `replace` allow targets inside the session's resolved
-  workspace by default, including a scratchpad there. Explicit tool/path
-  `Ask` or `Deny` rules win, and child path fences remain effective. Keep this
-  authority limited to native file tools; do not extend it to shell or Git.
+- **Native file mutations use authenticated roots.** `write`, `edit`,
+  `apply_patch`, and `replace` may write inside the resolved workspace or the
+  session's private/shared scratch grants without the general permission
+  default, including `permission.default = "ask"`. Explicit tool/path `Ask`
+  and `Deny` rules still win. Keep scratch authority session scoped and host
+  validated; shell and Git do not inherit it.
 - **Carry the accepted decision through execution.** Agent tool calls pass an
   immutable `ExecutionAuthorizationContext` (snapshot, receipt, bounded
   command-preflight result) through the broker and retries. Bash must consume
@@ -71,6 +72,11 @@ skill covers the ordering and isolation invariants that are easy to break.
   Services channels. Keep backend limits visible in `architecture/security.md`.
 - **`Automatic` is never silent Yolo.** With no reviewer model configured,
   `Automatic` defers to the human.
+- **Scratch recovery is advisory.** A structured write to a known host temp
+  root may suggest the current private scratch path after path authorization
+  rejects it. Never rewrite the request, expose an ungranted shared path, or
+  let a suggestion override explicit Ask/Deny. Structured reads and shell
+  commands keep their normal semantics.
 
 ## The Automatic Reviewer
 

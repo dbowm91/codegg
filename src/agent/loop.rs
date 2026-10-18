@@ -137,6 +137,7 @@ pub struct AgentLoop {
     /// durable sessions, so accounting joins them through the originating
     /// session plus `run_id` instead.
     pub(super) usage_session_id: Option<String>,
+    pub(super) scratch_scope: Option<crate::scratch::AgentScratchScope>,
     /// Push hints only; idle runs are never woken by peer observations.
     pub(super) peer_observation_rx:
         Option<tokio::sync::broadcast::Receiver<crate::bus::events::AppEvent>>,
@@ -455,6 +456,7 @@ impl AgentLoop {
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             run_id: None,
             usage_session_id: None,
+            scratch_scope: None,
             peer_observation_rx: None,
             peer_observation_session_id: None,
             peer_group_members: HashMap::new(),
@@ -861,6 +863,11 @@ impl AgentLoop {
 
     pub fn set_usage_session_id(&mut self, session_id: Option<String>) {
         self.usage_session_id = session_id;
+    }
+
+    pub fn set_scratch_scope(&mut self, scope: crate::scratch::AgentScratchScope) {
+        self.run_id = Some(scope.run_id.clone());
+        self.scratch_scope = Some(scope);
     }
 
     pub fn set_peer_group_memberships(&mut self, groups: Vec<(String, Vec<String>)>) {
