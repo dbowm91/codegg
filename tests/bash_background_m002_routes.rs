@@ -115,9 +115,9 @@ fn bash_tool_with(
     workspace_root: std::path::PathBuf,
 ) -> codegg::tool::bash::BashTool {
     codegg::tool::bash::BashTool::default()
+        .with_workspace_root(workspace_root)
         .with_submission(submission)
         .with_job_notifications(notifications)
-        .with_workspace_root(workspace_root)
 }
 
 #[test]
