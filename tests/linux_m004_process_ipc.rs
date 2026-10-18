@@ -707,6 +707,18 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
                     .expect("valid fixture revision"),
             },
         ),
+        (
+            "changed-files",
+            codegg_git::GitOperation::ChangedFiles { base_ref: None },
+        ),
+        (
+            "branches",
+            codegg_git::GitOperation::BranchList {
+                remotes: false,
+                all: false,
+            },
+        ),
+        ("worktrees", codegg_git::GitOperation::WorktreeList),
     ];
 
     for (label, operation) in &operations {
@@ -757,6 +769,18 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
                 assert!(!show.hash.is_empty());
                 assert!(live.stdout.to_string_lossy().contains(&show.hash));
                 assert!(show.message.contains("typed parity fixture"));
+            }
+            ("changed-files", GitPayload::ChangedFiles(files)) => {
+                assert!(files.iter().any(|file| file.path == "tracked.txt"));
+                assert!(live.stdout.to_string_lossy().contains("tracked.txt"));
+            }
+            ("branches", GitPayload::Branches(branches)) => {
+                assert!(branches.iter().any(|branch| branch.current));
+            }
+            ("worktrees", GitPayload::Worktrees(worktrees)) => {
+                assert!(worktrees.iter().any(|worktree| {
+                    worktree.is_current && Path::new(&worktree.path) == repository
+                }));
             }
             (label, payload) => panic!("unexpected typed {label} payload: {payload:?}"),
         }
