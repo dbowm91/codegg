@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -12,8 +12,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use codegg::managed_process::{
-    ManagedProcessRequest, ManagedProcessService, ProcessProvenance, SandboxExecutionOutcome,
-    SandboxRequest,
+    ManagedProcessRequest, ManagedProcessResult, ManagedProcessService, ProcessProvenance,
+    SandboxExecutionOutcome, SandboxRequest,
 };
 use codegg::security::sandbox::{SandboxConfig, SandboxMode};
 
@@ -361,6 +361,197 @@ else:
         "offline child communicated through an inherited host socket"
     );
     drop((tcp4, tcp6, inherited_stream));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_reads_live_objects_and_contains_configured_command() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the native contained-Git proof");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path();
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+
+    let setup = |args: &[&str]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git fixture")
+    };
+    let init = setup(&["init", "--quiet"]);
+    assert!(init.status.success(), "git init failed: {:?}", init);
+    std::fs::write(repository.join("tracked.txt"), "live object payload\n")
+        .expect("write tracked fixture");
+    assert!(setup(&["add", "tracked.txt"]).status.success());
+    let identity = setup(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "fixture",
+    ]);
+    assert!(
+        identity.status.success(),
+        "git commit fixture failed: {}",
+        String::from_utf8_lossy(&identity.stderr)
+    );
+
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("runner HOME is available");
+    let host_only = tempfile::Builder::new()
+        .prefix("codegg-live-git-host-only-")
+        .tempdir_in(home)
+        .expect("host-only sentinel directory");
+    let secret = host_only.path().join("credential-sentinel");
+    let secret_leak = host_only.path().join("credential-leak");
+    std::fs::write(&secret, "host-secret-marker").expect("write host-only secret sentinel");
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host TCP fixture");
+    listener
+        .set_nonblocking(true)
+        .expect("make host TCP fixture nonblocking");
+    let address = listener.local_addr().expect("host TCP fixture address");
+    let positive = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))
+        .expect("host positive control reaches TCP fixture");
+    let (accepted, _) = listener.accept().expect("accept host positive control");
+    drop((positive, accepted));
+
+    let workspace_marker = repository.join("contained-command-ran");
+    let network_marker = repository.join("network-escape");
+    let child_netns = repository.join("child-netns-inode");
+    let python = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("python3"))
+        .find(|candidate| candidate.is_file())
+        .expect("Python is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Python executable");
+    let python_probe = format!(
+        "import socket; socket.create_connection(({:?}, {}), timeout=1); open({:?}, 'w').write('connected')",
+        address.ip().to_string(),
+        address.port(),
+        network_marker.to_string_lossy()
+    );
+    let script = repository.join("configured-command.sh");
+    let script_text = format!(
+        "#!/bin/sh\nprintf ran > {}\n/usr/bin/stat -Lc '%i' /proc/self/ns/net > {}\nif test -r {}; then cat {} > {}; fi\n{} -c {} 2>/dev/null || true\n",
+        shell_quote(&workspace_marker.to_string_lossy()),
+        shell_quote(&child_netns.to_string_lossy()),
+        shell_quote(&secret.to_string_lossy()),
+        shell_quote(&secret.to_string_lossy()),
+        shell_quote(&secret_leak.to_string_lossy()),
+        shell_quote(&python.to_string_lossy()),
+        shell_quote(&python_probe)
+    );
+    std::fs::write(&script, script_text).expect("write configured Git command");
+    let mut permissions = std::fs::metadata(&script)
+        .expect("stat configured Git command")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).expect("make Git command executable");
+    let alias = format!("!{}", script.display());
+    let configure = setup(&["config", "alias.authority-probe", &alias]);
+    assert!(
+        configure.status.success(),
+        "configure repository-local Git command: {}",
+        String::from_utf8_lossy(&configure.stderr)
+    );
+
+    async fn contained_git(
+        git: &Path,
+        workspace: &Path,
+        args: &[&str],
+        label: &str,
+    ) -> ManagedProcessResult {
+        let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_offline_network(true)
+            .launch_spec(git, &args, Some(workspace))
+            .expect("construct test-only M004/M005 launch spec");
+        let argv = std::iter::once(spec.target.as_os_str().to_owned())
+            .chain(spec.args.iter().map(OsString::from))
+            .collect();
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace.to_path_buf(),
+            ProcessProvenance::new("linux-trusted-git-c001", label),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+            .with_var("GIT_CONFIG_NOSYSTEM", "1")
+            .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+            .with_var("HOME", "/tmp/codegg-empty-home");
+        request.sandbox = SandboxRequest::Required(spec);
+        ManagedProcessService::run(request)
+            .await
+            .expect("required contained Git must fail closed or run under obtained limits")
+    }
+
+    let log = contained_git(&git, repository, &["log", "-1", "--format=%s"], "live-log").await;
+    assert!(
+        log.exit_status.success(),
+        "contained git log failed: {}",
+        log.stderr.to_string_lossy()
+    );
+    assert!(log.stdout.to_string_lossy().contains("fixture"));
+    assert!(matches!(
+        log.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
+
+    let configured = contained_git(&git, repository, &["authority-probe"], "config-command").await;
+    assert!(
+        configured.exit_status.success(),
+        "contained configured Git command failed: {}",
+        configured.stderr.to_string_lossy()
+    );
+    assert!(
+        workspace_marker.exists(),
+        "Git's configured command did not execute"
+    );
+    let child_netns_inode = std::fs::read_to_string(&child_netns)
+        .expect("configured command records its network namespace")
+        .trim()
+        .parse::<u64>()
+        .expect("child network namespace inode is numeric");
+    assert_ne!(
+        child_netns_inode,
+        std::fs::metadata("/proc/self/ns/net")
+            .expect("host network namespace metadata")
+            .ino(),
+        "configured Git command shared the host network namespace"
+    );
+    assert!(
+        !secret_leak.exists(),
+        "configured command read a host-only credential sentinel"
+    );
+    assert!(
+        !network_marker.exists(),
+        "configured command escaped the offline network namespace"
+    );
+    assert!(
+        listener.accept().is_err(),
+        "configured Git command reached a host loopback service"
+    );
+    assert!(matches!(
+        configured.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -28,24 +28,6 @@ fn git_test_policy_diagnostic(root: &Path) -> String {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|error| vec![format!("<read error: {error}>")]);
-    let raw_repo_probe = std::process::Command::new("git")
-        .args([
-            "rev-parse",
-            "--git-dir",
-            "--show-toplevel",
-            "--show-object-format",
-        ])
-        .current_dir(root)
-        .output()
-        .map(|output| {
-            format!(
-                "status={} stdout={} stderr={}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout).trim(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )
-        })
-        .unwrap_or_else(|error| format!("<spawn error: {error}>"));
     let disk_probe = std::process::Command::new("df")
         .args(["-h"])
         .arg(root)
@@ -53,7 +35,7 @@ fn git_test_policy_diagnostic(root: &Path) -> String {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .unwrap_or_else(|error| format!("<spawn error: {error}>"));
     format!(
-        "root={}; .git={:?}; objects={:?}; alternates={:?}; entries={object_entries:?}; raw_repo_probe={raw_repo_probe}; disk={disk_probe}",
+        "root={}; .git={:?}; objects={:?}; alternates={:?}; entries={object_entries:?}; disk={disk_probe}",
         root.display(),
         std::fs::symlink_metadata(&git_dir),
         std::fs::symlink_metadata(&object_dir),

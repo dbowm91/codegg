@@ -2,7 +2,7 @@
 
 Status: blocked on C001 threat-model closure and independent ADR-0036 acceptance for production; **test-only transaction modeling can proceed against a written C001 interface**
 Primary class: invariant
-Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `004d770b8cd23ca33fb724dae95f97de563ba60d` (2026-10-18).
+Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`, parent Linux execution isolation roadmap and Linux C002 contained-local-Git recovery plan `plans/implementation/linux-execution-isolation/010-m001-contained-local-git-recovery.md`.
 Normative: long-term §§4,17,27–29 and terminology §8; accepted ADR-0002/0004/0016/0034/0035, **proposed ADR-0036**.
 Target future closure: `plans/closure/linux-trusted-git-cost-corrective/004-status.md`.

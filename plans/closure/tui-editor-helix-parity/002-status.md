@@ -401,7 +401,7 @@ M010 have a *second* dependency that M002 does not satisfy.
 | M006 unimpaired navigation | M002 | **becomes ready** (no plan yet) |
 | M007 multi-selection core | M001 | already ready; M002 neither helps nor hinders |
 | M008 multi-selection command surface | M007 | still blocked — M007 outstanding |
-| M009 match mode / text objects | M008, ADR-0034 acceptance | unchanged — blocked |
+| M009 match mode / text objects | M008, ADR-0037 acceptance | unchanged — blocked |
 | M010 space mode / extended goto | M002, M005 | still blocked — M005 outstanding |
 | M011 Insert-mode control chords | M002 | **becomes ready** (no plan yet) |
 | M012 undo history traversal | M002 | **becomes ready** (no plan yet) |
@@ -425,7 +425,7 @@ grammar instead of needing a prefix of their own.
    user-facing statements; publishing them in `/help` is a genuine gap and
    remains out of scope.
 3. **`[f`, `[t`, `[a`, `[c` and their `]` twins are not bindable until
-   ADR-0034 is accepted**, because the syntax-node slice needs a tree-sitter
+   ADR-0037 is accepted**, because the syntax-node slice needs a tree-sitter
    dependency that does not exist in this workspace. M006's non-TS subset is
    unaffected.
 4. **`g :` opens nothing.** A swallowing prefix consumes the colon, as it did

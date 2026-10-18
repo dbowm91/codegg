@@ -12,7 +12,7 @@ Reduce trusted Git read setup from ODB-sized snapshots to work proportional to t
 
 ## 2. Current evidence and defects
 
-At baseline `planning/linux-sandbox-next-admission-and-adr-cleanup` `004d770b8cd23ca33fb724dae95f97de563ba60d` (2026-10-18), `GitEnvPolicy::{apply,apply_sync}` prepares a private ODB snapshot for object-reading commands. Cache is 4 entries/2 GiB with inotify/fingerprint invalidation and global mutex during miss construction. C012 verified CoW integrity on Btrfs but fragmented cold p95 1,109.391 ms exceeds C010's 1,000 ms limit. C012 **rejected** a live view claiming snapshot equivalence because external writers are not excluded. M004 process/IPC/PTY/LSP tests passed on a hosted Linux configuration; M005 offline candidate has native denial tests but no production owner/policy admission. Historical M001 Git mutation failures and C002/C003 remain open. Some full CI Git object-view/alias tests have failed intermittently; do not relabel them transient.
+Current source review is post-rebase commit `0b36c71f`, reconciled from pre-rebase evidence commit `004d770b8cd23ca33fb724dae95f97de563ba60d` (2026-10-18). At that reviewed source baseline, `GitEnvPolicy::{apply,apply_sync}` prepares a private ODB snapshot for object-reading commands. Cache is 4 entries/2 GiB with inotify/fingerprint invalidation and global mutex during miss construction. C012 verified CoW integrity on Btrfs but fragmented cold p95 1,109.391 ms exceeds C010's 1,000 ms limit. C012 **rejected** a live view claiming snapshot equivalence because external writers are not excluded. M004 process/IPC/PTY/LSP tests passed on a hosted Linux configuration; M005 offline candidate has native denial tests but no production owner/policy admission. Historical M001 Git mutation failures and C002/C003 remain open. Some full CI Git object-view/alias tests have failed intermittently; do not relabel them transient.
 
 ## 3. Security invariants and non-goals
 
@@ -45,7 +45,7 @@ A plan may use an **interface** contract or a test-only harness before a hard pr
 
 | Milestone | Class | Plan | Status | Gate / exit |
 |---|---|---|---|---|
-| C001 | invariant | `plans/implementation/linux-trusted-git-cost-corrective/001-live-odb-trust-model-and-negative-probes.md` | **ready, test-only** | Threat matrix and real-child negative probes; no live-ODB production call |
+| C001 | invariant | `plans/implementation/linux-trusted-git-cost-corrective/001-live-odb-trust-model-and-negative-probes.md` | **in progress, test-only** | Threat matrix and real-child negative probes; no live-ODB production call |
 | C002 | capability | `plans/implementation/linux-trusted-git-cost-corrective/002-contained-live-odb-read-pilot.md` | **blocked on C001; test-only eligible after C001** | Native contained CLI reads and explicit non-snapshot receipt; promotion gated by ADR-0036 and M005 |
 | C003 | infrastructure | `plans/implementation/linux-trusted-git-cost-corrective/003-gix-versus-cli-benchmark.md` | **ready, comparison-only** | Portable command-parity/latency/build-footprint matrix; no new production dependency or API |
 | C004 | invariant | `plans/implementation/linux-trusted-git-cost-corrective/004-private-index-odb-promotion-prototype.md` | **blocked on C001, ADR-0036 for production; test design parallel** | Operation-scoped staging with validated publication, conflict and crash handling |

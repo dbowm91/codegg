@@ -1,8 +1,8 @@
 # Linux Trusted Git Cost Corrective C001 — Live-ODB Threat Model and Native Negative Proof
 
-Status: ready — **test-only evidence; no production backend/policy promotion**
+Status: in progress — **test-only evidence; no production backend/policy promotion**
 Primary class: invariant
-Baseline reviewed: `planning/linux-sandbox-next-admission-and-adr-cleanup` at `004d770b8cd23ca33fb724dae95f97de563ba60d` (2026-10-18).
+Baseline reviewed: `planning/linux-sandbox-next-admission-and-adr-cleanup` at `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`, parent `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Normative: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; accepted ADR-0004/0016/0034/0035; **proposed, not accepted ADR-0036**.
 Corrects C010/C012 evaluation questions; does not reopen `plans/closure/linux-execution-isolation/{018,020}-status.md`.

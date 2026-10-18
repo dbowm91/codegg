@@ -26,7 +26,7 @@ Long-term requirements:
 Applicable ADRs:
 
 - `plans/adrs/ADR-0011-editor-document-ownership-and-frontend-replication.md`
-- `plans/adrs/ADR-0034-editor-syntax-tree-dependency.md` (proposed; not a gate
+- `plans/adrs/ADR-0037-editor-syntax-tree-dependency.md` (proposed; not a gate
   for this milestone — `[`/`]` are armed here but their leaves arrive in M006)
 
 Primary class: infrastructure

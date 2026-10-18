@@ -2,7 +2,7 @@
 
 Status: blocked on C001 test-only proof; **production route additionally blocked on ADR-0036 acceptance and M005 native/owner admission**
 Primary class: capability
-Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `004d770b8cd23ca33fb724dae95f97de563ba60d` (2026-10-18).
+Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source roadmap: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`; parent `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Long term: `plans/000-long-term-specification.md` §§4,17,27,29, `plans/001-terminology-and-domain-model.md` §8. Accepted ADR-0004/0016/0034/0035; proposed ADR-0036 is **not** implementation authority for promotion.
 Historical C010 and C012 negative closures are preserved; M004 closure provides tested process/IPC mechanisms, M005 remains internal.

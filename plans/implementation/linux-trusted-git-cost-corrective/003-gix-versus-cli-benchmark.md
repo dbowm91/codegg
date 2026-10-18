@@ -2,7 +2,7 @@
 
 Status: ready — **comparison/test-only; no production dependency or read-backend promotion**
 Primary class: infrastructure
-Baseline reviewed: `planning/linux-sandbox-next-admission-and-adr-cleanup` `004d770b8cd23ca33fb724dae95f97de563ba60d` (2026-10-18).
+Baseline reviewed: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source roadmaps: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`, `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Long-term `plans/000-long-term-specification.md` §§4,17,27,29; accepted ADR-0004/0016/0034/0035; proposed ADR-0036 (not adopted).
 Target future closure: `plans/closure/linux-trusted-git-cost-corrective/003-status.md`.
