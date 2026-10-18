@@ -1808,6 +1808,93 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         "successful recovery requires the original expected index generation"
     );
 
+    // Exercise a path substitution at the final validation-to-publication
+    // boundary. The directory descriptor anchors reads to the authorized
+    // gitdir inode while a separate thread replaces its configured path.
+    // Recovery must observe the changed path identity and leave the
+    // replacement untouched before the successful control below.
+    let gitdir_anchor = std::fs::File::open(&source_gitdir).expect("open authorized gitdir");
+    let anchored_gitdir = PathBuf::from(format!("/proc/self/fd/{}", gitdir_anchor.as_raw_fd()));
+    let anchored_index = anchored_gitdir.join("index");
+    let anchored_lock = anchored_gitdir.join("index.lock");
+    assert_eq!(
+        std::fs::read(&anchored_index).expect("read index through gitdir descriptor"),
+        expected_recovery_index,
+        "descriptor must refer to the authorized Git directory"
+    );
+    assert_eq!(
+        std::fs::read(&anchored_lock).expect("read lock through gitdir descriptor"),
+        recovered_index,
+        "descriptor must refer to the broker-authored recovery lock"
+    );
+
+    let concurrent_displaced =
+        source_gitdir.with_file_name(format!(".git-c004-race-displaced-{}", std::process::id()));
+    assert!(
+        !concurrent_displaced.exists(),
+        "concurrent gitdir race path already exists"
+    );
+    let (replace_tx, replace_rx) = std::sync::mpsc::channel();
+    let (replaced_tx, replaced_rx) = std::sync::mpsc::channel();
+    let race_source_gitdir = source_gitdir.clone();
+    let race_displaced_gitdir = concurrent_displaced.clone();
+    let replacer = std::thread::spawn(move || {
+        replace_rx
+            .recv()
+            .expect("receive coordinated gitdir replacement signal");
+        std::fs::rename(&race_source_gitdir, &race_displaced_gitdir)
+            .expect("displace authorized gitdir during recovery");
+        std::fs::create_dir(&race_source_gitdir).expect("install concurrent replacement gitdir");
+        replaced_tx
+            .send(())
+            .expect("signal completed gitdir replacement");
+    });
+
+    // This is the model's pre-publication path identity check. The swap occurs
+    // after it, then the required immediate recheck must deny publication.
+    let pre_race_gitdir = std::fs::metadata(&source_gitdir).expect("pre-race gitdir identity");
+    assert_eq!(
+        (pre_race_gitdir.dev(), pre_race_gitdir.ino()),
+        expected_gitdir_identity,
+        "authorized gitdir changed before the coordinated race"
+    );
+    replace_tx
+        .send(())
+        .expect("start concurrent gitdir path replacement");
+    replaced_rx
+        .recv()
+        .expect("wait for concurrent gitdir path replacement");
+    let raced_gitdir = std::fs::metadata(&source_gitdir).expect("inspect raced gitdir path");
+    assert_ne!(
+        (raced_gitdir.dev(), raced_gitdir.ino()),
+        (intent_dev, intent_ino),
+        "concurrent replacement retained the authorized gitdir identity"
+    );
+    assert!(
+        !source_gitdir.join("index").exists() && !source_gitdir.join("index.lock").exists(),
+        "concurrent path replacement received an index publication"
+    );
+    assert_eq!(
+        std::fs::read(&anchored_index).expect("read authorized index after path swap"),
+        expected_recovery_index,
+        "path swap changed the original authorized index"
+    );
+    assert_eq!(
+        std::fs::read(&anchored_lock).expect("read authorized lock after path swap"),
+        recovered_index,
+        "path swap changed the original broker-authored lock"
+    );
+    replacer.join().expect("join concurrent gitdir replacer");
+    std::fs::remove_dir(&source_gitdir).expect("remove empty concurrent replacement gitdir");
+    std::fs::rename(&concurrent_displaced, &source_gitdir)
+        .expect("restore authorized gitdir after race probe");
+    let restored_after_race = std::fs::metadata(&source_gitdir).expect("recheck restored gitdir");
+    assert_eq!(
+        (restored_after_race.dev(), restored_after_race.ino()),
+        (intent_dev, intent_ino),
+        "race cleanup did not restore the authorized gitdir identity"
+    );
+
     std::fs::rename(&source_index_lock, source_gitdir.join("index"))
         .expect("recover atomic publication of validated staged index");
     std::fs::File::open(&source_gitdir)
