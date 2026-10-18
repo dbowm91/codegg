@@ -551,6 +551,12 @@ impl App {
                 // Mounted directly by `open_workspace_dashboard` with a
                 // fresh generation; see `workspace_dashboard.rs`.
             }
+            Dialog::Queue => {
+                // Mounted directly by `queue::open_queue_box`, which also
+                // issues the read-on-open. Re-entering here would push a
+                // second copy the FocusManager then refuses, leaving the
+                // caller looking at a box that never appeared.
+            }
             Dialog::ConnectionSelection => {
                 if let Some(ref dialog) = self.dialog_state.connection_selection_dialog {
                     self.focus_manager.push(Box::new(dialog.clone()));

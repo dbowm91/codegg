@@ -1196,6 +1196,37 @@ pub enum CoreResponse {
     HumanShellPromotions {
         promotions: Vec<HumanShellPromotionDto>,
     },
+    /// M002a: the live queue projection for one session, in daemon-owned
+    /// ordinal order. Every field defaults so an absent projection from an
+    /// older daemon reads as an empty queue.
+    UserPromptQueue {
+        session_id: String,
+        #[serde(default)]
+        entries: Vec<UserPromptQueueEntryDto>,
+    },
+    /// M002b (ADR-0037): the durable queue-owner binding for one session.
+    ///
+    /// `revision` is the transfer fence, not a turn counter: it increments only
+    /// on an ownership change, so a client can detect a concurrent transfer and
+    /// converge rather than overwrite.
+    UserPromptQueueOwner {
+        session_id: String,
+        owner_principal: String,
+        revision: u64,
+    },
+    /// M006 (ADR-0036): what happened to a send-now request.
+    ///
+    /// Carries the post-write projection on every outcome, including a refusal,
+    /// for the same reason the delete/reorder responses do: the box applies this
+    /// projection rather than guessing, and it must not be left showing a row
+    /// that left the live set — or one that a concurrent request already
+    /// removed.
+    UserPromptQueueSendNowOutcome {
+        session_id: String,
+        entry_id: String,
+        outcome: UserPromptQueueSendNowResult,
+        entries: Vec<UserPromptQueueEntryDto>,
+    },
     TurnAdmissionReceipt {
         receipt: TurnAdmissionReceiptDto,
     },
@@ -1931,6 +1962,70 @@ pub struct HumanShellPromotionDto {
     pub consumed_turn_id: Option<String>,
 }
 
+/// M002a (ADR-0035): one queued user prompt entry.
+///
+/// Carries the entry text because the user must eventually see and edit what
+/// they wrote; M005 owns editing. Every field defaults so a projection written
+/// by a newer daemon stays readable by an older client and an absent queue
+/// reads as empty.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserPromptQueueEntryDto {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub ordinal: i64,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub text_bytes: usize,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub expires_at_ms: i64,
+    /// M007 (ADR-0039): when this entry becomes eligible, or `None` for an
+    /// entry that was always immediate.
+    ///
+    /// `#[serde(default)]` is what makes the compatibility work in both
+    /// directions: an older client that predates timers reads an absent field
+    /// as `None`, which is exactly "no due time" rather than a sentinel it
+    /// would have to interpret.
+    #[serde(default)]
+    pub run_at_ms: Option<i64>,
+}
+
+/// M006 (ADR-0036): the outcome of handing a queued prompt to the running turn.
+///
+/// **Why three outcomes rather than an ack and an error.** The steer happens
+/// *before* the settlement, so "the turn refused it" and "the turn took it but
+/// the queue could not record that" are genuinely different states, and
+/// collapsing them would either lose a prompt or misreport one that was
+/// delivered. [`Self::AcceptedNotSettled`] is the honest third case: the turn
+/// holds the text, the row is still `pending`, and it may therefore be handed
+/// out again later. A client that reported both as an error would be telling
+/// the user to resend a prompt that already ran.
+///
+/// `Refused` carries only a stable code, never a message and never prompt text,
+/// so a frontend owns the wording and an unrecognised code degrades to the
+/// code itself rather than to prose the daemon composed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UserPromptQueueSendNowResult {
+    /// The running turn accepted the prompt **and** the queue recorded the
+    /// settlement. The entry is terminal; it will not be delivered again.
+    Accepted { turn_id: String },
+    /// The running turn accepted the prompt, but the queue could not settle the
+    /// entry, so the row is still `pending` and may run again as its own turn.
+    AcceptedNotSettled { turn_id: String, code: String },
+    /// The turn did not take the prompt. The entry is untouched and still
+    /// waiting, so the user can simply try again or let the turn finish.
+    Refused { code: String },
+    /// There is no such live entry. The prompt left the queue — expired,
+    /// deleted, or already delivered — and nothing was steered.
+    EntryNotFound,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnAdmissionReceiptDto {
     pub submission_id: String,
@@ -2289,6 +2384,96 @@ pub enum CoreRequest {
     },
     HumanShellPromotionsGet {
         session_id: String,
+    },
+    /// M002a (ADR-0035): read the durable user prompt queue projection for one
+    /// session. Read-only by construction — no queue-mutation variant exists in
+    /// this milestone (M002b owns add/edit/delete/reorder, gated on ADR-0037).
+    UserPromptQueueList {
+        session_id: String,
+    },
+    /// M002b (ADR-0037): append one entry to the durable queue.
+    ///
+    /// `entry_id` is client-supplied and is the at-most-once key: a duplicate
+    /// retry with the same id converges on the existing entry rather than
+    /// creating a second one. That is at-most-once by identity and adds no
+    /// receipt namespace, which ADR-0035 forbids.
+    ///
+    /// On a session whose queue does not exist yet, this is the one operation
+    /// that creates it, adopting the calling principal as owner in the same
+    /// transaction.
+    UserPromptQueueAdd {
+        session_id: String,
+        entry_id: String,
+        text: String,
+        /// M007 (ADR-0039): optional due time in epoch milliseconds.
+        ///
+        /// `None` — and any pre-M007 client that simply omits it — is an
+        /// ordinary immediate entry. A due time at or beyond the entry's expiry
+        /// is refused with `user_prompt_queue_due_time_after_expiry` rather
+        /// than clamped to it.
+        #[serde(default)]
+        run_at_ms: Option<i64>,
+    },
+    /// M002b: replace one entry's text. Identity and position are unchanged; an
+    /// over-bound edit is refused, never truncated, and an expired entry is
+    /// never resurrected.
+    UserPromptQueueEdit {
+        session_id: String,
+        entry_id: String,
+        text: String,
+        /// M007 (ADR-0039): replace the due time in the same transaction.
+        ///
+        /// `None` clears the schedule and returns the entry to
+        /// immediate-eligible, which is a distinct state from "due now" and not
+        /// merely a due time in the past.
+        #[serde(default)]
+        run_at_ms: Option<i64>,
+    },
+    /// M002b: remove one entry; the rest renumber densely.
+    UserPromptQueueDelete {
+        session_id: String,
+        entry_id: String,
+    },
+    /// M002b: write the complete desired order of the live entries.
+    ///
+    /// `entry_ids` is a permutation of the live set, not a patch and not a move;
+    /// anything else is refused. Reorder is its own operation rather than an
+    /// index argument smuggled through another request, which ADR-0035 forbids.
+    UserPromptQueueReorder {
+        session_id: String,
+        entry_ids: Vec<String>,
+    },
+    /// M002b (ADR-0037): explicitly claim ownership of this session's queue.
+    ///
+    /// The only operation that repairs an **unowned** queue, which otherwise has
+    /// no authorized mutator at all. It never seizes a queue that already has a
+    /// different owner — that is what transfer is for.
+    UserPromptQueueAdopt {
+        session_id: String,
+    },
+    /// M002b (ADR-0037): move ownership to a recipient under a CAS revision
+    /// fence. Mirrors `SessionControlTransfer`, including its capability
+    /// requirement, so two concurrent transfers converge on one winner.
+    UserPromptQueueTransfer {
+        session_id: String,
+        recipient_principal: String,
+        expected_revision: u64,
+    },
+    /// M006 (ADR-0036): hand one queued prompt to the turn that is **already
+    /// running**, instead of waiting for that turn to finish.
+    ///
+    /// Deliberately carries no `turn_id`. The daemon resolves the active turn
+    /// from its own runtime handle, so a client cannot steer a turn that has
+    /// already ended by naming the id it saw a moment ago. The turn that is
+    /// running when the daemon reads its handle is the turn that gets it.
+    ///
+    /// The prompt text is not in the request: the client names the entry, and
+    /// the daemon loads the text it already stored under ADR-0035's durability
+    /// rule. A client therefore cannot submit text that no queue entry accounts
+    /// for.
+    UserPromptQueueSendNow {
+        session_id: String,
+        entry_id: String,
     },
     TurnCancel {
         session_id: String,
@@ -3605,6 +3790,23 @@ impl CoreRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreEvent {
+    /// M003 (ADR-0038): the daemon's live prompt-queue projection for one
+    /// session, pushed because the daemon itself changed it.
+    ///
+    /// Distinct from the same-named [`CoreResponse`] variant on purpose. The
+    /// response answers a client's `UserPromptQueueList`; this one has no
+    /// request behind it. Delivery is daemon-initiated and has no reply
+    /// channel, so a client learns its queued prompt started running only if the
+    /// daemon pushes — otherwise the entry sits displayed as `pending` while its
+    /// turn runs.
+    ///
+    /// Additive and defaulted, so an older client ignores it and a newer daemon's
+    /// event still deserializes against an older reader.
+    UserPromptQueue {
+        session_id: String,
+        #[serde(default)]
+        entries: Vec<UserPromptQueueEntryDto>,
+    },
     AssetRefreshCompleted {
         report: AssetRefreshReportDto,
     },

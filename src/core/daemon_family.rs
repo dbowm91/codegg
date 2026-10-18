@@ -140,6 +140,22 @@ impl DaemonRequestFamily {
             CoreRequest::SessionPromptSubmit { .. } => Self::Turns,
             CoreRequest::HumanShellPromotionStage { .. } => Self::Turns,
             CoreRequest::HumanShellPromotionsGet { .. } => Self::Turns,
+            CoreRequest::UserPromptQueueList { .. } => Self::Turns,
+            // M002b (ADR-0037): the queue mutations share the Turns family with
+            // the read and with turn submission. They are not a scheduler or
+            // execution surface — a queued entry becomes a turn only through
+            // ordinary `TurnSubmit` (M003).
+            CoreRequest::UserPromptQueueAdd { .. } => Self::Turns,
+            CoreRequest::UserPromptQueueEdit { .. } => Self::Turns,
+            CoreRequest::UserPromptQueueDelete { .. } => Self::Turns,
+            CoreRequest::UserPromptQueueReorder { .. } => Self::Turns,
+            CoreRequest::UserPromptQueueAdopt { .. } => Self::Turns,
+            CoreRequest::UserPromptQueueTransfer { .. } => Self::Turns,
+            // M006 (ADR-0036): send-now is a steering request in the Turns
+            // family, not a queue mutation — ADR-0037 deliberately excludes
+            // steering from the owner binding, so it is admitted here on the
+            // turn side and its settlement re-checks the queue side in the store.
+            CoreRequest::UserPromptQueueSendNow { .. } => Self::Turns,
             CoreRequest::SessionControlGet { .. } => Self::Turns,
             CoreRequest::SessionControlRequest { .. } => Self::Turns,
             CoreRequest::SessionControlTransfer { .. } => Self::Turns,

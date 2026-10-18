@@ -1772,6 +1772,20 @@ impl App {
                     head.push('s');
                 }
             }
+            // M004: prompts waiting for the next turn. Appended in the same
+            // suffix chain as the counts above, so a queue that is not empty
+            // and no turn running still reads "idle · 2 queued" rather than
+            // looking like a session with nothing to do. Text only — row 0 is
+            // reserved unconditionally and this must never add a row or
+            // reflow the transcript.
+            //
+            // It sits *after* the phase selection on purpose: a latched
+            // `last_error` still outranks everything here, because the
+            // failure is the thing that explains why nothing is progressing.
+            let queued = self.session_state.user_prompt_queue.len();
+            if queued > 0 {
+                head.push_str(&format!(" · {queued} queued"));
+            }
         }
         lines.push(Line::from(Span::styled(
             format!(" {head}"),

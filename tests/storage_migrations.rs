@@ -282,3 +282,164 @@ async fn project_catalog_v28_and_discovery_v29_are_additive_and_idempotent() {
         "expected version to remain current"
     );
 }
+
+/// M007 (ADR-0039): v81 -> v82 adds `run_at_ms` to the prompt queue entry.
+///
+/// This test stages the **v81** shape by hand and lets the real `migrate()` run
+/// only v82, so what is asserted is the actual upgrade rather than a fresh
+/// database that happens to have the column.
+///
+/// The load-bearing assertion is that pre-existing rows read back as SQL `NULL`
+/// — "no due time" — and not as epoch `0`. A migration that backfilled `0`
+/// would be silently correct for the eligibility predicate (`0 <= now` is true,
+/// so such a row is immediately due) and wrong for the user, who would see every
+/// pre-existing entry reported as scheduled. The two are indistinguishable in
+/// the delivery query and only distinguishable here.
+#[tokio::test]
+async fn v81_to_v82_adds_run_at_ms_as_null_not_a_sentinel() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("failed to connect test sqlite pool");
+
+    // Stage v81: the migration version marker, a session row for the foreign
+    // key, and v80's queue table verbatim. `run_at_ms` is absent.
+    sqlx::query(
+        r#"
+        CREATE TABLE migration_version (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            version INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("failed to create migration_version table");
+    sqlx::query("INSERT INTO migration_version (id, version) VALUES (1, 81)")
+        .execute(&pool)
+        .await
+        .expect("failed to seed v81 marker");
+
+    sqlx::query("CREATE TABLE session (id TEXT PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .expect("failed to create session table");
+    sqlx::query("INSERT INTO session (id) VALUES ('session-v81')")
+        .execute(&pool)
+        .await
+        .expect("failed to seed session row");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE user_prompt_queue_entry (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            text TEXT NOT NULL,
+            text_bytes INTEGER NOT NULL CHECK (text_bytes >= 0 AND text_bytes <= 65536),
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'delivering', 'delivered', 'failed', 'expired')
+            ),
+            failure_reason TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER NOT NULL,
+            delivered_turn_id TEXT,
+            delivered_at_ms INTEGER,
+            UNIQUE (session_id, ordinal),
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("failed to create v80 queue table");
+    sqlx::query(
+        r#"
+        INSERT INTO user_prompt_queue_entry
+            (id, session_id, ordinal, text, text_bytes, status, failure_reason,
+             created_at_ms, updated_at_ms, expires_at_ms, delivered_turn_id, delivered_at_ms)
+        VALUES
+            ('pre-v82', 'session-v81', 0, 'queued before timers existed', 32,
+             'pending', NULL, 1000, 1000, 900000, NULL, NULL)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("failed to seed pre-v82 queue entry");
+
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("v82 migration should apply over a v81 database");
+
+    let final_version: i64 =
+        sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("failed to read final migration version");
+    assert_eq!(
+        final_version,
+        codegg::storage::STORAGE_LAYOUT_VERSION as i64,
+        "v82 must land exactly at the declared storage layout version"
+    );
+
+    // The column exists and is nullable.
+    let run_at_type: String = sqlx::query_scalar(
+        "SELECT type FROM pragma_table_info('user_prompt_queue_entry') WHERE name = 'run_at_ms'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("run_at_ms column missing after v82");
+    assert_eq!(
+        run_at_type, "INTEGER",
+        "run_at_ms must be an INTEGER column"
+    );
+    let not_null: i64 = sqlx::query_scalar(
+        "SELECT \"notnull\" FROM pragma_table_info('user_prompt_queue_entry') \
+         WHERE name = 'run_at_ms'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("failed to read run_at_ms notnull flag");
+    assert_eq!(
+        not_null, 0,
+        "run_at_ms must stay nullable so 'no due time' has a representation"
+    );
+
+    // The load-bearing assertion: NULL, not a sentinel.
+    let run_at: Option<i64> =
+        sqlx::query_scalar("SELECT run_at_ms FROM user_prompt_queue_entry WHERE id = 'pre-v82'")
+            .fetch_one(&pool)
+            .await
+            .expect("pre-v82 entry disappeared during upgrade");
+    assert_eq!(
+        run_at, None,
+        "a pre-v82 entry must read as 'no due time', not as a sentinel such as epoch 0"
+    );
+
+    // The rest of the row survived untouched.
+    let (status, ordinal, text): (String, i64, String) = sqlx::query_as(
+        "SELECT status, ordinal, text FROM user_prompt_queue_entry WHERE id = 'pre-v82'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("failed to re-read pre-v82 entry");
+    assert_eq!(status, "pending");
+    assert_eq!(ordinal, 0);
+    assert_eq!(text, "queued before timers existed");
+
+    // The sweep index exists, and is partial over scheduled pending rows only.
+    let index_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' \
+         AND name = 'idx_user_prompt_queue_entry_due'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("failed to look up the due-time index")
+    .expect("v82 must create idx_user_prompt_queue_entry_due");
+    assert!(
+        index_sql.contains("WHERE status = 'pending' AND run_at_ms IS NOT NULL"),
+        "the due index must stay partial over scheduled pending rows, got: {index_sql}"
+    );
+}

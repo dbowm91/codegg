@@ -558,6 +558,7 @@ impl CoreDaemon {
                 super::lsp_diagnostics_store::LspDiagnosticsStore::new(),
             )),
             sessions: Arc::new(crate::core::session_runtime::SessionRuntimeRegistry::new()),
+            queue_schedule_changed: Arc::new(tokio::sync::Notify::new()),
             clients: Arc::new(super::client_registry::ClientRegistry::new()),
             notification_router,
             audio_arbiter,

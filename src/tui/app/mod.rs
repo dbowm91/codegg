@@ -18,6 +18,7 @@ mod plugin_effects;
 mod project_session;
 mod prompt_turn;
 mod render;
+pub mod turn_submit;
 mod types;
 
 pub(crate) use commands::send_tui;
@@ -511,6 +512,16 @@ pub struct App {
     /// Retained envelope identity for the last failed/uncertain turn submit.
     /// An identical retry reuses this id so daemon receipts prevent replay.
     pub pending_turn_submission: Option<PendingTurnSubmission>,
+    /// Frontend-side lifecycle guard for the in-flight `turn.submit`.
+    ///
+    /// The daemon's `request_id` in [`PendingTurnSubmission`] is the
+    /// idempotency key and is derived from the request payload; this
+    /// generation is purely local and answers a different question — *is this
+    /// completion still about the submission the user is looking at?* A
+    /// superseded or cancelled submission must change nothing, so the
+    /// completion arm calls [`AsyncUiRequestState::finish`] first and drops
+    /// the completion when it returns `false`.
+    pub turn_submit_request: crate::tui::app::state::AsyncUiRequestState,
     /// Session/workspace authority captured when each human shell process
     /// starts, used to reject late output after navigation changes context.
     pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
@@ -707,6 +718,14 @@ pub struct PendingTurnSubmission {
     pub session_id: String,
     pub request_id: String,
     pub request_sha256: String,
+    /// The prompt this submission carried.
+    ///
+    /// `send_prompt` clears the composer *before* the daemon has accepted
+    /// anything, so a refusal has no other way to hand the user's text back.
+    /// Keeping it here rather than in the completion command means the prompt
+    /// is never duplicated across a channel and never read from the composer,
+    /// which the user may have kept typing into.
+    pub prompt: String,
 }
 
 fn turn_submission_request_id(
@@ -1002,6 +1021,9 @@ impl App {
                 permission_pending: false,
                 subagent_count: 0,
                 git_sidebar: crate::tui::app::state::session::GitSidebarState::default(),
+                // M002a: the queue projection is daemon-derived and seeded
+                // empty. Nothing can enqueue an entry until M002b.
+                user_prompt_queue: Vec::new(),
             },
             prompt_state: PromptState {
                 prompt: PromptWidget::new(Arc::clone(&theme)),
@@ -1103,6 +1125,11 @@ impl App {
                 terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
                 workspace_dashboard: None,
+                queue_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_add_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_edit_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_reorder_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_send_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -1190,6 +1217,7 @@ impl App {
                 .unwrap_or_default(),
             pending_shell_promotions: Vec::new(),
             pending_turn_submission: None,
+            turn_submit_request: crate::tui::app::state::AsyncUiRequestState::new(),
             shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: loaded_shell_cfg
                 .as_ref()
@@ -1578,6 +1606,9 @@ impl App {
                 permission_pending: false,
                 subagent_count: 0,
                 git_sidebar: crate::tui::app::state::session::GitSidebarState::default(),
+                // M002a: the queue projection is daemon-derived and seeded
+                // empty. Nothing can enqueue an entry until M002b.
+                user_prompt_queue: Vec::new(),
             },
             prompt_state: PromptState {
                 prompt: PromptWidget::new(Arc::clone(&theme)),
@@ -1679,6 +1710,11 @@ impl App {
                 terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
                 workspace_dashboard: None,
+                queue_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_add_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_edit_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_reorder_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_send_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -1760,6 +1796,7 @@ impl App {
             shell_store: crate::shell::ShellOutputStore::new(),
             pending_shell_promotions: Vec::new(),
             pending_turn_submission: None,
+            turn_submit_request: crate::tui::app::state::AsyncUiRequestState::new(),
             shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: true,
             shell_enabled: true,
@@ -1882,7 +1919,13 @@ impl App {
     /// therefore undo that optimistic state explicitly. Otherwise the composer
     /// sits on a spinner for a turn that does not exist, and the only thing the
     /// user ever learns is the stall watchdog's generic five-minute message.
-    pub fn fail_unstarted_turn(&mut self, reason: &str) {
+    ///
+    /// `restore_prompt` hands the submitted text back to the composer. The
+    /// optimistic clear destroyed it and the user's only copy is now in the
+    /// transcript, where editing it is not possible. Pass the prompt that was
+    /// actually submitted — not the current composer contents, which the user
+    /// may have kept typing into.
+    pub fn fail_unstarted_turn(&mut self, reason: &str, restore_prompt: Option<&str>) {
         self.session_state.working_since = None;
         self.session_state.active_turn_id = None;
         self.set_session_status(SessionStatus::Error);
@@ -1894,7 +1937,128 @@ impl App {
         // there is no in-flight turn to guard.
         self.prompt_state.pending_send = false;
         self.prompt_state.prompt.set_waiting(false);
+        if let Some(prompt) = restore_prompt {
+            self.prompt_state.restore_prompt_with_stash(prompt);
+        }
         self.report_turn_error(reason);
+    }
+
+    /// Release a submit the daemon refused **because a turn is already
+    /// running**, leaving that turn completely alone.
+    ///
+    /// This is not `fail_unstarted_turn`. No turn was unstarted here: a turn is
+    /// running on the daemon right now, and the optimistic teardown used for
+    /// every other failure actively lied about it. It cleared `active_turn_id`
+    /// and `working_since` — discarding the identity and elapsed age of a live
+    /// turn — stopped the thinking indicator, finalized the activity stream of
+    /// a turn that is still producing events, and set `Error` on a session that
+    /// is actively working.
+    ///
+    /// So this path releases only what the submit itself owns: the composer
+    /// guard, and the text the optimistic clear took away. The running turn's
+    /// state is untouched, and the refusal is reported as a toast rather than
+    /// latched through [`App::report_turn_error`] — `render_working_strip`
+    /// gives `last_error` absolute precedence, so latching would replace the
+    /// live turn's spinner and elapsed time with a stale `✗` line, which is
+    /// the same state corruption wearing a different hat.
+    ///
+    /// Contention is not a turn failure: the turn continues, so there is no
+    /// dead turn for a latched reason to explain.
+    pub fn fail_contended_turn(&mut self, reason: &str, submitted_prompt: Option<&str>) {
+        self.prompt_state.pending_send = false;
+        self.prompt_state.prompt.set_waiting(false);
+        if let Some(prompt) = submitted_prompt {
+            self.prompt_state.restore_prompt_with_stash(prompt);
+        }
+        self.messages_state.toasts.warning(reason);
+        tracing::info!(
+            target: "codegg::tui::app",
+            "turn.submit refused: a turn is already active; the active turn was left running"
+        );
+    }
+
+    /// Invalidate an in-flight `turn.submit` completion.
+    ///
+    /// The daemon turn is not undone — it keeps running and its events still
+    /// arrive — but a completion that lands after a tab switch, reconnect, or
+    /// project change must not act on state the user has moved past. Returns
+    /// the submitted prompt so a caller that is discarding the submission can
+    /// hand the user's text back; `None` when nothing was in flight.
+    pub fn cancel_turn_submit(&mut self) -> Option<String> {
+        if self.turn_submit_request.is_loading() {
+            self.turn_submit_request.cancel();
+        }
+        self.pending_turn_submission
+            .take()
+            .map(|pending| pending.prompt)
+    }
+
+    /// Apply one `turn.submit` completion.
+    ///
+    /// Returns `false` when the completion was superseded or cancelled, in
+    /// which case nothing was mutated. The staleness check is the shared
+    /// [`AsyncUiRequestState`] rather than a hand-rolled identity comparison
+    /// at the call site: this arm used to clear `pending_turn_submission` only
+    /// when the ids matched but then tore down turn state *unconditionally*,
+    /// so a late completion from a superseded submission could still null a
+    /// live turn's identity.
+    pub fn apply_turn_submission_finished(
+        &mut self,
+        request_id: &str,
+        generation: u64,
+        outcome: crate::tui::app::turn_submit::TurnSubmitOutcome,
+    ) -> bool {
+        // Local staleness first: a cancelled or superseded submission changes
+        // nothing at all, including the pending record.
+        if !self.turn_submit_request.finish(generation) {
+            return false;
+        }
+        // Then the daemon identity. This is the idempotency key, not a
+        // UI-generation marker, so it is still checked: a completion whose
+        // request id does not match the retained submission is not about the
+        // prompt this frontend is holding.
+        let submitted_prompt = match self.pending_turn_submission.as_ref() {
+            Some(pending) if pending.request_id == request_id => pending.prompt.clone(),
+            Some(_) => {
+                // A completion for a different submission's idempotency key is
+                // not about the prompt this frontend is holding. Drop it whole:
+                // clearing the retained record here would destroy the identity
+                // an identical retry needs to stay idempotent.
+                return false;
+            }
+            None => {
+                // No pending submission at all. An accepted-late completion is
+                // harmless; a failure with nowhere to restore from is reported
+                // but changes no state.
+                if let Some(reason) = outcome.failure_text() {
+                    self.report_turn_error(&reason);
+                }
+                return false;
+            }
+        };
+        self.pending_turn_submission = None;
+        match &outcome {
+            crate::tui::app::turn_submit::TurnSubmitOutcome::Accepted => true,
+            outcome => {
+                let reason = outcome
+                    .failure_text()
+                    .unwrap_or_else(|| "Turn not submitted".to_string());
+                let prompt = outcome
+                    .restores_prompt()
+                    .then_some(submitted_prompt.as_str())
+                    .filter(|prompt| !prompt.trim().is_empty());
+                if outcome.preserves_active_turn() {
+                    self.fail_contended_turn(&reason, prompt);
+                } else if outcome.reports_as_turn_failure() {
+                    // `Unexpected` reaches here too: it started no turn that
+                    // this frontend can prove, but it must not claim one is
+                    // running either, so it takes the unstarted-turn teardown
+                    // with no prompt to restore.
+                    self.fail_unstarted_turn(&reason, prompt);
+                }
+                true
+            }
+        }
     }
 
     /// Fail a turn that has produced no event for [`TURN_STALL_TIMEOUT`].
@@ -2306,6 +2470,22 @@ impl App {
                 self.refresh_project_catalog();
                 true
             }
+            // M003 (ADR-0038): the daemon pushes a fresh queue projection after
+            // it delivers — or fails to deliver — an entry. Before this arm the
+            // queue was read only on the session-change edge, which a delivery
+            // never produces, so an entry the user had queued would sit displayed
+            // as `pending` while its turn ran and nothing on screen would ever
+            // say it was no longer waiting.
+            E::UserPromptQueue {
+                session_id,
+                entries,
+            } => {
+                // Adopted through the same applier the load path uses, so a
+                // pushed projection and a read projection cannot diverge in how
+                // they are filtered — the superseded-session guard included.
+                self.apply_user_prompt_queue_loaded(session_id, entries, None);
+                true
+            }
             _ => false,
         }
     }
@@ -2463,6 +2643,96 @@ impl App {
                     },
                 );
             });
+    }
+
+    /// M002a (ADR-0035): refresh the daemon's prompt-queue projection for one
+    /// session.
+    ///
+    /// Follows the `load_human_shell_promotions` shape: build the request, hand
+    /// the work to the shared guarded task registry, match the typed response,
+    /// and return a typed completion command. No raw `tokio::spawn` — a
+    /// completion for a superseded session must be droppable.
+    ///
+    /// The queue reads empty until M002b lands; this exists so the projection is
+    /// already derived from the daemon rather than guessed locally when it does
+    /// not.
+    pub(crate) fn load_user_prompt_queue(&mut self, session_id: String) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            return;
+        };
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::UserPromptQueueList {
+                session_id: session_id.clone(),
+            },
+        );
+        self.task_registry
+            .spawn(TuiTaskKind::Command, "load_user_prompt_queue", async move {
+                let (entries, error) = match client.request(request).await {
+                    Ok(CoreResponse::UserPromptQueue { entries, .. }) => (entries, None),
+                    // An older daemon that does not know this request answers
+                    // with some other shape. Treat that as an absent
+                    // projection — an empty queue — not as a failure the user
+                    // needs to see.
+                    Ok(CoreResponse::Error { code, message }) => {
+                        (Vec::new(), Some(format!("{code}: {message}")))
+                    }
+                    Ok(_) => (Vec::new(), None),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::UserPromptQueueLoaded {
+                        session_id,
+                        entries,
+                        error,
+                    },
+                );
+            });
+    }
+
+    /// M002a: apply the daemon's prompt-queue projection.
+    ///
+    /// A failure leaves the previous projection intact. Clearing it would make
+    /// a dead socket indistinguishable from a genuinely empty queue, and the
+    /// user has no way to repopulate it locally — the difference is exactly
+    /// what a transient transport error should not erase.
+    pub fn apply_user_prompt_queue_loaded(
+        &mut self,
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            tracing::debug!(%error, %session_id, "could not read the prompt queue projection");
+            return;
+        }
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        if Some(session_id.as_str()) != current_session_id {
+            // A completion for a superseded session must not write into
+            // current state.
+            return;
+        }
+        self.session_state.user_prompt_queue = entries;
+        // M004: the mounted `/queue` box is a view over exactly this vector,
+        // so it is updated here rather than at each call site. Routing the
+        // read, the M003 push, and the delete response through one applier is
+        // what makes it impossible for the row-0 count and the open box to
+        // disagree about how many prompts are waiting.
+        let projection = self.session_state.user_prompt_queue.clone();
+        self.focus_manager
+            .with_dialog_mut::<crate::tui::components::dialogs::queue::QueueDialog, _>(
+                crate::tui::components::component::DialogType::Queue,
+                |dialog| dialog.set_entries(projection),
+            );
     }
 
     /// Store the latest completed security review receipt. Subsequent
@@ -2659,21 +2929,32 @@ impl App {
         }
     }
 
-    pub fn dispatch_turn_submit_request(&mut self, text: String) {
+    /// Dispatch one `turn.submit` to the daemon.
+    ///
+    /// Returns `false` when nothing was sent — no core client, no bound
+    /// session, or a payload that could not be prepared. The caller must not
+    /// then stamp `Working`: `send_prompt` ends by optimistically marking the
+    /// session busy, and that stamp used to land *after* the failure release
+    /// below, overwriting `SessionStatus::Error` and pinning the session on
+    /// `Working` for a turn that was never attempted. The optimistic teardown
+    /// was correct and its result was simply thrown away one line later.
+    pub fn dispatch_turn_submit_request(&mut self, text: String) -> bool {
         let Some(client) = self.core_client.clone() else {
             // No core client means nothing can carry this prompt. Returning
             // silently left the session pinned on `Working` for a turn that
             // was never even attempted.
             self.fail_unstarted_turn(
                 "No connection to the core daemon; the prompt was not submitted",
+                Some(&text),
             );
-            return;
+            return false;
         };
         let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone()) else {
             self.fail_unstarted_turn(
                 "No session is bound to this view; the prompt was not submitted",
+                Some(&text),
             );
-            return;
+            return false;
         };
         // Belt and braces: make sure the session filter is registered before
         // the turn starts, even when the session was bound through a path that
@@ -2701,9 +2982,10 @@ impl App {
                 Ok(agents) => agents,
                 Err(error) => {
                     tracing::error!(?error, "failed to serialize agents for turn submission");
-                    return;
+                    return false;
                 }
             };
+        let submitted_prompt = text.clone();
         let payload = CoreRequest::TurnSubmit {
             session_id: session_id.clone(),
             text,
@@ -2740,44 +3022,58 @@ impl App {
             &session_id,
             &request_sha256,
         );
+        let request = crate::core::new_request(request_id.clone(), payload);
+        // Local staleness guard, distinct from the daemon's idempotency key
+        // above. `begin()` invalidates any earlier submission's completion, so
+        // a late reply for a superseded prompt can never touch current state.
+        let generation = self.turn_submit_request.begin();
         self.pending_turn_submission = Some(PendingTurnSubmission {
             session_id,
             request_id: request_id.clone(),
             request_sha256,
+            prompt: submitted_prompt,
         });
-        let request = crate::core::new_request(request_id.clone(), payload);
+        // This submission produces two completions — the submit result and, for
+        // a turn carrying staged shell evidence, the evidence disposition — so
+        // both are sent from inside the task rather than returned from it.
+        // `spawn_tui_task` still owns the spawn, the elapsed-time trace, and
+        // the "no command sender" case; the returned `None` is deliberate.
         let tui_tx = self.tui_cmd_tx.clone();
-        tokio::spawn(async move {
-            let error = match client.request(request).await {
-                Ok(crate::protocol::core::CoreResponse::Ack) => None,
-                Ok(crate::protocol::core::CoreResponse::TurnAdmissionReceipt { .. }) => None,
-                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
-                    Some(format!("{code}: {message}"))
-                }
-                Ok(_) => Some("unexpected response to turn.submit".to_string()),
-                Err(error) => Some(error.to_string()),
-            };
-            if let Some(tx) = tui_tx {
+        crate::tui::async_cmd::spawn_tui_task(tui_tx.clone(), "turn_submit", async move {
+            // Classification happens here, once, at the only point that knows
+            // how the daemon answered. The completion arm receives a typed
+            // outcome instead of a pre-formatted string, so it can never guess
+            // from message text.
+            let outcome = crate::tui::app::turn_submit::submit(client, request).await;
+            let error = outcome.failure_text();
+            if let Some(reason) = &error {
+                // A submission failure used to be reachable only through a
+                // `debug!`, buried deep enough that a refused turn looked
+                // exactly like a slow one.
+                tracing::warn!("core facade turn.submit failed: {}", reason);
+            }
+            if let Some(tx) = &tui_tx {
+                // Order matters: the submit result explains the refusal, and
+                // the staged-evidence disposition explains what happened to the
+                // shell output that was riding along with it.
                 let _ = send_tui(
-                    &tx,
+                    tx,
                     TuiCommand::TurnSubmissionFinished {
                         request_id,
-                        error: error.clone(),
+                        generation,
+                        outcome,
                     },
                 );
                 if !promotions.is_empty() {
                     let _ = send_tui(
-                        &tx,
+                        tx,
                         TuiCommand::ShellPromotionsSubmitted { promotions, error },
                     );
                 }
-            } else if let Some(error) = error {
-                // No TUI command channel means this process cannot show
-                // anything, but `debug!` buried a submission failure so deep
-                // that a refused turn looked identical to a slow one.
-                tracing::warn!("core facade turn.submit failed: {}", error);
             }
+            None
         });
+        true
     }
 
     pub(crate) fn apply_shell_promotions_submitted(
@@ -5093,6 +5389,9 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
+            }
+            B::Queue => {
+                crate::tui::commands::queue::open_queue_box(self);
             }
             B::Reload => {
                 self.enqueue_tui_command(TuiCommand::RefreshAssets);
@@ -9589,6 +9888,22 @@ impl App {
                 // cursor against a policy that has since changed.
                 self.dialog_state.policy_selector = None;
             }
+            Dialog::Queue => {
+                // A delete still in flight when the box closes must not mutate
+                // anything afterwards. `cancel` bumps the request id, so the
+                // late completion fails `finish`/`fail` and is dropped whole —
+                // no projection write, no toast, no selection change.
+                self.dialog_state.queue_delete_request.cancel();
+                // M005: same for the three authoring mutations. Cancelling them
+                // is also what discharges acceptance criterion "closing the box
+                // with unsaved text adds nothing and edits nothing" — the box
+                // itself is dropped, so the compose buffer goes with it, and
+                // these three cancel whatever was in flight before that.
+                self.dialog_state.queue_add_request.cancel();
+                self.dialog_state.queue_edit_request.cancel();
+                self.dialog_state.queue_reorder_request.cancel();
+                self.dialog_state.queue_send_request.cancel();
+            }
             _ => {}
         }
 
@@ -12030,6 +12345,9 @@ impl App {
         self.session_state.session = Some(sess);
         self.ensure_session_event_stream(&sess_id);
         self.load_human_shell_promotions(sess_id.clone());
+        // M002a: the queue projection is session-scoped, so it reloads on the
+        // same session-change edge as the promotion projection.
+        self.load_user_prompt_queue(sess_id.clone());
         self.ui_state
             .routes
             .navigate_to(Route::Session(sess_id.clone()));
@@ -18406,6 +18724,7 @@ mod projection_adoption_tests {
             session_id: "session-1".into(),
             request_id: "submit-1".into(),
             request_sha256: "a".repeat(64),
+            prompt: "do the thing".into(),
         };
         assert_eq!(
             turn_submission_request_id(Some(&pending), "session-1", &"a".repeat(64)),
@@ -18890,6 +19209,174 @@ mod connection_rotation_tests {
         assert!(
             error.contains("empty"),
             "the dialog must make the blank field deliberate, got: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod user_prompt_queue_projection_tests {
+    //! M002a (ADR-0035): the prompt-queue read projection.
+    //!
+    //! In-crate because the apply arm is `pub(crate)`, matching
+    //! `apply_shell_promotions_loaded`. These pin the three properties that
+    //! make holding local state safe at all: it is seeded empty, a failure
+    //! leaves the previous value intact, and a completion for a superseded
+    //! session cannot write into current state.
+    //!
+    //! There is deliberately no test for a user enqueueing a prompt. Nothing in
+    //! this milestone can produce one.
+
+    use super::*;
+    use crate::protocol::core::UserPromptQueueEntryDto;
+
+    fn bound_session(id: &str) -> crate::session::Session {
+        crate::session::Session {
+            id: id.into(),
+            project_id: String::new(),
+            workspace_id: None,
+            parent_id: None,
+            slug: String::new(),
+            directory: String::new(),
+            title: String::new(),
+            version: String::new(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+            agent: None,
+            model: None,
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        }
+    }
+
+    fn entry(id: &str, ordinal: i64, text: &str) -> UserPromptQueueEntryDto {
+        UserPromptQueueEntryDto {
+            id: id.to_owned(),
+            ordinal,
+            text: text.to_owned(),
+            text_bytes: text.len(),
+            status: "pending".to_owned(),
+            created_at_ms: 1_700_000_000_000,
+            expires_at_ms: 1_700_000_000_000 + 604_800_000,
+            run_at_ms: None,
+        }
+    }
+
+    /// An absent projection reads as an empty queue, not as an error and not as
+    /// a populated local cache.
+    #[test]
+    fn user_prompt_queue_projection_seeds_empty_and_applies_absent_response() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "the projection must seed empty — the frontend owns no queue state"
+        );
+
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded("s-1".to_owned(), Vec::new(), None);
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "an absent projection must read as an empty queue"
+        );
+    }
+
+    /// The failure path must leave the previous value intact. Clearing it would
+    /// make a dead socket indistinguishable from a genuinely empty queue, and
+    /// the user has no way to repopulate it locally.
+    #[test]
+    fn user_prompt_queue_projection_failure_preserves_previous_value() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            vec![entry("entry-1", 0, "already loaded")],
+            None,
+        );
+        assert_eq!(app.session_state.user_prompt_queue.len(), 1);
+
+        // A transport error, then a daemon refusal: neither may clear it.
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            Vec::new(),
+            Some("connection reset".to_owned()),
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue.len(),
+            1,
+            "a failed load must not clear the previous projection"
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue[0].text,
+            "already loaded"
+        );
+
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            Vec::new(),
+            Some("user_prompt_queue_unavailable: no pool".to_owned()),
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue.len(),
+            1,
+            "a daemon refusal must not clear the previous projection"
+        );
+    }
+
+    /// A completion for a superseded session must not write into current state.
+    /// This is the stale-generation half of the shared guarded task shape.
+    #[test]
+    fn user_prompt_queue_projection_drops_superseded_session_completion() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-2"));
+        app.apply_user_prompt_queue_loaded("s-1".to_owned(), vec![entry("stale", 0, "old")], None);
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "a completion for a superseded session must be dropped"
+        );
+
+        app.apply_user_prompt_queue_loaded(
+            "s-2".to_owned(),
+            vec![entry("entry-2", 0, "current")],
+            None,
+        );
+        assert_eq!(app.session_state.user_prompt_queue.len(), 1);
+        assert_eq!(app.session_state.user_prompt_queue[0].id, "entry-2");
+    }
+
+    /// Ordinal order is the daemon's; the frontend preserves it rather than
+    /// re-sorting, so what a user eventually sees is the daemon's total order.
+    #[test]
+    fn user_prompt_queue_projection_preserves_daemon_ordinal_order() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            vec![
+                entry("entry-0", 0, "first"),
+                entry("entry-1", 1, "second"),
+                entry("entry-2", 2, "third"),
+            ],
+            None,
+        );
+        assert_eq!(
+            app.session_state
+                .user_prompt_queue
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["entry-0", "entry-1", "entry-2"]
         );
     }
 }

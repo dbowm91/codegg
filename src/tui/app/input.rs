@@ -612,6 +612,78 @@ impl App {
                     crate::tui::commands::policy::request_policy_change(self, mode, profile);
                 }
             }
+            TuiMsg::QueueDeleteSelected { entry_id } => {
+                // The box is **not** closed here. Delete is not a commit: the
+                // user is pruning a list, and unmounting the box after each
+                // one would turn "remove these three" into three open/close
+                // cycles. Closing here would also requeue whatever was still
+                // mounted at close time, and the box outlives the keystroke.
+                crate::tui::commands::queue::start_queue_delete(self, entry_id);
+            }
+            TuiMsg::QueueRefreshRequested => {
+                crate::tui::commands::queue::refresh_queue_box(self);
+            }
+            TuiMsg::QueueAddCommitted { text, run_at_ms } => {
+                crate::tui::commands::queue::start_queue_add(self, text, run_at_ms);
+            }
+            TuiMsg::QueueEditCommitted {
+                entry_id,
+                text,
+                run_at_ms,
+            } => {
+                crate::tui::commands::queue::start_queue_edit(self, entry_id, text, run_at_ms);
+            }
+            // M007: refused in the box, so the user is still sitting in the
+            // duration step with their input intact. The message names the
+            // grammar rather than the offending entry, and quotes what they
+            // typed — which is a duration token, never prompt text.
+            TuiMsg::QueueScheduleRejected { input } => {
+                self.messages_state.toasts.error(&format!(
+                    "\"{input}\" is not a delay this queue understands. \
+                     Use a number with a unit: 30s, 5min, 2h, or 1d."
+                ));
+            }
+            TuiMsg::QueueReorderSelected { entry_ids } => {
+                crate::tui::commands::queue::start_queue_reorder(self, entry_ids);
+            }
+            // A refusal the box could not express as a mutation. Surfaced here
+            // rather than inside the widget because a widget cannot show a
+            // toast, and a keypress that does nothing is the one outcome this
+            // milestone must never produce.
+            TuiMsg::QueueReorderUnavailable { reason } => {
+                let message = match reason {
+                    crate::tui::components::dialogs::queue::QueueReorderRefusal::Delivering => {
+                        "That prompt is being delivered right now — move it once its turn finishes."
+                    }
+                    crate::tui::components::dialogs::queue::QueueReorderRefusal::AlreadyEarliest => {
+                        "That prompt is already first in the queue."
+                    }
+                    crate::tui::components::dialogs::queue::QueueReorderRefusal::AlreadyLatest => {
+                        "That prompt is already last in the queue."
+                    }
+                };
+                self.messages_state.toasts.info(message);
+            }
+            // M006. The one refusal this layer makes for itself is "nothing is
+            // running": `active_turn_id` is a snapshot of the session's turn
+            // state, and pressing `s` into a definite no would be a round trip to
+            // learn what the box already knows. A *stale* snapshot is the safe
+            // direction — it sends a request the daemon can refuse truthfully —
+            // so the check is a fast path, never an authority.
+            TuiMsg::QueueSendNowSelected { entry_id } => {
+                if self.session_state.active_turn_id.is_none() {
+                    let message = crate::tui::commands::queue::send_now_refusal_message(
+                        crate::tui::components::dialogs::queue::QueueSendRefusal::NoActiveTurn,
+                    );
+                    self.messages_state.toasts.info(message);
+                } else {
+                    crate::tui::commands::queue::start_queue_send_now(self, entry_id);
+                }
+            }
+            TuiMsg::QueueSendNowUnavailable { reason } => {
+                let message = crate::tui::commands::queue::send_now_refusal_message(reason);
+                self.messages_state.toasts.info(message);
+            }
             TuiMsg::SubmitQuestionAnswers { answers_json } => {
                 if let Some(session_id) = self.dialog_state.question_session_id.take() {
                     let answers = answers_json.clone();

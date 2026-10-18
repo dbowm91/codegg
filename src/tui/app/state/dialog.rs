@@ -174,6 +174,20 @@ pub struct DialogState {
     /// this is a bounded display cache only. Entering/leaving never
     /// cancels daemon work.
     pub workspace_dashboard: Option<crate::tui::app::state::WorkspaceDashboardState>,
+    /// M004: `/queue` delete continuation. Stale completions are dropped at
+    /// apply time, and `cancel()` on close invalidates any delete still in
+    /// flight so a late answer cannot mutate a projection nobody is looking at.
+    pub queue_delete_request: crate::tui::app::state::AsyncUiRequestState,
+    /// M005. One generation per mutation kind rather than one shared slot: a
+    /// delete racing an edit must not silently cancel the edit, and a single
+    /// state would make whichever key was pressed last the only one that could
+    /// ever land.
+    pub queue_add_request: crate::tui::app::state::AsyncUiRequestState,
+    pub queue_edit_request: crate::tui::app::state::AsyncUiRequestState,
+    pub queue_reorder_request: crate::tui::app::state::AsyncUiRequestState,
+    /// M006: the in-flight send-now. Its own generation, so a slow steer
+    /// cannot be completed by — or overwrite — a later one.
+    pub queue_send_request: crate::tui::app::state::AsyncUiRequestState,
 }
 
 /// An approval the user has not answered yet, held so a later request cannot

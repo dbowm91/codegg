@@ -7,7 +7,8 @@ Rust 1.89+, edition 2021.
 ```bash
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/desktop
                           # boundaries, sandbox, execution-ownership, TUI authority,
-                          # http-route-disposition, audit-coverage, scheduler-bypass,
+                          # http-route-disposition, audit-coverage,
+                          # queue-delivery-callsites, scheduler-bypass,
                           # config-merge-coverage, no-hardcoded-models, provider
                           # wire/catalog/resilience +
                           # OpenAI endpoint, Eggwork target routing, cargo check workspace
@@ -94,6 +95,13 @@ green CI run does not imply a green `quick`. Everything outside both is
 change-triggered (`ls scripts/check_*` for the full list):
 
 - `codegg-core` or workspace deps → `bash scripts/check-core-boundary.sh`
+- Daemon-internal admission surfaces → `python3 scripts/check_queue_delivery_callsites.py`
+  (M003 queue delivery, ADR-0038 — exactly two permitted callers: the post-terminal
+  wake and the bounded restart twin; the guard also **fails when neither caller is
+  wired**, and `--self-test` injects a third caller to prove it is not vacuous).
+  Its sibling `check_idle_continuation_callsites.py` covers ADR-0031's delegated
+  entry. Both live in `scripts/verify.sh quick` and in CI. Widening either guard's
+  caller set is a recorded decision, never a quiet third call site.
 - Process spawning / execution surfaces → `python3 scripts/check_execution_ownership.py`
   and keep `docs/execution-ownership.toml` in sync; scheduler changes also need
   `check_scheduler_bypass.py`; daemon path handling needs `check_daemon_cwd_usage.py`

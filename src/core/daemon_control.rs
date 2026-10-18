@@ -23,6 +23,48 @@ use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 
 use super::daemon::CoreDaemon;
 
+/// Which ownership question a controller check is asking.
+///
+/// Named variants, not an `Option<&str>`: ADR-0037 requires that every future
+/// reader can tell "a queue mutation against an unowned queue" apart from "a
+/// turn operation with no turn", and those two states need different refusals.
+/// An optional turn locator erases exactly that distinction.
+///
+/// **The two ownership notions, named once.** `Turn` asks *"may this principal
+/// steer or cancel this in-flight turn?"* and is answered by the turn-scoped
+/// lease. The queue variants ask *"may this principal author this session's
+/// prompt queue?"* and are answered by the durable owner row, which exists
+/// while idle and survives restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ControllerScope<'a> {
+    /// Turn admission/cancel/steer, plus permission and question responses:
+    /// the **turn-scoped** controller lease. Unchanged by ADR-0037.
+    Turn {
+        session_id: &'a str,
+        turn_id: &'a str,
+    },
+    /// Queue mutation of an owned queue: the **durable session-scoped** queue
+    /// owner, plus the turn controller while a lease happens to exist.
+    QueueMutation { session_id: &'a str },
+    /// Explicit queue adoption. The queue-owner term is absent by definition
+    /// here — adoption is what repairs a queue that has no owner — so the turn
+    /// lease, if any, is the only standing available.
+    QueueAdoption { session_id: &'a str },
+}
+
+/// Render a queue store refusal as the daemon's typed denial.
+///
+/// `UserPromptQueueError`'s `Display` never carries entry text: the typed
+/// variants are about identity, bounds, and availability.
+pub(crate) fn queue_error_response(
+    error: &codegg_core::session::UserPromptQueueError,
+) -> CoreResponse {
+    CoreResponse::Error {
+        code: error.code().to_owned(),
+        message: error.to_string(),
+    }
+}
+
 pub(crate) struct TurnControllerAdmission<'a> {
     pub(super) session_id: &'a str,
     pub(super) turn_id: &'a str,
@@ -121,10 +163,47 @@ impl CoreDaemon {
     /// `Some(denial)` otherwise. The denial travels as an `Ok`
     /// `CoreResponse::Error` (never a large `Err` variant) following
     /// the daemon's typed-denial convention.
+    ///
+    /// This is the turn-scoped arm of [`Self::check_controller`], kept as its
+    /// own named entry point so every existing call site reads unambiguously and
+    /// its behavior is unchanged by M002b.
     pub(crate) async fn check_turn_controller(
         &self,
         session_id: &str,
         turn_id: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> Option<CoreResponse> {
+        self.check_controller(
+            ControllerScope::Turn {
+                session_id,
+                turn_id,
+            },
+            authority,
+            authz_decision,
+        )
+        .await
+    }
+
+    /// The single controller predicate, and the only one.
+    ///
+    /// M002b (ADR-0037) added a second ownership notion — the durable,
+    /// session-scoped **queue owner** — beside the existing turn-scoped
+    /// **controller lease**. ADR-0037's Negative consequences require that every
+    /// future reader can tell which question a check is asking, so the question
+    /// is named by the call shape rather than inferred from arguments.
+    ///
+    /// Deliberately **not** an `Option<&str>`: `None` cannot distinguish "a queue
+    /// mutation against an unowned queue" from "a turn operation with no turn",
+    /// and those two states require different refusals. Two divergent copies of
+    /// this check would drift, and drift here is either a security hole or a
+    /// lockout.
+    ///
+    /// Fails closed on every arm. Returns `None` to pass and `Some(denial)`
+    /// otherwise, following the daemon's typed-denial convention.
+    pub(crate) async fn check_controller(
+        &self,
+        scope: ControllerScope<'_>,
         authority: &codegg_core::transport_auth::RequestAuthorityContext,
         authz_decision: &codegg_core::authorization::AuthorizationDecision,
     ) -> Option<CoreResponse> {
@@ -135,7 +214,16 @@ impl CoreDaemon {
                 message: "session turn is controlled by another principal".to_string(),
             })
         };
-        if Self::is_controller_bypass(authority) {
+        // Solo behavior is unchanged for turns: the submitter automatically
+        // controls its turn.
+        //
+        // M002b (ADR-0037) narrows this to the turn scope deliberately. The
+        // bypass is an identity-only comparison that is NOT bound to a session,
+        // so letting it carry queue-mutation authority would let the local
+        // interactive owner mutate *any* session's queue — exactly what ADR-0037
+        // rejects, and what `user_prompt_queue_bypass_carries_no_authority`
+        // pins as a test rather than as a comment.
+        if matches!(scope, ControllerScope::Turn { .. }) && Self::is_controller_bypass(authority) {
             return None;
         }
         let caller = authority.principal_id().as_str().to_owned();
@@ -144,6 +232,10 @@ impl CoreDaemon {
         // `agent.invoke` on the owning project. The gate already
         // checked this at dispatch, but the lease must not outlive a
         // revocation that landed between gate and handler.
+        //
+        // The same rule applies to the queue owner row: a durable
+        // authorization must not outlive the membership that granted it
+        // either.
         if let Some(pool) = self.pool.clone() {
             if !self
                 .caller_holds_invoke(&pool, authz_decision.project_id.as_ref(), authority)
@@ -152,9 +244,37 @@ impl CoreDaemon {
                 return not_controller();
             }
         }
+        match scope {
+            ControllerScope::Turn {
+                session_id,
+                turn_id,
+            } => {
+                self.check_turn_scope(session_id, turn_id, &caller, authz_decision)
+                    .await
+            }
+            ControllerScope::QueueMutation { session_id } => {
+                self.check_queue_mutation_scope(session_id, &caller).await
+            }
+            ControllerScope::QueueAdoption { session_id } => {
+                self.check_queue_adoption_scope(session_id, &caller).await
+            }
+        }
+    }
+
+    /// The turn-scoped arm: unchanged from ADR-0007's predicate, verbatim.
+    async fn check_turn_scope(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        caller: &str,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> Option<CoreResponse> {
         let Some((controller, _revision, lease_turn)) = self.controller_lease_for(session_id).await
         else {
-            return not_controller();
+            return Some(CoreResponse::Error {
+                code: "session_control_not_controller".to_string(),
+                message: "session turn is controlled by another principal".to_string(),
+            });
         };
         if lease_turn != turn_id {
             return Some(CoreResponse::Error {
@@ -163,7 +283,10 @@ impl CoreDaemon {
             });
         }
         if controller != caller {
-            return not_controller();
+            return Some(CoreResponse::Error {
+                code: "session_control_not_controller".to_string(),
+                message: "session turn is controlled by another principal".to_string(),
+            });
         }
         // A revoked/suspended lease holder cannot exercise a stale
         // lease even if the row remains: re-resolve the controller's
@@ -178,6 +301,135 @@ impl CoreDaemon {
                     message: "session controller is no longer eligible".to_string(),
                 });
             }
+        }
+        None
+    }
+
+    /// The queue-mutation arm (ADR-0037 Option B).
+    ///
+    /// This is the case the turn-scoped lease structurally cannot express: it
+    /// exists only while a turn runs, so between turns it answers for nobody.
+    /// The durable queue owner is the authority here, and the turn lease is an
+    /// **additional** requirement while one happens to exist.
+    ///
+    /// The four-row mismatch table, fail-closed with no precedence rule:
+    ///
+    /// | queue owner | turn controller | result |
+    /// |---|---|---|
+    /// | caller | caller | allowed |
+    /// | caller | someone else | `ControllerMismatch` |
+    /// | someone else | caller | `NotQueueOwner` |
+    /// | someone else | someone else | `NotQueueOwner` |
+    ///
+    /// Ownership is evaluated before the turn term, which is what makes rows 3
+    /// and 4 report `NotQueueOwner` rather than depending on check order. An
+    /// unowned queue has no authorized mutator at all and is repaired only by
+    /// explicit adoption, so this arm refuses it rather than treating "no
+    /// owner" as "anyone".
+    async fn check_queue_mutation_scope(
+        &self,
+        session_id: &str,
+        caller: &str,
+    ) -> Option<CoreResponse> {
+        let Some(pool) = self.pool.clone() else {
+            return Some(CoreResponse::Error {
+                code: "user_prompt_queue_unavailable".to_string(),
+                message: "durable session storage is required for the prompt queue".to_string(),
+            });
+        };
+        let ownership = match codegg_core::session::UserPromptQueueStore::new(pool)
+            .ownership(session_id)
+            .await
+        {
+            Ok(ownership) => ownership,
+            Err(error) => return Some(queue_error_response(&error)),
+        };
+        match &ownership {
+            // `Absent` passes here so that the first `add` may create the queue
+            // and adopt it in one transaction. There is nothing to protect and no
+            // owner to match; the store still refuses edit/delete/reorder on an
+            // absent queue with `NotFound`.
+            codegg_core::session::UserPromptQueueOwnership::Absent => return None,
+            codegg_core::session::UserPromptQueueOwnership::Unowned => {
+                return Some(CoreResponse::Error {
+                    code: "user_prompt_queue_unowned".to_string(),
+                    message: "prompt queue has no recorded owner; explicit adoption is required"
+                        .to_string(),
+                });
+            }
+            codegg_core::session::UserPromptQueueOwnership::Owned(record) => {
+                // The refusal deliberately does NOT name the owner. Telling a
+                // refused caller who owns the queue would be itself the leak.
+                if record.owner_principal != caller {
+                    return Some(CoreResponse::Error {
+                        code: "user_prompt_queue_not_owner".to_string(),
+                        message: "caller is not the owner of this session's prompt queue"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        // A turn lease, when one exists, is an additional requirement. No lease
+        // row means the session is idle, which is the case this whole predicate
+        // exists to make expressible, so the queue-owner term alone decides.
+        let (controller, _revision, _lease_turn) = self.controller_lease_for(session_id).await?;
+        if controller != caller {
+            return Some(CoreResponse::Error {
+                code: "user_prompt_queue_controller_mismatch".to_string(),
+                message: "prompt queue owner is not the controller of the active turn".to_string(),
+            });
+        }
+        None
+    }
+
+    /// The explicit-adoption arm.
+    ///
+    /// Adoption repairs a queue that has **no** owner row, so for that case the
+    /// queue-owner term is absent by definition and cannot be the requirement.
+    /// What remains available is the turn lease: while a turn runs, only that
+    /// turn's controller may adopt, so a non-controller contributor with
+    /// `agent.invoke` cannot seize an unowned queue while someone else's turn is
+    /// in flight.
+    ///
+    /// Ownership is still resolved **first**, because a queue that *does* have an
+    /// owner is a different situation from one that does not, and the accurate
+    /// refusal is the ownership one. Answering "you are not the turn controller"
+    /// to a caller who is simply not the owner reports a different (and less
+    /// useful) fact, and would make the six operations refuse inconsistently for
+    /// the same underlying condition.
+    ///
+    /// The store then decides the resulting state: adoption never seizes a queue
+    /// that already has a different owner.
+    async fn check_queue_adoption_scope(
+        &self,
+        session_id: &str,
+        caller: &str,
+    ) -> Option<CoreResponse> {
+        let Some(pool) = self.pool.clone() else {
+            return Some(CoreResponse::Error {
+                code: "user_prompt_queue_unavailable".to_string(),
+                message: "durable session storage is required for the prompt queue".to_string(),
+            });
+        };
+        if let Ok(codegg_core::session::UserPromptQueueOwnership::Owned(record)) =
+            codegg_core::session::UserPromptQueueStore::new(pool)
+                .ownership(session_id)
+                .await
+        {
+            if record.owner_principal != caller {
+                return Some(CoreResponse::Error {
+                    code: "user_prompt_queue_not_owner".to_string(),
+                    message: "caller is not the owner of this session's prompt queue".to_string(),
+                });
+            }
+            return None;
+        }
+        let (controller, _revision, _lease_turn) = self.controller_lease_for(session_id).await?;
+        if controller != caller {
+            return Some(CoreResponse::Error {
+                code: "user_prompt_queue_controller_mismatch".to_string(),
+                message: "caller is not the controller of the active turn".to_string(),
+            });
         }
         None
     }
@@ -406,6 +658,12 @@ impl CoreDaemon {
     pub fn spawn_turn_reaper(&self, session_id: String, turn_id: String) {
         let daemon_sessions = self.sessions.clone();
         let pool = self.pool.clone();
+        // M003: the reaper is the post-terminal hook queue delivery hangs off,
+        // and it clones only `sessions` and `pool`. Re-entering the daemon needs
+        // the same `Weak` upgrade the idle-continuation fanout uses, so the
+        // reaper carries the already-published wake cell rather than adding a
+        // second publication surface.
+        let wake_cell = self.idle_wake_cell.clone();
         let rx = self.event_log.subscribe();
         tokio::spawn(async move {
             let mut rx = rx;
@@ -462,9 +720,107 @@ impl CoreDaemon {
                     let mut status = runtime.status.write().await;
                     *status = crate::core::session_runtime::RuntimeSessionStatus::Idle;
                 }
+                // M003 (ADR-0038): the session is free and the durable
+                // controller row is gone, so deliver at most one queued prompt.
+                // Both preconditions are established above — the lease is
+                // released and `active_turn` is cleared — which is why delivery
+                // happens here and not on the terminal event itself.
+                //
+                // A `Weak` that no longer upgrades means the daemon is shutting
+                // down. The entry stays `pending` and the restart twin delivers
+                // it; forcing a delivery through a live strong reference here
+                // would only extend the shutdown to wait for a turn.
+                if let Some(daemon) = wake_cell.get().and_then(|weak| weak.upgrade()) {
+                    let wake_session = session_id.clone();
+                    tokio::spawn(async move {
+                        daemon.deliver_next_queued_prompt(&wake_session).await;
+                    });
+                }
                 break;
             }
         });
+    }
+
+    /// M003 (ADR-0038): permitted caller 1 of
+    /// [`submit_queued_prompt_turn`](super::daemon_queue_delivery::CoreDaemon::submit_queued_prompt_turn).
+    ///
+    /// The post-terminal wake: once a turn has finished and the controller lease
+    /// is released, deliver the next queued prompt for this session. Called from
+    /// [`Self::spawn_turn_reaper`] after the runtime is parked `Idle`.
+    ///
+    /// This is a **wake, not a poll**. It runs on a terminal transition and at
+    /// daemon restart, and nowhere else — the daemon has no periodic session
+    /// observation loop and M003 does not add one. A trigger that ran on a timer
+    /// would keep the daemon awake for every session forever to deliver prompts
+    /// that only ever arrive as a side effect of a turn ending.
+    ///
+    /// One entry per wake, because delivery admits a turn: the next queued prompt
+    /// is delivered when that turn reaches its own terminal state. Delivering a
+    /// whole backlog at once would contend with itself for the controller lease
+    /// and lose the ordering the queue exists to provide.
+    pub async fn deliver_next_queued_prompt(&self, session_id: &str) {
+        let outcome = self.submit_queued_prompt_turn(session_id).await;
+        match outcome {
+            super::daemon_queue_delivery::QueueDeliveryOutcome::Delivered { turn_id } => {
+                tracing::debug!(
+                    %session_id,
+                    %turn_id,
+                    "queue delivery admitted a turn for a queued prompt"
+                );
+                self.publish_queue_changed(session_id).await;
+            }
+            super::daemon_queue_delivery::QueueDeliveryOutcome::Failed { reason }
+            | super::daemon_queue_delivery::QueueDeliveryOutcome::Released { reason } => {
+                tracing::info!(%session_id, reason, "queue delivery did not admit a turn");
+                self.publish_queue_changed(session_id).await;
+            }
+            // Nothing to deliver, or an already-delivered receipt that left the
+            // entry to the restart sweep. Either way the queue the client last
+            // saw is still accurate, so there is nothing to push.
+            super::daemon_queue_delivery::QueueDeliveryOutcome::AlreadyDelivered { .. }
+            | super::daemon_queue_delivery::QueueDeliveryOutcome::NothingToDo => {}
+        }
+    }
+
+    /// M003 (ADR-0038): push a fresh queue projection to every attached client.
+    ///
+    /// Delivery is daemon-initiated with no response channel, so the client that
+    /// queued a prompt learns about it running only if the daemon pushes. Before
+    /// M003 the queue was re-read solely on the session-change edge
+    /// (`src/tui/app/mod.rs`), which a delivery never produces — an entry would
+    /// sit shown as pending while its turn ran.
+    ///
+    /// A read that fails is logged and dropped rather than retried: the next
+    /// session change or the next delivery re-reads the whole projection anyway.
+    pub(crate) async fn publish_queue_changed(&self, session_id: &str) {
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
+        let store = codegg_core::session::UserPromptQueueStore::new(pool);
+        match store
+            .list_live(session_id, chrono::Utc::now().timestamp_millis())
+            .await
+        {
+            Ok(entries) => {
+                // A `CoreEvent`, not a `CoreResponse`: this is an unsolicited
+                // push with no reply channel, and the TUI's `apply_core_event`
+                // is the only place that can adopt it. Republishing the response
+                // shape would reach nothing.
+                let payload = crate::protocol::core::CoreEvent::UserPromptQueue {
+                    session_id: session_id.to_owned(),
+                    entries: entries
+                        .into_iter()
+                        .map(crate::core::daemon_turns::user_prompt_queue_entry_to_dto)
+                        .collect(),
+                };
+                self.event_log
+                    .publish(Some(session_id.to_owned()), None, payload)
+                    .await;
+            }
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "queue projection re-read failed");
+            }
+        }
     }
 
     /// Publish one structural control event (ids/revision/action only).

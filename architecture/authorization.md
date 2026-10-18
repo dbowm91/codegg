@@ -110,6 +110,26 @@ in-memory daemons without a pool decide under the same broad policy.
   marker (metadata only). Legacy rows without stored origin stay
   non-autonomous; revocation/expiry/budget/mismatch suppress before
   inference; ambiguity after admission becomes `needs_attention`.
+- `user-prompt-queue-deliver` (M003, ADR-0038 accepted — Option B) — daemon
+  - internal delivery of a queued user prompt into an ordinary turn admission.
+  Dispatch is never a wire operation: `submit_queued_prompt_turn` (exactly two
+  callers — the post-terminal wake and the bounded restart twin, enforced by
+  `check_queue_delivery_callsites.py`, which also fails when neither caller is
+  wired) claims one entry in ordinal order, resolves the delivery principal
+  from **durable rows only** (owner row + `TeamStore` kind), re-authorizes
+  against current team state, and admits through the canonical `TurnSubmit`
+  path with a `queue:<entry_id>` client marker (metadata only).
+  **The delivered principal is the queue owner.** A synthetic daemon identity
+  would take the controller lease away from the owner and lock it out of its own
+  queue at the first mid-turn mutation, and `is_controller_bypass` is refused
+  for the same reason. `AuthMethod::QueueDelivery` /
+  `TransportClass::DaemonDelivery` are a **delivery classification**, not a
+  record of what authenticated the owner when the prompt was queued — a
+  delivery has no originating connection, so a per-connection classification
+  would be a fabrication. Neither value needs a migration: both columns are
+  unconstrained `TEXT`. `CoreEvent::UserPromptQueue` is classified
+  `ClientLocal`, never `Safe`: it carries prompt text and reaches the session's
+  own frontend stream, not the durable projection store.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed
@@ -625,6 +645,81 @@ not a Core operation):
 | `workspace_services_snapshot` | global | `none` |
 | `workspace_snapshot_request` | opaque | `project.read` |
 | `worktree_list` | opaque | `git.read` |
+| `user_prompt_queue_list` | via_session | `session.read` |
+| `user_prompt_queue_add` | via_session | `agent.invoke` |
+| `user_prompt_queue_edit` | via_session | `agent.invoke` |
+| `user_prompt_queue_delete` | via_session | `agent.invoke` |
+| `user_prompt_queue_reorder` | via_session | `agent.invoke` |
+| `user_prompt_queue_adopt` | via_session | `agent.invoke` |
+| `user_prompt_queue_transfer` | via_session | `agent.invoke` |
+
+### Deliberate divergence: the queue read is narrower than the promotion read
+
+`user_prompt_queue_list` and `human_shell_promotions_get` are both
+session-scoped reads, and they are **not** authorized the same way:
+
+| Operation | Capability | Why |
+|---|---|---|
+| `human_shell_promotions_get` | `agent.invoke` | The older precedent. A read, gated with the broader invoke capability. |
+| `user_prompt_queue_list` | `session.read` | ADR-0035: "queue reads are subject to session read authority". |
+
+Do not copy the promotion precedent when adding queue operations. The
+practical difference is observable: a `Viewer` role holds `session.read` but
+not `agent.invoke`, so a Viewer may read the prompt queue while the same
+principal is refused the promotion read. Widening the queue read to
+`agent.invoke` would silently flip both outcomes.
+
+The read is classified in `UNINSTRUMENTED_OPERATIONS`, alongside
+`human_shell_promotions_get` — a read of inert metadata with no shared-state
+mutation. `scripts/check_audit_coverage.py` fails any operation in neither
+list, so a new queue operation must be classified rather than omitted.
+
+### Queue mutation authority (M002b, ADR-0037, accepted — Option B)
+
+The six mutating operations require `agent.invoke`, which is the capability the
+**capability gate** enforces. That gate is necessary but **not sufficient**:
+`agent.invoke` says the caller may act on this project, not that this caller
+owns this session's queue.
+
+The second condition is the **durable, session-scoped queue owner** (v81
+`user_prompt_queue_owner`), enforced by `ControllerScope::QueueMutation` /
+`ControllerScope::QueueAdoption` in `src/core/daemon_control.rs`, and re-checked
+by the store inside the mutation's own transaction. `Capability::AgentInvoke`
+cannot express a per-session identity row, which is exactly why the handler
+check exists. See `architecture/core.md` for the full contract.
+
+This is a real session-scoped authority, **not** the `is_controller_bypass`
+identity comparison. The bypass is an identity-only check against
+`LOCAL_OWNER_PRINCIPAL_ID` that is not bound to a session; ADR-0037 rules out
+extending it, and the code implements that — the bypass's early return is
+guarded by `matches!(scope, ControllerScope::Turn { .. })`. Without that guard
+the local interactive owner could mutate **any** session's queue, which is the
+defect ADR-0037 exists to prevent.
+
+A refused caller learns **nothing** about who the owner is:
+`user_prompt_queue_not_owner` carries no owner identity, because naming the
+owner to a refused caller would itself be the leak the refusal exists to
+prevent. A caller who already holds `agent.invoke` on the session can tell
+"absent" from "not yours", which ADR-0037 permits — it scopes the refusal rather
+than requiring indistinguishability.
+
+### Audit: queue operations use `prompt_submit`, not `membership_change`
+
+Every queue mutation, **including adoption and transfer**, maps to the
+`prompt_submit` audit action in `INSTRUMENTED_OPERATIONS`. This **deliberately
+diverges** from `session_control_transfer`, which maps to `membership_change`.
+The divergence is directed by ADR-0037 — queue authority is queue authority —
+and is recorded rather than "corrected"; matching the transfer precedent would
+put queue mutations in the wrong bucket.
+
+Records are built by
+`audit_instrumentation::user_prompt_queue_mutation_event`, which emits the
+`prompt_submit` action with queue-shaped metadata. It is not
+`prompt_submit_event`, because that builder requires a `turn_id` and a prompt
+digest and a queue mutation has neither — forcing it would mean inventing a turn
+id or a digest for an entry that is not yet a turn. Metadata carries entry
+identity, the actor's own owner identity, and a byte count. **No prompt text,
+and no digest of it**: a length is bounded, a digest is a content oracle.
 
 ## Verification
 

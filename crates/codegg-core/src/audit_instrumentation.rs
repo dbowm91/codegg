@@ -559,6 +559,28 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("human_shell_run_create", "human_shell_run"),
     ("human_shell_run_cancel", "human_shell_run"),
     ("turn_steer", "prompt_submit"),
+    // M002b (ADR-0037): every queue mutation, INCLUDING adoption and transfer,
+    // reuses the `prompt_submit` action ADR-0035 selected.
+    //
+    // This deliberately diverges from `session_control_transfer`, which maps to
+    // `membership_change` below. The divergence is directed by ADR-0037 — queue
+    // authority is queue authority — and is recorded rather than "corrected",
+    // because matching the transfer precedent here would put queue mutations in
+    // the wrong bucket.
+    ("user_prompt_queue_add", "prompt_submit"),
+    ("user_prompt_queue_deliver", "prompt_submit"),
+    ("user_prompt_queue_edit", "prompt_submit"),
+    ("user_prompt_queue_delete", "prompt_submit"),
+    ("user_prompt_queue_reorder", "prompt_submit"),
+    ("user_prompt_queue_adopt", "prompt_submit"),
+    ("user_prompt_queue_transfer", "prompt_submit"),
+    // M006 (ADR-0036): reaches the running turn, so it is instrumented as a
+    // submission rather than left in the `prompt_edit` bucket with the rest of
+    // the queue-mutation shape. Instrumenting it is what makes a send-now
+    // attributable after the fact, and what records the `accepted_unsettled`
+    // case — the one where the turn holds the prompt but the queue row did not
+    // move.
+    ("user_prompt_queue_send_now", "prompt_submit"),
     ("turn_cancel", "job_cancel"),
     ("agent_select", "agent_delegate"),
     ("model_select", "model_select"),
@@ -710,6 +732,11 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "human_shell_run_capabilities",
     "human_shell_run_read",
     "human_shell_promotions_get",
+    // M002a (ADR-0035): a session-scoped read of inert queued-prompt
+    // metadata, in the same class as the promotion read above. It carries
+    // no shared-state mutation, so it does not earn a dedicated audit
+    // action. Denial *is* audited upstream by `authorize_request`.
+    "user_prompt_queue_list",
     "asset_refresh_capabilities",
     "asset_refresh_status",
     "audit_capabilities",
@@ -1168,6 +1195,99 @@ pub fn prompt_submit_event(
         .with_metadata("turn.id", truncate_label(turn_id, 128))
         .with_metadata("prompt.digest", truncate_label(prompt_digest_hex, 128))
         .with_metadata("prompt.bytes", prompt_bytes.to_string())
+        .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// M002b (ADR-0037): the queue-specific fields of one mutation record.
+///
+/// Grouped rather than passed as six trailing parameters: the shape is a
+/// metadata bundle, and a struct keeps the call site readable and the arity
+/// under the lint.
+#[derive(Debug, Clone, Copy)]
+pub struct UserPromptQueueAudit<'a> {
+    /// Which protocol operation ran (`add`, `edit`, …). Not the descriptor name.
+    pub operation: &'a str,
+    /// The target entry, when the operation targets exactly one.
+    pub entry_id: Option<&'a str>,
+    /// The owner, on an applied action by its own actor only.
+    pub owner_principal: Option<&'a str>,
+    /// Byte count, never content.
+    pub entry_bytes: Option<usize>,
+    /// `applied` or `refused`.
+    pub outcome: &'a str,
+}
+
+/// M002b (ADR-0037): one queue mutation.
+///
+/// Emits the [`AuditAction::PromptSubmit`] action ADR-0037 selected, but with
+/// queue-shaped metadata. It is deliberately **not** the `prompt_submit_event`
+/// builder above: that one requires a `turn_id` and a prompt digest, and a
+/// queue mutation has neither. Forcing it would have meant inventing a turn id
+/// or a digest for an entry that is not yet a turn.
+///
+/// **No prompt text, and no digest of it.** Metadata carries entry *identity*,
+/// owner identity, and the byte count — a length is not a content oracle the way
+/// a digest would be. Owner identity is recorded here even though a *refused*
+/// caller must never learn it: this event is emitted on the actor's own
+/// successful action, and refusals are audited upstream by `authorize_request`.
+pub fn user_prompt_queue_mutation_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    session_id: &str,
+    queue: UserPromptQueueAudit<'_>,
+) -> AuditEventBuilder {
+    let builder = AuditEventBuilder::new(AuditAction::PromptSubmit, principal, provenance)
+        .with_visibility(AuditVisibility::Project)
+        .with_metadata("session.id", truncate_label(session_id, 128))
+        .with_metadata("queue.operation", truncate_label(queue.operation, 64));
+    let builder = match queue.entry_id {
+        Some(id) => builder.with_metadata("queue.entry_id", truncate_label(id, 128)),
+        None => builder,
+    };
+    let builder = match queue.owner_principal {
+        Some(owner) => builder.with_metadata("queue.owner", truncate_label(owner, 128)),
+        None => builder,
+    };
+    let builder = match queue.entry_bytes {
+        Some(bytes) => builder.with_metadata("queue.entry_bytes", bytes.to_string()),
+        None => builder,
+    };
+    let builder = builder.with_metadata("decision.outcome", truncate_label(queue.outcome, 64));
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// M003 (ADR-0038): one queue delivery into an ordinary turn admission.
+///
+/// Emits the same [`AuditAction::PromptSubmit`] action ADR-0037 selected, with
+/// the delivering principal as the actor — which is the point of the record: the
+/// turn ran as the **queue owner**, so `actor_principal` is the owner's id and a
+/// later mid-turn mutation by that owner succeeds against the same lease.
+///
+/// Separate from [`user_prompt_queue_mutation_event`] because a delivery is not
+/// a mutation: there is no queue revision to fence and no client request to
+/// record, and the durable fact worth keeping is which turn an entry became.
+///
+/// `entry_bytes` is a byte count, never text and never a digest of text — the
+/// settled M002b rule, extended here. The prompt itself is already in the turn's
+/// own transcript under its own visibility, so duplicating it into an audit row
+/// would widen nothing and leak into every audit reader.
+pub fn user_prompt_queue_delivery_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    session_id: &str,
+    entry_id: &str,
+    entry_bytes: usize,
+    outcome: &str,
+) -> AuditEventBuilder {
+    let builder = AuditEventBuilder::new(AuditAction::PromptSubmit, principal, provenance)
+        .with_visibility(AuditVisibility::Project)
+        .with_metadata("session.id", truncate_label(session_id, 128))
+        .with_metadata("queue.operation", "deliver")
+        .with_metadata("queue.entry_id", truncate_label(entry_id, 128))
+        .with_metadata("queue.entry_bytes", entry_bytes.to_string())
         .with_metadata("decision.outcome", truncate_label(outcome, 64));
     apply_chain(builder, chain, provenance.project())
 }

@@ -23,6 +23,7 @@ pub mod plugin;
 pub mod policy_selector;
 pub mod project_picker;
 pub mod question;
+pub mod queue;
 pub mod research;
 pub mod review;
 pub mod run_detail;

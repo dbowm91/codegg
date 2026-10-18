@@ -127,6 +127,66 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   `ui_state.dialog` is a derived compatibility discriminator, while
   `active_dialog_type()` controls modal lifecycle.
 
+### M004 `/queue` box
+
+`components/dialogs/queue.rs`, mounted by `commands::queue::open_queue_box`.
+Rules that are easy to break and hard to notice:
+
+- **The box renders, it does not decide.** It must never sort, filter, or
+  reorder `SessionState::user_prompt_queue`; the daemon owns the ordinal.
+  Selection follows `entry_id` across a fresh projection, not the index —
+  index-keyed selection slides the cursor onto a different prompt when a row
+  disappears, and the `d` after that deletes something the user never selected.
+- **Advertise only keys `handle_key` implements.** M004 owns `j/k`, `r`, `d`;
+  M005 adds `a`, `e`, `[`/`]`. Naming one that does not exist in the hint *or*
+  in `EMPTY_STATE` teaches a dead key. `Esc` is handled but deliberately not
+  hinted, like `TreeDialog`, because the modal host claims `Esc` first.
+- **A `delivering` row is listed and offered to `d`.** The daemon refuses it
+  with `user_prompt_queue_entry_delivering` and the box reports it as *being
+  delivered*, never as *expired* — a delivering entry has not expired.
+- **A mutation applies its own response's projection.** `queue_projection`
+  returns the post-write projection in the write's response; `commands::queue`
+  must never follow it with a `UserPromptQueueList`.
+- **Do not add key arms to `handle_dialog_key_legacy`** for a new `Dialog`
+  variant. It is `#[cfg(any())]`-disabled and `FocusManager` is the sole key
+  authority, so such an arm compiles and does nothing.
+- `close_dialog`'s `Dialog::Queue` arm cancels
+  `DialogState::queue_delete_request` (and M005's add/edit/reorder states) so a
+  late completion mutates nothing. It must **not** call
+  `requeue_open_permission` — the box has a cursor, not a pending human
+  decision.
+- `/queue` is blocked for observers by **omission** in the fail-closed
+  `is_observer_allowed_command` allowlist. Do not add it, and do not add the
+  M005 actions either.
+
+### M005 `/queue` authoring
+
+Same file; the box is now also a text field. Three rules carry the milestone:
+
+- **Guard the text step structurally, not per letter.** `handle_key` matches
+  `is_text_step()` **first, as a separate match**, and returns from it, so the
+  browsing arm is unreachable while a composer is open. A per-arm
+  `if !self.is_text_step()` is the shape that eventually ships a sixth action
+  with a missing guard — and typing `d` into a prompt then deletes a prompt.
+  Copy `ConnectDialog::is_text_input_step`'s shape; do **not** open a shared
+  `App`-level `captures_text` predicate.
+- **Reorder's permutation is built from `pending` rows only.** The projection
+  carries `pending` *and* `delivering`, but `reorder` checks the permutation
+  against `status = 'pending'` with exact length equality, so naming a
+  delivering row earns `user_prompt_queue_order_mismatch`.
+- **`order_mismatch` re-reads once and reports — never a retry loop.** The
+  check is a length-equality set compare, so blind retrying against a stale
+  projection is a contention source.
+
+Two deliberate asymmetries, both load-bearing:
+
+- M004 lets the daemon refuse a `d` on a `delivering` row. Reorder **cannot**:
+  the permutation would omit that row, succeed, and reorder nothing. So
+  `reorder_selected` refuses locally and names which end it is at.
+- The `unowned` refusal says the repair is a separate explicit operation
+  outside this box, and does **not** name a slash command — none is registered.
+  Naming one would be this milestone's own version of the dead-key lie.
+
 ## Connection dialog model pane
 
 The model pane is scoped to one connection. `start_selection_refresh` must
@@ -787,13 +847,56 @@ model to the wrong connection.
   clears the composer before the daemon acknowledges anything. So every path
   where acceptance fails must undo that explicitly, or the user watches an
   eternal spinner and learns nothing for five minutes. The three carriers are
-  `TuiCommand::TurnSubmissionFinished { error }` (daemon refused it or the
+  `TuiCommand::TurnSubmissionFinished { outcome }` (daemon refused it or the
   socket is dead), and `dispatch_turn_submit_request`'s no-core-client and
-  no-session early returns. Route all of them through
-  `App::fail_unstarted_turn`, which clears `working_since` (so the watchdog
-  stops counting a turn that never started), sets `Error`, stops the thinking
-  indicator, and **releases `pending_send` so a retry is possible**. Never
-  record a submission failure in a log line and return; the log is not the UI.
+  no-session early returns. Route them through
+  `App::apply_turn_submission_finished` / `App::fail_unstarted_turn`, which
+  clear `working_since` (so the watchdog stops counting a turn that never
+  started), set `Error`, stop the thinking indicator, and **release
+  `pending_send` so a retry is possible**. Never record a submission failure in
+  a log line and return; the log is not the UI.
+- **A turn already running is not an unstarted turn — do not tear it down.**
+  `turn_already_active` (both the in-memory collision and the ADR-0007
+  controller-lease conflict) means a turn is *running*. Sending it through
+  `fail_unstarted_turn` nulled `active_turn_id` and `working_since`, stopped the
+  spinner, and set `Error` on a session that was actively working — the UI
+  asserting the opposite of the truth while the user waits.
+  `App::fail_contended_turn` releases only what the submit owns (the composer
+  guard and the text) and reports a warning toast. It deliberately does **not**
+  call `report_turn_error`: row 0 gives `last_error` absolute precedence, so
+  latching would hide the live turn's spinner and elapsed time behind a stale
+  `✗`. Contention is not a turn failure — the turn continues.
+- **Classify a refusal before consuming any state.**
+  `src/tui/app/turn_submit.rs` is the one seam that reads a `turn.submit`
+  result, and it produces a typed `TurnSubmitOutcome` the completion arm applies
+  as data. Two rules keep it honest: an **unknown daemon code classifies as
+  `Rejected`**, not `Unexpected` — `Rejected` is the only class that keeps the
+  user's text, and the daemon grows refusal codes; `CONTENTION_CODES` is an
+  exact allowlist, never a default or a resemblance match. `Unexpected` is
+  reserved for a response *shape* the frontend cannot read, and does not
+  restore the prompt, because that submit may already have been accepted.
+  Do not re-derive a class by matching message text at a second site.
+- **Give the user's text back on a recoverable refusal.**
+  `send_prompt`'s optimistic clear means the composer held the only editable
+  copy. Use `PromptState::restore_prompt_with_stash` — one shared shape, already
+  used by session-create failure and reconnect — so the newer draft is displaced
+  into the bounded stash and `mark_retry_without_message` suppresses the
+  duplicate transcript entry on resubmission. The bound applies to how many
+  drafts are kept, **never** to the restored text: truncating would change what
+  the user wrote. Carry the prompt in `PendingTurnSubmission::prompt`; never
+  re-read it from the composer, which the user may have kept typing into.
+  **Never resubmit on the user's behalf** — handing the text back is the whole
+  recovery, and anything more is an unapproved queue.
+- **Keep the daemon idempotency key and the local staleness marker separate.**
+  `PendingTurnSubmission::request_id` is the daemon's receipt key and its
+  derivation must not change. `App::turn_submit_request`'s generation answers a
+  different question — *is this completion still about the submission the user is
+  looking at?* — and `apply_turn_submission_finished` calls
+  `finish(generation)` **first** and drops the completion on `false`. Without
+  that, a late completion from a superseded submission still nulled a live turn's
+  identity: the old arm guarded only the `pending_turn_submission` clear and
+  then tore down turn state unconditionally. `App::cancel_turn_submit`
+  invalidates on tab switch / reconnect / project change.
 - **Never attribute a refusal to a component that is not at fault.** A missing
   dependency is not a diagnosis. `app.core_client` being `None` means two
   different things depending on the transport: on the socket-daemon frontend it

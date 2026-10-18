@@ -288,6 +288,8 @@ pub enum BuiltinSlashAction {
     PluginDoctor,
     PluginRemove,
     PluginInstall,
+    /// M004: open the session's waiting-prompt box.
+    Queue,
 }
 
 /// Typed executable authority for a registry entry.
@@ -617,6 +619,10 @@ impl CommandRegistry {
                 .with_description("View rate limits and quota"),
             Command::new("/stats", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::TuiStats))
                 .with_description("View session analytics and cost breakdown"),
+            Command::new("/queue", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Queue))
+                .with_description(
+                    "Show prompts waiting for this session's next turn (j/k move, r refresh, d delete)",
+                ),
             Command::new("/tui", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tui))
                 .with_aliases(&["fullscreen"])
                 .with_description("Toggle fullscreen mode"),
