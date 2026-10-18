@@ -18,8 +18,8 @@ use codegg_core::agent_convergence::ConvergenceStore;
 use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
 use codegg_core::agent_run_control::AgentRunControlKind;
 use codegg_core::agent_run_group::{
-    AgentRunGroupOwner, AgentRunGroupRecord, AgentRunGroupService, AgentRunGroupSummary,
-    GroupActor, NewAgentRunGroup, RunJoinPolicy, MAX_GROUP_MEMBERS,
+    AgentRunGroupOwner, AgentRunGroupService, AgentRunGroupSummary, GroupActor, NewAgentRunGroup,
+    RunJoinPolicy, MAX_GROUP_MEMBERS,
 };
 use codegg_core::identity::{
     AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorkspaceId,
@@ -2350,7 +2350,7 @@ mod tests {
         let run_id = AgentRunId::new();
         let group_id = AgentRunGroupId::new();
         let summary = AgentRunGroupSummary {
-            group: AgentRunGroupRecord {
+            group: codegg_core::agent_run_group::AgentRunGroupRecord {
                 group_id,
                 root_run_id: run_id.clone(),
                 owner_run_id: run_id,
