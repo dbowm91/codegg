@@ -1165,6 +1165,135 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         );
     }
 
+    // Git recursively follows alternates. Prove that behavior with a positive
+    // control, then make the repository ODB point at an object directory
+    // outside both allowed roots and ensure the obtained sandbox denies it.
+    let external_repository = tempfile::tempdir().expect("external alternate repository");
+    let external_odb = external_repository.path().join("external.git/objects");
+    let external_init = setup(
+        external_repository.path(),
+        &[
+            "init".into(),
+            "--bare".into(),
+            "--quiet".into(),
+            "external.git".into(),
+        ],
+    );
+    assert!(
+        external_init.status.success(),
+        "initialize external alternate ODB: {}",
+        String::from_utf8_lossy(&external_init.stderr)
+    );
+    let alternate_secret = b"recursive alternate must stay outside the contained view\n";
+    let mut hash_object = Command::new(&git)
+        .args([
+            format!(
+                "--git-dir={}",
+                external_repository.path().join("external.git").display()
+            ),
+            "hash-object".into(),
+            "-w".into(),
+            "--stdin".into(),
+        ])
+        .current_dir(external_repository.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start external alternate blob creation");
+    hash_object
+        .stdin
+        .take()
+        .expect("external alternate hash-object stdin")
+        .write_all(alternate_secret)
+        .expect("write external alternate blob input");
+    let hashed = hash_object
+        .wait_with_output()
+        .expect("wait for external alternate blob creation");
+    assert!(
+        hashed.status.success(),
+        "create external alternate blob: {}",
+        String::from_utf8_lossy(&hashed.stderr)
+    );
+    let alternate_blob = String::from_utf8_lossy(&hashed.stdout).trim().to_owned();
+    let source_alternates = source_odb.join("info/alternates");
+    std::fs::create_dir_all(
+        source_alternates
+            .parent()
+            .expect("source ODB info directory"),
+    )
+    .expect("create source ODB info directory");
+    std::fs::write(&source_alternates, format!("{}\n", external_odb.display()))
+        .expect("install recursive external alternate for negative probe");
+    let recursive_positive = setup(
+        &repository,
+        &[
+            format!("--git-dir={}", private_gitdir.display()),
+            "cat-file".into(),
+            "blob".into(),
+            alternate_blob.clone(),
+        ],
+    );
+    assert!(
+        recursive_positive.status.success(),
+        "positive control did not follow recursive Git alternates: {}",
+        String::from_utf8_lossy(&recursive_positive.stderr)
+    );
+    assert_eq!(recursive_positive.stdout, alternate_secret);
+
+    let escape_args = vec![
+        format!("--git-dir={}", private_gitdir.display()),
+        "cat-file".into(),
+        "blob".into(),
+        alternate_blob,
+    ];
+    let escape_spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_allowed_paths(vec![
+            repository.to_string_lossy().into_owned(),
+            operation_scratch.path().to_string_lossy().into_owned(),
+        ])
+        .with_linux_offline_network(true)
+        .launch_spec(&git, &escape_args, Some(&repository))
+        .expect("construct contained recursive-alternate denial launch");
+    let escape_argv = std::iter::once(escape_spec.target.as_os_str().to_owned())
+        .chain(escape_spec.args.iter().map(OsString::from))
+        .collect();
+    let mut escape_request = ManagedProcessRequest::new(
+        escape_argv,
+        repository.clone(),
+        ProcessProvenance::new("linux-trusted-git-c004", "recursive-alternate-denial"),
+    );
+    escape_request.timeout = Some(Duration::from_secs(15));
+    escape_request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+        .with_var("GIT_CONFIG_NOSYSTEM", "1")
+        .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+        .with_var("HOME", "/tmp/codegg-empty-home");
+    escape_request.sandbox = SandboxRequest::Required(escape_spec);
+    let escape = ManagedProcessService::run(escape_request)
+        .await
+        .expect("required recursive-alternate denial launch must fail closed");
+    assert!(
+        matches!(escape.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+        "recursive-alternate probe did not obtain sandbox enforcement"
+    );
+    assert!(
+        !escape.exit_status.success(),
+        "contained Git read an object available only through an unapproved recursive alternate"
+    );
+    assert!(
+        !escape
+            .stdout
+            .to_string_lossy()
+            .contains(std::str::from_utf8(alternate_secret).expect("synthetic secret is UTF-8")),
+        "recursive alternate object bytes escaped the denied boundary"
+    );
+    std::fs::remove_file(&source_alternates)
+        .expect("remove external alternate before normal private staging probe");
+
     std::fs::write(
         repository.join("tracked.txt"),
         "new content must stay in private object storage\n",
