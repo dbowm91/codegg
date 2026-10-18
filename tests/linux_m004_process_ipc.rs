@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
+use codegg::git_service::{GitExecutionService as TypedGitExecutionService, GitPayload};
 use codegg::managed_process::{
     ManagedProcessRequest, ManagedProcessResult, ManagedProcessService, ProcessProvenance,
     SandboxExecutionOutcome, SandboxRequest,
@@ -593,6 +594,172 @@ async fn test_only_contained_git_reads_live_objects_and_contains_configured_comm
         configured.sandbox,
         SandboxExecutionOutcome::Enforced { .. }
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the contained Git read parity pilot");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path();
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+
+    let setup = |args: &[&str]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git fixture")
+    };
+    assert!(setup(&["init", "--quiet"]).status.success());
+    std::fs::write(repository.join("tracked.txt"), "base payload\n")
+        .expect("write tracked fixture");
+    assert!(setup(&["add", "tracked.txt"]).status.success());
+    let commit = setup(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "typed parity fixture",
+    ]);
+    assert!(
+        commit.status.success(),
+        "Git fixture commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    std::fs::write(repository.join("tracked.txt"), "changed payload\n")
+        .expect("dirty tracked fixture");
+    std::fs::write(repository.join("untracked.txt"), "untracked payload\n")
+        .expect("untracked fixture");
+
+    async fn contained_read(
+        git: &Path,
+        repository: &Path,
+        operation: &codegg_git::GitOperation,
+        label: &str,
+    ) -> ManagedProcessResult {
+        let argv = codegg_git::render_argv(operation);
+        let args = argv.iter().skip(1).cloned().collect::<Vec<_>>();
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_offline_network(true)
+            .launch_spec(git, &args, Some(repository))
+            .expect("construct contained Git read spec");
+        let argv = std::iter::once(spec.target.as_os_str().to_owned())
+            .chain(spec.args.iter().map(OsString::from))
+            .collect();
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            repository.to_path_buf(),
+            ProcessProvenance::new("linux-trusted-git-c002", label),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+            .with_var("GIT_CONFIG_NOSYSTEM", "1")
+            .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+            .with_var("HOME", "/tmp/codegg-empty-home");
+        request.sandbox = SandboxRequest::Required(spec);
+        ManagedProcessService::run(request)
+            .await
+            .expect("required contained Git read must run or fail closed")
+    }
+
+    let typed = TypedGitExecutionService::new();
+    let operations = [
+        ("status", codegg_git::GitOperation::Status { short: true }),
+        (
+            "diff",
+            codegg_git::GitOperation::Diff {
+                staged: false,
+                stat: false,
+                name_only: false,
+                base_ref: None,
+                paths: vec![],
+            },
+        ),
+        (
+            "log",
+            codegg_git::GitOperation::Log {
+                oneline: false,
+                max_count: Some(1),
+                paths: vec![],
+            },
+        ),
+        (
+            "show",
+            codegg_git::GitOperation::Show {
+                rev: codegg_git::ref_name::RevisionExpr::new("HEAD")
+                    .expect("valid fixture revision"),
+            },
+        ),
+    ];
+
+    for (label, operation) in &operations {
+        let snapshot = typed
+            .execute(operation, repository)
+            .await
+            .unwrap_or_else(|error| panic!("typed snapshot {label} failed: {error}"));
+        assert!(snapshot.success, "typed snapshot {label} returned nonzero");
+        let live = contained_read(&git, repository, operation, label).await;
+        assert!(
+            live.exit_status.success(),
+            "contained live {label} failed: {}",
+            live.stderr.to_string_lossy()
+        );
+        assert!(
+            matches!(live.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+            "contained live {label} did not report actual enforcement"
+        );
+        assert_eq!(
+            live.stdout.to_string_lossy(),
+            snapshot.stdout,
+            "native live {label} output differs from the typed snapshot route"
+        );
+        match (*label, snapshot.payload.as_ref().expect("typed payload")) {
+            ("status", GitPayload::Status(status)) => {
+                assert!(status.is_dirty);
+                assert!(live.stdout.to_string_lossy().contains("tracked.txt"));
+                assert!(live.stdout.to_string_lossy().contains("untracked.txt"));
+            }
+            ("diff", GitPayload::DiffResult(diff)) => {
+                assert_eq!(diff.files.len(), 1);
+                assert_eq!(diff.files[0].path, "tracked.txt");
+                assert!(live.stdout.to_string_lossy().contains("changed payload"));
+            }
+            ("diff", GitPayload::DiffSummary(summary)) => {
+                assert_eq!(summary.files_changed, 1);
+                assert_eq!(summary.files[0].path, "tracked.txt");
+            }
+            ("log", GitPayload::Log(commits)) => {
+                assert_eq!(commits.len(), 1);
+                assert_eq!(commits[0].message, "typed parity fixture");
+                assert!(live
+                    .stdout
+                    .to_string_lossy()
+                    .contains("typed parity fixture"));
+            }
+            ("show", GitPayload::Show(show)) => {
+                assert!(!show.hash.is_empty());
+                assert!(live.stdout.to_string_lossy().contains(&show.hash));
+                assert!(show.message.contains("typed parity fixture"));
+            }
+            (label, payload) => panic!("unexpected typed {label} payload: {payload:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C002 — Contained Live-ODB Read Pilot
 
-Status: ready for internal test-only pilot; **production route remains blocked on ADR-0036 acceptance and M005 native/owner admission**
+Status: in progress — internal test-only typed-payload parity pilot; **production route remains blocked on ADR-0036 acceptance and M005 native/owner admission**
 Primary class: capability
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source roadmap: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`; parent `plans/subsystems/linux-execution-isolation-roadmap.md`.
