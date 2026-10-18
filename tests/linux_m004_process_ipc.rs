@@ -924,11 +924,22 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         "new content must stay in private object storage\n",
     )
     .expect("write changed worktree content");
-    let changed_blob = setup(&repository, &["hash-object".into(), "tracked.txt".into()]);
+    let changed_blob = setup(
+        &repository,
+        &[
+            "hash-object".into(),
+            "--no-filters".into(),
+            "tracked.txt".into(),
+        ],
+    );
     assert!(changed_blob.status.success(), "hash changed blob failed");
     let changed_blob = String::from_utf8_lossy(&changed_blob.stdout)
         .trim()
         .to_owned();
+    assert!(
+        !filter_marker.exists(),
+        "test oracle unexpectedly invoked the source filter before sandbox launch"
+    );
 
     let args = vec![
         format!("--git-dir={}", private_gitdir.display()),
