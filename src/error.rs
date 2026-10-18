@@ -60,7 +60,8 @@ impl IntoResponse for AxumAppError {
             AppError::Config(ConfigError::NotFound(_)) => StatusCode::NOT_FOUND,
             AppError::Config(ConfigError::Invalid(_))
             | AppError::Config(ConfigError::Parse(_))
-            | AppError::Config(ConfigError::Merge(_)) => StatusCode::BAD_REQUEST,
+            | AppError::Config(ConfigError::Merge(_))
+            | AppError::Tool(ToolError::MissingWorkspaceRoot { .. }) => StatusCode::BAD_REQUEST,
             AppError::Config(ConfigError::Watch(_)) => StatusCode::INTERNAL_SERVER_ERROR,
 
             AppError::Storage(StorageError::NotFound(_)) => StatusCode::NOT_FOUND,
@@ -234,6 +235,16 @@ mod tests {
         assert_app_status(
             AppError::Storage(StorageError::NotFound("session".into())),
             StatusCode::NOT_FOUND,
+        );
+    }
+
+    #[test]
+    fn missing_workspace_root_maps_to_400() {
+        assert_app_status(
+            AppError::Tool(ToolError::MissingWorkspaceRoot {
+                context: "server request".into(),
+            }),
+            StatusCode::BAD_REQUEST,
         );
     }
 

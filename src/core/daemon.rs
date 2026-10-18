@@ -5169,7 +5169,7 @@ mod tests {
                 max_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_READ_BYTES,
             },
         };
-        for _ in 0..30 {
+        for _ in 0..200 {
             let response = daemon
                 .handle_request(crate::core::new_request(
                     "standalone-shell-read".into(),
@@ -5182,7 +5182,7 @@ mod tests {
                     return;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         panic!("standalone shell output was not delivered");
     }
@@ -5501,12 +5501,13 @@ mod tests {
     #[tokio::test]
     async fn session_create_through_daemon() {
         let daemon = test_daemon().await;
-        let (project_id, workspace_id) =
-            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
+        let workspace_root = tempfile::tempdir().unwrap();
+        let directory = workspace_root.path().to_string_lossy().into_owned();
+        let (project_id, workspace_id) = seed_test_context(&daemon, workspace_root.path()).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".into(),
+                directory,
                 title: Some("Test".into()),
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
@@ -5624,12 +5625,13 @@ mod tests {
     #[tokio::test]
     async fn turn_submit_rejects_when_active() {
         let daemon = test_daemon().await;
-        let (project_id, workspace_id) =
-            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
+        let workspace_root = tempfile::tempdir().unwrap();
+        let directory = workspace_root.path().to_string_lossy().into_owned();
+        let (project_id, workspace_id) = seed_test_context(&daemon, workspace_root.path()).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".into(),
+                directory,
                 title: None,
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),

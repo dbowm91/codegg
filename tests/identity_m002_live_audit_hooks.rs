@@ -91,6 +91,10 @@ fn tool_ctx(
     ctx
 }
 
+fn canonical_test_workspace() -> std::path::PathBuf {
+    std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("canonical test workspace")
+}
+
 async fn events_for(
     pool: &sqlx::SqlitePool,
     action: &str,
@@ -178,6 +182,7 @@ async fn bash_shell_success_emits_one_structural_event() {
             command_preflight: None,
         });
     let tool = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(canonical_test_workspace())
         .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, &ctx.cwd);
     let out = tool
         .execute_structured(serde_json::json!({"command": "echo m002-ok"}), Some(ctx))
@@ -295,10 +300,12 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
             ),
             command_preflight: None,
         });
-    let tool = codegg::tool::bash::BashTool::new().with_sandbox_profile(
-        codegg_core::approval::SandboxProfile::WorkspaceWrite,
-        root.path(),
-    );
+    let tool = codegg::tool::bash::BashTool::new()
+        .with_sandbox_profile(
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            root.path(),
+        )
+        .with_workspace_root(root.path().to_path_buf());
     let out = tool
         .execute_structured(
             serde_json::json!({
@@ -373,7 +380,7 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
 #[tokio::test(flavor = "current_thread")]
 async fn bash_failure_timeout_and_denial_matrix() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
+    let tool = codegg::tool::bash::BashTool::new().with_workspace_root(canonical_test_workspace());
 
     // Failure: real dispatch, nonzero exit, distinguishable outcome.
     let ctx = tool_ctx(&pool, "corr-bash-fail", "inv-bash-fail");
@@ -445,7 +452,7 @@ async fn bash_failure_timeout_and_denial_matrix() {
 #[tokio::test(flavor = "current_thread")]
 async fn bash_retry_with_same_invocation_key_does_not_duplicate() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
+    let tool = codegg::tool::bash::BashTool::new().with_workspace_root(canonical_test_workspace());
     for _ in 0..2 {
         // One logical idempotent invocation, replayed: same key,
         // same command, same terminal outcome.
@@ -1105,6 +1112,7 @@ async fn bash_routed_git_mutation_emits_single_git_event() {
     };
     let tool = codegg::tool::bash::BashTool::new()
         .with_routing_disabled_env(false)
+        .with_workspace_root(canonical_test_workspace())
         .with_command_intent_config(cic);
     let ctx = tool_ctx(&pool, "corr-git-routed", "inv-git-routed");
     let out = tool
@@ -1176,6 +1184,7 @@ async fn bash_managed_git_plumbing_emits_single_shell_event() {
     };
     let tool = codegg::tool::bash::BashTool::new()
         .with_routing_disabled_env(false)
+        .with_workspace_root(repo.path().to_path_buf())
         .with_command_intent_config(cic);
     let ctx = tool_ctx(&pool, "corr-git-plumbing", "inv-git-plumbing");
     let command = format!("git -C {} add plumbing.txt", repo.path().to_string_lossy());

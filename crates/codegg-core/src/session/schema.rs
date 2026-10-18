@@ -3522,12 +3522,20 @@ async fn migrate_v32(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// Associate provider usage rows with their durable delegated run so child
 /// token and estimated-cost totals can be compared independently.
 async fn migrate_v80(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
-    sqlx::query(
-        "ALTER TABLE usage ADD COLUMN agent_run_id TEXT REFERENCES agent_run(run_id) ON DELETE SET NULL",
+    let has_agent_run_id: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('usage') WHERE name = 'agent_run_id'",
     )
-    .execute(&mut **tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
+    if has_agent_run_id == 0 {
+        sqlx::query(
+            "ALTER TABLE usage ADD COLUMN agent_run_id TEXT REFERENCES agent_run(run_id) ON DELETE SET NULL",
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
     sqlx::query("CREATE INDEX IF NOT EXISTS usage_agent_run_idx ON usage(agent_run_id)")
         .execute(&mut **tx)
         .await

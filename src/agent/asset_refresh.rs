@@ -556,6 +556,7 @@ mod tests {
     use crate::agent::asset_context::{AssetContextBuilder, ProjectId};
     use crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder;
     use crate::config::schema::Config;
+    use std::future::Future;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -586,13 +587,15 @@ mod tests {
             &self,
             context: &AssetContext,
         ) -> Result<ProjectAssetSnapshot, SnapshotBuildError> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            *self
-                .thread
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
-            self.started.notify_one();
-            std::thread::park();
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                *self
+                    .thread
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(std::thread::current());
+                self.started.notify_one();
+                std::thread::park();
+            }
             self.inner.build(context)
         }
     }
@@ -746,17 +749,21 @@ mod tests {
         let second_service = service.clone();
         let second_scope = scope.clone();
         let second_ctx = ctx.clone();
+        let second_waiting = Arc::new(Notify::new());
+        let second_waiting_task = second_waiting.clone();
         let second = tokio::spawn(async move {
-            second_service
-                .refresh(second_scope, second_ctx, RefreshReason::Manual)
-                .await
+            let refresh = second_service.refresh(second_scope, second_ctx, RefreshReason::Manual);
+            tokio::pin!(refresh);
+            std::future::poll_fn(|context| {
+                let result = refresh.as_mut().poll(context);
+                if result.is_pending() {
+                    second_waiting_task.notify_one();
+                }
+                result
+            })
+            .await
         });
-        for _ in 0..20 {
-            if service.status(&scope).await.in_flight {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        second_waiting.notified().await;
         thread
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

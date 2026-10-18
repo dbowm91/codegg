@@ -3702,6 +3702,17 @@ mod tests {
         ]
     }
 
+    /// Prompt fixture for bounded-input tests. It consumes arbitrary bytes
+    /// without echoing them, so filling the admitted-input queue cannot
+    /// alter the screen or terminate the line-oriented prompt process.
+    fn prompt_shell_discarding_input() -> Vec<String> {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf 'CLEAR-PROMPT> '; stty raw -echo; exec cat >/dev/null".to_string(),
+        ]
+    }
+
     /// A newly created terminal must reach its own prompt with no keystroke.
     ///
     /// This is the "new" half of the reported defect and it is C003's armed
@@ -3867,7 +3878,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_refused_clear_reports_itself_and_leaves_the_screen_intact() {
         let dir = tempfile::tempdir().expect("workspace");
-        let mut app = pull_test_app(dir.path(), prompt_shell()).await;
+        let mut app = pull_test_app(dir.path(), prompt_shell_discarding_input()).await;
         drain_tui_commands(&mut app).await;
         let handle = app
             .dialog_state

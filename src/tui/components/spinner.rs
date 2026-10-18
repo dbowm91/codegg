@@ -74,7 +74,7 @@ pub const CURSOR_BLINK_PHASE: Duration = Duration::from_millis(500);
 /// a blinking anchor turns "which line am I about to delete" into a guess.
 pub fn cursor_blink_visible(elapsed: Duration) -> bool {
     // `CURSOR_BLINK_PHASE` is a non-zero const, so this cannot divide by zero.
-    (elapsed.as_millis() / CURSOR_BLINK_PHASE.as_millis()) % 2 == 0
+    (elapsed.as_millis() / CURSOR_BLINK_PHASE.as_millis()).is_multiple_of(2)
 }
 
 /// The process-wide monotonic instant the caret's phase is measured from.

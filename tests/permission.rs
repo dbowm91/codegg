@@ -28,7 +28,9 @@ fn test_default_ruleset_read_only_allowed() {
     let ruleset = default_ruleset();
     assert!(matches!(ruleset.default, PermissionLevel::Ask));
 
-    // Mutating tools default to Ask.
+    // Direct file edits use the resolved workspace path authority instead of
+    // an unconditional Ask rule. The ruleset fallback still asks when no
+    // workspace authority is available.
     let ask_tools: Vec<_> = ruleset
         .tool_rules
         .iter()
@@ -36,7 +38,7 @@ fn test_default_ruleset_read_only_allowed() {
         .map(|r| r.tool.as_str())
         .collect();
 
-    assert!(ask_tools.contains(&"edit"));
+    assert!(!ask_tools.contains(&"edit"));
 
     // Bash is NOT in the default ruleset anymore — it's handled by the
     // destructive-pattern short-circuit in `check_with_args()`.
@@ -57,10 +59,11 @@ fn test_default_ruleset_read_only_allowed() {
 }
 
 #[test]
-fn test_default_ruleset_destructive_tools_ask() {
+fn test_default_ruleset_keeps_explicit_asks_for_delegation() {
     let ruleset = default_ruleset();
 
-    // Mutating tools are listed as Ask in the default ruleset.
+    // Delegation and image generation remain explicit decisions; direct
+    // workspace file mutation is resolved by path authority.
     let ask_tools: Vec<_> = ruleset
         .tool_rules
         .iter()
@@ -68,7 +71,9 @@ fn test_default_ruleset_destructive_tools_ask() {
         .map(|r| r.tool.as_str())
         .collect();
 
-    assert!(ask_tools.contains(&"edit"));
+    assert!(ask_tools.contains(&"task"));
+    assert!(ask_tools.contains(&"image"));
+    assert!(!ask_tools.contains(&"edit"));
     // Note: bash is no longer in default_ruleset (handled by destructive check)
     // Note: todowrite is no longer in default_ruleset (short-circuited to Allow)
 }

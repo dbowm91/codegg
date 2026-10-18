@@ -9,12 +9,22 @@ fn make_tool() -> codegg::tool::lsp::LspTool {
     codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
         codegg::lsp::config::LspConfig::Disabled(true),
     ))
+    .with_allowed_root(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .expect("canonical test workspace root"),
+    )
 }
 
 fn make_live_tool() -> codegg::tool::lsp::LspTool {
     codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
         codegg::lsp::config::LspConfig::default(),
     ))
+    .with_allowed_root(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .expect("canonical test workspace root"),
+    )
 }
 
 fn make_tool_with_root(root: &std::path::Path) -> codegg::tool::lsp::LspTool {

@@ -131,6 +131,9 @@ fn make_bash_tool(store: Arc<MemRunStore>) -> BashTool {
     std::env::remove_var("CODEGG_ROUTING_DISABLE");
     BashTool::new()
         .with_run_store(store)
+        .with_workspace_root(
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("canonical test workspace"),
+        )
         .with_command_intent_config(active_config())
 }
 
@@ -963,7 +966,11 @@ async fn row_7_raw_shell_with_git_leading_command() {
 
     // Execute via BashTool without active routing (raw shell path).
     let store = Arc::new(MemRunStore::new());
-    let mut tool = BashTool::new().with_run_store(store.clone());
+    let mut tool = BashTool::new()
+        .with_run_store(store.clone())
+        .with_workspace_root(
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("canonical test workspace"),
+        );
     // Use observe config so git pipes stay as raw shell.
     use codegg::config::schema::CommandIntentMode;
     tool = tool.with_command_intent_config(codegg::config::schema::CommandIntentConfig {

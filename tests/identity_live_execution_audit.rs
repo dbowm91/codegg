@@ -455,7 +455,10 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
     );
 
     // 2. Model/tool path through ToolBroker (bash echo).
-    let tool_registry = ToolRegistry::with_defaults();
+    let tool_registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        workspace_root: Some(tmp_ws.path().to_path_buf()),
+        ..Default::default()
+    });
     let broker = ToolBroker::new(&tool_registry);
     let broker_ctx = BrokerInvocationContext {
         caller: ToolCaller::Agent,
@@ -894,7 +897,12 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
     assert!(!blob.contains("127.0.0.1"), "URL leaked: {blob}");
 
     // Secret-looking command text: digest only, never the secret.
-    let tool_registry = ToolRegistry::with_defaults();
+    let tool_registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        workspace_root: Some(
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("canonical test workspace"),
+        ),
+        ..Default::default()
+    });
     let broker = ToolBroker::new(&tool_registry);
     let secret = "ghp_m004secretvalue123456";
     let broker_ctx = BrokerInvocationContext {

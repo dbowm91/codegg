@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use codegg::session::schema::migrate;
 use codegg::workspace::{
-    ExecutionContext, InMemoryWorkspaceStore, PathPolicyError, WorkspaceRegistry,
+    ExecutionContext, InMemoryWorkspaceStore, PathPolicyError, WorkspaceError, WorkspaceRegistry,
 };
 
 async fn in_memory_pool() -> sqlx::SqlitePool {
@@ -59,14 +59,14 @@ async fn two_workspaces_register_and_resolve_independently() {
     assert_eq!(rec_a.canonical_root, dir_a.path().canonicalize().unwrap());
     assert_eq!(rec_b.canonical_root, dir_b.path().canonicalize().unwrap());
 
-    // Verify the registry deduplicates aliases.
+    // Workspace roots must be concrete directories. Reject symlink aliases
+    // instead of admitting a second identity spelling for the same tree.
     let alias = dir_a.path().join("alias");
     std::os::unix::fs::symlink(dir_a.path(), &alias).unwrap();
-    let alias_rec = registry.get_or_register(&alias).await.unwrap();
-    assert_eq!(
-        rec_a.id, alias_rec.id,
-        "symlink alias deduplicates to same workspace"
-    );
+    assert!(matches!(
+        registry.get_or_register(&alias).await,
+        Err(WorkspaceError::InvalidRootPath(_))
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

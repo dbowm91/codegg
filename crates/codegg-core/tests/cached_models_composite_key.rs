@@ -104,6 +104,27 @@ async fn upgrading_from_the_single_key_shape_preserves_rows_and_lifts_the_constr
         .execute(&pool)
         .await
         .expect("seed version 69");
+    // Version 69 databases already have the usage table from v15. This test
+    // builds a narrow historical fixture, so include that unchanged table
+    // shape before exercising the later cached-model upgrade.
+    sqlx::query(
+        r#"
+        CREATE TABLE usage (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL,
+            timestamp INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy usage table");
     sqlx::query(
         r#"
         CREATE TABLE cached_models (

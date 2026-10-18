@@ -1142,7 +1142,7 @@ fn contract_snapshot_admits_programmatic_only_and_hash_covers_policy() {
 #[test]
 fn adapters_are_hidden_and_ordinary_definitions_unchanged() {
     use codegg::tool::disclosure;
-    let registry = ToolRegistry::with_defaults();
+    let (_workspace, registry) = workspace_registry();
     assert!(registry.contains("git_read"));
     assert!(registry.contains("lsp_read"));
 
@@ -1180,7 +1180,7 @@ fn adapters_are_hidden_and_ordinary_definitions_unchanged() {
 #[test]
 fn adapters_are_undiscoverable_via_tool_search() {
     use std::sync::Arc;
-    let registry = ToolRegistry::with_defaults();
+    let (_workspace, registry) = workspace_registry();
     // Hidden tools never surface, even without an allow-list.
     for name in ["git_read", "lsp_read"] {
         let search =

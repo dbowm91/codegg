@@ -40,9 +40,14 @@ fn setup_dir() -> TempDir {
     dir
 }
 
+fn bash_tool_in(dir: &TempDir) -> BashTool {
+    BashTool::new().with_workspace_root(dir.path().to_path_buf())
+}
+
 #[tokio::test]
 async fn test_bash_tool_simple_command() {
-    let tool = BashTool::new();
+    let dir = setup_dir();
+    let tool = bash_tool_in(&dir);
     let input = serde_json::json!({
         "command": "echo hello"
     });
@@ -73,7 +78,8 @@ async fn test_terminal_tool_simple_command() {
 
 #[tokio::test]
 async fn test_bash_tool_command_with_stderr() {
-    let tool = BashTool::new();
+    let dir = setup_dir();
+    let tool = bash_tool_in(&dir);
     let input = serde_json::json!({
         "command": "ls /nonexistent 2>&1"
     });
@@ -83,7 +89,8 @@ async fn test_bash_tool_command_with_stderr() {
 
 #[tokio::test]
 async fn test_bash_tool_command_failure() {
-    let tool = BashTool::new();
+    let dir = setup_dir();
+    let tool = bash_tool_in(&dir);
     let input = serde_json::json!({
         "command": "false"
     });
@@ -174,7 +181,9 @@ async fn test_bash_tool_configured_blocked_commands_deny_without_dispatch() {
     assert!(!marker.exists());
     let command = format!("printf blocked-sentinel > '{}'", marker.display());
 
-    let tool = BashTool::new().with_blocked_commands(vec!["printf"]);
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_blocked_commands(vec!["printf"]);
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -203,6 +212,7 @@ async fn test_bash_tool_configured_deny_survives_permissive_allowlist() {
     let command = format!("printf blocked-sentinel > '{}'", marker.display());
 
     let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
         .with_blocked_commands(vec!["printf"])
         .with_allowlist(vec!["printf", "echo"]);
     let result = tool
@@ -227,7 +237,7 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     let dir = tempfile::tempdir().expect("benign positive marker root");
     let marker = dir.path().join("benign-positive-marker.txt");
     let command = format!("printf ok-sentinel > '{}'", marker.display());
-    let tool = BashTool::new();
+    let tool = BashTool::new().with_workspace_root(dir.path().to_path_buf());
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -245,7 +255,9 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     let dir = tempfile::tempdir().expect("benign allowlist marker root");
     let marker = dir.path().join("benign-allowlist-marker.txt");
     let command = format!("printf ok-sentinel > '{}'", marker.display());
-    let tool = BashTool::new().with_allowlist(vec!["echo"]);
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_allowlist(vec!["echo"]);
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -418,7 +430,9 @@ async fn test_bash_escalation_signals_do_not_block_the_tool() {
     // tool. The tool now admits them and defers to the permission layer, so
     // assert the *policy disposition* — not a permission rejection — rather
     // than the command's own exit status.
-    let tool = BashTool::new();
+    let tool = BashTool::new().with_workspace_root(
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("canonical test workspace"),
+    );
     for cmd in [
         "echo $(whoami)",
         "eval echo hello",
@@ -482,10 +496,14 @@ async fn test_bash_tool_deny_all() {
 
 #[tokio::test]
 async fn test_bash_tool_allowed_paths() {
-    let tool = BashTool::new().with_allowed_paths(vec!["/tmp".to_string()]);
+    let dir = setup_dir();
+    let root = dir.path().to_string_lossy().into_owned();
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_allowed_paths(vec![root.clone()]);
     let input = serde_json::json!({
         "command": "echo hello",
-        "workdir": "/tmp"
+        "workdir": root
     });
     let result = tool.execute(input).await;
     assert!(result.is_ok(), "command in allowed path should succeed");
@@ -493,7 +511,11 @@ async fn test_bash_tool_allowed_paths() {
 
 #[tokio::test]
 async fn test_bash_tool_allowed_paths_violation() {
-    let tool = BashTool::new().with_allowed_paths(vec!["/tmp".to_string()]);
+    let dir = setup_dir();
+    let root = dir.path().to_string_lossy().into_owned();
+    let tool = BashTool::new()
+        .with_workspace_root(dir.path().to_path_buf())
+        .with_allowed_paths(vec![root]);
     let input = serde_json::json!({
         "command": "echo hello",
         "workdir": "/home"
@@ -505,7 +527,10 @@ async fn test_bash_tool_allowed_paths_violation() {
 
 #[tokio::test]
 async fn test_bash_tool_allowed_paths_missing() {
-    let tool = BashTool::new().with_allowed_paths(vec!["/tmp".to_string()]);
+    let dir = setup_dir();
+    let root = dir.path().to_string_lossy().into_owned();
+    // `allowed_paths` is not a substitute for the session workspace root.
+    let tool = BashTool::new().with_allowed_paths(vec![root]);
     let input = serde_json::json!({ "command": "echo hello" });
     let result = tool.execute(input).await;
     assert!(result.is_err());
@@ -513,7 +538,8 @@ async fn test_bash_tool_allowed_paths_missing() {
 
 #[tokio::test]
 async fn test_bash_tool_custom_timeout() {
-    let tool = BashTool::new().with_timeout(Duration::from_secs(1));
+    let dir = setup_dir();
+    let tool = bash_tool_in(&dir).with_timeout(Duration::from_secs(1));
     let input = serde_json::json!({
         "command": "echo quick",
         "timeout": 1
@@ -524,7 +550,8 @@ async fn test_bash_tool_custom_timeout() {
 
 #[tokio::test]
 async fn test_bash_tool_input_timeout_overrides_tool_default() {
-    let tool = BashTool::new().with_timeout(Duration::from_secs(5));
+    let dir = setup_dir();
+    let tool = bash_tool_in(&dir).with_timeout(Duration::from_secs(5));
     let result = tool
         .execute(serde_json::json!({
             "command": "sleep 2",
