@@ -1503,9 +1503,11 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         (intent_dev, intent_ino),
         "recovery target gitdir identity changed"
     );
+    let expected_recovery_index =
+        std::fs::read(&recovery_expected_index).expect("read expected recovery index");
     assert_eq!(
         std::fs::read(source_gitdir.join("index")).expect("revalidate expected source index"),
-        std::fs::read(&recovery_expected_index).expect("read expected recovery index"),
+        expected_recovery_index,
         "recovery must reject an externally changed source index"
     );
 
@@ -1564,6 +1566,47 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         lock_bytes, recovered_index,
         "recovery lock does not match the broker-authored index"
     );
+
+    // Model a non-Git writer replacing index after the publisher died but
+    // before recovery publishes. Recovery must preserve that winner and leave
+    // its staged lock untouched instead of replaying a stale transaction.
+    let competing_index_path = recovery_dir.join("competing-index");
+    std::fs::write(&competing_index_path, &concurrently_updated_index)
+        .expect("write out-of-band competing index generation");
+    std::fs::File::open(&competing_index_path)
+        .and_then(|file| file.sync_all())
+        .expect("sync competing index generation");
+    std::fs::rename(&competing_index_path, source_gitdir.join("index"))
+        .expect("atomically install out-of-band competing index generation");
+    let competing_source_index =
+        std::fs::read(source_gitdir.join("index")).expect("read competing source index");
+    assert_eq!(competing_source_index, concurrently_updated_index);
+    assert_ne!(
+        competing_source_index, expected_recovery_index,
+        "recovery must observe the external index generation change"
+    );
+    assert_eq!(
+        std::fs::read(&source_index_lock).expect("read staged lock after conflict"),
+        recovered_index,
+        "a recovery conflict must not alter the broker-authored lock"
+    );
+
+    // Restore the disposable fixture's admitted generation so the succeeding
+    // branch can prove the exact prepared output is publishable.
+    let restore_index_path = recovery_dir.join("restore-index");
+    std::fs::write(&restore_index_path, &expected_recovery_index)
+        .expect("write expected index generation for recovery branch");
+    std::fs::File::open(&restore_index_path)
+        .and_then(|file| file.sync_all())
+        .expect("sync expected index generation");
+    std::fs::rename(&restore_index_path, source_gitdir.join("index"))
+        .expect("restore expected source index generation");
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("recheck restored source index"),
+        expected_recovery_index,
+        "successful recovery requires the original expected index generation"
+    );
+
     std::fs::rename(&source_index_lock, source_gitdir.join("index"))
         .expect("recover atomic publication of validated staged index");
     std::fs::File::open(&source_gitdir)
