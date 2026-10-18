@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -1261,6 +1261,45 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         "source ODB import returned a different object identity"
     );
 
+    // Persist a minimal operation-owned recovery intent before touching the
+    // source index. This remains a test-only broker model: it exercises the
+    // restart ordering and identity checks without granting the child access
+    // to source metadata.
+    let recovery_dir = operation_scratch.path().join("index-promotion-recovery");
+    std::fs::create_dir(&recovery_dir).expect("create operation recovery directory");
+    let source_gitdir_before_recovery =
+        std::fs::metadata(&source_gitdir).expect("capture recovery gitdir identity");
+    let expected_gitdir_identity = (
+        source_gitdir_before_recovery.dev(),
+        source_gitdir_before_recovery.ino(),
+    );
+    let recovery_expected_index = recovery_dir.join("expected-index");
+    let recovery_publish_index = recovery_dir.join("publish-index");
+    std::fs::write(&recovery_expected_index, &original_index)
+        .expect("persist expected source index generation");
+    std::fs::write(&recovery_publish_index, &private_index)
+        .expect("persist validated private index output");
+    for recovery_file in [&recovery_expected_index, &recovery_publish_index] {
+        std::fs::File::open(recovery_file)
+            .and_then(|file| file.sync_all())
+            .expect("sync operation recovery input");
+    }
+    let recovery_intent = recovery_dir.join("intent");
+    std::fs::write(
+        &recovery_intent,
+        format!(
+            "index-v1\n{}\n{}\n",
+            expected_gitdir_identity.0, expected_gitdir_identity.1
+        ),
+    )
+    .expect("persist index promotion intent");
+    std::fs::File::open(&recovery_intent)
+        .and_then(|file| file.sync_all())
+        .expect("sync index promotion intent");
+    std::fs::File::open(&recovery_dir)
+        .and_then(|directory| directory.sync_all())
+        .expect("sync operation recovery directory");
+
     let mut publish_lock = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1276,16 +1315,83 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         .expect("write verified staged index to lock file");
     publish_lock.sync_all().expect("sync verified staged index");
     drop(publish_lock);
+
+    // Model daemon termination after the lock file is durable but before its
+    // atomic rename. Recovery must reacquire all authority from the durable
+    // intent, validate the selected gitdir identity and expected index, then
+    // finish only the exact broker-authored replacement.
+    drop(private_index);
+    let intent = std::fs::read_to_string(&recovery_intent).expect("read recovery intent");
+    let mut intent_lines = intent.lines();
+    assert_eq!(intent_lines.next(), Some("index-v1"));
+    let intent_dev = intent_lines
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("parse recovery gitdir device identity");
+    let intent_ino = intent_lines
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("parse recovery gitdir inode identity");
+    assert!(
+        intent_lines.next().is_none(),
+        "unexpected recovery intent data"
+    );
+    let recovery_gitdir =
+        std::fs::metadata(&source_gitdir).expect("revalidate recovery gitdir identity");
+    assert_eq!(
+        (recovery_gitdir.dev(), recovery_gitdir.ino()),
+        (intent_dev, intent_ino),
+        "recovery target gitdir identity changed"
+    );
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("revalidate expected source index"),
+        std::fs::read(&recovery_expected_index).expect("read expected recovery index"),
+        "recovery must reject an externally changed source index"
+    );
+    let recovered_index =
+        std::fs::read(&recovery_publish_index).expect("read validated recovery index");
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&source_index_lock)
+        .expect("open interrupted Git index lock without following links");
+    let lock_metadata = lock_file
+        .metadata()
+        .expect("inspect interrupted Git index lock");
+    assert!(
+        lock_metadata.is_file(),
+        "recovery lock is not a regular file"
+    );
+    let lock_path_metadata = std::fs::symlink_metadata(&source_index_lock)
+        .expect("inspect interrupted Git index lock path");
+    assert!(
+        lock_path_metadata.file_type().is_file(),
+        "recovery lock path was replaced by a symlink or special file"
+    );
+    assert_eq!(
+        (lock_metadata.dev(), lock_metadata.ino()),
+        (lock_path_metadata.dev(), lock_path_metadata.ino()),
+        "recovery lock changed while it was being validated"
+    );
+    let mut lock_bytes = Vec::new();
+    let mut lock_file = lock_file;
+    lock_file
+        .read_to_end(&mut lock_bytes)
+        .expect("read interrupted Git index lock");
+    assert_eq!(
+        lock_bytes, recovered_index,
+        "recovery lock does not match the broker-authored index"
+    );
     std::fs::rename(&source_index_lock, source_gitdir.join("index"))
-        .expect("atomically publish validated staged index");
+        .expect("recover atomic publication of validated staged index");
     std::fs::File::open(&source_gitdir)
         .and_then(|directory| directory.sync_all())
-        .expect("sync source gitdir after index publication");
+        .expect("sync source gitdir after index recovery");
 
     assert_eq!(
         std::fs::read(source_gitdir.join("index")).expect("read published source index"),
-        private_index,
-        "broker did not publish the exact validated private index"
+        recovered_index,
+        "recovery did not publish the exact validated private index"
     );
     let source_has_blob = Command::new(&git)
         .args([
