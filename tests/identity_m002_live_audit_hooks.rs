@@ -297,10 +297,12 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
             command_preflight: None,
             scratch_scope: None,
         });
-    let tool = codegg::tool::bash::BashTool::new().with_sandbox_profile(
-        codegg_core::approval::SandboxProfile::WorkspaceWrite,
-        root.path(),
-    );
+    let tool = codegg::tool::bash::BashTool::new()
+        .with_sandbox_profile(
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            root.path(),
+        )
+        .with_workspace_root(root.path().to_path_buf());
     let out = tool
         .execute_structured(
             serde_json::json!({
