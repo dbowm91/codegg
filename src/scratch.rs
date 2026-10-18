@@ -5,10 +5,10 @@
 //! searches existing directories to infer ownership.
 
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::{Mutex, OnceLock};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static SHARED_RECLAIM_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +173,7 @@ pub fn shared_scratch_dir(
 /// Remove a shared cache directory after the durable store proves it has been
 /// revoked and has no admitted attempt leases. Unknown paths are never read
 /// from model input; the leaf is reconstructed from the typed resource ID.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn reclaim_shared_scratch_dir(
     session_id: &str,
     scratch_id: &codegg_core::identity::ScratchId,
@@ -204,9 +204,9 @@ pub(crate) fn reclaim_shared_scratch_dir(
     Ok(true)
 }
 
-/// Windows cleanup stays disabled until stable hardlink and reparse-point
-/// inspection is available at the repository's minimum Rust version.
-#[cfg(not(unix))]
+/// Other platforms stay fail-closed until their filesystem metadata and
+/// recursive removal semantics are qualified.
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn reclaim_shared_scratch_dir(
     _session_id: &str,
     _scratch_id: &codegg_core::identity::ScratchId,
@@ -214,7 +214,7 @@ pub(crate) fn reclaim_shared_scratch_dir(
     Err(ScratchError::CleanupUnavailable)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn recover_reclaim_tombstones(
     shared_root: &Path,
     digest: &[u8],
@@ -249,7 +249,7 @@ fn recover_reclaim_tombstones(
     Ok(recovered)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn validate_and_remove_tombstone(
     tombstone: &Path,
     canonical_shared_root: &Path,
@@ -292,7 +292,7 @@ fn validate_and_remove_tombstone(
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn validate_reclaim_tree(path: &Path) -> Result<(), ScratchError> {
     let metadata = std::fs::symlink_metadata(path)?;
     if is_symlink_or_reparse_point(&metadata) {
@@ -307,16 +307,32 @@ fn validate_reclaim_tree(path: &Path) -> Result<(), ScratchError> {
     if !metadata.is_file() {
         return Err(ScratchError::InvalidPath(path.to_path_buf()));
     }
-    use std::os::unix::fs::MetadataExt;
-    if metadata.nlink() != 1 {
-        return Err(ScratchError::InvalidPath(path.to_path_buf()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(ScratchError::InvalidPath(path.to_path_buf()));
+        }
     }
+    // A hard link is a file name, not a recursive edge. Removing the name
+    // under the claimed scratch tombstone only decrements its link count; it
+    // does not modify or remove the outside file. Windows does not expose a
+    // stable link-count accessor at this crate's MSRV, so quarantine reparse
+    // points and let the platform's handle-based remove_dir_all unlink names.
     Ok(())
 }
 
 #[cfg(unix)]
 fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 fn resource_digest(scope: &str, id: &str) -> Vec<u8> {
@@ -589,13 +605,13 @@ mod tests {
         assert_ne!(first, second);
         assert_ne!(first, shared_root);
         assert_ne!(second, shared_root);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             assert!(reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
             assert!(!shared_root.exists());
             assert!(!reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             assert!(matches!(
                 reclaim_shared_scratch_dir(&session_id, &shared),
@@ -608,7 +624,7 @@ mod tests {
         std::fs::remove_dir_all(second).unwrap();
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn revoked_cleanup_recovers_an_orphaned_tombstone_after_restart() {
         let session_id = format!("scratch-orphaned-reclaim-{}", uuid::Uuid::new_v4());
@@ -627,7 +643,7 @@ mod tests {
         assert!(!root.exists());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn concurrent_revocation_cleanup_reclaims_one_resource_once() {
         let session_id = format!("scratch-concurrent-reclaim-{}", uuid::Uuid::new_v4());
@@ -705,6 +721,60 @@ mod tests {
             })
             .expect("hardlinked resource is quarantined");
         std::fs::remove_dir_all(hardlink_tombstone).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn revoked_shared_cleanup_quarantines_reparse_points_and_unlinks_hardlinks_safely() {
+        let session_id = format!("scratch-windows-cleanup-session-{}", uuid::Uuid::new_v4());
+        let external = tempfile::tempdir().unwrap();
+        let external_file = external.path().join("external.txt");
+        let external_dir = external.path().join("external-dir");
+        std::fs::create_dir(&external_dir).unwrap();
+        let external_nested = external_dir.join("untouched.txt");
+        std::fs::write(&external_file, "outside file content").unwrap();
+        std::fs::write(&external_nested, "outside directory content").unwrap();
+
+        let junction_id = codegg_core::identity::ScratchId::new();
+        let junction_root = shared_scratch_dir(&session_id, &junction_id).unwrap();
+        let junction = junction_root.join("external-junction");
+        let mklink = format!(
+            "mklink /J \"{}\" \"{}\"",
+            junction.display(),
+            external_dir.display()
+        );
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", &mklink])
+            .status()
+            .expect("create native directory junction");
+        assert!(status.success(), "mklink /J failed with {status}");
+        assert!(reclaim_shared_scratch_dir(&session_id, &junction_id).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&external_nested).unwrap(),
+            "outside directory content"
+        );
+        let shared_parent = junction_root.parent().unwrap();
+        let tombstone = std::fs::read_dir(shared_parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".reclaim-") && path.exists())
+            })
+            .expect("unsafe reparse-point tree remains quarantined");
+        std::fs::remove_dir_all(tombstone).unwrap();
+
+        let hardlink_id = codegg_core::identity::ScratchId::new();
+        let hardlink_root = shared_scratch_dir(&session_id, &hardlink_id).unwrap();
+        std::fs::hard_link(&external_file, hardlink_root.join("external-link")).unwrap();
+        assert!(reclaim_shared_scratch_dir(&session_id, &hardlink_id).unwrap());
+        assert!(!hardlink_root.exists());
+        assert_eq!(
+            std::fs::read_to_string(&external_file).unwrap(),
+            "outside file content"
+        );
     }
 
     #[test]

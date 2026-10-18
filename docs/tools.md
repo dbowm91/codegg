@@ -267,8 +267,11 @@ explicit permission Deny remains final. Structured reads and shell commands
 are not redirected. FullHost shell processes retain access to the real host
 temp directory unless their selected native sandbox constrains it. Revoking a
 shared resource stops new child admission; active attempt leases keep it alive.
-Unix cleanup runs after the final lease releases. Windows shared scratch is
-retained because safe reclamation is disabled pending native qualification.
+Unix and Windows cleanup run after the final lease releases. Both reclaim only
+the revoked shared resource beneath an opaque tombstone. Reparse points are
+quarantined on Windows; deleting a hardlink inside the tombstone only removes
+that name and leaves its outside target intact. Other unsupported platforms
+retain revoked shared scratch rather than guessing at safe recursive removal.
 Session and run-private scratch remains disposable cache data and is not
 recursively collected by CodeGG.
 

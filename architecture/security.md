@@ -307,14 +307,16 @@ its own private run directory. Shared `/tmp` and global HOME caches are not
 writable grants. Revoked shared directories are removed after the last
 attempt lease releases. Run-private scratch is retained as disposable cache
 data and may be removed by host cache maintenance.
-On Unix, shared-resource reclamation first atomically renames the managed
-directory to an opaque tombstone, validates its owner marker and walks entries
-without following symlinks. Symlinks, non-regular entries, and
-multiply-linked regular files quarantine the tombstone and stop deletion. A
-later retry recovers an orphaned tombstone after daemon interruption, and
-concurrent reclamation is serialized. Windows cleanup is disabled until stable
-hardlink and reparse-point inspection is available at the repository's minimum
-Rust version; revoked data is retained there. Cleanup applies to explicitly
+On Unix and Windows, shared-resource reclamation first atomically renames the
+managed directory to an opaque tombstone, validates its owner marker, and walks
+entries without following links. Unix quarantines symlinks, non-regular
+entries, and multiply-linked regular files. Windows checks the stable reparse
+attribute and quarantines reparse points; hardlinks are file names rather than
+recursive edges, so deleting a link under the tombstone only removes that link
+and leaves the outside file intact. Windows recursive removal uses the Rust
+standard library's handle-based implementation. A later retry recovers an
+orphaned tombstone after daemon interruption, and concurrent reclamation is
+serialized. Other platforms remain fail-closed. Cleanup applies to explicitly
 revoked shared resources only; CodeGG does not recursively collect session or
 run-private cache roots.
 Existing denied regular files with hardlink aliases cause the required launch
