@@ -411,3 +411,70 @@ This qualifies the integrated implementation source for hosted CI and Windows
 platform suites. It does not change the S2/S3 outcomes or satisfy M008's
 Git-verified comparative acceptance gate. The workstream remains active, M005
 remains separately gated, and no downstream plan is unblocked.
+
+## 13. Matched frozen-interface S0–S3 and follow-up strata (2026-10-18)
+
+After the child-start readiness and Git-result publication fixes at source
+commits `9e109e7b` and `475ce4a5`, a complete S2/S3 pair was qualified against
+fixture v1. The successful comparison round used the unchanged fixture digest
+`b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1`, the same
+`opencode_go/gpt-6-luna` model, and a persisted 128 tool-call cap on every
+child. The complete per-run data is in the adjacent JSON entry
+`matched_s0_s3_2026_10_18`.
+
+| Arm / child | Group or run | Result commit | Child tests | Input / output tokens | Usage rows | Child wall |
+|---|---|---|---|---:|---:|---:|
+| S0, one agent | group `6718bf56-19b3-49b0-8d59-47b64a5d02c6`; run `c52835b8-1923-4c5c-8882-31dc1ba30ded` | `dfb581be7b6328fe66848f9b3a0bc3891fa3ef19` | Rust 7/7; Python exact committed worktree 7/7; frozen evaluator passed | 689,591 / 11,561 | 27 | 145.330 s |
+| S1 Rust | run `b8998f8b-3225-4bd3-9d4a-a665ac1f0e33` | `b87396ba5c757bd884ddfa5aed3e9c76f594bb47` | Rust 7/7; integration evaluator passed | 297,808 / 5,551 | 16 | 80.804 s |
+| S1 Python | run `4b0e9390-c89b-4904-9e36-8969d07da88f` | `651152a8e4ec8287fe286611bc89f85bf8dbb031` | Child pytest 7/7; exact committed worktree unittest 7/7; integration evaluator passed | 631,134 / 9,320 | 31 | 134.679 s |
+| S2 Rust | group `19b5f3b6-cef9-4f90-9311-fec33dc89ef0`; run `560f9404-a25d-4523-86bf-e1308c6454ed` | `f414263b461b4aa188c32887fa3684ef3b1ff381` | Rust workspace 7/7; integration evaluator passed | 332,196 / 6,232 | 17 | 84.253 s |
+| S2 Python | run `b64c5e21-a945-4dd3-beab-516fc0b65c8e` | `e01bbb09f2d918a3710fbe77f9db31d522077437` | Child pytest passed; exact committed worktree unittest 7/7; integration evaluator passed | 688,779 / 5,898 | 32 | 114.563 s |
+| S3 Rust | group `518b479c-e72d-48f4-8379-a4fdac422f5d`; run `bfb7d0f2-83b6-4c01-a847-f8aaa0dc0b12` | `9df3625dc5384d7287d056e4cfabe92df3d3aad2` | Rust workspace 7/7; integration evaluator passed | 365,322 / 6,488 | 16 | 263.301 s |
+| S3 Python | run `8eb27adf-74e0-40d2-9cca-1ae2717480ed` | `4d607168bc4e7de048a613b5129bbfec599ea687` | Exact committed worktree unittest 7/7; integration evaluator passed | 594,338 / 5,154 | 29 | 89.791 s |
+
+Integrated S1, S2, and S3 each passed Rust 7/7, Python 7/7, and
+`scripts/check_cross_language_golden.py`. S0's single result passed the same
+frozen evaluator. Group wall times were S0 146.857 s, S1 135.197 s, S2
+115.345 s, and S3 264.903 s. The 128 cap is per child; multi-agent arms could
+therefore spend up to twice S0's calls. Two attempted 64-call sensitivity
+rounds did not produce complete accepted pairs and are excluded from success
+comparisons. The provider has no supported matching price, so stored 0.0 USD
+is unavailable pricing, not zero cost. One sample per arm, unequal aggregate
+caps, and unavailable USD prohibit a performance or cost-effectiveness claim.
+
+The intentionally overlapping Rust API S1 stratum used group
+`82828a6c-a0cf-4240-a7c9-9f41ab0e4e71`. Children `1572e914-21e7-422e-89b3-84d8fab1e4cb`
+and `52427b11-8335-4144-b822-0d38c5b1ffef` published commits
+`154b178d9042ba5aba8775e565cb59c502773063` and
+`88dae394f360a7b63d029307f0eba6cca61a74d5`. Each added two tests and passed
+those new tests, but the seven existing producer tests still failed on the
+frozen starter TODO. Because both children edited `rust/src/lib.rs`, the
+second cherry-pick conflicted. Manual integration preserved both APIs at
+`7033e5b74bcbf6cb603d67e32fe83aad1b79acf3`; the capable S0 implementation plus
+both additions passed 11/11 Rust tests and the frozen cross-language
+evaluator. This is an integration recovery result, not independent child
+full-suite success.
+
+For a sequential dependency, the two API prerequisite commits were first
+integrated at `bda9d756824f09feed581d2c0c022200839a8d0a`; dependent child run
+`67c36c67-8bc5-4ea7-8db1-4a7bf581cab4` then published
+`e79976ac31ff34115d5a31fc0be8c889866e780a`. The child and parent rerun both
+passed the full 13-test Rust workspace suite, and the frozen evaluator passed.
+The child reported 258,929 input and 2,529 output tokens across 16 usage rows.
+
+The full-workspace Rust compilation stratum completed from two clean worktrees
+on source `803b5865`, using `cargo check --locked --offline --workspace`,
+`CARGO_BUILD_JOBS=1`, and one shared target directory. Both checks passed. The
+cold build took 691.64 s wall, 530.50 s user CPU, 68.70 s system CPU and
+reported 2,684,329,984 B maximum RSS; the target occupied about 2.1 GiB after
+it. The second request spent most of its 807.00 s wall time waiting on Cargo
+cache/build locks, then reused dependencies and rebuilt workspace-path-specific
+crates; it used 105.66 s user CPU, 8.06 s system CPU, and reported
+2,409,062,400 B maximum RSS. Final target size was 2,943,560 KiB. The host
+reported Darwin 25.6.0, `uname -m=x86_64`, and Rust 1.89.0 host triple
+`aarch64-apple-darwin`. This measures cold workspace compilation and serialized
+shared-target reuse, not a parallel build speedup or provider-backed code-change
+trajectory. The machine-readable record contains log paths and the full run
+metadata. M005 remains active independently; S4 remains unavailable because
+writer quiescence is not qualified. No downstream plan is unblocked by these
+results.

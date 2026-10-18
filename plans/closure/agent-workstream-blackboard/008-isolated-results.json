@@ -1204,5 +1204,219 @@
       "Costs unavailable.",
       "The fourth run was terminated before useful work; do not count its terminal state as a successful comparison."
     ]
+  },
+  "matched_s0_s3_2026_10_18": {
+    "evidence_kind": "one completed provider-backed S0-S3 frozen-interface comparison round; descriptive, no effectiveness claim",
+    "source_head": "803b586531ac9cd09cf268bed05c818e3cafc8a6",
+    "startup_and_result_publication_fixes": [
+      "9e109e7b",
+      "475ce4a5"
+    ],
+    "fixture_baseline_commit": "382c2978b21fb2ae27dad5094aea8285c89bb13c",
+    "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+    "provider_model": "opencode_go/gpt-6-luna",
+    "per_child_tool_call_cap": 128,
+    "aggregate_budget_note": "equal per-child cap; S0 has one child and S1-S3 have two, so aggregate maximum calls are not equal",
+    "provider_cost": "unavailable; provider reported 0.0 and local catalog has no matching price; zero is not interpreted as free",
+    "trials": [
+      {
+        "arm": "S0",
+        "group_id": "6718bf56-19b3-49b0-8d59-47b64a5d02c6",
+        "children": [
+          {
+            "role": "single-agent Rust+Python",
+            "run_id": "c52835b8-1923-4c5c-8882-31dc1ba30ded",
+            "input_tokens": 689591,
+            "output_tokens": 11561,
+            "usage_rows": 27,
+            "wall_seconds": 145.33,
+            "commit": "dfb581be7b6328fe66848f9b3a0bc3891fa3ef19",
+            "tests": "Rust 7/7; exact committed worktree Python 7/7",
+            "integrated_evaluator": "passed"
+          }
+        ],
+        "group_wall_seconds": 146.857
+      },
+      {
+        "arm": "S1",
+        "group_id": "4b9ee857-6004-4b8c-888b-f4c6e3d1322c",
+        "children": [
+          {
+            "role": "rust",
+            "run_id": "b8998f8b-3225-4bd3-9d4a-a665ac1f0e33",
+            "input_tokens": 297808,
+            "output_tokens": 5551,
+            "usage_rows": 16,
+            "wall_seconds": 80.804,
+            "commit": "b87396ba5c757bd884ddfa5aed3e9c76f594bb47",
+            "tests": "Rust 7/7",
+            "integrated_evaluator": "passed"
+          },
+          {
+            "role": "python",
+            "run_id": "4b0e9390-c89b-4904-9e36-8969d07da88f",
+            "input_tokens": 631134,
+            "output_tokens": 9320,
+            "usage_rows": 31,
+            "wall_seconds": 134.679,
+            "commit": "651152a8e4ec8287fe286611bc89f85bf8dbb031",
+            "tests": "child pytest 7/7; exact committed worktree unittest 7/7",
+            "integrated_evaluator": "passed"
+          }
+        ],
+        "group_wall_seconds": 135.197
+      },
+      {
+        "arm": "S2",
+        "group_id": "19b5f3b6-cef9-4f90-9311-fec33dc89ef0",
+        "board_observations": true,
+        "claims": false,
+        "children": [
+          {
+            "role": "rust",
+            "run_id": "560f9404-a25d-4523-86bf-e1308c6454ed",
+            "input_tokens": 332196,
+            "output_tokens": 6232,
+            "usage_rows": 17,
+            "wall_seconds": 84.253,
+            "commit": "f414263b461b4aa188c32887fa3684ef3b1ff381",
+            "tests": "Rust workspace 7/7",
+            "integrated_evaluator": "passed"
+          },
+          {
+            "role": "python",
+            "run_id": "b64c5e21-a945-4dd3-beab-516fc0b65c8e",
+            "input_tokens": 688779,
+            "output_tokens": 5898,
+            "usage_rows": 32,
+            "wall_seconds": 114.563,
+            "commit": "e01bbb09f2d918a3710fbe77f9db31d522077437",
+            "tests": "child pytest passed; exact committed worktree unittest 7/7",
+            "integrated_evaluator": "passed"
+          }
+        ],
+        "group_wall_seconds": 115.345
+      },
+      {
+        "arm": "S3",
+        "group_id": "518b479c-e72d-48f4-8379-a4fdac422f5d",
+        "board_observations": true,
+        "claims": true,
+        "join_policy": "all",
+        "children": [
+          {
+            "role": "rust",
+            "run_id": "bfb7d0f2-83b6-4c01-a847-f8aaa0dc0b12",
+            "claimed_path": "rust/src/lib.rs",
+            "input_tokens": 365322,
+            "output_tokens": 6488,
+            "usage_rows": 16,
+            "wall_seconds": 263.301,
+            "commit": "9df3625dc5384d7287d056e4cfabe92df3d3aad2",
+            "tests": "Rust workspace 7/7",
+            "integrated_evaluator": "passed"
+          },
+          {
+            "role": "python",
+            "run_id": "8eb27adf-74e0-40d2-9cca-1ae2717480ed",
+            "claimed_path": "python/summary_report/consumer.py",
+            "input_tokens": 594338,
+            "output_tokens": 5154,
+            "usage_rows": 29,
+            "wall_seconds": 89.791,
+            "commit": "4d607168bc4e7de048a613b5129bbfec599ea687",
+            "tests": "exact committed worktree unittest 7/7",
+            "integrated_evaluator": "passed"
+          }
+        ],
+        "group_wall_seconds": 264.903
+      }
+    ],
+    "integrated_evaluator": "Rust 7/7, Python 7/7, and scripts/check_cross_language_golden.py passed for S1, S2, S3; same frozen evaluator passed for S0",
+    "excluded_sensitivity_attempts": "S1 and S2 64-call rounds incomplete; excluded from accepted comparison denominator",
+    "limits": [
+      "single successful sample per arm",
+      "unequal aggregate maximum calls across S0 vs multi-agent arms",
+      "USD unavailable",
+      "not a performance or cost-effectiveness claim"
+    ]
+  },
+  "overlapping_and_sequential_rust_api_2026_10_18": {
+    "overlapping_group_id": "82828a6c-a0cf-4240-a7c9-9f41ab0e4e71",
+    "source_base": "803b586531ac9cd09cf268bed05c818e3cafc8a6",
+    "children": [
+      {
+        "run_id": "1572e914-21e7-422e-89b3-84d8fab1e4cb",
+        "commit": "154b178d9042ba5aba8775e565cb59c502773063",
+        "change": "Summary::total_line_changes and two tests",
+        "tests": "two new tests passed; seven frozen producer tests fail on starter TODO"
+      },
+      {
+        "run_id": "52427b11-8335-4144-b822-0d38c5b1ffef",
+        "commit": "88dae394f360a7b63d029307f0eba6cca61a74d5",
+        "change": "Summary::test_success_rate and two tests",
+        "tests": "two new tests passed; seven frozen producer tests fail on starter TODO"
+      }
+    ],
+    "integration": "expected rust/src/lib.rs cherry-pick conflict manually resolved preserving both APIs",
+    "integrated_commit": "7033e5b74bcbf6cb603d67e32fe83aad1b79acf3",
+    "integrated_tests": "11/11 Rust tests and frozen cross-language evaluator passed",
+    "sequential_prerequisite_base": "bda9d756824f09feed581d2c0c022200839a8d0a",
+    "sequential_child_run": "67c36c67-8bc5-4ea7-8db1-4a7bf581cab4",
+    "sequential_child_commit": "e79976ac31ff34115d5a31fc0be8c889866e780a",
+    "sequential_usage": {
+      "input_tokens": 258929,
+      "output_tokens": 2529,
+      "usage_rows": 16
+    },
+    "sequential_tests": "full Rust workspace 13/13 passed in child and parent rerun; frozen cross-language evaluator passed"
+  },
+  "heavy_workspace_compile_2026_10_18": {
+    "evidence_kind": "two concurrent cargo check requests on clean isolated worktrees sharing one target directory; Cargo serialized the requests; both passed",
+    "source_head": "803b586531ac9cd09cf268bed05c818e3cafc8a6",
+    "command": "cargo check --locked --offline --workspace",
+    "cargo_build_jobs": 1,
+    "target_directory": "/tmp/codegg-m008-trial-20261018-a/target-heavy-shared",
+    "checkouts": [
+      "/tmp/codegg-m008-trial-20261018-a/codegg-heavy-shared-a",
+      "/tmp/codegg-m008-trial-20261018-a/codegg-heavy-shared-b"
+    ],
+    "environment": {
+      "rustc": "1.89.0 (29483883e 2025-08-04)",
+      "rustc_host": "aarch64-apple-darwin",
+      "uname_machine": "x86_64",
+      "os": "Darwin 25.6.0",
+      "pkg_config_libdir": "/usr/local/opt/xz/lib/pkgconfig",
+      "LIBZ_SYS_STATIC": "1"
+    },
+    "runs": [
+      {
+        "checkout": "codegg-heavy-shared-b",
+        "result": "pass",
+        "cargo_reported_build_time_seconds": 691,
+        "wall_seconds": 691.64,
+        "user_cpu_seconds": 530.5,
+        "system_cpu_seconds": 68.7,
+        "time_max_rss_bytes": 2684329984,
+        "target_disk_after_run": "about 2.1 GiB",
+        "role": "cold shared-target build; bundled libgit2/PCRE2 C compilation and full workspace Rust checks"
+      },
+      {
+        "checkout": "codegg-heavy-shared-a",
+        "result": "pass",
+        "cargo_reported_build_time_seconds": 806,
+        "wall_seconds": 807.0,
+        "user_cpu_seconds": 105.66,
+        "system_cpu_seconds": 8.06,
+        "time_max_rss_bytes": 2409062400,
+        "target_disk_after_run": "2943560 KiB (about 2.8 GiB)",
+        "role": "second command waited for shared Cargo cache/build locks, then reused dependencies and rebuilt path-dependent workspace crates"
+      }
+    ],
+    "interpretation": "This establishes cold full-workspace compile feasibility and lock/reuse behavior, not parallel build speedup. Second wall time includes serialization waiting. Time max RSS is per process, not a sampled aggregate.",
+    "logs": [
+      "/tmp/codegg-m008-trial-20261018-a/heavy-shared-a.log",
+      "/tmp/codegg-m008-trial-20261018-a/heavy-shared-b.log"
+    ]
   }
 }

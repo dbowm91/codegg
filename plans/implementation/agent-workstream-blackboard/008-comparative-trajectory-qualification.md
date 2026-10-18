@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006/M007 and M011/M012 are closed. Isolated S0–S3 qualification is eligible and independent of M005; S4 remains unavailable until M005 qualifies. The latest S2 pair passed frozen acceptance after source-only evaluation copying but lacked child commits; S3 remains non-qualifying because spawned children can complete their initial wait before the parent delivers the required group message. The frozen shared-interface S0 passed, and one S1 Rust/Python pair completed after child approval-mode propagation; that single pair is descriptive, not evidence of repeatable improvement, and its child costs were not individually attributable. Child token/cost attribution is now durable and tested. Post-accounting S2/S3 attempts remain non-qualifying because of timeouts, coordination admission/authorization failures, and an incomplete S2 run stopped after 1.65M child input tokens; see `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and the execution updates below. TaskTool now accepts an optional per-child tool-call cap from 1 to 128; subsequent provider trials must set the same finite cap for all arms. The remaining strata are open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006/M007 and M011/M012 are closed. The frozen shared-interface fixture v1 now has a successful provider-backed S0, S1, S2, and S3 round at the same 128-call per-child cap. Both S2/S3 child pairs produced Git commits, passed their language suites, and passed the frozen integrated evaluator. This qualifies the mechanics and enables the next isolated strata; it does not establish an effectiveness advantage because the matched round is one sample per arm, S0 has one child while S1–S3 have two, and provider cost is unavailable. An overlapping Rust API S1 trial produced an expected commit conflict; both child additions integrated on the capable S0 result and passed all 11 Rust tests plus the frozen cross-language evaluator, while each child on the intentionally incomplete starter base could only pass its two new tests. A sequential dependent Rust API child passed all 13 workspace tests and the evaluator. The cold full-workspace Rust compile and serialized shared-target reuse check passed; resource results are recorded in the closure evidence. Continue the remaining strata and resource measurements. M005 remains independent; S4 shared-checkout execution is unavailable until M005 qualifies it. Do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -487,3 +487,35 @@ Hosted verify on `9ed8df7b` reached workspace tests and reported 12,456 passed,
 `user_prompt_queue` test pinning storage layout 82 after the new v83/v84
 migrations; the assertion now expects the current v84. The next exact-head CI
 run must confirm this correction.
+
+### Completed frozen S0–S3, API follow-up, and exact-head qualification (2026-10-18)
+
+The readiness and typed Git-result fixes landed in `9e109e7b` and
+`475ce4a5`. On the integrated source head `803b586531ac9cd09cf268bed05c818e3cafc8a6`,
+one successful provider-backed S0–S3 round used the same frozen fixture digest,
+provider/model, and 128-call per-child cap. Both S2/S3 child pairs completed,
+published commits, passed their own language tests, and passed the frozen
+integrated evaluator. The per-child measurements and all IDs are recorded in
+`plans/closure/agent-workstream-blackboard/008-isolated-results.md` and `.json`.
+One sample per arm, unequal aggregate call caps, and unavailable provider USD
+prevent an effectiveness/cost claim. Two 64-call sensitivity attempts were
+incomplete and remain excluded.
+
+The overlapping Rust API pair produced an expected `rust/src/lib.rs`
+cherry-pick conflict. The two child changes were combined on the capable S0
+result; 11/11 Rust tests and the frozen evaluator passed. The children could
+not pass the seven starter producer tests before integration because those tests
+exercise an intentional TODO. A follow-up child, started after both prerequisite
+APIs were integrated, passed all 13 Rust workspace tests and the frozen
+evaluator. The cold full-workspace `cargo check --locked --offline --workspace`
+and the second serialized shared-target check both passed; detailed wall, CPU,
+RSS, target-disk and lock-wait measurements are in the same results ledger.
+
+Exact-head hosted qualification passed on `803b5865`: verify run `39171202574`,
+Desktop E2E `39171202524`, managed-worktree `39171202506`, native-probe-contract
+`39171202512`, and process-launcher `39171202606`; GitGuardian passed and the
+C014 negative reproduction was skipped by workflow policy. M005 remains active
+for independent writer-path/native lifecycle qualification; shared-write S4 is
+unavailable. Registry audit: no downstream plan became newly eligible. M008
+remains active for the other task strata, repeated controlled comparisons, and
+broader resource measurements.
