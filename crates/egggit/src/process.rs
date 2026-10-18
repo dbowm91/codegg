@@ -332,6 +332,7 @@ impl ObjectStoreWatcher {
 
 const OBJECT_VIEW_CACHE_ENTRIES: usize = 4;
 const OBJECT_VIEW_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const OBJECT_VIEW_SNAPSHOT_ATTEMPTS: usize = 3;
 static OBJECT_VIEW_CACHE: OnceLock<Mutex<Option<ObjectViewCache>>> = OnceLock::new();
 #[cfg(all(test, target_os = "linux"))]
 static SNAPSHOT_FICLONE_SUCCESS: std::sync::atomic::AtomicU64 =
@@ -934,7 +935,6 @@ fn prepare_private_object_view(
     let cache = cache.as_mut().expect("initialized object-view cache");
     cache.clock = cache.clock.wrapping_add(1);
     let tick = cache.clock;
-    let mut fingerprint = None;
     let mut stale = Vec::new();
     for (index, view) in cache.entries.iter().enumerate() {
         if view.source != object_dir {
@@ -947,7 +947,6 @@ fn prepare_private_object_view(
         } else {
             let current = object_store_fingerprint(&object_dir)
                 .map_err(|error| unavailable_with("cached view fingerprint", &error))?;
-            fingerprint = Some(current);
             current == view.fingerprint
         };
         if clean {
@@ -967,39 +966,43 @@ fn prepare_private_object_view(
         }
     }
 
-    // The watcher is installed before fingerprinting/copying. Events during
-    // setup or snapshot construction reject caching rather than trusting an
-    // unstable source generation.
-    let watcher = ObjectStoreWatcher::new(&object_dir).ok().flatten();
-    let fingerprint = match fingerprint {
-        Some(fingerprint) => fingerprint,
-        None => object_store_fingerprint(&object_dir)
-            .map_err(|error| unavailable_with("source fingerprint", &error))?,
-    };
+    // The watcher is installed before fingerprinting/copying. A bounded
+    // retry accommodates short-lived Git object-store maintenance while every
+    // published snapshot still has to pass its own full stability check.
+    // Each attempt gets a fresh watcher and source fingerprint; no unstable
+    // partial copy can reach a child or the cache.
+    let mut stable_snapshot = None;
+    for _ in 0..OBJECT_VIEW_SNAPSHOT_ATTEMPTS {
+        let watcher = ObjectStoreWatcher::new(&object_dir).ok().flatten();
+        let fingerprint = object_store_fingerprint(&object_dir)
+            .map_err(|error| unavailable_with("source fingerprint", &error))?;
 
-    // Build inside the daemon-owned cache root. The resulting TempDir remains
-    // private and immutable for every child holding a lease. A cache miss is
-    // serialized under the cache mutex so concurrent callers cannot duplicate
-    // a whole-store copy for the same generation.
-    let view = tempfile::Builder::new()
-        .prefix("view-")
-        .tempdir_in(cache.root.path())
-        .map_err(|error| unavailable_with("snapshot directory", &error))?;
-    let bytes = copy_object_files(&object_dir, view.path())
-        .map_err(|error| unavailable_with("snapshot copy", &error))?;
-    let stable = if let Some(watcher) = &watcher {
-        watcher
-            .is_clean()
-            .map_err(|error| unavailable_with("snapshot watcher", &error))?
-    } else {
-        object_store_fingerprint(&object_dir)
-            .map_err(|error| unavailable_with("post-copy fingerprint", &error))?
-            == fingerprint
-    };
-    if !stable {
+        // Build inside the daemon-owned cache root. The resulting TempDir
+        // remains private and immutable for every child holding a lease.
+        let view = tempfile::Builder::new()
+            .prefix("view-")
+            .tempdir_in(cache.root.path())
+            .map_err(|error| unavailable_with("snapshot directory", &error))?;
+        let bytes = copy_object_files(&object_dir, view.path())
+            .map_err(|error| unavailable_with("snapshot copy", &error))?;
+        let stable = if let Some(watcher) = &watcher {
+            watcher
+                .is_clean()
+                .map_err(|error| unavailable_with("snapshot watcher", &error))?
+        } else {
+            object_store_fingerprint(&object_dir)
+                .map_err(|error| unavailable_with("post-copy fingerprint", &error))?
+                == fingerprint
+        };
+        if stable {
+            stable_snapshot = Some((view, bytes, fingerprint, watcher));
+            break;
+        }
+    }
+    let Some((view, bytes, fingerprint, watcher)) = stable_snapshot else {
         report_private_object_view_failure("source stability", &"source changed during snapshot");
         return Err(unavailable());
-    }
+    };
     if bytes > OBJECT_VIEW_CACHE_MAX_BYTES {
         return Ok(Some(PrivateObjectView {
             lease: None,
