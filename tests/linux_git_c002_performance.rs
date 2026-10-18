@@ -51,6 +51,7 @@ struct ResourceMetricSummary {
 #[derive(Debug, Serialize)]
 struct ChildResourceSummary {
     samples: usize,
+    cpu_time_resolution_us: u64,
     user_cpu_us: ResourceMetricSummary,
     system_cpu_us: ResourceMetricSummary,
     max_rss_kib: ResourceMetricSummary,
@@ -528,6 +529,9 @@ fn percentile_u64(samples: &[u64], percent: usize) -> u64 {
 fn child_resource_summary(samples: &[ChildResourceSample]) -> ChildResourceSummary {
     ChildResourceSummary {
         samples: samples.len(),
+        // GNU time formats %U/%S to centiseconds; zero means below this
+        // resolution, not that the Git process consumed no CPU.
+        cpu_time_resolution_us: 10_000,
         user_cpu_us: resource_metric_summary(
             &samples
                 .iter()
@@ -731,6 +735,7 @@ async fn c002_packed_and_fragmented_cold_warm_git_cost_qualification() {
             "wall time includes canonical service/launcher overhead",
             "CPU time and peak RSS are not measured comparatively for native Git or the typed-snapshot route",
             "GNU time reports child CPU and max RSS only for the contained-live route; native and typed-snapshot child resources are not instrumented",
+            "GNU time reports user/system CPU to centisecond precision; CPU values below 10 ms appear as zero",
             "POSIX_FADV_DONTNEED is advisory and does not prove true cold cache",
             "warm contention measures 1, 4, and 8 simultaneous calls using 30 batches per level; it does not model separate agent identities",
             "setup-only and child-only time are not separated",
