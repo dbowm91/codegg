@@ -184,6 +184,32 @@ security = "#e66d5b"
 Any color you omit is filled in from the fallback theme. The `id` is also
 optional: when absent, codegg derives the id from the file name.
 
+### Selected-row text is derived, not configured
+
+A selected row is a filled surface, so the text on it needs a colour that reads
+against *that fill* — which is a different question from "what colour is this
+theme's body text". codegg derives two such colours and you never have to
+configure them:
+
+- `selection_text` — drawn on `ui.selection`
+- `accent_text` — drawn on `ui.accent_primary`
+
+Each is whichever of the theme's own `foreground` / `background` contrasts more
+with the fill it will sit on. If neither is legible enough, codegg falls back to
+whichever of black or white contrasts more, so a selected row is always readable
+even in a theme with a mid-grey palette.
+
+**You do not need to add anything to a Halloy theme for this to work.** Halloy
+has a `buttons.primary.foreground_selected` field, but none of the 50 bundled
+themes set it (they all set `background_selected` and `buffer.selection`), so
+sourcing from it would leave the colour empty for every real theme. Deriving
+from the colours Halloy does guarantee is what lets a fresh theme from the
+gallery drop in unchanged.
+
+If you are hand-writing a native codegg theme and want to override the
+derivation, `selection_text` and `accent_text` are accepted as optional keys in
+the `[ui]` table. Omit them unless the derived value is wrong for your palette.
+
 Point codegg at the directory containing the theme:
 
 ```toml

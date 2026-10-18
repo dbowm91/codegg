@@ -23,6 +23,35 @@ pub struct ShellPromotionStageResult {
     pub error: Option<String>,
 }
 
+/// Which bookkeeping slot a terminal resume completion belongs to.
+///
+/// `request` names the bookkeeping slot the answer belongs to. It is a
+/// distinct type rather than two parallel `Option`s because the difference is
+/// load-bearing: a `/terminal-resume` owns the one shared
+/// `dialog_state.terminal_request` generation, while a cadence pull owns a
+/// per-attachment read id and must never touch that slot. Encoding it here
+/// means a poll cannot be wired into the shared slot by mistake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalResumeRequest {
+    /// `/terminal-resume`: the shared single-slot generation.
+    User(u64),
+    /// The cadence pull: a per-attachment read id.
+    Pull { read_id: u64, attachment_id: String },
+}
+
+impl TerminalResumeRequest {
+    /// The per-attachment read this answer claims, if it claims one.
+    pub fn pull(&self) -> Option<(u64, &str)> {
+        match self {
+            TerminalResumeRequest::User(_) => None,
+            TerminalResumeRequest::Pull {
+                read_id,
+                attachment_id,
+            } => Some((*read_id, attachment_id)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TuiCommand {
     DeleteSession {
@@ -698,7 +727,7 @@ pub enum TuiCommand {
     },
     /// Completion: an interactive terminal resume has finished.
     TerminalResumeFinished {
-        request_id: u64,
+        request: TerminalResumeRequest,
         handle: String,
         chunk: Option<crate::protocol::interactive_process::InteractiveOutputChunk>,
         resync: Option<crate::protocol::interactive_process::InteractiveResync>,
@@ -1115,6 +1144,14 @@ pub enum TuiCommand {
         session_id: String,
         subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
         cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        /// Authoritative snapshot returned by the daemon with the
+        /// subscription. Discarding it leaves the projection controller
+        /// empty until a live event happens to arrive, which is why
+        /// derived status surfaces had nothing to read.
+        projection: Option<(
+            crate::protocol::projection::replay::ProjectionStreamDescriptor,
+            crate::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
         error: Option<String>,
         unauthorized: bool,
         unsupported: bool,

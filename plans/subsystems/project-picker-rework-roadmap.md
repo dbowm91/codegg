@@ -10,7 +10,7 @@ Long-term references:
 
 Related ADRs:
 
-- `plans/adrs/ADR-0034-directory-tied-project-identity-and-client-working-directory.md` (accepted 2026-10-16; gates M3–M5)
+- `plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md` (accepted 2026-10-16; gates M3–M5)
 
 ## 1. Purpose and ownership boundary
 
@@ -60,7 +60,7 @@ directories are client-side `ExecutionContext`, never daemon chdir.
 - `ProjectDelete` daemon operation with cascading session delete, confirm
   payload (session count), and dedicated authz op.
 - Project update path for rename plus root rebind (extend
-  `ProjectRegister` to upsert or add `ProjectUpdate`; ADR-0034 decides).
+  `ProjectRegister` to upsert or add `ProjectUpdate`; ADR-0033 decides).
 
 ### Polish
 
@@ -114,14 +114,14 @@ M1 (remove Ctrl+\)
   +--> M2 (help-style picker + surfaces)
             |
             +--> M3 (d/a lifecycle + destroy) --\
-            |                                    +--> blocked on ADR-0034
+            |                                    +--> blocked on ADR-0033
             +--> M4 (e rename + repath) ---------/
             |
-            `--> M5 (1:1 identity + auto-load + client cwd switch, ADR-0034)
+            `--> M5 (1:1 identity + auto-load + client cwd switch, ADR-0033)
 ```
 
 M1 is a hard dependency of M2 (shared key/help/description surface).
-M3/M4/M5 each carry a hard dependency on accepted ADR-0034 (new
+M3/M4/M5 each carry a hard dependency on accepted ADR-0033 (new
 protocol, new authz semantics, identity change). M3/M4 are interface
 dependents of M2 (row-action hooks in the new dialog). M6 (multi-cwd
 splits) is deferred and not planned here.
@@ -177,7 +177,7 @@ Class: capability
 Objective: `d` archives (recoverable, sinks to bottom), `a` restores,
 `d` on inactive destroys behind a confirm box naming the session count.
 
-Dependencies: ADR-0034 accepted (hard: new `ProjectDelete` protocol +
+Dependencies: ADR-0033 accepted (hard: new `ProjectDelete` protocol +
 authz + cascade semantics); M2 interface stable.
 
 Deliverable boundary: new daemon op + authz + catalog cascade, confirm
@@ -199,7 +199,7 @@ Class: capability
 Objective: `e` edits project name and path, rebinding the project to a
 different workspace root/environment.
 
-Dependencies: ADR-0034 accepted (hard: rebind semantics, bound-root
+Dependencies: ADR-0033 accepted (hard: rebind semantics, bound-root
 refusal rule, session-binding follow rule); M2 interface stable.
 
 Deliverable boundary: rename/repath form, path validation
@@ -223,7 +223,7 @@ Objective: one directory is one project; opening an unseen directory
 creates it (named for the directory), reopening loads it; selection
 switches the client's working directory.
 
-Dependencies: ADR-0034 accepted (hard); M2–M4 closed (hard: picker and
+Dependencies: ADR-0033 accepted (hard); M2–M4 closed (hard: picker and
 mutation surfaces must exist first).
 
 Deliverable boundary: canonical-root↔project 1:1 enforcement, picker +
@@ -290,19 +290,19 @@ daemon-cwd-guard evidence.
 
 ## 10. Risks and decision points
 
-- ADR-0034 was accepted on 2026-10-16 and the M2–M4 sequencing gates are
+- ADR-0033 was accepted on 2026-10-16 and the M2–M4 sequencing gates are
   satisfied. If a successor ADR supersedes it, any new work stops under the
   individual plan stop conditions.
 - Destroy cascade semantics (sessions deleted) is the one irreversible
   step; confirm copy and authz scope need maintainer sign-off in the ADR.
-- Repath-to-bound-root refusal vs adoption (ADR-0034 recommends refusal).
-- Grandfathering existing N-workspace projects under 1:1 (ADR-0034).
+- Repath-to-bound-root refusal vs adoption (ADR-0033 recommends refusal).
+- Grandfathering existing N-workspace projects under 1:1 (ADR-0033).
 - `Shift+H/J/K/L` cannot serve split switching later; a new chord needs
   its own design (explicitly out of scope here).
 
 ## 11. Completion definition
 
-The roadmap closes when M1–M5 have strict closure records, ADR-0034 is
+The roadmap closes when M1–M5 have strict closure records, ADR-0033 is
 accepted, the picker opens only via `Shift+F` / `/projects`,
 lifecycle/rename/repath work end-to-end against the daemon, 1:1 directory
 identity holds with auto-create/load, and no milestone carries unresolved

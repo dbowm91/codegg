@@ -32,6 +32,9 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::theme::color::Rgb;
+use crate::theme::schema::derive_text_on;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     /// Stable lookup key (lowercase kebab-case slug), e.g. `"cyber-red"`.
@@ -53,6 +56,12 @@ pub struct Theme {
     pub border: Color,
     pub selection: Color,
     pub selection_dim: Color,
+    /// Foreground to draw on `selection`. Derived from this theme's own
+    /// `foreground`/`background` by [`ThemeData::to_theme`] and by
+    /// `theme::schema::UiColors::derive_selection_texts`; never authored.
+    pub selection_text: Color,
+    /// Foreground to draw on `primary`. Derived on the same rule.
+    pub accent_text: Color,
     pub alternate_bg: Color,
     pub input_bg: Color,
     pub code_theme: String,
@@ -80,6 +89,25 @@ struct ThemeData {
 
 impl ThemeData {
     fn to_theme(&self) -> Theme {
+        // The two selection foregrounds are computed here rather than spelled
+        // out in all 32 literals. They are a *property of the palette*, not a
+        // per-theme choice a human should make twice: whichever of this theme's
+        // own `foreground`/`background` reads better on `selection` and on
+        // `primary` is the answer, and adding a hand-picked tuple per literal
+        // would be 32 chances to leave one theme's selected rows unreadable —
+        // the same defect as the hardcoded `Color::White` this replaced.
+        let rgb = |c: (u8, u8, u8)| Rgb::new(c.0, c.1, c.2);
+        let selection_text = derive_text_on(
+            rgb(self.foreground),
+            rgb(self.background),
+            rgb(self.selection),
+        );
+        let accent_text = derive_text_on(
+            rgb(self.foreground),
+            rgb(self.background),
+            rgb(self.primary),
+        );
+
         Theme {
             // The legacy static list has no separate id table; the name is
             // already a lowercase slug, so it doubles as the id.
@@ -100,6 +128,8 @@ impl ThemeData {
                 self.selection_dim.1,
                 self.selection_dim.2,
             ),
+            selection_text: selection_text.into(),
+            accent_text: accent_text.into(),
             alternate_bg: Color::Rgb(
                 self.alternate_bg.0,
                 self.alternate_bg.1,
@@ -815,12 +845,16 @@ impl Theme {
     }
 
     pub fn highlight_style(&self) -> Style {
-        Style::default().fg(self.primary).bg(self.selection)
+        Style::default().fg(self.selection_text).bg(self.selection)
     }
 
     pub fn selection_style(&self) -> Style {
+        // The accent is a *fill*, not a foreground: painting `primary` text on
+        // the selection fill made a selected row's text the same colour as the
+        // accents around it. `selection_text` is the token derived to read on
+        // the fill it is actually drawn over.
         Style::default()
-            .fg(self.primary)
+            .fg(self.selection_text)
             .bg(self.selection)
             .add_modifier(Modifier::BOLD)
             .add_modifier(Modifier::UNDERLINED)

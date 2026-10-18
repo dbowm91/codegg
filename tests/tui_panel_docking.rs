@@ -693,7 +693,9 @@ fn visible(app: &mut App, handle: &str) -> String {
     // like "page-39" unreadable. That is a rendering artifact of this helper,
     // not what the user sees.
     app.interactive_terminals
-        .render_view(handle, 200, ratatui::style::Style::default())
+        // Caret present: this is a text projection, so the phase is not part of
+        // what it asserts and there is no clock to read it from.
+        .render_view(handle, 200, true, ratatui::style::Style::default())
         .expect("render")
         .into_iter()
         .map(|line| {
@@ -1613,4 +1615,112 @@ async fn insert_mode_typing_reaches_the_docked_shell() {
             .any(|toast| toast.message.contains("terminal input dropped")),
         "Insert-mode keystrokes must be routed as PTY input, not eaten by the composer"
     );
+}
+
+// ── The hint row follows the keyboard ───────────────────────────────
+
+/// The whole frame as text, one string per row.
+///
+/// Sized wide enough for the composer row to be drawn uncut: the hint line is
+/// truncated to the pane width, and a narrow frame would drop `TERM ·` mid
+/// word and make every assertion below pass or fail on wrapping instead of on
+/// the contract.
+fn frame_rows(app: &mut App) -> Vec<String> {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            app.render(frame);
+        })
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(120)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect()
+}
+
+/// The reported defect: `TERM · focus to scroll, select and type` stayed on
+/// screen above the composer after `Shift+←` handed the keyboard back, so the
+/// row described the terminal's verbs at a user who was typing into the LLM
+/// buffer. The row exists to name whoever holds the keyboard, and it must
+/// leave with it — and come back when the panel takes it again.
+#[tokio::test(flavor = "current_thread")]
+async fn the_terminal_hint_row_only_exists_while_the_panel_holds_the_keyboard() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-hint", &["$ ", "bravo"]);
+    focus_terminal_panel(&mut app);
+
+    let focused = frame_rows(&mut app);
+    assert!(
+        focused.iter().any(|row| row.contains("TERM ·")),
+        "a focused panel must still advertise its verbs, got {focused:?}"
+    );
+    let focused_prompt = composer_row(&focused);
+
+    // `Shift+←` is the way out of a right-hand column.
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(
+        !app.panel_host.is_focused(),
+        "the premise: the panel let go"
+    );
+    let unfocused = frame_rows(&mut app);
+    assert!(
+        !unfocused.iter().any(|row| row.contains("TERM ·")),
+        "the terminal's verbs must not survive losing the keyboard, got {unfocused:?}"
+    );
+
+    // The row the hint occupied is not the input box's. `session_layout` gives
+    // the prompt chunk a fixed, bottom-anchored height and the working strip,
+    // hint line and todo strip are carved off its **top** in that order, so
+    // removing one row shrinks the carved region and gives the row to the
+    // transcript (`Min(10)`) without moving the input by a single row.
+    //
+    // That is the property worth pinning, and it is not the one that is easy to
+    // assume: a hint row that appeared or vanished and dragged the composer with
+    // it would reflow the frame under the user's hands every time a panel took
+    // or lost focus. Asserted here rather than assumed, because the layout code
+    // reads as though the opposite should happen.
+    assert_eq!(
+        composer_row(&unfocused),
+        focused_prompt,
+        "the input box must not move when the hint row is added or removed"
+    );
+    assert_eq!(
+        unfocused[focused_prompt - 1],
+        focused[focused_prompt - 2],
+        "the working strip is carved off the prompt chunk's top edge, so it moves down into \
+         the vacated row while the composer below it stays put"
+    );
+
+    app.ui_state.input_mode = InputMode::Normal;
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(app.panel_host.is_focused(), "the panel is back");
+    let refocused = frame_rows(&mut app);
+    assert!(
+        refocused.iter().any(|row| row.contains("TERM ·")),
+        "re-focusing must bring the row back"
+    );
+    assert_eq!(
+        composer_row(&refocused),
+        focused_prompt,
+        "and the reflow must be symmetric — a hint row that only ever shrinks is its own bug"
+    );
+}
+
+/// Row the composer box is drawn on.
+///
+/// Found from the prompt's own `❯` marker rather than from the hint line: the
+/// hint row is the thing under test, so locating the reflow by it would let the
+/// same change move both ends of the comparison.
+fn composer_row(rows: &[String]) -> usize {
+    rows.iter()
+        .position(|row| row.contains('❯'))
+        .expect("the composer is always drawn")
 }

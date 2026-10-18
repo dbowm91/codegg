@@ -16,7 +16,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0034-directory-tied-project-identity-and-client-working-directory.md`
+- `plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`
   (accepted 2026-10-16 — satisfied; governs destroy cascade, confirm
   copy, and authz)
 
@@ -31,7 +31,7 @@ names the affected session count — cascading to its sessions atomically.
 
 ## 2. Why this milestone is ready
 
-ADR-0034 is accepted, and M2 is strictly closed at
+ADR-0033 is accepted, and M2 is strictly closed at
 `plans/closure/project-picker-rework/002-status.md`. The picker now has
 stable per-row selection context, a help-style dialog, and a documented
 Normal/Insert key contract for lifecycle actions to extend.
@@ -231,7 +231,7 @@ The agent must stop and report rather than improvise when:
 
 - M2 has not closed (row hooks/key contract differ from §3);
 - the cascade cannot be made single-transaction safely;
-- ADR-0034 is superseded or its destroy semantics change;
+- ADR-0033 is superseded or its destroy semantics change;
 - scope would expand into rename/repath (M4) or identity (M5).
 
 ## 15. Closure evidence required

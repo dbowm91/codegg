@@ -16,7 +16,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0034-directory-tied-project-identity-and-client-working-directory.md`
+- `plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`
   (accepted 2026-10-16 — satisfied; governs rebind semantics,
   bound-root refusal, session-follow rule)
 
@@ -30,7 +30,7 @@ following the project and repath onto an already-bound root refused.
 
 ## 2. Why this milestone is ready
 
-ADR-0034 is accepted, and M2 is strictly closed at
+ADR-0033 is accepted, and M2 is strictly closed at
 `plans/closure/project-picker-rework/002-status.md`. The picker now has
 stable per-row selection context, a help-style dialog, and a documented
 Normal/Insert key contract for rename/repath actions to extend. M3 and
@@ -216,7 +216,7 @@ The agent must stop and report rather than improvise when:
 
 - M2 has not closed (form/key seams differ from §3);
 - rebind cannot reuse `WorkspaceRegister` validation safely;
-- ADR-0034 is superseded or its rebind semantics change;
+- ADR-0033 is superseded or its rebind semantics change;
 - scope would expand into lifecycle (M3) or identity (M5).
 
 ## 15. Closure evidence required

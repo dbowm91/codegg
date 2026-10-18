@@ -93,7 +93,7 @@ not run; local acceptance suites and quick verification passed.
 ## 9. Downstream dependency audit
 
 M002 closes the stable picker-interface dependency for both M003 and
-M004. The accepted ADR-0034 remains satisfied, so both plans move from
+M004. The accepted ADR-0033 remains satisfied, so both plans move from
 blocked to ready:
 
 - M003 lifecycle and confirmed destroy is ready and is next in the

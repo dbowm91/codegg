@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
@@ -10,10 +10,46 @@ use ratatui::Frame;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::tui::app::TuiMsg;
+use crate::tui::wrap::wrap_count;
 use crate::util::truncate::truncate_prefix;
 
 use crate::research::service::ResearchRunSummary;
 use crate::research::types::{Confidence, ResearchBundle, RunStatus};
+
+/// Who owns this render's chrome.
+///
+/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
+/// draws its own border, heading and keymap footer per mode; [`Chrome::Hosted`]
+/// is a column in a side panel, where the host has already painted all three
+/// into the same rect.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    Owned,
+    Hosted,
+}
+
+/// The verbs `ResearchBrowserMode::RunsList` delivers, for the panel host.
+///
+/// `handle_key` also answers `↑/↓` and `Esc`, and neither survives docking:
+/// the arrows are claimed by `insert_panel_direction_bindings` as panel
+/// directions, and `Esc` by `SidePanelHost::handle_key` as a universal exit
+/// that blurs without consulting the widget. The old footer's `Esc close` was
+/// therefore dead the moment this box docked.
+const RUNS_LIST_HINT: &str = "j/k move · enter open · r refresh";
+
+/// The verbs `ResearchBrowserMode::RunDetail` delivers.
+///
+/// No `Esc`: this mode's `Esc` steps back to the run list, and in a column it
+/// is the host's exit instead — so a docked detail box has no way back but
+/// `Shift+←`, which the host says so itself.
+const RUN_DETAIL_HINT: &str = "j/k move · enter section";
+
+/// The verbs `ResearchBrowserMode::ReportView` delivers.
+///
+/// `Home`/`End` are named because they are **not** panel directions and do
+/// reach a widget from a column. `⌫` is named rather than `Esc` for the same
+/// reason the review diff view names it: `Esc` is the host's, `⌫` is not.
+const REPORT_VIEW_HINT: &str = "j/k scroll · ^d/^u page · Home/End jump · ⌫ back";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResearchBrowserMode {
@@ -32,7 +68,6 @@ pub enum ReportSection {
 
 #[derive(Clone)]
 pub struct ResearchBrowserDialog {
-    pub theme: Arc<Theme>,
     pub runs: Vec<ResearchRunSummary>,
     pub selected: usize,
     pub mode: ResearchBrowserMode,
@@ -44,9 +79,8 @@ pub struct ResearchBrowserDialog {
 }
 
 impl ResearchBrowserDialog {
-    pub fn new(theme: Arc<Theme>) -> Self {
+    pub fn new() -> Self {
         Self {
-            theme,
             runs: Vec::new(),
             selected: 0,
             mode: ResearchBrowserMode::RunsList,
@@ -56,10 +90,6 @@ impl ResearchBrowserDialog {
             report_content: None,
             loading: false,
         }
-    }
-
-    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
     }
 
     pub fn set_runs(&mut self, runs: Vec<ResearchRunSummary>) {
@@ -249,17 +279,39 @@ impl Component for ResearchBrowserDialog {
         }
     }
 
+    /// The verbs this box owns **in the mode it is currently in**, spelled the
+    /// way this box spells them.
+    ///
+    /// `handle_key` is mode-dispatched and the three modes share nothing: `r`
+    /// refreshes the run list and means nothing in a report, `⌫` is the way
+    /// back out of a report and means nothing anywhere else, and `Home`/`End`
+    /// jump a report only. One string would have to describe keys that are
+    /// dead in the mode on screen.
+    fn keymap_hint(&self) -> Option<String> {
+        Some(match self.mode {
+            ResearchBrowserMode::RunsList => RUNS_LIST_HINT.to_string(),
+            ResearchBrowserMode::RunDetail => RUN_DETAIL_HINT.to_string(),
+            ResearchBrowserMode::ReportView => REPORT_VIEW_HINT.to_string(),
+        })
+    }
+
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        if area.height < 5 {
+        self.render_body(frame, area, theme, Chrome::Owned);
+    }
+
+    /// The listing alone: no border, no title, no footer.
+    ///
+    /// The host has already painted a border, a title and the `●` focus marker
+    /// into this same rect, and `render_in_panel` is handed the full rect
+    /// rather than the interior, so a second border does not stack — it
+    /// overwrites all three, in every mode, including the two early-return
+    /// branches. `area` is the host's full rect, so inset by its border first.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let inner = area.inner(Margin::new(1, 1));
+        if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.theme = Arc::clone(theme);
-
-        match self.mode {
-            ResearchBrowserMode::RunsList => self.render_runs_list(frame, area),
-            ResearchBrowserMode::RunDetail => self.render_run_detail(frame, area),
-            ResearchBrowserMode::ReportView => self.render_report_view(frame, area),
-        }
+        self.render_body(frame, inner, theme, Chrome::Hosted);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -268,368 +320,459 @@ impl Component for ResearchBrowserDialog {
 }
 
 impl ResearchBrowserDialog {
-    fn render_runs_list(&self, frame: &mut Frame, area: Rect) {
-        let title = if self.loading {
-            " Research Runs (loading...) "
-        } else {
-            " Research Runs "
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .title(title);
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        if self.runs.is_empty() {
-            let empty_lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  No research runs found",
-                    Style::default().fg(self.theme.muted),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  Run /research <question> to start one",
-                    Style::default().fg(self.theme.muted),
-                )),
-            ];
-            let paragraph = Paragraph::new(empty_lines);
-            frame.render_widget(paragraph, inner);
+    /// One body routine for all three modes and both render paths.
+    ///
+    /// The three footers are the reason it is one routine. Each mode had its
+    /// own footer naming `Esc` and `↑/↓`, and a docked column destroyed all
+    /// three — while the only copy a docked reader could see was the host's
+    /// generic `"j/k scroll · i act"`, which is wrong for two of the three
+    /// modes. The verbs moved to [`Component::keymap_hint`]; what stayed
+    /// behind is a border and a title per mode, and both go with the host's.
+    ///
+    /// The report's scroll clamp is the other thing this routine exists to
+    /// own. `content_scroll` was passed to `Paragraph::scroll` unclamped, so
+    /// `Home` — which stores `usize::MAX` — reached ratatui as `u16::MAX` and
+    /// rendered the report blank, with an offset that only grows, leaving
+    /// `j`/`k` no way back. **That is a deliberate behaviour change**, and the
+    /// only one: `Home` now lands on the last row the rect can show instead of
+    /// past it. It is applied here rather than in `handle_key` because only
+    /// this routine can see the rect, and doing it here is what stops the
+    /// modal and the column reaching different last rows.
+    fn render_body(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+        if area.height < 5 {
             return;
         }
 
-        let visible_height = inner.height as usize;
-        let scroll = if self.selected >= visible_height.saturating_sub(1) {
-            self.selected - visible_height + 2
-        } else {
-            0
-        };
-
-        let items: Vec<ListItem> = self
-            .runs
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .map(|(i, run)| {
-                let is_selected = i == self.selected;
-                let style = if is_selected {
-                    Style::default()
-                        .bg(self.theme.selection)
-                        .fg(self.theme.primary)
-                        .add_modifier(Modifier::BOLD)
+        match self.mode {
+            ResearchBrowserMode::RunsList => {
+                let title = if self.loading {
+                    " Research Runs (loading...) "
                 } else {
-                    Style::default().fg(self.theme.foreground)
+                    " Research Runs "
                 };
 
-                let short_id: String = run.run_id.chars().take(8).collect();
-                let status_icon = match run.status {
-                    RunStatus::Completed => ("done", self.theme.success),
-                    RunStatus::Failed => ("FAIL", self.theme.error),
-                    _ => ("run", self.theme.warning),
-                };
-
-                let question_display = if run.question.len() > 50 {
-                    format!("{}...", truncate_prefix(&run.question, 50))
-                } else {
-                    run.question.clone()
-                };
-
-                let line = Line::from(vec![
-                    Span::styled(
-                        format!(" {} ", status_icon.0),
-                        Style::default().fg(status_icon.1),
+                let block = match chrome {
+                    Chrome::Owned => Some(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme.border))
+                            .title(title),
                     ),
-                    Span::styled(short_id.clone(), Style::default().fg(self.theme.muted)),
-                    Span::styled("  ", Style::default()),
-                    Span::styled(question_display, style),
-                ]);
-                ListItem::new(line)
-            })
-            .collect();
+                    Chrome::Hosted => None,
+                };
 
-        let list = List::new(items);
-        frame.render_widget(list, inner);
+                let inner = match &block {
+                    Some(block) => block.inner(area),
+                    None => area,
+                };
+                if let Some(block) = &block {
+                    frame.render_widget(block, area);
+                }
 
-        let footer = Line::from(Span::styled(
-            "j/k navigate  |  Enter: details  |  r: refresh  |  Esc close",
-            Style::default().fg(self.theme.muted),
-        ));
-        let footer_area = Rect::new(
-            inner.x,
-            inner.y + inner.height.saturating_sub(1),
-            inner.width,
-            1,
-        );
-        frame.render_widget(footer, footer_area);
-    }
+                if self.runs.is_empty() {
+                    let empty_lines = vec![
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "  No research runs found",
+                            Style::default().fg(theme.muted),
+                        )),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "  Run /research <question> to start one",
+                            Style::default().fg(theme.muted),
+                        )),
+                    ];
+                    let paragraph = Paragraph::new(empty_lines);
+                    frame.render_widget(paragraph, inner);
+                    return;
+                }
 
-    fn render_run_detail(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .title(" Research Run Detail ");
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let Some(bundle) = &self.detail else {
-            if self.loading {
-                let msg = Line::from(Span::styled(
-                    "  Loading...",
-                    Style::default().fg(self.theme.muted),
-                ));
-                let msg_area = Rect::new(inner.x, inner.y, inner.width, 1);
-                frame.render_widget(msg, msg_area);
-            } else {
-                let msg = Line::from(Span::styled(
-                    "  No run selected",
-                    Style::default().fg(self.theme.muted),
-                ));
-                let msg_area = Rect::new(inner.x, inner.y, inner.width, 1);
-                frame.render_widget(msg, msg_area);
-            }
-            return;
-        };
-
-        let mut lines: Vec<Line> = Vec::new();
-
-        // Header info
-        lines.push(Line::from(vec![
-            Span::styled("Question: ", Style::default().fg(self.theme.muted)),
-            Span::styled(
-                &bundle.request.question,
-                Style::default().fg(self.theme.foreground),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(self.theme.muted)),
-            Span::styled(
-                format!("{:?}", bundle.status.status),
-                Style::default().fg(match bundle.status.status {
-                    RunStatus::Completed => self.theme.success,
-                    RunStatus::Failed => self.theme.error,
-                    _ => self.theme.warning,
-                }),
-            ),
-            Span::styled("  Mode: ", Style::default().fg(self.theme.muted)),
-            Span::styled(
-                format!("{:?}", bundle.request.mode),
-                Style::default().fg(self.theme.foreground),
-            ),
-            Span::styled("  Depth: ", Style::default().fg(self.theme.muted)),
-            Span::styled(
-                format!("{:?}", bundle.request.depth),
-                Style::default().fg(self.theme.foreground),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Counts: ", Style::default().fg(self.theme.muted)),
-            Span::styled(
-                format!(
-                    "{} sources, {} evidence, {} claims, {} contradictions",
-                    bundle.status.counts.sources,
-                    bundle.status.counts.evidence_spans,
-                    bundle.status.counts.claims,
-                    bundle.status.counts.contradictions
-                ),
-                Style::default().fg(self.theme.foreground),
-            ),
-        ]));
-
-        if let Some(ref plan) = bundle.plan {
-            lines.push(Line::from(vec![
-                Span::styled("Plan: ", Style::default().fg(self.theme.muted)),
-                Span::styled(
-                    plan.scope.clone(),
-                    Style::default().fg(self.theme.foreground),
-                ),
-            ]));
-        }
-
-        lines.push(Line::from(""));
-
-        // Sources summary
-        if !bundle.sources.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("  Sources ({})", bundle.sources.len()),
-                Style::default()
-                    .fg(self.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for src in bundle.sources.iter().take(3) {
-                let title = src.title.as_deref().unwrap_or(&src.uri);
-                let display = if title.len() > 60 {
-                    format!("    {}...", truncate_prefix(title, 60))
+                let visible_height = inner.height as usize;
+                let scroll = if self.selected >= visible_height.saturating_sub(1) {
+                    self.selected - visible_height + 2
                 } else {
-                    format!("    {}", title)
+                    0
                 };
-                lines.push(Line::from(Span::styled(
-                    display,
-                    Style::default().fg(self.theme.foreground),
-                )));
-            }
-            if bundle.sources.len() > 3 {
-                lines.push(Line::from(Span::styled(
-                    format!("    ... and {} more", bundle.sources.len() - 3),
-                    Style::default().fg(self.theme.muted),
-                )));
-            }
-        }
 
-        // Claims summary
-        if !bundle.claims.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("  Claims ({})", bundle.claims.len()),
-                Style::default()
-                    .fg(self.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for claim in bundle.claims.iter().take(3) {
-                let conf_color = match claim.confidence {
-                    Confidence::High => self.theme.success,
-                    Confidence::Medium => self.theme.warning,
-                    Confidence::Low => self.theme.error,
+                let items: Vec<ListItem> = self
+                    .runs
+                    .iter()
+                    .enumerate()
+                    .skip(scroll)
+                    .map(|(i, run)| {
+                        let is_selected = i == self.selected;
+                        let style = if is_selected {
+                            Style::default()
+                                .bg(theme.selection)
+                                .fg(theme.primary)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.foreground)
+                        };
+
+                        let short_id: String = run.run_id.chars().take(8).collect();
+                        let status_icon = match run.status {
+                            RunStatus::Completed => ("done", theme.success),
+                            RunStatus::Failed => ("FAIL", theme.error),
+                            _ => ("run", theme.warning),
+                        };
+
+                        let question_display = if run.question.len() > 50 {
+                            format!("{}...", truncate_prefix(&run.question, 50))
+                        } else {
+                            run.question.clone()
+                        };
+
+                        let line = Line::from(vec![
+                            Span::styled(
+                                format!(" {} ", status_icon.0),
+                                Style::default().fg(status_icon.1),
+                            ),
+                            Span::styled(short_id.clone(), Style::default().fg(theme.muted)),
+                            Span::styled("  ", Style::default()),
+                            Span::styled(question_display, style),
+                        ]);
+                        ListItem::new(line)
+                    })
+                    .collect();
+
+                let list = List::new(items);
+                frame.render_widget(list, inner);
+
+                if chrome == Chrome::Owned {
+                    let footer = Line::from(Span::styled(
+                        "j/k navigate  |  Enter: details  |  r: refresh  |  Esc close",
+                        Style::default().fg(theme.muted),
+                    ));
+                    let footer_area = Rect::new(
+                        inner.x,
+                        inner.y + inner.height.saturating_sub(1),
+                        inner.width,
+                        1,
+                    );
+                    frame.render_widget(footer, footer_area);
+                }
+            }
+            ResearchBrowserMode::RunDetail => {
+                let block = match chrome {
+                    Chrome::Owned => Some(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme.border))
+                            .title(" Research Run Detail "),
+                    ),
+                    Chrome::Hosted => None,
                 };
-                let display = if claim.text.len() > 60 {
-                    format!(
-                        "    [{}] {}...",
-                        claim.claim_type.as_str(),
-                        truncate_prefix(&claim.text, 60)
-                    )
-                } else {
-                    format!("    [{}] {}", claim.claim_type.as_str(), claim.text)
+
+                let inner = match &block {
+                    Some(block) => block.inner(area),
+                    None => area,
                 };
+                if let Some(block) = &block {
+                    frame.render_widget(block, area);
+                }
+
+                let Some(bundle) = &self.detail else {
+                    if self.loading {
+                        let msg = Line::from(Span::styled(
+                            "  Loading...",
+                            Style::default().fg(theme.muted),
+                        ));
+                        let msg_area = Rect::new(inner.x, inner.y, inner.width, 1);
+                        frame.render_widget(msg, msg_area);
+                    } else {
+                        let msg = Line::from(Span::styled(
+                            "  No run selected",
+                            Style::default().fg(theme.muted),
+                        ));
+                        let msg_area = Rect::new(inner.x, inner.y, inner.width, 1);
+                        frame.render_widget(msg, msg_area);
+                    }
+                    return;
+                };
+
+                let mut lines: Vec<Line> = Vec::new();
+
+                // Header info
                 lines.push(Line::from(vec![
-                    Span::styled(display, Style::default().fg(self.theme.foreground)),
+                    Span::styled("Question: ", Style::default().fg(theme.muted)),
                     Span::styled(
-                        format!(" ({:?})", claim.confidence),
-                        Style::default().fg(conf_color),
+                        &bundle.request.question,
+                        Style::default().fg(theme.foreground),
                     ),
                 ]));
-            }
-        }
+                lines.push(Line::from(vec![
+                    Span::styled("Status: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!("{:?}", bundle.status.status),
+                        Style::default().fg(match bundle.status.status {
+                            RunStatus::Completed => theme.success,
+                            RunStatus::Failed => theme.error,
+                            _ => theme.warning,
+                        }),
+                    ),
+                    Span::styled("  Mode: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!("{:?}", bundle.request.mode),
+                        Style::default().fg(theme.foreground),
+                    ),
+                    Span::styled("  Depth: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!("{:?}", bundle.request.depth),
+                        Style::default().fg(theme.foreground),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("Counts: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!(
+                            "{} sources, {} evidence, {} claims, {} contradictions",
+                            bundle.status.counts.sources,
+                            bundle.status.counts.evidence_spans,
+                            bundle.status.counts.claims,
+                            bundle.status.counts.contradictions
+                        ),
+                        Style::default().fg(theme.foreground),
+                    ),
+                ]));
 
-        // Contradictions
-        if !bundle.contradictions.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("  Contradictions ({})", bundle.contradictions.len()),
-                Style::default()
-                    .fg(self.theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for c in bundle.contradictions.iter().take(2) {
-                let display = if c.description.len() > 60 {
-                    format!("    {}...", truncate_prefix(&c.description, 60))
-                } else {
-                    format!("    {}", c.description)
+                if let Some(ref plan) = bundle.plan {
+                    lines.push(Line::from(vec![
+                        Span::styled("Plan: ", Style::default().fg(theme.muted)),
+                        Span::styled(plan.scope.clone(), Style::default().fg(theme.foreground)),
+                    ]));
+                }
+
+                lines.push(Line::from(""));
+
+                // Sources summary
+                if !bundle.sources.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  Sources ({})", bundle.sources.len()),
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for src in bundle.sources.iter().take(3) {
+                        let title = src.title.as_deref().unwrap_or(&src.uri);
+                        let display = if title.len() > 60 {
+                            format!("    {}...", truncate_prefix(title, 60))
+                        } else {
+                            format!("    {}", title)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            display,
+                            Style::default().fg(theme.foreground),
+                        )));
+                    }
+                    if bundle.sources.len() > 3 {
+                        lines.push(Line::from(Span::styled(
+                            format!("    ... and {} more", bundle.sources.len() - 3),
+                            Style::default().fg(theme.muted),
+                        )));
+                    }
+                }
+
+                // Claims summary
+                if !bundle.claims.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  Claims ({})", bundle.claims.len()),
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for claim in bundle.claims.iter().take(3) {
+                        let conf_color = match claim.confidence {
+                            Confidence::High => theme.success,
+                            Confidence::Medium => theme.warning,
+                            Confidence::Low => theme.error,
+                        };
+                        let display = if claim.text.len() > 60 {
+                            format!(
+                                "    [{}] {}...",
+                                claim.claim_type.as_str(),
+                                truncate_prefix(&claim.text, 60)
+                            )
+                        } else {
+                            format!("    [{}] {}", claim.claim_type.as_str(), claim.text)
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(display, Style::default().fg(theme.foreground)),
+                            Span::styled(
+                                format!(" ({:?})", claim.confidence),
+                                Style::default().fg(conf_color),
+                            ),
+                        ]));
+                    }
+                }
+
+                // Contradictions
+                if !bundle.contradictions.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  Contradictions ({})", bundle.contradictions.len()),
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for c in bundle.contradictions.iter().take(2) {
+                        let display = if c.description.len() > 60 {
+                            format!("    {}...", truncate_prefix(&c.description, 60))
+                        } else {
+                            format!("    {}", c.description)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            display,
+                            Style::default().fg(theme.foreground),
+                        )));
+                    }
+                }
+
+                // Report sections (selectable)
+                let sections = self.available_report_sections();
+                if !sections.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "  Available Sections",
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for (i, (label, _)) in sections.iter().enumerate() {
+                        let is_sel = i == self.detail_selected;
+                        let prefix = if is_sel { "> " } else { "  " };
+                        let style = if is_sel {
+                            Style::default()
+                                .fg(theme.primary)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.foreground)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", prefix, label),
+                            style,
+                        )));
+                    }
+                }
+
+                let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+                frame.render_widget(paragraph, inner);
+
+                if chrome == Chrome::Owned {
+                    let footer = Line::from(Span::styled(
+                        " j/k navigate  |  Enter: open section  |  Esc: back to list",
+                        Style::default().fg(theme.muted),
+                    ));
+                    let footer_area = Rect::new(
+                        inner.x,
+                        inner.y + inner.height.saturating_sub(1),
+                        inner.width,
+                        1,
+                    );
+                    frame.render_widget(footer, footer_area);
+                }
+            }
+            ResearchBrowserMode::ReportView => {
+                let title = match &self.report_content {
+                    Some((section, _)) => match section {
+                        ReportSection::Report => " Research Plan ",
+                        ReportSection::Brief => " Sources ",
+                        ReportSection::AgentAnswer => " Claims ",
+                        ReportSection::Handoff => " Contradictions ",
+                    },
+                    None => " Content ",
                 };
-                lines.push(Line::from(Span::styled(
-                    display,
-                    Style::default().fg(self.theme.foreground),
-                )));
-            }
-        }
 
-        // Report sections (selectable)
-        let sections = self.available_report_sections();
-        if !sections.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  Available Sections",
-                Style::default()
-                    .fg(self.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for (i, (label, _)) in sections.iter().enumerate() {
-                let is_sel = i == self.detail_selected;
-                let prefix = if is_sel { "> " } else { "  " };
-                let style = if is_sel {
-                    Style::default()
-                        .fg(self.theme.primary)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(self.theme.foreground)
+                let block = match chrome {
+                    Chrome::Owned => Some(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme.border))
+                            .title(title),
+                    ),
+                    Chrome::Hosted => None,
                 };
-                lines.push(Line::from(Span::styled(
-                    format!("{}{}", prefix, label),
-                    style,
-                )));
+
+                let inner = match &block {
+                    Some(block) => block.inner(area),
+                    None => area,
+                };
+                if let Some(block) = &block {
+                    frame.render_widget(block, area);
+                }
+
+                let Some((_, content)) = &self.report_content else {
+                    let msg = Line::from(Span::styled(
+                        "  No content to display",
+                        Style::default().fg(theme.muted),
+                    ));
+                    let msg_area = Rect::new(inner.x, inner.y, inner.width, 1);
+                    frame.render_widget(msg, msg_area);
+                    return;
+                };
+
+                // The rows the paragraph is about to be handed, counted with
+                // the same wrapper the chat viewport and `InfoDialog` use, and
+                // against the width of the rect actually being filled. A line
+                // that wraps occupies several rows while `content_scroll`
+                // still advances by one, so counting logical lines here would
+                // clamp against the wrong quantity and leave the tail of a
+                // wrapped report below the fold.
+                let mut total_rows = 0usize;
+                let lines: Vec<Line> = content
+                    .lines()
+                    .map(|line| {
+                        total_rows += wrap_count(line, inner.width);
+                        Line::from(Span::styled(
+                            line.to_string(),
+                            Style::default().fg(theme.foreground),
+                        ))
+                    })
+                    .collect();
+
+                // The modal footer takes the last interior row, so only the
+                // rows above it are ever visible content; a hosted column has
+                // no footer row at all. Deriving this from `inner` in one
+                // place is what stops the two paths reaching different last
+                // rows from one shared clamp.
+                let visible_rows = match chrome {
+                    Chrome::Owned => (inner.height as usize).saturating_sub(1),
+                    Chrome::Hosted => inner.height as usize,
+                };
+                // `.scroll()` consumes a `u16`, so the ceiling is capped there
+                // too: a report of more than 65535 rows is unreachable rather
+                // than wrapping the offset back to the top of the document.
+                let max_scroll = total_rows
+                    .saturating_sub(visible_rows)
+                    .min(u16::MAX as usize);
+                let scroll = self.content_scroll.min(max_scroll);
+
+                let paragraph = Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .scroll((scroll as u16, 0));
+                frame.render_widget(paragraph, inner);
+
+                if chrome == Chrome::Owned {
+                    let footer = Line::from(Span::styled(
+                        " j/k: scroll  PgUp/PgDn: page  Esc: back",
+                        Style::default().fg(theme.muted),
+                    ));
+                    let footer_area = Rect::new(
+                        inner.x,
+                        inner.y + inner.height.saturating_sub(1),
+                        inner.width,
+                        1,
+                    );
+                    frame.render_widget(footer, footer_area);
+                }
             }
         }
-
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        frame.render_widget(paragraph, inner);
-
-        let footer = Line::from(Span::styled(
-            " j/k navigate  |  Enter: open section  |  Esc: back to list",
-            Style::default().fg(self.theme.muted),
-        ));
-        let footer_area = Rect::new(
-            inner.x,
-            inner.y + inner.height.saturating_sub(1),
-            inner.width,
-            1,
-        );
-        frame.render_widget(footer, footer_area);
     }
+}
 
-    fn render_report_view(&self, frame: &mut Frame, area: Rect) {
-        let title = match &self.report_content {
-            Some((section, _)) => match section {
-                ReportSection::Report => " Research Plan ",
-                ReportSection::Brief => " Sources ",
-                ReportSection::AgentAnswer => " Claims ",
-                ReportSection::Handoff => " Contradictions ",
-            },
-            None => " Content ",
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
-            .title(title);
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let Some((_, content)) = &self.report_content else {
-            let msg = Line::from(Span::styled(
-                "  No content to display",
-                Style::default().fg(self.theme.muted),
-            ));
-            let msg_area = Rect::new(inner.x, inner.y, inner.width, 1);
-            frame.render_widget(msg, msg_area);
-            return;
-        };
-
-        let lines: Vec<Line> = content
-            .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(self.theme.foreground),
-                ))
-            })
-            .collect();
-
-        let paragraph = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((self.content_scroll as u16, 0));
-        frame.render_widget(paragraph, inner);
-
-        let footer = Line::from(Span::styled(
-            " j/k: scroll  PgUp/PgDn: page  Esc: back",
-            Style::default().fg(self.theme.muted),
-        ));
-        let footer_area = Rect::new(
-            inner.x,
-            inner.y + inner.height.saturating_sub(1),
-            inner.width,
-            1,
-        );
-        frame.render_widget(footer, footer_area);
+/// These constructors lost their theme parameter when the render body stopped
+/// caching one, which leaves `new()` shaped like `Default` — so it has one.
+impl Default for ResearchBrowserDialog {
+    fn default() -> Self {
+        Self::new()
     }
 }

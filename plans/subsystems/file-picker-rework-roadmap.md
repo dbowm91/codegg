@@ -12,7 +12,7 @@ Long-term references:
 - `plans/002-long-term-roadmap.md` — frontend-neutral projections, TUI evolution.
 - `plans/003-planning-process.md` — milestone sizing, handoff review, registry discipline.
 
-Related ADRs: none required. This workstream changes no identity, ownership boundary, protocol, or authorization semantics. ADR-0022 (daemon-authorized workspace directory listing) and ADR-0034 (directory-tied project identity) are consumed, unchanged.
+Related ADRs: none required. This workstream changes no identity, ownership boundary, protocol, or authorization semantics. ADR-0022 (daemon-authorized workspace directory listing) and ADR-0033 (directory-tied project identity) are consumed, unchanged.
 
 ## 1. Purpose and ownership boundary
 

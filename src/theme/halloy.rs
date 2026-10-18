@@ -442,6 +442,19 @@ pub fn parse_halloy_theme(
 
     // selection_dim: lighten/darken selection slightly, or use border.
     theme.ui.selection_dim = derive_selection_dim(theme.ui.selection, theme.base.background);
+    // The two selection *foregrounds* are derived, not read. Halloy declares
+    // `buttons.primary.foreground_selected` in its schema and 0 of the 50
+    // bundled themes set it (all 50 set `background_selected` and
+    // `buffer.selection`), so sourcing from that slot would return `None` for
+    // every real theme — dead code that reads as correct. Deriving from
+    // colours the format *does* guarantee (`text.primary` and
+    // `general.background`, resolved above into base.foreground/background)
+    // asks no theme author for anything, which is what keeps "any Halloy theme
+    // ingests unchanged" true. This is the same move as `derive_selection_dim`
+    // one line above, for the same reason.
+    theme
+        .ui
+        .derive_selection_texts(theme.base.foreground, theme.base.background);
 
     diagnostics.extend(validate_theme(&theme));
     Ok((theme, diagnostics))
@@ -562,6 +575,8 @@ mod tests {
                 border_focused: Rgb::new(120, 180, 255),
                 selection: Rgb::new(40, 60, 90),
                 selection_dim: Rgb::new(50, 70, 100),
+                selection_text: Rgb::new(255, 255, 255),
+                accent_text: Rgb::new(0, 0, 0),
                 panel_background: Rgb::new(18, 18, 24),
                 input_background: Rgb::new(8, 8, 12),
                 title_background: Rgb::new(18, 18, 24),

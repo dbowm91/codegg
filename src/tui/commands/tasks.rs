@@ -708,9 +708,8 @@ pub(crate) fn handle_open_diff_dialog(
     new_content: Box<str>,
     title: Box<str>,
 ) {
-    let mut dialog =
+    let dialog =
         crate::tui::components::dialogs::diff::DiffDialog::new(old_content, new_content, title);
-    dialog.set_theme(&app.ui_state.theme);
     app.dialog_state.diff_dialog = Some(dialog);
     app.open_dialog(Dialog::Diff);
 }

@@ -16,7 +16,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0034-directory-tied-project-identity-and-client-working-directory.md`
+- `plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`
   (accepted 2026-10-16 — satisfied; governs 1:1 identity,
   auto-create/load, client-owned working directory, grandfathering)
 
@@ -32,7 +32,7 @@ working directory — with the daemon process cwd never moving.
 ## 2. Why this milestone is ready
 
 Ready at the sequential handoff: M2 (picker + surfaces), M3 (lifecycle),
-and M4 (rename/repath) are closed, and ADR-0034 is accepted. M5 unifies
+and M4 (rename/repath) are closed, and ADR-0033 is accepted. M5 unifies
 their surfaces under the identity rule and switches execution context on
 selection.
 
@@ -241,7 +241,7 @@ The agent must stop and report rather than improvise when:
   grandfather rule stands);
 - any design moves the daemon cwd or adds `current_dir()` to
   workspace-bound daemon code;
-- ADR-0034 is superseded;
+- ADR-0033 is superseded;
 - scope would expand into splits (deferred).
 
 ## 15. Closure evidence required

@@ -22,7 +22,7 @@ use codegg_protocol::document::DocumentScope;
 
 use crate::core::CoreClient;
 
-use super::editor::{EditorMode, EditorPoint, EditorUndoEntry};
+use super::editor::{EditorMode, EditorPoint, EditorPrefix, EditorUndoEntry, FindMotion, FindNote};
 use super::helix_selection::Selection;
 
 struct CoreClientTransport(Arc<dyn CoreClient>);
@@ -73,20 +73,35 @@ pub struct TuiDocumentPresentation {
     pub viewport_column: usize,
     /// Buffer edit mode.
     pub mode: EditorMode,
-    /// Multi-key normal-mode command prefix (`g`). Bounded to
-    /// [`MAX_EDITOR_PENDING_COMMAND`](super::editor::MAX_EDITOR_PENDING_COMMAND).
-    pub pending_command: String,
-    /// Whether a Helix `space` prefix is armed awaiting `y`.
+    /// The multi-key grammar the editor is waiting on.
     ///
-    /// Remembered state rather than a chord: `space y` arrives as two key
-    /// events in legacy xterm encoding, exactly as it does in `/terminal`.
-    pub yank_prefix_pending: bool,
+    /// Idle, or one armed [`EditorPrefix`] consumed by the next key. See that
+    /// type for the grammar rule — one pending prefix, one terminal key, and
+    /// a disarm whenever the thing it was aimed at changes.
+    pub pending_prefix: EditorPrefix,
+    /// The find-char motion `Alt-.` repeats, or `None` when there is none.
+    ///
+    /// Helix keeps one *motion* slot that every motion overwrites, so this
+    /// is cleared by any other motion rather than only by another find — the
+    /// gap between `f x`, `j`, and `Alt-.` is exactly what makes `Alt-.`
+    /// predictable. A reconciliation clears it for the same reason
+    /// `disarm_prefix` exists: the character it was aimed at may not be in
+    /// the text any more.
+    pub last_find: Option<FindMotion>,
+    /// Why the last find motion did not land, if it did not.
+    ///
+    /// Disclosed in the status row. A find that stops because the character
+    /// is absent and one that stops at [`MAX_EDITOR_FIND_BYTES`] otherwise
+    /// look identical — like a dropped keypress — and they call for
+    /// different answers, so the bound is stated rather than hidden.
+    pub find_note: FindNote,
     /// The `:` command line while command mode is open, without the leading
     /// `:`. Empty when command mode is closed.
     ///
     /// Bounded to [`MAX_EDITOR_COMMAND_LINE`](super::editor::MAX_EDITOR_COMMAND_LINE).
     /// This is a command *name*, never document text, so it is exempt from
-    /// the text-authority guard for the same reason `pending_command` is.
+    /// the text-authority guard for the same reason
+    /// [`pending_prefix`](Self::pending_prefix) is.
     pub command_line: String,
     /// Whether the `:` command line is open.
     pub command_active: bool,
@@ -145,10 +160,44 @@ impl TuiDocumentPresentation {
         self.viewport_line = 0;
         self.viewport_column = 0;
         self.mode = EditorMode::Normal;
-        self.yank_prefix_pending = false;
+        self.disarm_prefix();
         super::editor::clear_history(self);
         self.close_command_line();
         self.cancel_search();
+    }
+
+    /// Arm `prefix`, waiting for its next key.
+    ///
+    /// Replacing rather than stacking is the grammar: one pending prefix at a
+    /// time, so no gesture can ever need a third key.
+    pub fn arm_prefix(&mut self, prefix: EditorPrefix) {
+        self.pending_prefix = prefix;
+    }
+
+    /// Disarm any armed prefix, leaving the key that armed it unaffected.
+    ///
+    /// Called wherever the pending key's target stops being the thing on
+    /// screen: opening a document, leaving the editor route, moving focus to
+    /// the tree pane, and every reconciliation that rewrites the text.
+    pub fn disarm_prefix(&mut self) {
+        self.pending_prefix = EditorPrefix::Idle;
+    }
+
+    /// Forget the repeatable find and clear its disclosure.
+    ///
+    /// Called whenever something else becomes the last motion, which is how
+    /// Helix's single repeat slot behaves: `f x`, `j`, `Alt-.` finds nothing
+    /// to repeat, because `j` overwrote the motion `f x` recorded. Also
+    /// called on a reconciliation, where the recorded character may no longer
+    /// exist in the text at all.
+    ///
+    /// Kept as one operation rather than two assignments because the two
+    /// halves have no meaning apart from each other: a disclosure about a
+    /// find that cannot be repeated, or a repeatable find whose disclosure is
+    /// missing, are both a status row lying about the last keystroke.
+    pub fn forget_find(&mut self) {
+        self.last_find = None;
+        self.find_note = FindNote::None;
     }
 
     /// Open the `:` command line, optionally seeded with `prefix`.

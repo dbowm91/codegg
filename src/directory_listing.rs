@@ -12,6 +12,9 @@
 //!
 //! - **Bounded on every axis.** Depth, retained-node count,
 //!   *examined*-entry count, and per-entry name length all have hard caps.
+//! - **One listing is a bounded *window*, not the whole tree.** See
+//!   [`MAX_LISTING_DEPTH`] for why the depth cap is small and what replaces
+//!   unbounded nesting as the way to reach a deeper entry.
 //! - **Symlinks are never followed**, at any depth, including directory
 //!   symlinks. The check is on the raw entry.
 //! - **Cooperatively cancellable.** `cancel` is observed on every entry.
@@ -23,10 +26,40 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use codegg_protocol::document::{WorkspaceDirectoryNodeDto, WorkspaceDirectoryNodeKindDto};
 
-/// Maximum directory depth walked, counted from the walk root at `0`.
-pub const MAX_LISTING_DEPTH: usize = 12;
+/// Maximum directory depth **embedded** in one listing, counted from the walk
+/// root at `0`.
+///
+/// This is a *window* size, not a navigation limit, and that distinction is
+/// the whole reason it is small. A listing is scoped: `WorkspaceDirectoryList`
+/// carries a `prefix`, and `l` re-walks the selected directory as a new root
+/// (`FileTreeState::set_root_prefix`). So a three-level window is not a cap on
+/// how deep the user can browse — it is how much of any subtree one response
+/// carries.
+///
+/// It used to be 12, and a deep embed made the response cap bind on the wrong
+/// axis. The wire enforcer keeps the longest **top-level prefix** that fits
+/// `MAX_DIRECTORY_LISTING_RESPONSE_BYTES` (ADR-0022), so one directory with a
+/// deep subtree monopolises the budget and every sibling root is trimmed away.
+/// In a repository whose first alphabetical directory was a large one, a
+/// 512 KiB budget retained exactly **one** root node and the pane showed a
+/// single unusable row: no second row to select, nothing to expand. Raising
+/// [`MAX_LISTING_NODES`] did not help — the binding constraint was bytes, not
+/// node count.
+///
+/// Bounding the embedded depth keeps every root node small, so the prefix trim
+/// keeps *all* of them. Measured on a 75,956-entry repository: depth 12
+/// retained 1 root, depth 3 retains all 37 roots in 290 KiB.
+pub const MAX_LISTING_DEPTH: usize = 3;
 
 /// Maximum number of entries retained across the whole walk.
+///
+/// This bounds one **listing**, which is one directory scope. It is not a cap
+/// on the size of a repository: browsing past it is `l`, which re-walks a
+/// subtree against this same budget. The number is unchanged from C002
+/// deliberately — with [`MAX_LISTING_DEPTH`] bounding the embedding, the
+/// retained count is dominated by the breadth of the listed scope rather than
+/// the depth of the workspace, so raising it would buy payload without buying
+/// reach.
 pub const MAX_LISTING_NODES: usize = 4_096;
 
 /// Maximum number of directory entries *examined* across the whole walk,
@@ -39,6 +72,15 @@ pub const MAX_LISTING_NAME_BYTES: usize = 255;
 
 /// Directories never descended into. Mirrors the composer's `@`
 /// file-mention indexer.
+///
+/// `.codegg` is this application's own per-project runtime state — sessions,
+/// tool-program results, run records, python traces — and it lives *inside* the
+/// tree it describes. In a CodeGG checkout it was the single largest entry in
+/// the workspace (21,482 entries) and, being second alphabetically, it consumed
+/// the entire retained-node budget before any source directory was walked. The
+/// other walkers in this repository already skipped it
+/// (`python_script::snapshot`, `python_script::executor`,
+/// `research::sources::local_repo`); this list had drifted away from them.
 pub const LISTING_IGNORED_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -49,6 +91,7 @@ pub const LISTING_IGNORED_DIRS: &[&str] = &[
     ".cargo",
     "dist",
     "build",
+    ".codegg",
 ];
 
 /// Result of one bounded walk.

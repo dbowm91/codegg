@@ -3476,10 +3476,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn security_review_hunk_filter_clamps_selection() {
         use crate::tui::components::dialogs::security_review::SecurityReviewDialog;
-        use crate::tui::theme::Theme;
-        use std::sync::Arc;
-
-        let theme = Arc::new(Theme::dark());
         let receipt_output = SecurityReviewOutput {
             targets: vec![SecurityReviewTarget {
                 file_path: PathBuf::from("src/lib.rs"),
@@ -3543,7 +3539,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             0,
         );
 
-        let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt.clone());
+        let mut dialog = SecurityReviewDialog::with_receipt(receipt.clone());
         let all_count = dialog.visible_items.len();
         assert!(all_count > 0, "should have items");
 
@@ -3566,10 +3562,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn security_review_hunk_navigation_wraps_next_previous() {
         use crate::tui::components::component::Component;
         use crate::tui::components::dialogs::security_review::SecurityReviewDialog;
-        use crate::tui::theme::Theme;
-        use std::sync::Arc;
-
-        let theme = Arc::new(Theme::dark());
         let output = SecurityReviewOutput {
             targets: vec![SecurityReviewTarget {
                 file_path: PathBuf::from("src/a.rs"),
@@ -3676,7 +3668,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             0,
         );
 
-        let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
+        let mut dialog = SecurityReviewDialog::with_receipt(receipt);
         // Items: [Finding A (hunk), Finding B (no hunk), Finding C (hunk)] = 3 items
         assert_eq!(dialog.visible_items.len(), 3);
 
@@ -3718,10 +3710,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn security_review_hunk_jump_sets_detail_scroll() {
         use crate::tui::components::component::Component;
         use crate::tui::components::dialogs::security_review::SecurityReviewDialog;
-        use crate::tui::theme::Theme;
-        use std::sync::Arc;
-
-        let theme = Arc::new(Theme::dark());
         let output = SecurityReviewOutput {
             targets: vec![SecurityReviewTarget {
                 file_path: PathBuf::from("src/lib.rs"),
@@ -3782,7 +3770,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             0,
         );
 
-        let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
+        let mut dialog = SecurityReviewDialog::with_receipt(receipt);
         assert_eq!(dialog.detail_scroll, 0);
 
         // Press h (jump to hunk) — should set detail_scroll > 0
@@ -3855,10 +3843,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn security_review_hunk_key_noops_when_no_hunk() {
         use crate::tui::components::component::Component;
         use crate::tui::components::dialogs::security_review::SecurityReviewDialog;
-        use crate::tui::theme::Theme;
-        use std::sync::Arc;
-
-        let theme = Arc::new(Theme::dark());
         let output = SecurityReviewOutput {
             targets: vec![],
             findings: vec![SecurityReviewFinding {
@@ -3900,7 +3884,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             0,
         );
 
-        let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
+        let mut dialog = SecurityReviewDialog::with_receipt(receipt);
         assert_eq!(dialog.detail_scroll, 0);
         assert!(dialog.selected_item().unwrap().hunk.is_none());
 

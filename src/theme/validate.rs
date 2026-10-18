@@ -93,6 +93,26 @@ pub fn validate_theme(theme: &SemanticTheme) -> Vec<ThemeDiagnostic> {
         theme.ui.selection,
         SELECTION_TEXT_RATIO,
     );
+    // The two derived selection foregrounds. These are the tokens a selected
+    // row actually paints with, so they are held to the same bar as the fill
+    // they sit on. The derivation guarantees the ratio unless a native theme
+    // pinned the key explicitly — which is exactly the case worth reporting.
+    check(
+        &mut out,
+        theme,
+        "ui.selection_text",
+        theme.ui.selection_text,
+        theme.ui.selection,
+        SELECTION_TEXT_RATIO,
+    );
+    check(
+        &mut out,
+        theme,
+        "ui.accent_text",
+        theme.ui.accent_text,
+        theme.ui.accent_primary,
+        SELECTION_TEXT_RATIO,
+    );
     check(
         &mut out,
         theme,
@@ -180,6 +200,8 @@ mod tests {
                 border_focused: fg,
                 selection: bg,
                 selection_dim: bg,
+                selection_text: fg,
+                accent_text: bg,
                 panel_background: bg,
                 input_background: bg,
                 title_background: bg,

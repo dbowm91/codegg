@@ -14,7 +14,7 @@ Long-term requirements: `plans/000-long-term-specification.md#17-tui-target-arch
 `plans/001-terminology-and-domain-model.md#6-session-and-interaction-terms`;
 `plans/002-long-term-roadmap.md#phase-4--multi-project-and-multi-session-tui`
 
-Applicable ADRs: `plans/adrs/ADR-0034-directory-tied-project-identity-and-client-working-directory.md`
+Applicable ADRs: `plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`
 (accepted 2026-10-16). This milestone is **conformance work against that accepted
 decision** and introduces no new architecture.
 
@@ -98,7 +98,7 @@ At baseline:
   never to process cwd.
 - Path validation continues to canonicalize, reject symlink escapes, and join
   `allowed_root` before resolving a relative request. Never walk the raw request.
-- Daemon process cwd is never mutated. ADR-0034 Option B (daemon chdirs) was
+- Daemon process cwd is never mutated. ADR-0033 Option B (daemon chdirs) was
   explicitly rejected and must not be reintroduced.
 - `check_daemon_cwd_usage.py` continues to pass, and continues to reject new
   process-cwd call sites in daemon-owned execution modules.

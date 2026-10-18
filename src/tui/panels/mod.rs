@@ -909,6 +909,19 @@ pub struct PanelCtx<'a> {
     /// `DirectionLeft`/`DirectionRight`/… are Normal-mode gestures by
     /// contract, and this is what enforces that even while a panel is focused.
     pub input_mode: crate::tui::input::InputMode,
+    /// Whether the terminal caret's blink is in its visible phase this frame.
+    ///
+    /// Granted from the one frame clock
+    /// ([`spinner::cursor_blink_visible_now`](crate::tui::components::spinner::cursor_blink_visible_now))
+    /// rather than read inside the panel, for the same reason `now_ms` is:
+    /// the host owns time, the panel owns presentation. It also makes the
+    /// phase *pinnable* — a test can render both phases of the blink without
+    /// racing the clock, where a panel that called the seam itself could only
+    /// be asserted by sampling it.
+    ///
+    /// Presentation only, like everything else in this context: reporting a
+    /// phase may not move the keyboard.
+    pub caret_blink_on: bool,
 }
 
 /// A swappable side panel. See [`SidePanelId`] for the extension procedure.
@@ -977,6 +990,24 @@ pub trait SidePanel {
         action: Option<InputAction>,
         ctx: &mut PanelCtx<'_>,
     ) -> PanelKey;
+
+    /// Whether this panel claims the host's directional gesture
+    /// (`Shift`+arrows, `H`/`J`/`K`/`L`).
+    ///
+    /// The host answers the directions before consulting the panel, because
+    /// they are the only way out of a focused panel. That is right for a
+    /// *viewer* and wrong for a surface with the keyboard: the Terminal panel
+    /// in INS mode is a live PTY, and the app's `InputMode` is still `Normal`
+    /// there, so a `Normal`-mode gate alone let an uppercase `H`/`J`/`K`/`L`
+    /// be read as "move the panel" instead of a character the user typed. In a
+    /// shell those are ordinary letters, so a command containing one lost the
+    /// character and the column moved out from under the user.
+    ///
+    /// Takes `ctx` for the same reason [`Self::owns_exit_key`] does: the answer
+    /// depends on controller state the panel does not own.
+    fn claims_panel_directions(&self, _ctx: &PanelCtx<'_>) -> bool {
+        true
+    }
 
     /// Whether the panel claims one of the host's exit keys
     /// (`Esc`/`q`) before the host drops focus.
@@ -1481,9 +1512,7 @@ impl SidePanelHost {
     /// The composer is aimed at the agent session whenever no panel has
     /// focus, so a panel whose verbs are only live *with* the keyboard has
     /// nothing to say then — `None` is the correct answer for the session,
-    /// chat, help and agents surfaces. A panel the user docked is the
-    /// exception: it advertises itself and the gesture that enters it, so the
-    /// keymap is readable before anyone presses the wrong key.
+    /// chat, help, agents and terminal surfaces.
     pub fn composer_hints(
         &self,
         chat_project: Option<&str>,
@@ -1498,15 +1527,28 @@ impl SidePanelHost {
         // Read-only dispatch: a hint must not require an exclusive borrow of
         // the panel, or the composer row could not ask for it during render.
         //
-        // Asked whether or not this panel is focused, on purpose. The gate
-        // lived here and meant an unfocused panel advertised nothing at all —
-        // so a docked `/files` panel, the one surface whose verbs the user
-        // cannot guess, showed a keymap only after they had already guessed
-        // right. Each panel decides what is honest to say without the
-        // keyboard: the session, chat, help and agents panels decline, so a
-        // pre-docked column that the user never went into stays quiet, and the
-        // terminal panel, which always had an unfocused branch, finally gets to
-        // use it.
+        // Asked whether or not this panel is focused, on purpose, and the two
+        // answers differ by *kind* rather than by accident:
+        //
+        // - A **hosted** panel is a box the user adopted. Its verbs are
+        //   undiscoverable any other way — the `/files` keymap exists only in
+        //   this line — so an unfocused hosted panel advertises itself and the
+        //   gesture that enters it. Those verbs are inert without the keyboard,
+        //   and the line says so (`"/shift+→ in"` leads, `back` does not
+        //   appear).
+        // - A **bespoke** panel holds a live projection the user can already
+        //   see and whose chrome names it, so an unfocused one declines and
+        //   the row goes away entirely.
+        //
+        // The gate that once lived here — no hint from any panel until it had
+        // the keyboard — answered the `/files` case wrongly, and the terminal
+        // panel was the one panel that kept an unfocused branch to exploit it.
+        // That branch then outlived its reasoning: every verb in
+        // `"TERM · focus to scroll, select and type"`, including the
+        // `Shift+←/→` gesture it advertised, needs the keyboard the composer
+        // had taken, so the row persisted above the LLM buffer describing a
+        // terminal the user was not in. Bespoke panels now decline; hosted
+        // panels still speak.
         match self.active() {
             SidePanelId::Session => self.session.composer_hints(&hints),
             SidePanelId::Chat => self.chat.composer_hints(&hints),
@@ -1587,6 +1629,27 @@ impl SidePanelHost {
     /// created or attached so docking `/terminal` shows something.
     pub fn show_terminal(&mut self, handle: Option<&str>) {
         self.terminal.show(handle);
+    }
+
+    /// The terminal the panel is *currently showing*, if that panel is docked
+    /// and visible on screen.
+    ///
+    /// Visibility is part of the answer on purpose. A terminal adopted by a
+    /// panel that is collapsed, swapped out for another panel, or moved off
+    /// the edge is not on anyone's screen, so nothing it produces is worth a
+    /// read; treating "adopted" as "mounted" is how a background terminal ends
+    /// up polling forever for nobody.
+    pub fn visible_terminal_handle(&self) -> Option<String> {
+        if !self.terminal.is_empty() && self.panel_is_terminal_visible() {
+            return self.terminal.handle().map(str::to_string);
+        }
+        None
+    }
+
+    fn panel_is_terminal_visible(&self) -> bool {
+        PanelPlacement::ALL.iter().any(|placement| {
+            self.panel_at(*placement) == SidePanelId::Terminal && self.is_visible_at(*placement)
+        })
     }
 
     /// Drop the terminal panel's handle when its view disappears.
@@ -1829,7 +1892,9 @@ impl SidePanelHost {
         // `MoveDirection` rather than as a resolved focus change so the
         // contextual dispatcher still sees the whole picture — including the
         // fact that no box is open, which is what makes this a pane move.
-        if ctx.input_mode == crate::tui::input::InputMode::Normal {
+        if ctx.input_mode == crate::tui::input::InputMode::Normal
+            && self.panel().claims_panel_directions(ctx)
+        {
             let dir = match action {
                 Some(InputAction::DirectionLeft) => Some(PanelDirection::Left),
                 Some(InputAction::DirectionRight) => Some(PanelDirection::Right),

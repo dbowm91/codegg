@@ -53,11 +53,175 @@ pub const MAX_EDITOR_UNDO_DEPTH: usize = 256;
 /// recent history is always the history that survives.
 pub const MAX_EDITOR_UNDO_BYTES: usize = 4 * 1024 * 1024;
 
-/// Maximum length of a pending multi-key normal-mode command prefix.
+/// Maximum width of the pending-prefix indicator, in bytes.
 ///
-/// The editor accepts only `d` and `g` prefixes, so two bytes is the whole
-/// grammar. Anything longer is discarded rather than buffered.
-pub const MAX_EDITOR_PENDING_COMMAND: usize = 2;
+/// This bounds what the editor can *put on screen*, not what it can hold.
+/// [`EditorPrefix`] is a single enum value, so the state machine cannot grow
+/// past one variant however many leaves are registered against it; the only
+/// thing left to bound is the rendered text. Every
+/// [`EditorPrefix::display`] is asserted to fit by
+/// `every_pending_prefix_display_fits_the_indicator_bound`, so adding a
+/// grammar that needs a longer label fails a test instead of silently
+/// truncating into an indistinguishable blank.
+pub const MAX_EDITOR_PENDING_PREFIX: usize = 5;
+
+/// The multi-key grammar the editor is waiting on.
+///
+/// **Grammar rule: one pending prefix, one terminal key consumed.** A key
+/// arriving while a prefix is armed either matches a leaf or disarms it;
+/// nothing consumes a second key, and no prefix is ever armed on top of
+/// another. The find prefixes keep the rule but change what the terminal
+/// key *is*: `f` takes the next character as its target rather than as a
+/// leaf, which is still exactly one key and still always disarms. A prefix
+/// is also disarmed outright whenever the thing it was waiting for stops
+/// being the thing on screen — opening a different document, leaving the
+/// editor route, moving focus to the tree pane, or a reconciliation
+/// rewriting the text under it. A prefix that outlives its target is a
+/// gesture applied to the wrong buffer, which is the "relative path
+/// resolved against the wrong root" defect in gesture form.
+///
+/// Adding a grammar means adding a variant here and its leaf in
+/// `commands::editor::resolve_pending_prefix`, never a new field on the
+/// presentation. That is the whole point of the type: `pending_command` and
+/// `yank_prefix_pending` were one flag per feature, which is why Helix's
+/// `[`/`]` grammars each wanted another one.
+///
+/// This module is the presentation model and deliberately knows nothing about
+/// key events, so a leaf is named by the glyph it completes rather than by a
+/// `KeyCode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorPrefix {
+    /// Nothing pending: every key resolves against the keymap.
+    #[default]
+    Idle,
+    /// Helix goto mode, armed by `g`. Its only leaf is `gg`.
+    Goto,
+    /// Helix space mode, armed by `space`.
+    Space,
+    /// Helix's unimpaired `[` prefix. Armed; its leaves arrive in M006.
+    OpenBracket,
+    /// Helix's unimpaired `]` prefix. Armed; its leaves arrive in M006.
+    CloseBracket,
+    /// Helix `f` — waiting for the character to find.
+    FindNext,
+    /// Helix `F` — waiting for the character to find.
+    FindPrevious,
+    /// Helix `t` — waiting for the character to find.
+    FindTillNext,
+    /// Helix `T` — waiting for the character to find.
+    FindTillPrevious,
+}
+
+impl EditorPrefix {
+    /// The find motion this prefix is waiting to complete, when it is one.
+    ///
+    /// These four are the one place the grammar takes its next key as
+    /// **data** rather than as a leaf glyph: after `f`, the character typed
+    /// is the target, not a command. That is a categorically different job
+    /// from `gg`'s second `g`, which is a command — and it is why
+    /// [`Self::leaf`] is `None` for all of them. [`find_target_char`][target]
+    /// does the capture; the machine still owns the disarm.
+    ///
+    /// [target]: crate::tui::commands::editor::find_target_char
+    pub fn find_kind(self) -> Option<FindKind> {
+        match self {
+            EditorPrefix::FindNext => Some(FindKind::Next),
+            EditorPrefix::FindPrevious => Some(FindKind::Previous),
+            EditorPrefix::FindTillNext => Some(FindKind::TillNext),
+            EditorPrefix::FindTillPrevious => Some(FindKind::TillPrevious),
+            _ => None,
+        }
+    }
+
+    /// Whether this prefix waits for a target character rather than a leaf.
+    pub fn is_find(self) -> bool {
+        self.find_kind().is_some()
+    }
+
+    /// The prefix `glyph` arms, when `glyph` is one of the find keys.
+    ///
+    /// The one table mapping `f`/`t`/`F`/`T` onto their kinds, so an arm
+    /// cannot arm `FindPrevious` for `T`.
+    pub fn armed_by(glyph: char) -> Option<Self> {
+        match glyph {
+            'f' => Some(EditorPrefix::FindNext),
+            'F' => Some(EditorPrefix::FindPrevious),
+            't' => Some(EditorPrefix::FindTillNext),
+            'T' => Some(EditorPrefix::FindTillPrevious),
+            _ => None,
+        }
+    }
+
+    /// Whether a key is currently being waited on.
+    pub fn is_pending(self) -> bool {
+        self != EditorPrefix::Idle
+    }
+
+    /// What the editor shows for an armed prefix, or `""` when idle.
+    ///
+    /// This is the whole grammar's rendering surface, so it is a closed set
+    /// rather than accumulated text. `space` renders as the word rather than
+    /// the space character it is bound to: a literal space would put nothing
+    /// on screen, and a pending prefix the user cannot see is a prefix they
+    /// cannot predict. The find prefixes show their key for the same reason
+    /// — an armed `f` that drew nothing would be indistinguishable from a
+    /// dropped keypress.
+    pub fn display(self) -> &'static str {
+        match self {
+            EditorPrefix::Idle => "",
+            EditorPrefix::Goto => "g",
+            EditorPrefix::Space => "space",
+            EditorPrefix::OpenBracket => "[",
+            EditorPrefix::CloseBracket => "]",
+            EditorPrefix::FindNext => "f",
+            EditorPrefix::FindPrevious => "F",
+            EditorPrefix::FindTillNext => "t",
+            EditorPrefix::FindTillPrevious => "T",
+        }
+    }
+
+    /// The glyph completing this prefix's leaf, or `None` when it has none.
+    ///
+    /// Every leaf is a bare unmodified glyph today, so the dispatch layer is
+    /// the only place that needs to know about modifiers. The find prefixes
+    /// are `None` on purpose: their next key is a *target character*, not a
+    /// leaf, so there is no glyph that could complete them.
+    pub fn leaf(self) -> Option<char> {
+        match self {
+            EditorPrefix::Goto => Some('g'),
+            EditorPrefix::Space => Some('y'),
+            // `[`/`]` are armed ahead of M006's unimpaired leaves, so nothing
+            // matches yet and every second key takes the mismatch path.
+            EditorPrefix::Idle
+            | EditorPrefix::OpenBracket
+            | EditorPrefix::CloseBracket
+            | EditorPrefix::FindNext
+            | EditorPrefix::FindPrevious
+            | EditorPrefix::FindTillNext
+            | EditorPrefix::FindTillPrevious => None,
+        }
+    }
+
+    /// Whether an unmatched key is consumed with the prefix or resolved next.
+    ///
+    /// `Goto` swallows, because that is the baseline's `gg` behavior and
+    /// Helix's: the second key belongs to the chord whether or not it
+    /// completes it. The unimpaired prefixes retry, because swallowing there
+    /// would mean a `[` followed by a letter lost that letter on its way to
+    /// the composer — and their leaves are still two milestones away, so a
+    /// prefix that cannot be escaped is worse than one that occasionally
+    /// passes a key through.
+    ///
+    /// The find prefixes retry too, and for the sharper reason: their next
+    /// key is a target character, so there is no such thing as a key that
+    /// "matches". A key that cannot be a target — an arrow, `Esc`, one of
+    /// the two modal openers — is handed back for normal resolution rather
+    /// than eaten, which is what keeps `f` from swallowing a keystroke on
+    /// its way to the composer.
+    pub fn swallows_unmatched(self) -> bool {
+        self == EditorPrefix::Goto
+    }
+}
 
 /// Minimum display columns reserved for the horizontal scroll indicator.
 const MIN_EDITOR_TEXT_COLUMNS: u16 = 1;
@@ -90,7 +254,7 @@ pub const TRUNCATED_LINE_SUFFIX: &str = " …[too long]";
 /// the whole grammar. Anything longer is refused at the keystroke rather
 /// than buffered, so this field can never grow into a second text buffer —
 /// the same reasoning that bounds
-/// [`MAX_EDITOR_PENDING_COMMAND`](super::editor::MAX_EDITOR_PENDING_COMMAND).
+/// [`MAX_EDITOR_PENDING_PREFIX`](super::editor::MAX_EDITOR_PENDING_PREFIX).
 pub const MAX_EDITOR_COMMAND_LINE: usize = 64;
 
 /// Maximum number of `:` completions offered at once.
@@ -182,6 +346,267 @@ pub fn find_matches(snapshot: &DocumentSnapshot, needle: &str) -> SearchOutcome 
         matches,
         truncated,
         bounded,
+    }
+}
+
+// ── Character-finding motions (Helix `f` / `F` / `t` / `T`) ──────────────────
+
+/// Bytes one find-char motion scans away from the cursor.
+///
+/// Deliberately the same window a `/` search uses rather than a second
+/// number to reason about: both are paid on the keystroke, so both need the
+/// same reason to stop. Unlike `/`, the window is measured **from the
+/// cursor** — `[cursor, cursor + MAX)` forward, `[cursor - MAX, cursor)`
+/// backward — because a find jumps *toward* a target rather than
+/// enumerating the document.
+pub const MAX_EDITOR_FIND_BYTES: usize = MAX_EDITOR_SEARCH_BYTES;
+
+/// Which way a find-char motion travels, and what Helix calls it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindKind {
+    /// Helix `f` — find next char.
+    Next,
+    /// Helix `F` — find previous char.
+    Previous,
+    /// Helix `t` — find till next char.
+    TillNext,
+    /// Helix `T` — find till previous char.
+    TillPrevious,
+}
+
+impl FindKind {
+    /// Which direction this motion travels.
+    pub fn forward(self) -> bool {
+        matches!(self, Self::Next | Self::TillNext)
+    }
+
+    /// The `EditorCommand` this motion is, given its target.
+    pub fn command(self, target: char) -> EditorCommand {
+        match self {
+            Self::Next => EditorCommand::FindNext(target),
+            Self::Previous => EditorCommand::FindPrevious(target),
+            Self::TillNext => EditorCommand::FindTillNext(target),
+            Self::TillPrevious => EditorCommand::FindTillPrevious(target),
+        }
+    }
+}
+
+/// One resolved find-char motion: what to look for, and which way.
+///
+/// The repeatable-motion record is this type rather than an
+/// `Option<EditorCommand>` so that "repeat only find motions" is a property
+/// the compiler enforces. `Alt-.` is Helix's *repeat last motion*, and
+/// Helix keeps a single slot that every motion overwrites — which is why
+/// `j` between two finds is what disarms the repeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindMotion {
+    pub kind: FindKind,
+    pub target: char,
+}
+
+impl FindMotion {
+    /// Scan for this motion's target from `offset`.
+    pub fn outcome(&self, snapshot: &DocumentSnapshot, offset: usize) -> FindOutcome {
+        find_char(snapshot, offset, self.target, self.kind.forward())
+    }
+
+    /// The `EditorCommand` this motion is.
+    pub fn command(self) -> EditorCommand {
+        self.kind.command(self.target)
+    }
+}
+
+/// Where one find-char scan stopped, and why it stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindOutcome {
+    /// The target is at this byte offset, always on a character boundary.
+    Found(usize),
+    /// The whole document was scanned in that direction and the target does
+    /// not occur in it.
+    Absent,
+    /// The scan stopped at [`MAX_EDITOR_FIND_BYTES`] first, so the target
+    /// may well exist past it.
+    ///
+    /// Disclosed rather than folded into `Absent`, for the same reason
+    /// [`SearchOutcome::bounded`] is: a result that stopped early and one
+    /// that looked everywhere are different facts, and reporting them the
+    /// same way is a search that lies by omission.
+    Bounded,
+}
+
+/// Why the last find-char motion did not land, if it did not.
+///
+/// Disclosed in the status row rather than swallowed. A motion that stops
+/// because the character is not there and a motion that stops because the
+/// bound was reached otherwise read identically — as a keypress that was
+/// simply dropped — and they call for different answers from the reader
+/// (type something else vs. jump through `/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FindNote {
+    /// The last find motion landed, or no find motion has run.
+    #[default]
+    None,
+    /// The whole document was scanned; the character does not occur in that
+    /// direction.
+    Absent(char),
+    /// The scan stopped at [`MAX_EDITOR_FIND_BYTES`] first.
+    Bounded(char),
+}
+
+impl FindNote {
+    /// The note for a completed scan.
+    pub fn from_outcome(outcome: FindOutcome, target: char) -> Self {
+        match outcome {
+            FindOutcome::Found(_) => FindNote::None,
+            FindOutcome::Absent => FindNote::Absent(target),
+            FindOutcome::Bounded => FindNote::Bounded(target),
+        }
+    }
+
+    /// Status-row text, or `""` when the last find landed.
+    pub fn label(self) -> String {
+        match self {
+            FindNote::None => String::new(),
+            FindNote::Absent(target) => format!("no {target:?} in that direction"),
+            FindNote::Bounded(target) => format!(
+                "no {target:?} within the {mib} MiB scan bound",
+                mib = MAX_EDITOR_FIND_BYTES / (1024 * 1024)
+            ),
+        }
+    }
+}
+
+/// Bytes read per step of a find-char scan.
+///
+/// The window is bounded at [`MAX_EDITOR_FIND_BYTES`], but materializing all
+/// of it on one keystroke would make `f` pay a 2 MiB copy for a jump the
+/// user expects to be instant. Chunks are read with a small overlap — the
+/// widest target minus one byte — so a multi-byte target straddling a chunk
+/// edge is still wholly inside one of them.
+///
+/// Overlapping means a target can be seen twice. That is harmless: the first
+/// occurrence is returned and the scan stops, and UTF-8 is
+/// self-synchronizing, so a valid encoding of `target` appears in the byte
+/// stream only where that character actually starts — never at the tail of
+/// some other character.
+const FIND_SCAN_CHUNK: usize = 8 * 1024;
+
+/// The largest character boundary at or before `offset`, never below `floor`.
+fn boundary_at_or_before(snapshot: &DocumentSnapshot, offset: usize, floor: usize) -> usize {
+    let mut candidate = offset;
+    while candidate > floor && !snapshot.is_byte_boundary(candidate) {
+        candidate -= 1;
+    }
+    candidate
+}
+
+/// The smallest character boundary at or after `offset`, never above
+/// `ceiling`.
+fn boundary_at_or_after(snapshot: &DocumentSnapshot, offset: usize, ceiling: usize) -> usize {
+    let mut candidate = offset;
+    while candidate < ceiling && !snapshot.is_byte_boundary(candidate) {
+        candidate += 1;
+    }
+    candidate
+}
+
+/// Find `target` from `offset`, forward or backward, **across line
+/// boundaries**.
+///
+/// Helix calls out the difference from vi in a single line — *"`f`, `F`,
+/// `t` and `T` are not confined to the current line"* — because the current
+/// line is what an implementation reaches for by habit. Nothing here knows
+/// which line the cursor is on; this is the whole reason the cross-line
+/// tests exist rather than being obvious from the code.
+///
+/// The scan starts **strictly past** the cursor in the direction of travel,
+/// so `f x` from a cursor already sitting on `x` finds the *next* `x`
+/// rather than standing still, and `F x` likewise looks strictly behind.
+///
+/// `DocumentSnapshot::read_bytes` refuses a range that does not start and end
+/// on character boundaries, which is why this reads in aligned chunks rather
+/// than a byte at a time. Reading per byte would not merely be slow: a
+/// single `read_bytes(offset, offset + 1)` into the middle of a multi-byte
+/// character is an error, so the byte at which a two-byte target begins
+/// would be *unreadable*, and the scan would walk past every occurrence of
+/// it. That was the first implementation of this function and it silently
+/// failed on every document containing a non-ASCII character.
+pub fn find_char(
+    snapshot: &DocumentSnapshot,
+    offset: usize,
+    target: char,
+    forward: bool,
+) -> FindOutcome {
+    // The widest match minus one byte, so a target straddling a chunk edge is
+    // still wholly inside the next chunk. `str::match_indices` yields the
+    // *byte* offset of each match, so no encoding is materialized here.
+    let overlap = target.len_utf8() - 1;
+    let total = snapshot.len_bytes();
+    let cursor = clamp_offset(snapshot, offset);
+
+    if forward {
+        let bound = cursor.saturating_add(MAX_EDITOR_FIND_BYTES).min(total);
+        let mut at = next_char_boundary(snapshot, cursor).unwrap_or(total);
+        while at < bound {
+            let ceiling = (at + FIND_SCAN_CHUNK).min(bound);
+            let last_chunk = ceiling == bound;
+            let hi = boundary_at_or_before(snapshot, ceiling, at);
+            if hi == at {
+                break;
+            }
+            let Ok(chunk) = snapshot.read_bytes(at, hi) else {
+                // A window we could not read is a window we did not cover,
+                // which is exactly what `Bounded` says.
+                return FindOutcome::Bounded;
+            };
+            if let Some((found, _)) = chunk.match_indices(target).next() {
+                let at_found = at + found;
+                // A target whose last byte is past the bound lies outside the
+                // window, so reporting it would be reporting something the
+                // bound promised not to look at.
+                if at_found + target.len_utf8() <= bound {
+                    return FindOutcome::Found(at_found);
+                }
+            }
+            if last_chunk {
+                break;
+            }
+            at = hi - overlap;
+        }
+        if bound < total {
+            FindOutcome::Bounded
+        } else {
+            FindOutcome::Absent
+        }
+    } else {
+        let bound = cursor.saturating_sub(MAX_EDITOR_FIND_BYTES);
+        let mut at = cursor;
+        while at > bound {
+            let floor = at.saturating_sub(FIND_SCAN_CHUNK).max(bound);
+            let last_chunk = floor == bound;
+            let lo = boundary_at_or_after(snapshot, floor, at);
+            if lo >= at {
+                break;
+            }
+            let Ok(chunk) = snapshot.read_bytes(lo, at) else {
+                return FindOutcome::Bounded;
+            };
+            if let Some(found) = chunk.rfind(target) {
+                let at_found = lo + found;
+                if at_found >= bound {
+                    return FindOutcome::Found(at_found);
+                }
+            }
+            if last_chunk {
+                break;
+            }
+            at = lo + overlap;
+        }
+        if bound > 0 {
+            FindOutcome::Bounded
+        } else {
+            FindOutcome::Absent
+        }
     }
 }
 
@@ -562,6 +987,15 @@ pub enum EditorCommand {
     WordEnd,
     HalfPageDown,
     HalfPageUp,
+    /// Helix `f {char}` — the next occurrence, spanning line boundaries.
+    FindNext(char),
+    /// Helix `F {char}` — the previous occurrence, spanning line boundaries.
+    FindPrevious(char),
+    /// Helix `t {char}` — see [`Self::FindNext`]; the two differ in Helix's
+    /// *selection*, not in where the cursor lands.
+    FindTillNext(char),
+    /// Helix `T {char}` — see [`Self::FindPrevious`].
+    FindTillPrevious(char),
     InsertBefore,
     InsertAfter,
     InsertLineStart,
@@ -574,6 +1008,29 @@ pub enum EditorCommand {
     DeleteWord,
     Undo,
     Redo,
+}
+
+impl EditorCommand {
+    /// This command as a find motion, when it is one.
+    ///
+    /// The single place that answers it, so "which motions are repeatable
+    /// by `Alt-.`" cannot be answered two slightly different ways by the
+    /// recorder and the dispatcher.
+    pub fn find_motion(self) -> Option<FindMotion> {
+        let (kind, target) = match self {
+            Self::FindNext(target) => (FindKind::Next, target),
+            Self::FindPrevious(target) => (FindKind::Previous, target),
+            Self::FindTillNext(target) => (FindKind::TillNext, target),
+            Self::FindTillPrevious(target) => (FindKind::TillPrevious, target),
+            _ => return None,
+        };
+        Some(FindMotion { kind, target })
+    }
+
+    /// Whether this command is a find motion.
+    pub fn is_find_motion(self) -> bool {
+        self.find_motion().is_some()
+    }
 }
 
 // ── Offset safety ────────────────────────────────────────────────────────────
@@ -922,6 +1379,9 @@ pub fn apply_helix_verb(
     );
     let mut outcome = HelixVerbOutcome::Handled;
     let mut scrolled_to = presentation.viewport_line;
+    // Only a find motion writes a record; `None` means this verb moved the
+    // cursor and deliberately left the repeatable-motion slot alone.
+    let mut find_record: Option<(Option<FindMotion>, FindNote)> = None;
     match verb {
         HelixVerb::SelectChar => state.toggle_char(),
         HelixVerb::SelectLine => {
@@ -966,9 +1426,18 @@ pub fn apply_helix_verb(
             // written exactly once, below, through the shared machine — which
             // is what decides whether this move extends a character selection
             // or only disarms line growth.
+            //
+            // The find record and its disclosure ride along with the cursor
+            // and the scroll for the same reason: a find motion is the one
+            // motion that also writes state about the *attempt*, and it
+            // resolves on the probe. Both are seeded from the real
+            // presentation first so a non-find motion — which writes neither
+            // — cannot erase a record the dispatcher deliberately kept.
             let mut probe = TuiDocumentPresentation {
                 viewport_line: presentation.viewport_line,
                 cursor_byte: presentation.cursor_byte,
+                last_find: presentation.last_find,
+                find_note: presentation.find_note,
                 ..TuiDocumentPresentation::default()
             };
             let next = apply_motion(&mut probe, snapshot, command, NOMINAL_HELIX_PAGES);
@@ -978,11 +1447,16 @@ pub fn apply_helix_verb(
             scrolled_to = probe.viewport_line;
             state.move_to(editor_point(snapshot, next));
             outcome = HelixVerbOutcome::Moved(next);
+            find_record = Some((probe.last_find, probe.find_note));
         }
     }
     presentation.cursor_byte = state.cursor().byte;
     presentation.selection = state.selection();
     presentation.viewport_line = scrolled_to;
+    if let Some((last_find, find_note)) = find_record {
+        presentation.last_find = last_find;
+        presentation.find_note = find_note;
+    }
     outcome
 }
 
@@ -1173,16 +1647,42 @@ pub fn resolve_completion_edit(
 /// *raw* motion: it always drops a held selection, so an Insert-mode arrow or
 /// an LSP jump leaves nothing highlighted rather than dragging an old anchor
 /// onto wherever the cursor landed.
+///
+/// A find motion is the one command resolved here rather than in
+/// [`apply_motion_inner`], because it is the only motion that has an
+/// *outcome* to disclose: the bounded scan can stop short, and that has to
+/// reach the status row whether or not the cursor moved. It is recorded
+/// here, next to the resolution that produced it, rather than in the
+/// dispatch layer that pressed the key — otherwise the note and the move
+/// would be two facts about the same keystroke that can disagree.
 pub fn apply_motion(
     presentation: &mut TuiDocumentPresentation,
     snapshot: &DocumentSnapshot,
     command: EditorCommand,
     visible_lines: usize,
 ) -> usize {
-    let resolved = apply_motion_inner(presentation, snapshot, command, visible_lines);
+    let from = clamp_offset(snapshot, presentation.cursor_byte);
+    let find = command
+        .find_motion()
+        .map(|motion| (motion, motion.outcome(snapshot, from)));
+    let resolved = match find {
+        Some((_, FindOutcome::Found(offset))) => offset,
+        // A find that found nothing leaves the cursor exactly where it was,
+        // and `apply_motion_inner`'s catch-all would do the same — but only
+        // by accident, and it would leave the disclosure unwritten.
+        Some((_, FindOutcome::Absent | FindOutcome::Bounded)) => from,
+        None => apply_motion_inner(presentation, snapshot, command, visible_lines),
+    };
     presentation.cursor_byte = resolved;
     presentation.viewport_line =
         viewport_after_motion(presentation, snapshot, command, resolved, visible_lines);
+    if let Some((motion, outcome)) = find {
+        // Recorded whether or not it landed: Helix's repeat slot is set by
+        // running the command, so `f z` with no `z` ahead still leaves `Alt-.`
+        // armed to try `f z` again from wherever the cursor is.
+        presentation.last_find = Some(motion);
+        presentation.find_note = FindNote::from_outcome(outcome, motion.target);
+    }
     resolved
 }
 
@@ -1540,12 +2040,25 @@ fn trim_history(presentation: &mut TuiDocumentPresentation) {
 /// editor surfaces that state and never replays or discards the draft on the
 /// user's behalf, so it must not keep inverse transactions that no longer
 /// describe the local text.
+///
+/// Disarms the pending prefix too, which is the same fact in a different
+/// register: the gesture the user was halfway through was aimed at text that
+/// has just been replaced underneath it. The baseline only disarmed
+/// `pending_command` here and left `yank_prefix_pending` armed across a
+/// reload, so a `space` typed before a resync yanked in the reloaded
+/// buffer.
+///
+/// The repeatable find and its disclosure go for the same reason and in the
+/// same breath: after a reconciliation the character `Alt-.` would look for,
+/// and the answer to whether it is there at all, describe text that no
+/// longer exists.
 pub fn clear_history(presentation: &mut TuiDocumentPresentation) {
     presentation.undo.clear();
     presentation.redo.clear();
     presentation.undo_bytes = 0;
     presentation.redo_bytes = 0;
-    presentation.pending_command.clear();
+    presentation.disarm_prefix();
+    presentation.forget_find();
 }
 
 // ── Viewport ─────────────────────────────────────────────────────────────────
@@ -2627,20 +3140,542 @@ mod tests {
     }
 
     #[test]
-    fn clear_history_drops_undo_redo_and_pending_command() {
+    fn clear_history_drops_undo_redo_and_the_pending_prefix() {
         let snapshot = snapshot_of("hello");
         let mut presentation = presentation_at(0);
         record_undo(
             &mut presentation,
             &insert_text(&snapshot, 0, "abc").unwrap(),
         );
-        presentation.pending_command = "d".into();
+        presentation.pending_prefix = EditorPrefix::Goto;
+        // A reconciliation replaces the text, so a recorded find aimed at the
+        // old bytes — and the disclosure about whether the target is there —
+        // are both statements about text that no longer exists.
+        presentation.last_find = Some(FindMotion {
+            kind: FindKind::Next,
+            target: 'h',
+        });
+        presentation.find_note = FindNote::Absent('h');
         clear_history(&mut presentation);
         assert!(presentation.undo.is_empty());
         assert!(presentation.redo.is_empty());
         assert_eq!(presentation.undo_bytes, 0);
         assert_eq!(presentation.redo_bytes, 0);
-        assert!(presentation.pending_command.is_empty());
+        assert_eq!(presentation.pending_prefix, EditorPrefix::Idle);
+        assert_eq!(
+            presentation.last_find, None,
+            "`Alt-.` must not repeat a motion resolved against the replaced text"
+        );
+        assert_eq!(presentation.find_note, FindNote::None);
+    }
+
+    // ── Character-finding motions ─────────────────────────────────────────
+
+    /// The defect this milestone exists to not ship. Helix states the
+    /// difference from vi in one sentence — *"`f`, `F`, `t` and `T` are not
+    /// confined to the current line"* — because the current line is what an
+    /// implementation reaches for by habit.
+    ///
+    /// Every target here sits on a *different* line from the cursor, so a
+    /// scan bounded by `line_content_end` would report `Absent` and leave the
+    /// cursor where it was, which is exactly the same observable result as
+    /// the motion working. Asserting only "the cursor moved" would pass on
+    /// both implementations.
+    #[test]
+    fn a_find_motion_spans_line_boundaries() {
+        // `alpha\nbeta\ngamma\ndelta\n` — `g` is at byte 11, in the third
+        // line; `b` is at byte 6, in the second. Both targets are the *only*
+        // occurrence of their character anywhere in the document, so a
+        // line-confined scan has nothing to find and reports "absent".
+        let text = "alpha\nbeta\ngamma\ndelta\n";
+        let snapshot = snapshot_of(text);
+
+        let mut presentation = presentation_at(0);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('g'),
+            10,
+        );
+        assert_eq!(
+            presentation.cursor_byte, 11,
+            "`f g` must cross the two line breaks between `alpha` and `gamma`"
+        );
+
+        let end = text.len();
+        let mut presentation = presentation_at(end);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindPrevious('b'),
+            10,
+        );
+        assert_eq!(
+            presentation.cursor_byte, 6,
+            "`F b` must cross three line breaks back to the `b` in `beta`"
+        );
+    }
+
+    /// `t`/`T` land **on** the target character, as does `f`/`F`.
+    ///
+    /// The plan rejects the other reading five times, and it is the reading an
+    /// implementer arrives at from vi and kakoune, where a till-motion stops
+    /// *before* the character. That mistake is invisible in a suite that only
+    /// asserts "the cursor moved somewhere near the target", which is why the
+    /// expected offset here is the target's own byte, spelled out.
+    #[test]
+    fn till_motions_land_on_the_target_character() {
+        let text = "alpha\nbeta\ngamma\n";
+        let snapshot = snapshot_of(text);
+
+        // `alpha`: a(0) l(1) p(2) h(3) a(4) \n(5)
+        let cases = [
+            (EditorCommand::FindNext('l'), 1),
+            (EditorCommand::FindTillNext('l'), 1),
+            (EditorCommand::FindNext('a'), 4),
+            (EditorCommand::FindTillNext('a'), 4),
+        ];
+        for (command, expected) in cases {
+            let mut presentation = presentation_at(0);
+            apply_motion(&mut presentation, &snapshot, command, 10);
+            assert_eq!(
+                presentation.cursor_byte, expected,
+                "{command:?} must land on the target, not before it"
+            );
+        }
+
+        // `gamma` starts at byte 11: g(11) a(12) m(13) m(14) a(15).
+        let cases = [
+            (EditorCommand::FindPrevious('g'), 11),
+            (EditorCommand::FindTillPrevious('g'), 11),
+            (EditorCommand::FindPrevious('m'), 14),
+            (EditorCommand::FindTillPrevious('m'), 14),
+        ];
+        for (command, expected) in cases {
+            let mut presentation = presentation_at(16);
+            apply_motion(&mut presentation, &snapshot, command, 10);
+            assert_eq!(
+                presentation.cursor_byte, expected,
+                "{command:?} must land on the target, not past it"
+            );
+        }
+    }
+
+    /// The scan starts strictly past the cursor in the direction of travel.
+    ///
+    /// Without this, `f x` with the cursor already on `x` is a no-op that
+    /// looks exactly like a failed find, and `F x` cannot find the `x` the
+    /// cursor is sitting on — which is the one `x` the user can see.
+    #[test]
+    fn a_find_motion_scans_strictly_past_the_cursor() {
+        let snapshot = snapshot_of("xax");
+        let mut presentation = presentation_at(0);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('x'),
+            10,
+        );
+        assert_eq!(
+            presentation.cursor_byte, 2,
+            "`f x` on an `x` must find the next one, not stand still"
+        );
+
+        let mut presentation = presentation_at(2);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindPrevious('x'),
+            10,
+        );
+        assert_eq!(
+            presentation.cursor_byte, 0,
+            "`F x` on an `x` must find the previous one"
+        );
+    }
+
+    /// A multi-byte target matches whole characters, never a byte of a
+    /// neighbour — and the scan advances across multi-byte characters.
+    ///
+    /// The load-bearing case is the *interior* byte. The second byte of `é` is
+    /// `0xA9`, and `read_bytes` refuses any range that does not end on a
+    /// character boundary — so a scan that reads one byte at a time cannot
+    /// read byte 1 of `"aé…"` at all, and walks straight past the `é`. That
+    /// implementation passed on ASCII and failed silently on every document
+    /// containing a non-ASCII character, which is why the two-byte and
+    /// four-byte targets are both spelled out here.
+    #[test]
+    fn a_multi_byte_target_matches_whole_characters_only() {
+        // `a`(1) `é`(2) `€`(3) `a`(1) — 7 bytes, 4 characters.
+        let snapshot = snapshot_of("aé€a");
+        let mut presentation = presentation_at(0);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('é'),
+            10,
+        );
+        assert_eq!(presentation.cursor_byte, 1);
+
+        let mut presentation = presentation_at(0);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('€'),
+            10,
+        );
+        assert_eq!(presentation.cursor_byte, 3);
+
+        let mut presentation = presentation_at(6);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindPrevious('é'),
+            10,
+        );
+        assert_eq!(
+            presentation.cursor_byte, 1,
+            "backward multi-byte targets resolve to their own byte offset"
+        );
+
+        // A four-byte target: the scan must step over one whole character to
+        // reach the byte after it, and must not mistake the emoji's own
+        // continuation bytes for a match.
+        let snapshot = snapshot_of("z😀z");
+        let mut presentation = presentation_at(0);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('😀'),
+            10,
+        );
+        assert_eq!(presentation.cursor_byte, 1);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('z'),
+            10,
+        );
+        assert_eq!(
+            presentation.cursor_byte, 5,
+            "the scan must advance by whole characters across a 4-byte one"
+        );
+    }
+
+    /// A target past the bound is disclosed, not reported as absent.
+    ///
+    /// Both mean "the cursor did not move", and they call for opposite
+    /// answers from the reader — type something else, or reach for `/`. A
+    /// scan that stopped at the bound and said "not found" would be a search
+    /// that lies by omission, which is the `search_partial` defect one layer
+    /// down.
+    #[test]
+    fn a_find_beyond_the_scan_bound_is_disclosed_rather_than_called_absent() {
+        // A target well past the window, and none within it at all.
+        let filler = "a".repeat(MAX_EDITOR_FIND_BYTES + 1024);
+        let text = format!("{filler}z");
+        let snapshot = snapshot_of(&text);
+
+        assert_eq!(
+            find_char(&snapshot, 0, 'z', true),
+            FindOutcome::Bounded,
+            "a target past the window must be disclosed, not called absent"
+        );
+        assert_eq!(
+            find_char(&snapshot, 0, 'q', true),
+            FindOutcome::Bounded,
+            "an absent target is also only known to be absent within the window"
+        );
+
+        // Scanning backwards from the end of a document *larger* than the
+        // window still only covers the window, so that direction is bounded
+        // too — it cannot claim "absent" any more than the forward scan can.
+        assert_eq!(
+            find_char(&snapshot, text.len(), 'q', false),
+            FindOutcome::Bounded,
+            "a backward scan past the window is bounded as well"
+        );
+        assert_eq!(
+            find_char(&snapshot, text.len(), 'z', false),
+            FindOutcome::Found(MAX_EDITOR_FIND_BYTES + 1024),
+            "the target just past the forward bound is reachable backwards"
+        );
+
+        // A document inside the window is different: the whole of it was
+        // scanned, so "absent" is a fact about the document rather than
+        // about the scan.
+        let small = snapshot_of("abc");
+        assert_eq!(
+            find_char(&small, 3, 'q', false),
+            FindOutcome::Absent,
+            "a backward scan inside the window may say absent for real"
+        );
+        assert_eq!(
+            find_char(&small, 0, 'q', true),
+            FindOutcome::Absent,
+            "and so may a forward one"
+        );
+
+        // And the disclosure says the bound, so the two are distinguishable
+        // in the status row and not only in a test.
+        assert_eq!(
+            FindNote::from_outcome(FindOutcome::Absent, 'z'),
+            FindNote::Absent('z')
+        );
+        assert_eq!(
+            FindNote::from_outcome(FindOutcome::Bounded, 'z'),
+            FindNote::Bounded('z')
+        );
+        assert_eq!(FindNote::Absent('z').label(), "no 'z' in that direction");
+        assert!(
+            FindNote::Bounded('z').label().contains("2 MiB"),
+            "the bounded note must state the bound: {}",
+            FindNote::Bounded('z').label()
+        );
+        assert_ne!(
+            FindNote::Absent('z').label(),
+            FindNote::Bounded('z').label(),
+            "the two not-found cases must be distinguishable on screen"
+        );
+        assert_eq!(
+            FindNote::from_outcome(FindOutcome::Found(4), 'z'),
+            FindNote::None
+        );
+        assert_eq!(FindNote::None.label(), "");
+    }
+
+    /// A find motion records itself for `Alt-.` and discloses how it went,
+    /// including when it went nowhere.
+    ///
+    /// Recording only on success would be the intuitive choice and the wrong
+    /// one: Helix sets the repeat slot by *running* the command, so `f z` with
+    /// no `z` ahead still leaves `Alt-.` armed to try `f z` again from
+    /// wherever the cursor is.
+    #[test]
+    fn a_find_motion_records_itself_for_repeat_and_discloses_its_outcome() {
+        let snapshot = snapshot_of("abc\nxyz\n");
+        let mut presentation = presentation_at(0);
+
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('x'),
+            10,
+        );
+        assert_eq!(
+            presentation.last_find,
+            Some(FindMotion {
+                kind: FindKind::Next,
+                target: 'x'
+            })
+        );
+        assert_eq!(
+            presentation.find_note,
+            FindNote::None,
+            "a find that landed has nothing to disclose"
+        );
+
+        // Now one that finds nothing: recorded, and disclosed.
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::FindNext('q'),
+            10,
+        );
+        assert_eq!(
+            presentation.last_find,
+            Some(FindMotion {
+                kind: FindKind::Next,
+                target: 'q'
+            }),
+            "a failed find is still the last find"
+        );
+        assert_eq!(presentation.find_note, FindNote::Absent('q'));
+
+        // Only a find motion is ever recorded, and only a find motion maps
+        // back to the command that produced it.
+        for command in [
+            EditorCommand::MoveRight,
+            EditorCommand::WordForward,
+            EditorCommand::BufferStart,
+        ] {
+            assert_eq!(command.find_motion(), None, "{command:?}");
+            assert!(!command.is_find_motion(), "{command:?}");
+        }
+        for (kind, target, expected) in [
+            (FindKind::Next, 'a', EditorCommand::FindNext('a')),
+            (FindKind::Previous, 'b', EditorCommand::FindPrevious('b')),
+            (FindKind::TillNext, 'c', EditorCommand::FindTillNext('c')),
+            (
+                FindKind::TillPrevious,
+                'd',
+                EditorCommand::FindTillPrevious('d'),
+            ),
+        ] {
+            let motion = FindMotion { kind, target };
+            assert_eq!(motion.command(), expected);
+            assert_eq!(expected.find_motion(), Some(motion), "{expected:?}");
+        }
+    }
+
+    /// Every armed prefix, with the leaf it completes and what it does to a key
+    /// that completes nothing. `gg` and `space y` are the reason this is a table
+    /// and not a single boolean: the baseline disagreed about the unmatched key,
+    /// and merging them while picking one answer would have changed a gesture.
+    ///
+    /// The four find prefixes appear here too, and their `leaf` is `None` on
+    /// purpose — their next key is a target *character*, not a leaf, so there
+    /// is no glyph that could complete them. They are the reason the
+    /// mismatched-key column is also a table: a key that cannot be a target
+    /// must be handed back, not eaten.
+    #[test]
+    fn each_prefix_declares_its_leaf_and_its_unmatched_key_policy() {
+        let cases = [
+            (EditorPrefix::Idle, None, false, "", None),
+            (EditorPrefix::Goto, Some('g'), true, "g", None),
+            (EditorPrefix::Space, Some('y'), false, "space", None),
+            (EditorPrefix::OpenBracket, None, false, "[", None),
+            (EditorPrefix::CloseBracket, None, false, "]", None),
+            (
+                EditorPrefix::FindNext,
+                None,
+                false,
+                "f",
+                Some(FindKind::Next),
+            ),
+            (
+                EditorPrefix::FindPrevious,
+                None,
+                false,
+                "F",
+                Some(FindKind::Previous),
+            ),
+            (
+                EditorPrefix::FindTillNext,
+                None,
+                false,
+                "t",
+                Some(FindKind::TillNext),
+            ),
+            (
+                EditorPrefix::FindTillPrevious,
+                None,
+                false,
+                "T",
+                Some(FindKind::TillPrevious),
+            ),
+        ];
+        for (prefix, leaf, swallows, display, find_kind) in cases {
+            assert_eq!(prefix.leaf(), leaf, "{prefix:?} leaf");
+            assert_eq!(
+                prefix.swallows_unmatched(),
+                swallows,
+                "{prefix:?} unmatched-key policy"
+            );
+            assert_eq!(prefix.display(), display, "{prefix:?} indicator");
+            assert_eq!(prefix.find_kind(), find_kind, "{prefix:?} find kind");
+            assert_eq!(
+                prefix.is_find(),
+                find_kind.is_some(),
+                "{prefix:?} takes a target character"
+            );
+            assert_eq!(
+                prefix.is_pending(),
+                prefix != EditorPrefix::Idle,
+                "{prefix:?}"
+            );
+        }
+    }
+
+    /// The one table mapping the four find keys onto the kinds they arm.
+    ///
+    /// Asserted against the dispatch layer's arms rather than trusted to them:
+    /// a mistyped table here would arm `FindPrevious` for `T`, and the result
+    /// would still be a pending prefix that resolves — just the wrong motion.
+    #[test]
+    fn the_four_find_keys_arm_the_four_find_kinds() {
+        let cases = [
+            ('f', EditorPrefix::FindNext, FindKind::Next, true),
+            ('F', EditorPrefix::FindPrevious, FindKind::Previous, false),
+            ('t', EditorPrefix::FindTillNext, FindKind::TillNext, true),
+            (
+                'T',
+                EditorPrefix::FindTillPrevious,
+                FindKind::TillPrevious,
+                false,
+            ),
+        ];
+        for (glyph, prefix, kind, forward) in cases {
+            let armed = EditorPrefix::armed_by(glyph)
+                .unwrap_or_else(|| panic!("{glyph:?} must arm a prefix"));
+            assert_eq!(armed, prefix, "{glyph:?} arms");
+            assert_eq!(armed.find_kind(), Some(kind), "{glyph:?} kind");
+            assert_eq!(kind.forward(), forward, "{glyph:?} direction");
+        }
+        // Nothing else arms a find. Without this, the next milestone's leaves
+        // could quietly join the table.
+        for glyph in ['g', ' ', '[', ']', 'y', 'd', 'w', '\n', '.'] {
+            assert_eq!(
+                EditorPrefix::armed_by(glyph),
+                None,
+                "{glyph:?} must not arm a find prefix"
+            );
+        }
+    }
+
+    /// The indicator's width is bounded by construction: the pending prefix is a
+    /// typed value rather than accumulated text, so the bound is asserted
+    /// against every label instead of against a length a caller might pass.
+    #[test]
+    fn every_pending_prefix_display_fits_the_indicator_bound() {
+        for prefix in [
+            EditorPrefix::Idle,
+            EditorPrefix::Goto,
+            EditorPrefix::Space,
+            EditorPrefix::OpenBracket,
+            EditorPrefix::CloseBracket,
+            EditorPrefix::FindNext,
+            EditorPrefix::FindPrevious,
+            EditorPrefix::FindTillNext,
+            EditorPrefix::FindTillPrevious,
+        ] {
+            assert!(
+                prefix.display().len() <= MAX_EDITOR_PENDING_PREFIX,
+                "{prefix:?} renders {:?}, over the {MAX_EDITOR_PENDING_PREFIX} byte bound",
+                prefix.display()
+            );
+        }
+        assert_eq!(
+            EditorPrefix::Space.display().len(),
+            MAX_EDITOR_PENDING_PREFIX,
+            "the bound is the longest label, not a guess"
+        );
+        assert_eq!(
+            MAX_EDITOR_FIND_BYTES, MAX_EDITOR_SEARCH_BYTES,
+            "a find motion inherits the search window rather than inventing a second bound"
+        );
+    }
+
+    /// The grammar is one prefix deep: arming while armed replaces, because a
+    /// stacked grammar is how a gesture ends up needing a third key.
+    #[test]
+    fn arming_replaces_rather_than_stacking_and_disarm_returns_to_idle() {
+        let mut presentation = presentation_at(0);
+        assert_eq!(presentation.pending_prefix, EditorPrefix::Idle);
+        assert!(!presentation.pending_prefix.is_pending());
+
+        presentation.arm_prefix(EditorPrefix::Goto);
+        assert_eq!(presentation.pending_prefix, EditorPrefix::Goto);
+        presentation.arm_prefix(EditorPrefix::Space);
+        assert_eq!(
+            presentation.pending_prefix,
+            EditorPrefix::Space,
+            "the second prefix replaced the first rather than stacking on it"
+        );
+
+        presentation.disarm_prefix();
+        assert_eq!(presentation.pending_prefix, EditorPrefix::Idle);
+        assert_eq!(presentation.pending_prefix.display(), "");
     }
 
     #[test]

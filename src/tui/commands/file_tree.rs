@@ -32,6 +32,10 @@ pub fn toggle_tree(app: &mut App) {
     let visible = !app.file_tree_state.visible;
     app.file_tree_state.visible = visible;
     app.ui_state.tree_focused = visible;
+    // Focus moved. A prefix armed over the buffer belongs to the surface the
+    // user just looked away from, so it disarms rather than surviving until
+    // its second key happens to arrive.
+    app.editor_state.disarm_prefix();
     if !visible {
         app.file_tree_state.selected = None;
         return;
@@ -525,6 +529,11 @@ pub fn activate_selected(app: &mut App) {
 pub fn set_focus(app: &mut App, focused: bool) {
     let focused = focused && app.file_tree_state.visible;
     app.ui_state.tree_focused = focused;
+    // Same rule as `toggle_tree`: focus moving into the tree retires any
+    // prefix the buffer was waiting on. This runs before the Normal-mode
+    // coercion below, so the prefix is gone by the time the buffer is no
+    // longer the focused surface.
+    app.editor_state.disarm_prefix();
     if focused {
         app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
         if let Some(session) = app.editor_state.session.as_mut() {

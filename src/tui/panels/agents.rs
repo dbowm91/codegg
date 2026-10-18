@@ -392,6 +392,7 @@ mod tests {
             area: Rect::new(0, 0, 40, 10),
             focused: true,
             input_mode: crate::tui::input::InputMode::Normal,
+            caret_blink_on: true,
         };
         body(&mut ctx)
     }

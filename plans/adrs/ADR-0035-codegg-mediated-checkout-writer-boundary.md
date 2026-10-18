@@ -1,4 +1,4 @@
-# ADR-0033: CodeGG-Mediated Checkout Writer Boundary for Shared Placement
+# ADR-0035: CodeGG-Mediated Checkout Writer Boundary for Shared Placement
 
 Status: accepted — 2026-10-16; user authorization recorded in the work session. No implementation or shared-write authorization.
 

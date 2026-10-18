@@ -12,7 +12,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::Rect,
+    layout::{Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -24,6 +24,33 @@ use crate::tui::app::state::{group_task_rows, TaskViewSection, TaskViewState, MA
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
 use crate::tui::theme::Theme;
+
+/// Who owns this render's chrome.
+///
+/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
+/// draws its own border, title and keymap footer; [`Chrome::Hosted`] is a
+/// column in a side panel, where the host has already painted all three into
+/// the same rect.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    Owned,
+    Hosted,
+}
+
+/// The verbs this box implements, for the panel host to reuse verbatim.
+///
+/// `handle_key` below is the implementation and this is the advertisement.
+/// `Esc`, `q`, `↑`/`↓` and `J`/`K` are deliberately absent even though
+/// `handle_key` answers all of them: `SidePanelHost::handle_key` claims
+/// `Esc`/`q` as its universal exits and `insert_panel_direction_bindings` binds
+/// bare uppercase `H`/`J`/`K`/`L` (with SHIFT and with NONE, because
+/// terminals disagree about how they encode a shifted letter) as panel
+/// directions, so all of them are answered before this widget is consulted. The
+/// `J`/`K` case is the sharp one — that pair is the reorder gesture, and it
+/// cannot fire from a column at all, so the old footer's `J/K reorder` was
+/// false the moment the box docked. `Home`/`End`/`PageUp`/`PageDown` are *not*
+/// panel directions, which is why this hint can still promise them.
+const HINT: &str = "j/k move · ^d/^u page · Home/End end · g/G end · enter open · d detail · r refresh · x cancel · u resume · t trigger · T rotate · X revoke · e trigger refresh";
 
 /// One rendered Task-view row (bounded, secret-free).
 #[derive(Debug, Clone)]
@@ -215,8 +242,45 @@ impl Component for TaskViewDialog {
         }
     }
 
+    /// The verbs this box owns, spelled the way this box spells them.
+    fn keymap_hint(&self) -> Option<String> {
+        Some(HINT.to_string())
+    }
+
+    /// The row list alone: no border, no title, no footer.
+    ///
+    /// The host has already painted a border, a ` ● Task View ` title and the
+    /// `●` focus marker into this same rect, and `render_in_panel` is handed the
+    /// full rect rather than the interior, so `render_view`'s own `Block` would
+    /// overwrite all three and a focused column would render exactly like an
+    /// unfocused one. The longest footer in the codebase goes with it: it named
+    /// `J/K reorder` (a panel direction, so unreachable here) and `Esc close`
+    /// (the host's), and it wrapped onto extra rows in a 40-column body. `area`
+    /// is the host's full rect, so inset by its border first.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let inner = area.inner(Margin::new(1, 1));
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        render_view(
+            frame,
+            inner,
+            theme,
+            &self.project_id,
+            &self.snapshot,
+            Chrome::Hosted,
+        );
+    }
+
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        render_view(frame, area, theme, &self.project_id, &self.snapshot);
+        render_view(
+            frame,
+            area,
+            theme,
+            &self.project_id,
+            &self.snapshot,
+            Chrome::Owned,
+        );
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -230,17 +294,27 @@ fn render_view(
     theme: &Arc<Theme>,
     project_id: &str,
     snapshot: &TaskViewSnapshot,
+    chrome: Chrome,
 ) {
     if area.height < 8 || area.width < 30 {
         return;
     }
     let width = area.width as usize;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(" Project Tasks ".to_string());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // Only the modal owns a box. A hosted column already has the host's border
+    // and ` Project Tasks ` title in this same rect, so `block.inner` here would
+    // inset a second time and the `Block` would repaint over the focus marker.
+    let inner = match chrome {
+        Chrome::Owned => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .title(" Project Tasks ".to_string());
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            inner
+        }
+        Chrome::Hosted => area,
+    };
     if inner.height == 0 || inner.width < 10 {
         return;
     }
@@ -323,10 +397,15 @@ fn render_view(
             Style::default().fg(theme.warning),
         )));
     }
-    lines.push(Line::from(Span::styled(
-        "j/k move · J/K reorder · Enter open · d detail · r refresh · x cancel · u resume · t trigger setup · T rotate · X revoke · e trigger refresh · Esc close",
-        Style::default().fg(theme.muted),
-    )));
+    // The footer is the modal's only: a column is told the verbs through
+    // `keymap_hint`, and two of the five keys it used to spell (`J/K`, `Esc`)
+    // are answered by the panel host before this widget is ever consulted.
+    if chrome == Chrome::Owned {
+        lines.push(Line::from(Span::styled(
+            "j/k move · J/K reorder · Enter open · d detail · r refresh · x cancel · u resume · t trigger setup · T rotate · X revoke · e trigger refresh · Esc close",
+            Style::default().fg(theme.muted),
+        )));
+    }
     let paragraph = Paragraph::new(lines).style(Style::default().fg(theme.foreground));
     frame.render_widget(paragraph, inner);
 }

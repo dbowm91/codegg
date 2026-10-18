@@ -35,7 +35,7 @@ use ratatui::Frame;
 
 use codegg_document::DocumentSnapshot;
 
-use crate::tui::editor::{self, EditorMode, EditorViewport, MAX_EDITOR_PENDING_COMMAND};
+use crate::tui::editor::{self, EditorMode, EditorPrefix, EditorViewport};
 use crate::tui::theme::Theme;
 
 /// Rows of chrome reserved above the text: the state banner and the
@@ -53,6 +53,13 @@ pub struct EditorWidget<'a> {
     pub status: &'a str,
     /// Surfaced error banner, if any.
     pub notice: Option<&'a str>,
+    /// Why the last find-char motion did not land, already rendered to text
+    /// by [`FindNote::label`], or `""`.
+    ///
+    /// A pre-rendered `&str` like `status` and `notice`, because the widget
+    /// holds no domain state: the disclosure belongs to the motion that
+    /// produced it, and the caller already had it in hand.
+    pub find_note: &'a str,
     /// Buffer mode.
     pub mode: EditorMode,
     /// Which region owns keyboard input.
@@ -62,8 +69,8 @@ pub struct EditorWidget<'a> {
     /// puts the cursor in the text, NOR hands typing to the bottom input box
     /// while the Helix verbs stay on the buffer.
     pub buffer_focused: bool,
-    /// Pending normal-mode command prefix.
-    pub pending_command: &'a str,
+    /// The armed multi-key prefix, rendered as its pending indicator.
+    pub pending_prefix: EditorPrefix,
     /// Whether the `:` command line is open.
     pub command_active: bool,
     /// Authority root the open document is confined to. Drives the global /
@@ -151,10 +158,22 @@ impl EditorWidget<'_> {
         let line_number = editor::cursor_line(self.snapshot, self.cursor_byte) + 1;
         let column = editor::display_column(self.snapshot, self.cursor_byte) + 1;
         let plural = if self.search_count == 1 { "" } else { "es" };
-        let pending = if self.pending_command.is_empty() {
+        let pending = self.pending_prefix.display();
+        let pending = if pending.is_empty() {
             String::new()
         } else {
-            format!(" {}", self.pending_command)
+            format!(" {pending}")
+        };
+        // The find disclosure rides on the same row as the pending
+        // indicator, because it answers the same question — "what did my
+        // last keystroke do?" — and a second status line would compete with
+        // the one the reader is already looking at. Empty when the last find
+        // landed, which is the overwhelmingly common case, so an ordinary
+        // keystroke draws exactly what it drew before this existed.
+        let find = if self.find_note.is_empty() {
+            String::new()
+        } else {
+            format!("  · {}", self.find_note)
         };
         // The `:` line replaces the status text while it is open. It owns
         // the banner row because that row is what the user is looking at
@@ -163,7 +182,10 @@ impl EditorWidget<'_> {
         //
         // `/` gets the same row for the same reason: it is a modal input
         // line on this surface, so it belongs where `:` lives rather than
-        // inventing a second place to look.
+        // inventing a second place to look. Both also suppress the find
+        // disclosure: those lines own the keyboard and the row, and a note
+        // about a find that happened before them would read as an answer to
+        // a question nobody is asking.
         let (banner_text, banner_style) = if self.search_active {
             (
                 format!("/{}_", self.search_line),
@@ -180,17 +202,17 @@ impl EditorWidget<'_> {
             )
         } else if let Some(notice) = self.notice {
             (
-                format!("{notice}{pending}"),
+                format!("{notice}{find}{pending}"),
                 Style::default().fg(theme.error),
             )
         } else if !self.writable {
             (
-                format!("{}{pending}", self.status),
+                format!("{}{find}{pending}", self.status),
                 Style::default().fg(theme.warning),
             )
         } else {
             (
-                format!("{}{pending}", self.status),
+                format!("{}{find}{pending}", self.status),
                 Style::default().fg(theme.muted),
             )
         };
@@ -1137,19 +1159,11 @@ fn display_width_str(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-/// Clamp a pending normal-mode prefix to the editor's bound.
-pub fn bounded_pending(pending: &str) -> &str {
-    if pending.len() <= MAX_EDITOR_PENDING_COMMAND {
-        pending
-    } else {
-        ""
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::document_session::TuiDocumentPresentation;
+    use crate::tui::editor::FindNote;
     use codegg_document::DocumentBuffer;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1160,9 +1174,10 @@ mod tests {
     struct Options<'a> {
         status: &'a str,
         notice: Option<&'a str>,
+        find_note: &'a str,
         mode: EditorMode,
         buffer_focused: bool,
-        pending_command: &'a str,
+        pending_prefix: EditorPrefix,
         command_active: bool,
         command_line: &'a str,
         command_selection: usize,
@@ -1184,9 +1199,10 @@ mod tests {
         Options {
             status: "synced",
             notice: None,
+            find_note: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
-            pending_command: "",
+            pending_prefix: EditorPrefix::Idle,
             command_active: false,
             command_line: "",
             command_selection: 0,
@@ -1228,9 +1244,10 @@ mod tests {
                     path: "src/lib.rs",
                     status: options.status,
                     notice: options.notice,
+                    find_note: options.find_note,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
-                    pending_command: options.pending_command,
+                    pending_prefix: options.pending_prefix,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -1297,9 +1314,10 @@ mod tests {
                     path: "src/lib.rs",
                     status: options.status,
                     notice: options.notice,
+                    find_note: options.find_note,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
-                    pending_command: options.pending_command,
+                    pending_prefix: options.pending_prefix,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -1534,7 +1552,7 @@ mod tests {
             0,
             Options {
                 notice: Some("edit queue is full"),
-                pending_command: "d",
+                pending_prefix: EditorPrefix::Goto,
                 ..defaults()
             },
         );
@@ -1545,7 +1563,7 @@ mod tests {
             "banner status is replaced: {banner}"
         );
         assert!(
-            banner.contains("edit queue is full d"),
+            banner.contains("edit queue is full g"),
             "banner and pending prefix share the row: {banner}"
         );
     }
@@ -1555,6 +1573,141 @@ mod tests {
         let lines = render("content", 60, 8, 0, defaults());
         let banner = banner(&lines);
         assert!(banner.contains("synced"), "{banner}");
+    }
+
+    /// The two "the cursor did not move" reasons must be distinguishable on
+    /// screen, and neither may appear when the find landed.
+    ///
+    /// They are one cursor position and two completely different facts, so a
+    /// user told nothing has to guess between "that character is not ahead of
+    /// you" and "I stopped looking". The common case — a find that worked —
+    /// has to stay silent, or every ordinary keystroke would leave debris on
+    /// the row.
+    #[test]
+    fn the_find_disclosure_distinguishes_absent_from_bounded_and_is_silent_on_success() {
+        let cases = [
+            (FindNote::None, false, false),
+            (FindNote::Absent('z'), true, false),
+            (FindNote::Bounded('z'), true, true),
+        ];
+        for (note, expect_visible, expect_bound) in cases {
+            let lines = render(
+                "content",
+                60,
+                8,
+                0,
+                Options {
+                    find_note: &note.label(),
+                    ..defaults()
+                },
+            );
+            let banner = banner(&lines);
+            if expect_visible {
+                assert!(
+                    banner.contains('z'),
+                    "the note must name the target: {banner}"
+                );
+            } else {
+                assert!(
+                    !banner.contains('z'),
+                    "a landed find must leave the row clean: {banner}"
+                );
+            }
+            assert_eq!(
+                banner.contains("MiB"),
+                expect_bound,
+                "only the bounded note states the bound: {banner}"
+            );
+        }
+
+        // The two never render identically — that is the whole point.
+        assert_ne!(
+            FindNote::Absent('z').label(),
+            FindNote::Bounded('z').label()
+        );
+    }
+
+    /// An armed `f` and the disclosure share one row, in that order: the
+    /// indicator answers "what is waiting", the note answers "what happened
+    /// last", and conflating them would leave the user unable to tell which
+    /// is which.
+    #[test]
+    fn the_find_disclosure_and_the_pending_prefix_share_the_banner_row() {
+        let lines = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                find_note: &FindNote::Absent('z').label(),
+                pending_prefix: EditorPrefix::FindNext,
+                ..defaults()
+            },
+        );
+        let row = banner(&lines);
+        // The bordered row is padded out to the pane width, so the banner
+        // text ends *before* a run of spaces and the right-hand border.
+        let text = row.trim_end().trim_end_matches('│').trim_end();
+        assert!(
+            text.ends_with(" f"),
+            "the pending indicator is last on the row: {text:?}"
+        );
+        let note_at = text
+            .find("no 'z'")
+            .expect("the disclosure must render on the same row");
+        assert!(
+            note_at < text.len() - 1,
+            "the note precedes the pending indicator: {text:?}"
+        );
+    }
+
+    /// The modal lines own the banner while they are open, and suppress the
+    /// note — a disclosure about a find that happened before them would read
+    /// as an answer to the question the line is asking.
+    #[test]
+    fn an_open_modal_line_suppresses_the_find_disclosure() {
+        let note = FindNote::Absent('z').label();
+
+        let lines = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                command_active: true,
+                command_line: "wq",
+                find_note: &note,
+                ..defaults()
+            },
+        );
+        let row = banner(&lines);
+        assert!(row.contains(":wq"), "the `:` line owns the banner: {row}");
+        assert!(
+            !row.contains("no 'z'"),
+            "a stale find note must not sit on the `:` line: {row}"
+        );
+
+        let lines = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                search_active: true,
+                search_line: "target",
+                find_note: &note,
+                ..defaults()
+            },
+        );
+        let row = banner(&lines);
+        assert!(
+            row.contains("/target"),
+            "the `/` line owns the banner: {row}"
+        );
+        assert!(
+            !row.contains("no 'z'"),
+            "a stale find note must not sit on the `/` line: {row}"
+        );
     }
 
     #[test]
@@ -1838,10 +1991,71 @@ mod tests {
         assert!(joined.contains("working"), "{joined}");
     }
 
+    /// Every armed prefix puts something different on screen, and an idle editor
+    /// puts nothing there.
+    ///
+    /// The distinctness is the point, not the presence: an indicator that rendered
+    /// every prefix identically would let a user believe they had armed a grammar
+    /// they had not. `space` is here because it was the one pending state with no
+    /// indicator at all before M002 — the baseline's `bool` had nowhere to render
+    /// to — and `space y` is the gesture that made that visible.
     #[test]
-    fn bounded_pending_drops_an_over_long_prefix() {
-        assert_eq!(bounded_pending("d"), "d");
-        assert_eq!(bounded_pending("ddd"), "");
+    fn every_pending_prefix_renders_distinctly_and_idle_renders_nothing() {
+        let mut seen: Vec<(EditorPrefix, String)> = Vec::new();
+        for prefix in [
+            EditorPrefix::Idle,
+            EditorPrefix::Goto,
+            EditorPrefix::Space,
+            EditorPrefix::OpenBracket,
+            EditorPrefix::CloseBracket,
+            EditorPrefix::FindNext,
+            EditorPrefix::FindPrevious,
+            EditorPrefix::FindTillNext,
+            EditorPrefix::FindTillPrevious,
+        ] {
+            let lines = render(
+                "content",
+                60,
+                8,
+                0,
+                Options {
+                    pending_prefix: prefix,
+                    ..defaults()
+                },
+            );
+            let banner = banner(&lines);
+            if prefix == EditorPrefix::Idle {
+                for armed in [
+                    EditorPrefix::Goto,
+                    EditorPrefix::Space,
+                    EditorPrefix::OpenBracket,
+                    EditorPrefix::CloseBracket,
+                    EditorPrefix::FindNext,
+                    EditorPrefix::FindPrevious,
+                    EditorPrefix::FindTillNext,
+                    EditorPrefix::FindTillPrevious,
+                ] {
+                    assert!(
+                        !banner.contains(armed.display()),
+                        "an idle editor must not show {armed:?}'s indicator {:?}: {banner:?}",
+                        armed.display()
+                    );
+                }
+            } else {
+                assert!(
+                    banner.contains(prefix.display()),
+                    "{prefix:?} renders {:?} but the banner reads {banner:?}",
+                    prefix.display()
+                );
+            }
+            for (earlier, earlier_banner) in &seen {
+                assert_ne!(
+                    earlier_banner, &banner,
+                    "{earlier:?} and {prefix:?} render identically"
+                );
+            }
+            seen.push((prefix, banner));
+        }
     }
 
     fn render_with_lsp(
@@ -1870,9 +2084,10 @@ mod tests {
                     path: "src/lib.rs",
                     status: options.status,
                     notice: options.notice,
+                    find_note: options.find_note,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
-                    pending_command: options.pending_command,
+                    pending_prefix: options.pending_prefix,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -1987,9 +2202,10 @@ mod tests {
         let options = Options {
             status: "synced",
             notice: None,
+            find_note: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
-            pending_command: "",
+            pending_prefix: EditorPrefix::Idle,
             command_active: false,
             command_line: "",
             command_selection: 0,
@@ -2011,9 +2227,10 @@ mod tests {
                     path: "src/lib.rs",
                     status: options.status,
                     notice: options.notice,
+                    find_note: options.find_note,
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
-                    pending_command: options.pending_command,
+                    pending_prefix: options.pending_prefix,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -2289,9 +2506,10 @@ mod tests {
             path: "src/lib.rs",
             status: "synced",
             notice: None,
+            find_note: "",
             mode: EditorMode::Normal,
             buffer_focused: true,
-            pending_command: "",
+            pending_prefix: EditorPrefix::Idle,
             command_active: false,
             command_line: "",
             command_selection: 0,

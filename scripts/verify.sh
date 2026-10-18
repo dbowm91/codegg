@@ -82,6 +82,12 @@ run_quick() {
     echo "==> python3 scripts/check_tui_editor_text_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_text_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_key_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_key_authority.py)
+
+    echo "==> python3 scripts/check_tui_editor_prefix_state.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py)
+
     echo "==> python3 scripts/check_tui_transport_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_transport_authority.py)
 
@@ -120,6 +126,9 @@ run_quick() {
 
     echo "==> python3 scripts/check_no_hardcoded_models.py"
     (cd "$REPO_ROOT" && python3 scripts/check_no_hardcoded_models.py)
+
+    echo "==> python3 scripts/check_no_hardcoded_selection_colours.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_no_hardcoded_selection_colours.py)
 
     echo "==> python3 scripts/check_provider_resilience_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_resilience_ownership.py)

@@ -45,7 +45,7 @@ name and root. Local focused suites and `scripts/verify.sh quick` passed.
   and event/result projection into open tabs, labels, roots, session lists,
   and the manifest.
 - Reused `WorkspaceRegistry` registration for canonical roots and aligned
-  its validation with ADR-0034: roots must be absolute, and the selected
+  its validation with ADR-0033: roots must be absolute, and the selected
   root cannot itself be a symlink. Updated `architecture/workspace.md` to
   record the contract. No migration was needed.
 - Added post-success audit metadata for actor, previous/new name and root,
@@ -110,7 +110,7 @@ remain operational evidence limits.
 
 ## 8. Downstream dependency audit
 
-- M005's hard M2–M4 closure gate is satisfied; ADR-0034 remains accepted.
+- M005's hard M2–M4 closure gate is satisfied; ADR-0033 remains accepted.
   M005 is moved from blocked to ready for the next sequential step.
 - No other registered project-picker milestone became eligible.
 - Multi-cwd split panels remain deferred; this update changes one

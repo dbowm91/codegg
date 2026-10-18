@@ -1347,11 +1347,8 @@ mod async_cmd_tests {
     #[test]
     fn research_stale_run_is_ignored() {
         let mut app = make_test_app();
-        app.dialog_state.research_browser = Some(
-            crate::tui::components::dialogs::research::ResearchBrowserDialog::new(
-                std::sync::Arc::new(Theme::dark()),
-            ),
-        );
+        app.dialog_state.research_browser =
+            Some(crate::tui::components::dialogs::research::ResearchBrowserDialog::new());
 
         // Start load run A
         let id_a = app.dialog_state.research_request.begin();
@@ -1399,11 +1396,8 @@ mod async_cmd_tests {
     #[test]
     fn close_dialog_cancels_research_request() {
         let mut app = make_test_app();
-        app.dialog_state.research_browser = Some(
-            crate::tui::components::dialogs::research::ResearchBrowserDialog::new(
-                std::sync::Arc::new(Theme::dark()),
-            ),
-        );
+        app.dialog_state.research_browser =
+            Some(crate::tui::components::dialogs::research::ResearchBrowserDialog::new());
         app.ui_state.dialog = Dialog::ResearchBrowser;
         app.open_dialog(Dialog::ResearchBrowser);
 

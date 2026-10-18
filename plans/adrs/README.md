@@ -145,26 +145,27 @@ were never active on main and must not be reused for Windows references.
 
 ## ADR-0032 workstream coordination reservation (2026-10-15)
 
-ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md was
+`ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` was
 accepted on 2026-10-15 and merged to main in commit `171ef93b`. It does not
 modify accepted ADR-0002, admit shared-write child execution, or confer new
-capability by existing group membership. M005 is active for writer-containment
-design and qualification; shared-write execution remains unavailable pending
-real tool-path confinement and lifecycle recovery evidence.
+capability by existing group membership. M005 remains gated on writer
+containment and lifecycle evidence.
 
-## ADR-0033 checkout writer boundary (accepted 2026-10-16)
+## ADR-0033 directory-tied project identity (accepted 2026-10-16)
 
-`ADR-0033-codegg-mediated-checkout-writer-boundary.md` accepts a restricted
+`ADR-0033-directory-tied-project-identity-and-client-working-directory.md`
+accepts one-to-one directory/project identity and per-tab client working
+directories. It gates the project-picker rebind and lifecycle work.
+
+## ADR-0034 editor syntax-tree dependency (proposed 2026-10-17)
+
+`ADR-0034-editor-syntax-tree-dependency.md` remains proposed. It does not
+authorize a dependency or implementation work until accepted.
+
+## ADR-0035 CodeGG-mediated checkout writer boundary (accepted 2026-10-16)
+
+`ADR-0035-codegg-mediated-checkout-writer-boundary.md` accepts the restricted
 M005 contract: serialize only CodeGG-mediated writers, treat external
 same-user edits as detectable checkout drift, and deny CodeGG effect owners
-without complete permit/lifecycle evidence. The user authorized acceptance
-on 2026-10-16. It authorizes no permit service or shared-write execution;
-ADR-0002 isolation remains effective.
-
-
-## ADR-0034 directory-tied project identity (accepted 2026-10-16)
-
-`ADR-0034-directory-tied-project-identity-and-client-working-directory.md`
-accepts one-to-one directory/project identity and per-tab client working
-directories. It gates the project-picker rebind and lifecycle work. ADR-0033
-remains the separately accepted CodeGG-mediated checkout writer boundary.
+without complete permit/lifecycle evidence. It authorizes neither a permit
+service nor shared-write execution; ADR-0002 isolation remains effective.

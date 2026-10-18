@@ -221,21 +221,87 @@ model to the wrong connection.
   `TuiMsg::ChatComposerSeed` instead, so the reply target or replaced body
   is not stranded. Panels get named borrows via `PanelCtx` (never `&App`)
   and express every mutation as a `TuiMsg` routed into an existing command
-  seam. A panel declares its own keys through `SidePanel::composer_hints`,
   which render on one contextual line directly above the composer — that is
   the seam for adding the next panel, so do not grow per-panel footers.
+  A panel declares its verbs through `SidePanel::composer_hints`. Read
+  `architecture/tui.md`'s "A docked panel advertises itself before you go in"
+  before changing that seam; two things about it are easy to get backwards:
+
+  - **The unfocused answer is not one answer.** A *hosted* panel (an adopted
+    box like `/files`) advertises without the keyboard, because its verbs exist
+    nowhere else and it leads with the gesture that makes them live. A
+    *bespoke* panel (session, chat, agents, help, **terminal**) answers `None`,
+    because the row is meant to describe whoever holds the keyboard and the
+    reader can already see the panel. The Terminal panel used to get this
+    wrong: it kept an unfocused branch whose every verb — including the
+    `Shift+←/→` it advertised — required the keyboard the composer had just
+    taken, so the line sat above the LLM buffer describing a terminal nobody
+    was in.
+  - **The row is a carved row, and the input box does not move with it.**
+    `session_layout` gives the prompt chunk a fixed, bottom-anchored height, and
+    the working strip, hint line and todo strip come off its **top** in that
+    order. So a panel that starts declining shrinks the carved region and hands
+    the row to the transcript (`Min(10)`), and the composer stays on its row —
+    the opposite of what the arithmetic looks like it should do. Pin it, because
+    a hint row that reflowed the input every time a panel took or lost focus
+    would be the same defect the working strip's reserved row 0 exists to
+    prevent. Nothing to do with that strip, which is reserved unconditionally.
   A **hosted** box gets its verbs from the box itself via
   `Component::keymap_hint()`, so the string sits next to the `handle_key`
   arms that implement it; the host's generic `j/k scroll · i act` is only
   the fallback for widgets that answer `None`, and it named `i`, which no
-  adopted box dispatches. A docked panel advertises itself **unfocused**
+  adopted box dispatches. **Every dockable box now answers it** (14
+  overrides, counted by grepping `src/` for `fn keymap_hint` and excluding
+  the trait declaration), and every one also overrides `render_in_panel`
+  (15, including `Placeholder`), so `InfoDialog` is no longer the template
+  — **`FilesDialog` and `InfoDialog` are the two worked examples**, and
+  a third should copy one of them rather than invent an idiom.
+  Three rules the twelve adapters established, each of which a new one
+  must keep:
+  - **A hint names only keys a *docked* box can receive.** The host
+    answers, before the widget is consulted, `Esc`, `q`, the four
+    arrows, and bare **and** shifted uppercase `H`/`J`/`K`/`L`
+    (`insert_panel_direction_bindings`). So spell scrolling `j/k`, never
+    `↑/↓`; never advertise `Enter` as a close verb, because docking pops
+    the box off the modal stack and `CloseDialog` runs against an empty
+    one. `Home`/`End`/`PageUp`/`PageDown` *do* arrive.
+  - **One body routine, parameterised by chrome.** `enum
+    Chrome { Owned, Hosted }` and a single private routine that `render`
+    and `render_in_panel` both call. Two viewport computations is how a
+    docked box ends up with an unreachable tail and no error — the
+    `ResearchBrowserDialog` report view shipped exactly that, and its
+    `Home` key rendered the report blank because nothing clamped the
+    offset. Clamp in the shared routine, against the rect actually being
+    filled, or do not have a sentinel-keyed scroll at all.
+  - **Retire in-panel footers and border-title keymaps into the hint**,
+    but check whether the footer is also an *affordance*. `plugin`
+    keeps its `12-30/30` scroll indicator (that is content, and the only
+    end-of-content signal); `panel_picker` keeps its whole footer,
+    because it declares `docks_as_viewer() == true` but has no
+    `App::dock_target` arm, so it never docks and the footer is all a
+    user ever sees. Do not replay a caller-supplied `set_custom_footer`
+    string into the hint: those describe the modal box, where `Esc`
+    really does close.
+  A docked panel advertises itself **unfocused**
   too, leading with the gesture that enters it (`PanelPlacement::toward`),
   because the alternative is a keymap readable only after you have already
   guessed the keys. Bespoke panels (session, chat, help, agents) decline
   unfocused — a pre-docked column is on screen every session — and an empty
   panel is silent because `focus` refuses it. The host owns the border and
   the `●` focus dot, so a widget with chrome of its own overrides
-  `Component::render_in_panel` rather than `render`.
+  `Component::render_in_panel` rather than `render`; `FilesDialog` and
+  `InfoDialog` are the two worked examples, and the rule for both is one
+  private body routine parameterised by "draw chrome", because the hosted and
+  modal paths must reach the same end of the same scroll. `InfoDialog` is the
+  one to copy when the box has scroll state: its `Down`/`j` arm is
+  deliberately unbounded and `scroll_to_end` stores a `usize::MAX` sentinel
+  because a wrapped line occupies several rows, so both hand the clamp to the
+  render pass and two clamps reach a different last row with no error to show.
+  A `keymap_hint` is a claim about the **hosted** verb set: `Esc` never reaches
+  a hosted widget (the host claims `Esc`/`q` as its own exit and blurs first)
+  and `Enter`'s `CloseDialog` runs against an empty modal stack, because
+  docking popped the box off it. Do not name either, and do not replay a
+  `set_custom_footer` string into the hint — those describe the modal box.
   Project binding is resolved by `commands/panels.rs`, not by the panel.
   Key precedence in `App::on_key`:
   **Ctrl+digit hotkey recall** → modals → timeline → command mode →
@@ -578,8 +644,10 @@ model to the wrong connection.
   the same reason walking the list never materializes an empty panel — a gesture
   that silently starts a daemon load is not a positioning gesture.
 - **Every surface the composer can target needs a name.** The badge row reads
-  `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. That
-  destination is `App::composer_destination_title`: the focused panel's
+  `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. The mode
+  is `App::composer_input_mode`, never the raw `ui_state.input_mode` (see the
+  terminal bullet below for why that field lies). That destination is
+  `App::composer_destination_title`: the focused panel's
   `SidePanelId::title`, or `MAIN_BUFFER_TITLE` (`LLM`) when nothing is focused,
   or `CHAT` while a seed is armed. It previously rendered `[BUILD]` *and*
   `[CHAT]` unconditionally, giving `[INS] [build][BUILD] [CHAT]` — two badges
@@ -750,6 +818,23 @@ model to the wrong connection.
   stops counting a turn that never started), sets `Error`, stops the thinking
   indicator, and **releases `pending_send` so a retry is possible**. Never
   record a submission failure in a log line and return; the log is not the UI.
+- **Never attribute a refusal to a component that is not at fault.** A missing
+  dependency is not a diagnosis. `app.core_client` being `None` means two
+  different things depending on the transport: on the socket-daemon frontend it
+  really is a lost connection, but on the `/tui` WebSocket attach frontend the
+  daemon is healthy and that frontend was simply never given a `CoreClient`
+  (`src/client/attach.rs` speaks `TuiMessage`). Answering the second with
+  "Daemon connection unavailable" sends the operator to restart a working
+  process. Classify the cause explicitly through one seam that owns the wording
+  — `terminal_core_client` → `TerminalRefusal` for terminals — rather than
+  retyping a sentence at each site; duplicated text is exactly how the wrong
+  cause propagates to nine places. The discriminator is
+  `App::is_ws_attach_transport()`, never `AppMode` alone.
+  Related: classify a refusal **before** any state is consumed.
+  `flush_terminal_input` used to claim the input slot and drain the queued bytes
+  and only then discover there was no client, which dropped the keystrokes *and*
+  left `input_in_flight` set with nothing in flight to release it — one visible
+  error, then permanent silence.
 - **The stall watchdog measures silence, and long tools are silent.**
   `bash` delivers its output only on completion, so a multi-minute build emits
   no events at all. `SessionState::running_tool` (set on `ToolStarted`, cleared
@@ -805,11 +890,29 @@ model to the wrong connection.
   `App::input_target()` returns `Chat` while `PromptState::chat_seed` is set,
   the badge shows `[REPLY]`/`[EDIT]`, and Normal-mode `Esc` cancels the
   context without discarding the typed text.
-- **Selection uses `bg`, not `fg`.** `theme.selection` is a background; using
-  it as a foreground painted selected message authors dark-on-dark. Pair it
-  with `fg(theme.foreground)`. Unselected bodies are `foreground`, not
-  `muted` — dimming the whole transcript whenever nothing was unread made
-  the common case the unreadable one.
+- **Selection uses `bg`, not `fg`, and its text is `theme.selection_text`.**
+  `theme.selection` is a background; using it as a foreground painted selected
+  message authors dark-on-dark. Its text needs a colour that reads on *that
+  fill*, which is not necessarily the body foreground — a light theme's
+  selection can be pale enough that dark text is required. Use
+  `fg(theme.selection_text)`; it is derived per theme, never hardcode a literal
+  foreground (a `Color::White` row is white-on-white on every light theme, which
+  is what the old selection code did). `Theme::selection_style()` already pairs
+  them. Unselected bodies are `foreground`, not `muted` — dimming the whole
+  transcript whenever nothing was unread made the common case the unreadable
+  one.
+- **A render path reads the theme it is handed; it never caches one.**
+  `Component::render` / `render_in_panel` receive the live `&Arc<Theme>` every
+  frame. A box that stores `Arc<Theme>` and refreshes it only when opened goes
+  stale the moment the user changes theme, because the seven sites that
+  reassign `UiState::theme` do not re-push into an open box. A box that
+  reassigns the field from inside its own render is *also* wrong — it happens to
+  work, and it is the shape a source grep ranks as the worst offender.
+  Enforced by `tests/tui_theme_source_of_truth.rs`: render with theme A, render
+  again with theme B, and no interior foreground may be a colour A defined.
+  `Widget` cannot receive a theme, so a widget that must stay one has to be an
+  inherent method instead — `DiffViewer::render_in`, `PlanDialog::render_legacy`,
+  `DiffDialog::render_legacy`.
 - **Chat surfaces open on the newest message and follow the tail.**
   `ChatBrowser::follow_tail` starts true; `k` unpins, `j` past the newest and
   `G` re-pin. `sync` runs on every render and snapshot, not only on
@@ -878,6 +981,58 @@ model to the wrong connection.
   back to INS, `Esc` detaches. `/terminal` opens the box **already in INS**.
   Terminal output is interpreted by bounded VT screen state before Ratatui
   rendering; never write raw child escape sequences to the host terminal.
+- **A surface with the keyboard is not a viewer.** The dock gesture (`H`/`J`/`K`/
+  `L`, `Shift`+arrows) must be gated on "nothing is being typed", and for a
+  terminal that question is `TerminalFocus`, **not** `InputMode` — a terminal in
+  INS still reports the app's `Normal` mode, so a Normal-only gate let an
+  ordinary shell letter be read as "move the panel". The character never reached
+  the process and the column moved out from under the user, which is
+  indistinguishable from the terminal eating their command. Every other surface
+  already gates this on its own text buffer; the two terminal surfaces were the
+  ones missing it (`claims_panel_directions` for the panel host, and the
+  `DialogType::Terminal` pre-check in `App::on_key` for the box).
+- **Output is pulled on the existing cadence, and input is serialized — both are
+  correctness, not polish.** `service_terminal_output_pull` rides the same pump
+  tick as the editor's semantic refresh (never a second timer) and skips unless a
+  mounted surface holds a live attachment with no read outstanding. Flushing
+  input per keystroke spawned one concurrent daemon request per character, and
+  those raced, so fast typing arrived **scrambled**. `queue_resize` must no-op on
+  an unchanged size: a PTY resize flushes tty pending input, so a per-frame
+  resize storm eats the half-typed word. And a stale test is a finding, not
+  noise — a red assertion left behind by a deliberate contract change reads as
+  "pre-existing bug" and ships.
+- **"Rides the existing cadence" is a claim about the *arming*, and it was false
+  for the idle case.** The pull has exactly one call site: the timed arm of the
+  loop's `select!`. That arm parks on `futures_util::future::pending()` when
+  `next_wake` is `None`, and `None` does not mean "sleep a while" — the arm never
+  runs again until some *other* event wakes the loop. `next_wake` comes from
+  `runtime::event_loop::animation_interval`, whose contributors were all
+  transient (streaming, working, toast), so a mounted terminal was read only
+  while a toast happened to be alive, a keystroke arrived, or a resize was
+  debouncing: a shell's output became visible when the user pressed the **next**
+  key. When you add a service to that tick, assert the **arming decision**, not
+  just the function — a test that calls the service directly stands in for the
+  arm and proves nothing about reachability. `animation_interval` is now a pure
+  `&App` function precisely so that is testable. Two rules keep
+  `terminal_pull_armed` honest: never gate the arm on read state
+  (`begin_output_read`, refusals, `TerminalLinkState` — that latches the loop
+  off, because a dark arm means nothing wakes it to issue the read that would
+  clear the condition), and key it on **mount**, never focus, since focus is what
+  changes when nobody is looking.
+- **The `[NOR]`/`[INS]` badge reports where the keyboard is, not what the
+  composer thinks.** `ui_state.input_mode` is the composer's *own* mode, and it is
+  the wrong answer whenever the keyboard is elsewhere: `focus_panel` forces it to
+  `Normal` on panel focus, and the terminal box never touches it at all. So a
+  terminal in Insert rendered `[NOR]` above the input, and the terminal panel's
+  own Insert hint branch — which branches on that same field — was unreachable
+  dead code. One field, read twice, both wrong. Resolve it once in
+  `App::composer_input_mode` over two named seams that key routing already reads:
+  `App::terminal_box_has_keyboard` (a modal box owns the keyboard either way, so
+  it reports `Normal` after `Esc` even though the composer's field still claims
+  `Insert`) and `PanelHost::claims_insert_keys` for a docked panel. Neither half
+  can answer the other — a box is not a side panel, and a panel is not a dialog.
+  It is a **pure read**: a badge that forced `input_mode` to match what it
+  displays turns the state it reports into the state it causes.
 - **Never make one key answer two questions.** `Esc` used to be both "leave
   insert" and "pass an escape byte through", disambiguated by a hidden
   `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's

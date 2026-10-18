@@ -6,7 +6,7 @@ Repository baseline: `809f1f5073d0fa4f1c61c796c1edab0b3e606fc0`
 Source roadmap: `plans/subsystems/agent-workstream-blackboard-roadmap.md`
 Related closures: M006 `plans/closure/agent-workstream-blackboard/006-newmanaged-materializer-addendum.md`; M008 evidence `plans/closure/agent-workstream-blackboard/008-isolated-results.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§16, 26–29; `plans/001-terminology-and-domain-model.md` §§5, 7–8
-Applicable ADRs: ADR-0002, ADR-0032, ADR-0033
+Applicable ADRs: ADR-0002, ADR-0032, ADR-0035
 Primary class: invariant/capability corrective
 
 ## 1. Objective

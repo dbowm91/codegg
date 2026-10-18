@@ -56,10 +56,60 @@ impl super::event_log::ProjectionSink for SeamProjectionSink {
         let seam = self.inner.clone();
         Box::pin(async move {
             let ctx = codegg_core::projection_replay::seam::ProjectionPublicationContext::default();
-            if let Err(error) = seam.publish(&envelope, ctx).await {
-                tracing::warn!(error = %error, "projection publication failed");
+            // Bounded retry on SQLite lock contention only. The daemon's
+            // single-file pool runs several connections against one WAL
+            // database, so a writer can collide with a reader holding a
+            // snapshot. Losing that event silently is what left the
+            // projection permanently short of job and subagent lifecycle
+            // events — the frontend then had nothing to show even though the
+            // work was real. Anything else is a genuine failure and is
+            // reported immediately rather than retried into a stall.
+            let mut attempt = 0;
+            loop {
+                match seam.publish(&envelope, ctx.clone()).await {
+                    Ok(_) => return,
+                    Err(error) => {
+                        attempt += 1;
+                        if attempt >= PROJECTION_PUBLISH_ATTEMPTS || !is_transient_busy(&error) {
+                            tracing::warn!(
+                                error = %error,
+                                attempt,
+                                "projection publication failed"
+                            );
+                            return;
+                        }
+                        tokio::time::sleep(PROJECTION_PUBLISH_BACKOFF).await;
+                    }
+                }
             }
         })
+    }
+}
+
+/// Total publish attempts, including the first. Three is enough to ride out
+/// a checkpoint-sized write without turning a stuck database into a stall.
+const PROJECTION_PUBLISH_ATTEMPTS: u32 = 3;
+
+/// Fixed pause between retries. Short enough that a subscriber notices no
+/// meaningful delay, long enough not to spin against the same contention.
+const PROJECTION_PUBLISH_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// `true` when a storage error is transient SQLite lock contention that a
+/// bounded retry may resolve. Mirrors the work-order store's classifier so
+/// both subsystems agree on what "busy" means.
+fn is_transient_busy(error: &codegg_core::error::StorageError) -> bool {
+    match error {
+        codegg_core::error::StorageError::Database(message) => {
+            let lower = message.to_lowercase();
+            // SQLITE_BUSY (5) surfaces as "database is locked"; the WAL
+            // snapshot-conflict variant (517) surfaces as "database table is
+            // locked". Neither is retried by busy_timeout itself, which is
+            // why the pool's 30s timeout does not save these.
+            lower.contains("database is locked")
+                || lower.contains("database table is locked")
+                || lower.contains("database is busy")
+        }
+        _ => false,
     }
 }
 

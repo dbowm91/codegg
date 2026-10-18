@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::Style;
@@ -36,7 +34,6 @@ pub struct DiffHunk {
 
 #[derive(Clone)]
 pub struct DiffViewer {
-    pub theme: Arc<Theme>,
     pub old_content: String,
     pub new_content: String,
     pub hunks: Vec<DiffHunk>,
@@ -49,7 +46,6 @@ impl DiffViewer {
     pub fn new(old_content: Box<str>, new_content: Box<str>, title: Box<str>) -> Self {
         let hunks = Self::compute_diff(&old_content, &new_content);
         Self {
-            theme: Arc::new(Theme::default()),
             old_content: old_content.to_string(),
             new_content: new_content.to_string(),
             hunks,
@@ -57,10 +53,6 @@ impl DiffViewer {
             mode: DiffMode::Inline,
             title: title.to_string(),
         }
-    }
-
-    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
-        self.theme = Arc::clone(theme);
     }
 
     pub fn toggle_mode(&mut self) {
@@ -144,7 +136,15 @@ impl DiffViewer {
         self.hunks.iter().map(|h| h.lines.len()).sum()
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    /// Draw the viewer into `area`.
+    ///
+    /// `theme` is a parameter rather than a field this box refreshes when it is
+    /// opened. `DiffViewer` used to cache an `Arc<Theme>` that was set once by
+    /// its owner, so a `/diff` opened before a theme change kept drawing the old
+    /// palette while the rest of the UI followed the new one. The owner already
+    /// holds the live theme at every call site, so reading it is strictly less
+    /// state — there is no path on which the value can be stale.
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let chunks = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(1),
@@ -152,35 +152,35 @@ impl DiffViewer {
         ])
         .split(area);
 
-        self.render_header(frame, chunks[0]);
-        self.render_diff(frame, chunks[1]);
-        self.render_footer(frame, chunks[2]);
+        self.render_header(frame, chunks[0], theme);
+        self.render_diff(frame, chunks[1], theme);
+        self.render_footer(frame, chunks[2], theme);
     }
 
-    fn render_header(&self, frame: &mut Frame, area: Rect) {
+    fn render_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let mode_str = match self.mode {
             DiffMode::Inline => "Inline",
             DiffMode::SideBySide => "Side-by-Side",
         };
 
         let title_line = Line::from(vec![
-            Span::styled("Diff: ", Style::default().fg(self.theme.primary)),
-            Span::styled(&self.title, Style::default().fg(self.theme.foreground)),
+            Span::styled("Diff: ", Style::default().fg(theme.primary)),
+            Span::styled(&self.title, Style::default().fg(theme.foreground)),
             Span::raw(" | "),
-            Span::styled(mode_str, Style::default().fg(self.theme.secondary)),
+            Span::styled(mode_str, Style::default().fg(theme.secondary)),
         ]);
 
         let header = ratatui::widgets::Paragraph::new(title_line).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Diff Viewer ")
-                .border_style(Style::default().fg(self.theme.border)),
+                .border_style(Style::default().fg(theme.border)),
         );
 
         frame.render_widget(header, area);
     }
 
-    fn render_diff(&self, frame: &mut Frame, area: Rect) {
+    fn render_diff(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if area.height < 1 {
             return;
         }
@@ -204,9 +204,9 @@ impl DiffViewer {
                 }
 
                 let fg_color = match line.tag {
-                    ChangeTag::Delete => self.theme.error,
-                    ChangeTag::Insert => self.theme.success,
-                    ChangeTag::Equal => self.theme.foreground,
+                    ChangeTag::Delete => theme.error,
+                    ChangeTag::Insert => theme.success,
+                    ChangeTag::Equal => theme.foreground,
                 };
 
                 let old_num = line
@@ -242,7 +242,7 @@ impl DiffViewer {
         }
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect) {
+    fn render_footer(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let mode_toggle = match self.mode {
             DiffMode::Inline => "Press 's' for Side-by-Side",
             DiffMode::SideBySide => "Press 's' for Inline",
@@ -252,12 +252,12 @@ impl DiffViewer {
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
-            Style::default().fg(self.theme.muted),
+            Style::default().fg(theme.muted),
         )))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border)),
+                .border_style(Style::default().fg(theme.border)),
         );
 
         frame.render_widget(footer, area);
@@ -275,15 +275,25 @@ impl DiffViewer {
     }
 }
 
-impl Widget for &DiffViewer {
-    fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
+/// The single-border layout, as a method rather than a `Widget` impl.
+///
+/// It was `impl Widget for &DiffViewer` while the theme lived in a field. That
+/// trait cannot carry a theme, so the only way to read the live one was to keep
+/// the cache — which is the defect. An inherent method takes the theme it is
+/// handed and renders byte-identically, so `ChangeReview` keeps its layout and
+/// the cache goes away.
+///
+/// It is **not** the same layout as [`DiffViewer::render`], which draws three
+/// bordered blocks. Both are live; collapsing them is a separate cleanup.
+impl DiffViewer {
+    pub fn render_in(&self, area: Rect, buf: &mut ratatui::prelude::Buffer, theme: &Theme) {
         if area.height < 7 {
             return;
         }
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
+            .border_style(Style::default().fg(theme.border))
             .title(" Diff Viewer ");
 
         let inner = block.inner(area);
@@ -296,10 +306,10 @@ impl Widget for &DiffViewer {
         };
 
         let title_line = Line::from(vec![
-            Span::styled("Diff: ", Style::default().fg(self.theme.primary)),
-            Span::styled(&self.title, Style::default().fg(self.theme.foreground)),
+            Span::styled("Diff: ", Style::default().fg(theme.primary)),
+            Span::styled(&self.title, Style::default().fg(theme.foreground)),
             Span::raw(" | "),
-            Span::styled(mode_str, Style::default().fg(self.theme.secondary)),
+            Span::styled(mode_str, Style::default().fg(theme.secondary)),
         ]);
 
         let header = ratatui::widgets::Paragraph::new(title_line);
@@ -321,7 +331,7 @@ impl Widget for &DiffViewer {
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
-            Style::default().fg(self.theme.muted),
+            Style::default().fg(theme.muted),
         )));
 
         footer.render(footer_area, buf);
@@ -342,9 +352,9 @@ impl Widget for &DiffViewer {
                 }
 
                 let fg_color = match line.tag {
-                    ChangeTag::Delete => self.theme.error,
-                    ChangeTag::Insert => self.theme.success,
-                    ChangeTag::Equal => self.theme.foreground,
+                    ChangeTag::Delete => theme.error,
+                    ChangeTag::Insert => theme.success,
+                    ChangeTag::Equal => theme.foreground,
                 };
 
                 let old_num = line

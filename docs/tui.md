@@ -508,19 +508,56 @@ your login shell (`$SHELL`, falling back to `sh`) — you do not have to name a
 command first. `/terminal-create <command> [args...]` is still there when you
 want to run a specific program instead.
 
+**Terminals need the local frontend.** They work when CodeGG's TUI is talking
+to your daemon — plain `codegg`, or `codegg daemon attach` over the local
+socket. They do not work through the remote WebSocket attach
+(`codegg attach http://<host>:<port> --token …`): that connection carries chat,
+but no interactive-process traffic, so every terminal command there answers
+with a message naming the transport rather than pretending the daemon is down.
+Everything else on that frontend — chatting, tools, permissions — is unaffected.
+To open a shell, run `codegg` (or `codegg daemon attach`) on the machine running
+the daemon.
+
 The box opens **already taking your keys**, so you can type straight away.
+
+Once it is taking your keys, every key is your program's — including `H`, `J`,
+`K` and `L`, and `Shift`+arrows. Those are the panel-docking gesture everywhere
+else, but a terminal that owns the keyboard is not a viewer, so the gesture is
+turned off while you are typing. `i` is only a focus gesture while the surface is
+in viewing mode (`NOR`); in the box the surface is never in `NOR` to begin with.
+
+Output keeps up on its own: the TUI reads the PTY on its own refresh tick while the
+terminal is on screen, so anything the command prints appears without you doing
+anything. That includes after you hand the keyboard back to the main buffer with
+`Shift`+an arrow — a docked terminal keeps producing output while it is merely
+visible. You do not need `/terminal-resume` to see live output — it is a recovery
+affordance for a view whose read fell behind, not a step in the normal flow.
+
+The `[NOR]` / `[INS]` badge above the main input shows where your keystrokes are
+actually going, whichever surface has them. It reads `[INS]` while a terminal is
+taking your keys — in the box or in the docked panel — and `[NOR]` once `Esc` has
+handed them back, so the badge never claims you are reading a shell you are
+typing into.
 
 There are two modes, and each key means exactly one thing:
 
 - **INS** — the process owns the keyboard. Everything you type, plus `Enter`,
   `Backspace`, `Tab`, the arrow keys and `Ctrl-C`/`Ctrl-D`, goes to the
   terminal. The cursor is drawn where the shell is accepting the next
-  character. Press `Esc` to stop typing and read.
+  character, and it blinks while it is there — so a glance is enough to see
+  that the terminal is live rather than frozen. Press `Esc` to stop typing and
+  read.
 - **NOR** — the reader owns the keyboard. `hjkl` and the arrows move, `Ctrl+u`
   and `Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x` selects
   whole lines, `d` deletes the selection, `space+y` copies it, `C` clears the
   screen, `D` folds in diagnostics. Press `i` or `Enter` to start typing again.
   Press `Esc` to close and detach — or to drop an armed selection first.
+
+While reading, the cursor sits on the last line the process actually printed —
+the prompt after a short command, the last line of the output after a long one.
+`Esc` puts it there for you, so the first `k` moves from where you were working
+rather than from the bottom of an empty screen. The reader cursor does not
+blink: it is what `x`, `v` and `d` act on, so it stays put and stays legible.
 
 If you are running a full-screen program that needs its own escape (Vim, less,
 tmux), press `Ctrl+]` to send it a real `Esc` byte and stay in INS. `Esc` itself
@@ -535,8 +572,21 @@ same way. You can also **click** a panel column to focus it, **drag** across one
 to select its text and copy it with `Ctrl+C`, and **scroll** the wheel over one
 to move that column's own content. If the process behind the panel has exited,
 `i` starts a fresh shell instead — the panel never leaves you staring at a dead
-one. `/terminal-clear` wipes the local scrollback and screen while the process
-keeps running.
+one.
+
+The line of keys above the composer describes whatever is holding your keyboard,
+so it appears while the terminal panel has it and leaves with it: once you have
+handed the keyboard back to the conversation, the terminal's own verbs are gone
+from the frame, and the row they occupied goes back to the transcript. Press
+`Shift`+`←` (or whichever edge the panel is on) to take the keyboard back, and
+the line returns.
+
+A new shell shows its prompt as soon as it prints one — you do not have to press
+a key to see it. `C` clears the screen by asking the shell to clear itself, so
+what comes back is a fresh prompt from *your* shell, with your `PS1`, rather than
+an empty panel; the process keeps running and so does anything it was doing.
+`/terminal-clear` does the same. A terminal whose process has already exited has
+no prompt left to print, so clearing one just empties it.
 
 The box opens with one header line — the command, the link state, and whether
 it is taking your keys. Press `D` while viewing to fold in the full diagnostics
@@ -670,14 +720,66 @@ Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
 `v` selects by character, `x` selects the whole line (press again for one
 more), `d` deletes the selection, and `space y` copies it — the same keys
 `/terminal` uses in its viewing mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`,
-where typing goes into the file and `Esc` returns. In `NOR` anything the
-buffer does not claim types into the input box at the bottom, so you can talk
-to the agent without leaving the file. `Esc` never closes the editor; `:q`
-does.
+where typing goes into the file and `Esc` returns. `u`/`U` undo and redo, the
+Helix pair. In `NOR` anything the buffer does not claim types into the input
+box at the bottom, so you can talk to the agent without leaving the file. `Esc`
+never closes the editor; `:q` does.
+
+Three chords work in either mode, because they are round trips rather than
+verbs: `Ctrl+S` saves, `Ctrl+R` resyncs the replica after a transport failure,
+and `R` — `NOR` only — reloads from disk and throws the local draft away. Each
+chord has exactly one owner. In particular `U` is redo and `Ctrl+R` is resync;
+they are not two spellings of the same thing.
 
 The cursor is a block in `NOR` and a thin bar in `INS`, so you can always see
 where you are. `Ctrl+d` pages down and continues to the end of the file when a
 half-page would land past it.
+
+### Multi-key gestures
+
+`gg` (buffer start) and `space y` (copy the selection) each take two keys. While
+the first one is held, the status row shows which one: `g` or `space`. The
+indicator is there because a prefix that shows nothing is a prefix you cannot
+predict.
+
+The two gestures finish differently, on purpose. After `g`, any key belongs to
+the chord — `g j` does nothing, because `g j` is not a gesture. After `space`,
+an unmapped key is just a normal-mode key: `space j` moves down. `[` and `]`
+are Helix's unimpaired prefixes; they show their indicator too, and any key
+after them still does what it normally does. A prefix never survives leaving
+the editor, opening a different file, reloading, or moving focus to the file
+tree.
+
+### Finding a character
+
+| Key | What it does |
+|---|---|
+| `f` + char | jump to the next occurrence of that character |
+| `F` + char | jump to the previous occurrence |
+| `t` + char | as `f` |
+| `T` + char | as `F` |
+| `Alt` + `.` | repeat the last find |
+
+These search the whole file, not just the line the cursor is on — `f` jumps
+across line breaks. The cursor lands on the character itself, and the scan
+starts strictly past the cursor, so `f x` while already sitting on an `x` finds
+the *next* one.
+
+`f`, `F`, `t` and `T` show their indicator while waiting, so you can see that
+the editor is waiting for a character rather than having dropped the keypress.
+`:`, `/` and any non-character key are not swallowed: they still open the
+command line, open the search line, or do their normal job. In `INS` a
+printable is always text, never a search target.
+
+Search covers a bounded window from the cursor. If the character is not in the
+window the status row says so — `no 'z' within the 2 MiB scan bound` — rather
+than reporting it as absent, which is a different fact and needs a different
+response.
+
+`Alt` + `.` repeats the last find, and any other movement replaces it: after
+`f x`, then `j`, then `Alt` + `.` there is nothing to repeat. With no find
+recorded it does nothing at all and the keystroke stays available to the
+composer.
 
 ### Searching inside the file
 
@@ -841,9 +943,44 @@ a left-column panel says `Shift+← in`. The `l/→` and `enter` you see there a
 the file browser's own keys, not a generic panel description: the box, its
 panel, and this line are written from one source, so they cannot drift apart.
 
+That source is the box itself. Every box that can dock says its own keys now, not
+just the information panels: `/files` says `l/→ root at dir`, `/mcps` says
+`j/k move · enter actions`, `/review` says `j/k move · enter diff`, and `/diff`
+says `j/k scroll · ^d/^u page · s side-by-side`. A box whose meaning changes with
+what it is showing says the right thing in each case — `/theme` says
+`j/k preview · enter commit` once you have navigated and `j/k navigate · enter
+apply` before that, and `/security-review` drops its `H copy hunk` verb from the
+panel for a reason given below. `/cost`, `/usage`, `/logs`, `/doctor` and the
+rest of the information panels are all one widget, so a single panel of theirs
+says `j/k scroll` and `/project-init` adds `a publish`, because that is the one
+of them that has an approve key. Nothing advertises a key the box does not have.
+
+**A docked box never sees the arrow keys, `Esc`, or uppercase `H`/`J`/`K`/`L`.**
+While a panel has the keyboard, the host answers those before the box is asked:
+the arrows and bare uppercase `H`/`J`/`K`/`L` move *between panels*, and `Esc`
+returns the keyboard to the input. So a docked box's line spells its scrolling
+verbs `j/k` and never `↑/↓`, and `/tasks` does not offer `J/K reorder` in a
+column — the same `J` that reorders modally moves panels when docked. This is
+why those verbs are missing rather than forgotten.
+
+**A docked box has no `Esc`.** `Esc` returns the keyboard to the input, and
+`Shift+←` brings the box back out of the column as a window you can close. So
+when you want the box *gone* rather than just stepped out of, press `Shift+←`
+first. The in-box window keeps `Esc`/`Enter` closing it exactly as before.
+
+Two boxes are worth knowing the shape of. `/diff` and `/plan` have no close key
+in a column at all — their `Enter` is wired to close the window, and a docked box
+has no window left to close, so `Shift+←` is the way out. `/keybinds` in export
+or import mode is the same shape: `Esc` is the only exit from those two modes,
+and a column does not deliver it, so use `Shift+←` and come back to the list.
+
 The in-box modal keeps its own keymap along the bottom, because a modal box owns
 its whole surface. The side column does not: a column too narrow for a keymap
-gives its rows to the listing instead.
+gives its rows to the listing instead. A docked information panel keeps one
+line at the bottom instead, reading `Showing 12-40 of 214`, because its scroll
+keys do not stop at the end of the page — and so does a docked plugin box, which
+keeps its `12-30/30` indicator for the same reason: that number is where you are,
+not a keymap, and it is the only thing telling you the listing ends.
 
 The columns you never go into — the session projection by default — stay quiet,
 and a panel with nothing loaded in it says nothing either.

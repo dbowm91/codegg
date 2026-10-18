@@ -3,7 +3,7 @@
 //! This module provides the Component trait and FocusManager for decoupled UI architecture.
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::Frame;
 use std::any::Any;
 use std::sync::Arc;
@@ -274,7 +274,40 @@ pub trait Component: Send + Any + AsAny {
     fn set_focused(&mut self, _idx: usize) {}
 }
 
-/// Object-safe type erasure used by the narrow typed modal accessors.
+/// A centred `Rect` of `percent_x` × `percent_y` inside `area`.
+///
+/// The one definition of this shape. It was duplicated in
+/// `src/tui/app/mod.rs` and `src/tui/components/dialogs/run_detail.rs` — not
+/// byte-for-byte identical (one copy qualified `Direction::Vertical`, the other
+/// did not, and the third parameter was named `area` in one and `r` in the
+/// other), but semantically the same function, so a fix to one would have left
+/// the other drawing a differently-sized popup.
+///
+/// It lives here rather than in either caller because `component.rs` is the one
+/// module both `app` and the dialogs already depend on. A dialog reaching into
+/// `app::centered_rect` would invert the dependency, which is how the
+/// duplication started.
+pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+/// A component that can be drawn either as a modal box or as a docked panel
 pub trait AsAny {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
