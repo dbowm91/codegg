@@ -1905,6 +1905,15 @@ impl App {
         // without opening the agent picker. Bounded so a long agent name
         // cannot crowd out the prompt's own prefix row.
         //
+        // The mode comes from `App::composer_input_mode`, not from
+        // `ui_state.input_mode`. The raw field is the *composer's* mode, and
+        // `focus_panel` forces it to `Normal` whenever a panel takes the
+        // keyboard — so a terminal panel holding a live PTY in Insert rendered
+        // `[NOR]` above the input while the user was typing into a shell. The
+        // badge and the contextual hint line read this one derived answer, so
+        // a surface that owns the keyboard is named by both or by neither. The
+        // derivation is a read: the render pass never moves the keyboard.
+        //
         // The destination badge names the surface that currently has the
         // keyboard — `[LLM]`, `[CHAT]`, `[SESSIONS]` — rather than listing
         // every reachable destination. Showing both send targets at once was
@@ -1940,7 +1949,8 @@ impl App {
                 })
                 .unwrap_or_default(),
         };
-        let mode_span_style = match self.ui_state.input_mode {
+        let input_mode = self.composer_input_mode();
+        let mode_span_style = match input_mode {
             InputMode::Insert => Style::default()
                 .fg(self.ui_state.theme.secondary)
                 .add_modifier(Modifier::BOLD),
@@ -1948,7 +1958,7 @@ impl App {
                 .fg(self.ui_state.theme.primary)
                 .add_modifier(Modifier::BOLD),
         };
-        let mode_label = match self.ui_state.input_mode {
+        let mode_label = match input_mode {
             InputMode::Insert => "[INS]",
             InputMode::Normal => "[NOR]",
         };
@@ -2331,6 +2341,10 @@ impl App {
             area,
             focused: self.panel_host.is_focused_at(placement),
             input_mode: self.ui_state.input_mode,
+            // The one frame clock decides, once, for every surface this frame
+            // paints — so the docked panel and the box cannot show the caret in
+            // opposite phases.
+            caret_blink_on: crate::tui::components::spinner::cursor_blink_visible_now(),
         };
         // `Clear` first: the previous panel's pixels must not show through
         // a narrower panel (the chat panel is shorter than the sidebar).

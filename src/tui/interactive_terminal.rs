@@ -612,6 +612,39 @@ impl InteractiveTerminalView {
             .translate(|(row, col)| (shift_row(row, delta, rows), col));
     }
 
+    /// Put the reader's cursor where the reader was working.
+    ///
+    /// Called on the way *out* of Insert, and the only place the cursor is
+    /// placed rather than kept — while Insert is live the program's cursor is
+    /// the truth and the reader's is parked at whatever the last clear left it
+    /// on, which is the bottom row. `Esc` then handed back a keyboard and a
+    /// cursor parked at the bottom of a mostly-empty screen, so the first `k`
+    /// appeared to do nothing and the first `x` armed a line the reader could
+    /// not see.
+    ///
+    /// **The rule: the last row that has content, or row 0 when nothing has.**
+    /// A fixed "one row above the bottom" was rejected because the common case
+    /// is a shell whose prompt sits on row 0 of a 24-row screen — the cursor
+    /// would have been parked in blank space *below* the only line on screen,
+    /// trading one wrong place for another. Anchoring on content instead puts
+    /// it on the prompt line after a short command and on the last line of the
+    /// block after a long one, which is where the reader was either way.
+    ///
+    /// `sync_viewport` first, so the row is measured against the offset the
+    /// screen is actually parked at; `set_cursor` rather than `move_to`, because
+    /// placement is bookkeeping and must not count as a deliberate movement
+    /// that extends a `v` selection. An armed selection keeps its own anchor:
+    /// the reader built it, and Esc from Insert is not a gesture against it.
+    fn place_reader_cursor_after_insert(&mut self) {
+        self.sync_viewport();
+        let max_row = self.rows.saturating_sub(1);
+        let row = (0..=max_row)
+            .rev()
+            .find(|row| !self.screen.row_text(*row).is_empty())
+            .unwrap_or(0);
+        self.nav.set_cursor((row, 0));
+    }
+
     /// Current daemon-link state for the view.
     pub fn link_state(&self) -> &TerminalLinkState {
         &self.link
@@ -843,12 +876,19 @@ impl TerminalScreen {
     /// head is pinned and the cursor is free to wander) or `v` (where the head
     /// tracks the cursor). `redactions` is the resolved `d` scrub, one entry
     /// per viewport row.
+    ///
+    /// `cursor_visible` is the *blink* phase, and it changes the modifier only
+    /// — never the caret's position. The cell stays painted while the caret is
+    /// dark, because a cursor that stops reserving its own cell would let the
+    /// line trim back to its last character and then re-extend on the next
+    /// phase: the text would appear to flicker instead of the caret.
     fn styled_lines(
         &self,
         max_lines: usize,
         selection: Option<Selection<TerminalPoint>>,
         redactions: &[Vec<(u16, u16)>],
         cursor: Option<TerminalPoint>,
+        cursor_visible: bool,
         highlight: ratatui::style::Style,
     ) -> Vec<ratatui::text::Line<'static>> {
         use ratatui::style::{Modifier, Style};
@@ -947,7 +987,7 @@ impl TerminalScreen {
                     }
                 }
                 if let Some((cur_row, cur_col)) = cursor {
-                    if cur_row == row && cur_col == col {
+                    if cur_row == row && cur_col == col && cursor_visible {
                         style = style.add_modifier(Modifier::REVERSED);
                     }
                 }
@@ -1437,12 +1477,22 @@ impl InteractiveTerminalController {
 
     /// Leave keyboard focus on `handle` (back to viewing). Never forwards
     /// bytes and never submits anything: this is the escape path.
+    ///
+    /// Leaving Insert is the one moment the reader's cursor is placed rather
+    /// than merely kept, and it is placed here so both surfaces get it from
+    /// one call. See [`TerminalView::place_reader_cursor_after_insert`].
     pub fn escape(&mut self, handle: &str) {
         if let Some(view) = self.views.get_mut(handle) {
             if view.focus == TerminalFocus::Focused {
                 view.focus = TerminalFocus::Viewing;
+                view.place_reader_cursor_after_insert();
             }
         }
+        // The sweep stays a second, separate pass and deliberately never
+        // touches `nav`. A hidden view becoming visible is not a gesture the
+        // reader made, so it must not move a cursor they did not move — and
+        // folding this into the block above is how one gesture's placement ends
+        // up being applied to every view on screen.
         for other in self.views.values_mut() {
             if other.focus == TerminalFocus::Hidden {
                 other.focus = TerminalFocus::Viewing;
@@ -1968,10 +2018,16 @@ impl InteractiveTerminalController {
     ///
     /// Both cells exist at once; showing the wrong one is what made an
     /// otherwise-correct focus flag look like a lie.
+    ///
+    /// `caret_blink_on` is the phase from the one frame clock, and it is
+    /// consulted **only** in INS. The reader's cursor is a selection anchor, so
+    /// a NOR surface ignores the phase entirely and keeps a solid cursor: a
+    /// blinking anchor makes `x` and `d` guesswork about which line is armed.
     pub fn render_view(
         &mut self,
         handle: &str,
         max_lines: usize,
+        caret_blink_on: bool,
         highlight: ratatui::style::Style,
     ) -> Option<Vec<ratatui::text::Line<'static>>> {
         let view = self.views.get_mut(handle)?;
@@ -1982,10 +2038,15 @@ impl InteractiveTerminalController {
             TerminalFocus::Focused => Some(view.screen.program_cursor()),
             _ => Some(view.nav.cursor()),
         };
-        Some(
-            view.screen
-                .styled_lines(max_lines, selection, &redactions, cursor, highlight),
-        )
+        let caret_visible = !matches!(view.focus, TerminalFocus::Focused) || caret_blink_on;
+        Some(view.screen.styled_lines(
+            max_lines,
+            selection,
+            &redactions,
+            cursor,
+            caret_visible,
+            highlight,
+        ))
     }
 
     /// Render the newest lines from the bounded VT screen for one view.
@@ -2006,7 +2067,14 @@ impl InteractiveTerminalController {
         handle: &str,
         max_lines: usize,
     ) -> Option<Vec<ratatui::text::Line<'static>>> {
-        self.render_view(handle, max_lines, ratatui::style::Style::default())
+        self.render_view(
+            handle,
+            max_lines,
+            // No clock in this path: it is the read-only projection API, not a
+            // surface a user is typing into, so the caret is simply present.
+            true,
+            ratatui::style::Style::default(),
+        )
     }
 
     /// Header lines describing one terminal for the dialog view, never
@@ -3197,6 +3265,205 @@ mod tests {
             "clear rebuilds the screen, so a held selection would name other text"
         );
         assert_eq!(controller.viewport_offset("h"), Some(0));
+    }
+
+    // ── Caret blink ─────────────────────────────────────────────────────
+
+    /// Cells carrying the caret's `REVERSED` modifier in one rendered frame.
+    ///
+    /// Counted rather than addressed: the blink's contract is "a phase changes
+    /// whether the caret is painted", and a count says that directly. Nothing
+    /// here paints an inverse cell of its own — the fixtures are plain text —
+    /// so a reversed cell can only be the caret.
+    fn reversed_cells(lines: &[ratatui::text::Line<'_>]) -> usize {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| {
+                span.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+            .count()
+    }
+
+    fn rendered(blink_on: bool) -> Vec<ratatui::text::Line<'static>> {
+        let mut controller = scrolled_history(3, &["alpha", "bravo"]);
+        assert!(controller.focus("h"), "the fixture is live and attached");
+        controller
+            .render_view("h", 200, blink_on, ratatui::style::Style::default())
+            .expect("render")
+    }
+
+    /// The reported defect: the caret was painted `REVERSED` and nothing
+    /// changed it, so a user could not tell from the terminal that the PTY was
+    /// live — the one thing the `[INS]` badge claims on the frame above.
+    ///
+    /// Both phases are *pinned*, so this pins the production decision rather
+    /// than sampling a live clock: `render_view` takes the phase as an input,
+    /// which is the only reason a blink can be asserted at all.
+    #[test]
+    fn the_insert_caret_blinks_on_the_phase_it_is_given() {
+        assert_eq!(
+            reversed_cells(&rendered(true)),
+            1,
+            "the visible phase paints exactly one caret cell"
+        );
+        assert_eq!(
+            reversed_cells(&rendered(false)),
+            0,
+            "the hidden phase paints none"
+        );
+    }
+
+    /// The dark phase must not change the *text*.
+    ///
+    /// A cursor that stopped reserving its cell would let `styled_lines` trim
+    /// the line back to its last character, and the next visible phase would
+    /// re-extend it — the line would appear to flicker instead of the caret,
+    /// and at the end of a prompt the whole line would vanish for half of every
+    /// second.
+    #[test]
+    fn the_hidden_phase_keeps_the_caret_cell_it_reserves() {
+        let on = rendered(true);
+        let off = rendered(false);
+        assert_eq!(
+            on.iter().map(|line| line.to_string()).collect::<Vec<_>>(),
+            off.iter().map(|line| line.to_string()).collect::<Vec<_>>(),
+            "the blink must change the modifier and nothing else"
+        );
+    }
+
+    /// NOR is a selection anchor, not a caret: `x`, `v` and `d` all act from
+    /// wherever it sits, so a blinking anchor would make "which line am I about
+    /// to delete" a coin flip. The phase is ignored there entirely.
+    #[test]
+    fn the_reader_cursor_never_blinks() {
+        let mut controller = scrolled_history(3, &["alpha", "bravo"]);
+        assert!(!controller.is_focused("h"), "the premise: reading");
+        for blink_on in [true, false] {
+            let lines = controller
+                .render_view("h", 200, blink_on, ratatui::style::Style::default())
+                .expect("render");
+            assert_eq!(
+                reversed_cells(&lines),
+                1,
+                "a NOR cursor is an anchor and stays solid (blink_on={blink_on})"
+            );
+        }
+    }
+
+    // ── Leaving Insert ────────────────────────────────────────────────
+
+    /// The reported defect: `Esc` handed the keyboard back and left the reader's
+    /// cursor where the last clear had parked it — the bottom row — so the
+    /// first `k` looked inert and the first `x` armed a line nobody could see.
+    ///
+    /// Anchored on *content*, so a short command puts the cursor on the prompt
+    /// line rather than in the blank space under it.
+    #[test]
+    fn leaving_insert_lands_the_reader_cursor_on_the_last_line_with_content() {
+        let mut controller = scrolled_history(6, &["one", "two", "three"]);
+        assert!(controller.focus("h"));
+        assert_eq!(
+            controller.cursor("h"),
+            Some((5, 0)),
+            "the premise: Insert leaves the reader parked at the bottom"
+        );
+
+        controller.escape("h");
+
+        assert!(!controller.is_focused("h"));
+        assert_eq!(
+            controller.cursor("h"),
+            Some((2, 0)),
+            "the cursor belongs on the last line the process painted"
+        );
+    }
+
+    /// A full screen is the other end of the same rule: the block's last line
+    /// *is* the last row, so placement must not underflow past it or stop one
+    /// row short of the output the reader just produced.
+    #[test]
+    fn leaving_insert_on_a_full_screen_lands_on_the_last_row() {
+        let rows = 4;
+        let lines = ["l0", "l1", "l2", "l3"];
+        let mut controller = scrolled_history(rows, &lines);
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert_eq!(controller.cursor("h"), Some((3, 0)));
+    }
+
+    /// Nothing has been printed yet — a shell that has not echoed its prompt,
+    /// or a screen cleared a moment ago. Row 0 is the only honest answer; the
+    /// bottom row is the placement this rule exists to stop.
+    #[test]
+    fn leaving_insert_on_an_empty_screen_lands_on_row_zero() {
+        let mut controller = scrolled_history(5, &["", "", "", "", ""]);
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert_eq!(controller.cursor("h"), Some((0, 0)));
+    }
+
+    /// A one-row screen is the degenerate geometry: `rows.saturating_sub(1)` is
+    /// 0 and the cursor must stay there rather than wrapping.
+    #[test]
+    fn leaving_insert_cannot_underflow_on_a_one_row_screen() {
+        let mut controller = scrolled_history(1, &["only"]);
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert_eq!(controller.cursor("h"), Some((0, 0)));
+    }
+
+    /// The sweep that reveals a hidden view is not a gesture the reader made,
+    /// so it must not move a cursor they did not move. A hidden view reaching
+    /// `Viewing` is the one part of `escape` with no user behind it.
+    #[test]
+    fn an_unrelated_escape_does_not_move_a_hidden_views_cursor() {
+        let mut controller = scrolled_history(4, &["one", "two", "three"]);
+        // A second view, focused, so the first one is hidden by the sweep's
+        // own rule.
+        assert!(controller.apply_created(
+            "h2".to_string(),
+            "ws-1".to_string(),
+            "cat".to_string(),
+            40,
+            4
+        ));
+        let other = chunk(0, 3, false, "two");
+        assert!(controller
+            .apply_attached("h2", "a-2".to_string(), &other, None)
+            .expect("attach")
+            .is_none());
+        assert!(controller.focus("h2"));
+        assert!(!controller.is_focused("h"));
+
+        // The reader presses Esc in the *box*, aimed at nothing this view did.
+        controller.escape("h2");
+        assert!(
+            !controller.is_focused("h"),
+            "the premise: `h` was hidden and stayed hidden until the sweep"
+        );
+        assert_eq!(
+            controller.cursor("h"),
+            Some((3, 0)),
+            "being swept out of Hidden must not place a cursor this reader never asked for"
+        );
+    }
+
+    /// Placement is bookkeeping, so it must not read as a deliberate movement.
+    /// A `v` selection armed before Insert is still armed after it, anchored
+    /// where the reader put it.
+    #[test]
+    fn leaving_insert_keeps_the_selection_the_reader_built() {
+        let mut controller = scrolled_history(4, &["alpha", "bravo"]);
+        assert!(controller.begin_selection("h", SelectionMode::Char));
+        assert!(controller.focus("h"));
+        controller.escape("h");
+        assert!(
+            controller.selection("h").is_some(),
+            "Esc from Insert is not a gesture against a selection the reader built"
+        );
     }
 
     #[test]

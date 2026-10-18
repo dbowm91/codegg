@@ -212,6 +212,18 @@ impl FilesDialog {
                     format!("… {reason}"),
                     Style::default().fg(theme.warning),
                 )));
+                // A truncated listing is bounded *in scope*, not a failure to
+                // find anything, and the recovery is a keypress. Without this
+                // the notice reads as a terminal verdict: the user is left
+                // staring at whatever survived the cut with nothing to do
+                // about it. `l` re-walks the selected directory on its own
+                // budget, so it is the way past every kind of truncation here
+                // — the retained-node cap, the depth window, and the response
+                // byte cap alike.
+                lines.push(Line::from(Span::styled(
+                    "  l to list a directory on its own · h to go back",
+                    Style::default().fg(theme.muted),
+                )));
             }
         }
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);

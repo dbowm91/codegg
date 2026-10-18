@@ -4339,14 +4339,7 @@ impl App {
         // buffer*, and a live terminal owns neither a filter buffer nor the
         // keyboard. Focus is the real question, and the terminal's own reader
         // path already handles the gesture in viewing mode.
-        let terminal_owns_keyboard = self.focus_manager.active_dialog_type()
-            == DialogType::Terminal
-            && self
-                .dialog_state
-                .terminal_detail_handle
-                .as_deref()
-                .is_some_and(|handle| self.interactive_terminals.is_focused(handle));
-        if !terminal_owns_keyboard
+        if !self.terminal_box_owns_keyboard()
             && self.focus_manager.top_docks_as_viewer()
             && self.dock_target().is_some()
         {
@@ -12537,6 +12530,98 @@ impl App {
         self.panel_host.destination_title()
     }
 
+    /// Whether the open terminal **box** is the current keyboard destination.
+    ///
+    /// The box is modal: while it is up with a mounted handle, its state *is*
+    /// the mode, whatever the composer thinks. This is deliberately weaker than
+    /// [`Self::terminal_box_owns_keyboard`] — that one asks whether the box is
+    /// consuming keys **as input for the process** (`TerminalFocus::Focused`),
+    /// which is the narrower question the docking gesture asks; this one asks
+    /// whether the box is where keys go at all, which is true in viewing mode
+    /// too. Reporting needs the wider one, because after `Esc` the box still has
+    /// the keyboard and the composer's private mode has nothing to say about it.
+    pub fn terminal_box_has_keyboard(&self) -> bool {
+        self.focus_manager.active_dialog_type() == DialogType::Terminal
+            && self.dialog_state.terminal_detail_handle.is_some()
+    }
+
+    /// Whether the open terminal box is holding the keyboard **for the
+    /// process**.
+    ///
+    /// Two independent facts, not one: the box must be the active dialog
+    /// (a terminal behind another dialog is not receiving keystrokes, whatever
+    /// its `TerminalFocus` says), and that handle must actually be focused in
+    /// the controller (`Esc` drops the keyboard to the reader while the box
+    /// stays open).
+    ///
+    /// The docking gesture in [`App::on_key`] and [`Self::composer_input_mode`]
+    /// both ask this rather than each re-deriving it. The panel host has the
+    /// mirror-image rule for the docked surface — a focused panel whose
+    /// `claims_insert_keys` holds — and those two together are what
+    /// `composer_input_mode` resolves over; neither can answer the other's half
+    /// of the question, because a box is not in the panel host and a panel is
+    /// not a dialog.
+    pub fn terminal_box_owns_keyboard(&self) -> bool {
+        self.terminal_box_has_keyboard()
+            && self
+                .dialog_state
+                .terminal_detail_handle
+                .as_deref()
+                .is_some_and(|handle| self.interactive_terminals.is_focused(handle))
+    }
+
+    /// The input mode the user is **actually** in, for everything that reports
+    /// it rather than enforces it.
+    ///
+    /// `ui_state.input_mode` is the composer's own mode, and it is the wrong
+    /// answer whenever the keyboard is somewhere else — which is most of the
+    /// time. `focus_panel` forces it to `Normal` whenever a panel takes focus
+    /// and `blur_panel` restores the parked mode, so a terminal panel holding a
+    /// live PTY in Insert reported `Normal` for as long as the user typed into
+    /// it. The composer badge read that raw field, so a user with the keyboard
+    /// in a shell watched `[NOR]` above the input — and the terminal panel's own
+    /// Insert hint branch was unreachable dead code, because the same field is
+    /// what it branched on.
+    ///
+    /// Resolution order, each half a seam key routing already reads rather than
+    /// a third definition of its own:
+    ///
+    /// 1. **The terminal box, either way.** A modal surface owns the keyboard,
+    ///    so it reports `Insert` while `TerminalFocus::Focused` and `Normal`
+    ///    after `Esc`. This half is why the composer's private mode cannot be
+    ///    the fallback here: the box never touches it, so it is still whatever
+    ///    it was before the box opened.
+    /// 2. **A focused panel that claims Insert** → `Insert`.
+    /// 3. **Otherwise `ui_state.input_mode`**, which is authoritative for every
+    ///    case where the composer really does have the keyboard. A panel that
+    ///    *declines* the Insert claim has genuinely handed the keys back, and
+    ///    `focus_panel` already parked the composer at `Normal` — reporting
+    ///    Insert there would be the same lie in the other direction.
+    ///
+    /// That is the same shape as [`Self::composer_destination_title`] and as
+    /// the editor route's `buffer_focused(input_mode)` badge, so this is the
+    /// third instance of one rule rather than a new mechanism.
+    ///
+    /// A pure read. It takes `&mut self` only because
+    /// `panel_claims_insert_keys` has to build a `PanelCtx`, whose grants are
+    /// `&mut`; **it writes nothing.** The frame must never be able to move the
+    /// keyboard by describing it — a badge that forced `input_mode` to match
+    /// what it displays would turn the state it reported into the state it
+    /// caused.
+    pub fn composer_input_mode(&mut self) -> InputMode {
+        if self.terminal_box_has_keyboard() {
+            return if self.terminal_box_owns_keyboard() {
+                InputMode::Insert
+            } else {
+                InputMode::Normal
+            };
+        }
+        if crate::tui::commands::panels::panel_claims_insert_keys(self) {
+            return InputMode::Insert;
+        }
+        self.ui_state.input_mode
+    }
+
     /// The side panel that can hold the currently open box, if any.
     ///
     /// The single place a box is associated with a panel, and the reason the
@@ -12605,7 +12690,7 @@ impl App {
     ///
     /// `None` when no panel is focused and nothing is armed — the row is not
     /// reserved at all in that case, so the prompt keeps its height.
-    pub fn composer_hint_text(&self) -> Option<String> {
+    pub fn composer_hint_text(&mut self) -> Option<String> {
         // Resize mode owns the frame, so it outranks every surface hint: the
         // keys that just changed meaning are `h/j/k/l`, and a reader who sees
         // "j/k scroll" while resize mode is armed has been told something
@@ -12634,13 +12719,21 @@ impl App {
         // The turn keys come first but never gate the panel's own hints: the
         // active panel advertises its keys whether a turn is running or not,
         // and only a composer with neither shows no row at all. The panel may
-        // not have the keyboard either — a docked panel names itself and the
-        // gesture that enters it, which is the only way its keymap is
-        // readable before anyone presses the wrong key.
+        // not have the keyboard either — a bespoke panel then declines, so the
+        // row still describes whoever holds it rather than the panel the user
+        // just walked away from.
         let agent_keys = self.llm_buffer_key_hints();
+        // The same derived answer the `[NOR]`/`[INS]` badge renders, not the raw
+        // composer field. The two were separate reads of `ui_state.input_mode`,
+        // which is pinned to `Normal` whenever a panel holds the keyboard — so
+        // while a terminal panel owned a live PTY in Insert, the badge said
+        // `[NOR]` and this line advertised reader navigation (`i type · hjkl
+        // move`) at a user who was typing into a shell. One answer, both
+        // surfaces, and they cannot disagree again.
+        let input_mode = self.composer_input_mode();
         let panel = self
             .panel_host
-            .composer_hints(self.chat_panel_project.as_deref(), self.ui_state.input_mode);
+            .composer_hints(self.chat_panel_project.as_deref(), input_mode);
         match (agent_keys, panel) {
             (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
             (Some(agent_keys), None) => Some(agent_keys),
@@ -15508,6 +15601,11 @@ fn index_files_recursive(
         ".cargo",
         "dist",
         "build",
+        // Mirrors `directory_listing::LISTING_IGNORED_DIRS`. Kept in step on
+        // purpose: the file tree and the `@` completions describe the same
+        // workspace, so a directory offered by one and hidden by the other
+        // reads as a bug in whichever one the user is looking at.
+        ".codegg",
     ];
 
     if let Ok(entries) = std::fs::read_dir(current_dir) {

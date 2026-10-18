@@ -597,6 +597,130 @@ pub fn reconcile_tab_model_with_daemon(
     }
 }
 
+/// The binding this process established at launch, captured before the
+/// restore plan clears the tab container.
+///
+/// `root` is `None` in compat mode — the launch directory could not be
+/// canonicalized — and there is nothing to preserve then.
+#[derive(Debug, Clone, Default)]
+pub struct LaunchBinding {
+    pub root: Option<std::path::PathBuf>,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub session_id: Option<String>,
+    pub label: String,
+    pub model: String,
+    pub agent: String,
+}
+
+impl LaunchBinding {
+    /// Capture the launch binding from the currently active tab.
+    pub fn capture(tabs: &crate::tui::app::state::project_tabs::ProjectTabs) -> Option<Self> {
+        tabs.active().map(|tab| Self {
+            root: tab.workspace_root.clone(),
+            project_id: tab.project_id.clone(),
+            workspace_id: tab.workspace_id.clone(),
+            session_id: tab.session_id.clone(),
+            label: tab.label.clone(),
+            model: tab.model.clone(),
+            agent: tab.agent.clone(),
+        })
+    }
+}
+
+/// What [`preserve_launch_binding`] had to do, so the caller can report it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchBindingOutcome {
+    /// Nothing to preserve (compat mode), or the restored active tab already
+    /// points at the launch directory. The ordinary case, and the only one
+    /// that leaves the plan's result untouched.
+    Unchanged,
+    /// The plan restored a tab for the launch directory but activated a
+    /// different one; that tab was focused.
+    FocusedExistingTab,
+    /// The launch directory was absent from the plan and its tab was
+    /// re-established and activated.
+    Reestablished,
+}
+
+/// Keep the session on the directory the user launched in.
+///
+/// The manifest is *user*-scoped, not workspace-scoped, so it can
+/// legitimately name a project from an earlier session — and
+/// [`apply_restore_plan`] clears every tab before installing the restored
+/// ones. Launching `codegg` inside a git worktree could therefore activate a
+/// tab rooted in whatever checkout the previous session used, with nothing on
+/// screen saying so.
+///
+/// That matters because `tab.workspace_root` anchors every relative path in
+/// the session (tools, `@` completions, the file tree). Retargeting it
+/// silently moves the whole session into a tree the user never opened — the
+/// same failure class as a tool reading the daemon's launch directory instead
+/// of the workspace root, reached from the other end.
+///
+/// Returns the heavy-load target unchanged when the launch binding survived,
+/// and `None` when the active tab changed: the plan's heavy load targets a
+/// session the user is no longer looking at.
+///
+/// Reporting the disagreement is the caller's job — this function only
+/// decides. Silently correcting would be the opposite mistake (the user may
+/// have meant to resume the older project); what is never acceptable is the
+/// two disagreeing invisibly.
+pub fn preserve_launch_binding(
+    tabs: &mut crate::tui::app::state::project_tabs::ProjectTabs,
+    launch: Option<LaunchBinding>,
+    heavy_target: Option<crate::tui::app::state::project_tabs::ProjectTabId>,
+) -> (
+    LaunchBindingOutcome,
+    Option<crate::tui::app::state::project_tabs::ProjectTabId>,
+) {
+    let Some(launch) = launch else {
+        return (LaunchBindingOutcome::Unchanged, heavy_target);
+    };
+    let Some(root) = launch.root.clone() else {
+        return (LaunchBindingOutcome::Unchanged, heavy_target);
+    };
+    // The restored active tab already points at the launch directory: the
+    // manifest and the launch agree.
+    if tabs
+        .active()
+        .and_then(|tab| tab.workspace_root.clone())
+        .as_ref()
+        == Some(&root)
+    {
+        return (LaunchBindingOutcome::Unchanged, heavy_target);
+    }
+
+    // Restored, but not active. Focus the matching tab rather than
+    // re-creating a binding that already exists.
+    let restored_match = tabs
+        .ordered()
+        .into_iter()
+        .find(|tab| tab.workspace_root.as_ref() == Some(&root))
+        .map(|tab| tab.tab_id.clone());
+    if let Some(tab_id) = restored_match {
+        if tabs.set_active(&tab_id) {
+            return (LaunchBindingOutcome::FocusedExistingTab, None);
+        }
+        return (LaunchBindingOutcome::Unchanged, heavy_target);
+    }
+
+    // Absent from the plan. Re-establish the launch tab, carrying the
+    // identities `bootstrap_launch_project_context` registered for it.
+    let mut tab = crate::tui::app::state::project_tabs::ProjectTabState::empty(
+        crate::tui::app::state::project_tabs::ProjectTabId::new(),
+        launch.label.clone(),
+    );
+    tab.project_id = launch.project_id.clone();
+    tab.workspace_id = launch.workspace_id.clone();
+    tab.session_id = launch.session_id.clone();
+    tab.workspace_root = Some(root);
+    tab.model = launch.model.clone();
+    tab.agent = launch.agent.clone();
+    tabs.add_and_activate(tab);
+    (LaunchBindingOutcome::Reestablished, None)
+}
+
 /// Apply a `RestorePlan` to a mutable [`ProjectTabs`] container.
 /// The plan is consumed deterministically: each entry that
 /// `opens_tab()` becomes a `ProjectTabState`; the active tab is set
@@ -700,6 +824,7 @@ mod tests {
     use crate::tui::app::state::manifest::{
         ManifestPreferences, PersistedProjectTab, TuiWorkspaceManifest,
     };
+    use crate::tui::app::state::project_tabs::ProjectTabs;
 
     fn snapshot() -> DaemonLookupSnapshot {
         DaemonLookupSnapshot::default()
@@ -1196,5 +1321,148 @@ mod tests {
         // No daemon snapshot yet: hint is kept.
         assert!(!reconcile_tab_model_with_daemon(&mut tab, None));
         assert_eq!(tab.model, "openai/gpt-4o");
+    }
+
+    // ---- launch-binding guard -------------------------------------------------
+    //
+    // The failure these cover is invisible by construction: the tab container is
+    // cleared and re-rooted, so nothing on screen reports the swap. Assert on
+    // the active tab's `workspace_root`, which is what every relative path in
+    // the session actually resolves against.
+
+    fn launch_binding(root: &str) -> LaunchBinding {
+        LaunchBinding {
+            root: Some(std::path::PathBuf::from(root)),
+            project_id: Some("p-launch".into()),
+            workspace_id: Some("w-launch".into()),
+            session_id: Some("s-launch".into()),
+            label: "launch".into(),
+            model: "openai/gpt-4o".into(),
+            agent: "build".into(),
+        }
+    }
+
+    fn rooted_tab(label: &str, root: &str) -> ProjectTabState {
+        let mut tab = ProjectTabState::empty(ProjectTabId::new(), label.into());
+        tab.project_id = Some(format!("p-{label}"));
+        tab.workspace_id = Some(format!("w-{label}"));
+        tab.session_id = Some(format!("s-{label}"));
+        tab.workspace_root = Some(std::path::PathBuf::from(root));
+        tab.model = "openai/gpt-4o".into();
+        tab.agent = "build".into();
+        tab
+    }
+
+    fn active_root(tabs: &ProjectTabs) -> Option<std::path::PathBuf> {
+        tabs.active().and_then(|tab| tab.workspace_root.clone())
+    }
+
+    #[test]
+    fn a_restore_agreeing_with_the_launch_directory_changes_nothing() {
+        let mut tabs = ProjectTabs::new();
+        tabs.add_and_activate(rooted_tab("launch", "/repo"));
+        let heavy = tabs.active().map(|t| t.tab_id.clone());
+
+        let (outcome, target) =
+            preserve_launch_binding(&mut tabs, Some(launch_binding("/repo")), heavy.clone());
+
+        assert_eq!(outcome, LaunchBindingOutcome::Unchanged);
+        assert_eq!(
+            target, heavy,
+            "an agreeing restore must keep the heavy load"
+        );
+        assert_eq!(
+            active_root(&tabs).as_deref(),
+            Some(std::path::Path::new("/repo"))
+        );
+        assert_eq!(tabs.len(), 1, "no extra tab invented for the agreeing case");
+    }
+
+    #[test]
+    fn a_restore_rooted_elsewhere_does_not_retarget_the_launch_directory() {
+        // The reported failure: `apply_restore_plan` cleared the launch tab and
+        // installed a tab rooted in the previous session's checkout, leaving the
+        // session anchored to a tree the user never opened.
+        let mut tabs = ProjectTabs::new();
+        tabs.add_and_activate(rooted_tab("launch", "/repo"));
+        let launch = LaunchBinding::capture(&tabs);
+        assert!(launch.is_some());
+
+        // ... the plan runs and roots the active tab somewhere else ...
+        tabs.clear_for_restore();
+        tabs.add_and_activate(rooted_tab("old", "/other/checkout"));
+
+        let (outcome, target) = preserve_launch_binding(&mut tabs, launch, None);
+
+        assert_eq!(outcome, LaunchBindingOutcome::Reestablished);
+        assert_eq!(
+            target, None,
+            "the plan's heavy load targets a tab we are leaving"
+        );
+        assert_eq!(
+            active_root(&tabs).as_deref(),
+            Some(std::path::Path::new("/repo")),
+            "the launch directory must win over the restored root"
+        );
+        let active = tabs.active().expect("a tab is active");
+        assert_eq!(active.project_id.as_deref(), Some("p-launch"));
+        assert_eq!(active.workspace_id.as_deref(), Some("w-launch"));
+        assert_eq!(active.session_id.as_deref(), Some("s-launch"));
+        assert_eq!(
+            active.model, "openai/gpt-4o",
+            "model choice is carried, not reset"
+        );
+        assert_eq!(active.agent, "build");
+    }
+
+    #[test]
+    fn a_restored_tab_for_the_launch_directory_is_focused_not_duplicated() {
+        let mut tabs = ProjectTabs::new();
+        tabs.add_and_activate(rooted_tab("launch", "/repo"));
+        let launch = LaunchBinding::capture(&tabs);
+
+        tabs.clear_for_restore();
+        let old_id = tabs.add_tab(rooted_tab("old", "/other/checkout"));
+        let keep_id = tabs.add_tab(rooted_tab("launch", "/repo"));
+        tabs.set_active(&old_id);
+
+        let (outcome, target) = preserve_launch_binding(&mut tabs, launch, None);
+
+        assert_eq!(outcome, LaunchBindingOutcome::FocusedExistingTab);
+        assert_eq!(target, None);
+        assert_eq!(
+            tabs.active().map(|t| t.tab_id.clone()),
+            Some(keep_id),
+            "the existing launch tab is focused rather than re-created"
+        );
+        assert_eq!(tabs.len(), 2, "focusing must not duplicate the tab");
+    }
+
+    #[test]
+    fn compat_mode_preserves_nothing_and_keeps_the_heavy_load() {
+        let mut tabs = ProjectTabs::new();
+        let heavy = tabs.add_and_activate(rooted_tab("launch", "/repo"));
+        // Launch directory could not be canonicalized: nothing to preserve.
+        let compat = LaunchBinding {
+            root: None,
+            ..LaunchBinding::default()
+        };
+
+        let (outcome, target) =
+            preserve_launch_binding(&mut tabs, Some(compat), Some(heavy.clone()));
+
+        assert_eq!(outcome, LaunchBindingOutcome::Unchanged);
+        assert_eq!(target, Some(heavy));
+    }
+
+    #[test]
+    fn an_absent_capture_preserves_nothing_and_keeps_the_heavy_load() {
+        let mut tabs = ProjectTabs::new();
+        let heavy = tabs.add_and_activate(rooted_tab("launch", "/repo"));
+
+        let (outcome, target) = preserve_launch_binding(&mut tabs, None, Some(heavy.clone()));
+
+        assert_eq!(outcome, LaunchBindingOutcome::Unchanged);
+        assert_eq!(target, Some(heavy));
     }
 }

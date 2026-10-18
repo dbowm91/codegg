@@ -34,11 +34,17 @@ use crate::directory_listing::{
     MAX_LISTING_NODES,
 };
 
-/// Maximum directory depth walked, counted from the workspace root at `0`.
+/// Maximum directory depth **embedded** in one listing, counted from the
+/// workspace root at `0`.
 ///
 /// Single-sourced from [`crate::directory_listing`]: the TUI navigator and
 /// the daemon-owned listing execute the same walk, so the bounds cannot
 /// drift between the two authorities.
+///
+/// This is a window, not a navigation limit — `l` re-walks a selected
+/// directory as a new root, so browsing past it is one key away. See
+/// [`crate::directory_listing::MAX_LISTING_DEPTH`] for why a small window is
+/// what keeps every top-level row inside the response budget.
 pub const MAX_TREE_DEPTH: usize = MAX_LISTING_DEPTH;
 
 /// Maximum number of entries retained across the whole tree.
