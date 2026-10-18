@@ -18,7 +18,7 @@ Routes:
 2. `egggit::GitEnvPolicy::apply_sync`, which uses the current private immutable object-view route, then Git status.
 3. gix 0.89.0 `Repository::status` with `open::Options::isolated()` and `sha1,status` features. System, user, and environment configuration and includes are disabled by gix's isolated options; repository-local configuration remains available. The gix route is not production wired.
 
-Each shape/route has 100 warm samples in one process and 30 fresh-process samples. Before each fresh-process sample the harness calls `posix_fadvise(POSIX_FADV_DONTNEED)` on object files and records advised bytes. This is an advisory request, not proof of kernel page eviction. “Cold” below means a fresh process plus cache-drop advice; it does not claim a verified cold device/page cache. Fixture generation and earlier parity checks may still influence filesystem/device caches. Samples are sequential, single-caller, and include all route work in end-to-end elapsed time. CPU is process-plus-child CPU. Cold RSS is sampled from each one-operation subprocess; warm `ru_maxrss` is cumulative and is not interpreted as per-operation RSS.
+Each shape/route has 100 warm samples in one process and 30 fresh-process samples. Before each fresh-process sample the harness calls `posix_fadvise(POSIX_FADV_DONTNEED)` on object files and records advised bytes. This is an advisory request, not proof of kernel page eviction. “Cold” below means a fresh process plus cache-drop advice; it does not claim a verified cold device/page cache. Fixture generation and earlier parity checks may still influence filesystem/device caches. Samples are sequential, single-caller, and include all route work in end-to-end elapsed time. CPU is process-plus-child CPU. Cold RSS is sampled from each one-operation subprocess; warm `ru_maxrss` is cumulative and is not interpreted as per-operation RSS. p95 is nearest-rank (`ceil(0.95 * n)`).
 
 Commands:
 
@@ -40,12 +40,12 @@ Values are milliseconds; p95 uses the nearest-rank lower sample index. Each row 
 
 | Fixture | Route | Warm p50 / p95 / max | Fresh-process p50 / p95 / max | Fresh-process median CPU | Fresh-process median RSS (self / Git child) |
 |---|---|---:|---:|---:|---:|
-| Fragmented, 4,098 files / 100,875,466 object bytes | Native Git | 5.17 / 5.56 / 6.06 | 6.46 / 6.92 / 7.13 | 9.82 ms | 7.8 / 5.7 MiB |
-| Fragmented | Immutable snapshot + Git | 5.27 / 5.58 / 5.81 | 3,706 / 4,534 / 9,853 | 1,380 ms | 7.8 / 5.7 MiB |
-| Fragmented | gix | 8.03 / 8.49 / 9.41 | 11.10 / 12.68 / 313.43 | 9.85 ms | 7.8 / n/a |
-| Packed, 4 files / 100,975,256 object bytes | Native Git | 5.44 / 5.66 / 8.14 | 6.88 / 7.28 / 7.54 | 9.57 ms | 7.8 / 5.9 MiB |
-| Packed | Immutable snapshot + Git | 5.21 / 5.47 / 5.62 | 2,651 / 4,143 / 4,467 | 159 ms | 7.8 / 6.0 MiB |
-| Packed | gix | 7.74 / 8.06 / 8.35 | 10.70 / 10.82 / 13.99 | 9.16 ms | 7.8 / n/a |
+| Fragmented, 4,098 files / 100,875,466 object bytes | Native Git | 5.17 / 5.56 / 6.06 | 6.46 / 6.95 / 7.13 | 9.82 ms | 7.8 / 5.7 MiB |
+| Fragmented | Immutable snapshot + Git | 5.27 / 5.58 / 5.81 | 3,706 / 5,754 / 9,853 | 1,380 ms | 7.8 / 5.7 MiB |
+| Fragmented | gix | 8.03 / 8.49 / 9.41 | 11.10 / 13.43 / 313.43 | 9.85 ms | 7.8 / n/a |
+| Packed, 4 files / 100,975,256 object bytes | Native Git | 5.44 / 5.66 / 8.14 | 6.88 / 7.30 / 7.54 | 9.57 ms | 7.8 / 5.9 MiB |
+| Packed | Immutable snapshot + Git | 5.21 / 5.47 / 5.62 | 2,651 / 4,270 / 4,467 | 159 ms | 7.8 / 6.0 MiB |
+| Packed | gix | 7.74 / 8.06 / 8.35 | 10.70 / 12.49 / 13.99 | 9.16 ms | 7.8 / n/a |
 
 Raw per-sample CSV files are retained in `research/linux-trusted-git-cost-corrective/results/`. The packed and fragmented median object-store sizes differ slightly because Git's generated pack representation is not byte-identical to the loose representation.
 

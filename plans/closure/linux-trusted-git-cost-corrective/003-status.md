@@ -58,6 +58,7 @@ python3 scripts/check_adr_integrity.py
 python3 scripts/check_execution_ownership.py
 python3 scripts/check_git_forbidden_patterns.py
 python3 scripts/check_sandbox_contract.py
+scripts/verify.sh quick
 ```
 
 ### Results
@@ -67,7 +68,9 @@ python3 scripts/check_sandbox_contract.py
 - Full egggit serial suite: 108 passed, 1 ignored across 2 suites.
 - An initial un-serialized `cargo test --locked -p egggit` run had two failures involving the snapshot cache and global Git hooks. The repository guidance requires serial execution for process-global state; both failures passed in the serial full suite.
 - Formatting, diff check, ADR integrity, execution ownership, forbidden Git pattern, and sandbox contract guards passed.
-- Exact throughput values and cache-eviction limitation are recorded in `research/linux-trusted-git-cost-corrective/c003-gix-vs-cli-benchmark.md`.
+- `scripts/verify.sh quick` passed on branch head `326a9f042f9d98c12175be5cee5a7cb5d595b787`.
+- Hosted x86_64 macOS CodeGG target compile passed on the same branch head in run [39102146034](https://github.com/dbowm91/codegg/actions/runs/39102146034); C003 itself changes no cross-platform production route.
+- Exact throughput values use nearest-rank p95 and the cache-eviction limitation is recorded in `research/linux-trusted-git-cost-corrective/c003-gix-vs-cli-benchmark.md`.
 
 ## 5. Invariant review
 
@@ -102,7 +105,7 @@ The gix route uses `gix::open::Options::isolated()` and runs only in the standal
 |---|---|---|---|
 | medium | gix was compared only for status entry counts, without broad `GitPayload` parity or malformed-repository security probes | No future operation beyond status can rely on this benchmark | Any re-proposal must use a new plan with operation and adversarial matrices before production discussion. |
 | medium | Cache drop was advisory; no 1/4/8 caller run, verified device-cold I/O, or setup-only timing was captured | Absolute cold latency may vary by host/cache state | Preserve raw data and repeat under a controlled runner if a route decision depends on those dimensions. |
-| high | Snapshot cold p95 is 4.14–4.53 seconds in these fixtures, above C010's 1,000 ms comparator | Current route's cold routine-read cost remains unresolved | Continue the separate C001/C002 contained native CLI work; retain immutable semantics until independently admitted. |
+| high | Snapshot cold p95 is 4.27–5.75 seconds in these fixtures, above C010's 1,000 ms comparator | Current route's cold routine-read cost remains unresolved | Continue the separate C001/C002 contained native CLI work; retain immutable semantics until independently admitted. |
 
 ## 11. Roadmap disposition
 

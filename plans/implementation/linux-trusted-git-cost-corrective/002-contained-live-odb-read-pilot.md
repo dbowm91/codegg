@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C002 — Contained Live-ODB Read Pilot
 
-Status: blocked on C001 test-only proof; **production route additionally blocked on ADR-0036 acceptance and M005 native/owner admission**
+Status: ready for internal test-only pilot; **production route remains blocked on ADR-0036 acceptance and M005 native/owner admission**
 Primary class: capability
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source roadmap: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`; parent `plans/subsystems/linux-execution-isolation-roadmap.md`.
@@ -26,7 +26,7 @@ Build and qualify an **internal opt-in, test-only** contained native-Git read ad
 
 ## Ordered implementation packages
 
-1. Freeze `C001` test oracle, expected typed operation kinds and selected repo/gitdir/common-dir/ODB identity. Define internal `GitReadBackend` selection/facts (names illustrative): `ImmutableSnapshotLegacy`, `ContainedLiveTestOnly`. Originating session/agent authorization and immutable job lease are inputs; `egggit` may construct argv but must not bypass `ManagedProcessService`.
+1. Freeze the conditionally closed C001 test oracle, expected typed operation kinds and selected repo/gitdir/common-dir/ODB identity. Restrict the initial fixture to an ordinary repository whose gitdir/common-dir/ODB are inside the selected workspace; linked/external metadata roots and alternates remain denied/unqualified. Define internal `GitReadBackend` selection/facts (names illustrative): `ImmutableSnapshotLegacy`, `ContainedLiveTestOnly`. Originating session/agent authorization and immutable job lease are inputs; `egggit` may construct argv but must not bypass `ManagedProcessService`.
 2. Build internal, test-gated adapter through `src/git_service.rs` and `src/managed_process.rs`; pass reviewed `SandboxLaunchSpec` with explicit protected metadata, ODB read roots, M004 process/FD/seccomp, M005 offline network. Reuse child-only helper identity+status+ack, cancellation, time/output bounds and tests. Refuse any unknown/unobtained required dimension *before Git runs*. Verify chosen trust-root and path/FD identity and enforce no unapproved secondary ODB, partial-clone/promisor fetch, Git `includeIf`, repo-discovery or alternate escape.
 3. Preserve structured Git payload parity (`status`, `diff`, `log`, `show`, `ChangedFiles`, branches/worktree reads) against a static native Git oracle. Use separate receipt field for live vs immutable consistency; while proposed, keep it internal or test-only. Explicitly protect Git config executables and user/credential env using existing `GitEnvPolicy` hardening.
 4. Run adversarial/race fixtures from C001 on real children and intentionally mutate/repack ODB concurrently. Treat failures as typed stale/unavailable (do not fabricate spawn error or silently retry as FullHost). Carry output provenance/retry counts into existing audit without secret text.

@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C004 — Private Index/Object Staging and Broker Promotion
 
-Status: blocked on C001 threat-model closure and independent ADR-0036 acceptance for production; **test-only transaction modeling can proceed against a written C001 interface**
+Status: ready for test-only transaction modeling against C001's closed test boundary; **production publication remains blocked on independent ADR-0036 acceptance and broker safety proof**
 Primary class: invariant
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
 Source: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`, parent Linux execution isolation roadmap and Linux C002 contained-local-Git recovery plan `plans/implementation/linux-execution-isolation/010-m001-contained-local-git-recovery.md`.
