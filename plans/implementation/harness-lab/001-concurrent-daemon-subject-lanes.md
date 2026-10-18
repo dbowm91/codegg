@@ -86,7 +86,7 @@ No user-facing config or DB migration, no changed default daemon behavior. If co
 ## 10. Tests
 
 - Pure Python tests with fake child processes: delayed ready, wrong ID, stale metadata, reused PID, duplicate exit, hung ACP, invalid JSON, one lane kill versus two lane state.
-- Real `pytest` or `unittest` subprocess smoke using built `codegg` and two private homes, distinct sockets and DBs; validate live daemon identity, AC P session binding, shutdown and retained default-user daemon invariance. No provider token required.
+- Real `pytest` or `unittest` subprocess smoke using built `codegg` and two private homes, distinct sockets and DBs; validate live daemon identity, ACP session binding, shutdown and retained default-user daemon invariance. No provider token required.
 - Permission/path and cancellation assertions; executable digest mismatch should block binding, not warn.
 
 ## 11. Verification commands
