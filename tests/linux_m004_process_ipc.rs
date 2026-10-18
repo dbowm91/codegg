@@ -1496,6 +1496,34 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         intent_lines.next().is_none(),
         "unexpected recovery intent data"
     );
+
+    // Recovery must bind to the original gitdir inode, not merely trust the
+    // configured path. Replace that path after the publisher exits and prove
+    // the identity check rejects the replacement before it can touch it.
+    let displaced_gitdir = recovery_dir.join("displaced-source-gitdir");
+    std::fs::rename(&source_gitdir, &displaced_gitdir)
+        .expect("displace source gitdir for identity substitution probe");
+    std::fs::create_dir(&source_gitdir).expect("install replacement source gitdir path");
+    let replacement_gitdir =
+        std::fs::metadata(&source_gitdir).expect("inspect replacement gitdir identity");
+    assert_ne!(
+        (replacement_gitdir.dev(), replacement_gitdir.ino()),
+        (intent_dev, intent_ino),
+        "replacement gitdir unexpectedly has the authorized identity"
+    );
+    assert!(
+        !source_gitdir.join("index").exists() && !source_gitdir.join("index.lock").exists(),
+        "identity-mismatched recovery path was modified"
+    );
+    let displaced_lock = displaced_gitdir.join("index.lock");
+    assert!(
+        displaced_lock.is_file(),
+        "displaced authorized gitdir lost the interrupted publisher lock"
+    );
+    std::fs::remove_dir(&source_gitdir).expect("remove empty replacement gitdir");
+    std::fs::rename(&displaced_gitdir, &source_gitdir)
+        .expect("restore original source gitdir after identity probe");
+
     let recovery_gitdir =
         std::fs::metadata(&source_gitdir).expect("revalidate recovery gitdir identity");
     assert_eq!(
