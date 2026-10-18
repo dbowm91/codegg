@@ -624,7 +624,8 @@ async fn c002_packed_and_fragmented_cold_warm_git_cost_qualification() {
             "wall time includes canonical service/launcher overhead",
             "CPU time and peak RSS are not measured by this pilot",
             "POSIX_FADV_DONTNEED is advisory and does not prove true cold cache",
-            "concurrent-agent contention is not measured by this pilot",
+            "warm contention measures 1, 4, and 8 simultaneous calls using 30 batches per level; it does not model separate agent identities",
+            "setup-only and child-only time are not separated",
             "snapshot bytes copied are approximated by the fixture ODB size per cold sample"
         ]
     });
