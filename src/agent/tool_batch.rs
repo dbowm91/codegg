@@ -383,9 +383,12 @@ impl AgentLoop {
             workspace_path_policy_revision: None,
             permission_policy_revision: receipt.policy_revision.clone(),
             principal_identity: Some(agent_id),
-            // M003 origin: stamped by the agent loop via `apply_origin`
-            // once turn attribution is threaded through (M005).
-            origin_principal: None,
+            // Captured from authenticated daemon turn admission; never
+            // sourced from the prompt, client DTO, or model output.
+            origin_principal: self
+                .origin_principal
+                .as_ref()
+                .map(|principal| principal.as_str().to_owned()),
             origin_auth_method: None,
             origin_decision_id: None,
             caller_class: Some("agent".into()),

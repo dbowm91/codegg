@@ -726,7 +726,20 @@ impl AgentRunGroupService {
         actor: &GroupActor,
         group_id: AgentRunGroupId,
     ) -> Result<AgentRunGroupSummary, AgentRunGroupError> {
-        let group = self.authorize(actor, &group_id).await?;
+        // Direct group members may observe the board. This grants no group
+        // control: wait and cancel remain restricted to the group owner.
+        let group = self
+            .groups
+            .get(&group_id)
+            .await?
+            .ok_or_else(|| AgentRunGroupError::NotFound(group_id.to_string()))?;
+        let member = actor
+            .run_id
+            .as_ref()
+            .is_some_and(|run_id| group.member_run_ids.contains(run_id));
+        if !self.actor_is_owner(actor, &group) && !member {
+            return Err(AgentRunGroupError::Unauthorized);
+        }
         self.recompute_group(group).await
     }
 
@@ -1058,7 +1071,14 @@ impl AgentRunGroupService {
             .get(group_id)
             .await?
             .ok_or_else(|| AgentRunGroupError::NotFound(group_id.to_string()))?;
-        let authorized = match &group.owner {
+        if !self.actor_is_owner(actor, &group) {
+            return Err(AgentRunGroupError::Unauthorized);
+        }
+        Ok(group)
+    }
+
+    fn actor_is_owner(&self, actor: &GroupActor, group: &AgentRunGroupRecord) -> bool {
+        match &group.owner {
             AgentRunGroupOwner::Run { run_id } => actor.run_id.as_ref() == Some(run_id),
             AgentRunGroupOwner::Turn { session_id, .. } => {
                 actor.run_id.is_none()
@@ -1068,11 +1088,7 @@ impl AgentRunGroupService {
                         .as_deref()
                         .is_some_and(|turn_id| !turn_id.is_empty())
             }
-        };
-        if authorized {
-            return Ok(group);
         }
-        Err(AgentRunGroupError::Unauthorized)
     }
 }
 
@@ -1464,6 +1480,31 @@ mod tests {
             )
             .await
             .is_ok());
+        let child_actor = GroupActor {
+            run_id: Some(first.run_id.clone()),
+            session_id: None,
+            turn_id: None,
+        };
+        assert!(service
+            .status(&child_actor, summary.group.group_id.clone())
+            .await
+            .is_ok());
+        assert!(matches!(
+            service
+                .wait(
+                    &child_actor,
+                    summary.group.group_id.clone(),
+                    std::time::Duration::from_millis(1),
+                )
+                .await,
+            Err(AgentRunGroupError::Unauthorized)
+        ));
+        assert!(matches!(
+            service
+                .cancel(&child_actor, summary.group.group_id.clone())
+                .await,
+            Err(AgentRunGroupError::Unauthorized)
+        ));
         let later_turn = GroupActor {
             run_id: None,
             session_id: Some("turn-group-session".into()),
@@ -1500,7 +1541,7 @@ mod tests {
             service
                 .status(
                     &GroupActor {
-                        run_id: Some(first.run_id),
+                        run_id: Some(AgentRunId::new()),
                         session_id: Some("turn-group-session".into()),
                         turn_id: None,
                     },

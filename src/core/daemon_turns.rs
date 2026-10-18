@@ -721,36 +721,9 @@ impl CoreDaemon {
                         ) as crate::agent::provider_qualification::SharedProviderCredentialObserver
                     })
                 });
-                // Delegated mutating runs derive their managed worktree from
-                // the authoritative repository binding of the session's
-                // workspace. Carry that identity into TaskTool so the
-                // scheduler can provision isolated child checkouts instead
-                // of treating a repository-backed session as repo-less.
-                let repository_id = match self.pool.clone() {
-                    Some(pool) => {
-                        let storage = codegg_core::project_storage::ProjectStorage::new(pool);
-                        match storage.workspace_binding(&runtime.workspace_id).await {
-                            Ok(Some(binding))
-                                if binding.status
-                                    == codegg_core::project_storage::BindingStatus::Resolved =>
-                            {
-                                binding.repository_id
-                            }
-                            Ok(_) => None,
-                            Err(error) => {
-                                tracing::warn!(
-                                    %error,
-                                    workspace_id = %runtime.workspace_id,
-                                    "workspace repository binding lookup failed for delegated runs"
-                                );
-                                None
-                            }
-                        }
-                    }
-                    None => None,
-                };
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
+                    origin_principal: Some(authority.principal_id().clone()),
                     agents_dto: agents,
                     current_agent_idx,
                     model,

@@ -18,8 +18,8 @@ use codegg_core::agent_convergence::ConvergenceStore;
 use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
 use codegg_core::agent_run_control::AgentRunControlKind;
 use codegg_core::agent_run_group::{
-    AgentRunGroupOwner, AgentRunGroupService, AgentRunGroupSummary, GroupActor, NewAgentRunGroup,
-    RunJoinPolicy, MAX_GROUP_MEMBERS,
+    AgentRunGroupOwner, AgentRunGroupRecord, AgentRunGroupService, AgentRunGroupSummary,
+    GroupActor, NewAgentRunGroup, RunJoinPolicy, MAX_GROUP_MEMBERS,
 };
 use codegg_core::identity::{
     AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorkspaceId,
@@ -2211,7 +2211,14 @@ fn format_group_summary(
         ));
     }
     if !rejected.is_empty() {
-        lines.push(format!("Rejected children: {}", rejected.len()));
+        lines.push(format!("Rejected child requests: {}", rejected.len()));
+        for (index, error) in rejected.iter().enumerate() {
+            let mut detail = error.chars().take(512).collect::<String>();
+            if error.chars().count() > 512 {
+                detail.push('…');
+            }
+            lines.push(format!("- rejected request {}: {detail}", index + 1));
+        }
     }
     lines.join("\n")
 }
@@ -2318,6 +2325,59 @@ mod tests {
             assert!(actions.contains(&action));
         }
         assert!(!actions.contains(&"handoff"));
+    }
+
+    #[test]
+    fn workstream_claim_actor_requires_authenticated_origin_context() {
+        let tool = TaskTool::default();
+        let mut context = ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        assert!(tool.workstream_actor(Some(&context)).is_err());
+
+        context.origin_principal = Some("principal-fixture".into());
+        assert_eq!(
+            tool.workstream_actor(Some(&context)).unwrap(),
+            codegg_core::workstream_claim::ClaimActor::Principal(
+                codegg_core::identity::PrincipalId::parse("principal-fixture").unwrap()
+            )
+        );
+        // An invalid or untrusted string must never be guessed into an actor.
+        context.origin_principal = Some("/tmp/workspace".into());
+        assert!(tool.workstream_actor(Some(&context)).is_err());
+    }
+
+    #[test]
+    fn group_summary_reports_bounded_child_rejection_details() {
+        let run_id = AgentRunId::new();
+        let group_id = AgentRunGroupId::new();
+        let summary = AgentRunGroupSummary {
+            group: AgentRunGroupRecord {
+                group_id,
+                root_run_id: run_id.clone(),
+                owner_run_id: run_id,
+                owner: AgentRunGroupOwner::Turn {
+                    session_id: "session-fixture".into(),
+                    turn_id: "turn-fixture".into(),
+                },
+                member_run_ids: Vec::new(),
+                join_policy: RunJoinPolicy::All,
+                cancel_remaining_on_satisfaction: false,
+                status: codegg_core::agent_run_group::RunGroupStatus::Running,
+                created_at: 0,
+                completed_at: None,
+                winner_run_id: None,
+                idempotency_key: "group-fixture".into(),
+            },
+            members: Vec::new(),
+            successful: 0,
+            failed: 0,
+            active: 0,
+            timed_out: false,
+        };
+        let detail = format!("{}tail", "x".repeat(512));
+        let output = format_group_summary(&summary, false, &[detail]);
+        assert!(output.contains("Rejected child requests: 1"));
+        assert!(output.contains(&format!("- rejected request 1: {}…", "x".repeat(512))));
+        assert!(!output.contains("tail"));
     }
 
     #[test]

@@ -84,6 +84,9 @@ impl LspAgentContextInput {
 pub struct TurnRunInput {
     /// Session identifier.
     pub session_id: String,
+    /// Authenticated principal captured by the daemon when this turn was
+    /// admitted. This is trusted transport state, never request/model input.
+    pub origin_principal: Option<codegg_core::identity::PrincipalId>,
     /// Raw agent DTOs from the protocol layer.
     pub agents_dto: Vec<codegg_protocol::dto::Agent>,
     /// Index into `agents_dto` for the active agent this turn.
@@ -231,6 +234,7 @@ impl TurnRuntime for DefaultTurnRuntime {
 
         let TurnRunInput {
             session_id,
+            origin_principal,
             agents_dto,
             current_agent_idx,
             model,
@@ -870,6 +874,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             tool_registry,
             pool,
             session_id: session_id.clone(),
+            origin_principal,
             turn_id: Some(turn_id.clone()),
             provider_registry: Arc::new(registry),
             subagent_pool,

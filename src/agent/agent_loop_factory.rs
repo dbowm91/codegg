@@ -16,6 +16,8 @@ pub struct AgentLoopBuildInput {
     pub tool_registry: ToolRegistry,
     pub pool: Option<sqlx::SqlitePool>,
     pub session_id: String,
+    /// Authenticated daemon principal for the admitted turn.
+    pub origin_principal: Option<codegg_core::identity::PrincipalId>,
     pub turn_id: Option<String>,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub task_state_policy: TaskStatePolicy,
@@ -87,6 +89,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.session_id,
     );
     agent_loop.set_turn_id(input.turn_id);
+    agent_loop.set_origin_principal(input.origin_principal);
     agent_loop.set_provider_registry(input.provider_registry);
     agent_loop.set_workspace_id(input.execution.workspace_id.clone());
     if let Some(lease) = input.workspace_service_lease {

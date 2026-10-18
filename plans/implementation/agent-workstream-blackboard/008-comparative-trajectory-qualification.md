@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed and independent of M005. Partial exploratory S0/S1 and Cargo target measurements are recorded in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`; sandbox containment was not verified, S2/S3 remain unqualified, and the remaining task strata are open. `codegg headless --session <id>` submits through the production daemon TaskTool and session-resolved workspace; first establish a verified sandbox root and live smoke trajectory, then repeat S1 and proceed with isolated S2/S3 using managed sessions. The provider-backed comparison MUST include at least one substantial Rust workload and one substantial Python workload that implement or consume a shared, frozen interface; independent modules alone do not meet this criterion. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006 and M007 are strictly closed and independent of M005; M011 repository identity and M012 same-session group continuation are closed. The frozen shared-interface S0 passed, and one S1 Rust/Python pair completed after child approval-mode propagation; that single pair is descriptive, not evidence of repeatable improvement, and its child costs were not individually attributable. Child token/cost attribution is now durable and tested. Post-accounting S2/S3 retries remain non-qualifying because of timeouts and coordination admission/authorization failures; see `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and the execution updates below. The remaining strata are open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -211,7 +211,38 @@ recorded.
 
 The user-approved credential selection used the most recently updated existing
 OpenCode Go credential in the trial-only database; no secret was displayed or
-copied into the report. No new provider-backed retries were started after the
-S3 recovery discrepancy. Rust-heavy overlapping APIs, dependency-heavy builds,
-and the remaining task strata are still open. No S2/S3 effectiveness result is
-claimed, and no dependent plan is unblocked.
+copied into the report. No S2/S3 effectiveness result is claimed, and no
+dependent plan is unblocked.
+
+### Post-accounting S2/S3 retries and coordination corrections (2026-10-18)
+
+The provider-backed retries below used the frozen v1 fixture and isolated
+trial-owned daemon/data roots. Per-child usage is now queryable by each durable
+`AgentRunId`; `cost_usd=0` is reported as unavailable because the provider sent
+no cost and the local model catalog has no matching price. These usage totals
+are not successful-trial comparisons because required work, claims, commits,
+or acceptance checks did not complete.
+
+| Condition / group | Child runs and final usage (input/output tokens; USD) | Outcome |
+|---|---|---|
+| S2 factual observations, `df49011f-c5b6-4e5e-bc19-b4a47b5628e9` | Rust `0f6c3ae6-d76f-4200-8391-b76ace68968f`: 666,945/7,370; Python `4114f366-f58c-40af-ae22-144abf2c0088`: 564,630/7,523; USD unavailable for both | The parent reached the 10-minute cap while both runs were active. After stopping the trial daemon, Python was completed and Rust recovered as interrupted. Their managed worktrees held uncommitted edits, but neither child commit nor frozen acceptance result was available. No integration was performed. |
+| S3, `712bbd65-3dd4-493a-a8ac-7928e4db7574` | Rust `a9942108-bb4e-4307-8cbf-7ff594dafc11`: 63,448/2,076; Python `ecd57c24-9a33-43df-b9c3-dd492365617e`: 91,183/1,672; USD unavailable | Both children completed without edits. Their reports said board/claim prerequisites failed; observed errors included missing `group_id` and unauthorized group-member board reads. No commits or tests. |
+| S3, `4e5be18e-bc4b-4bcf-97f3-755130dd0b57` | Python `2b1e04ff-5697-4879-92c9-c875e265f67f`: 46,930/666; Rust `c3ee9894-c64d-4c57-b0c0-4fbcafb1235f`: 879,888/8,273; USD unavailable | Python stopped because path intent `python/` has an invalid trailing slash. Rust remained active at the 10-minute cap and recovered as interrupted. No claims, commits or acceptance checks. |
+| S3, `53f4e9e8-417e-43ed-9026-5e48282af9c4` | Rust `a83bbd02-407b-49df-a1df-ccc0884f5e5b`: 9,055/493; USD unavailable | `spawn_many` accepted the Rust child but rejected the Python request before creating its durable task. Rust remained active at the cap and recovered as interrupted. No claims or code changes. The rejection detail was not retained in the final parent report. A daemon restart marked the child `interrupted` with `scheduler_recovery`, but the `join_policy=all` group remained `running`, reproducing the group reconciliation defect. |
+
+The source follow-up carries the daemon-authenticated principal through
+`TurnRunInput` into `ToolExecutionContext` for parent workstream claim actors.
+`AgentRunGroupService::status` now permits direct member runs to read the
+group board; wait and cancel remain owner-only. The task tool now includes
+bounded rejection details in `spawn_many` summaries so a future retry can
+record why one child was refused. Focused tests cover the member read boundary,
+rejection detail bounds, and the claim actor's requirement for a valid bound
+principal.
+The `python/` failure was prompt input: claim targets are normalized relative
+intent strings such as `python`, without a trailing slash. The second-child
+`spawn_many` rejection remains unexplained. Restarting the isolated daemon
+after capped attempts recovered active child runs as interrupted, but left
+their `join_policy=all` groups in `running`; startup does not reconcile these
+group records. These changes do not qualify the provider-backed S2/S3 arms. The frozen task acceptance tests, typed integration,
+and successful two-child claim/board trajectory remain outstanding. Do not
+expand to overlapping Rust APIs or dependency-heavy tasks until S2/S3 complete.

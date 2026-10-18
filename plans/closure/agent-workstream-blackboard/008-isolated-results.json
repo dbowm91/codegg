@@ -373,5 +373,119 @@
       "provider_usage_attribution": "Unavailable per child. The parent session has 147 usage rows (2,131,250 input tokens; 22,583 output tokens) across the experiment and follow-up turns. These values are not attributed to the S1 children and are intentionally excluded from child cost totals.",
       "classification": "completed isolated multi-agent shared-interface arm; one descriptive S1 pair, not an effectiveness conclusion"
     }
-  }
+  },
+  "supplemental_trials": [
+    {
+      "id": "S2-post-accounting-2026-10-18",
+      "group_id": "df49011f-c5b6-4e5e-bc19-b4a47b5628e9",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "two isolated children with factual peer observations; no claims",
+      "result": "incomplete_timeout",
+      "cap_seconds": 600,
+      "children": [
+        {
+          "assignment": "rust",
+          "agent_run_id": "0f6c3ae6-d76f-4200-8391-b76ace68968f",
+          "status": "interrupted_scheduler_recovery",
+          "input_tokens": 666945,
+          "output_tokens": 7370,
+          "reported_usd": null,
+          "commit": null,
+          "acceptance_tests": "not verified"
+        },
+        {
+          "assignment": "python",
+          "agent_run_id": "4114f366-f58c-40af-ae22-144abf2c0088",
+          "status": "completed_without_integrated_report",
+          "input_tokens": 564630,
+          "output_tokens": 7523,
+          "reported_usd": null,
+          "commit": null,
+          "acceptance_tests": "not verified"
+        }
+      ],
+      "integrated_checks": "not run; no child commits",
+      "notes": "Both child worktrees contained uncommitted source changes. Cost unavailable: provider returned no cost and local catalog lacked a price."
+    },
+    {
+      "id": "S3-authorization-followup-2026-10-18",
+      "group_id": "712bbd65-3dd4-493a-a8ac-7928e4db7574",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "two isolated children with peer observations and atomic claims",
+      "result": "completed_without_claims_or_changes",
+      "children": [
+        {
+          "assignment": "rust",
+          "agent_run_id": "a9942108-bb4e-4307-8cbf-7ff594dafc11",
+          "status": "completed",
+          "input_tokens": 63448,
+          "output_tokens": 2076,
+          "reported_usd": null,
+          "commit": null
+        },
+        {
+          "assignment": "python",
+          "agent_run_id": "ecd57c24-9a33-43df-b9c3-dd492365617e",
+          "status": "completed",
+          "input_tokens": 91183,
+          "output_tokens": 1672,
+          "reported_usd": null,
+          "commit": null
+        }
+      ],
+      "integrated_checks": "not run; no child commits",
+      "notes": "Claims/board failed; observed errors included missing group_id and group actor authorization."
+    },
+    {
+      "id": "S3-invalid-path-claim-followup-2026-10-18",
+      "group_id": "4e5be18e-bc4b-4bcf-97f3-755130dd0b57",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "two isolated children with peer observations and atomic claims",
+      "result": "incomplete_timeout",
+      "cap_seconds": 600,
+      "children": [
+        {
+          "assignment": "rust",
+          "agent_run_id": "c3ee9894-c64c-4c57-b0c0-4fbcafb1235f",
+          "status": "interrupted_scheduler_recovery",
+          "input_tokens": 879888,
+          "output_tokens": 8273,
+          "reported_usd": null,
+          "commit": null
+        },
+        {
+          "assignment": "python",
+          "agent_run_id": "2b1e04ff-5697-4879-92c9-c875e265f67f",
+          "status": "completed_claim_rejected",
+          "input_tokens": 46930,
+          "output_tokens": 666,
+          "reported_usd": null,
+          "commit": null
+        }
+      ],
+      "integrated_checks": "not run; no successful claims or child commits",
+      "notes": "Python path claim used a trailing slash, which the canonical relative intent normalizer rejects. Restart interrupted Rust but left the group running. Cost unavailable."
+    },
+    {
+      "id": "S3-single-member-spawn-rejection-followup-2026-10-18",
+      "group_id": "53f4e9e8-417e-43ed-9026-5e48282af9c4",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "two isolated child requests with peer observations and atomic claims",
+      "result": "incomplete_one_child_request_rejected",
+      "cap_seconds": 600,
+      "children": [
+        {
+          "assignment": "rust",
+          "agent_run_id": "a83bbd02-407b-49df-a1df-ccc0884f5e5b",
+          "status": "interrupted_scheduler_recovery",
+          "input_tokens": 9055,
+          "output_tokens": 493,
+          "reported_usd": null,
+          "commit": null
+        }
+      ],
+      "integrated_checks": "not run; Python request rejected before durable task creation",
+      "notes": "The parent report did not retain the Python rejection detail. On restart the Rust child became interrupted while the join_policy=all group stayed running. Cost unavailable."
+    }
+  ]
 }

@@ -103,6 +103,9 @@ pub struct AgentLoop {
     /// Durable child loops retain the originating turn for provenance while
     /// their run ID remains the invocation owner scope.
     pub(super) turn_id: Option<String>,
+    /// Daemon-authenticated principal that submitted this turn. Used for
+    /// principal-owned orchestration actions such as workstream claims.
+    pub(super) origin_principal: Option<codegg_core::identity::PrincipalId>,
     pub(super) workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     pub(super) workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     /// Retains the workspace service bundle so eviction cannot replace the
@@ -431,6 +434,7 @@ impl AgentLoop {
             plugin_service: None,
             session_id,
             turn_id: None,
+            origin_principal: None,
             workspace_id: None,
             workspace_locks: None,
             workspace_service_lease: None,
@@ -702,6 +706,10 @@ impl AgentLoop {
 
     pub fn set_turn_id(&mut self, turn_id: Option<String>) {
         self.turn_id = turn_id;
+    }
+
+    pub fn set_origin_principal(&mut self, principal: Option<codegg_core::identity::PrincipalId>) {
+        self.origin_principal = principal;
     }
 
     pub fn set_workspace_id(&mut self, workspace_id: codegg_core::workspace::WorkspaceId) {

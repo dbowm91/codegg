@@ -1170,6 +1170,8 @@ async fn turn_submit_atomically_acquires_controller() {
     let pool = test_pool().await;
     let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
     let team = TeamStore::new(pool);
+    let workspace_dir = tempfile::tempdir().expect("canonical workspace directory");
+    let workspace_root = workspace_dir.path().to_string_lossy().into_owned();
     let alice = human_token(&team, "Alice-submit", "client-alice").await;
     let alice_record = team
         .get_principal(alice.principal_id())
@@ -1182,7 +1184,7 @@ async fn turn_submit_atomically_acquires_controller() {
     let workspace_id = match Box::pin(daemon.handle_request(new_request(
         "req-ws-submit".to_string(),
         CoreRequest::WorkspaceRegister {
-            root: "/tmp".to_string(),
+            root: workspace_root.clone(),
         },
     )))
     .await
@@ -1218,7 +1220,7 @@ async fn turn_submit_atomically_acquires_controller() {
         new_request(
             "req-create-submit".to_string(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".to_string(),
+                directory: workspace_root.clone(),
                 title: None,
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
@@ -1309,10 +1311,12 @@ async fn concurrent_submits_converge_on_one_controller() {
     let pool = test_pool().await;
     let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
     let team = TeamStore::new(pool);
+    let workspace_dir = tempfile::tempdir().expect("canonical workspace directory");
+    let workspace_root = workspace_dir.path().to_string_lossy().into_owned();
     let workspace_id = match Box::pin(daemon.handle_request(new_request(
         "req-ws-race".to_string(),
         CoreRequest::WorkspaceRegister {
-            root: "/tmp".to_string(),
+            root: workspace_root.clone(),
         },
     )))
     .await
@@ -1357,7 +1361,7 @@ async fn concurrent_submits_converge_on_one_controller() {
         new_request(
             "req-create-race".to_string(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".to_string(),
+                directory: workspace_root.clone(),
                 title: None,
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
