@@ -1149,6 +1149,10 @@ fn contract_snapshot_admits_programmatic_only_and_hash_covers_policy() {
 #[test]
 fn adapters_are_hidden_and_ordinary_definitions_unchanged() {
     use codegg::tool::disclosure;
+    // The canonical Git and LSP definitions are rooted workspace tools.
+    // Build the registry with the same workspace context used by the rest
+    // of this suite so this assertion checks disclosure, not rootless
+    // registration behavior.
     let (_workspace, registry) = workspace_registry();
     assert!(registry.contains("git_read"));
     assert!(registry.contains("lsp_read"));
