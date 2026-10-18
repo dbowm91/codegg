@@ -290,6 +290,8 @@ pub enum BuiltinSlashAction {
     PluginDoctor,
     PluginRemove,
     PluginInstall,
+    /// M004: open the session's waiting-prompt box.
+    Queue,
 }
 
 /// Typed executable authority for a registry entry.
@@ -623,6 +625,11 @@ impl CommandRegistry {
                 .with_description("View rate limits and quota"),
             Command::new("/stats", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::TuiStats))
                 .with_description("View session analytics and cost breakdown"),
+            Command::new("/queue", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Queue))
+                .with_description(
+                    "Open this session's waiting-prompt box: j/k move, r refresh, a add, \
+                     e edit, [ ] reorder, d delete, s send now",
+                ),
             Command::new("/tui", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tui))
                 .with_aliases(&["fullscreen"])
                 .with_description("Toggle fullscreen mode"),
@@ -1190,9 +1197,9 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // The 166 registered commands include `/projects`, `/fork-worktree`,
+        // The 167 registered commands include `/projects`, `/fork-worktree`,
         // and `/new-worktree`. Keep architecture/command.md in sync.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 166);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 167);
     }
 
     #[test]
@@ -1344,6 +1351,9 @@ mod tests {
     fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
         use BuiltinSlashAction as B;
         vec![
+            // M004: `/queue`. The variant was added to the enum and to the
+            // registry but omitted here, so this test failed to notice it.
+            B::Queue,
             B::ProjectInit,
             B::Reload,
             B::Skills,

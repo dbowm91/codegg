@@ -384,6 +384,66 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::AgentInvoke),
         ),
+        // M002a (ADR-0035): a read, and deliberately narrower than the
+        // promotion read above, which uses `AgentInvoke`. ADR-0035 states
+        // "queue reads are subject to session read authority", so this
+        // descriptor uses `SessionRead`. Do not copy the broader capability
+        // from the promotion precedent.
+        R::UserPromptQueueList { .. } => OperationDescriptor::new(
+            "user_prompt_queue_list",
+            ScopeKind::ViaSession,
+            Some(Capability::SessionRead),
+        ),
+        // M002b (ADR-0037, accepted): the five mutations plus ownership
+        // transfer. All six are `AgentInvoke` — the same capability
+        // `session_control_transfer` requires, which ADR-0037 names directly for
+        // transfer. Reads keep `SessionRead` above and are unchanged.
+        //
+        // The capability gate is necessary, not sufficient: these operations
+        // additionally require the durable session-scoped queue owner, which
+        // `ControllerScope::QueueMutation` enforces. The descriptor cannot
+        // express a per-session identity row, which is exactly why the handler
+        // check exists.
+        R::UserPromptQueueAdd { .. } => OperationDescriptor::new(
+            "user_prompt_queue_add",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::UserPromptQueueEdit { .. } => OperationDescriptor::new(
+            "user_prompt_queue_edit",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::UserPromptQueueDelete { .. } => OperationDescriptor::new(
+            "user_prompt_queue_delete",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::UserPromptQueueReorder { .. } => OperationDescriptor::new(
+            "user_prompt_queue_reorder",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::UserPromptQueueAdopt { .. } => OperationDescriptor::new(
+            "user_prompt_queue_adopt",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::UserPromptQueueTransfer { .. } => OperationDescriptor::new(
+            "user_prompt_queue_transfer",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        // M006 (ADR-0036): hands one queued prompt to the turn that is already
+        // running. `AgentInvoke` rather than a distinct capability: it reaches
+        // the same turn-steering surface as `turn_steer`, and a policy that
+        // could steer directly but not steer from the queue would be a way
+        // around the same guard.
+        R::UserPromptQueueSendNow { .. } => OperationDescriptor::new(
+            "user_prompt_queue_send_now",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         R::TurnCancel { .. } => OperationDescriptor::new(
             "turn_cancel",
             ScopeKind::ViaSession,
@@ -1570,6 +1630,9 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::HumanShellPromotionsGet {
             session_id: String::new(),
         },
+        R::UserPromptQueueList {
+            session_id: String::new(),
+        },
         R::TurnCancel {
             session_id: String::new(),
             turn_id: String::new(),
@@ -2185,6 +2248,34 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             recipient_principal: String::new(),
             expected_revision: 0,
             reason: None,
+        },
+        R::UserPromptQueueAdd {
+            session_id: String::new(),
+            entry_id: String::new(),
+            text: String::new(),
+            run_at_ms: None,
+        },
+        R::UserPromptQueueEdit {
+            session_id: String::new(),
+            entry_id: String::new(),
+            text: String::new(),
+            run_at_ms: None,
+        },
+        R::UserPromptQueueDelete {
+            session_id: String::new(),
+            entry_id: String::new(),
+        },
+        R::UserPromptQueueReorder {
+            session_id: String::new(),
+            entry_ids: Vec::new(),
+        },
+        R::UserPromptQueueAdopt {
+            session_id: String::new(),
+        },
+        R::UserPromptQueueTransfer {
+            session_id: String::new(),
+            recipient_principal: String::new(),
+            expected_revision: 0,
         },
         R::SessionControlRelease {
             session_id: String::new(),

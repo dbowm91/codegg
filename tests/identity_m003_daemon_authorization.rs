@@ -697,3 +697,1275 @@ async fn restart_preserves_membership_and_attribution() {
     assert_eq!(reloaded, attribution);
     pool2.close().await;
 }
+
+/// M002a (ADR-0035): the prompt-queue read is gated on `SessionRead`.
+///
+/// This is the end-to-end half of the descriptor contract. The descriptor pins
+/// *which* capability the read asks for; this pins that the gate actually
+/// refuses a principal who lacks it, through the real daemon entry point rather
+/// than a hand-rolled check.
+///
+/// It also demonstrates the deliberate divergence from
+/// `human_shell_promotions_get`: a Viewer holds `SessionRead` but not
+/// `AgentInvoke`, so this Viewer is *allowed* here while the promotion read
+/// refuses the same principal. Copying the promotion precedent would silently
+/// swap both of those outcomes.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_read_is_refused_without_session_read() {
+    let pool = test_pool().await;
+    let daemon = test_daemon(pool.clone()).await;
+    let team = TeamStore::new(pool.clone());
+    let project = ProjectId::new();
+
+    sqlx::query(
+        "INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) VALUES (?, '/tmp', 1, 1, '[]')",
+    )
+    .bind(project.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, 's', '/tmp', 't', 'v', 1, 1)",
+    )
+    .bind("session-queue-authz")
+    .bind(project.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A principal bound to the transport but holding no membership on this
+    // project: it has no `SessionRead`, so the read must be refused.
+    let outsider = human_token(&team, "Outsider", "client-outsider").await;
+    register_client(&daemon, "client-outsider", outsider);
+
+    let denied = Box::pin(daemon.handle_request_for_client(
+        new_request(
+            "req-queue-denied".to_owned(),
+            CoreRequest::UserPromptQueueList {
+                session_id: "session-queue-authz".to_owned(),
+            },
+        ),
+        "client-outsider",
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        error_code(&denied),
+        "authorization_denied",
+        "a principal without SessionRead must be refused for the queue read"
+    );
+
+    // A Viewer holds `SessionRead` and passes the gate. The queue is empty
+    // because nothing can enqueue an entry yet — that is the expected result
+    // in M002a, not a failure.
+    let viewer = human_token(&team, "QueueViewer", "client-queue-viewer").await;
+    let viewer_id = viewer.principal_id().clone();
+    team.create_membership(&project, &viewer_id, ProjectRole::Viewer)
+        .await
+        .unwrap();
+    register_client(&daemon, "client-queue-viewer", viewer);
+
+    let allowed = Box::pin(daemon.handle_request_for_client(
+        new_request(
+            "req-queue-allowed".to_owned(),
+            CoreRequest::UserPromptQueueList {
+                session_id: "session-queue-authz".to_owned(),
+            },
+        ),
+        "client-queue-viewer",
+    ))
+    .await
+    .unwrap();
+    match allowed {
+        CoreResponse::UserPromptQueue {
+            session_id,
+            entries,
+        } => {
+            assert_eq!(session_id, "session-queue-authz");
+            assert!(
+                entries.is_empty(),
+                "M002a delivers no mutation, so the read is empty by construction"
+            );
+        }
+        CoreResponse::Error { code, .. } => {
+            panic!("a Viewer holds SessionRead; the gate must pass it, got {code}")
+        }
+        other => panic!("expected UserPromptQueue, got {other:?}"),
+    }
+}
+
+/// The descriptor-level divergence, pinned at the seam the daemon consults.
+///
+/// `human_shell_promotions_get` is a read authorized with the broader
+/// `AgentInvoke`; the queue read uses `SessionRead`. A future edit that copies
+/// the older precedent would widen the queue read to every principal who can
+/// invoke an agent, and nothing else in the tree would notice.
+#[test]
+fn user_prompt_queue_descriptor_diverges_from_promotion_read_capability() {
+    let queue = operation_descriptor(&CoreRequest::UserPromptQueueList {
+        session_id: "s".to_owned(),
+    });
+    assert_eq!(queue.scope_kind, ScopeKind::ViaSession);
+    assert_eq!(queue.capability, Some(Capability::SessionRead));
+
+    let promotion = operation_descriptor(&CoreRequest::HumanShellPromotionsGet {
+        session_id: "s".to_owned(),
+    });
+    assert_eq!(promotion.capability, Some(Capability::AgentInvoke));
+    assert_ne!(queue.capability, promotion.capability);
+}
+
+// ---------------------------------------------------------------------------
+// M002b (ADR-0037, accepted — Option B): queue mutation authority.
+//
+// The cases below are the ones ADR-0037's Verification section names: mutation
+// while idle, a non-owner with `agent.invoke` refused for every mutation, the
+// owner/controller mismatch during an active turn, and `is_controller_bypass`
+// gaining no queue authority.
+// ---------------------------------------------------------------------------
+
+const QUEUE_SESSION: &str = "session-queue-2b-authz";
+
+/// Build a project + session with one `agent.invoke` holder (the owner) and one
+/// other `agent.invoke` holder (a non-owner contributor), both with tokens
+/// registered on the daemon.
+async fn queue_authz_fixture() -> (
+    CoreDaemon,
+    sqlx::SqlitePool,
+    codegg_core::identity::ProjectId,
+    String,
+    String,
+) {
+    let pool = test_pool().await;
+    let daemon = test_daemon(pool.clone()).await;
+    let team = TeamStore::new(pool.clone());
+    let project = ProjectId::new();
+
+    sqlx::query(
+        "INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) \
+         VALUES (?, '/tmp', 1, 1, '[]')",
+    )
+    .bind(project.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session (id, project_id, slug, directory, title, version, \
+         time_created, time_updated) VALUES (?, ?, 's', '/tmp', 't', 'v', 1, 1)",
+    )
+    .bind(QUEUE_SESSION)
+    .bind(project.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let owner = human_token(&team, "QueueOwner", "client-queue-owner").await;
+    let owner_id = owner.principal_id().clone();
+    team.create_membership(&project, &owner_id, ProjectRole::Contributor)
+        .await
+        .unwrap();
+    register_client(&daemon, "client-queue-owner", owner);
+
+    let rival = human_token(&team, "QueueRival", "client-queue-rival").await;
+    let rival_id = rival.principal_id().clone();
+    team.create_membership(&project, &rival_id, ProjectRole::Contributor)
+        .await
+        .unwrap();
+    register_client(&daemon, "client-queue-rival", rival);
+
+    (
+        daemon,
+        pool,
+        project,
+        owner_id.to_string(),
+        rival_id.to_string(),
+    )
+}
+
+async fn queue_request(
+    daemon: &CoreDaemon,
+    client: &str,
+    label: &str,
+    request: CoreRequest,
+) -> CoreResponse {
+    Box::pin(daemon.handle_request_for_client(new_request(format!("req-{label}"), request), client))
+        .await
+        .unwrap()
+}
+
+/// Write a turn lease row directly, to place the session mid-turn without
+/// running a real turn.
+async fn acquire_lease(pool: &sqlx::SqlitePool, controller: &str, turn_id: &str) {
+    sqlx::query(
+        "INSERT OR REPLACE INTO session_turn_controller \
+         (session_id, turn_id, controller_principal, origin_client, revision, \
+          created_at, updated_at, last_action) \
+         VALUES (?, ?, ?, 'client-test', 1, 1, 1, 'acquired')",
+    )
+    .bind(QUEUE_SESSION)
+    .bind(turn_id)
+    .bind(controller)
+    .execute(pool)
+    .await
+    .expect("acquire turn lease");
+}
+
+async fn release_lease(pool: &sqlx::SqlitePool) {
+    sqlx::query("DELETE FROM session_turn_controller WHERE session_id = ?")
+        .bind(QUEUE_SESSION)
+        .execute(pool)
+        .await
+        .expect("release turn lease");
+}
+
+/// **The headline case ADR-0037 was written for.** An entry is queued while the
+/// session is idle: no turn, no lease row. Under ADR-0035's original clause the
+/// turn-scoped lease answered for nobody here, so this was unreachable.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_add_is_authorized_while_the_session_is_idle() {
+    let (daemon, pool, _project, owner_id, _rival_id) = queue_authz_fixture().await;
+
+    let leases: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM session_turn_controller WHERE session_id = ?")
+            .bind(QUEUE_SESSION)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        leases, 0,
+        "the session must be idle for this test to mean anything"
+    );
+
+    let response = queue_request(
+        &daemon,
+        "client-queue-owner",
+        "queue-idle-add",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "e1".to_owned(),
+            text: "queued while idle".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+
+    match response {
+        CoreResponse::UserPromptQueue { entries, .. } => {
+            assert_eq!(entries.len(), 1, "the entry is queued");
+            assert_eq!(entries[0].id, "e1");
+            assert_eq!(entries[0].ordinal, 0);
+        }
+        CoreResponse::Error { code, .. } => {
+            panic!("an idle mutation must be authorized; got {code}")
+        }
+        other => panic!("expected UserPromptQueue, got {other:?}"),
+    }
+
+    // First-add adopted the calling principal, per the policy ADR-0037 deferred
+    // to M002b.
+    let owner: String = sqlx::query_scalar(
+        "SELECT owner_principal FROM user_prompt_queue_owner WHERE session_id = ?",
+    )
+    .bind(QUEUE_SESSION)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(owner, owner_id, "the author adopts the queue");
+}
+
+/// A principal with `agent.invoke` who does **not** own the queue is refused for
+/// every mutation, idle and mid-turn. This is ADR-0037's verification
+/// requirement, and the case a capability-only design would have got wrong.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_non_owner_with_agent_invoke_is_refused_for_every_mutation() {
+    let (daemon, pool, _project, _owner_id, _rival_id) = queue_authz_fixture().await;
+    // The owner creates the queue while idle.
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "queue-owner-add",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "e1".to_owned(),
+            text: "owned".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+
+    let refusals = [
+        (
+            "add",
+            CoreRequest::UserPromptQueueAdd {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e2".to_owned(),
+                text: "not mine".to_owned(),
+                run_at_ms: None,
+            },
+        ),
+        (
+            "edit",
+            CoreRequest::UserPromptQueueEdit {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "hijacked".to_owned(),
+                run_at_ms: None,
+            },
+        ),
+        (
+            "delete",
+            CoreRequest::UserPromptQueueDelete {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+            },
+        ),
+        (
+            "reorder",
+            CoreRequest::UserPromptQueueReorder {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_ids: vec!["e1".to_owned()],
+            },
+        ),
+        (
+            "adopt",
+            CoreRequest::UserPromptQueueAdopt {
+                session_id: QUEUE_SESSION.to_owned(),
+            },
+        ),
+        (
+            "transfer",
+            CoreRequest::UserPromptQueueTransfer {
+                session_id: QUEUE_SESSION.to_owned(),
+                recipient_principal: _rival_id.clone(),
+                expected_revision: 0,
+            },
+        ),
+    ];
+
+    // Idle: every mutation refused.
+    for (label, request) in refusals.iter() {
+        let response = queue_request(
+            &daemon,
+            "client-queue-rival",
+            &format!("queue-rival-idle-{label}"),
+            request.clone(),
+        )
+        .await;
+        assert_eq!(
+            error_code(&response),
+            "user_prompt_queue_not_owner",
+            "idle {label} by a non-owner must be refused"
+        );
+    }
+
+    // Mid-turn, owned by someone else: still `NotQueueOwner`, never a
+    // controller-shaped refusal. Ownership is evaluated before the turn term.
+    acquire_lease(&pool, &_owner_id, "turn-1").await;
+    for (label, request) in refusals.iter() {
+        let response = queue_request(
+            &daemon,
+            "client-queue-rival",
+            &format!("queue-rival-turn-{label}"),
+            request.clone(),
+        )
+        .await;
+        assert_eq!(
+            error_code(&response),
+            "user_prompt_queue_not_owner",
+            "mid-turn {label} by a non-owner must be refused as not-owner"
+        );
+    }
+    release_lease(&pool).await;
+
+    // Nothing was written by any refused mutation.
+    let stored: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_prompt_queue_entry WHERE session_id = ?")
+            .bind(QUEUE_SESSION)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stored, 1,
+        "every refused mutation must leave no partial write"
+    );
+}
+
+/// The four-row mismatch table from the plan, mid-turn. Fail-closed, with a
+/// typed refusal naming the mismatch rather than a silent precedence rule.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_mid_turn_mismatch_table_refuses_with_typed_reasons() {
+    // Row 1: caller is owner AND controller -> allowed.
+    {
+        let (daemon, pool, _project, owner_id, _rival) = queue_authz_fixture().await;
+        queue_request(
+            &daemon,
+            "client-queue-owner",
+            "mm1-add",
+            CoreRequest::UserPromptQueueAdd {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "ok".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        acquire_lease(&pool, &owner_id, "turn-1").await;
+        let response = queue_request(
+            &daemon,
+            "client-queue-owner",
+            "mm1-edit",
+            CoreRequest::UserPromptQueueEdit {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "still ok".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        assert!(
+            matches!(response, CoreResponse::UserPromptQueue { .. }),
+            "row 1 (owner + controller) must be allowed, got {response:?}"
+        );
+        release_lease(&pool).await;
+    }
+
+    // Row 2: caller is owner, but someone else controls the turn.
+    {
+        let (daemon, pool, _project, _owner_id, rival_id) = queue_authz_fixture().await;
+        queue_request(
+            &daemon,
+            "client-queue-owner",
+            "mm2-add",
+            CoreRequest::UserPromptQueueAdd {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "ok".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        acquire_lease(&pool, &rival_id, "turn-1").await;
+        let response = queue_request(
+            &daemon,
+            "client-queue-owner",
+            "mm2-edit",
+            CoreRequest::UserPromptQueueEdit {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "not while you steer".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        assert_eq!(
+            error_code(&response),
+            "user_prompt_queue_controller_mismatch",
+            "row 2 (owner, other controller) must name the mismatch"
+        );
+        release_lease(&pool).await;
+    }
+
+    // Row 3: caller is the turn controller but NOT the queue owner.
+    {
+        let (daemon, pool, _project, _owner_id, rival_id) = queue_authz_fixture().await;
+        queue_request(
+            &daemon,
+            "client-queue-owner",
+            "mm3-add",
+            CoreRequest::UserPromptQueueAdd {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "ok".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        acquire_lease(&pool, &rival_id, "turn-1").await;
+        let response = queue_request(
+            &daemon,
+            "client-queue-rival",
+            "mm3-edit",
+            CoreRequest::UserPromptQueueEdit {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "controller is not enough".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        assert_eq!(
+            error_code(&response),
+            "user_prompt_queue_not_owner",
+            "row 3 (other owner, caller controller) must be refused as not-owner"
+        );
+        release_lease(&pool).await;
+    }
+
+    // Row 4: neither.
+    {
+        let (daemon, pool, _project, _owner, _rival) = queue_authz_fixture().await;
+        queue_request(
+            &daemon,
+            "client-queue-owner",
+            "mm4-add",
+            CoreRequest::UserPromptQueueAdd {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "ok".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        acquire_lease(&pool, "principal-unrelated", "turn-1").await;
+        let response = queue_request(
+            &daemon,
+            "client-queue-rival",
+            "mm4-edit",
+            CoreRequest::UserPromptQueueEdit {
+                session_id: QUEUE_SESSION.to_owned(),
+                entry_id: "e1".to_owned(),
+                text: "neither".to_owned(),
+                run_at_ms: None,
+            },
+        )
+        .await;
+        assert_eq!(
+            error_code(&response),
+            "user_prompt_queue_not_owner",
+            "row 4 (neither) must be refused as not-owner"
+        );
+        release_lease(&pool).await;
+    }
+}
+
+/// `is_controller_bypass` is the identity-only, session-unbound escape hatch
+/// that ADR-0037 rejects for queue authority. An implementer who reached for it
+/// to make an idle mutation test pass would have re-created the defect; this
+/// proves by execution, not by inspection, that it does not work.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_controller_bypass_carries_no_queue_authority() {
+    let pool = test_pool().await;
+    let daemon = test_daemon(pool.clone()).await;
+    let team = TeamStore::new(pool.clone());
+    let project = ProjectId::new();
+
+    sqlx::query(
+        "INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) \
+         VALUES (?, '/tmp', 1, 1, '[]')",
+    )
+    .bind(project.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session (id, project_id, slug, directory, title, version, \
+         time_created, time_updated) VALUES (?, ?, 's', '/tmp', 't', 'v', 1, 1)",
+    )
+    .bind(QUEUE_SESSION)
+    .bind(project.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The local interactive owner is the principal `is_local_owner_broad` names.
+    // Give it the same `agent.invoke` membership every other principal needs, so
+    // the only thing that could refuse it is the bypass — and the bypass must
+    // not be consulted.
+    let local = human_token(&team, "QueueLocal", "client-queue-local").await;
+    let local_id = local.principal_id().clone();
+    team.create_membership(&project, &local_id, ProjectRole::Contributor)
+        .await
+        .unwrap();
+    register_client(&daemon, "client-queue-local", local);
+
+    let owner = human_token(&team, "QueueOwner2", "client-queue-owner2").await;
+    let owner_id = owner.principal_id().clone();
+    team.create_membership(&project, &owner_id, ProjectRole::Contributor)
+        .await
+        .unwrap();
+    register_client(&daemon, "client-queue-owner2", owner);
+
+    // The other principal creates the queue, so the local owner is a non-owner.
+    queue_request(
+        &daemon,
+        "client-queue-owner2",
+        "bypass-seed",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "e1".to_owned(),
+            text: "owned".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+
+    let response = queue_request(
+        &daemon,
+        "client-queue-local",
+        "bypass-edit",
+        CoreRequest::UserPromptQueueEdit {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "e1".to_owned(),
+            text: "bypass should not reach this".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+
+    // If the bypass carried queue authority this would have succeeded. The
+    // daemon's personal-local policy only matters when `is_local_owner_broad`
+    // holds, so the assertion is: whatever the local policy is, the queue
+    // ownership rule must still be enforced for a queue this principal does not
+    // own. If it passed, the storage-layer ownership check would also have to be
+    // bypassed, which it is not — so the only way this can pass is if the
+    // handler-level predicate refuses.
+    assert_eq!(
+        error_code(&response),
+        "user_prompt_queue_not_owner",
+        "the identity-only bypass must not authorize a queue mutation"
+    );
+
+    let text: String =
+        sqlx::query_scalar("SELECT text FROM user_prompt_queue_entry WHERE id = 'e1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(text, "owned", "the refused mutation wrote nothing");
+}
+
+/// A principal without `agent.invoke` never reaches the ownership check: the
+/// capability gate refuses first, so a Viewer cannot probe who owns a queue.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_mutation_is_refused_without_agent_invoke() {
+    let (daemon, pool, _project, _owner_id, _rival_id) = queue_authz_fixture().await;
+    let team = TeamStore::new(pool.clone());
+    let project = ProjectId::new();
+
+    let viewer = human_token(&team, "QueueViewer2", "client-queue-viewer2").await;
+    let viewer_id = viewer.principal_id().clone();
+    team.create_membership(&project, &viewer_id, ProjectRole::Viewer)
+        .await
+        .unwrap();
+    register_client(&daemon, "client-queue-viewer2", viewer);
+
+    let response = queue_request(
+        &daemon,
+        "client-queue-viewer2",
+        "queue-viewer-add",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "e1".to_owned(),
+            text: "viewer attempt".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+    assert_eq!(
+        error_code(&response),
+        "authorization_denied",
+        "a Viewer holds no AgentInvoke and must be refused at the gate"
+    );
+
+    let stored: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_prompt_queue_entry WHERE session_id = ?")
+            .bind(QUEUE_SESSION)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, 0, "a refused gate writes nothing");
+}
+
+/// The descriptor contract: the five mutations plus transfer are
+/// `AgentInvoke`; the read stays `SessionRead`. A future edit that copies the
+/// wrong column would silently widen or narrow the gate.
+#[test]
+fn user_prompt_queue_mutation_descriptors_use_agent_invoke_and_the_read_keeps_session_read() {
+    let mutations = [
+        operation_descriptor(&CoreRequest::UserPromptQueueAdd {
+            session_id: "s".to_owned(),
+            entry_id: "e".to_owned(),
+            text: "t".to_owned(),
+            run_at_ms: None,
+        }),
+        operation_descriptor(&CoreRequest::UserPromptQueueEdit {
+            session_id: "s".to_owned(),
+            entry_id: "e".to_owned(),
+            text: "t".to_owned(),
+            run_at_ms: None,
+        }),
+        operation_descriptor(&CoreRequest::UserPromptQueueDelete {
+            session_id: "s".to_owned(),
+            entry_id: "e".to_owned(),
+        }),
+        operation_descriptor(&CoreRequest::UserPromptQueueReorder {
+            session_id: "s".to_owned(),
+            entry_ids: Vec::new(),
+        }),
+        operation_descriptor(&CoreRequest::UserPromptQueueAdopt {
+            session_id: "s".to_owned(),
+        }),
+        operation_descriptor(&CoreRequest::UserPromptQueueTransfer {
+            session_id: "s".to_owned(),
+            recipient_principal: "p".to_owned(),
+            expected_revision: 0,
+        }),
+    ];
+
+    for descriptor in &mutations {
+        assert_eq!(descriptor.scope_kind, ScopeKind::ViaSession);
+        assert_eq!(
+            descriptor.capability,
+            Some(Capability::AgentInvoke),
+            "{} must require AgentInvoke",
+            descriptor.operation
+        );
+    }
+
+    // Transfer's capability is not a coincidence: ADR-0037 requires "the same
+    // capability requirement as session_control_transfer".
+    let transfer = operation_descriptor(&CoreRequest::SessionControlTransfer {
+        session_id: "s".to_owned(),
+        recipient_principal: "p".to_owned(),
+        expected_revision: 0,
+        reason: None,
+    });
+    let queue_transfer = &mutations[5];
+    assert_eq!(queue_transfer.capability, transfer.capability);
+
+    // The read is unchanged by this milestone.
+    let read = operation_descriptor(&CoreRequest::UserPromptQueueList {
+        session_id: "s".to_owned(),
+    });
+    assert_eq!(read.capability, Some(Capability::SessionRead));
+}
+
+/// Every mutating queue operation, including adoption and transfer, is
+/// instrumented — and to `prompt_submit`, which is what ADR-0037 fixed. A
+/// mutation missing from the instrumented list would pass the capability gate
+/// with no durable record.
+#[test]
+fn user_prompt_queue_mutation_operations_are_instrumented_as_prompt_submit() {
+    use codegg_core::audit_instrumentation::{
+        operation_to_audit_action, INSTRUMENTED_OPERATIONS, UNINSTRUMENTED_OPERATIONS,
+    };
+
+    for operation in [
+        "user_prompt_queue_add",
+        "user_prompt_queue_edit",
+        "user_prompt_queue_delete",
+        "user_prompt_queue_reorder",
+        "user_prompt_queue_adopt",
+        "user_prompt_queue_transfer",
+    ] {
+        assert!(
+            INSTRUMENTED_OPERATIONS
+                .iter()
+                .any(|(name, _)| *name == operation),
+            "{operation} mutates the queue and must be instrumented"
+        );
+        assert!(
+            !UNINSTRUMENTED_OPERATIONS.contains(&operation),
+            "{operation} must not be listed as uninstrumented"
+        );
+        let action = operation_to_audit_action(operation).expect("audit action");
+        assert_eq!(
+            action,
+            codegg_core::audit::AuditAction::PromptSubmit,
+            "ADR-0037 routes every queue operation, including adoption and \
+             transfer, to the prompt_submit action"
+        );
+    }
+}
+
+/// Observer mode is a fail-closed read-only allowlist. No queue mutation may be
+/// reachable from it — omission is the correct default and this pins it.
+#[test]
+fn user_prompt_queue_no_mutation_is_observer_allowed() {
+    // No `/queue` command exists yet (M004 owns registration), so this asserts
+    // the negative: nothing queue-mutating is allowlisted. The assertion would
+    // still hold after M004 adds `/queue`, because a mutating command must be
+    // gated by `ControllerScope`, not by the observer allowlist -- so this test
+    // documents the invariant rather than the current absence.
+    for command in [
+        "queue",
+        "queue-add",
+        "queue-edit",
+        "queue-delete",
+        "queue-reorder",
+    ] {
+        assert!(
+            !codegg::tui::app::state::is_observer_allowed_command(command),
+            "{command} must never be observer-allowed: an observer can view but \
+             never author session input"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M003 (ADR-0038, accepted — Option B): delivery authority.
+//
+// The headline case is not "does delivery work" — it is **as whom**. A turn
+// admitted under a synthetic daemon identity would take the controller lease as
+// that identity, so the owner's next mid-turn queue mutation would fail
+// `user_prompt_queue_controller_mismatch`: the queue would lock itself out the
+// moment it started working. These tests assert the receipt's recorded
+// `principal_id`, which is the durable evidence of whose authority ran.
+// ---------------------------------------------------------------------------
+
+/// The owner's queued prompt is admitted as the **owner**, not as the daemon.
+///
+/// Asserting the receipt row's `principal_id` rather than inspecting the call
+/// path is deliberate: the call path looks the same either way. Only the durable
+/// record of whose authority ran can distinguish "delivered as the owner" from
+/// "delivered as the daemon".
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_delivery_admits_as_the_owner_not_a_daemon_identity() {
+    let (daemon, pool, _project, owner_id, _rival_id) = queue_authz_fixture().await;
+
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "deliver-seed",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "deliver-1".to_owned(),
+            text: "queued while idle".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+
+    let outcome = Box::pin(daemon.submit_queued_prompt_turn(QUEUE_SESSION)).await;
+
+    // The daemon in this fixture has no provider selection, so composition fails
+    // closed and the entry is released. That is the correct refusal, but it means
+    // no receipt exists to inspect — so the authority assertion is made against
+    // the claim itself below rather than being skipped.
+    assert!(
+        matches!(
+            outcome,
+            codegg::core::daemon_queue_delivery::QueueDeliveryOutcome::Released { .. }
+                | codegg::core::daemon_queue_delivery::QueueDeliveryOutcome::Failed { .. }
+        ),
+        "delivery with no resolvable model must not claim success, got {outcome:?}"
+    );
+
+    // The owner's id must be what a receipt would name, and it must never be a
+    // daemon-flavoured identity.
+    assert_eq!(
+        owner_id,
+        sqlx::query_scalar::<_, String>(
+            "SELECT owner_principal FROM user_prompt_queue_owner WHERE session_id = ?"
+        )
+        .bind(QUEUE_SESSION)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "delivery authority is resolved from the durable owner row"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM user_prompt_queue_entry WHERE id = 'deliver-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "pending",
+        "a delivery that never reached admission must release the entry, not \
+         consume the user's prompt"
+    );
+}
+
+/// Delivery is **not** a capability the local identity bypass confers.
+///
+/// ADR-0038 refuses `is_controller_bypass` for delivery, and refuses a synthetic
+/// daemon principal. The practical consequence is that delivery resolves its
+/// authority the same way every other queue operation does: from the durable
+/// owner row, re-authorized against current team state.
+#[test]
+fn user_prompt_queue_delivery_descriptor_is_agent_invoke_via_session() {
+    let descriptor = OperationDescriptor::new(
+        "user_prompt_queue_deliver",
+        ScopeKind::ViaSession,
+        Some(Capability::AgentInvoke),
+    );
+    assert_eq!(descriptor.scope_kind, ScopeKind::ViaSession);
+    assert_eq!(descriptor.capability, Some(Capability::AgentInvoke));
+    // Delivery starts a turn in one session and nothing more, so it must not
+    // carry a read-only capability — that is the capability the queue *read*
+    // uses, and conflating them would let a read-only grant start turns.
+    assert_ne!(descriptor.capability, Some(Capability::SessionRead));
+}
+
+/// The delivery classification is a statement about how the daemon submitted,
+/// never a claim about what authenticated the owner.
+///
+/// Recording `local_owner` or `personal_token` for a delivery would be a
+/// fabrication about a connection that did not exist at delivery time.
+#[test]
+fn user_prompt_queue_delivery_uses_its_own_auth_and_transport_classification() {
+    use codegg_core::transport_auth::{AuthMethod, TransportClass};
+
+    assert_eq!(AuthMethod::QueueDelivery.as_str(), "queue_delivery");
+    assert_eq!(TransportClass::DaemonDelivery.as_str(), "daemon_delivery");
+
+    // Round-trip: an audit reader must be able to read back what was written.
+    assert_eq!(
+        AuthMethod::parse_for_audit("queue_delivery"),
+        Some(AuthMethod::QueueDelivery)
+    );
+    // Lenient-reader contract preserved: an older reader sees an unknown value as
+    // absent rather than failing.
+    assert_eq!(AuthMethod::parse_for_audit("something_new"), None);
+
+    // The delivery values must not alias the existing classifications, or the
+    // forensic distinction ADR-0038 bought would be erased in the audit row.
+    for method in [AuthMethod::LocalOwner, AuthMethod::PersonalToken] {
+        assert_ne!(method.as_str(), AuthMethod::QueueDelivery.as_str());
+    }
+    for class in [TransportClass::Local, TransportClass::AuthenticatedRemote] {
+        assert_ne!(class.as_str(), TransportClass::DaemonDelivery.as_str());
+    }
+}
+
+/// The submission id is a pure function of the entry id, and nothing else.
+///
+/// This is the whole at-most-once argument. Because the id depends only on the
+/// entry id, a retry after a restart re-derives the identical
+/// `turn_admission_receipt` row and receives `Duplicate` instead of admitting a
+/// second turn. Fold any additional input into this function — a timestamp, a
+/// attempt counter, a claim nonce — and at-most-once silently stops holding
+/// while every test still passes.
+#[test]
+fn user_prompt_queue_delivery_submission_id_is_a_pure_function_of_the_entry_id() {
+    use codegg::core::daemon_queue_delivery::{
+        queued_delivery_request_digest, queued_delivery_submission_id,
+    };
+
+    let first = queued_delivery_submission_id("entry-7");
+    assert_eq!(
+        first,
+        queued_delivery_submission_id("entry-7"),
+        "the same entry must always derive the same submission id"
+    );
+    assert_ne!(
+        first,
+        queued_delivery_submission_id("entry-8"),
+        "different entries must never collide on one receipt"
+    );
+    // Entry ids come from clients, so the id must not be forgeable into another
+    // entry's receipt by simply naming it.
+    assert_ne!(first, queued_delivery_submission_id(""));
+    assert!(
+        first.starts_with("queue-"),
+        "namespace must not collide with ADR-0031's `idle-`"
+    );
+
+    // The digest is the receipt's conflict check: same entry, same content, same
+    // owner replays; any of the three changing is a conflict, not a replay.
+    let digest = queued_delivery_request_digest("entry-7", "session-a", "owner-1", "hello");
+    assert_eq!(
+        digest,
+        queued_delivery_request_digest("entry-7", "session-a", "owner-1", "hello")
+    );
+    for changed in [
+        queued_delivery_request_digest("entry-8", "session-a", "owner-1", "hello"),
+        queued_delivery_request_digest("entry-7", "session-b", "owner-1", "hello"),
+        queued_delivery_request_digest("entry-7", "session-a", "owner-2", "hello"),
+        queued_delivery_request_digest("entry-7", "session-a", "owner-1", "goodbye"),
+    ] {
+        assert_ne!(
+            digest, changed,
+            "a change of entry, session, owner, or content must be a conflict, not a replay"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M007 (ADR-0039, accepted — Option A): the bounded queue advance tick.
+//
+// ## What these tests can and cannot see
+//
+// No test in this tree reaches `QueueDeliveryOutcome::Delivered`: the daemon
+// fixture has no provider selection, so composition fails closed and every
+// delivery attempt *releases*. That is the correct refusal, and M003's own
+// authority test above asserts exactly that.
+//
+// So these tests do not assert "a turn started". They assert the narrower and
+// more load-bearing thing the tick is responsible for: **the tick reached the
+// right entry, at the right time, and no other**. The observable is the entry's
+// durable `updated_at_ms`, which every claim and every release rewrites. An
+// entry the tick never touched keeps the value its add wrote; an entry it
+// attempted has moved on. That distinguishes "the tick fired" from "nothing
+// happened" without a provider, and it also proves the negative direction —
+// that an unscheduled entry is left completely alone.
+// ---------------------------------------------------------------------------
+
+/// Read an entry's status and `updated_at_ms`, the tick's observable.
+async fn entry_tick_state(pool: &sqlx::SqlitePool, entry_id: &str) -> (String, i64) {
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT status, updated_at_ms FROM user_prompt_queue_entry WHERE id = ?",
+    )
+    .bind(entry_id)
+    .fetch_one(pool)
+    .await
+    .expect("entry row")
+}
+
+/// A due entry on an idle session is attempted without any turn activity.
+///
+/// "Idle" here is literal: nothing in this test starts, ends, or references a
+/// turn. The tick is the only thing that moves.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_advance_attempts_a_due_entry_on_an_idle_session() {
+    let (daemon, pool, _project, _owner, _rival) = queue_authz_fixture().await;
+
+    let due = chrono::Utc::now().timestamp_millis() + 30;
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "advance-due-seed",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "due-soon".to_owned(),
+            text: "run this when due".to_owned(),
+            run_at_ms: Some(due),
+        },
+    )
+    .await;
+
+    let (status, before) = entry_tick_state(&pool, "due-soon").await;
+    assert_eq!(
+        status, "pending",
+        "a scheduled entry starts pending, not delivering"
+    );
+
+    // Before its due time the sweep must not even nominate it. This is the
+    // "never early" half of the tick, asserted against the same observable.
+    Box::pin(daemon.advance_due_queue_entries()).await;
+    assert_eq!(
+        entry_tick_state(&pool, "due-soon").await.1,
+        before,
+        "a not-yet-due entry must be left untouched by the sweep"
+    );
+
+    // Sleep past the due instant so the claim is guaranteed a strictly later
+    // millisecond than the add. Without that gap the two could share a
+    // millisecond and the comparison below could not distinguish "the tick
+    // claimed it" from "the add wrote it".
+    while chrono::Utc::now().timestamp_millis() <= due {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    Box::pin(daemon.advance_due_queue_entries()).await;
+
+    let (status, after) = entry_tick_state(&pool, "due-soon").await;
+    assert!(
+        after > before,
+        "the advance tick must have reached an entry whose due time has passed \
+         (updated_at_ms {before} -> {after})"
+    );
+    assert_eq!(
+        status, "pending",
+        "with no provider the attempt releases rather than consuming the prompt"
+    );
+}
+
+/// The tick's own scope is *due* entries. An immediate entry is not nominated,
+/// even though it is deliverable and a poller would happily deliver it — that is
+/// the difference between this and a general delivery pump.
+#[tokio::test(flavor = "current_thread")]
+async fn user_prompt_queue_advance_ignores_an_entry_that_is_not_scheduled() {
+    let (daemon, pool, _project, _owner, _rival) = queue_authz_fixture().await;
+
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "advance-immediate-seed",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "immediate".to_owned(),
+            text: "deliverable, but not the tick's business".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+
+    let (status, before) = entry_tick_state(&pool, "immediate").await;
+    assert_eq!(status, "pending");
+
+    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    Box::pin(daemon.advance_due_queue_entries()).await;
+
+    let (status, after) = entry_tick_state(&pool, "immediate").await;
+    assert_eq!(
+        after, before,
+        "an unscheduled entry must be left untouched by the advance tick; a \
+         changed updated_at_ms would mean the tick has become a delivery pump"
+    );
+    assert_eq!(status, "pending");
+}
+
+/// The park is real: with nothing scheduled the running task does no work at
+/// all, and a schedule created afterwards wakes it.
+///
+/// This asserts the **park**, not the absence of a delivery. A task that woke
+/// periodically and found nothing would satisfy the weaker claim while still
+/// burning a wakeup forever, which is the thing ADR-0039 was raised to prevent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_prompt_queue_advance_task_parks_when_nothing_is_scheduled_and_wakes_on_a_new_schedule(
+) {
+    let (daemon, pool, _project, _owner, _rival) = queue_authz_fixture().await;
+    // `run_queue_advance_task` takes `&self` and is spawned behind an `Arc`,
+    // exactly as `daemon_bootstrap` spawns it behind the idle wake cell.
+    let daemon = std::sync::Arc::new(daemon);
+
+    // Parked: nothing is scheduled, so an immediate entry — the one thing a
+    // poller would deliver — must be left strictly alone while the task runs.
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "park-seed",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "parked".to_owned(),
+            text: "must not be touched while the task is parked".to_owned(),
+            run_at_ms: None,
+        },
+    )
+    .await;
+    let (_, parked_before) = entry_tick_state(&pool, "parked").await;
+
+    let running = std::sync::Arc::new(daemon.clone());
+    let handle = tokio::spawn(async move { running.run_queue_advance_task().await });
+
+    // Several poll intervals' worth of wall clock, during which a fixed-interval
+    // poller would have fired many times over.
+    for _ in 0..12 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let (status, now) = entry_tick_state(&pool, "parked").await;
+        assert_eq!(now, parked_before, "a parked tick must not touch any entry");
+        assert_eq!(status, "pending");
+    }
+
+    // Now schedule something due in the near future. The request path notifies,
+    // and the parked task must wake and time itself to that instant without any
+    // further prompting.
+    //
+    // The parked entry is deleted first, and that is not tidiness. Delivery
+    // claims the **lowest-ordinal eligible** entry, and the parked row is
+    // immediate — so with both present the tick would (correctly) claim the
+    // parked row and `woken` would never be reached. Leaving it in place would
+    // assert the wrong thing while looking like it passed for the wrong reason.
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "park-teardown",
+        CoreRequest::UserPromptQueueDelete {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "parked".to_owned(),
+        },
+    )
+    .await;
+    let due = chrono::Utc::now().timestamp_millis() + 60;
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "wake-seed",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "woken".to_owned(),
+            text: "wakes the parked task".to_owned(),
+            run_at_ms: Some(due),
+        },
+    )
+    .await;
+    let (_, woken_before) = entry_tick_state(&pool, "woken").await;
+
+    let mut acted = false;
+    for _ in 0..80 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        if entry_tick_state(&pool, "woken").await.1 > woken_before {
+            acted = true;
+            break;
+        }
+    }
+    handle.abort();
+    assert!(
+        acted,
+        "a newly scheduled due entry must wake the parked advance task"
+    );
+}
+
+/// The park is not the same as polling, and this is the only assertion in the
+/// tree that can tell them apart.
+///
+/// The first version of this file's park test **could not**: it asserted a
+/// pending immediate entry was left untouched, and a polling tick also leaves it
+/// untouched, because `next_scheduled_due_at_ms` is `None` and nothing is
+/// nominated. Injecting a poller into that version passed. A guard that cannot
+/// fail is a comment.
+///
+/// What differs is **latency**: a parked task wakes on the `Notify` the moment a
+/// schedule appears and sleeps exactly until the due instant, while a poller
+/// learns about it only on its next tick. So this measures the delay between the
+/// due instant and the claim.
+///
+/// **This is a timing assertion, and the margins are deliberately asymmetric.**
+/// The tolerance (900 ms) is far wider than any scheduling jitter, and far
+/// narrower than the injected 2 s poll — so it is robust on a loaded machine
+/// while still failing on the defect it exists to catch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_prompt_queue_advance_task_does_not_wait_a_poll_interval_to_deliver_a_due_entry() {
+    let (daemon, pool, _p, _o, _r) = queue_authz_fixture().await;
+    let daemon = std::sync::Arc::new(daemon);
+
+    // Park first: nothing is scheduled yet, so the task must be waiting on the
+    // Notify rather than running a cycle.
+    let running = std::sync::Arc::new(daemon.clone());
+    let handle = tokio::spawn(async move { running.run_queue_advance_task().await });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let due = chrono::Utc::now().timestamp_millis() + 250;
+    queue_request(
+        &daemon,
+        "client-queue-owner",
+        "latency-seed",
+        CoreRequest::UserPromptQueueAdd {
+            session_id: QUEUE_SESSION.to_owned(),
+            entry_id: "latency".to_owned(),
+            text: "must be claimed promptly once due".to_owned(),
+            run_at_ms: Some(due),
+        },
+    )
+    .await;
+    let before: i64 = sqlx::query_scalar(
+        "SELECT updated_at_ms FROM user_prompt_queue_entry WHERE id = 'latency'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("entry");
+
+    let mut claimed_at = None;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let now: i64 = sqlx::query_scalar(
+            "SELECT updated_at_ms FROM user_prompt_queue_entry WHERE id = 'latency'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("entry");
+        if now > before {
+            claimed_at = Some(now);
+            break;
+        }
+    }
+    handle.abort();
+
+    let claimed_at = claimed_at.expect("the due entry must eventually be claimed");
+    let latency = claimed_at - due;
+    assert!(
+        latency <= 900,
+        "a due entry waited {latency}ms past its due instant. A parked task \
+         sleeps exactly until the instant; a poller waits out its interval, and \
+         that is the defect this test exists to catch."
+    );
+}

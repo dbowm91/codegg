@@ -303,6 +303,11 @@ impl App {
             && self.remote_send_tx.is_some();
         let socket_daemon = matches!(self.ui_state.mode, AppMode::RemoteCore { .. })
             && self.remote_send_tx.is_none();
+        // Whether anything actually took this prompt. The optimistic `Working`
+        // stamp below must not be applied when it did not: the release that
+        // already happened inside the dispatch would be overwritten, leaving
+        // the session pinned on `Working` for a turn that never existed.
+        let mut dispatch_failed = false;
         if remote_transport {
             self.send_remote_message(RemoteTuiMessage::Input {
                 text: text.trim().to_string(),
@@ -310,7 +315,7 @@ impl App {
             self.prompt_state.pending_send = false;
         } else if socket_daemon {
             if self.session_state.session.is_some() {
-                self.dispatch_turn_submit_request(trimmed_text.clone());
+                dispatch_failed = !self.dispatch_turn_submit_request(trimmed_text.clone());
                 self.prompt_state.pending_send = false;
             } else if let Some((context, route, request_id)) = pending_session_route {
                 // No session yet on the socket path: create one through the
@@ -327,8 +332,11 @@ impl App {
                 self.prompt_state.prompt.set_waiting(true);
             } else {
                 // Nothing can carry this prompt. Surface the failure instead of
-                // leaving the composer spinning.
+                // leaving the composer spinning — and hand the text back,
+                // because the optimistic clear above already took the user's
+                // only editable copy.
                 self.prompt_state.pending_send = false;
+                self.prompt_state.restore_prompt_with_stash(&trimmed_text);
                 self.set_session_status(SessionStatus::Error);
                 self.messages_state
                     .toasts
@@ -348,7 +356,13 @@ impl App {
                 self.prompt_state.prompt.set_waiting(true);
             }
         }
-        self.set_session_status(SessionStatus::Working);
+        if !dispatch_failed {
+            // Skipped when the dispatch already released the turn: stamping
+            // `Working` here would overwrite the error it set and pin the
+            // session on a turn that was never attempted, which is the exact
+            // stall this release exists to prevent.
+            self.set_session_status(SessionStatus::Working);
+        }
         self.reset_live_token_estimate();
 
         // Navigate to session view when user sends a prompt

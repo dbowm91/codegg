@@ -26,6 +26,7 @@ pub mod daemon_project_init;
 pub mod daemon_projection;
 pub mod daemon_projects;
 pub mod daemon_providers;
+pub mod daemon_queue_delivery;
 pub mod daemon_refresh;
 pub mod daemon_sessions;
 pub mod daemon_shutdown;

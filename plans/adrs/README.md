@@ -162,9 +162,18 @@ directories. It gates the project-picker rebind and lifecycle work.
 `ADR-0034-editor-syntax-tree-dependency.md` remains proposed. It does not
 authorize a dependency or implementation work until accepted.
 
-## ADR-0035 CodeGG-mediated checkout writer boundary (accepted 2026-10-16)
+## Cross-branch ADR numbering reconciliation (2026-10-18)
 
-`ADR-0035-codegg-mediated-checkout-writer-boundary.md` accepts the restricted
+The user-prompt-queue branch assigned ADR-0035 to durable queue ownership
+before the agent-workstream branch's accepted checkout-writer decision had
+merged. Mainline keeps the queue ADR-0035 and assigns the existing accepted
+CodeGG-mediated checkout-writer decision ADR-0040. The decision text and
+acceptance are unchanged; all M005 references use ADR-0040. ADR-0033 remains
+the single accepted directory-tied project identity decision on both branches.
+
+## ADR-0040 CodeGG-mediated checkout writer boundary (accepted 2026-10-16)
+
+`ADR-0040-codegg-mediated-checkout-writer-boundary.md` accepts the restricted
 M005 contract: serialize only CodeGG-mediated writers, treat external
 same-user edits as detectable checkout drift, and deny CodeGG effect owners
 without complete permit/lifecycle evidence. It authorizes neither a permit

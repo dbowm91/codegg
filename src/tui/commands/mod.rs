@@ -26,6 +26,10 @@ pub(super) mod project_init;
 pub(super) mod project_picker;
 pub(super) mod prompt;
 pub(super) mod provider_connections;
+/// M004: the `/queue` box — open, refresh, and delete one waiting prompt.
+/// Public so the `TuiCommand` delete-completion variant and the integration
+/// target can both reach the applier without a test-only App shim.
+pub mod queue;
 pub(super) mod research;
 pub(super) mod run_rerun;
 pub(super) mod security;

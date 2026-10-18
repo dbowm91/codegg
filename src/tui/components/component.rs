@@ -76,6 +76,8 @@ pub enum DialogType {
     PolicySelector,
     /// "Which panel should this go in?" — opened by `/agents`.
     PanelPicker,
+    /// M004: the session's waiting prompts (`/queue`).
+    Queue,
     None,
 }
 
@@ -138,6 +140,7 @@ impl From<DialogType> for Dialog {
             DialogType::WorkspaceDashboard => Dialog::WorkspaceDashboard,
             DialogType::PolicySelector => Dialog::PolicySelector,
             DialogType::PanelPicker => Dialog::PanelPicker,
+            DialogType::Queue => Dialog::Queue,
             DialogType::None => Dialog::None,
             DialogType::PanelManager => Dialog::PanelManager,
         }
@@ -199,6 +202,7 @@ impl From<Dialog> for DialogType {
             Dialog::WorkspaceDashboard => DialogType::WorkspaceDashboard,
             Dialog::PolicySelector => DialogType::PolicySelector,
             Dialog::PanelPicker => DialogType::PanelPicker,
+            Dialog::Queue => DialogType::Queue,
         }
     }
 }
@@ -379,6 +383,7 @@ mod tests {
             (DialogType::WorkspaceDashboard, Dialog::WorkspaceDashboard),
             (DialogType::PolicySelector, Dialog::PolicySelector),
             (DialogType::PanelPicker, Dialog::PanelPicker),
+            (DialogType::Queue, Dialog::Queue),
             (DialogType::None, Dialog::None),
         ];
 

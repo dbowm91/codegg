@@ -7,9 +7,10 @@
 use std::sync::Arc;
 
 use crate::error::AppError;
-use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
+use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse, UserPromptQueueSendNowResult};
 
 use super::daemon::CoreDaemon;
+use super::daemon_control::{queue_error_response, ControllerScope};
 use super::event_log::EventFilter;
 
 fn turn_admission_receipt_response(
@@ -884,6 +885,129 @@ impl CoreDaemon {
                     .get_human_shell_promotions(&session_id, &authority)
                     .await);
             }
+            CoreRequest::UserPromptQueueList { session_id } => {
+                return Ok(self.list_user_prompt_queue(&session_id).await);
+            }
+            // M002b (ADR-0037): every queue mutation goes through one handler
+            // that runs the capability gate's follow-up — the durable queue
+            // owner — before any write. Routing them to a single function keeps
+            // that from being re-implemented per operation.
+            CoreRequest::UserPromptQueueAdd {
+                session_id,
+                entry_id,
+                text,
+                run_at_ms,
+            } => {
+                return Ok(self
+                    .handle_user_prompt_queue_mutation(
+                        session_id,
+                        QueueMutation::Add {
+                            entry_id: &entry_id,
+                            text: &text,
+                            run_at_ms,
+                        },
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
+            CoreRequest::UserPromptQueueEdit {
+                session_id,
+                entry_id,
+                text,
+                run_at_ms,
+            } => {
+                return Ok(self
+                    .handle_user_prompt_queue_mutation(
+                        session_id,
+                        QueueMutation::Edit {
+                            entry_id: &entry_id,
+                            text: &text,
+                            run_at_ms,
+                        },
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
+            CoreRequest::UserPromptQueueDelete {
+                session_id,
+                entry_id,
+            } => {
+                return Ok(self
+                    .handle_user_prompt_queue_mutation(
+                        session_id,
+                        QueueMutation::Delete {
+                            entry_id: &entry_id,
+                        },
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
+            CoreRequest::UserPromptQueueReorder {
+                session_id,
+                entry_ids,
+            } => {
+                return Ok(self
+                    .handle_user_prompt_queue_mutation(
+                        session_id,
+                        QueueMutation::Reorder {
+                            entry_ids: &entry_ids,
+                        },
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
+            CoreRequest::UserPromptQueueAdopt { session_id } => {
+                return Ok(self
+                    .handle_user_prompt_queue_mutation(
+                        session_id,
+                        QueueMutation::Adopt,
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
+            CoreRequest::UserPromptQueueTransfer {
+                session_id,
+                recipient_principal,
+                expected_revision,
+            } => {
+                return Ok(self
+                    .handle_user_prompt_queue_mutation(
+                        session_id,
+                        QueueMutation::Transfer {
+                            recipient: &recipient_principal,
+                            expected_revision,
+                        },
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
+            // M006 (ADR-0036): deliberately NOT a `QueueMutation`. It reaches the
+            // running turn, and ADR-0037 excludes steering from the durable owner
+            // binding — so gating it here on `ControllerScope::QueueMutation`
+            // would refuse the legitimate case of a caller steering its own turn
+            // in a session it does not own. The turn controller is the only gate
+            // that applies; the queue-side ownership check happens inside the
+            // settlement write, where it is answering a different question
+            // ("may this principal change this queue?").
+            CoreRequest::UserPromptQueueSendNow {
+                session_id,
+                entry_id,
+            } => {
+                return Ok(self
+                    .handle_user_prompt_queue_send_now(
+                        &session_id,
+                        &entry_id,
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
             CoreRequest::PermissionRespond { id, choice } => {
                 let parsed = match choice.as_str() {
                     "allow" => crate::bus::PermissionDecision::AllowOnce,
@@ -1197,18 +1321,22 @@ impl CoreDaemon {
                         if let Some(ref steer_tx) = handle.steer_tx {
                             match steer_tx.try_send(text) {
                                 Ok(()) => Ok(CoreResponse::Ack),
-                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                    tracing::debug!(turn_id = %turn_id, "turn steering receiver already closed");
+                                Err(ref error) => {
+                                    // M006: the code comes from the shared
+                                    // mapping so direct steering and send-now
+                                    // cannot drift apart; only the prose here.
+                                    let code = steer_channel_code(error);
+                                    tracing::debug!(turn_id = %turn_id, code = code, "turn steering refused");
                                     Ok(CoreResponse::Error {
-                                        code: "steer_unavailable".to_string(),
-                                        message: "Turn steering receiver is unavailable"
-                                            .to_string(),
-                                    })
-                                }
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                    Ok(CoreResponse::Error {
-                                        code: "steer_queue_full".to_string(),
-                                        message: "Turn steering queue is full".to_string(),
+                                        code: code.to_string(),
+                                        message: match code {
+                                            "steer_queue_full" => {
+                                                "Turn steering queue is full".to_string()
+                                            }
+                                            _ => {
+                                                "Turn steering receiver is unavailable".to_string()
+                                            }
+                                        },
                                     })
                                 }
                             }
@@ -1787,6 +1915,661 @@ impl CoreDaemon {
         }
     }
 
+    /// M002a (ADR-0035): read the durable user prompt queue projection.
+    ///
+    /// Read-only. Authority is enforced by the `operation_descriptor` seam
+    /// (`ScopeKind::ViaSession` + `Capability::SessionRead`) before this
+    /// handler runs — there is no hand-rolled check here and deliberately no
+    /// `is_controller_bypass` path: a read needs session read authority, not
+    /// an identity bypass.
+    ///
+    /// The queue always reads empty until M002b lands, because nothing can
+    /// enqueue an entry yet. That is expected, not a defect.
+    async fn list_user_prompt_queue(&self, session_id: &str) -> CoreResponse {
+        let Some(pool) = self.pool.clone() else {
+            return promotion_error_response(
+                "user_prompt_queue_unavailable",
+                "durable session storage is required for the prompt queue",
+            );
+        };
+        match codegg_core::session::UserPromptQueueStore::new(pool)
+            .list_live(session_id, chrono::Utc::now().timestamp_millis())
+            .await
+        {
+            Ok(entries) => CoreResponse::UserPromptQueue {
+                session_id: session_id.to_owned(),
+                entries: entries
+                    .into_iter()
+                    .map(user_prompt_queue_entry_to_dto)
+                    .collect(),
+            },
+            // `UserPromptQueueError`'s Display never carries entry text: the
+            // typed variants are about identity, bounds, and availability.
+            Err(error) => promotion_error_response(error.code(), &error.to_string()),
+        }
+    }
+}
+
+/// One M002b queue mutation, after the capability gate has run.
+///
+/// The capability gate is necessary but not sufficient: `AgentInvoke` says the
+/// caller may act on this project, not that this caller owns this session's
+/// queue. The durable owner row answers the second question, and the store
+/// re-reads it inside the mutation's own transaction, so authorization and
+/// mutation are never separable by a crash.
+#[derive(Debug)]
+enum QueueMutation<'a> {
+    Add {
+        entry_id: &'a str,
+        text: &'a str,
+        /// M007 (ADR-0039): the requested due time, or `None` for an immediate
+        /// entry. Carried through to the store, which owns the expiry check —
+        /// the daemon does not second-guess it with a duplicate rule.
+        run_at_ms: Option<i64>,
+    },
+    Edit {
+        entry_id: &'a str,
+        text: &'a str,
+        /// M007: `None` clears an existing schedule.
+        run_at_ms: Option<i64>,
+    },
+    Delete {
+        entry_id: &'a str,
+    },
+    Reorder {
+        entry_ids: &'a [String],
+    },
+    Adopt,
+    Transfer {
+        recipient: &'a str,
+        expected_revision: u64,
+    },
+}
+
+impl QueueMutation<'_> {
+    /// Stable operation label for the audit record. It mirrors the protocol
+    /// variant name, not the descriptor name, so one label is unambiguous.
+    const fn operation(&self) -> &'static str {
+        match self {
+            Self::Add { .. } => "add",
+            Self::Edit { .. } => "edit",
+            Self::Delete { .. } => "delete",
+            Self::Reorder { .. } => "reorder",
+            Self::Adopt => "adopt",
+            Self::Transfer { .. } => "transfer",
+        }
+    }
+
+    /// The entry this mutation targets, when it targets exactly one.
+    const fn entry_id(&self) -> Option<&str> {
+        match self {
+            Self::Add { entry_id, .. }
+            | Self::Edit { entry_id, .. }
+            | Self::Delete { entry_id } => Some(entry_id),
+            Self::Reorder { .. } | Self::Adopt | Self::Transfer { .. } => None,
+        }
+    }
+}
+
+impl CoreDaemon {
+    /// Execute one authorized queue mutation, then audit it.
+    ///
+    /// Order is deliberate: **authorize, mutate, audit.** A refusal returns
+    /// before any write, so an unauthorized mutation leaves no partial state.
+    async fn handle_user_prompt_queue_mutation(
+        &self,
+        session_id: String,
+        mutation: QueueMutation<'_>,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> CoreResponse {
+        let Some(pool) = self.pool.clone() else {
+            return promotion_error_response(
+                "user_prompt_queue_unavailable",
+                "durable session storage is required for the prompt queue",
+            );
+        };
+        let store = codegg_core::session::UserPromptQueueStore::new(pool.clone());
+        let caller = authority.principal_id().as_str();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        // Adoption answers a different question from the other five: it repairs
+        // a queue that has no owner, so the queue-owner term is absent by
+        // definition. Every other mutation requires ownership.
+        let scope = match mutation {
+            QueueMutation::Adopt => ControllerScope::QueueAdoption {
+                session_id: &session_id,
+            },
+            _ => ControllerScope::QueueMutation {
+                session_id: &session_id,
+            },
+        };
+        if let Some(denial) = self
+            .check_controller(scope, authority, authz_decision)
+            .await
+        {
+            return denial;
+        }
+
+        // Resolved before the write so a refusal can name the entry it refused
+        // to change, without ever naming the owner to a non-owner.
+        let operation = mutation.operation();
+        let entry_id = mutation.entry_id().map(str::to_owned);
+
+        let result = match mutation {
+            QueueMutation::Add {
+                entry_id,
+                text,
+                run_at_ms,
+            } => {
+                let stored = store
+                    .add(caller, &session_id, entry_id, text, run_at_ms, now_ms)
+                    .await;
+                let bytes = stored.as_ref().ok().map(|entry| entry.text_bytes);
+                match self
+                    .queue_projection(&store, &session_id, now_ms, stored.err())
+                    .await
+                {
+                    Ok(response) => Ok((response, bytes)),
+                    Err(error) => Err(error),
+                }
+            }
+            QueueMutation::Edit {
+                entry_id,
+                text,
+                run_at_ms,
+            } => {
+                let stored = store
+                    .edit(caller, &session_id, entry_id, text, run_at_ms, now_ms)
+                    .await;
+                let bytes = stored.as_ref().ok().map(|entry| entry.text_bytes);
+                match self
+                    .queue_projection(&store, &session_id, now_ms, stored.err())
+                    .await
+                {
+                    Ok(response) => Ok((response, bytes)),
+                    Err(error) => Err(error),
+                }
+            }
+            QueueMutation::Delete { entry_id } => {
+                let stored = store.delete(caller, &session_id, entry_id, now_ms).await;
+                self.queue_projection(&store, &session_id, now_ms, stored.err())
+                    .await
+                    .map(|response| (response, None))
+            }
+            QueueMutation::Reorder { entry_ids } => {
+                let stored = store.reorder(caller, &session_id, entry_ids, now_ms).await;
+                self.queue_projection(&store, &session_id, now_ms, stored.err())
+                    .await
+                    .map(|response| (response, None))
+            }
+            QueueMutation::Adopt => match store.adopt(caller, &session_id, now_ms).await {
+                Ok(record) => Ok((
+                    CoreResponse::UserPromptQueueOwner {
+                        session_id: record.session_id,
+                        owner_principal: record.owner_principal,
+                        revision: record.revision,
+                    },
+                    None,
+                )),
+                Err(error) => Err(error),
+            },
+            QueueMutation::Transfer {
+                recipient,
+                expected_revision,
+            } => {
+                let Ok(recipient) = codegg_core::identity::PrincipalId::parse(recipient) else {
+                    return promotion_error_response(
+                        "user_prompt_queue_invalid",
+                        "transfer recipient is not a valid principal",
+                    );
+                };
+                // Mirrors `session_control_transfer`: the recipient must already
+                // be eligible for in-flight control, so a transfer never mints
+                // authority the recipient did not already hold.
+                if !self
+                    .principal_holds_invoke(
+                        &pool,
+                        authz_decision.project_id.as_ref(),
+                        recipient.as_str(),
+                    )
+                    .await
+                {
+                    return promotion_error_response(
+                        "user_prompt_queue_invalid",
+                        "transfer recipient is not eligible to own this queue",
+                    );
+                }
+                match store
+                    .transfer(
+                        caller,
+                        recipient.as_str(),
+                        expected_revision,
+                        &session_id,
+                        now_ms,
+                    )
+                    .await
+                {
+                    Ok(record) => Ok((
+                        CoreResponse::UserPromptQueueOwner {
+                            session_id: record.session_id,
+                            owner_principal: record.owner_principal,
+                            revision: record.revision,
+                        },
+                        None,
+                    )),
+                    Err(error) => Err(error),
+                }
+            }
+        };
+
+        match result {
+            Ok((response, bytes)) => {
+                self.audit_queue_mutation(
+                    authority,
+                    authz_decision,
+                    &session_id,
+                    operation,
+                    entry_id.as_deref(),
+                    bytes,
+                    "applied",
+                )
+                .await;
+                // M007 (ADR-0039): tell the advance task the schedule may have
+                // moved. It is parked with no timer when nothing is scheduled,
+                // so without this a newly scheduled entry would have nothing to
+                // wake it.
+                //
+                // Deliberately unconditional over add and edit rather than
+                // "only when `run_at_ms` is `Some`": clearing the last schedule
+                // must also wake the task so it can go back to parking, and
+                // tracking the prior value here would mean reading the row the
+                // store has already replaced. The cost is one indexed `MIN()`
+                // per queue mutation.
+                if matches!(operation, "add" | "edit") {
+                    self.queue_schedule_changed.notify_one();
+                }
+                response
+            }
+            Err(error) => {
+                // The store refused. `authorize_request` already audited a
+                // controller-level denial upstream; this records the store-level
+                // refusal so a rejected mutation is not invisible.
+                self.audit_queue_mutation(
+                    authority,
+                    authz_decision,
+                    &session_id,
+                    operation,
+                    entry_id.as_deref(),
+                    None,
+                    "refused",
+                )
+                .await;
+                queue_error_response(&error)
+            }
+        }
+    }
+
+    /// Read back the resulting projection for a mutation that already succeeded.
+    ///
+    /// `store_error` short-circuits the read when the mutation itself was
+    /// refused, so a refusal never costs an extra query and never reports a
+    /// projection that did not result from this call.
+    async fn queue_projection(
+        &self,
+        store: &codegg_core::session::UserPromptQueueStore,
+        session_id: &str,
+        now_ms: i64,
+        store_error: Option<codegg_core::session::UserPromptQueueError>,
+    ) -> Result<CoreResponse, codegg_core::session::UserPromptQueueError> {
+        if let Some(error) = store_error {
+            return Err(error);
+        }
+        let entries = store.list_live(session_id, now_ms).await?;
+        Ok(CoreResponse::UserPromptQueue {
+            session_id: session_id.to_owned(),
+            entries: entries
+                .into_iter()
+                .map(user_prompt_queue_entry_to_dto)
+                .collect(),
+        })
+    }
+
+    /// M006 (ADR-0036): hand one queued prompt to the turn that is running now.
+    ///
+    /// **Not a `QueueMutation`** — see the dispatch arm for why the durable owner
+    /// binding does not gate this. The order below *is* the safety argument, and
+    /// each step exists because the one after it cannot undo it:
+    ///
+    /// 1. **Pre-flight** the entry, so a prompt that could never be settled is
+    ///    never steered into a turn in the first place. This is what stops a
+    ///    `delivering` row from being handed to a turn when it is already
+    ///    running as its own.
+    /// 2. **Steer** the active turn, through the same controller predicate
+    ///    `TurnSteer` uses and against the `turn_id` the daemon resolves itself,
+    ///    so a client cannot steer a turn that has already ended.
+    /// 3. **Settle** the row in the store, which re-checks queue ownership
+    ///    inside its transaction and is guarded on `status = 'pending'`.
+    ///
+    /// Step 3 can still fail after step 2 succeeded: the turn holds the text and
+    /// the row did not move. That is reported as `AcceptedNotSettled`, never as
+    /// an error — an error here would tell the user their prompt was rejected
+    /// and invite them to resend a prompt that has already run, which is
+    /// exactly the duplication ADR-0036 forbids.
+    async fn handle_user_prompt_queue_send_now(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> CoreResponse {
+        let Some(pool) = self.pool.clone() else {
+            return self
+                .send_now_unavailable(authority, authz_decision, session_id, entry_id)
+                .await;
+        };
+        let store = codegg_core::session::UserPromptQueueStore::new(pool.clone());
+        let caller = authority.principal_id().as_str();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        let preflight = match store.get_live(entry_id, now_ms).await {
+            Ok(record) if record.session_id == session_id => record,
+            // `get_live` reads by identity alone, so a row in another session is
+            // indistinguishable from a row that never existed. Reported as the
+            // latter on purpose: telling a caller that an id exists in a session
+            // it cannot see would leak that session's queue.
+            Ok(_) | Err(codegg_core::session::UserPromptQueueError::NotFound) => {
+                return self
+                    .finish_send_now(
+                        authority,
+                        authz_decision,
+                        &store,
+                        session_id,
+                        entry_id,
+                        now_ms,
+                        UserPromptQueueSendNowResult::EntryNotFound,
+                    )
+                    .await
+            }
+            Err(error) => {
+                let code = error.code().to_owned();
+                return self
+                    .finish_send_now(
+                        authority,
+                        authz_decision,
+                        &store,
+                        session_id,
+                        entry_id,
+                        now_ms,
+                        UserPromptQueueSendNowResult::Refused { code },
+                    )
+                    .await;
+            }
+        };
+
+        // A `delivering` row is already running as its own turn, and any other
+        // non-pending status is terminal. Both refuse before the steer, so the
+        // only prompt this path can hand over is one still waiting its turn.
+        if preflight.status != codegg_core::session::UserPromptQueueStatus::Pending {
+            let code = match preflight.status {
+                codegg_core::session::UserPromptQueueStatus::Delivering => {
+                    "user_prompt_queue_entry_delivering"
+                }
+                _ => "user_prompt_queue_expired",
+            };
+            return self
+                .finish_send_now(
+                    authority,
+                    authz_decision,
+                    &store,
+                    session_id,
+                    entry_id,
+                    now_ms,
+                    UserPromptQueueSendNowResult::Refused {
+                        code: code.to_owned(),
+                    },
+                )
+                .await;
+        }
+
+        let turn_id = match self
+            .steer_running_turn(session_id, preflight.text, authority, authz_decision)
+            .await
+        {
+            Ok(turn_id) => turn_id,
+            Err(code) => {
+                return self
+                    .finish_send_now(
+                        authority,
+                        authz_decision,
+                        &store,
+                        session_id,
+                        entry_id,
+                        now_ms,
+                        UserPromptQueueSendNowResult::Refused { code },
+                    )
+                    .await
+            }
+        };
+
+        // The turn has the prompt. From here the settlement cannot be allowed to
+        // fail into silence, which is why this is a reported outcome rather than
+        // a discarded error.
+        match store
+            .mark_steer_delivered(caller, session_id, entry_id, &turn_id, now_ms)
+            .await
+        {
+            Ok(()) => {
+                self.finish_send_now(
+                    authority,
+                    authz_decision,
+                    &store,
+                    session_id,
+                    entry_id,
+                    now_ms,
+                    UserPromptQueueSendNowResult::Accepted {
+                        turn_id: turn_id.clone(),
+                    },
+                )
+                .await
+            }
+            Err(error) => {
+                self.finish_send_now(
+                    authority,
+                    authz_decision,
+                    &store,
+                    session_id,
+                    entry_id,
+                    now_ms,
+                    UserPromptQueueSendNowResult::AcceptedNotSettled {
+                        turn_id,
+                        code: error.code().to_owned(),
+                    },
+                )
+                .await
+            }
+        }
+    }
+
+    /// Audit the attempt and attach the post-attempt projection.
+    ///
+    /// Every outcome routes through here so no path can return without leaving
+    /// a record, and every outcome carries the projection — including the
+    /// refusals, because a refusal may have been caused by a row another
+    /// frontend already removed, and a box left showing it would be showing
+    /// something the daemon no longer believes.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_send_now(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+        store: &codegg_core::session::UserPromptQueueStore,
+        session_id: &str,
+        entry_id: &str,
+        now_ms: i64,
+        outcome: UserPromptQueueSendNowResult,
+    ) -> CoreResponse {
+        let audit_outcome = match &outcome {
+            UserPromptQueueSendNowResult::Accepted { .. } => "applied",
+            UserPromptQueueSendNowResult::AcceptedNotSettled { .. } => "accepted_unsettled",
+            UserPromptQueueSendNowResult::Refused { .. }
+            | UserPromptQueueSendNowResult::EntryNotFound => "refused",
+        };
+        self.audit_queue_mutation(
+            authority,
+            authz_decision,
+            session_id,
+            "send_now",
+            Some(entry_id),
+            // Deliberately absent: the audit records that a prompt was handed to
+            // a turn, never what the prompt said. The byte count was recorded by
+            // the `add` that stored it.
+            None,
+            audit_outcome,
+        )
+        .await;
+
+        let entries = store
+            .list_live(session_id, now_ms)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(user_prompt_queue_entry_to_dto)
+            .collect();
+        CoreResponse::UserPromptQueueSendNowOutcome {
+            session_id: session_id.to_owned(),
+            entry_id: entry_id.to_owned(),
+            outcome,
+            entries,
+        }
+    }
+
+    /// Send-now with no durable store at all.
+    ///
+    /// The entry's text lives only in the queue, so with no queue there is
+    /// nothing to steer and nothing honest to report as accepted. Audited like
+    /// every other outcome — a refused attempt that left no record would make
+    /// this path the one hole in the trail.
+    async fn send_now_unavailable(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+        session_id: &str,
+        entry_id: &str,
+    ) -> CoreResponse {
+        self.audit_queue_mutation(
+            authority,
+            authz_decision,
+            session_id,
+            "send_now",
+            Some(entry_id),
+            None,
+            "refused",
+        )
+        .await;
+        CoreResponse::UserPromptQueueSendNowOutcome {
+            session_id: session_id.to_owned(),
+            entry_id: entry_id.to_owned(),
+            outcome: UserPromptQueueSendNowResult::Refused {
+                code: "user_prompt_queue_unavailable".to_owned(),
+            },
+            entries: Vec::new(),
+        }
+    }
+
+    /// M006: put one prompt into the session's active turn.
+    ///
+    /// Resolves `turn_id` from the daemon's **own** runtime handle rather than
+    /// from the caller, then applies the same controller predicate `TurnSteer`
+    /// applies. Returns the turn that accepted, or a stable code naming the one
+    /// condition that stopped it.
+    ///
+    /// The handle is read once, under a short lock, and the `(turn_id, sender)`
+    /// pair is cloned out before any database work — holding a read lock across
+    /// the controller check would serialise every turn's steering behind one
+    /// storage round trip. A sender cloned from a handle whose turn has since
+    /// ended is not a hazard: its receiver is dropped with the turn, so
+    /// `try_send` reports `Closed` and the prompt stays queued rather than
+    /// reaching a turn that did not ask for it.
+    async fn steer_running_turn(
+        &self,
+        session_id: &str,
+        text: String,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> Result<String, String> {
+        let Some(runtime) = self.sessions.get(session_id) else {
+            return Err("session_not_found".to_owned());
+        };
+        let resolved = {
+            let active = runtime.active_turn.read().await;
+            active.as_ref().map(|handle| {
+                (
+                    handle.turn_id.clone(),
+                    handle
+                        .steer_tx
+                        .clone()
+                        .ok_or_else(|| "steer_not_supported".to_owned()),
+                )
+            })
+        };
+        let Some((turn_id, sender)) = resolved else {
+            return Err("no_active_turn".to_owned());
+        };
+        let sender = sender?;
+
+        if let Some(denial) = self
+            .check_turn_controller(session_id, &turn_id, authority, authz_decision)
+            .await
+        {
+            return Err(controller_denial_code(&denial));
+        }
+
+        match sender.try_send(text) {
+            Ok(()) => Ok(turn_id),
+            Err(error) => Err(steer_channel_code(&error).to_owned()),
+        }
+    }
+
+    /// Audit one queue mutation with entry and owner identity, never text.
+    ///
+    /// Uses the `prompt_submit` action ADR-0037 selected, with queue-shaped
+    /// metadata. The owner is recorded only on an applied action by its own
+    /// actor; a refusal never carries an owner identity, because telling a
+    /// refused caller who owns the queue would itself be the leak.
+    async fn audit_queue_mutation(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+        session_id: &str,
+        operation: &'static str,
+        entry_id: Option<&str>,
+        entry_bytes: Option<usize>,
+        outcome: &str,
+    ) {
+        use codegg_core::audit_instrumentation as instr;
+        let provenance = codegg_core::authorization::audit_provenance(authz_decision);
+        let mut chain = instr::AuditChainContext::new();
+        chain.project = authz_decision.project_id.clone();
+        chain.session_id = Some(session_id.to_owned());
+        // Only the actor's own identity, never a third party's owner row.
+        let owner = (outcome == "applied").then(|| authority.principal_id().as_str());
+        let builder = instr::user_prompt_queue_mutation_event(
+            authority.principal(),
+            &provenance,
+            &chain,
+            session_id,
+            codegg_core::audit_instrumentation::UserPromptQueueAudit {
+                operation,
+                entry_id,
+                owner_principal: owner,
+                entry_bytes,
+                outcome,
+            },
+        );
+        self.append_audit_event(builder).await;
+    }
+
     pub(crate) async fn resolve_prompt_submit_composition(
         &self,
         session_id: &str,
@@ -1901,6 +2684,35 @@ fn promotion_error_response(code: &str, message: &str) -> CoreResponse {
     }
 }
 
+/// The three conditions a steering channel can present, as stable codes.
+///
+/// Shared by `TurnSteer` and M006's send-now path so the two cannot disagree
+/// about what a full or closed channel means — both push into the same channel
+/// on the same turn, and a divergence here would show as one user getting an
+/// inexplicable refusal where the other gets a clear one.
+fn steer_channel_code(error: &tokio::sync::mpsc::error::TrySendError<String>) -> &'static str {
+    match error {
+        tokio::sync::mpsc::error::TrySendError::Closed(_) => "steer_unavailable",
+        tokio::sync::mpsc::error::TrySendError::Full(_) => "steer_queue_full",
+    }
+}
+
+/// Reduce a controller refusal to its stable code.
+///
+/// A denial is a `CoreResponse::Error` already carrying the code a client
+/// depends on. Send-now reports the code rather than the whole response so its
+/// frontend owns the wording, and so it cannot inherit prose that interpolates
+/// ids a queue box has no reason to parse. A denial of any other shape cannot
+/// occur — the controller check returns exactly this — but it degrades to a
+/// named refusal rather than to an empty string a client would present as a
+/// blank reason.
+fn controller_denial_code(denial: &CoreResponse) -> String {
+    match denial {
+        CoreResponse::Error { code, .. } => code.clone(),
+        _ => "session_control_not_controller".to_owned(),
+    }
+}
+
 fn promotion_record_to_dto(
     record: codegg_core::session::HumanShellPromotionRecord,
 ) -> crate::protocol::core::HumanShellPromotionDto {
@@ -1914,6 +2726,29 @@ fn promotion_record_to_dto(
         created_at_ms: record.created_at_ms,
         expires_at_ms: record.expires_at_ms,
         consumed_turn_id: record.consumed_turn_id,
+    }
+}
+
+/// M003: project one live queue entry.
+///
+/// **The status is the entry's own, not a constant.** This mapper used to hardcode
+/// `"pending"` on the reasoning that every row in `list_live` was pending by
+/// construction — true until M003 gave `delivering` a producer. Once an entry
+/// starts delivering it still appears in the projection (so a client can see an
+/// entry it must not edit), and a hardcoded `pending` would tell the client it
+/// may edit it.
+pub(crate) fn user_prompt_queue_entry_to_dto(
+    entry: codegg_core::session::user_prompt_queue::UserPromptQueueLiveEntry,
+) -> crate::protocol::core::UserPromptQueueEntryDto {
+    crate::protocol::core::UserPromptQueueEntryDto {
+        id: entry.id,
+        ordinal: entry.ordinal,
+        text: entry.text,
+        text_bytes: entry.text_bytes,
+        status: entry.status.as_str().to_owned(),
+        created_at_ms: entry.created_at_ms,
+        expires_at_ms: entry.expires_at_ms,
+        run_at_ms: entry.run_at_ms,
     }
 }
 

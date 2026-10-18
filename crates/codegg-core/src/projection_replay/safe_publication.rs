@@ -11,6 +11,18 @@ pub enum SafePublicationClass {
 
 pub fn classify(event: &CoreEvent) -> SafePublicationClass {
     match event {
+        // M003 (ADR-0038): the prompt-queue projection carries **user prompt
+        // text**, so it is `ClientLocal`, never `Safe`.
+        //
+        // `Safe` would be a real widening. The `UserPromptQueueList` *request*
+        // path is gated by a descriptor that requires `session.read`, but this
+        // event arrives through `event_log.publish`, which feeds the projection
+        // sink as well as the frontend stream — so marking it `Safe` would put a
+        // user's queued prompt text into the durable projection store behind a
+        // check the request path never ran. `ClientLocal` reaches the session's
+        // own frontend event stream, which is where delivery's push has to land,
+        // and is denied at the projection disclosure boundary.
+        CoreEvent::UserPromptQueue { .. } => SafePublicationClass::ClientLocal,
         CoreEvent::TurnStarted { .. } => SafePublicationClass::Safe,
         CoreEvent::TurnTextDelta { .. } => SafePublicationClass::Safe,
         CoreEvent::ToolStarted { .. } => SafePublicationClass::Safe,

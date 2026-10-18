@@ -83,6 +83,14 @@ pub struct PromptState {
 /// for.
 pub const STOP_ARM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How many displaced drafts the prompt stash retains.
+///
+/// Every path that puts a submitted prompt back into the composer goes
+/// through [`PromptState::restore_prompt_with_stash`], so this is the single
+/// bound. It was previously a literal `100` repeated in three places, which
+/// meant the bound was three promises rather than one.
+pub const PROMPT_STASH_BOUND: usize = 100;
+
 impl PromptState {
     /// Begin one session-create continuation.  A second submit while this is
     /// pending is coalesced by the caller and cannot create another request.
@@ -148,6 +156,42 @@ impl PromptState {
             self.retry_without_message = None;
             false
         }
+    }
+
+    /// Put a prompt the user already submitted back into the composer.
+    ///
+    /// The one restore shape in the TUI. Session-create failure, reconnect, and
+    /// a refused turn submission all lose the user's text the same way: the
+    /// composer is cleared optimistically before the daemon has accepted
+    /// anything, so every refusal has to undo that. Keeping one method means
+    /// the bounded stash and the no-duplicate-transcript rule are proved once
+    /// rather than three times.
+    ///
+    /// * A non-empty draft typed while the submission was in flight is
+    ///   displaced into the bounded stash, never dropped.
+    /// * The restored text is put back **whole**. Truncating a prompt to fit a
+    ///   bound would change what the user wrote, so the bound applies to how
+    ///   many displaced drafts are kept, never to this text.
+    /// * [`PromptState::mark_retry_without_message`] is set so resubmitting the
+    ///   restored prompt produces one user transcript entry, not two.
+    ///
+    /// An empty `prompt` is ignored: there is nothing to give back, and
+    /// restoring it would silently clear whatever the user has since typed.
+    pub fn restore_prompt_with_stash(&mut self, prompt: &str) -> bool {
+        if prompt.trim().is_empty() {
+            return false;
+        }
+        let current_draft = self.prompt.get_text();
+        if !current_draft.trim().is_empty() && current_draft != prompt {
+            if self.stashed_prompts.len() >= PROMPT_STASH_BOUND {
+                self.stashed_prompts.remove(0);
+            }
+            self.stashed_prompts.push(current_draft);
+        }
+        self.prompt.set_text(prompt.to_string());
+        self.prompt.set_waiting(false);
+        self.mark_retry_without_message(prompt.to_string());
+        true
     }
 
     /// Toggle the composer between Session and Task submission modes.

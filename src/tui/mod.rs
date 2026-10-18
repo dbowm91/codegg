@@ -530,8 +530,11 @@ mod shell_dispatch_tests {
             .expect("acceptance completion arrives")
             .expect("completion command")
         {
-            TuiCommand::TurnSubmissionFinished { error, .. } => {
-                assert!(error.is_none());
+            TuiCommand::TurnSubmissionFinished { outcome, .. } => {
+                assert!(
+                    !outcome.is_failure(),
+                    "the daemon accepted the turn: {outcome:?}"
+                );
             }
             other => panic!("unexpected turn completion command: {other:?}"),
         }

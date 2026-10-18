@@ -658,6 +658,12 @@ stop`, `press x again to stop agent` while a confirmation is armed, `press x or
 way out is what reads as a dropped connection. The rows below it are clickable
 and their hit rects are rebuilt every frame in `UiState::working_area` /
 `SubagentState::hits`, so a click resolves against the geometry the user saw.
+
+The `queued` suffix (M004) is appended in the same left-aligned `" · "` chain
+as the subagent and job counts, and is text on the existing row — never an extra
+row and never a condition on row 0's existence. It sits *after* the phase
+selection so a latched `last_error` still outranks it: the failure is what
+explains why nothing is progressing, and a waiting-prompt count is not.
 `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
 strip is carved out of the prompt chunk, so the reverse order would resolve
 every subagent click to click-to-focus.
@@ -877,7 +883,7 @@ three used to be silent:
 
 | Failure | Carrier | Before |
 |---|---|---|
-| `turn.submit` refused / socket dead | `TuiCommand::TurnSubmissionFinished { error }` | the arm handled `error.is_none()` and discarded `Some(_)`, recording it only in a `tracing::debug!` |
+| `turn.submit` refused / socket dead | `TuiCommand::TurnSubmissionFinished { outcome }` | the arm handled `error.is_none()` and discarded `Some(_)`, recording it only in a `tracing::debug!` |
 | No core client | `dispatch_turn_submit_request` | bare `return` |
 | No session bound | `dispatch_turn_submit_request` | bare `return` |
 
@@ -886,12 +892,378 @@ session stayed pinned on `Working`, and the user saw no output and no error
 until `check_turn_stall` fired five minutes later with a generic "the core
 produced no event" — a diagnosis that named none of the three actual causes.
 
-`App::fail_unstarted_turn` is the single release path: it clears
-`working_since` (so the watchdog stops counting a turn that never started),
-drops `active_turn_id`, sets `SessionStatus::Error`, stops the thinking
-indicator, finalizes streaming, **releases `pending_send` so a retry is
-possible**, clears the prompt waiting flag, and toasts the reason. The
-`TurnSubmissionFinished` arm calls it with the daemon's own message.
+`App::fail_unstarted_turn` is the release path for a submit that started no
+turn: it clears `working_since` (so the watchdog stops counting a turn that
+never started), drops `active_turn_id`, sets `SessionStatus::Error`, stops the
+thinking indicator, finalizes streaming, **releases `pending_send` so a retry is
+possible**, clears the prompt waiting flag, and latches the reason through
+`report_turn_error`.
+
+### Turn-contention refusal is not an unstarted turn
+
+The daemon returns `turn_already_active` when a turn is already running — for
+both the in-memory collision and a durable controller-lease conflict
+(ADR-0007). Running every refusal through `fail_unstarted_turn` therefore made
+the frontend assert the opposite of the truth at the exact moment a user was
+waiting: it nulled `active_turn_id` and `working_since`, discarding the
+identity and elapsed age of a **live** turn, stopped the thinking indicator,
+finalized the activity stream of a turn that was still producing events, and
+set `Error` on a session that was actively working. The queue milestone that
+follows has to consult turn state to decide between queueing and steering, so a
+path that invalidates that state is a correctness problem, not a cosmetic one.
+
+`src/tui/app/turn_submit.rs` classifies the outcome **once**, at the only point
+that knows how the daemon answered, and the typed value travels to the
+completion arm as data — the arm never parses prose:
+
+| Outcome | Meaning | Turn state | Prompt |
+|---|---|---|---|
+| `Accepted` | `Ack` or `TurnAdmissionReceipt` | untouched | consumed |
+| `Contended` | `turn_already_active` | **untouched** — identity, age, status, spinner all kept | restored |
+| `Rejected` | any other daemon refusal code | torn down, error latched | restored |
+| `TransportFailure` | `CoreClient::request` returned `Err` | torn down, error latched | restored |
+| `Unexpected` | a response shape this frontend cannot read | torn down, error latched | **not** restored |
+
+Three of those decisions are deliberate:
+
+- **Contention restores the prompt but does not latch.** Row 0 gives
+  `last_error` absolute precedence (see "Working strip"), so latching here
+  would replace the live turn's spinner and elapsed time with a stale `✗` line
+  — the same state corruption in a different costume. Contention is not a turn
+  failure: the turn continues, so there is no dead turn for a latched reason to
+  explain. The refusal is reported as a warning toast, which is transient by
+  design and is retained in `/logs`. `App::fail_contended_turn` owns this.
+- **An unknown daemon code is `Rejected`, not `Unexpected`.** `Rejected` is the
+  only class that keeps the user's text. The daemon adds refusal codes over
+  time; routing an unrecognised one to a class that refuses to restore would
+  lose the user's words the first time a new reason appeared. Contention is a
+  deliberate exact-code allowlist (`CONTENTION_CODES`), never a default and
+  never a resemblance match.
+- **`Unexpected` does not restore the prompt.** An uninterpretable response may
+  already have been accepted, so offering a resubmit is how one prompt becomes
+  two turns.
+
+**Every recoverable refusal restores the composed text through one shared
+shape.** `PromptState::restore_prompt_with_stash` is that shape: it displaces
+any newer draft into the bounded stash (`PROMPT_STASH_BOUND`), puts the refused
+prompt back **whole** — the bound applies to how many drafts are kept, never to
+the text, because truncating would change what the user wrote — and calls
+`mark_retry_without_message` so resubmitting produces **one** transcript entry
+rather than two. Session-create failure, reconnect, and refused submission all
+route through it; the implementation was previously a literal `100` repeated in
+three places, which made the bound three promises rather than one. The prompt
+travels in `PendingTurnSubmission::prompt`, never across the command channel and
+never re-read from the composer, which the user may have kept typing into.
+
+The frontend never resubmits on the user's behalf. Handing the text back is the
+whole recovery; anything more would be a queue nobody approved.
+
+### The queue projection is pushed, not polled (M003, ADR-0038)
+
+`SessionState::user_prompt_queue` is a **projection**, never an authoritative
+copy: it is replaced wholesale and the TUI owns no queue state that could drift.
+Before M003 it was read on exactly one edge — the session change
+(`load_user_prompt_queue`, called from the same handler as the promotion
+projection). A session that never changes re-read it never, which was harmless
+while nothing could mutate the queue from the daemon side.
+
+Delivery broke that. The daemon claims an entry and admits a turn with **no
+reply channel**, so no client-initiated read can discover it: an entry the user
+queued would sit displayed as `pending` while its turn ran, and nothing on
+screen would ever say it was no longer waiting. `CoreEvent::UserPromptQueue` is
+therefore pushed after every delivery attempt that changed the queue, and
+`App::apply_core_event` adopts it through the **same**
+`apply_user_prompt_queue_loaded` applier the read path uses — so a pushed
+projection and a read projection cannot diverge in how they are filtered, the
+superseded-session guard included.
+
+Two properties the push depends on:
+
+- The event carries the entry's **real** `status`, not a constant.
+  `user_prompt_queue_entry_to_dto` hardcoded `"pending"` on the reasoning that
+  every row in `list_live` was pending by construction — true until M003 gave
+  `delivering` a producer. A `delivering` entry is visible and **not** editable,
+  and a client can only grey that row if the status reaches it. The daemon
+  refuses an edit to it with `user_prompt_queue_entry_delivering`, never
+  `user_prompt_queue_expired`.
+- `CoreEvent::UserPromptQueue` is classified `ClientLocal`, never `Safe`. It
+  carries user prompt text, and `event_log.publish` feeds the projection sink as
+  well as the frontend stream — marking it `Safe` would put a user's queued
+  prompt into the durable projection store behind a check the
+  `UserPromptQueueList` descriptor never ran.
+
+### The `/queue` box (M004)
+
+M003 made the projection exist. M004 is the first milestone a user can
+actually operate: `/queue` mounts `components/dialogs/queue.rs`, a
+FocusManager-owned list of the session's waiting prompts.
+
+It is a **view**, and every deliberate omission is a refusal to imply authority
+the TUI does not have:
+
+- The widget **never sorts**. `SessionState::user_prompt_queue` is the daemon's
+  order verbatim; a locally re-sorted list would claim an order the queue does
+  not have. Selection follows `entry_id` across a fresh projection rather than
+  the index, because a projection that lost a row would otherwise slide the
+  cursor onto a prompt the user never looked at — and a `d` there would delete
+  it.
+- **A `delivering` row is listed and offered to `d`.** The daemon refuses it
+  with `user_prompt_queue_entry_delivering`; the box does not pre-empt that with
+  a local rule, because the refusal is the authority's answer to a real
+  attempt. It reports it as *being delivered*, never as *expired* — a
+  delivering entry has not expired, and telling the user otherwise is a lie they
+  might act on.
+- **A delete applies the projection that delete produced.**
+  `queue_projection` re-reads after a successful write and returns it in the
+  same response, so the frontend issues no second `UserPromptQueueList`. The
+  rendered list therefore cannot disagree with the write the user just made.
+- **The box advertises exactly the keys it implements.** M004 shipped `j/k`,
+  `r`, `d`; M005 added `a`, `e`, and `[`/`]`; M006 added `s`. Naming a key this
+  widget does not implement — in the hint *or* in the empty state — is the
+  specific dishonesty the milestone plan forbids, and the test that enforces it
+  has now rejected the box twice: once when M005 landed a verb the hint did not
+  teach, and once when M006 did.
+  - **M007 adds a second guard arm to the same test.** `HINT_SCHEDULE` states
+    the duration grammar (`30s/5min/2h/1d`) *and* the empty case, because the
+    box is the only place that grammar is written down — a user who must leave
+    the box to learn `1h` has already lost the prompt they were composing. `Esc` is answered by `handle_key` but
+  deliberately absent from the hint, for the same reason `TreeDialog` omits it:
+  the modal host claims `Esc` as its universal exit before consulting the
+  widget.
+
+Two wiring facts that are easy to get wrong:
+
+- `Dialog::Queue` has **no key arms** in `handle_dialog_key_legacy`, and must
+  not get any. That router is `#[cfg(any())]`-disabled and `FocusManager` is
+  the sole key authority, so such an arm would compile and do nothing.
+  `Dialog::Queue` is also absent from `App::dock_target`, so the box is a modal
+  and never docks even though it declares `docks_as_viewer()`.
+- `close_dialog`'s `Dialog::Queue` arm cancels `DialogState::queue_delete_request`,
+  `queue_add_request`, `queue_edit_request`, `queue_reorder_request`, and (M006)
+  `queue_send_request`, so a mutation still in flight when the box closes cannot
+  rewrite a projection nobody is looking at. Each slot is separate on purpose: a
+  shared one would let a slow send-now be completed by — or overwrite — a later
+  reorder. Close does **not** requeue anything: the box has no pending human
+  decision, only a cursor.
+
+`/queue` is **blocked for observers** by omission in the fail-closed
+`is_observer_allowed_command` allowlist. No code registers it there, and
+`tests/user_prompt_queue_box.rs` proves it by executing the predicate against
+`/queue` and the M005 subcommand names, with `/stats` asserted allowed so the
+suite cannot pass against an always-false stub.
+
+#### Authoring: `a`, `e`, `[`/`]` (M005)
+
+M005 makes the box both a navigator and a text field. That is the whole hazard
+of the milestone, and the seam that manages it is
+`QueueDialog::is_text_step()`.
+
+**The guard is structural, not per-letter.** `handle_key` matches the text step
+**first, as a separate match**, and returns from it. The browsing arm is then
+unreachable while a composer is open, so a sixth action added later cannot be
+live in a text step by forgetting one guard. The alternative — `if
+!self.is_text_step()` on each action arm — is the shape that produces the
+defect: typing `d` into a prompt deletes a prompt.
+
+There is no shared `captures_text` / `wants_text` predicate on `App`. The only
+precedent is `ConnectDialog::is_text_input_step`, one method on one dialog, and
+`is_text_step()` is that method again. Opening an `App`-level predicate is an
+explicit non-goal.
+
+Text lives in the **widget**, not in `DialogState`. There is therefore no window
+in which a later `/queue` can commit text an abandoned step left behind — the
+buffer is dropped by the same unmount that drops the box.
+
+- **`a` — add.** Composes text, commits on `Enter`. The `entry_id` is minted at
+  **commit** (`start_queue_add`), not when the step opens, because
+  `entry_id` is the protocol's at-most-once key: a retry carrying the same id
+  converges on the same row instead of duplicating the user's sentence. An
+  abandoned step therefore burns no id. The response's projection is applied
+  directly — no second read — and the cursor follows the minted id.
+- **`e` — edit in place.** Seeded with the selected entry's current text, so an
+  edit starts from what the user can see on the row. It commits the entry's
+  **existing** id: minting a new one would turn "correct this prompt" into "add
+  a second prompt and orphan the first". Identity and ordinal are the daemon's
+  to hold, and the box only renders its answer.
+- **`[`/`]` — reorder earlier/later.** Not `Shift+K`/`Shift+J`: this box
+  already uses `j`/`k` for movement, and a shifted variant of the movement key
+  that does something *other* than move is a pairing people misfire.
+
+**The permutation is built from `pending` rows only.** This is the milestone's
+sharpest edge. The rendered projection contains `pending` **and** `delivering`
+rows (`list_projected_in`, `LIVE_STATUS_PREDICATE`), but `reorder` validates
+against `list_live_in`, whose `WHERE` is `OPERABLE_STATUS_PREDICATE`
+(`status = 'pending'`), and `is_permutation` demands **exact length equality**.
+A client that sends every id it rendered is refused with
+`user_prompt_queue_order_mismatch` the moment one entry is mid-delivery.
+`QueueDialog::pending_permutation` therefore permutes the operable subset and
+never computes an ordinal — the daemon owns those.
+
+**One local refusal, and it is the exception.** M004's rule is "let the daemon
+answer a real attempt". Reorder cannot follow it: with a `delivering` selection
+the permutation would be built from the pending subset, **succeed**, and reorder
+nothing — a silent no-op. So `reorder_selected` refuses locally and names
+which end it is at, via `TuiMsg::QueueReorderUnavailable`. There is no daemon
+call that can express "this particular row is not yours to move".
+
+**`order_mismatch` re-reads once and reports.** It never retries: the check is
+exact-length set equality, so a blind retry against a stale projection turns one
+refusal into a contention source. Re-reading surfaces the truth (usually another
+frontend's mutation) and the user's next `[`/`]` is built from the corrected
+order.
+
+**Refusals keep their own sentence and the user's words.** A bounds refusal
+(`entry_too_large`, `too_many_entries`, `invalid`) restores the composed text
+into the composer, because the fix is to shorten it. An ownership, delivery-state
+or expiry refusal does not — retrying cannot work there, and restoring text
+would suggest it can. The `unowned` sentence says the repair is a separate
+explicit operation outside this box and deliberately does **not** name a slash
+command, because no command registers one.
+
+**Composed text travels exactly as far as it must.** It rides in
+`UserPromptQueueAddFinished`/`EditFinished` so a refusal can restore it, and
+nowhere else: no toast, no hint, no `tracing` call. The dialog renders the
+buffer bound by width with an announced truncation.
+
+#### The duration step (M007, ADR-0039)
+
+`a` and `e` are **two** steps, not one. `Enter` on the prompt text advances to a
+duration field; `Enter` there commits. The third state — text, duration, and a
+committed box — is what the user sees.
+
+**A separate step, not an inline suffix.** The obvious cheaper design is a
+delimiter in the text (`ship the docs | 1h`). It was rejected because prompt text
+is user data the box must not reinterpret: any delimiter is a character the user
+cannot type, so `ship the docs | 1h` and `ship the docs | 1h | check the 1h
+build` are not distinguishable. A second step makes the due time a first-class,
+editable field instead, and it is what lets `e` edit an existing schedule
+rather than only new ones.
+
+**The duration step is inside `is_text_step`, not beside it.** That is the whole
+safety argument: it inherits every property that keeps a stray `d` from deleting
+a prompt while someone is typing `2d`. Its `Esc` goes **back** to the text step
+rather than cancelling, because the prompt is still in the buffer and making
+`Esc` discard it would mean a mistyped `2d` costs the whole prompt.
+
+**An unparseable duration is refused in the box, with no request.** The grammar
+is a UI-level fact the box already owns; sending a string to the daemon to be
+told "that is not a duration" spends a round trip to deliver a message the box
+can give first. A bare number is refused rather than guessed. The refusal quotes
+what the user typed — which is a duration token, never prompt text — and the
+field keeps its contents so the fix is an edit.
+
+**Rows are marked by character, not by colour.** `@2h` / `@30m` for waiting,
+`@·` for due, blank for immediate. The `@·` state is the one that earns the
+marker: "scheduled for 09:00" and "09:00 has passed and it still has not run"
+look identical otherwise, and they are very different states for a user deciding
+whether to press `s`.
+
+**Remaining time rounds up, and rolls into the next unit.** `format_remaining`
+never prints `60m`: an entry 59m59s out reads `1h`. Flooring would make a prompt
+the user scheduled "for an hour" read back as "59m" and look like an off-by-one.
+
+#### `s`: send now (M006, ADR-0036)
+
+`s` is the only queue key that reaches **into a live turn** instead of writing to
+the queue. Everything else in this box authors, reorders, or discards rows; `s`
+hands one row to a turn that already exists.
+
+**The request names the entry and nothing else.** No text, no turn id. The daemon
+loads the stored prompt — ADR-0035's durable-entry rule is what makes that safe,
+because the text cannot differ from what the user queued — and resolves the
+active turn from its **own** runtime handle. A client therefore cannot submit
+text no queue entry accounts for, and cannot steer a turn that ended a moment ago
+by naming the id it saw.
+
+**Four outcomes, not two, and that is the whole design.** The steer happens
+*before* the settlement, so "the turn refused it" and "the turn took it but the
+queue could not record that" are different states with different correct
+copy. `UserPromptQueueSendNowResult` is `Accepted`, `AcceptedNotSettled`,
+`Refused { code }`, `EntryNotFound`. Reporting the third state as an error would
+tell the user to resend a prompt that has already run — the exact duplication
+ADR-0036 forbids. Reporting it as success would hide that the row is still
+`pending`.
+
+**Six outcomes, six sentences, and no sentence promises more than acceptance.**
+`s` is a *handover*: the prompt joins the running turn's message stream. Whether
+the model reads it, believes it, or acts on it this turn is not knowable at the
+moment of acceptance, so no copy says "the model will…", "forced", or
+"guaranteed". A user told "sent" for a channel that was `Full` has been lied to;
+a user told the same for a `Closed` channel cannot tell their prompt went
+nowhere. `send_now_outcome_message` owns all of that mapping, and
+`user_prompt_queue_the_send_now_sentences_are_all_different` asserts the six are
+pairwise distinct and quote no prompt text.
+
+**Two local refusals, and they are different kinds of fact.** `delivering` is a
+fact about the *row* — it is already running as its own turn, and no retry
+changes that — so the box refuses without a round trip, exactly as reorder does.
+No-active-turn is a fact about the *box's own snapshot*
+(`session_state.active_turn_id`), and it is only a fast path: a stale snapshot
+sends a request the daemon can refuse truthfully, which is the safe direction.
+The daemon remains the authority.
+
+**Send-now is not a `QueueMutation`.** ADR-0037 deliberately excludes steering
+from the durable owner binding, so gating `s` on `ControllerScope::QueueMutation`
+would refuse the legitimate case of a principal steering its own turn in a session
+it does not own. The dispatch arm is its own handler, gated by the turn
+controller, with the queue-ownership question re-asked **inside the settlement
+transaction** — where it answers a different question ("may this principal change
+this queue?") about a different write.
+
+**The projection rides along on every outcome, refusals included.** A refusal may
+mean another frontend already moved or removed the row, and a box left showing it
+is showing something the daemon no longer holds. This is the same
+"apply the projection this write produced" rule M004 established for mutations,
+extended to the case where the write did *not* succeed.
+
+**No retry, ever.** Every refusal is a fact about the turn — full, closing,
+unsupported, not yours — and retrying a request whose answer is "definitely no"
+is how one refusal becomes a contention source.
+
+#### What a released delivery does (C001)
+
+`renumber_dense` used to displace **every row in the session, status-blind** and
+then re-densify only the client's pending rows, so a `delivering` row was pushed
+above the dense band and nothing ever wrote its ordinal back. M005 measured the
+consequence and recorded it as accepted-and-documented: the row sorted **last**,
+and a released delivery returned to `pending` at the back of the queue carrying
+`USER_PROMPT_QUEUE_RENUMBER_BAND_OFFSET` (1 000 000) instead of a dense ordinal.
+
+**C001 fixed it.** `renumber_dense` now writes the whole **live** set, folding
+the caller's desired pending order together with each non-pending live row held
+at **the rank it already had**
+(`merge_operable_into_live`, `crates/codegg-core/src/session/user_prompt_queue.rs`).
+The displacement step is unchanged — terminal rows still hold ordinals under the
+session-wide `UNIQUE`, so they still have to be pushed clear of the band — and
+the client's permutation contract is unchanged: it still sends **pending ids
+only**.
+
+The box is unaffected and stays correct: it renders the daemon's ordinal verbatim
+and never renumbers locally, which is why this was always a store defect and never
+a TUI one. A released prompt now resumes where the user put it.
+
+### Turn-submit staleness
+
+`App::turn_submit_request` is an `AsyncUiRequestState`, and
+`TuiCommand::TurnSubmissionFinished` carries its `generation` alongside the
+daemon's `request_id`. These are different questions and stay separate:
+
+- `request_id` is the **daemon's idempotency key**, derived from the submitted
+  payload. An identical retry reuses it so daemon receipts prevent replay.
+- `generation` is the **frontend's local staleness marker**.
+  `apply_turn_submission_finished` calls `finish(generation)` first and drops the
+  completion when it returns `false`.
+
+That check was missing. The old arm cleared `pending_turn_submission` only when
+the ids matched but then tore down turn state *unconditionally*, so a late
+completion from a superseded submission could still null a live turn's identity.
+`App::cancel_turn_submit` invalidates an in-flight submit on tab switch,
+reconnect, and project change — the daemon turn is not undone, it keeps running
+and its events still arrive, but the completion must not act on state the user
+has moved past. On reconnect the submitted prompt is handed back alongside it:
+the daemon may well have accepted the submit before the socket died, so the user
+resubmits explicitly, and `retry_without_message` plus daemon-side turn
+admission keep that from becoming a second transcript entry or a second turn.
 
 The stall watchdog remains the backstop for the case where the daemon accepted
 the turn and then went quiet — a different failure, and still measured by
@@ -3969,6 +4341,8 @@ tui/
 │   ├── project_picker.rs   # Project picker navigation
 │   ├── prompt.rs           # Prompt/session continuation commands
 │   ├── provider_connections.rs # Provider connection lifecycle
+│   ├── queue.rs           # /queue box: open, refresh, delete (M004); add/edit/reorder
+│   │                      # (M005); send-now (M006)
 │   ├── research.rs         # Research list runs, load run, load section
 │   ├── run_rerun.rs        # Historical run reruns
 │   ├── security.rs         # Security review dispatch
@@ -4014,6 +4388,8 @@ tui/
 │   │   ├── plugin.rs       # PluginDialog (generic plugin UI)
 │   │   ├── project_picker.rs # ProjectPickerDialog
 │   │   ├── question.rs     # QuestionDialog
+│   │   ├── queue.rs        # QueueDialog (M004 list/delete; M005 add/edit/reorder;
+│   │   │                  # M006 send-now)
 │   │   ├── research.rs     # ResearchBrowserDialog
 │   │   ├── review.rs       # ReviewDialog
 │   │   ├── run_detail.rs   # RunDetailDialog

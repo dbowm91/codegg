@@ -18,7 +18,7 @@ Root turn construction now reads the authoritative binding for the session runti
 | Resolved session workspace repository identity reaches the runtime | `core::daemon_turns::tests::repository_binding_reaches_turn_runtime_for_isolated_delegation` | pass, 1/1 |
 | The propagated field controls managed child checkout creation | `src/scheduler/executors.rs`: repository-less tasks retain the in-place fallback; a task with `repository_id` enters `WorktreeService` managed checkout allocation | source reviewed |
 | No caller-provided path or prompt controls repository identity | `ProjectStorage::workspace_binding(&runtime.workspace_id)` is the sole lookup source | pass by source review |
-| Shared checkout stays gated | M005 remains active/blocked for shared-write capability under ADR-0035 | unchanged |
+| Shared checkout stays gated | M005 remains active/blocked for shared-write capability under ADR-0040 | unchanged |
 
 Focused test command:
 

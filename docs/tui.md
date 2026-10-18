@@ -271,6 +271,7 @@ A few commonly used entries:
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
 | `/sessions` | Session browser |
+| `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
 | `/approval` | Approval-mode fast-select (`/approval-mode` is an alias) |
 | `/sandbox` | Sandbox-profile fast-select (`/sandbox-profile` is an alias) |
@@ -290,6 +291,137 @@ dialog needs a second press.
 Registry metadata — domain, scope, and source exist for palette and help
 presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
+
+### Typing while the agent is already working
+
+You can keep typing during a turn, and pressing Enter does not throw the text
+away. If the agent is still working, CodeGG says so and **puts your prompt back
+in the composer** for you to send again once the turn ends — the running turn
+keeps going, and the status line above the composer keeps showing it (spinner,
+elapsed time) rather than flipping to an error.
+
+Nothing is sent on your behalf. The text comes back and you press Enter when you
+want it sent. Anything you typed while the submission was in flight is kept
+behind it in the draft stash.
+
+A lost connection is reported as a connection problem, not as "the agent is
+busy", and it restores your prompt the same way.
+
+## The prompt queue
+
+A prompt you send while a turn is running is kept instead of dropped, and it
+goes to the next turn for the same session. `/queue` shows what is waiting.
+
+| Key | What it does |
+|-----|--------------|
+| `j` / `k`, `↓` / `↑` | Move the selection |
+| `r` | Re-read the queue |
+| `a` | Add a prompt |
+| `e` | Edit the selected prompt in place |
+| `[` / `]` | Move the selected prompt earlier / later |
+| `d` | Delete the selected prompt |
+| `s` | Send the selected prompt to the turn running now |
+| `Esc` | Close the box |
+
+The list is in the order the queue is in. Each row shows its status, so a
+prompt whose turn is running right now says so rather than looking like it is
+still waiting. A prompt you gave a due time carries an `@` marker with the time
+left (`@2h`, `@30m`), so you can see at a glance which prompts are waiting for
+a clock and which are waiting for a turn. Once a due time arrives the marker
+becomes `@·`: the time has passed and the prompt is waiting for the next turn.
+
+### Adding and correcting
+
+`a` opens a line under the list. Type the prompt, then `Enter` — that moves to a
+second line where you say **when** it should run. Press `Enter` there to queue
+it, or `Esc` to go back to the prompt text without losing it. Leaving the delay
+empty queues the prompt for the next turn, which is what almost every prompt
+wants. The box is navigable again the moment you commit; you do not have to wait
+for the save to finish.
+
+`e` opens the same line with the selected prompt's text already in it, so you
+correct a typo instead of retyping. Editing never changes which prompt it is
+or where it sits; only the words change.
+
+### Setting a due time
+
+The delay line takes a number and a unit: `30s`, `5min`, `2h`, `1d`. There is no
+bare number — `5` is refused rather than guessed, because five seconds and five
+minutes are very different instructions to give a machine. The hint on that line
+lists the same forms, so you do not have to leave the box to learn them.
+
+A delay that lands at or after the moment the prompt would expire is refused
+rather than quietly shortened. Prompts stop being eligible after seven days; the
+box tells you the two times rather than scheduling something that can never run.
+
+A due time is a floor, not a promise. The prompt is delivered at the first turn
+boundary at or after that moment, and if the daemon is not running when the time
+passes the prompt goes on the next turn after it starts. Nothing here claims the
+prompt reaches the model at any particular second.
+
+### Typing safely
+
+While a line is open, every letter goes into it. Typing a prompt that contains
+`a`, `e`, `d`, `j`, `k`, or `s` is completely safe — the line's hint reads
+`Enter next · Esc cancel` precisely so you can see the box has switched into
+typing mode. The delay line is guarded the same way, so typing `2d` cannot
+delete the prompt you were writing.
+
+If a prompt is too long or the queue is full, the box says so and **keeps what
+you typed**, so you can shorten it and save again. It never quietly cuts text
+off.
+
+### Reordering
+
+`[` and `]` swap the selected prompt with its neighbour. At either end there is
+nothing to swap with, and the box tells you which end you are at rather than
+appearing to do nothing.
+
+A prompt whose turn has already started cannot be moved — it is mid-delivery.
+The same is true of editing it.
+
+Reordering the queue moves the prompts that are still waiting. One whose turn is
+running holds its place while it runs, and if that turn is interrupted the prompt
+resumes **where you put it** — it does not jump to the end.
+
+### Sending now
+
+`s` hands the selected prompt to the turn that is running **right now**, instead
+of waiting for that turn to finish. It is the one place where the queue reaches
+into a live turn rather than starting a new one.
+
+It is a handover, not an override. The prompt goes into the running turn's stream
+of messages; the agent reads it the way it reads anything else that arrives
+mid-turn, and it may already be part-way through answering something else. What
+`s` does **not** do is interrupt, restart, or force anything — if the turn is
+already finishing, or has no room for another message, the box says so and your
+prompt stays queued exactly where it was.
+
+When the running turn accepts the prompt, the box removes it from the list and
+records it as delivered to that turn, so it will not also arrive at the next one.
+If the queue cannot record that, the box tells you so plainly rather than
+leaving you to guess whether to send it again — check before you do.
+
+If nothing is running, `s` tells you the prompt stays queued for the next turn.
+That is not a refusal you need to work around; it is what an idle queue is for.
+
+### What it still cannot do
+
+- **It cannot delete, edit, reorder, or send now a prompt whose turn has already
+  started as its own.** The queue refuses it and the box says the prompt is
+  being delivered — it does not tell you the prompt expired, because it has not.
+  Close the box and the running turn keeps its text.
+- **It cannot send a prompt to a turn that has already ended**, and it cannot
+  send one for another frontend's turn. Both are refused with the reason.
+- **It cannot schedule a prompt for later** or claim a queue that has no owner.
+  Those are separate, explicit operations outside this box.
+
+The waiting count also appears on the status line above the composer
+(`· 2 queued`), so a queue with nothing running is still visibly not empty.
+
+The box is one session's queue. With another frontend attached to the same
+session, that session's queue belongs to whoever claimed it, and a change made
+there cannot be made here; the box says so if you try.
 
 ## Subagents, jobs, and the tasks overlay
 

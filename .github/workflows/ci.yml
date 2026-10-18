@@ -132,6 +132,12 @@ jobs:
       - name: Audit coverage guard
         run: python3 scripts/check_audit_coverage.py
 
+      - name: Queue delivery callsite guard
+        run: python3 scripts/check_queue_delivery_callsites.py
+
+      - name: Queue write transaction shape guard
+        run: python3 scripts/check_queue_write_transaction_shape.py
+
       - name: Scheduler bypass guard
         run: python3 scripts/check_scheduler_bypass.py
 

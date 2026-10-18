@@ -153,21 +153,29 @@ impl App {
     /// request is intentionally not undone: it may already have committed a
     /// durable session, but that session must not be rebound to a new tab or
     /// retried implicitly by the frontend.
+    ///
+    /// Also invalidates an in-flight `turn.submit` completion. The daemon turn
+    /// is not undone either — it keeps running and its events still arrive —
+    /// but a late completion must not act on state the user has moved past.
     pub fn invalidate_pending_session_submit(&mut self, restore_prompt: bool) {
-        let pending = self.prompt_state.cancel_session_submit();
+        let pending_session = self.prompt_state.cancel_session_submit();
+        let pending_turn = self.cancel_turn_submit();
         if restore_prompt {
-            if let Some(pending) = pending {
-                let current_draft = self.prompt_state.prompt.get_text();
-                if !current_draft.trim().is_empty() && current_draft != pending.prompt {
-                    if self.prompt_state.stashed_prompts.len() >= 100 {
-                        self.prompt_state.stashed_prompts.remove(0);
-                    }
-                    self.prompt_state.stashed_prompts.push(current_draft);
-                }
-                self.prompt_state.prompt.set_text(pending.prompt.clone());
-                self.prompt_state.mark_retry_without_message(pending.prompt);
+            if let Some(pending) = pending_session {
+                self.prompt_state.restore_prompt_with_stash(&pending.prompt);
                 self.messages_state.toasts.warning(
                     "Session creation was interrupted; review the prompt and press Enter to retry",
+                );
+            } else if let Some(prompt) = pending_turn {
+                // A submit interrupted by a dropped connection is restored the
+                // same way a refused one is. The daemon may well have accepted
+                // it before the socket went away, so the user resubmits
+                // explicitly: `retry_without_message` keeps that from adding a
+                // second transcript entry and daemon-side turn admission keeps
+                // it from becoming a second turn.
+                self.prompt_state.restore_prompt_with_stash(&prompt);
+                self.messages_state.toasts.warning(
+                    "Turn submission was interrupted; review the prompt and press Enter to retry",
                 );
             }
         }

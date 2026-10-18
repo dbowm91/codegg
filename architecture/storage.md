@@ -128,7 +128,7 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **80**, defined by
+The current layout version is **84**, defined by
 `storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:41`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
@@ -283,7 +283,7 @@ pub async fn init_pool_at_for_migration(db_path: &Path)
 Migrations are implemented in `session/schema.rs`, not in the storage
 module. The storage module calls `session::schema::migrate()` during
 initialization. `session/schema.rs` contains 87 `CREATE TABLE`
-statements; migrations v1–v80 are all present as `migrate_v<N>` functions
+statements; migrations v1–v84 are all present as `migrate_v<N>` functions
 (declaration order in the file is not numeric — `migrate_v67`,
 `migrate_v34`, `migrate_v33` lead, and `migrate_v50`/`v47`/`v46`/`v32` are
 defined at the end).
@@ -345,6 +345,11 @@ Key storage-layout migrations:
 - **v66**: Eggwork fixed-target execution target and remote handle fields
 - **v67**: nullable `job_attempt.source_subject_json` for attempt-scoped execution source provenance; historical rows remain NULL and are never backfilled from a workspace
 - **v68**: `work_plan_eggplan_binding`, `work_plan_eggplan_item_binding`, `work_order_eggplan_binding` (M003; append/replace only). No migration for C001: the physical `source_subject_json` column already stores versioned JSON, and the nested `ExecutionSubjectRevision` evolved additively from schema v1 (native `dirty_digest` only) to schema v2 (plus optional `eggplan_dirty_digest` in `sha256:<hex>` form). Historical v1 rows stay readable; dirty v1 fails closed for bound exact-subject evidence. The v2 Eggplan-compatible digest is captured through `eggplan_repo::capture_git_subject_fingerprint` (Eggplan pin `0dd33b761e85f1364320a9208aaebd5be281c6a5`), so the persisted value is the exact byte string Eggplan repository assessment compares against, and the column remains the only execution-subject persistence owner.
+- **v80**: `user_prompt_queue_entry` (user-prompt-queue M002a)
+- **v81**: `user_prompt_queue_owner` (user-prompt-queue M002b)
+- **v82**: `user_prompt_queue_entry.run_at_ms` and its due index (user-prompt-queue M007)
+- **v83**: `agent_scratch_resource`, `agent_scratch_attempt_lease`, and `agent_run.shared_scratch_json` (managed-agent-scratch M002; renumbered during mainline reconciliation)
+- **v84**: `usage.agent_run_id` and its index (M008 child-specific usage attribution; renumbered during mainline reconciliation)
 
 ## Testing
 
@@ -380,3 +385,8 @@ actually sets `busy_timeout=5000` while the builder sets 30s); added the
 used by v55/v58/v59/v65/v68. All other refs (`:39` layout const, `:41`
 struct, `:214` connect fn, pool sizes, TTLs, preference keys) verified
 accurate.
+
+Verified 2026-10-18 after mainline reconciliation: migrations v80–v82 are the
+user-prompt-queue entry, owner, and due-time changes; managed-agent-scratch
+M002 is v83; child-specific delegated usage attribution is v84. The
+`STORAGE_LAYOUT_VERSION` and overview verified-count row both match v84.
