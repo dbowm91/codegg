@@ -12,6 +12,9 @@ direct execution path for a tool that the broker already owns.
 
 Heavy work such as tests, managed processes, subagent dispatch, and tool
 programs is submitted through `JobSubmissionService` to `JobScheduler`.
+Daemon-created child registries must receive the same daemon-owned submission
+service; a missing service fails closed and is not a reason to bypass the
+scheduler.
 Preserve the typed job request, permission decision, cancellation, and durable
 result path when changing those capabilities. Human shell commands are a
 separate TUI feature and do not become model tools.

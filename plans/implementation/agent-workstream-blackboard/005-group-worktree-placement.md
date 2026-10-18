@@ -246,8 +246,9 @@ for arbitrary shell/process writers: a future permit must be quarantined until
 quiescence is proven, or these process surfaces must be denied. It is not
 shared-write qualification. The native worktree, delegation, project-picker,
 and identity suites passed earlier on the integrated branch; rerun them at the
-final head before closure. Windows/Linux process-owner qualification remains pending the
-exact-head hosted platform jobs.
+final head before closure. Windows/Linux process-owner qualification remains pending; the
+exact-head Windows managed-worktree workflow qualifies checkout materialization,
+not process-tree containment.
 
 **Q0 — safe-default posture (pass; negative evidence only).** On merged head
 `c19a6c3c2ae1f77e5298cb3390035f0420140929`, the spawn surface still has no

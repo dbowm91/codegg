@@ -1881,6 +1881,9 @@ impl AgentLoop {
                                     // principal used to issue the grant. The
                                     // decision identity is not a principal.
                                     principal_ref: Some(principal_ref.clone()),
+                                    // Preserve only the daemon-threaded origin
+                                    // attribution for group orchestration.
+                                    origin_principal: exec_ctx.origin_principal.clone(),
                                     workspace_path_policy_id: Some(format!(
                                         "workspace:{}",
                                         ws_id_for_ctx

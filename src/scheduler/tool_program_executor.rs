@@ -462,6 +462,7 @@ impl BrokerCallback for BrokerAdapter {
                         .unwrap_or_else(|_| chrono::Duration::zero())
             }),
             principal_ref: self.grant.as_ref().map(|g| g.principal_ref.clone()),
+            origin_principal: None,
             workspace_path_policy_id: self
                 .grant
                 .as_ref()

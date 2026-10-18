@@ -1,5 +1,5 @@
 {
-  "evidence_kind": "partial exploratory measurement; one completed S0 and one completed S1 shared-interface arm; not M008 closure",
+  "evidence_kind": "partial exploratory measurement; one completed S0 and one completed S1 shared-interface arm; additional S2/S3 diagnostic attempts remain non-qualifying; not M008 closure",
   "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
   "fixture_baseline": "f5e27d388255726b0b85226a144fdcce2e91b73a",
   "binary": {
@@ -127,6 +127,66 @@
       "integrated_rust_tests": "5 passed",
       "integrated_python_tests": "5 passed",
       "test_files_unchanged": true
+    },
+    {
+      "id": "S2-registered-agent-capped-write-denial-2026-10-18",
+      "group_id": "a21f01a3-da8f-4069-81f9-e0c823792964",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "two isolated build-agent children; factual peer observation; no claims; max_tool_calls=32 each",
+      "result": "non_qualifying_workspace_write_denied_and_no_child_commits",
+      "group_join_policy": "all",
+      "parallelism": 2,
+      "group_created_at_ms": 1792308792171,
+      "group_completed_at_ms": 1792308930451,
+      "children": [
+        {
+          "assignment": "python consumer",
+          "agent_run_id": "35523fc1-f471-4d56-9bb0-1d4ed70f4d3f",
+          "worktree_id": "d34d8fff-7f49-4c80-9ce0-175bb0e5406e",
+          "status": "completed_incomplete",
+          "budget": {
+            "max_tool_calls": 32
+          },
+          "queue_delay_seconds": 1.505,
+          "wall_seconds": 91.177,
+          "provider_usage_rows": 9,
+          "input_tokens": 143025,
+          "output_tokens": 8157,
+          "reported_usd": null,
+          "tests": "not run; first workspace write denied; child stopped per instruction",
+          "commit": null,
+          "worktree_state": "clean; no changed paths",
+          "board_observation": "both group members active; no completed results or claims"
+        },
+        {
+          "assignment": "rust producer",
+          "agent_run_id": "bb906993-b108-4335-ac27-081f494db972",
+          "worktree_id": "e4c1dc45-ed55-4d45-865a-f238a6d1b427",
+          "status": "completed_without_usable_text",
+          "budget": {
+            "max_tool_calls": 32
+          },
+          "queue_delay_seconds": 2.623,
+          "wall_seconds": 135.656,
+          "provider_usage_rows": 20,
+          "input_tokens": 376316,
+          "output_tokens": 13512,
+          "reported_usd": null,
+          "tests": "no terminal test report; acceptance not verified",
+          "commit": null,
+          "worktree_state": "clean; no changed paths"
+        }
+      ],
+      "parent_usage": {
+        "provider_usage_rows": 48,
+        "input_tokens": 803723,
+        "output_tokens": 9221,
+        "reported_usd": null,
+        "attribution": "session aggregate; not substituted for child usage"
+      },
+      "integrated_checks": "not run; no child commits or changes",
+      "source_checkout_mutated": false,
+      "notes": "Both child budgets persisted as max_tool_calls=32. Python directly observed the production group board and stopped after workspace write denial. The parent still consumed provider usage after group completion and was stopped with the isolated daemon. No trial changes were applied to the source checkout. Provider cost was unavailable; stored 0.0 is not evidence of zero cost."
     }
   ],
   "cargo_target_measurement": {
@@ -182,7 +242,7 @@
     "Sandbox containment was requested but not verified because each headless exec logged that no workspace root was available.",
     "No S2/S3 peer-observation or claim benefit conclusion is supported.",
     "The completed S1 is one descriptive pair and does not establish repeatable effectiveness, quality, time, or cost improvement.",
-    "Provider usage is not persisted per synthetic child; child token and cost totals are unavailable."
+    "Early S1 child token/cost attribution remains unavailable; post-accounting S2/S3 diagnostic runs include exact child AgentRunId usage rows. Provider-reported USD cost is unavailable for those runs."
   ],
   "follow_up_trials_2026_10_16": {
     "fixture_v1_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
@@ -486,6 +546,101 @@
       ],
       "integrated_checks": "not run; Python request rejected before durable task creation",
       "notes": "The parent report did not retain the Python rejection detail. On restart the Rust child became interrupted while the join_policy=all group stayed running. Cost unavailable."
+    },
+    {
+      "id": "S2-unregistered-agent-dispatch-2026-10-18",
+      "group_id": "1c0437bf-f4fd-4495-b8e4-75f4d290b0f0",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "two isolated children with factual peer observations; no claims",
+      "result": "failed_before_child_execution",
+      "children": [
+        {
+          "agent_run_id": "c926e002-4aed-4584-abc1-36fedf64ed57",
+          "requested_agent": "default",
+          "status": "failed",
+          "failure": "Agent 'default' not found",
+          "provider_work_started": false
+        },
+        {
+          "agent_run_id": "a706b5e5-9312-43c6-bdb6-bc4725b22935",
+          "requested_agent": "default",
+          "status": "failed",
+          "failure": "Agent 'default' not found",
+          "provider_work_started": false
+        }
+      ],
+      "integrated_checks": "not run; no child work began",
+      "notes": "The registered agent is build. No fixture changes or child-attributed provider usage resulted from this dispatch."
+    },
+    {
+      "id": "S2-registered-agent-bounded-stop-2026-10-18",
+      "group_id": "ccae0678-08d8-4548-a9bb-30244538a9d0",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "two isolated children with factual peer observations; no claims; registered build agent",
+      "result": "incomplete_stopped_for_unbounded_provider_usage",
+      "group_join_policy": "all",
+      "parallelism": 2,
+      "group_created_at_ms": 1792305799010,
+      "daemon_stopped_for_recovery": true,
+      "group_status_after_recovery": "running",
+      "children": [
+        {
+          "assignment": "python consumer",
+          "agent_run_id": "26128ee3-bc39-47b8-8f50-2f032d51bf6c",
+          "worktree_id": "343bbf67-369b-4402-9eb6-946f6368b56b",
+          "status": "completed",
+          "queue_delay_seconds": 2.601,
+          "wall_seconds": 103.466,
+          "provider_attempts_succeeded": 22,
+          "input_tokens": 420176,
+          "output_tokens": 8993,
+          "reported_usd": null,
+          "tests": "python3 -m unittest discover -s python/tests -v: 7 passed",
+          "commit": null,
+          "git_mutation": "branch/stage/commit denied by child worktree policy",
+          "worktree_state": "dirty; one intended source file modified, generated __pycache__ files present"
+        },
+        {
+          "assignment": "rust producer",
+          "agent_run_id": "6634f466-cef3-475c-86e9-d718e7f7758c",
+          "worktree_id": "64033444-b485-4452-a542-036c1052a7cc",
+          "status": "interrupted_scheduler_recovery",
+          "queue_delay_seconds": 1.479,
+          "wall_seconds": 273.505,
+          "provider_attempts_started": 59,
+          "provider_attempts_succeeded": 59,
+          "input_tokens": 1650511,
+          "output_tokens": 14466,
+          "reported_usd": null,
+          "tests": "no terminal test report; acceptance not verified",
+          "commit": null,
+          "worktree_state": "dirty; Rust source/tests modified and target/ generated"
+        }
+      ],
+      "integrated_checks": "not run; no child commits; no changes integrated",
+      "source_checkout_mutated": false,
+      "notes": "The trial was stopped after 273.5 seconds because the Rust run continued with no finite tool-call budget and had accumulated 1,650,511 input tokens. Provider cost was not reported; stored 0.0 is not evidence of zero cost. Daemon recovery interrupted Rust but left the join_policy=all group running. Both dirty child worktrees are preserved for diagnosis."
     }
-  ]
+  ],
+  "exact_head_qualification_2026_10_18": {
+    "source_head": "671e4c0ec2a9c9091d50cc601031b205181fa02d",
+    "reconciled_with_main": true,
+    "hosted_ci": {
+      "run_id": "39103958556",
+      "result": "success",
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39103958556"
+    },
+    "windows_managed_worktree": {
+      "run_id": "39103958482",
+      "result": "success",
+      "job": "managed-worktree",
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39103958482"
+    },
+    "local": {
+      "fmt": "passed",
+      "verify_full_default_workspace": "14,390 passed; 6 skipped",
+      "feature_enabled_codegg_nextest": "11,335 passed; 6 skipped"
+    },
+    "qualification_scope": "Exact source head before this documentation-only evidence update; no implementation source changes followed."
+  }
 }

@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed and independent of M005; M011 repository identity and M012 same-session group continuation are closed. The frozen shared-interface S0 passed, and one S1 Rust/Python pair completed after child approval-mode propagation; that single pair is descriptive, not evidence of repeatable improvement, and its child costs were not individually attributable. Child token/cost attribution is now durable and tested. Post-accounting S2/S3 retries remain non-qualifying because of timeouts and coordination admission/authorization failures; see `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and the execution updates below. The remaining strata are open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006 and M007 are strictly closed and independent of M005; M011 repository identity and M012 same-session group continuation are closed. The frozen shared-interface S0 passed, and one S1 Rust/Python pair completed after child approval-mode propagation; that single pair is descriptive, not evidence of repeatable improvement, and its child costs were not individually attributable. Child token/cost attribution is now durable and tested. Post-accounting S2/S3 attempts remain non-qualifying because of timeouts, coordination admission/authorization failures, and an incomplete S2 run stopped after 1.65M child input tokens; see `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and the execution updates below. TaskTool now accepts an optional per-child tool-call cap from 1 to 128; subsequent provider trials must set the same finite cap for all arms. The remaining strata are open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -246,3 +246,57 @@ their `join_policy=all` groups in `running`; startup does not reconcile these
 group records. These changes do not qualify the provider-backed S2/S3 arms. The frozen task acceptance tests, typed integration,
 and successful two-child claim/board trajectory remain outstanding. Do not
 expand to overlapping Rust APIs or dependency-heavy tasks until S2/S3 complete.
+
+### Registered-agent S2 retry and exact-head qualification (2026-10-18)
+
+The frozen shared-interface fixture digest was independently verified by the
+supervisor. One dispatch attempt used the unregistered agent name `default`;
+both durable runs failed immediately with `Agent 'default' not found` and did
+not start provider work. A corrected retry used the registered `build` agent
+for both child assignments in separate managed worktrees, `join_policy=all`,
+and no claims. Python completed its assigned 7 tests, but its branch/stage/
+commit operations were denied by the child worktree policy. Rust produced
+uncommitted changes but continued consuming provider turns without a terminal
+result. The isolated daemon was stopped at 273.5 seconds to bound the run;
+Rust had accumulated 1,650,511 input and 14,466 output tokens. The provider
+reported no cost. Startup recovery marked Rust interrupted but left the group
+`running`. No child commit or integrated acceptance run exists, so this is
+non-qualifying diagnostic evidence, not an S2 effectiveness result.
+
+The retry revealed two prerequisites for another provider-backed arm: a
+finite child tool-call budget and explicit use of the typed Git mutation
+surface for branch/stage/commit operations. TaskTool now accepts an optional
+per-child `max_tool_calls` from 1 to 128 and carries it through the durable
+budget and scheduled payload to the existing loop enforcement. Focused tests
+cover validation, schema exposure, and idempotency fingerprints. Use one
+explicit limit for every child in each comparative arm. Do not expand to
+overlapping Rust APIs or dependency-heavy tasks until bounded S2 and S3
+trajectories complete; do not create an unbounded replacement trial.
+The interrupted S2 also reproduces the stale `join_policy=all` group after
+recovery. Full run identifiers, per-child usage, tests, dirty worktrees and
+exact-head hosted workflows are recorded in `008-isolated-results.md` and
+`008-isolated-results.json`.
+
+
+### Bounded S2 retry: scheduler wiring and workspace write denial (2026-10-18)
+
+The next S2 retry used `max_tool_calls=32` for both registered `build`
+children. Durable payload inspection confirms the cap. It also confirms child
+usage attribution is comparable by `AgentRunId`, with 9 Python usage rows
+(143,025 input / 8,157 output) and 20 Rust rows (376,316 input / 13,512
+output). Provider-reported cost remains unavailable.
+
+Python observed the production board successfully, but its first workspace
+write was denied, so it stopped per the prompt; no tests or commit were
+produced. Rust completed without usable text, and its managed worktree was
+clean. No acceptance evaluator ran. The parent consumed 803,723 input tokens
+after group completion and was stopped with the isolated daemon. The full
+record is in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`
+and `.json`.
+
+This attempt exposed a missing `JobSubmissionService` in child tool registries
+and loss of authenticated origin attribution at the broker boundary. Both
+paths are fixed and focused tests pass, but the write denial still requires a
+deterministic root-cause check. Do not start S3 or expand task strata until a
+bounded S2 can write, run tests, commit, and pass the frozen evaluator. M005
+remains separate; no downstream plan is unblocked.

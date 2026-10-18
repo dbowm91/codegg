@@ -1304,8 +1304,13 @@ async fn execute_agent_task(
         .map_err(|e| format!("read-only child sandbox narrowing failed: {e}"))?;
     }
 
+    // Child tools use the same daemon-owned scheduler submission boundary as
+    // parent tools. Without this capability heavy tools (including `test`)
+    // fail closed as if they were invoked outside the daemon.
+    let durable_submission = subagent_pool.durable_submission.lock().await.clone();
     let mut tool_registry = ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
         workspace_root: request.workspace_root.clone(),
+        submission: durable_submission.clone(),
         tool_advisor: config.tool_advisor.clone(),
         decision_engine: config.decision_engine.clone(),
         command_intent: config.command_intent.clone(),
@@ -1356,8 +1361,7 @@ async fn execute_agent_task(
     if can_delegate {
         // Acquire the four option slots concurrently rather than in
         // sequence; each is uncontended and the clones are cheap Arcs.
-        let (durable_submission, durable_agent_runs, durable_run_control, durable_run_groups) = tokio::join!(
-            async { subagent_pool.durable_submission.lock().await.clone() },
+        let (durable_agent_runs, durable_run_control, durable_run_groups) = tokio::join!(
             async { subagent_pool.durable_agent_runs.lock().await.clone() },
             async { subagent_pool.durable_run_control.lock().await.clone() },
             async { subagent_pool.durable_run_groups.lock().await.clone() },

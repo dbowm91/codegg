@@ -283,3 +283,80 @@ quality, time, cost, or agent effectiveness. S2 peer-observation and S3
 claim-enforced comparisons, further task strata, resource attribution, and
 full sandbox writer/path qualification remain open. S4 remains unavailable
 pending M005.
+
+## 12. Registered-agent S2 retry and exact-head CI (2026-10-18)
+
+The frozen shared-interface fixture v1 was independently confirmed at digest
+`b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1` before
+this retry. An initial group request selected the unregistered `default` agent;
+both child runs failed before provider work. A corrected S2 request used the
+registered `build` agent for both isolated child worktrees, `join_policy=all`,
+and factual peer observations without claims.
+
+| Assignment | AgentRunId | Outcome | Input/output tokens | Wall time | Tests / commit |
+|---|---|---|---:|---:|---|
+| Python consumer | `26128ee3-bc39-47b8-8f50-2f032d51bf6c` | Completed; child worktree dirty | 420,176 / 8,993 | 103.47 s | `python3 -m unittest discover -s python/tests -v`: 7 passed; branch/stage/commit denied; no commit |
+| Rust producer | `6634f466-cef3-475c-86e9-d718e7f7758c` | Interrupted by scheduler recovery; child worktree dirty | 1,650,511 / 14,466 | 273.51 s | No terminal test report; no commit |
+
+The provider returned no cost for either child; stored `cost_usd=0.0` is not
+reported as zero cost. Rust was still generating provider turns with no finite
+tool-call limit, so the isolated daemon was stopped after 273.5 seconds. The
+Python child could not create a branch or commit under its worktree policy.
+Neither child result was integrated, and no acceptance evaluator ran. Startup
+recovery marked Rust interrupted but left group
+`ccae0678-08d8-4548-a9bb-30244538a9d0` in `running`; the two dirty managed
+worktrees are preserved outside the fixture for diagnosis. This is a failed
+coordination/economics attempt, not a comparative S2 effectiveness result.
+
+The TaskTool creation path supplies `max_tool_calls: None` to delegated jobs.
+A further provider-backed comparison needs an enforced finite tool-call or
+wall-clock budget and child instructions to use the typed Git mutation
+surface for branch/stage/commit. Until those conditions exist, the remaining
+S2/S3 provider arms and the overlapping Rust/dependency-heavy strata remain
+open and unrun. S4 remains separately unavailable under M005.
+
+For exact-head qualification, hosted CI run
+[39103958556](https://github.com/dbowm91/codegg/actions/runs/39103958556) passed
+on source SHA `671e4c0ec2a9c9091d50cc601031b205181fa02d`. The Windows managed
+worktree run
+[39103958482](https://github.com/dbowm91/codegg/actions/runs/39103958482) also
+passed on that SHA, including deep-path linked-worktree materialization. Local
+`verify.sh full` passed with 14,390 tests and 6 skipped; the additional
+`server,plugins,lsp-test-support` nextest run passed with 11,335 tests and 6
+skipped. These source checks were completed before this documentation-only
+evidence update.
+
+M005 remains separate. Its candidate writer-path inventory is complete, and
+Darwin native lifecycle qualification passed its tests while exposing the
+negative property that a `setsid()` descendant can write after managed job
+completion. That failure keeps shared-write serialization unavailable; M008's
+isolated S2/S3 work does not depend on M005.
+
+
+## 13. Bounded S2 retry and child tool wiring (2026-10-18)
+
+A new registered-agent S2 retry used the same frozen fixture, isolated
+worktrees, factual board observation, and `max_tool_calls=32` per child. The
+budget persisted on both durable runs. The retry exposed two missing runtime
+capabilities: child registries did not receive the daemon-owned
+`JobSubmissionService`, and `BrokerInvocationContext` dropped authenticated
+origin attribution needed by group actions. Both paths are now wired and have
+focused regression coverage.
+
+| Assignment | AgentRunId | Queue / wall | Usage rows | Input/output tokens | Result |
+|---|---|---:|---:|---:|---|
+| Python consumer | `35523fc1-f471-4d56-9bb0-1d4ed70f4d3f` | 1.505 / 91.177 s | 9 | 143,025 / 8,157 | Workspace write denied; stopped; no tests or commit |
+| Rust producer | `bb906993-b108-4335-ac27-081f494db972` | 2.623 / 135.656 s | 20 | 376,316 / 13,512 | Completed with no usable text; no tests or commit |
+
+The Python child observed both members active and no completed results or
+claims on the production group board. Both worktrees remained clean. No changes
+were integrated and no acceptance evaluator ran. Provider-reported cost was
+unavailable; persisted `cost_usd=0.0` is not evidence of zero cost. The parent
+session aggregate reached 803,723 input and 9,221 output tokens across 48 rows,
+which is not a valid substitute for child-attributed usage. The parent turn
+continued after group completion, so the isolated daemon was stopped.
+
+This attempt remains non-qualifying. The child write denial requires a
+deterministic root-cause check under the isolated trial policy before another
+provider run. S2/S3 and overlapping Rust/dependency-heavy trials remain open;
+M005 stays independent and S4 remains unavailable.

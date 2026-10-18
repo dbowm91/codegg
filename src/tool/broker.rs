@@ -101,6 +101,10 @@ pub struct BrokerInvocationContext {
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
     /// M013-C-06: Principal reference for scope verification.
     pub principal_ref: Option<String>,
+    /// Daemon-threaded originating principal for delegated orchestration.
+    /// Kept separate from `principal_ref`, which only binds the broker grant
+    /// and must not synthesize audit provenance.
+    pub origin_principal: Option<String>,
     /// M013-C-06: Workspace path policy ID for scope verification.
     pub workspace_path_policy_id: Option<String>,
     /// M013-C-06: Allowed tools manifest for scope verification.
@@ -189,6 +193,7 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             cancellation: None,
             deadline: ctx.deadline,
             principal_ref: None,
+            origin_principal: None,
             workspace_path_policy_id: None,
             allowed_tools: None,
             current_policy_revision: None,
@@ -1284,7 +1289,7 @@ fn execution_context_for_attempt(
         workspace_path_policy_revision: None,
         permission_policy_revision: None,
         principal_identity: None,
-        origin_principal: None,
+        origin_principal: ctx.origin_principal.clone(),
         origin_auth_method: None,
         origin_decision_id: None,
         caller_class: None,
@@ -1453,6 +1458,7 @@ mod tests {
             cancellation: None,
             deadline: None,
             principal_ref: None,
+            origin_principal: None,
             workspace_path_policy_id: None,
             allowed_tools: None,
             current_policy_revision: None,
@@ -1593,6 +1599,14 @@ mod tests {
         let mut ctx = make_ctx();
         ctx.principal_ref = Some("attacker-human".to_owned());
         assert!(ctx.execution_audit().is_none());
+        let exec = super::execution_context_for_attempt(&ctx, 1_000);
+        assert_eq!(exec.origin_principal, None);
+        ctx.origin_principal = Some("daemon-authenticated-origin".to_owned());
+        let exec = super::execution_context_for_attempt(&ctx, 1_000);
+        assert_eq!(
+            exec.origin_principal.as_deref(),
+            Some("daemon-authenticated-origin")
+        );
         let exec: BrokerInvocationContext =
             super::super::backend::ToolExecutionContext::with_backend(
                 super::super::backend::ToolBackendKind::Native,

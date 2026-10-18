@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+const MAX_REQUESTED_CHILD_TOOL_CALLS: u32 = 128;
+
 use crate::agent::run_control::{ControlActor, ControlOutcome, RunControlService};
 use crate::agent::worker::{SubAgentRequest, SubAgentSpawner};
 use crate::bus::global::GlobalEventBus;
@@ -1293,6 +1295,22 @@ impl Tool for TaskTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        let spawn_many_item = json!({
+            "type": "object",
+            "properties": {
+                "description": { "type": "string" },
+                "prompt": { "type": "string" },
+                "agent": { "type": "string" },
+                "model": { "type": "string" },
+                "allowed_paths": { "type": "array", "items": { "type": "string" } },
+                "max_tool_calls": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_REQUESTED_CHILD_TOOL_CALLS
+                }
+            },
+            "required": ["description", "prompt"]
+        });
         json!({
             "type": "object",
             "properties": {
@@ -1328,6 +1346,12 @@ impl Tool for TaskTool {
                     "type": "string",
                     "description": "Optional model override for the child"
                 },
+                "max_tool_calls": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_REQUESTED_CHILD_TOOL_CALLS,
+                    "description": "Optional host-enforced tool-call cap for this child (action=spawn)"
+                },
                 "allowed_paths": {
                     "type": "array",
                     "items": { "type": "string" },
@@ -1355,8 +1379,8 @@ impl Tool for TaskTool {
                 "requests": {
                     "type": "array",
                     "maxItems": 16,
-                    "description": "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, and optional allowed_paths.",
-                    "items": { "type": "object" }
+                    "description": "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, model, allowed_paths, and max_tool_calls.",
+                    "items": spawn_many_item
                 },
                 "member_run_ids": {
                     "type": "array",
@@ -1769,6 +1793,7 @@ impl TaskTool {
                 .as_str()
                 .map(ToOwned::to_owned)
                 .or_else(|| self.parent_model.clone());
+            let max_tool_calls = requested_max_tool_calls(&input)?;
 
             let denied_tools = self.denied_tools.clone();
 
@@ -1828,6 +1853,7 @@ impl TaskTool {
                         &prompt,
                         &allowed_paths,
                         parent_run_id.as_ref(),
+                        max_tool_calls,
                     );
                     let depth = next_durable_depth(
                         parent_run.as_ref().map(|run| run.depth),
@@ -1872,6 +1898,7 @@ impl TaskTool {
                                 model: child_model.clone().unwrap_or_default(),
                                 authority_digest,
                                 budget: AgentRunBudget {
+                                    max_tool_calls,
                                     max_depth: Some(self.max_depth),
                                     ..Default::default()
                                 },
@@ -1958,7 +1985,7 @@ impl TaskTool {
                                     } else {
                                         allowed_paths.clone()
                                     },
-                                    max_tool_calls: None,
+                                    max_tool_calls,
                                     task_id,
                                     run_id,
                                     delegation_key,
@@ -1979,7 +2006,7 @@ impl TaskTool {
                                     } else {
                                         allowed_paths.clone()
                                     },
-                                    max_tool_calls: None,
+                                    max_tool_calls,
                                 }
                             },
                             resource_request: codegg_core::jobs::ResourceRequest::for_kind(
@@ -2104,7 +2131,7 @@ impl TaskTool {
                     denied_tools,
                     allowed_paths,
                     depth: self.depth + 1,
-                    max_tool_calls: None,
+                    max_tool_calls: max_tool_calls.map(|limit| limit as usize),
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
                     workspace_locks: self.workspace_locks.clone(),
@@ -2233,17 +2260,38 @@ fn delegation_key(call_identity: &str) -> String {
     format!("agent-delegation-{:x}", hasher.finalize())
 }
 
+fn requested_max_tool_calls(input: &serde_json::Value) -> Result<Option<u32>, ToolError> {
+    let Some(value) = input.get("max_tool_calls") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(limit) = value.as_u64().and_then(|value| u32::try_from(value).ok()) else {
+        return Err(ToolError::Execution(
+            "max_tool_calls must be an integer between 1 and 128".into(),
+        ));
+    };
+    if !(1..=MAX_REQUESTED_CHILD_TOOL_CALLS).contains(&limit) {
+        return Err(ToolError::Execution(
+            "max_tool_calls must be an integer between 1 and 128".into(),
+        ));
+    }
+    Ok(Some(limit))
+}
+
 fn spawn_request_fingerprint(
     agent: &str,
     description: &str,
     prompt: &str,
     allowed_paths: &[String],
     parent_run_id: Option<&AgentRunId>,
+    max_tool_calls: Option<u32>,
 ) -> String {
     let mut normalized_paths = allowed_paths.to_vec();
     normalized_paths.sort();
     let mut hasher = Sha256::new();
-    hasher.update(b"spawn-request-v1");
+    hasher.update(b"spawn-request-v2");
     for value in [agent, description, prompt] {
         hasher.update((value.len() as u64).to_le_bytes());
         hasher.update(value.as_bytes());
@@ -2251,6 +2299,7 @@ fn spawn_request_fingerprint(
     if let Some(parent_run_id) = parent_run_id {
         hasher.update(parent_run_id.to_string().as_bytes());
     }
+    hasher.update(max_tool_calls.unwrap_or_default().to_le_bytes());
     for path in normalized_paths {
         hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
@@ -2325,6 +2374,35 @@ mod tests {
             assert!(actions.contains(&action));
         }
         assert!(!actions.contains(&"handoff"));
+        assert_eq!(parameters["properties"]["max_tool_calls"]["minimum"], 1);
+        assert_eq!(parameters["properties"]["max_tool_calls"]["maximum"], 128);
+        assert_eq!(
+            parameters["properties"]["requests"]["items"]["properties"]["max_tool_calls"]
+                ["maximum"],
+            128
+        );
+    }
+
+    #[test]
+    fn requested_child_tool_call_limit_is_optional_and_bounded() {
+        assert_eq!(
+            requested_max_tool_calls(&serde_json::json!({})).unwrap(),
+            None
+        );
+        assert_eq!(
+            requested_max_tool_calls(&serde_json::json!({"max_tool_calls": 1})).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            requested_max_tool_calls(&serde_json::json!({"max_tool_calls": 128})).unwrap(),
+            Some(128)
+        );
+        for invalid in [0, 129, -1] {
+            assert!(
+                requested_max_tool_calls(&serde_json::json!({"max_tool_calls": invalid})).is_err()
+            );
+        }
+        assert!(requested_max_tool_calls(&serde_json::json!({"max_tool_calls": 1.5})).is_err());
     }
 
     #[test]
@@ -2393,6 +2471,7 @@ mod tests {
                 "same prompt",
                 &["src".into()],
                 None,
+                Some(32),
             ),
             spawn_request_fingerprint(
                 "general",
@@ -2400,6 +2479,7 @@ mod tests {
                 "same prompt",
                 &["src".into()],
                 None,
+                Some(32),
             )
         );
     }
@@ -2415,8 +2495,12 @@ mod tests {
             delegation_key("other-call")
         );
         assert_ne!(
-            spawn_request_fingerprint("general", "description-a", "prompt", &[], None),
-            spawn_request_fingerprint("general", "description-b", "prompt", &[], None)
+            spawn_request_fingerprint("general", "description-a", "prompt", &[], None, None),
+            spawn_request_fingerprint("general", "description-b", "prompt", &[], None, None)
+        );
+        assert_ne!(
+            spawn_request_fingerprint("general", "description", "prompt", &[], None, Some(32)),
+            spawn_request_fingerprint("general", "description", "prompt", &[], None, Some(48))
         );
     }
 }

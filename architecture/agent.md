@@ -430,6 +430,22 @@ intentional calls while retrying one accepted call idempotently. Durable task
 rows retain a bounded request fingerprint so reusing one call identity for a
 different spawn request fails closed.
 
+Each `spawn` request and each `spawn_many` child request may set an optional
+`max_tool_calls` limit from 1 to 128. TaskTool persists the selected value in
+the durable `AgentRunBudget` and scheduled subagent payload, and the child
+loop enforces it. The cap is per child; omission preserves the existing
+configured child budget. Comparative runs should set the same explicit cap
+for each condition so one arm cannot consume unbounded tool work.
+
+Daemon-created child tool registries inherit the daemon-owned
+`JobSubmissionService`; heavy child actions such as tests therefore use the
+same scheduler admission and result path as parent actions. The originating
+principal is carried separately through the broker context for group and
+mailbox ownership checks. It comes from daemon-threaded `ToolExecutionContext`
+attribution and is never inferred from model arguments or the grant's
+`principal_ref`. Standalone compatibility pools without the service keep heavy
+actions unavailable.
+
 The invocation key is a bounded digest of the execution owner (root turn or
 durable run), provider-turn occurrence, provider call ID, and accepted call
 ordinal. Delegation identity is derived from that resolved call identity only;

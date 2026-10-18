@@ -81,6 +81,13 @@ instructions into the candidate. See `architecture/agent.md`.
    successful mutating or process-class call is **not** progress on its own,
    because `state_changed` needs a drained file-change bus event. A
    `ProgressSignal` variant with no producer is a claim, not a hook.
+10. **Bound comparative delegated work explicitly.** `task.spawn` and each
+    `task.spawn_many` request accept an optional host-enforced
+    `max_tool_calls` from 1 to 128. The limit is persisted with the durable
+    run and applied by the child loop. Set equal limits across experiment
+    arms; omission preserves the configured child default. Daemon-created child
+  registries inherit the daemon `JobSubmissionService` for heavy tools; keep
+  authenticated origin attribution separate from the broker grant principal.
 
 ## Orientation Facts
 
