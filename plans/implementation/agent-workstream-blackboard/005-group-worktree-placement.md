@@ -392,3 +392,35 @@ S4 remains unavailable until every enabled writer has a bounded, native
 quiescence boundary or is denied. The source inventory is unchanged and remains
 complete at the family level; exact per-capability containment qualification
 is still open.
+
+### Darwin containment options research (2026-10-18)
+
+The native `setsid()` reproduction rules out process-group membership as the
+lease's lifetime boundary. macOS App Sandbox inheritance can constrain a
+launched process and its children, but Apple documents that inherited children
+receive only the parent target's static entitlement rights; capabilities
+granted after launch are not inherited. It therefore does not provide a
+per-`WorktreeId` dynamic root grant for an otherwise unsandboxed CodeGG daemon.
+Apple recommends XPC over a child process for privilege separation, but an XPC
+boundary alone does not attest that arbitrary shell or compiler descendants
+have exited before a checkout writer lease is released. See [App Sandbox
+inheritance](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)
+and [Apple's subprocess guidance](https://developer.apple.com/documentation/foundation/process).
+
+Endpoint Security can authorize or observe system events, including events
+from a process descendant subtree, but it is a system-extension route. Apple
+requires the `com.apple.developer.endpoint-security.client` entitlement and
+states that developers must request it; deployment also requires installing a
+system extension. This is not an available assumption for the ordinary CodeGG
+desktop/CLI installation. See [Endpoint Security](https://developer.apple.com/documentation/endpointsecurity),
+[the entitlement requirements](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.developer.endpoint-security.client),
+and [monitoring system events](https://developer.apple.com/documentation/endpointsecurity/monitoring-system-events-with-endpoint-security).
+
+Current disposition: do not treat process-group teardown, Seatbelt path
+containment, or daemon job completion as writer quiescence. A future shared
+profile could enable only finite CodeGG-native mutations and deny arbitrary
+process-backed and persistent writers until a supported containment backend
+proves descendant quiescence on each platform. That narrower profile still
+needs production-shaped Q1–Q5 evidence and must remain opt-in; isolated
+worktrees remain the usable coordination path meanwhile. No writer-permit
+service or shared mutation mode is enabled by this research.
