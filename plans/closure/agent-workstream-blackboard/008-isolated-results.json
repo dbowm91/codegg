@@ -794,6 +794,111 @@
         },
         "qualification_scope": "Exact integrated source SHA; this evidence-only update adds no code changes."
       }
+    },
+    {
+      "id": "S3-corrected-per-child-cap-message-race-2026-10-18",
+      "group_id": "157547d5-c5ef-4e64-82fc-457a98cfdc32",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "S3: two isolated build children; one shared group; factual peer observations and disjoint atomic path claims",
+      "group_status": "completed",
+      "join_policy": "all",
+      "per_child_max_tool_calls": 32,
+      "provider_model": "opencode_go/gpt-6-luna",
+      "provider_cost": "unavailable; provider returned no cost and stored cost_usd=0.0 is not treated as a price",
+      "children": [
+        {
+          "assignment": "Rust producer",
+          "agent_run_id": "fff97b7b-e67d-463e-9815-371f37385ece",
+          "status": "completed_before_parent_message",
+          "worktree_id": "c2147917-982d-49a1-b5fe-cf3fe7af64ec",
+          "queue_delay_seconds": 1.615,
+          "wall_seconds": 2.963,
+          "usage_rows": 1,
+          "input_tokens": 9217,
+          "output_tokens": 134,
+          "reported_usd": null,
+          "durable_max_tool_calls": 32,
+          "summary": "Waiting for explicit parent message; no board read, edits, tests, or commit.",
+          "claim": null,
+          "commit": null
+        },
+        {
+          "assignment": "Python consumer",
+          "agent_run_id": "8ac4cf8d-1322-46bf-86fa-fc703866e304",
+          "status": "completed_before_parent_message",
+          "worktree_id": "741fa48e-86b7-4df3-9421-a6fc9cb105d9",
+          "queue_delay_seconds": 0.453,
+          "wall_seconds": 5.289,
+          "usage_rows": 1,
+          "input_tokens": 9234,
+          "output_tokens": 269,
+          "reported_usd": null,
+          "durable_max_tool_calls": 32,
+          "summary": "Waiting for explicit parent message; no board read, edits, tests, or commit.",
+          "claim": null,
+          "commit": null
+        }
+      ],
+      "parent_messages": "Both full messages were sent only after both child runs were terminal; the trial therefore failed the required sequence.",
+      "integrated_checks": "not run",
+      "qualification": "non-qualifying; the bounded cap and two-member group were correct, but the child initial wait completed before group-scoped instruction delivery.",
+      "downstream": "Pause provider comparative trials until the child-start/message ordering race has deterministic coverage. Overlapping Rust API and dependency-heavy strata were not started; M005 remains separate and S4 unavailable."
+    },
+    {
+      "id": "S3-preassigned-group-full-child-context-2026-10-18",
+      "group_id": "4db9ae26-4092-45f5-bbac-1e1c7c9e88f4",
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "condition": "S3: two isolated build children; factual peer observations and disjoint path claims; preassigned group ID included in each complete child prompt",
+      "group_status": "completed",
+      "join_policy": "all",
+      "provider_model": "opencode_go/gpt-6-luna",
+      "per_child_max_tool_calls": 32,
+      "provider_cost": "unavailable; provider returned no cost and stored cost_usd=0.0 is not treated as a price",
+      "children": [
+        {
+          "assignment": "Rust producer",
+          "agent_run_id": "1ec4d16f-f3d8-49cd-a341-15d5305fe42d",
+          "worktree_id": "9eb474b2-cd8b-43ac-8754-3fcc925460c3",
+          "status": "completed",
+          "queue_delay_seconds": 1.615,
+          "wall_seconds": 106.366,
+          "usage_rows": 21,
+          "input_tokens": 441430,
+          "output_tokens": 6540,
+          "reported_usd": null,
+          "durable_max_tool_calls": 32,
+          "claim": "rust/src/lib.rs acquired by this run",
+          "changed_paths": [
+            "rust/src/lib.rs"
+          ],
+          "child_commit": null,
+          "independent_test": "cargo test --locked --workspace: 7 producer tests passed"
+        },
+        {
+          "assignment": "Python consumer",
+          "agent_run_id": "509bc580-514b-4e10-84e1-0a34f570bab9",
+          "worktree_id": "97643bc8-c45f-4ea3-8c60-ee6412cc19d8",
+          "status": "completed",
+          "queue_delay_seconds": 0.453,
+          "wall_seconds": 99.795,
+          "usage_rows": 19,
+          "input_tokens": 345259,
+          "output_tokens": 6791,
+          "reported_usd": null,
+          "durable_max_tool_calls": 32,
+          "claim": "python/summary_report/consumer.py acquired by this run",
+          "changed_paths": [
+            "python/summary_report/__pycache__/",
+            "python/tests/__pycache__/"
+          ],
+          "child_commit": null,
+          "independent_test": "python3 -m unittest discover -s python/tests -v: 0/7; 6 failed, 1 errored at TODO implementation"
+        }
+      ],
+      "integrated_checks": "not run; Python implementation absent and no child commits",
+      "qualification": "non-qualifying S3 result despite correct two-member group, equal caps and both disjoint claims: Rust passed its package suite but Python source was unchanged and failed all frozen acceptance behavior",
+      "coordination": "Preassigned group ID and complete task context removed the message-ordering failure; child text summaries were unavailable, so worktree deltas and package tests were independently checked.",
+      "downstream": "Do not expand overlapping Rust API or dependency-heavy strata until a complete S2/S3 comparison has Git-verified child commits and a passing integrated evaluator. M005 is separate; S4 remains unavailable."
     }
   ],
   "exact_head_qualification_2026_10_18": {
@@ -842,5 +947,24 @@
     "qualification_scope": "Exact implementation source head; the evidence update changes documentation only.",
     "comparative_trials": "S2 remains non-qualifying because the persisted Python result does not retain the permission/tool error trace; S2/S3 and expansion strata remain open.",
     "downstream_audit": "M005 remains separate and unqualified; no downstream plan was unblocked."
+  },
+  "exact_head_qualification_after_managed_scratch_merge_2026_10_18": {
+    "source_head": "19e63685146a651dbed9ebe23f95e26812bf52b1",
+    "local_focused_tests": {
+      "bash_background_m002_routes": "12 passed",
+      "m003_checked_in_receipt_matches_recomputation": "1 passed"
+    },
+    "hosted_ci": {
+      "run_id": "39125324857",
+      "status": "in_progress",
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39125324857"
+    },
+    "windows_managed_worktree": {
+      "run_id": "39125324842",
+      "status": "in_progress",
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39125324842"
+    },
+    "reconciled_with": "plan/managed-scratch-spaces at 7c7b1396915fedcd9d4db55441431f2fcfc4b68b",
+    "qualification_scope": "Integrated source head after managed-scratch merge; hosted exact-head runs are pending."
   }
 }

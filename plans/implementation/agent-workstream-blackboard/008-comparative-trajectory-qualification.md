@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed and independent of M005; M011 repository identity and M012 same-session group continuation are closed. The frozen shared-interface S0 passed, and one S1 Rust/Python pair completed after child approval-mode propagation; that single pair is descriptive, not evidence of repeatable improvement, and its child costs were not individually attributable. Child token/cost attribution is now durable and tested. Post-accounting S2/S3 attempts remain non-qualifying because of timeouts, coordination admission/authorization failures, and an incomplete S2 run stopped after 1.65M child input tokens; see `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and the execution updates below. TaskTool now accepts an optional per-child tool-call cap from 1 to 128; subsequent provider trials must set the same finite cap for all arms. The remaining strata are open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006/M007 and M011/M012 are closed. Isolated S0–S3 qualification is eligible and independent of M005; S4 remains unavailable until M005 qualifies. The latest S2 pair passed frozen acceptance after source-only evaluation copying but lacked child commits; S3 remains non-qualifying because spawned children can complete their initial wait before the parent delivers the required group message. The frozen shared-interface S0 passed, and one S1 Rust/Python pair completed after child approval-mode propagation; that single pair is descriptive, not evidence of repeatable improvement, and its child costs were not individually attributable. Child token/cost attribution is now durable and tested. Post-accounting S2/S3 attempts remain non-qualifying because of timeouts, coordination admission/authorization failures, and an incomplete S2 run stopped after 1.65M child input tokens; see `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and the execution updates below. TaskTool now accepts an optional per-child tool-call cap from 1 to 128; subsequent provider trials must set the same finite cap for all arms. The remaining strata are open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -321,3 +321,65 @@ trials or expand into overlapping Rust APIs/dependency-heavy tasks until that
 denial can be reproduced deterministically and a bounded S2 passes tests,
 commit, and the frozen evaluator. M005 remains independent and its native
 escaped-descendant finding still blocks S4; no future plan is newly unblocked.
+
+
+### S3 message-delivery retry and reconciled branch (2026-10-18)
+
+After merging `plan/managed-scratch-spaces` into M008, the branch head is
+`19e63685146a651dbed9ebe23f95e26812bf52b1`. The receipt reconstruction
+retains the live expanded child schema assertions, and the Bash fixture uses an
+absolute registered workspace root. Focused local verification passes:
+`tests/bash_background_m002_routes.rs` 12/12 and the frozen M003 schema
+receipt test 1/1.
+
+A final single-group S3 retry used the frozen fixture digest, the selected
+`opencode_go/gpt-6-luna` connection, `max_tool_calls=32` on each request item,
+and one two-member `join_policy=all` group. Both durable budgets confirmed the
+cap. The children were asked to wait for a full parent message containing the
+group ID, their claim target, and implementation instructions. Both completed
+their initial wait before the parent delivered either message; neither read
+the board, claimed a path, edited, tested, or committed. Rust used 9,217 input /
+134 output tokens (1 usage row, 1.615 s queue delay, 2.963 s run wall); Python
+used 9,234 input / 269 output tokens (1 usage row, 0.453 s queue delay,
+5.289 s run wall). Provider-reported costs were unavailable. The group is
+`157547d5-c5ef-4e64-82fc-457a98cfdc32`; run IDs, exact summaries, and cap
+records are in `008-isolated-results.json`.
+
+This confirms a scheduler/message ordering gap: new child jobs may complete
+before their parent can deliver group-scoped instructions. It is not an S3
+result and requires a bounded implementation correction so a child cannot
+complete its pre-work wait before receiving the initial group context (or an
+equivalent host-owned initial instruction). Do not spend more provider budget
+on comparative runs until that race is fixed and a focused deterministic test
+proves both children can observe the same group and claim board. The integrated
+branch is pushed; exact-head hosted CI and Windows runs are pending. No
+overlapping Rust API/dependency-heavy strata were started. M005's native
+`setsid()` escape still independently blocks S4.
+
+
+### S3 preassigned-group retry (2026-10-18)
+
+A further bounded S3 arm used one preassigned group ID embedded in both full
+child prompts, eliminating post-spawn message delivery. The single two-member
+group `4db9ae26-4092-45f5-bbac-1e1c7c9e88f4` completed with both durable
+`max_tool_calls=32` budgets. Both children acquired the required disjoint claims
+on the same board. Rust run `1ec4d16f-f3d8-49cd-a341-15d5305fe42d` used
+441,430 input / 6,540 output tokens (21 usage rows; 1.615 s queue; 106.366 s
+run); its changed Rust producer passed 7/7 frozen Rust tests. Python run
+`509bc580-514b-4e10-84e1-0a34f570bab9` used 345,259 input / 6,791 output
+(19 usage rows; 0.453 s queue; 99.795 s run), but its worktree changed only
+`__pycache__`; Python's 7 frozen tests produced 6 failures and 1 error at the
+intentional TODO implementation. Neither child committed. Provider cost was
+unavailable. See the raw run/claim/usage records in
+`plans/closure/agent-workstream-blackboard/008-isolated-results.json`.
+
+This S3 arm fixes the group/message ordering path but still fails functional
+acceptance because one package is unimplemented. Together with the earlier S2
+source-copy evaluation (all acceptance tests pass, but no child commits), it
+provides no Git-verified S2/S3 comparative result. Do not expand into
+intentional-overlap Rust APIs or dependency-heavy strata yet. A source change
+must give children observable task results and produce actual assigned source
+changes; rerun only after a deterministic regression test covers that child
+result path. M008 remains active. The separate M005 writer inventory is
+complete, while its Darwin `setsid()` descendant test still fails the native
+lifecycle gate; S4 remains unavailable.
