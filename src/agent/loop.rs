@@ -46,9 +46,8 @@ pub(super) use super::loop_output::redact_local_paths;
 pub use super::loop_output::AgentLoopTerminalOutput;
 pub(super) use super::tool_inspect::{
     extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_file_modifying_tool, is_path_within_workspace, is_soft_stop_reason, is_test_command,
-    is_workspace_file_mutation, parse_mcp_tool_name, tool_outcome_is_success,
-    truncate_test_event_preview, ToolPermissionOutcome, ToolTimeoutConfig,
+    is_file_modifying_tool, is_soft_stop_reason, is_test_command, parse_mcp_tool_name,
+    tool_outcome_is_success, truncate_test_event_preview, ToolPermissionOutcome, ToolTimeoutConfig,
 };
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
