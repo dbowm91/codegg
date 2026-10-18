@@ -94,6 +94,17 @@ by the M006 Windows qualification workflow.
 This policy does not protect writable `.git` metadata or
 claim network isolation; those are separate Linux execution-isolation gates.
 
+Isolated child runs have one additional narrow staging path. Their typed
+`stage_paths` action validates explicit repository-relative paths, checks the
+effective `filter`, `text`, `eol`, `ident`, and `working-tree-encoding`
+attributes plus `core.autocrlf`, and refuses content-conversion settings.
+Regular files are inserted into the index through libgit2's raw-buffer API;
+missing tracked paths are removed from the index. This path does not invoke
+Git filters, stage directories, or change ordinary `git add` policy. It still
+captures the standard before/after snapshot, state delta, and structural Git
+audit event, so the child can return an inspectable authorized result for
+parent-side review and integration.
+
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
 exit code, and `ProjectionHints`.

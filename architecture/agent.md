@@ -611,7 +611,10 @@ remain separately controlled.
 Completion persists a bounded `codegg_core::agent_run_result::AgentRunResult`
 with Git-derived base/result commits, changed paths, repository state,
 findings, validation/artifact slots, retryability, and recovery guidance.
-The transcript is explanatory only. `AgentRunIntegrationService` validates
+Authorized parent `task get` and `task status`/`wait` surfaces read back this
+structured result, so child prose and a result reference alone are not used to
+inspect Git state. The transcript is explanatory only.
+`AgentRunIntegrationService` validates
 the recorded base and a clean, unchanged parent before dispatching an
 explicit typed merge, cherry-pick, or rebase; no child completion mutates the
 parent automatically.
@@ -915,6 +918,13 @@ explicit persisted option for the `any_successful` and `first_completed`
 policies. `spawn_many`, `status_group`, `wait_group`, and `cancel_group` are
 bounded additions to the existing task tool; single `spawn` remains the
 normal path.
+
+`spawn_many` reserves a stable group ID and carries it in each durable child
+job before scheduler submission. Durable children with a reserved group wait
+for the authoritative group membership before publishing their start event or
+entering the model; this makes the board and peer context available at the
+first provider boundary without delaying ordinary single-child spawns. The
+barrier is bounded and fails the child if its group is not published.
 
 The blackboard extends this same `task` surface with `board`, `claim`,
 `release_claim`, and `request_handoff`. `board` returns an authorized bounded

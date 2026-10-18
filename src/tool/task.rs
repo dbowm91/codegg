@@ -1603,6 +1603,20 @@ impl TaskTool {
                 ),
             };
             if matches!(action, "spawn_many" | "create_group") {
+                let owner_key = match &group_owner {
+                    AgentRunGroupOwner::Run { run_id } => run_id.to_string(),
+                    AgentRunGroupOwner::Turn {
+                        session_id,
+                        turn_id,
+                    } => format!("{session_id}/{turn_id}"),
+                };
+                let group_id = match input["group_id"].as_str() {
+                    Some(value) => AgentRunGroupId::parse(value)
+                        .map_err(|e| ToolError::Execution(format!("invalid group_id: {e}")))?,
+                    None => {
+                        deterministic_group_id(&format!("{call_identity}/{action}/{owner_key}"))
+                    }
+                };
                 let (accepted, rejected) = if action == "spawn_many" {
                     let requests = input["requests"].as_array().ok_or_else(|| {
                         ToolError::Execution("spawn_many requires a requests array".into())
@@ -1620,6 +1634,10 @@ impl TaskTool {
                             ToolError::Execution("each spawn_many request must be an object".into())
                         })?;
                         object.insert("action".into(), serde_json::Value::String("spawn".into()));
+                        object.insert(
+                            "_fanout_group_id".into(),
+                            serde_json::Value::String(group_id.to_string()),
+                        );
                         let member_identity = format!("{call_identity}/member/{index}");
                         match Box::pin(self.execute_impl(child, ctx, member_identity, None)).await {
                             Ok(output) => {
@@ -1665,12 +1683,6 @@ impl TaskTool {
                     )));
                 }
                 let policy = parse_join_policy(input["join_policy"].as_str().unwrap_or("all"))?;
-                let group_id = input["group_id"]
-                    .as_str()
-                    .map(AgentRunGroupId::parse)
-                    .transpose()
-                    .map_err(|e| ToolError::Execution(format!("invalid group_id: {e}")))?
-                    .unwrap_or_else(AgentRunGroupId::new);
                 let key = input["idempotency_key"]
                     .as_str()
                     .map(ToOwned::to_owned)
@@ -1780,6 +1792,7 @@ impl TaskTool {
                 .ok_or_else(|| ToolError::Execution("missing 'run_id' parameter".into()))?;
             let run_id = AgentRunId::parse(raw_run_id)
                 .map_err(|e| ToolError::Execution(format!("invalid run_id: {e}")))?;
+            let result_run_id = run_id.clone();
             let actor = ControlActor {
                 session_id: self.parent_session_id.clone(),
                 run_id: self.parent_run_id.clone(),
@@ -1820,7 +1833,20 @@ impl TaskTool {
                 }
             }
             .map_err(|e| ToolError::Execution(e.to_string()))?;
-            return Ok(format_control_outcome(outcome));
+            let mut output = format_control_outcome(outcome);
+            if matches!(action, "status" | "wait") {
+                if let Some(agent_runs) = self.agent_runs.as_ref() {
+                    if let Some(result) = agent_runs
+                        .get_result(&result_run_id)
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?
+                    {
+                        output.push_str("\n\nStructured child result\n");
+                        output.push_str(&format_agent_run_result(&result));
+                    }
+                }
+            }
+            return Ok(output);
         }
 
         if action == "get" {
@@ -1848,13 +1874,26 @@ impl TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 return Ok(match run {
-                    Some(run) => format!(
-                        "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
-                        task.task_id,
-                        run.run_id,
-                        run.status.as_str(),
-                        run.result_ref.unwrap_or_default()
-                    ),
+                    Some(run) => {
+                        let Some(parent_session) = self.parent_session_id.as_deref() else {
+                            return Ok(format!("Task {} not found", task_id));
+                        };
+                        let authorized = task_result_visible_to(
+                            parent_session,
+                            self.parent_turn_id.as_deref(),
+                            self.parent_run_id.as_ref(),
+                            &task,
+                            &run,
+                        );
+                        if !authorized {
+                            return Ok(format!("Task {} not found", task_id));
+                        }
+                        let result = agent_runs
+                            .get_result(&run.run_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?;
+                        format_agent_run_task(&task.task_id, &run, result.as_ref())
+                    }
                     None => format!("Task: {}\nStatus: {}", task.task_id, task.status.as_str()),
                 });
             }
@@ -2086,6 +2125,9 @@ impl TaskTool {
                                     max_tool_calls,
                                     task_id,
                                     run_id,
+                                    group_id: input["_fanout_group_id"]
+                                        .as_str()
+                                        .and_then(|value| AgentRunGroupId::parse(value).ok()),
                                     delegation_key,
                                     approval_mode: ctx
                                         .and_then(|ctx| ctx.permission_mode.as_deref())
@@ -2221,6 +2263,7 @@ impl TaskTool {
                 let req = SubAgentRequest {
                     task_id,
                     run_id: None,
+                    group_id: None,
                     description: description.clone(),
                     prompt,
                     agent,
@@ -2278,13 +2321,50 @@ impl TaskTool {
 
 #[cfg(test)]
 mod identity_tests {
-    use super::next_durable_depth;
+    use super::{deterministic_group_id, format_agent_run_result, next_durable_depth};
 
     #[test]
     fn durable_depth_enforces_last_allowed_level() {
         assert_eq!(next_durable_depth(None, 1), Ok(1));
         assert_eq!(next_durable_depth(Some(1), 2), Ok(2));
         assert!(next_durable_depth(Some(2), 2).is_err());
+    }
+
+    #[test]
+    fn fanout_group_identity_is_stable_for_idempotent_dispatch() {
+        let first = deterministic_group_id("call-1/spawn_many/session/turn");
+        let replay = deterministic_group_id("call-1/spawn_many/session/turn");
+        let next_call = deterministic_group_id("call-2/spawn_many/session/turn");
+        assert_eq!(first, replay);
+        assert_ne!(first, next_call);
+    }
+
+    #[test]
+    fn structured_run_result_exposes_machine_derived_git_subject() {
+        let result = codegg_core::run_result::AgentRunResult {
+            run_id: codegg_core::identity::AgentRunId::new(),
+            status: codegg_core::run_result::AgentRunResultStatus::Succeeded,
+            summary: "producer complete".into(),
+            worktree_id: Some(codegg_core::identity::WorktreeId::new()),
+            base_commit: Some("base123".into()),
+            result_commit: Some("result456".into()),
+            changed_paths: vec!["rust/src/lib.rs".into()],
+            validation: vec![codegg_core::run_result::ValidationEvidence {
+                kind: "cargo test".into(),
+                status: codegg_core::run_result::ValidationStatus::Passed,
+                summary: "7 passed".into(),
+            }],
+            findings: Vec::new(),
+            artifacts: Vec::new(),
+            repository_state: codegg_core::run_result::RepositoryState::Clean,
+            retryability: codegg_core::run_result::Retryability::NotRetryable,
+            recovery_hint: None,
+        };
+        let formatted = format_agent_run_result(&result);
+        assert!(formatted.contains("Result commit: result456"));
+        assert!(formatted.contains("Base commit: base123"));
+        assert!(formatted.contains("- rust/src/lib.rs"));
+        assert!(formatted.contains("Validation cargo test (Passed): 7 passed"));
     }
 }
 
@@ -2348,6 +2428,84 @@ fn format_group_summary(
     lines.join("\n")
 }
 
+fn format_agent_run_task(
+    task_id: &AgentTaskId,
+    run: &codegg_core::agent_run::AgentRunRecord,
+    result: Option<&codegg_core::run_result::AgentRunResult>,
+) -> String {
+    use codegg_core::run_result::AgentRunResult;
+
+    let Some(result) = result else {
+        return format!(
+            "Task: {task_id}\nRun: {}\nStatus: {}\nResult: {}",
+            run.run_id,
+            run.status.as_str(),
+            run.result_ref.as_deref().unwrap_or("pending")
+        );
+    };
+    let result: AgentRunResult = result.clone().bounded();
+    let mut lines = vec![
+        format!("Task: {task_id}"),
+        format!("Run: {}", run.run_id),
+        format!("Status: {}", run.status.as_str()),
+    ];
+    lines.push(format_agent_run_result(&result));
+    lines.join("\n")
+}
+
+fn format_agent_run_result(result: &codegg_core::run_result::AgentRunResult) -> String {
+    let result = result.clone().bounded();
+    let mut lines = vec![
+        format!("Outcome: {:?}", result.status).to_lowercase(),
+        format!("Summary: {}", result.summary),
+        format!("Repository: {:?}", result.repository_state).to_lowercase(),
+    ];
+    if let Some(worktree_id) = result.worktree_id {
+        lines.push(format!("Worktree: {worktree_id}"));
+    }
+    if let Some(base) = result.base_commit {
+        lines.push(format!("Base commit: {base}"));
+    }
+    if let Some(commit) = result.result_commit {
+        lines.push(format!("Result commit: {commit}"));
+    }
+    if !result.changed_paths.is_empty() {
+        lines.push(format!("Changed paths ({}):", result.changed_paths.len()));
+        lines.extend(
+            result
+                .changed_paths
+                .into_iter()
+                .map(|path| format!("- {path}")),
+        );
+    }
+    for validation in result.validation {
+        lines.push(format!(
+            "Validation {} ({:?}): {}",
+            validation.kind, validation.status, validation.summary
+        ));
+    }
+    if let Some(hint) = result.recovery_hint {
+        lines.push(format!("Recovery: {hint}"));
+    }
+    lines.join("\n")
+}
+
+fn task_result_visible_to(
+    parent_session: &str,
+    parent_turn: Option<&str>,
+    parent_run: Option<&AgentRunId>,
+    task: &codegg_core::agent_run::AgentTaskRecord,
+    run: &codegg_core::agent_run::AgentRunRecord,
+) -> bool {
+    task.originating_session_id == parent_session
+        && if let Some(parent_run) = parent_run {
+            run.parent_run_id.as_ref() == Some(parent_run)
+        } else {
+            run.parent_run_id.is_none()
+                && parent_turn.is_none_or(|turn| task.originating_turn_id.as_deref() == Some(turn))
+        }
+}
+
 fn delegation_key(call_identity: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"agent-delegation-v3");
@@ -2356,6 +2514,16 @@ fn delegation_key(call_identity: &str) -> String {
     hasher.update([0]);
     hasher.update(b"spawn");
     format!("agent-delegation-{:x}", hasher.finalize())
+}
+
+fn deterministic_group_id(key: &str) -> AgentRunGroupId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-run-group-v1");
+    hasher.update([0]);
+    hasher.update(key.as_bytes());
+    let identity = format!("agent-group-{:x}", hasher.finalize());
+    AgentRunGroupId::parse(&identity)
+        .expect("SHA-256 group identity satisfies the identity contract")
 }
 
 fn requested_max_tool_calls(input: &serde_json::Value) -> Result<Option<u32>, ToolError> {

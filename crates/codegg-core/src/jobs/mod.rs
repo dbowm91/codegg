@@ -1064,6 +1064,9 @@ pub enum JobPayload {
         max_tool_calls: Option<u32>,
         task_id: crate::identity::AgentTaskId,
         run_id: crate::identity::AgentRunId,
+        /// Reserved group identity for atomic fan-out startup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<crate::identity::AgentRunGroupId>,
         delegation_key: String,
         /// Approval mode captured from the authorized parent tool invocation.
         /// Missing historical values fail closed to interactive approval.
@@ -2014,6 +2017,7 @@ mod tests {
             max_tool_calls: None,
             task_id: crate::identity::AgentTaskId::parse("task-1").unwrap(),
             run_id: crate::identity::AgentRunId::parse("run-1").unwrap(),
+            group_id: None,
             delegation_key: "delegation-1".to_string(),
             approval_mode: Some(crate::approval::ApprovalMode::Yolo),
             base_commit: None,
@@ -2026,6 +2030,7 @@ mod tests {
             decoded,
             JobPayload::SubagentRun {
                 approval_mode: None,
+                group_id: None,
                 ..
             }
         ));

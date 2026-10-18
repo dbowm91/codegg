@@ -77,6 +77,12 @@ and invariants that are easy to violate.
     On Windows, remove Rust's verbatim canonical-path prefix from both the
     Git working directory and destination at this narrow boundary; the hosted M006 workflow qualifies a deep path and
     linked `.git` metadata.
+10. **Isolated child staging is explicit and filter-free.** Child Git policy
+    routes only `stage_paths` through the dedicated libgit2 buffer path, which
+    rejects Git content-conversion attributes/config and accepts regular files
+    or removal of tracked paths. Preserve the snapshot/delta/audit result. Do not use this
+    path to broaden ordinary `git add`, stage directories, or run clean/smudge
+    programs.
 
 ## Static Guards
 

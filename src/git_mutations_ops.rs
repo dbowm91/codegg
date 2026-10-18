@@ -45,6 +45,142 @@ pub async fn stage_paths(
     exec.execute(&op, repo_root).await
 }
 
+/// Stage literal child-owned paths without invoking repository-defined Git
+/// filters. This is deliberately separate from ordinary `git add`: isolated
+/// child commits may stage regular files only, and paths with active Git
+/// content-conversion settings are refused.
+pub(crate) async fn stage_paths_filter_free(
+    exec: &GitMutationExecutor,
+    repo_root: &Path,
+    paths: Vec<String>,
+) -> Result<MutationResult, GitMutationError> {
+    let started = std::time::Instant::now();
+    let root = resolve_repo_root(repo_root)?;
+    let mut validated = Vec::with_capacity(paths.len());
+    for path in &paths {
+        validated.push(validate_repo_path(&root, path)?);
+    }
+    if validated.is_empty() {
+        return Err(GitMutationError::Precondition(
+            "child staging requires at least one explicit path".to_string(),
+        ));
+    }
+
+    let operation = GitOperation::Add { paths: validated };
+    let before = exec.snapshot(repo_root).await?;
+    let root = repo_root.to_path_buf();
+    let paths = match &operation {
+        GitOperation::Add { paths } => paths.clone(),
+        _ => unreachable!("constructed as add"),
+    };
+    let raw = tokio::task::spawn_blocking(move || stage_filter_free_files(&root, &paths))
+        .await
+        .map_err(|error| GitMutationError::execution(&operation, error.to_string()))?
+        .map_err(|error| GitMutationError::execution(&operation, error))?;
+    let after = exec
+        .snapshot(repo_root)
+        .await
+        .unwrap_or_else(|_| before.clone());
+    let outcome = classify_outcome(&operation, &before, &after, raw.exit_code);
+    let delta = compute_delta(&operation, &before, &after, &raw, &outcome);
+    exec.emit_git_operation(&operation, &outcome, &after).await;
+    Ok(MutationResult {
+        subcommand: operation.subcommand_name().to_string(),
+        operation,
+        delta,
+        outcome,
+        stdout: crate::git_mutations::sanitize_truncate_for_result(&raw.stdout, 64 * 1024),
+        stderr: crate::git_mutations::sanitize_truncate_for_result(&raw.stderr, 64 * 1024),
+        exit_code: raw.exit_code,
+        success: raw.exit_code == 0,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+fn stage_filter_free_files(
+    repo_root: &Path,
+    paths: &[codegg_git::path::RepoPath],
+) -> Result<crate::git_service::RawGitOutput, String> {
+    use git2::{AttrCheckFlags, AttrValue, IndexEntry, IndexTime, Oid, Repository};
+    let repository = Repository::open(repo_root).map_err(|error| error.to_string())?;
+    let config = repository.config().map_err(|error| error.to_string())?;
+    match config.get_string("core.autocrlf") {
+        Ok(value) if value.eq_ignore_ascii_case("false") => {}
+        Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+        Ok(_) => return Err("child staging refuses core.autocrlf conversion".to_string()),
+        Err(error) => return Err(error.to_string()),
+    }
+    let mut index = repository.index().map_err(|error| error.to_string())?;
+    for repo_path in paths {
+        let text = repo_path.as_str();
+        let path = Path::new(text);
+        for attribute in ["filter", "text", "eol", "ident", "working-tree-encoding"] {
+            let attr = repository
+                .get_attr(path, attribute, AttrCheckFlags::FILE_THEN_INDEX)
+                .map_err(|error| error.to_string())?;
+            if !matches!(
+                AttrValue::from_string(attr),
+                AttrValue::False | AttrValue::Unspecified
+            ) {
+                return Err(format!(
+                    "child staging refuses path with a content-conversion attribute ({attribute}): {text}"
+                ));
+            }
+        }
+
+        let absolute = repo_root.join(path);
+        match std::fs::symlink_metadata(&absolute) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let bytes = std::fs::read(&absolute).map_err(|error| error.to_string())?;
+                #[cfg(unix)]
+                let mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    if metadata.permissions().mode() & 0o111 != 0 {
+                        0o100755
+                    } else {
+                        0o100644
+                    }
+                };
+                #[cfg(not(unix))]
+                let mode = 0o100644;
+                let entry = IndexEntry {
+                    ctime: IndexTime::new(0, 0),
+                    mtime: IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode,
+                    uid: 0,
+                    gid: 0,
+                    file_size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+                    id: Oid::zero(),
+                    flags: 0,
+                    flags_extended: 0,
+                    path: text.as_bytes().to_vec(),
+                };
+                index
+                    .add_frombuffer(&entry, &bytes)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(_) => return Err(format!("child staging only accepts regular files: {text}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if index.get_path(path, 0).is_some() {
+                    index.remove_path(path).map_err(|error| error.to_string())?;
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    index.write().map_err(|error| error.to_string())?;
+    Ok(crate::git_service::RawGitOutput {
+        stdout: format!(
+            "staged {} explicit path(s) without conversions",
+            paths.len()
+        ),
+        stderr: String::new(),
+        exit_code: 0,
+    })
+}
+
 /// Stage every change (tracked and untracked) under the repository root.
 pub async fn stage_all(
     exec: &GitMutationExecutor,
@@ -790,6 +926,73 @@ pub(crate) async fn run_raw_mutation(
         success: raw.exit_code == 0,
         duration_ms: start.elapsed().as_millis() as u64,
     })
+}
+
+#[cfg(test)]
+mod child_filter_free_stage_tests {
+    use super::*;
+
+    fn fresh_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temporary repo");
+        let repository = git2::Repository::init(dir.path()).expect("initialize repository");
+        std::fs::write(dir.path().join("README.md"), "initial\n").expect("write README");
+        let mut index = repository.index().expect("index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("stage README");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repository.find_tree(tree_id).expect("find tree");
+        let signature = git2::Signature::now("Test", "test@example.invalid").expect("signature");
+        repository
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .expect("create initial commit");
+        dir
+    }
+
+    #[tokio::test]
+    async fn explicit_regular_file_stages_with_delta_without_filters() {
+        let repo = fresh_repo();
+        std::fs::write(repo.path().join("child.txt"), "child output\n").expect("write file");
+        let result = stage_paths_filter_free(
+            &GitMutationExecutor::new(),
+            repo.path(),
+            vec!["child.txt".to_string()],
+        )
+        .await
+        .expect("regular file should stage");
+        assert!(result.success, "{}", result.stderr);
+        assert!(result
+            .delta
+            .paths_staged
+            .iter()
+            .any(|path| path == "child.txt"));
+        let repository = git2::Repository::open(repo.path()).expect("open repository");
+        let index = repository.index().expect("index");
+        assert!(index.get_path(Path::new("child.txt"), 0).is_some());
+    }
+
+    #[tokio::test]
+    async fn active_filter_attribute_is_refused_before_index_write() {
+        let repo = fresh_repo();
+        std::fs::write(
+            repo.path().join(".gitattributes"),
+            "filtered.txt filter=custom\n",
+        )
+        .expect("write attributes");
+        std::fs::write(repo.path().join("filtered.txt"), "do not filter\n").expect("write file");
+        let error = stage_paths_filter_free(
+            &GitMutationExecutor::new(),
+            repo.path(),
+            vec!["filtered.txt".to_string()],
+        )
+        .await
+        .expect_err("active content conversion must be refused");
+        assert!(error.to_string().contains("content-conversion attribute"));
+        let repository = git2::Repository::open(repo.path()).expect("open repository");
+        let index = repository.index().expect("index");
+        assert!(index.get_path(Path::new("filtered.txt"), 0).is_none());
+    }
 }
 
 // Re-exports for tests / sibling modules.

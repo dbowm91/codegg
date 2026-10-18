@@ -405,6 +405,7 @@ pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest
                 max_tool_calls,
                 task_id,
                 run_id,
+                group_id,
                 delegation_key,
                 approval_mode,
                 base_commit,
@@ -448,6 +449,12 @@ pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest
                     "run_id".to_string(),
                     bounded_text(run_id.as_ref(), MAX_ID_CHARS),
                 );
+                if let Some(group_id) = group_id {
+                    extra.insert(
+                        "group_id".to_string(),
+                        bounded_text(group_id.as_ref(), MAX_ID_CHARS),
+                    );
+                }
                 extra.insert(
                     "delegation_key".to_string(),
                     bounded_text(delegation_key, MAX_ID_CHARS),
@@ -1650,6 +1657,7 @@ mod tests {
             max_tool_calls: Some(8),
             task_id: codegg_core::identity::AgentTaskId::parse("task-1").unwrap(),
             run_id: codegg_core::identity::AgentRunId::parse("run-1").unwrap(),
+            group_id: None,
             delegation_key: "dk".to_string(),
             approval_mode: None,
             base_commit: None,
@@ -1682,6 +1690,7 @@ mod tests {
             max_tool_calls: Some(8),
             task_id: codegg_core::identity::AgentTaskId::parse("task-1").unwrap(),
             run_id: codegg_core::identity::AgentRunId::parse("run-1").unwrap(),
+            group_id: None,
             delegation_key: "dk".to_string(),
             approval_mode,
             base_commit: None,

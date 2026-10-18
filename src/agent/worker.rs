@@ -83,6 +83,9 @@ pub struct SubAgentRequest {
     pub task_id: u64,
     /// Durable identity of the run being executed, when scheduler-owned.
     pub run_id: Option<codegg_core::identity::AgentRunId>,
+    /// Expected group for atomic fan-out. A durable child waits for group
+    /// membership before publishing its start event or entering the model.
+    pub group_id: Option<codegg_core::identity::AgentRunGroupId>,
     pub prompt: String,
     pub agent: String,
     pub parent_id: Option<String>,
@@ -1019,6 +1022,39 @@ async fn run_subagent_task_with_cancel(
     let task_id = request.task_id;
     let session_id = request.parent_id.clone().unwrap_or_default();
 
+    // `spawn_many` submits durable jobs before it can persist the group row
+    // that binds their generated run ids. The group id is reserved in each
+    // payload, and this bounded readiness barrier guarantees that no child
+    // emits its start event or enters the model until the authoritative group
+    // contains that exact run.
+    if let (Some(expected_group), Some(run_id)) =
+        (request.group_id.as_ref(), request.run_id.as_ref())
+    {
+        let groups = subagent_pool.durable_run_groups.lock().await.clone();
+        let ready = wait_for_reserved_group_membership(
+            groups,
+            run_id,
+            expected_group,
+            std::time::Duration::from_secs(15),
+        )
+        .await;
+        if !ready {
+            let error = "reserved AgentRun group was not published before child startup";
+            task_store
+                .lock()
+                .await
+                .set_result(task_id, error.to_string())
+                .await;
+            GlobalEventBus::publish(AppEvent::SubagentFailed {
+                session_id,
+                task_id,
+                agent: request.agent.clone(),
+                error: error.to_string(),
+            });
+            return SubAgentResult::failure(task_id, error.to_string());
+        }
+    }
+
     // Draw the display name exactly once, here at spawn, and carry it in the
     // event. The lease is bound to this function's stack frame, so *every*
     // exit path below — success, each early failure return, cancellation, and
@@ -1898,6 +1934,35 @@ fn delegation_key(request: &SubAgentRequest) -> String {
     format!("delegation-{:x}", hasher.finalize())
 }
 
+async fn wait_for_reserved_group_membership(
+    groups: Option<Arc<codegg_core::agent_run_group::AgentRunGroupService>>,
+    run_id: &codegg_core::identity::AgentRunId,
+    expected_group: &codegg_core::identity::AgentRunGroupId,
+    timeout: std::time::Duration,
+) -> bool {
+    let Some(groups) = groups else {
+        return false;
+    };
+    tokio::time::timeout(timeout, async {
+        loop {
+            if groups
+                .groups_for_member(run_id)
+                .await
+                .is_ok_and(|memberships| {
+                    memberships
+                        .iter()
+                        .any(|group| &group.group_id == expected_group)
+                })
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod admission_tests {
     use super::*;
@@ -1911,6 +1976,7 @@ mod admission_tests {
             agent: "build".into(),
             parent_id: Some("root-a".into()),
             parent_run_id: None,
+            group_id: None,
             run_id: None,
             denied_tools: Vec::new(),
             allowed_paths: Vec::new(),
@@ -2188,5 +2254,90 @@ mod admission_tests {
             pool.requires_isolation("build", &[]),
             "git write authority must still demand isolation"
         );
+    }
+
+    #[tokio::test]
+    async fn fanout_child_waits_until_its_reserved_group_is_durable() {
+        use codegg_core::agent_run::{
+            AgentRunBudget, AgentRunStore, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
+        };
+        use codegg_core::agent_run_group::{
+            AgentRunGroupOwner, AgentRunGroupService, NewAgentRunGroup, RunJoinPolicy,
+        };
+        use codegg_core::identity::{
+            AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, WorkspaceId,
+        };
+
+        let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+        let task_id = AgentTaskId::new();
+        let run_id = AgentRunId::new();
+        let submission = runs
+            .create_or_get(
+                NewAgentTask {
+                    task_id: task_id.clone(),
+                    parent_task_id: None,
+                    originating_session_id: "session-group-gate".into(),
+                    originating_turn_id: Some("turn-group-gate".into()),
+                    project_id: ProjectId::new(),
+                    repository_id: None,
+                    workspace_id: WorkspaceId::new_unchecked("workspace-group-gate"),
+                    requested_agent: "build".into(),
+                    delegation_key: "group-gate-child".into(),
+                    request_fingerprint: "group-gate-child".into(),
+                    description: "group startup test".into(),
+                },
+                NewAgentRun {
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    depth: 1,
+                    workspace_id: WorkspaceId::new_unchecked("workspace-group-gate"),
+                    agent_name: "build".into(),
+                    agent_digest: None,
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                    authority_digest: "fixture".into(),
+                    budget: AgentRunBudget::default(),
+                    shared_scratch: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let groups = AgentRunGroupService::in_memory(runs);
+        let group_id = AgentRunGroupId::new();
+        let run_for_wait = submission.run.run_id.clone();
+        let group_for_wait = group_id.clone();
+        let groups_for_wait = groups.clone();
+        let waiter = tokio::spawn(async move {
+            wait_for_reserved_group_membership(
+                Some(groups_for_wait),
+                &run_for_wait,
+                &group_for_wait,
+                std::time::Duration::from_secs(1),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            !waiter.is_finished(),
+            "child escaped before group publication"
+        );
+
+        groups
+            .create(NewAgentRunGroup {
+                group_id: group_id.clone(),
+                root_run_id: submission.run.run_id.clone(),
+                owner_run_id: submission.run.run_id.clone(),
+                owner: AgentRunGroupOwner::Turn {
+                    session_id: "session-group-gate".into(),
+                    turn_id: "turn-group-gate".into(),
+                },
+                member_run_ids: vec![submission.run.run_id],
+                join_policy: RunJoinPolicy::All,
+                cancel_remaining_on_satisfaction: false,
+                idempotency_key: "group-gate-test".into(),
+            })
+            .await
+            .unwrap();
+        assert!(waiter.await.unwrap());
     }
 }

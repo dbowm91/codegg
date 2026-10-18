@@ -853,6 +853,7 @@ dependencies = [
  "flate2",
  "futures-executor",
  "futures-util",
+ "git2",
  "globset",
  "grep-regex",
  "grep-searcher",

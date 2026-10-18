@@ -147,6 +147,7 @@ fn subagent_payload() -> JobPayload {
         max_tool_calls: Some(8),
         task_id: codegg_core::identity::AgentTaskId::new(),
         run_id: codegg_core::identity::AgentRunId::new(),
+        group_id: None,
         delegation_key: "dk-1".into(),
         approval_mode: None,
         base_commit: None,

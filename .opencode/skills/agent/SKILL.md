@@ -81,6 +81,11 @@ instructions into the candidate. See `architecture/agent.md`.
    system/developer instructions, and never wake an idle session. On a gap,
    direct the model to re-read the canonical board. This does not serialize
    filesystem writers.
+   `spawn_many` reserves and persists its group before children enter the
+   model; children must observe their exact durable membership before their
+   first provider call. Parent `task get` and authorized `status`/`wait`
+   return the bounded stored Git result, including commit and changed-path
+   evidence.
 9. **Every progress-recovery incident keys on the whole `action_key()`**, and
    ladder state belongs to one incident (`src/agent/progress_recovery.rs`).
    Two tool-name-only arms got this wrong and each killed ordinary turns:

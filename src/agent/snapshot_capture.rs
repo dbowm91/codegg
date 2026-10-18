@@ -162,6 +162,7 @@ impl AgentLoop {
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             run_id: None,
+            group_id: None,
             prompt,
             agent,
             parent_id: Some(session_id),

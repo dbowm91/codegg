@@ -225,6 +225,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "Hello from parent".to_string(),
             agent: "test-agent".to_string(),
             parent_id: Some("parent-session-123".to_string()),
@@ -349,6 +350,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "Test".to_string(),
             agent: "nonexistent-agent".to_string(),
             parent_id: Some("parent".to_string()),
@@ -420,6 +422,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "Test".to_string(),
             agent: "test-agent".to_string(),
             parent_id: Some("parent".to_string()),
@@ -495,6 +498,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "Test".to_string(),
             agent: "test-agent".to_string(),
             parent_id: None,
@@ -536,6 +540,7 @@ mod tests {
         let request2 = SubAgentRequest {
             task_id: 2,
             run_id: None,
+            group_id: None,
             prompt: "Test".to_string(),
             agent: "test-agent".to_string(),
             parent_id: None,
@@ -594,6 +599,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 41,
             run_id: None,
+            group_id: None,
             prompt: "same work".into(),
             agent: "test-agent".into(),
             parent_id: Some("parent".into()),
@@ -711,6 +717,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "Test with denied tools".to_string(),
             agent: "test-agent".to_string(),
             parent_id: Some("parent".to_string()),
@@ -919,6 +926,7 @@ mod tests {
             let request = SubAgentRequest {
                 task_id: i as u64,
                 run_id: None,
+                group_id: None,
                 prompt: format!("Task {}", i),
                 agent: "test-agent".to_string(),
                 parent_id: None,
@@ -1010,6 +1018,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 123,
             run_id: None,
+            group_id: None,
             prompt: "Test prompt".to_string(),
             agent: "test".to_string(),
             parent_id: Some("parent-session".to_string()),
@@ -1053,6 +1062,7 @@ mod tests {
         let request_depth_0 = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "depth 0".to_string(),
             agent: "test".to_string(),
             parent_id: None,
@@ -1072,6 +1082,7 @@ mod tests {
         let request_depth_2 = SubAgentRequest {
             task_id: 2,
             run_id: None,
+            group_id: None,
             prompt: "depth 2".to_string(),
             agent: "test".to_string(),
             parent_id: Some("parent".to_string()),
@@ -1105,6 +1116,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "Test prompt".to_string(),
             agent: "test".to_string(),
             parent_id: Some("parent".to_string()),
@@ -1164,6 +1176,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 1,
             run_id: None,
+            group_id: None,
             prompt: "test".to_string(),
             agent: "nonexistent".to_string(),
             parent_id: None,
@@ -1230,6 +1243,7 @@ mod tests {
                 let req = SubAgentRequest {
                     task_id: 1,
                     run_id: None,
+                    group_id: None,
                     prompt: "task 1".to_string(),
                     agent: "nonexistent".to_string(),
                     parent_id: None,
@@ -1257,6 +1271,7 @@ mod tests {
                 let req = SubAgentRequest {
                     task_id: 2,
                     run_id: None,
+                    group_id: None,
                     prompt: "task 2".to_string(),
                     agent: "nonexistent".to_string(),
                     parent_id: None,
@@ -1394,6 +1409,7 @@ mod tests {
         let request = SubAgentRequest {
             task_id: 999,
             run_id: None,
+            group_id: None,
             prompt: "Block me".to_string(),
             agent: "blocking-agent".to_string(),
             parent_id: Some("parent".to_string()),

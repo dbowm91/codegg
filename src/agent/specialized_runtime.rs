@@ -166,6 +166,7 @@ async fn run_research_child(
     let request = SubAgentRequest {
         task_id,
         run_id: None,
+        group_id: None,
         prompt: child_prompt(task),
         agent: "general".into(),
         parent_id: Some(session_id.into()),

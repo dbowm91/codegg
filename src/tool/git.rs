@@ -517,12 +517,7 @@ impl GitTool {
         if matches!(self.child_policy, Some(ChildGitPolicy::LocalCommitOnly))
             && !matches!(
                 mutation,
-                "stage_paths"
-                    | "stage_all"
-                    | "stage_tracked"
-                    | "unstage_paths"
-                    | "unstage_all"
-                    | "commit"
+                "stage_paths" | "unstage_paths" | "unstage_all" | "commit"
             )
         {
             return Err(ToolError::Permission(format!(
@@ -592,6 +587,9 @@ impl GitTool {
         let directories = input["directories"].as_bool().unwrap_or(false);
 
         let result = match mutation {
+            "stage_paths" if matches!(self.child_policy, Some(ChildGitPolicy::LocalCommitOnly)) => {
+                gm_ops::stage_paths_filter_free(&exec, workdir, paths()).await
+            }
             "stage_paths" => gm_ops::stage_paths(&exec, workdir, paths()).await,
             "stage_all" => gm_ops::stage_all(&exec, workdir).await,
             "stage_tracked" => gm_ops::stage_tracked(&exec, workdir).await,
