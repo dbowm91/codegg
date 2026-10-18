@@ -474,7 +474,10 @@ explicit Ask/Deny decisions and path rules remain authoritative. The existing
 permission regression suite covers these cases. These runtime and test changes
 do not qualify an S2/S3 provider pair. No downstream plan is unblocked.
 
-The draft PR's first Desktop E2E run found that failed route tests could leave
-one-time Vitest bridge mocks queued for later tests. The suite now resets mock
-implementations before each test; local `npm test` passes 18/18. The updated
+The draft PR's Desktop E2E run found that the artifact route test could click
+before the connection generation settled, causing its project-detail result
+to be discarded as stale. The resulting early failure also left one-time
+projection mocks queued for later tests. The route fixture now waits for the
+connected state before project selection, and the suite resets mock
+implementations before each test. Local `npm test` passes 18/18; the updated
 hosted E2E run is pending.

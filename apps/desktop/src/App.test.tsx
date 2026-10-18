@@ -286,6 +286,16 @@ describe('session route flow', () => {
     resyncReason: null,
   });
 
+  const selectDemoProject = async () => {
+    await screen.findByTestId('project-select-p0');
+    await waitFor(() =>
+      expect(screen.getByTestId('connection-status')).toHaveTextContent('connected'),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+  };
+
   beforeEach(() => {
     vi.mocked(bridge.projectDetail).mockImplementation(async (_projectId: string) => detailGen(1));
     vi.mocked(bridge.workspaceSelect).mockImplementation(async (_workspaceId: string, routeGeneration: number) => token(routeGeneration + 1));
@@ -320,10 +330,7 @@ describe('session route flow', () => {
 
   it('drives projectdetail to workspaceselect to session open and projection', async () => {
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     expect(await screen.findByTestId('workspace-list')).toBeInTheDocument();
     expect(bridge.projectDetail).toHaveBeenCalledWith('p0');
     await act(async () => {
@@ -349,10 +356,7 @@ describe('session route flow', () => {
         }),
     );
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     // First workspace select hangs on sessionList; supersede the route by
     // re-selecting the project (new route generation).
@@ -363,9 +367,7 @@ describe('session route flow', () => {
     })();
     await waitFor(() => expect(bridge.sessionList).toHaveBeenCalled());
     vi.mocked(bridge.projectDetail).mockImplementationOnce(async () => detailGen(7));
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('route-generation')).toHaveTextContent('7'));
     await act(async () => {
       resolveList({ sessions: [], routeToken: token(2, null) });
@@ -383,10 +385,7 @@ describe('session route flow', () => {
       pendingQuestions: [{ questionId: 'q-1', header: 'Choice', prompt: 'Pick one', status: 'pending' }],
     }));
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
@@ -406,10 +405,7 @@ describe('session route flow', () => {
 
   it('submits a prompt once and clears the draft on accept', async () => {
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
@@ -435,10 +431,7 @@ describe('session route flow', () => {
   it('keeps the draft and surfaces the error on prompt failure', async () => {
     vi.mocked(bridge.promptSubmit).mockRejectedValueOnce(new Error('model_unselected: no model'));
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
@@ -468,10 +461,7 @@ describe('session route flow', () => {
         }),
     );
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
@@ -511,10 +501,7 @@ describe('session route flow', () => {
       revision: 4,
     }));
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
@@ -540,10 +527,7 @@ describe('session route flow', () => {
       artifactHandles: [{ handle: 'handle-1', byteLength: 128 }],
     }));
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
@@ -568,10 +552,7 @@ describe('session route flow', () => {
     }));
     vi.mocked(bridge.artifactRead).mockRejectedValueOnce(new Error('artifact_not_found'));
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
@@ -597,10 +578,7 @@ describe('session route flow', () => {
       new Error('session_control_not_controller: not the controller'),
     );
     render(<App />);
-    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('project-select-p0'));
-    });
+    await selectDemoProject();
     await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
     await act(async () => {
       fireEvent.click(screen.getByTestId('workspace-select-w0'));
