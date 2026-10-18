@@ -641,6 +641,42 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         "Git fixture commit failed: {}",
         String::from_utf8_lossy(&commit.stderr)
     );
+
+    let resolve_repo_path = |args: &[&str]| {
+        let output = setup(args);
+        assert!(
+            output.status.success(),
+            "resolve Git trust-root facts with {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        if path.is_absolute() {
+            path.canonicalize().expect("canonical Git trust-root path")
+        } else {
+            repository
+                .join(path)
+                .canonicalize()
+                .expect("canonical relative Git trust-root path")
+        }
+    };
+    let selected_root = resolve_repo_path(&["rev-parse", "--show-toplevel"]);
+    let selected_gitdir = resolve_repo_path(&["rev-parse", "--absolute-git-dir"]);
+    let selected_common_dir = resolve_repo_path(&["rev-parse", "--git-common-dir"]);
+    let selected_odb = resolve_repo_path(&["rev-parse", "--git-path", "objects"]);
+    assert_eq!(
+        selected_root,
+        repository.canonicalize().expect("repository root")
+    );
+    assert_eq!(selected_common_dir, selected_gitdir);
+    assert_eq!(selected_odb, selected_gitdir.join("objects"));
+    assert!(
+        std::fs::symlink_metadata(selected_odb.join("info/alternates")).is_err(),
+        "ordinary fixture unexpectedly has an alternate object store"
+    );
+    let gitdir_identity = std::fs::metadata(&selected_gitdir).expect("stat selected gitdir");
+    let odb_identity = std::fs::metadata(&selected_odb).expect("stat selected object directory");
+    let gitdir_identity = (gitdir_identity.dev(), gitdir_identity.ino());
+    let odb_identity = (odb_identity.dev(), odb_identity.ino());
     std::fs::write(repository.join("tracked.txt"), "changed payload\n")
         .expect("dirty tracked fixture");
     std::fs::write(repository.join("untracked.txt"), "untracked payload\n")
@@ -649,6 +685,7 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
     async fn contained_read(
         git: &Path,
         repository: &Path,
+        selected_gitdir: &Path,
         operation: &codegg_git::GitOperation,
         label: &str,
     ) -> ManagedProcessResult {
@@ -660,6 +697,18 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             .with_linux_offline_network(true)
             .launch_spec(git, &args, Some(repository))
             .expect("construct contained Git read spec");
+        assert!(
+            spec.protected_readonly_paths
+                .contains(&selected_gitdir.to_path_buf()),
+            "contained {label} launch did not protect selected gitdir {}",
+            selected_gitdir.display()
+        );
+        assert!(
+            spec.path_identities
+                .iter()
+                .any(|identity| identity.path == selected_gitdir),
+            "contained {label} launch did not capture selected gitdir identity"
+        );
         let argv = std::iter::once(spec.target.as_os_str().to_owned())
             .chain(spec.args.iter().map(OsString::from))
             .collect();
@@ -727,7 +776,7 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             .await
             .unwrap_or_else(|error| panic!("typed snapshot {label} failed: {error}"));
         assert!(snapshot.success, "typed snapshot {label} returned nonzero");
-        let live = contained_read(&git, repository, operation, label).await;
+        let live = contained_read(&git, repository, &selected_gitdir, operation, label).await;
         assert!(
             live.exit_status.success(),
             "contained live {label} failed: {}",
@@ -741,6 +790,19 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             live.stdout.to_string_lossy(),
             snapshot.stdout,
             "native live {label} output differs from the typed snapshot route"
+        );
+        let gitdir_after =
+            std::fs::metadata(&selected_gitdir).expect("stat selected gitdir after read");
+        let odb_after = std::fs::metadata(&selected_odb).expect("stat selected ODB after read");
+        assert_eq!(
+            (gitdir_after.dev(), gitdir_after.ino()),
+            gitdir_identity,
+            "contained {label} read observed a replaced Git directory"
+        );
+        assert_eq!(
+            (odb_after.dev(), odb_after.ino()),
+            odb_identity,
+            "contained {label} read observed a replaced object directory"
         );
         match (*label, snapshot.payload.as_ref().expect("typed payload")) {
             ("status", GitPayload::Status(status)) => {
@@ -886,6 +948,12 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         String::from_utf8_lossy(&configure_filter.stderr)
     );
     let source_gitdir = repository.join(".git");
+    let source_odb = source_gitdir.join("objects");
+    let source_gitdir_metadata =
+        std::fs::metadata(&source_gitdir).expect("stat protected source gitdir");
+    let source_odb_metadata = std::fs::metadata(&source_odb).expect("stat protected source ODB");
+    let source_gitdir_identity = (source_gitdir_metadata.dev(), source_gitdir_metadata.ino());
+    let source_odb_identity = (source_odb_metadata.dev(), source_odb_metadata.ino());
     let original_index =
         std::fs::read(source_gitdir.join("index")).expect("capture source index before staging");
     let head = setup(&repository, &["rev-parse".into(), "HEAD".into()]);
@@ -987,6 +1055,16 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         .with_linux_offline_network(true)
         .launch_spec(&git, &args, Some(&repository))
         .expect("construct scoped M004/M005 Git staging launch spec");
+    assert!(
+        spec.protected_readonly_paths.contains(&source_gitdir),
+        "contained staging launch did not protect the source gitdir"
+    );
+    assert!(
+        spec.path_identities
+            .iter()
+            .any(|identity| identity.path == source_gitdir),
+        "contained staging launch did not capture the source gitdir identity"
+    );
     let argv = std::iter::once(spec.target.as_os_str().to_owned())
         .chain(spec.args.iter().map(OsString::from))
         .collect();
@@ -1022,6 +1100,19 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         std::fs::read(source_gitdir.join("index")).expect("source index remains readable"),
         original_index,
         "contained git add changed the protected source index"
+    );
+    let source_gitdir_after =
+        std::fs::metadata(&source_gitdir).expect("stat source gitdir after staging");
+    let source_odb_after = std::fs::metadata(&source_odb).expect("stat source ODB after staging");
+    assert_eq!(
+        (source_gitdir_after.dev(), source_gitdir_after.ino()),
+        source_gitdir_identity,
+        "contained staging replaced the protected source gitdir"
+    );
+    assert_eq!(
+        (source_odb_after.dev(), source_odb_after.ino()),
+        source_odb_identity,
+        "contained staging replaced the protected source ODB"
     );
     assert!(
         !source_gitdir.join("index.lock").exists(),
