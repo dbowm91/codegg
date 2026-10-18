@@ -966,5 +966,42 @@
     },
     "reconciled_with": "plan/managed-scratch-spaces at 7c7b1396915fedcd9d4db55441431f2fcfc4b68b",
     "qualification_scope": "Integrated source head after managed-scratch merge; hosted exact-head runs are pending."
+  },
+  "exact_head_qualification_after_audit_fixture_correction_2026_10_18": {
+    "source_head": "a5977dd7342945990d7749ebaeb163374125ec8f",
+    "reconciled_with_main": true,
+    "scratch_branch_fixture_correction": "65e857abeb3389815a86afb7edf47701dee4f6ce",
+    "hosted_ci": {
+      "run_id": "39132947871",
+      "result": "success",
+      "tests": "14,446 passed; 6 configured skips",
+      "includes": [
+        "formatting",
+        "guards",
+        "workspace Clippy",
+        "workspace tests"
+      ],
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39132947871"
+    },
+    "windows_process_launcher": {
+      "run_id": "39132947859",
+      "result": "success",
+      "coverage": [
+        "managed process lifecycle",
+        "managed scratch lifecycle",
+        "ACL",
+        "AppContainer",
+        "native shell and policy"
+      ],
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39132947859"
+    },
+    "desktop_e2e_corrobating_other_branch": {
+      "run_id": "39132905786",
+      "result": "success",
+      "source_head": "65e857abeb3389815a86afb7edf47701dee4f6ce",
+      "url": "https://github.com/dbowm91/codegg/actions/runs/39132905786"
+    },
+    "fixture_correction": "Add canonical workspace root to bash_shell_success_emits_one_structural_event; test-only.",
+    "qualification_scope": "Hosted CI and Windows checks passed on integrated M008 implementation head. S2/S3 comparative acceptance remains incomplete; not M008 closure."
   }
 }

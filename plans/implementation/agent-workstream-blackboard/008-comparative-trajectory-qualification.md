@@ -383,3 +383,26 @@ changes; rerun only after a deterministic regression test covers that child
 result path. M008 remains active. The separate M005 writer inventory is
 complete, while its Darwin `setsid()` descendant test still fails the native
 lifecycle gate; S4 remains unavailable.
+
+### Exact-head qualification after audit fixture correction (2026-10-18)
+
+The integrated M008 branch is reconciled with `origin/main` and the scratch
+branch fixture correction. Hosted CI passed on exact implementation head
+`a5977dd7342945990d7749ebaeb163374125ec8f` in run
+[39132947871](https://github.com/dbowm91/codegg/actions/runs/39132947871):
+formatting, guards, workspace Clippy, and 14,446 workspace tests passed with
+6 configured skips. The Windows process launcher workflow also passed on that
+exact head in run
+[39132947859](https://github.com/dbowm91/codegg/actions/runs/39132947859),
+covering process lifecycle, managed scratch, ACL, AppContainer, and native
+shell/policy checks. The final test-fixture correction supplies the canonical
+workspace root to `bash_shell_success_emits_one_structural_event`; it changes
+no runtime behavior.
+
+These results qualify the integrated source for hosted CI and Windows checks.
+M008 remains active because the latest S2 pair still has no child commits and
+the S3 Python child failed the frozen acceptance tests. Do not expand into
+overlapping Rust APIs or dependency-heavy tasks until both conditions have
+Git-verified integrated acceptance. M005 remains separate: writer inventory
+is complete, but the Darwin escaped-descendant finding still blocks S4. No
+downstream plan is unblocked.

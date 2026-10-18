@@ -386,3 +386,28 @@ safe S2 rerun is not yet justified. S2/S3, overlapping Rust API and
 dependency-heavy strata remain open. M005 remains separate with its Darwin
 escaped-descendant failure; no shared-worktree capability or downstream plan
 was unblocked.
+
+## 15. Exact-head qualification after audit fixture correction (2026-10-18)
+
+The exact-head CI run exposed one remaining test-fixture omission:
+`bash_shell_success_emits_one_structural_event` constructed a native
+`BashTool` without its canonical workspace root. The fixture now supplies the
+same explicit root used by neighboring audit cases. No runtime behavior
+changed. The integrated branch retains `origin/main` as an ancestor.
+
+On integrated source head `a5977dd7342945990d7749ebaeb163374125ec8f`, hosted
+CI [39132947871](https://github.com/dbowm91/codegg/actions/runs/39132947871)
+passed formatting, guards, workspace Clippy, and all 14,446 workspace tests
+(6 configured skips). The Windows process launcher workflow
+[39132947859](https://github.com/dbowm91/codegg/actions/runs/39132947859)
+passed, including managed process, scratch lifecycle, ACL, AppContainer, and
+native shell/policy checks. Desktop E2E passed on scratch source head
+`65e857abeb3389815a86afb7edf47701dee4f6ce` in run
+[39132905786](https://github.com/dbowm91/codegg/actions/runs/39132905786);
+this is corroborating branch evidence, not a claim that that run tested the
+integrated M008 SHA.
+
+This qualifies the integrated implementation source for hosted CI and Windows
+platform suites. It does not change the S2/S3 outcomes or satisfy M008's
+Git-verified comparative acceptance gate. The workstream remains active, M005
+remains separately gated, and no downstream plan is unblocked.
