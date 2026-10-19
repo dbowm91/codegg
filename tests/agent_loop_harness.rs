@@ -943,6 +943,7 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
         session_id: &str,
         marker: &str,
         runtime: codegg::search_backend::SearchRuntimeContext,
+        mode: codegg::agent::AgentMode,
     ) -> String {
         let provider = ScriptedProvider::new(vec![
             vec![
@@ -975,7 +976,7 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
             name: "build".into(),
             role: None,
             description: "Pinned Eggsearch pair qualification".into(),
-            mode: codegg::agent::AgentMode::Primary,
+            mode,
             mode_name: None,
             model: None,
             variant: None,
@@ -1030,8 +1031,20 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
     let runtime_a = runtime.clone();
     let runtime_b = runtime.clone();
     let (output_a, output_b) = tokio::join!(
-        run_search(&roots[0], "pair-session-a", &markers[0], runtime_a),
-        run_search(&roots[1], "pair-session-b", &markers[1], runtime_b),
+        run_search(
+            &roots[0],
+            "pair-session-a",
+            &markers[0],
+            runtime_a,
+            codegg::agent::AgentMode::Primary,
+        ),
+        run_search(
+            &roots[1],
+            "pair-session-b",
+            &markers[1],
+            runtime_b,
+            codegg::agent::AgentMode::Primary,
+        ),
     );
     let output_a = output_a;
     let output_b = output_b;
@@ -1052,11 +1065,13 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
         "AgentLoop B received root A bytes: {output_b}"
     );
 
+    let runtime_for_subagent = runtime.clone();
     let output_a_again = run_search(
         &roots[0],
         "pair-session-a-switched-back",
         &markers[0],
         runtime,
+        codegg::agent::AgentMode::Primary,
     )
     .await;
     assert!(
@@ -1066,6 +1081,23 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
     assert!(
         !output_a_again.contains(&markers[1]),
         "workspace B leaked after switching back"
+    );
+
+    let subagent_output = run_search(
+        &roots[1],
+        "pair-subagent-b",
+        &markers[1],
+        runtime_for_subagent,
+        codegg::agent::AgentMode::Subagent,
+    )
+    .await;
+    assert!(
+        subagent_output.contains(&markers[1]),
+        "subagent did not retain its accepted workspace root: {subagent_output}"
+    );
+    assert!(
+        !subagent_output.contains(&markers[0]),
+        "subagent received bytes from another workspace: {subagent_output}"
     );
 }
 
