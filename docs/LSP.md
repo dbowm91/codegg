@@ -161,14 +161,14 @@ If the server is running but does not offer that feature, the read comes back
 `NotReady` on purpose: your language server is fine, it simply does not do this,
 and nothing you do will change that.
 
-### Previews change nothing
+### A preview you can apply
 
 Formatting and rename can both be asked for, and both return a **preview**: a
-diff, or the list of files a rename would touch. Neither writes to your buffer.
+diff, or the list of files a rename would touch.
 
-Both previews now have a key:
+Both previews have a key:
 
-| Key | What it shows |
+| Key | What it does |
 |---|---|
 | `=` | the **format preview** for the open document — the diff the formatter would produce, and how many edits that is |
 | `space r` | the **rename preview** for the symbol under the cursor — the old and new names, the files that would change, and the edits in each |
@@ -180,15 +180,37 @@ newname` — and `Esc` abandons it. An empty name, or one longer than the
 server's limit, is refused before a request is sent, and the refusal names the
 limit.
 
+**A preview that can be applied opens the review.** The diff in the review is
+the change that would be written, and the review is where you decide:
+
+- `[a]pply` sends the change through the daemon's checked apply path — the
+  same path `/lsp-preview-apply` uses, with the same revalidation of the file
+  it was computed against;
+- `Esc` rejects it. Nothing is written.
+
+So `=` and `space r` are no longer only a picture of what would change: they
+lead to the change itself, reviewed before it lands.
+
+**A preview that cannot be applied stays a preview, and says so.** The editor
+offers an apply only when the whole change is known. A truncated preview, a
+change with no edits, and a change too large to apply are all still previews,
+and the panel says which.
+
+Two refusals are the daemon's, not the editor's, and both appear verbatim in
+the review:
+
+- **Unsaved edits.** The apply will not write over a file you have edited but
+  not saved. Save it, then run the preview again.
+- **A file that changed.** If the file changed on disk since the preview was
+  built, the apply refuses and asks for a fresh preview.
+
+After a successful apply the editor reloads the file it wrote — unless your
+buffer holds edits the editor has not saved, in which case it keeps them and
+tells you the file changed on disk.
+
 `space a` — the code action — is **not** bound to a preview, because there is
 no code-action request to make: nothing in the protocol asks a server what
 code actions it would offer. Pressing it says so.
-
-A preview is a **read**: it asks the server what *would* change and shows you
-the answer. Turning that answer into an edit is a separate step — a reviewed
-one — and the editor's preview keys do not perform it. When they do, these two
-chords become the apply step, and this documentation and the changelog record
-that in advance so it is not a surprise.
 
 ## Error Handling
 

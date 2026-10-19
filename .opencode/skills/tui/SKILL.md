@@ -504,15 +504,20 @@ model to the wrong connection.
   toast disappears, a status line stays and can be read. Every Helix space
   glyph is bound, bound to a statement, or documented as out of scope — there
   is no dead key in the menu.
-- **A preview is a read, and it says so.** `space r` and `=` show what a
-  rename or a format *would* change and apply nothing. `space r` collects
-  the new name on the `:` command line — the mechanism M008 established, not a
-  second input mode — so the leaf arms the prompt and the read follows it.
-  `space a` says there is **no code-action request to preview**, which is a
-  different claim from "there is one and it may not be applied": the latter
-  would imply a preview exists. And the write path is **not** missing —
-  ADR-0008 owns it; the editor's previews are not reviewable artifacts, so
-  they cannot reach it. The gap is the bridge, not an ADR.
+- **A preview is a read, and a complete one can become an edit.** `space r` and `=`
+  show what a rename or a format *would* change. `space r` collects the new
+  name on the `:` command line — the mechanism M008 established, not a second
+  input mode — so the leaf arms the prompt and the read follows it. Since M016
+  a preview that is complete enough carries the material the apply path
+  consumes, and the chord opens the **change review** on it: the diff on
+  screen is the change that would be written, `[a]pply` sends it through the
+  daemon's checked apply path, and `Esc` rejects it. A preview that cannot be
+  applied stays a preview and says which it was. `space a` says there is
+  **no code-action request to preview**, which is a different claim from "there
+  is one and it may not be applied": the latter would imply a preview exists.
+  The write path is **not** missing — ADR-0008 owns it, and the editor reaches
+  it by carrying the candidate to the one builder,
+  `build_apply_request`. There is no registry and no second apply path.
 - **A Normal-mode chord that needs the App layer reports what it wants.**
   `=` is a Normal chord, not a prefix leaf, and `pending_effect` is
   documented as *a prefix leaf's* effect — so `=` returns

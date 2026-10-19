@@ -849,6 +849,16 @@ pub(crate) fn apply_editor_lsp_read(
         }
         app.editor_state.lsp.panel = None;
     }
+    // A preview that carries a candidate opens the review.
+    //
+    // The review is the step in front of the apply, and the apply is what
+    // these chords now do: `=` and `space r` stopped showing what *would*
+    // change and started doing it. A preview with no candidate — a truncated
+    // rename, a preview with no edits — stays in the panel, which says why it
+    // cannot be applied.
+    if let Some(candidate) = app.editor_state.lsp.preview_candidate.clone() {
+        crate::tui::commands::change_review::open_carried(app, candidate);
+    }
 }
 
 fn validate_semantic_tokens(
@@ -4037,10 +4047,11 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             BufferKey::Consumed
         }
         // Helix `=` formats the document. CodeGG's `=` shows the **preview** —
-        // what the formatter *would* change — and applies nothing. The write
-        // path is not missing (ADR-0008 owns it), but it consumes a
-        // *registered reviewable artifact*, and a rendered preview is not one:
-        // the gap is the bridge, not an authorization.
+        // what the formatter *would* change — and, since M016, opens the
+        // change review on it when the whole change is known. The write path
+        // is ADR-0008's, and the editor reaches it by carrying the candidate
+        // to the one builder: nothing is registered, and the daemon's digest
+        // check still binds the request to the reviewed change.
         //
         // The chord is a **Normal-mode** verb, not a prefix leaf, so it
         // reports the request the way the other Normal-mode verbs report
@@ -11025,10 +11036,12 @@ mod tests {
 
     // ── M015: the LSP preview leaves ───────────────────────────────────
     //
-    // A preview is a **read**: it shows what would change and applies
-    // nothing. Every test here drives the real dispatch path, and the
-    // request-level assertions read the request the daemon was handed —
-    // the panel shows what the server *answered*, not what was *asked*.
+    // A preview is a **read**: it shows what would change. Since M016 it also
+    // carries the material the apply path consumes, so a complete preview
+    // opens the change review on it. Every test here drives the real dispatch
+    // path, and the request-level assertions read the request the daemon was
+    // handed — the panel shows what the server *answered*, not what was
+    // *asked*.
 
     /// A core client that records the LSP read requests it is handed.
     ///
@@ -11363,6 +11376,7 @@ mod tests {
                         warnings: Vec::new(),
                         truncated: false,
                         base_stale: false,
+                        candidate: None,
                     },
                 )),
             }),
@@ -11388,5 +11402,243 @@ mod tests {
             }
             other => panic!("a rename preview must reach the panel, got {other:?}"),
         }
+    }
+
+    /// The bridge's editor half: a preview that carries a candidate opens the
+    /// review on it.
+    ///
+    /// The chords stopped showing what *would* change and started doing it.
+    /// The review is where the user decides, so a candidate has to arrive
+    /// there — otherwise the editor would hold material the apply path could
+    /// consume and nothing would ever consume it.
+    #[tokio::test]
+    async fn a_preview_with_a_candidate_opens_the_review_on_it() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspPreviewCandidateDto, LspPreviewPatchDto,
+        };
+
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('='))));
+        let request = next_read(&mut reads).await;
+        assert_eq!(request.operation, LspReadOperation::FormatPreview);
+
+        let scope = current_lsp_scope(&app).expect("the scope resolved");
+        let request_id = app.editor_state.lsp.read_request_id;
+        apply_editor_lsp_read(
+            &mut app,
+            request_id,
+            scope,
+            LspReadOperation::FormatPreview,
+            Some(LspReadResultDto {
+                operation: LspReadOperation::FormatPreview,
+                status: LspReadStatus::Ready,
+                payload: Some(crate::protocol::lsp::LspReadPayloadDto::FormatPreview(
+                    LspFormatPreviewDto {
+                        path: "src/lib.rs".to_string(),
+                        edit_count: 1,
+                        before_hash: "a".repeat(64),
+                        after_hash: "b".repeat(64),
+                        diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                        truncated: false,
+                        base_stale: false,
+                        candidate: Some(LspPreviewCandidateDto {
+                            preview_id: "editor-preview-1".to_string(),
+                            preview_revision: 1,
+                            preview_digest: "c".repeat(64),
+                            kind: "formatting".to_string(),
+                            title: "Format src/lib.rs".to_string(),
+                            provenance: "editor:format:src/lib.rs".to_string(),
+                            patches: vec![LspPreviewPatchDto {
+                                path: "src/lib.rs".to_string(),
+                                patch: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                                original_hash: "a".repeat(64),
+                            }],
+                        }),
+                    },
+                )),
+            }),
+            None,
+        );
+
+        assert!(
+            app.change_review_state.is_open(),
+            "a candidate must open the review, got: {:?}",
+            reported(&app)
+        );
+        assert_eq!(
+            app.change_review_state
+                .carried
+                .as_ref()
+                .map(|candidate| candidate.preview_id.clone()),
+            Some("editor-preview-1".to_string()),
+            "the review must hold the candidate the daemon minted"
+        );
+    }
+
+    /// A preview with no candidate stays a preview.
+    ///
+    /// A truncated preview, or one with nothing to change, carries no
+    /// candidate — and a review that offered to apply it would be offering an
+    /// apply the daemon would refuse.
+    #[tokio::test]
+    async fn a_preview_without_a_candidate_opens_no_review() {
+        use codegg_protocol::lsp::LspFormatPreviewDto;
+
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('='))));
+        let _request = next_read(&mut reads).await;
+
+        let scope = current_lsp_scope(&app).expect("the scope resolved");
+        let request_id = app.editor_state.lsp.read_request_id;
+        apply_editor_lsp_read(
+            &mut app,
+            request_id,
+            scope,
+            LspReadOperation::FormatPreview,
+            Some(LspReadResultDto {
+                operation: LspReadOperation::FormatPreview,
+                status: LspReadStatus::Ready,
+                payload: Some(crate::protocol::lsp::LspReadPayloadDto::FormatPreview(
+                    LspFormatPreviewDto {
+                        path: "src/lib.rs".to_string(),
+                        edit_count: 0,
+                        before_hash: "a".repeat(64),
+                        after_hash: "a".repeat(64),
+                        diff: String::new(),
+                        truncated: false,
+                        base_stale: false,
+                        candidate: None,
+                    },
+                )),
+            }),
+            None,
+        );
+
+        assert!(
+            !app.change_review_state.is_open(),
+            "a preview with nothing to apply must not open a review"
+        );
+        assert!(
+            app.editor_state.lsp.preview_candidate.is_none(),
+            "and the editor must hold no candidate"
+        );
+    }
+
+    /// Build a review over a candidate that touches the open document.
+    async fn review_over_a_candidate(state: EditorState) -> App {
+        use codegg_protocol::lsp::{LspPreviewCandidateDto, LspPreviewPatchDto};
+
+        let (mut app, _reads) = app_with_a_lsp_scope(state).await;
+        let candidate = LspPreviewCandidateDto {
+            preview_id: "editor-preview-1".to_string(),
+            preview_revision: 1,
+            preview_digest: "c".repeat(64),
+            kind: "formatting".to_string(),
+            title: "Format src/lib.rs".to_string(),
+            provenance: "editor:format:src/lib.rs".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                original_hash: "a".repeat(64),
+            }],
+        };
+        crate::tui::commands::change_review::open_carried(&mut app, candidate);
+        assert!(
+            app.change_review_state.is_open(),
+            "the review must be open for the completion to belong to"
+        );
+        app
+    }
+
+    /// A successful apply reloads the file it wrote.
+    ///
+    /// The apply writes to disk behind the editor's buffer, so the buffer is
+    /// stale the moment it lands. A clean buffer is reloaded; otherwise the
+    /// editor would show text that is no longer on disk.
+    #[tokio::test]
+    async fn a_successful_apply_reloads_the_file_it_wrote() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = review_over_a_candidate(state).await;
+        let request_id = app.change_review_state.request.request_id();
+        let generation = app.change_review_state.generation;
+
+        crate::tui::commands::change_review::apply_completion(
+            &mut app,
+            request_id,
+            generation,
+            vec!["/tmp/src/lib.rs".to_string()],
+            "cp-1".to_string(),
+            None,
+        );
+
+        assert_eq!(
+            app.editor_state.operation,
+            Some(EditorOperation::Reload),
+            "the applied file must be reloaded into the editor"
+        );
+    }
+
+    /// A refused apply changes nothing on disk, so it reloads nothing.
+    #[tokio::test]
+    async fn a_refused_apply_reloads_nothing() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = review_over_a_candidate(state).await;
+        let request_id = app.change_review_state.request.request_id();
+        let generation = app.change_review_state.generation;
+
+        crate::tui::commands::change_review::apply_completion(
+            &mut app,
+            request_id,
+            generation,
+            Vec::new(),
+            String::new(),
+            Some("src/lib.rs has unsaved editor changes".to_string()),
+        );
+
+        assert_eq!(
+            app.editor_state.operation, None,
+            "a refused apply wrote nothing, so there is nothing to reload"
+        );
+    }
+
+    /// An apply over a buffer with unsaved edits must not discard them.
+    ///
+    /// A reload throws the local draft away. The daemon's dirty-document check
+    /// is not the editor's — the editor is a replica — so the daemon can
+    /// believe a document is clean while the buffer holds edits it has not
+    /// pushed yet. Discarding those to make the screen tidier would lose
+    /// work.
+    #[tokio::test]
+    async fn an_apply_over_an_unsaved_buffer_keeps_the_draft() {
+        let (mut state, _daemon) = opened_writer("hello").await;
+        state.status = EditorStatus::DirtyLocal;
+        let mut app = review_over_a_candidate(state).await;
+        let request_id = app.change_review_state.request.request_id();
+        let generation = app.change_review_state.generation;
+
+        crate::tui::commands::change_review::apply_completion(
+            &mut app,
+            request_id,
+            generation,
+            vec!["/tmp/src/lib.rs".to_string()],
+            "cp-1".to_string(),
+            None,
+        );
+
+        assert_eq!(
+            app.editor_state.operation, None,
+            "a buffer with a draft must not be reloaded over it"
+        );
+        let messages: Vec<String> = reported(&app);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("unsaved edits")),
+            "and the editor must say why, got: {messages:?}"
+        );
     }
 }

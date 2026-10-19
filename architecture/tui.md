@@ -5184,8 +5184,8 @@ pending slot now live in `src/tui/editor_effect.rs`.)
 | `space c` / `space C` | **unavailable**: no comment syntax is known for the edited buffer |
 | `space '` | **unavailable**: the pickers are not fuzzy, so there is no query to recall |
 | `space a` | **unavailable**: no code-action *request* exists, so there is nothing to preview |
-| `=` | the **format preview** — what the formatter would change, applied to nothing |
-| `space r` | the **rename preview** — what a rename would touch, applied to nothing |
+| `=` | the **format preview** — what the formatter would change, and the change review when it can be applied |
+| `space r` | the **rename preview** — what a rename would touch, and the change review when it can be applied |
 
 **The two halves of a leaf run at different authority levels.** The prefix
 resolver holds `&mut EditorState` and can decide *what* was asked for; only
@@ -5224,23 +5224,26 @@ left the file browser unreachable from the editor route and gave the symbols
 panel two names for one request; the reclaim is a binding change, not a
 rename, and `CHANGELOG.md` records it under `### Changed`.
 
-**A preview is a read, and the editor's previews cannot apply** (M015). `=` and
-`space r` reach `LspReadOperation::FormatPreview` and
-`LspReadOperation::RenamePreview` — the two operations M013 delivered with
-daemon arms and panel renderings and **no key**. They show what would change
-and apply nothing. The difference from Helix is deliberate and recorded: its
-`=` formats and its `space r` renames.
+**A preview is a read, and — when it is complete — the editor's preview can
+apply** (M015, M016). `=` and `space r` reach `LspReadOperation::FormatPreview`
+and `LspReadOperation::RenamePreview` — the two operations M013 delivered with
+daemon arms and panel renderings and **no key**. They show what would change,
+and since M016 a preview that is complete enough carries the **material the
+apply path consumes**, so the chord leads to the change review rather than
+only to a picture of it. The difference from Helix is deliberate and recorded:
+its `=` formats and its `space r` renames.
 
 The apply path is **ADR-0008's, and it is accepted** —
 `CoreRequest::LspPreviewApply`, authorized `via_session` + `file.modify`,
-applying a *registered, still-current reviewable preview* by id through the
-change-review surface or the model-facing preview-apply tool. The editor's
-two chords produce a **read result**, not such an artifact: no preview id, no
-patches, and no reference to `change_review` anywhere in the editor path. So
-the chords cannot reach the apply path — **not because an ADR is missing, but
-because the bridge from a rendered preview to a reviewable artifact does not
-exist.** That is an implementation gap, and it is the gap a future milestone
-closes.
+applying a digest-bound candidate through the change-review surface or the
+model-facing preview-apply tool. The editor reaches it by **carrying** the
+candidate: the daemon mints it into the read result, the editor holds it, and
+the review's accept builds the one request through `build_apply_request` — the
+single place a `CoreRequest::LspPreviewApply` is constructed, which
+`scripts/check_tui_editor_apply_path.py` enforces structurally. Nothing is
+registered, and no registry is needed: `apply_preview` recomputes the digest
+over the request's own patches, so a candidate altered in transit fails the
+check.
 
 `=` is a **Normal-mode** chord with no prefix, so it is attributed by the
 key-authority guard as one — the count moves. `space r` is a **prefix leaf**,
@@ -5255,12 +5258,24 @@ name and an over-long one are refused before a request is spent on them.
 `LspReadOperation` asks for one. Its reason says exactly that, rather than
 implying that a preview exists and is merely unapplied.
 
-**The preview/apply transition is registered now.** When the bridge from the
-editor's preview to a reviewable artifact is built, `=` and `space r` become
-the **apply** step. The chords do not move, so the change is invisible to
-anyone who did not learn the preview — which is why the roadmap, this closure
-record and the `CHANGELOG.md` all record it while the preview is what a
-reader learns.
+**The preview/apply transition landed, and it was registered before it did.**
+M015 recorded the change of meaning while the preview was what a reader
+learned; M016 built the bridge, so `=` and `space r` open the change review
+on the candidate. The chords do not move, so the change is invisible to
+anyone who did not learn the preview — which is why the roadmap, the closure
+record and the `CHANGELOG.md` record it, and why the preview panel says
+*ready to apply* rather than *not applied*.
+
+**The apply writes to disk, so the editor reloads what it wrote.** The apply
+is the daemon's checked path — its checkpoint, its hash revalidation, its
+rollback and its LSP re-synchronization — not an editor edit, so the editor's
+buffer is not the thing that changed. A clean buffer is reloaded after a
+successful apply; a buffer with a draft is **not**, because a reload discards
+the local draft and the daemon's dirty-document check is not the editor's:
+the editor is a replica, so the daemon can believe a document is clean while
+the replica holds edits it has not yet pushed. Discarding those edits to make
+the screen tidier would lose work, so the editor keeps them and says the file
+changed on disk.
 
 **Degradation is a status row, not a toast.** `EditorPendingEffect::Unavailable`
 carries the reason a key is unbound, so a Helix user pressing `gy` learns the

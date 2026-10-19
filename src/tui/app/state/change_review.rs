@@ -9,9 +9,15 @@
 //! saved document is reviewed here; whether an apply may merge into a *dirty*
 //! buffer is a deferred ADR, and the rejection in `src/lsp/mutation.rs` is
 //! correct as written and untouched.
+//!
+//! Since M016 the review can also be opened on a candidate the *editor*
+//! carried — the material a preview read returned. That candidate travels
+//! with the review, because the registry the other path resolves ids in does
+//! not exist in socket mode. The request is still built in one place.
 
 use crate::tui::app::state::AsyncUiRequestState;
 use crate::tui::unified_diff::ParsedReview;
+use codegg_protocol::lsp::LspPreviewCandidateDto;
 
 /// What the daemon said about the apply.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -58,11 +64,38 @@ pub struct ChangeReviewState {
     pub verdict: ReviewVerdict,
     /// Request tracking for the accept round trip.
     pub request: AsyncUiRequestState,
+    /// The candidate the editor carried, when the review was opened on one.
+    ///
+    /// The registry path resolves its candidate by id at accept time; the
+    /// carried path resolves it from here. Either way the request is built by
+    /// the one builder, so the two paths cannot drift.
+    pub carried: Option<LspPreviewCandidateDto>,
+    /// Every path the candidate touches, relative to the workspace.
+    ///
+    /// This is the *candidate's* list, not the review's: the review parses at
+    /// most [`MAX_REVIEW_PATCHES`](crate::tui::unified_diff::MAX_REVIEW_PATCHES)
+    /// patches for display, and a rename may touch more than that. The list
+    /// is what decides whether the editor's open document was one of the
+    /// files the apply wrote.
+    pub affected_paths: Vec<String>,
     /// Bumped whenever a review is opened, so a completion for a superseded
     /// review is discarded.
     pub generation: u64,
     /// True while the review owns keyboard focus.
     pub focused: bool,
+}
+
+/// The candidate's identity, as the review records it.
+///
+/// Four strings that always travel together, so they travel together: a
+/// review that named one candidate's title and another's kind would be a
+/// review of nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewIdentity {
+    preview_id: String,
+    kind: String,
+    title: String,
+    provenance: String,
 }
 
 impl ChangeReviewState {
@@ -82,17 +115,73 @@ impl ChangeReviewState {
         provenance: String,
         stale: bool,
         review: ParsedReview,
+        affected_paths: Vec<String>,
+    ) -> (u64, u64) {
+        self.begin(
+            ReviewIdentity {
+                preview_id,
+                kind,
+                title,
+                provenance,
+            },
+            stale,
+            review,
+            None,
+            affected_paths,
+        )
+    }
+
+    /// Begin a review on a candidate the editor carried.
+    ///
+    /// The candidate is the material the daemon minted for a preview read. It
+    /// travels with the review so the accept path can build exactly the
+    /// request the review displayed, without resolving anything in a registry
+    /// that does not exist in socket mode.
+    pub fn open_carried(
+        &mut self,
+        candidate: LspPreviewCandidateDto,
+        review: ParsedReview,
+    ) -> (u64, u64) {
+        let affected_paths = candidate
+            .patches
+            .iter()
+            .map(|patch| patch.path.clone())
+            .collect();
+        self.begin(
+            ReviewIdentity {
+                preview_id: candidate.preview_id.clone(),
+                kind: candidate.kind.clone(),
+                title: candidate.title.clone(),
+                provenance: candidate.provenance.clone(),
+            },
+            false,
+            review,
+            Some(candidate),
+            affected_paths,
+        )
+    }
+
+    /// Begin a review, with or without a carried candidate.
+    fn begin(
+        &mut self,
+        identity: ReviewIdentity,
+        stale: bool,
+        review: ParsedReview,
+        carried: Option<LspPreviewCandidateDto>,
+        affected_paths: Vec<String>,
     ) -> (u64, u64) {
         self.status = ReviewStatus::Reviewing;
-        self.preview_id = preview_id;
-        self.kind = kind;
-        self.title = title;
-        self.provenance = provenance;
+        self.preview_id = identity.preview_id;
+        self.kind = identity.kind;
+        self.title = identity.title;
+        self.provenance = identity.provenance;
         self.stale = stale;
         self.review = review;
         self.file_index = 0;
         self.verdict = ReviewVerdict::Pending;
         self.focused = true;
+        self.carried = carried;
+        self.affected_paths = affected_paths;
         self.generation = self.generation.wrapping_add(1);
         let request_id = self.request.begin();
         (self.generation, request_id)
@@ -108,6 +197,16 @@ impl ChangeReviewState {
         self.preview_id.clear();
         self.review = ParsedReview::default();
         self.file_index = 0;
+        self.carried = None;
+        self.affected_paths.clear();
+    }
+
+    /// Whether the candidate touches `path`.
+    ///
+    /// The comparison is on the workspace-relative path, which is how the
+    /// candidate names its files and how the editor names its document.
+    pub fn touches_path(&self, path: &str) -> bool {
+        self.affected_paths.iter().any(|affected| affected == path)
     }
 
     /// Mark an accept as in flight.
@@ -192,6 +291,7 @@ mod tests {
             "agent".to_string(),
             false,
             sample_review(),
+            vec!["a.rs".to_string()],
         )
     }
 
@@ -324,6 +424,7 @@ mod tests {
                 ("a.rs".to_string(), "@@ -1,1 +1,1 @@\n-x\n+y\n".to_string()),
                 ("b.rs".to_string(), "@@ -1,1 +1,1 @@\n-x\n+y\n".to_string()),
             ]),
+            vec!["a.rs".to_string(), "b.rs".to_string()],
         );
         assert_eq!(state.file_index, 0);
         state.move_file(-1);
@@ -352,10 +453,50 @@ mod tests {
             "agent".to_string(),
             true,
             sample_review(),
+            vec!["a.rs".to_string()],
         );
         assert!(
             state.stale,
             "a stale candidate must be visible in the state"
+        );
+    }
+
+    #[test]
+    fn a_carried_review_keeps_the_candidate_and_the_files_it_touches() {
+        use codegg_protocol::lsp::{LspPreviewCandidateDto, LspPreviewPatchDto};
+
+        let candidate = LspPreviewCandidateDto {
+            preview_id: "editor-preview-3".to_string(),
+            preview_revision: 3,
+            preview_digest: "a".repeat(64),
+            kind: "rename".to_string(),
+            title: "Rename old to new".to_string(),
+            provenance: "editor:rename:old->new".to_string(),
+            patches: vec![
+                LspPreviewPatchDto {
+                    path: "src/a.rs".to_string(),
+                    patch: "@@ -1 +1 @@\n-x\n+y\n".to_string(),
+                    original_hash: "b".repeat(64),
+                },
+                LspPreviewPatchDto {
+                    path: "src/b.rs".to_string(),
+                    patch: "@@ -1 +1 @@\n-x\n+y\n".to_string(),
+                    original_hash: "c".repeat(64),
+                },
+            ],
+        };
+        let mut state = ChangeReviewState::default();
+        state.open_carried(candidate.clone(), sample_review());
+        assert!(state.is_open());
+        assert_eq!(state.preview_id, "editor-preview-3");
+        assert_eq!(state.carried, Some(candidate));
+        assert!(
+            state.touches_path("src/b.rs"),
+            "the editor must be able to tell that its own document is one of the files"
+        );
+        assert!(
+            !state.touches_path("src/other.rs"),
+            "a file the candidate does not touch must not read as touched"
         );
     }
 }

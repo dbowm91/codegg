@@ -725,8 +725,12 @@ impl EditorWidget<'_> {
                                     ));
                                 }
                                 lines.push(Line::from(format!(
-                                    "{} edit(s) · not applied",
-                                    preview.edit_count
+                                    "{} edit(s) · {}",
+                                    preview.edit_count,
+                                    preview_disposition(
+                                        preview.truncated,
+                                        preview.candidate.is_some()
+                                    )
                                 )));
                                 lines.extend(preview.diff.lines().take(16).map(|line| {
                                     Line::from(crate::tui::editor_lsp::truncate_chars(line, 200))
@@ -735,11 +739,12 @@ impl EditorWidget<'_> {
                         }
                         Some(LspReadPayloadDto::RenamePreview(preview)) => {
                             lines.push(Line::from(format!(
-                                "{} → {} · {} edit(s) in {} file(s) · not applied",
+                                "{} → {} · {} edit(s) in {} file(s) · {}",
                                 preview.old_name.as_deref().unwrap_or("(symbol)"),
                                 preview.new_name,
                                 preview.edit_count,
-                                preview.files.len()
+                                preview.files.len(),
+                                preview_disposition(preview.truncated, preview.candidate.is_some())
                             )));
                             if preview.base_stale {
                                 lines.push(Line::from(
@@ -1434,6 +1439,23 @@ pub(crate) fn token_style(theme: &Theme, token_type: &str) -> Option<Style> {
 fn display_width_str(text: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     UnicodeWidthStr::width(text)
+}
+
+/// What the panel says will happen to the change.
+///
+/// A preview that carries a candidate is **ready to apply**: the review is
+/// open on it, and the review is where the user decides. A preview without
+/// one is still a preview — and a *truncated* preview says so, because a
+/// partial change is not the change that was previewed, and offering it as
+/// applicable would be a lie.
+fn preview_disposition(truncated: bool, has_candidate: bool) -> &'static str {
+    if has_candidate {
+        "ready to apply"
+    } else if truncated {
+        "not applied — the preview is truncated"
+    } else {
+        "not applied"
+    }
 }
 
 #[cfg(test)]
@@ -3399,6 +3421,7 @@ mod tests {
                 warnings: Vec::new(),
                 truncated: false,
                 base_stale: false,
+                candidate: None,
             })),
         });
 
@@ -3437,6 +3460,7 @@ mod tests {
                 diff: "- let x = 1;\n+ let x =  1;".to_string(),
                 truncated: false,
                 base_stale: false,
+                candidate: None,
             })),
         });
 
@@ -3448,6 +3472,93 @@ mod tests {
         assert!(
             painted.contains("not applied"),
             "and says that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// A preview that became a candidate is not "not applied" any more.
+    ///
+    /// The chords stopped showing what *would* change and started doing it,
+    /// so the panel's disposition line has to say so. A panel still claiming
+    /// "not applied" for a candidate would be a status row lying about the
+    /// last keystroke.
+    #[test]
+    fn a_preview_with_a_candidate_says_it_is_ready_to_apply() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspPreviewCandidateDto, LspPreviewPatchDto, LspReadOperation,
+            LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: false,
+                base_stale: false,
+                candidate: Some(LspPreviewCandidateDto {
+                    preview_id: "editor-preview-1".to_string(),
+                    preview_revision: 1,
+                    preview_digest: "a".repeat(64),
+                    kind: "formatting".to_string(),
+                    title: "Format src/lib.rs".to_string(),
+                    provenance: "editor:format:src/lib.rs".to_string(),
+                    patches: vec![LspPreviewPatchDto {
+                        path: "src/lib.rs".to_string(),
+                        patch: "@@ -1 +1 @@\n- let x = 1;\n+ let x =  1;".to_string(),
+                        original_hash: "b".repeat(64),
+                    }],
+                }),
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("ready to apply"),
+            "a candidate is ready to apply, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("not applied"),
+            "and must not still claim that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// A truncated preview says why it cannot be applied.
+    #[test]
+    fn a_truncated_preview_says_it_cannot_be_applied() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspReadOperation, LspReadPayloadDto, LspReadResultDto,
+            LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: true,
+                base_stale: false,
+                candidate: None,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("truncated"),
+            "a truncated preview must say it is truncated, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("ready to apply"),
+            "and must not offer itself as applicable, got:\n{painted}"
         );
     }
 }

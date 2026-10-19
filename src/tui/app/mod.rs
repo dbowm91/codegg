@@ -7003,8 +7003,10 @@ impl App {
                         // helper the review surface also calls, so the two
                         // paths cannot drift into two apply semantics.
                         let core_request =
-                            match crate::tui::commands::change_review::build_apply_request(self, id)
-                            {
+                            match crate::tui::commands::change_review::build_apply_request(
+                                self,
+                                crate::tui::commands::change_review::ApplySource::Registry(id),
+                            ) {
                                 Ok(request) => request,
                                 Err(refusal) => {
                                     self.messages_state.toasts.info(refusal.message());

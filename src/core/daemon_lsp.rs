@@ -31,13 +31,16 @@
 //!   response; `NotReady` means "no warm server". Conflating them would tell
 //!   a caller that a forbidden request was merely early.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use codegg_protocol::lsp::{
     LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto, LspFormatPreviewDto, LspHighlightDto,
-    LspRangeDto, LspReadOperation, LspReadPayloadDto, LspReadRequestDto, LspReadResultDto,
-    LspRenameFileDto, LspRenamePreviewDto, LspSignatureDto, LspSignatureParameterDto, LspSymbolDto,
+    LspPreviewCandidateDto, LspPreviewPatchDto, LspRangeDto, LspReadOperation, LspReadPayloadDto,
+    LspReadRequestDto, LspReadResultDto, LspRenameFileDto, LspRenamePreviewDto, LspSignatureDto,
+    LspSignatureParameterDto, LspSymbolDto,
 };
 
 use crate::core::daemon::CoreDaemon;
@@ -619,23 +622,47 @@ impl CoreDaemon {
                     Err(err) => return Self::read_operation_error(operation, &err),
                 }
             }
-            // The two preview reads. Neither applies anything: they return
-            // what *would* change so a human can decide. Applying either is
-            // an LSP write and needs an accepted ADR that does not exist.
+            // The two preview reads. They return what *would* change, and —
+            // since M016 — the material the apply path needs when the preview
+            // is complete enough to become a candidate. The write path itself
+            // is ADR-0008's, in `daemon_goals.rs`; a preview never applies
+            // anything.
             LspReadOperation::FormatPreview => {
                 match operations
                     .format_preview_for_warm_client(key, target, Some(root))
                     .await
                 {
-                    Ok(preview) => LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
-                        path: workspace_relative_target(root, target).unwrap_or_default(),
-                        edit_count: preview.edit_count,
-                        before_hash: preview.before_hash,
-                        after_hash: preview.after_hash,
-                        diff: preview.diff,
-                        truncated: preview.truncated,
-                        base_stale: preview.base_stale,
-                    }),
+                    Ok(preview) => {
+                        let path = workspace_relative_target(root, target).unwrap_or_default();
+                        // A truncated diff, an empty diff, or a file the
+                        // daemon could not name relative to the workspace
+                        // leaves the preview a preview.
+                        let candidate =
+                            if preview.truncated || preview.diff.is_empty() || path.is_empty() {
+                                None
+                            } else {
+                                mint_preview_candidate(
+                                    "formatting",
+                                    &format!("Format {path}"),
+                                    &format!("editor:format:{path}"),
+                                    vec![(
+                                        path.clone(),
+                                        preview.diff.clone(),
+                                        preview.before_hash.clone(),
+                                    )],
+                                )
+                            };
+                        LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                            path,
+                            edit_count: preview.edit_count,
+                            before_hash: preview.before_hash,
+                            after_hash: preview.after_hash,
+                            diff: preview.diff,
+                            truncated: preview.truncated,
+                            base_stale: preview.base_stale,
+                            candidate,
+                        })
+                    }
                     Err(err) => return Self::read_operation_error(operation, &err),
                 }
             }
@@ -674,6 +701,11 @@ impl CoreDaemon {
                         if preview.edit_count > codegg_protocol::lsp::MAX_LSP_RENAME_EDITS {
                             truncated = true;
                         }
+                        // The per-file patches `egglsp` already computed are
+                        // carried here instead of being discarded. A truncated
+                        // preview, or a file whose patch was omitted, leaves
+                        // the preview a preview.
+                        let candidate = mint_rename_candidate(root, &preview, truncated);
                         LspReadPayloadDto::RenamePreview(LspRenamePreviewDto {
                             old_name: preview.old_name,
                             new_name: preview.new_name,
@@ -686,6 +718,7 @@ impl CoreDaemon {
                                 .collect(),
                             truncated,
                             base_stale: preview.base_stale,
+                            candidate,
                         })
                     }
                     Err(err) => return Self::read_operation_error(operation, &err),
@@ -893,6 +926,119 @@ fn workspace_relative_target(root: &Path, target: &Path) -> Option<String> {
         return None;
     }
     Some(components.join("/"))
+}
+
+/// The daemon's candidate counter.
+///
+/// A candidate's revision says which version of a preview it is, and the
+/// apply path rejects a zero revision, so the counter starts at one.
+static PREVIEW_CANDIDATE_REVISION: AtomicU64 = AtomicU64::new(1);
+
+/// Mint one reviewable candidate, or none.
+///
+/// The daemon owns the language server, so it owns the material the apply path
+/// consumes: the patches, the base each was computed against, and the digest
+/// that binds a request to exactly this candidate.
+///
+/// **Nothing is registered.** The apply path verifies a digest recomputed over
+/// the request's *own* patches (`src/lsp/mutation.rs:380-401`), so a candidate
+/// that travelled from here and was altered in transit fails the check. That
+/// is what lets the candidate ride in a read result instead of living in a
+/// registry — and it is what makes the bridge work in socket mode, where the
+/// frontend has no LSP tool at all.
+///
+/// `None` means "this preview is not a candidate": it carries no patch, or the
+/// material exceeds a bound the apply path would refuse anyway. The preview is
+/// still a preview.
+fn mint_preview_candidate(
+    kind: &str,
+    title: &str,
+    provenance: &str,
+    patches: Vec<(String, String, String)>,
+) -> Option<LspPreviewCandidateDto> {
+    if patches.is_empty() {
+        return None;
+    }
+    // The digest is computed over exactly the material the request will
+    // carry: the same paths, in the same order, the same patch text and the
+    // same base hashes.
+    let edits: Vec<String> = patches.iter().map(|(path, _, _)| path.clone()).collect();
+    let mut hashes: HashMap<String, String> = HashMap::new();
+    let mut patch_views: Vec<egglsp::PreviewFilePatch> = Vec::with_capacity(patches.len());
+    for (path, patch, original_hash) in patches {
+        hashes.insert(path.clone(), original_hash.clone());
+        patch_views.push(egglsp::PreviewFilePatch {
+            path,
+            patch,
+            original_hash,
+        });
+    }
+    let preview_digest = egglsp::preview_registry::preview_digest_for_candidate(
+        kind,
+        title,
+        provenance,
+        &edits,
+        &hashes,
+        &patch_views,
+    );
+    let preview_revision = PREVIEW_CANDIDATE_REVISION.fetch_add(1, Ordering::Relaxed);
+    let candidate = LspPreviewCandidateDto {
+        preview_id: format!("editor-preview-{preview_revision}"),
+        preview_revision,
+        preview_digest,
+        kind: kind.to_string(),
+        title: title.to_string(),
+        provenance: provenance.to_string(),
+        patches: patch_views
+            .into_iter()
+            .map(|patch| LspPreviewPatchDto {
+                path: patch.path,
+                patch: patch.patch,
+                original_hash: patch.original_hash,
+            })
+            .collect(),
+    };
+    // The bounds are the apply path's own, so a candidate that passes is one
+    // the daemon can at least shape into a request. The daemon still decides
+    // whether the change may be applied.
+    candidate.validate().ok()?;
+    Some(candidate)
+}
+
+/// Mint the candidate for a rename preview, or none.
+///
+/// The per-file patches `egglsp` computed for the preview are carried here
+/// instead of being discarded — they were always the material the apply path
+/// needed. A truncated preview, or a file whose patch was omitted, leaves the
+/// preview a preview: a partial rename is not a rename.
+fn mint_rename_candidate(
+    root: &Path,
+    preview: &egglsp::RenamePreview,
+    truncated: bool,
+) -> Option<LspPreviewCandidateDto> {
+    if truncated {
+        return None;
+    }
+    let mut patches = Vec::new();
+    for file in &preview.affected_files {
+        if file.patch_omitted || file.patch.is_empty() {
+            continue;
+        }
+        let Some(path) = workspace_relative_target(root, &file.file) else {
+            continue;
+        };
+        patches.push((path, file.patch.clone(), file.original_hash.clone()));
+    }
+    if patches.is_empty() {
+        return None;
+    }
+    let old_name = preview.old_name.as_deref().unwrap_or("symbol");
+    mint_preview_candidate(
+        "rename",
+        &format!("Rename {old_name} to {}", preview.new_name),
+        &format!("editor:rename:{old_name}->{}", preview.new_name),
+        patches,
+    )
 }
 
 fn uri_file_name(uri: &crate::lsp::lsp_types::Uri) -> String {
@@ -1407,5 +1553,197 @@ mod diagnostics_readiness_tests {
             codegg_protocol::lsp::LspDiagnosticsStatus::Ready
         );
         assert!(result.files.is_empty());
+    }
+}
+
+/// The candidate the daemon mints for a preview.
+///
+/// The apply path recomputes the candidate's digest over the request's *own*
+/// patches and refuses a mismatch. So the digest the daemon mints has to be
+/// computable from the candidate's own fields — the same path strings, the
+/// same patch text, the same base hashes. If the daemon ever computed the
+/// digest over one set of strings and published another, every editor apply
+/// would be refused by the daemon with no clue why.
+#[cfg(test)]
+mod preview_candidate_tests {
+    use super::*;
+
+    /// Recompute a candidate's digest from the candidate's own fields.
+    fn recompute(candidate: &LspPreviewCandidateDto) -> String {
+        let edits: Vec<String> = candidate.patches.iter().map(|p| p.path.clone()).collect();
+        let hashes: HashMap<String, String> = candidate
+            .patches
+            .iter()
+            .map(|p| (p.path.clone(), p.original_hash.clone()))
+            .collect();
+        let patch_views: Vec<egglsp::PreviewFilePatch> = candidate
+            .patches
+            .iter()
+            .map(|p| egglsp::PreviewFilePatch {
+                path: p.path.clone(),
+                patch: p.patch.clone(),
+                original_hash: p.original_hash.clone(),
+            })
+            .collect();
+        egglsp::preview_registry::preview_digest_for_candidate(
+            &candidate.kind,
+            &candidate.title,
+            &candidate.provenance,
+            &edits,
+            &hashes,
+            &patch_views,
+        )
+    }
+
+    #[test]
+    fn a_minted_candidate_digest_is_recomputable_from_its_own_fields() {
+        let candidate = mint_preview_candidate(
+            "rename",
+            "Rename old to new",
+            "editor:rename:old->new",
+            vec![(
+                "src/lib.rs".to_string(),
+                "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                "a".repeat(64),
+            )],
+        )
+        .expect("a candidate with a patch is mintable");
+
+        assert_eq!(
+            candidate.preview_digest,
+            recompute(&candidate),
+            "the apply path recomputes the digest from the request's own patches"
+        );
+        assert_eq!(candidate.preview_digest.len(), 64);
+        assert_ne!(candidate.preview_revision, 0, "a zero revision is refused");
+        assert!(!candidate.preview_id.is_empty());
+        assert_eq!(candidate.validate(), Ok(()));
+    }
+
+    #[test]
+    fn two_candidates_get_different_revisions() {
+        let first = mint_preview_candidate(
+            "formatting",
+            "Format a",
+            "editor:format:a",
+            vec![("a.rs".to_string(), "p".to_string(), "a".repeat(64))],
+        )
+        .expect("mintable");
+        let second = mint_preview_candidate(
+            "formatting",
+            "Format b",
+            "editor:format:b",
+            vec![("b.rs".to_string(), "p".to_string(), "a".repeat(64))],
+        )
+        .expect("mintable");
+        assert_ne!(
+            first.preview_revision, second.preview_revision,
+            "two candidates must be distinguishable"
+        );
+        assert_ne!(first.preview_id, second.preview_id);
+    }
+
+    #[test]
+    fn a_candidate_with_no_patch_is_not_minted() {
+        assert!(
+            mint_preview_candidate("formatting", "Format a", "editor:format:a", Vec::new())
+                .is_none(),
+            "a candidate with no patches changes nothing"
+        );
+    }
+
+    /// A rename preview whose only file had its patch omitted cannot become a
+    /// candidate: the change would be partial, and a partial rename is not a
+    /// rename.
+    #[test]
+    fn a_rename_whose_only_patch_was_omitted_mints_no_candidate() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, "fn main() {}\n").expect("write");
+        let preview = egglsp::RenamePreview {
+            old_name: Some("main".to_string()),
+            new_name: "run".to_string(),
+            affected_files: vec![egglsp::FileEditPreview {
+                file: file.clone(),
+                original_hash: "a".repeat(64),
+                edits: Vec::new(),
+                patch: String::new(),
+                patch_omitted: true,
+            }],
+            edit_count: 1,
+            warnings: Vec::new(),
+            truncated: false,
+            base_stale: false,
+            affected_file_versions: Vec::new(),
+            server_generation: 1,
+        };
+        assert!(
+            mint_rename_candidate(dir.path(), &preview, false).is_none(),
+            "a rename with no applicable patch must stay a preview"
+        );
+    }
+
+    /// A truncated preview is not a candidate either, whatever it contains.
+    #[test]
+    fn a_truncated_rename_mints_no_candidate() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, "fn main() {}\n").expect("write");
+        let preview = egglsp::RenamePreview {
+            old_name: Some("main".to_string()),
+            new_name: "run".to_string(),
+            affected_files: vec![egglsp::FileEditPreview {
+                file: file.clone(),
+                original_hash: "a".repeat(64),
+                edits: Vec::new(),
+                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                patch_omitted: false,
+            }],
+            edit_count: 1,
+            warnings: Vec::new(),
+            truncated: true,
+            base_stale: false,
+            affected_file_versions: Vec::new(),
+            server_generation: 1,
+        };
+        assert!(
+            mint_rename_candidate(dir.path(), &preview, true).is_none(),
+            "a truncated preview must stay a preview"
+        );
+    }
+
+    /// The candidate's paths are workspace-relative and contained.
+    #[test]
+    fn a_minted_candidate_names_its_files_relative_to_the_workspace() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let nested = dir.path().join("src");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let file = nested.join("lib.rs");
+        std::fs::write(&file, "fn main() {}\n").expect("write");
+        let preview = egglsp::RenamePreview {
+            old_name: Some("main".to_string()),
+            new_name: "run".to_string(),
+            affected_files: vec![egglsp::FileEditPreview {
+                file: file.clone(),
+                original_hash: "a".repeat(64),
+                edits: Vec::new(),
+                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                patch_omitted: false,
+            }],
+            edit_count: 1,
+            warnings: Vec::new(),
+            truncated: false,
+            base_stale: false,
+            affected_file_versions: Vec::new(),
+            server_generation: 1,
+        };
+        let candidate = mint_rename_candidate(dir.path(), &preview, false)
+            .expect("a contained rename is mintable");
+        assert_eq!(candidate.patches.len(), 1);
+        assert_eq!(
+            candidate.patches[0].path, "src/lib.rs",
+            "the path must be workspace-relative, so the apply path joins it to the root"
+        );
+        assert_eq!(candidate.preview_digest, recompute(&candidate));
     }
 }

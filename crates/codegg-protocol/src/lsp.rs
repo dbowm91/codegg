@@ -92,6 +92,202 @@ pub struct LspPreviewApplyResultDto {
     pub synchronization_errors: Vec<String>,
 }
 
+/// Maximum patches in one reviewable candidate.
+///
+/// Mirrors the apply path's own bound: a candidate with more patches than this
+/// could not be applied, so it is not minted.
+pub const MAX_LSP_PREVIEW_CANDIDATE_PATCHES: usize = 100;
+
+/// Maximum bytes in one patch of a reviewable candidate.
+///
+/// Mirrors the apply path's per-patch bound for the same reason.
+pub const MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES: usize = 50_000;
+
+/// Maximum total patch bytes in one reviewable candidate.
+///
+/// A read result travels over the wire, so the candidate it carries is
+/// bounded. A preview whose patches exceed this is still a preview; it is
+/// simply not a candidate.
+pub const MAX_LSP_PREVIEW_CANDIDATE_BYTES: usize = 1024 * 1024;
+
+/// Maximum bytes in one of the candidate's identifying strings.
+///
+/// Mirrors the apply path's own metadata bound, so a candidate that passes
+/// validation is one the daemon will not refuse for its shape alone.
+pub const MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES: usize = 4_096;
+
+/// The preview kinds the apply path accepts.
+///
+/// These are the kinds ADR-0008's apply path can check and apply. A candidate
+/// of any other kind is refused rather than passed through.
+pub const LSP_PREVIEW_KINDS: [&str; 3] = ["rename", "code_action", "formatting"];
+
+/// Why a reviewable candidate was refused.
+///
+/// Every variant names the bound it broke, because the reader of a refusal
+/// needs to know what to change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LspPreviewCandidateInvalid {
+    /// The candidate has no identity.
+    MissingIdentity,
+    /// The candidate's revision is zero, which the apply path rejects.
+    InvalidRevision,
+    /// The candidate's digest is not a SHA-256 hex digest.
+    InvalidDigest,
+    /// The candidate's kind is not one the apply path accepts.
+    UnsupportedKind(String),
+    /// The candidate carries no patches.
+    NoPatches,
+    /// The candidate carries more patches than the apply path accepts.
+    TooManyPatches(usize),
+    /// One patch is malformed.
+    MalformedPatch(String),
+    /// One of the candidate's identifying strings is too long.
+    OversizedMetadata(String),
+    /// The candidate's patches exceed the total byte bound.
+    TooLarge(usize),
+}
+
+impl LspPreviewCandidateInvalid {
+    /// Why the candidate was refused, in one line.
+    ///
+    /// The reader of a refusal needs to know what to change, so every variant
+    /// names the bound it broke rather than saying "invalid".
+    pub fn message(&self) -> String {
+        match self {
+            LspPreviewCandidateInvalid::MissingIdentity => {
+                "the candidate has no preview id".to_string()
+            }
+            LspPreviewCandidateInvalid::InvalidRevision => {
+                "the candidate's revision is zero, which the apply path rejects".to_string()
+            }
+            LspPreviewCandidateInvalid::InvalidDigest => {
+                "the candidate's digest is not a SHA-256 digest".to_string()
+            }
+            LspPreviewCandidateInvalid::UnsupportedKind(kind) => {
+                format!("the apply path does not implement the \"{kind}\" preview kind")
+            }
+            LspPreviewCandidateInvalid::NoPatches => "the candidate carries no patches".to_string(),
+            LspPreviewCandidateInvalid::TooManyPatches(count) => {
+                format!("the candidate carries {count} patches, more than the apply path accepts")
+            }
+            LspPreviewCandidateInvalid::MalformedPatch(detail) => {
+                format!("a patch is malformed: {detail}")
+            }
+            LspPreviewCandidateInvalid::OversizedMetadata(detail) => {
+                format!("the candidate's metadata is too long: {detail}")
+            }
+            LspPreviewCandidateInvalid::TooLarge(bytes) => {
+                format!("the candidate's patches total {bytes} bytes, more than the limit")
+            }
+        }
+    }
+}
+
+/// One reviewable candidate, ready for the apply path.
+///
+/// This is the **bridge** between a preview and an apply. A preview says what
+/// *would* change; a candidate carries the material the apply needs — the
+/// patches, the base each patch was computed against, and the identity the
+/// apply path binds its request to.
+///
+/// The daemon mints it, because the daemon owns the language server. It
+/// travels in the read result, and **nothing is registered**: the apply path
+/// verifies a digest recomputed over the request's *own* patches rather than
+/// resolving an id in a registry, so a candidate that has been altered in
+/// transit fails the check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspPreviewCandidateDto {
+    /// The candidate's identity. Opaque to the client.
+    pub preview_id: String,
+    /// The candidate's revision. Must be non-zero.
+    pub preview_revision: u64,
+    /// The digest binding the request to this exact candidate.
+    pub preview_digest: String,
+    /// One of [`LSP_PREVIEW_KINDS`].
+    pub kind: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Where the candidate came from.
+    pub provenance: String,
+    /// The patches, in the order the apply path will apply them.
+    pub patches: Vec<LspPreviewPatchDto>,
+}
+
+impl LspPreviewCandidateDto {
+    /// Whether this candidate can be handed to the apply path.
+    ///
+    /// The bounds are the apply path's own, so a candidate that passes here
+    /// is one the daemon can at least *shape* into a request. The daemon still
+    /// decides whether the change may be applied.
+    pub fn validate(&self) -> Result<(), LspPreviewCandidateInvalid> {
+        if self.preview_id.trim().is_empty() {
+            return Err(LspPreviewCandidateInvalid::MissingIdentity);
+        }
+        if self.preview_revision == 0 {
+            return Err(LspPreviewCandidateInvalid::InvalidRevision);
+        }
+        if self.preview_digest.len() != 64 {
+            return Err(LspPreviewCandidateInvalid::InvalidDigest);
+        }
+        if !LSP_PREVIEW_KINDS.contains(&self.kind.as_str()) {
+            return Err(LspPreviewCandidateInvalid::UnsupportedKind(
+                self.kind.clone(),
+            ));
+        }
+        for (label, value) in [
+            ("the preview id", &self.preview_id),
+            ("the title", &self.title),
+            ("the provenance", &self.provenance),
+        ] {
+            if value.len() > MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES {
+                return Err(LspPreviewCandidateInvalid::OversizedMetadata(format!(
+                    "{label} is longer than the {MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES}-byte limit"
+                )));
+            }
+        }
+        if self.patches.is_empty() {
+            return Err(LspPreviewCandidateInvalid::NoPatches);
+        }
+        if self.patches.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCHES {
+            return Err(LspPreviewCandidateInvalid::TooManyPatches(
+                self.patches.len(),
+            ));
+        }
+        let mut total = 0usize;
+        for patch in &self.patches {
+            if patch.path.trim().is_empty() {
+                return Err(LspPreviewCandidateInvalid::MalformedPatch(
+                    "a patch has no path".to_string(),
+                ));
+            }
+            if patch.path.len() > MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES {
+                return Err(LspPreviewCandidateInvalid::OversizedMetadata(format!(
+                    "{}: the path is longer than the {MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES}-byte limit",
+                    patch.path
+                )));
+            }
+            if patch.patch.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES {
+                return Err(LspPreviewCandidateInvalid::MalformedPatch(format!(
+                    "{}: the patch is longer than the {}-byte limit",
+                    patch.path, MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES
+                )));
+            }
+            if patch.original_hash.len() != 64 {
+                return Err(LspPreviewCandidateInvalid::MalformedPatch(format!(
+                    "{}: the base hash is not a SHA-256 digest",
+                    patch.path
+                )));
+            }
+            total += patch.patch.len();
+        }
+        if total > MAX_LSP_PREVIEW_CANDIDATE_BYTES {
+            return Err(LspPreviewCandidateInvalid::TooLarge(total));
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // M006-B read surface
 // ---------------------------------------------------------------------------
@@ -424,9 +620,13 @@ pub struct LspSignatureParameterDto {
 
 /// A previewed document-formatting result.
 ///
-/// Preview-only: `diff` is what *would* change and `before_hash`/`after_hash`
-/// let a client prove the base it was computed against. Nothing here has been
-/// written. Applying it is an LSP write and needs an accepted ADR.
+/// `diff` is what *would* change and `before_hash`/`after_hash` let a client
+/// prove the base it was computed against. Nothing here has been written.
+///
+/// `candidate` is the material ADR-0008's apply path needs, and it is present
+/// only when the preview is complete enough to become one. Its absence is not
+/// a failure: a truncated preview, a preview with no edits, and a preview
+/// whose diff is too large to apply are all still previews.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspFormatPreviewDto {
     /// Workspace-relative path, derived by the daemon after containment.
@@ -440,6 +640,9 @@ pub struct LspFormatPreviewDto {
     /// The file changed on disk while the preview was being built, so this
     /// preview may no longer describe what is on disk.
     pub base_stale: bool,
+    /// The reviewable candidate, when this preview can become one.
+    #[serde(default)]
+    pub candidate: Option<LspPreviewCandidateDto>,
 }
 
 /// One file a rename preview would touch.
@@ -453,11 +656,14 @@ pub struct LspRenameFileDto {
 
 /// A previewed rename result.
 ///
-/// Preview-only, exactly as [`LspFormatPreviewDto`] is. `new_name` echoes the
-/// request so a client never has to correlate a preview with the input that
-/// produced it, and `old_name` is `None` when the server advertised no
-/// `prepareRename` — fabricating a placeholder there would be a guess about
-/// what the user is renaming.
+/// `new_name` echoes the request so a client never has to correlate a preview
+/// with the input that produced it, and `old_name` is `None` when the server
+/// advertised no `prepareRename` — fabricating a placeholder there would be a
+/// guess about what the user is renaming.
+///
+/// `candidate` is the material ADR-0008's apply path needs, and it is present
+/// only when every file's patch is complete. A rename whose preview was
+/// truncated, or one of whose files had its patch omitted, stays a preview.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspRenamePreviewDto {
     #[serde(default)]
@@ -470,6 +676,9 @@ pub struct LspRenamePreviewDto {
     pub warnings: Vec<String>,
     pub truncated: bool,
     pub base_stale: bool,
+    /// The reviewable candidate, when this preview can become one.
+    #[serde(default)]
+    pub candidate: Option<LspPreviewCandidateDto>,
 }
 
 /// The payload of a successful read.
@@ -1533,6 +1742,7 @@ mod tests {
                 warnings: vec!["resource operations present".to_string()],
                 truncated: false,
                 base_stale: false,
+                candidate: None,
             }),
         );
         let json = serde_json::to_string(&result).expect("a rename preview serializes");
@@ -1540,6 +1750,137 @@ mod tests {
             serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
             result
         );
+    }
+
+    /// The bridge's protocol half.
+    ///
+    /// A candidate is the material the apply path consumes, so the fields it
+    /// carries are the fields the apply path binds: an identity, a non-zero
+    /// revision, a digest, a kind the apply path accepts, and the patches
+    /// with the base each was computed against. A candidate missing any of
+    /// them is refused here, before a request is ever built.
+    #[test]
+    fn a_candidate_carries_the_material_the_apply_path_binds() {
+        let candidate = LspPreviewCandidateDto {
+            preview_id: "editor-preview-7".to_string(),
+            preview_revision: 7,
+            preview_digest: "a".repeat(64),
+            kind: "rename".to_string(),
+            title: "Rename old to new".to_string(),
+            provenance: "editor:rename:old->new".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                original_hash: "b".repeat(64),
+            }],
+        };
+        assert_eq!(candidate.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_candidate_is_refused_when_it_cannot_be_applied() {
+        let base = LspPreviewCandidateDto {
+            preview_id: "editor-preview-1".to_string(),
+            preview_revision: 1,
+            preview_digest: "a".repeat(64),
+            kind: "formatting".to_string(),
+            title: "Format src/lib.rs".to_string(),
+            provenance: "editor:format:src/lib.rs".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                original_hash: "b".repeat(64),
+            }],
+        };
+
+        let mut candidate = base.clone();
+        candidate.preview_id = "  ".to_string();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::MissingIdentity),
+            "a candidate with no identity could not be applied"
+        );
+
+        let mut candidate = base.clone();
+        candidate.preview_revision = 0;
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::InvalidRevision),
+            "the apply path rejects a zero revision"
+        );
+
+        let mut candidate = base.clone();
+        candidate.preview_digest = "short".to_string();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::InvalidDigest),
+            "the digest is what binds the request to this candidate"
+        );
+
+        let mut candidate = base.clone();
+        candidate.kind = "delete_everything".to_string();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::UnsupportedKind(
+                "delete_everything".to_string()
+            )),
+            "a kind the apply path does not implement must not travel"
+        );
+
+        let mut candidate = base.clone();
+        candidate.patches.clear();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::NoPatches),
+            "a candidate with no patches changes nothing"
+        );
+
+        let mut candidate = base.clone();
+        candidate.patches[0].original_hash = "not-a-digest".to_string();
+        assert!(
+            matches!(
+                candidate.validate(),
+                Err(LspPreviewCandidateInvalid::MalformedPatch(_))
+            ),
+            "a patch without a base hash could not be revalidated"
+        );
+
+        let mut candidate = base.clone();
+        candidate.patches[0].patch = "x".repeat(MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES + 1);
+        assert!(
+            matches!(
+                candidate.validate(),
+                Err(LspPreviewCandidateInvalid::MalformedPatch(_))
+            ),
+            "a patch the apply path would refuse must not travel"
+        );
+    }
+
+    #[test]
+    fn a_preview_without_a_candidate_is_still_a_preview() {
+        // The candidate is additive: a preview that cannot become one — a
+        // truncated rename, a preview with no edits — carries no candidate,
+        // and an older client that never heard of the field still reads it.
+        let json = r#"{
+            "operation": "format_preview",
+            "status": "ready",
+            "payload": {
+                "kind": "format_preview",
+                "path": "src/lib.rs",
+                "edit_count": 0,
+                "before_hash": "b",
+                "after_hash": "b",
+                "diff": "",
+                "truncated": true,
+                "base_stale": false
+            }
+        }"#;
+        let result: LspReadResultDto =
+            serde_json::from_str(json).expect("an older daemon preview is understood");
+        let Some(LspReadPayloadDto::FormatPreview(preview)) = result.payload else {
+            panic!("expected the format preview payload");
+        };
+        assert_eq!(preview.candidate, None);
     }
 
     #[test]
@@ -1601,6 +1942,7 @@ mod tests {
                 diff: "-a\n+b\n".to_string(),
                 truncated: false,
                 base_stale: true,
+                candidate: None,
             }),
         );
         let json = serde_json::to_string(&result).expect("a format preview serializes");

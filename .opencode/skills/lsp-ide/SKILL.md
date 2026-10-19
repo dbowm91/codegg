@@ -45,19 +45,25 @@ workspace symbols, `space d` diagnostics, `space h` and `gr` references,
 status row rather than doing nothing. M015 added the two **preview** leaves:
 `space r` previews renaming the symbol under the cursor — the new name is
 collected on the `:` line, the same line the editor's other argument-taking
-commands use — and `=` previews what formatting would change. Both show what
-would change and **apply nothing**. `space a` (code action) stays unbound with
-a visible reason, because no code-action *read* exists to preview.
+commands use — and `=` previews what formatting would change. M016 gave both
+previews a way to become an edit: a complete preview carries the material the
+apply path consumes, and the chord opens the **change review** on it, where
+`[a]pply` writes it and `Esc` rejects it. A preview that cannot be applied
+(truncated, empty, too large) stays a preview and says so. `space a` (code
+action) stays unbound with a visible reason, because no code-action *read*
+exists to preview.
 
-**Do not say the write path is missing.** ADR-0008 is accepted and owns it:
-`CoreRequest::LspPreviewApply` is authorized `via_session` + `file.modify` and
-applies a **registered, still-current reviewable preview** by id, through the
-change-review surface or the model-facing preview-apply tool. The editor's
-preview leaves produce a *read result*, not such an artifact — no preview id,
-no patches, no `register_preview_artifact` in the editor path — so they
-cannot reach it. The gap is the **bridge**, not an ADR. When that bridge is
-built, `space r` and `=` become the apply step; that transition is registered
-in `CHANGELOG.md` now so it is a documented upgrade rather than a surprise.
+**The write path is the daemon's, and it is ADR-0008's.** ADR-0008 is accepted
+and owns it: `CoreRequest::LspPreviewApply` is authorized `via_session` +
+`file.modify` and applies a digest-bound candidate through the change-review
+surface or the model-facing preview-apply tool. The editor reaches it by
+**carrying** the candidate — the daemon mints it into the read result, the
+editor holds it, and the review's accept builds the request through
+`build_apply_request`, the single place a `CoreRequest::LspPreviewApply` is
+constructed (`scripts/check_tui_editor_apply_path.py` enforces that). Nothing
+is registered: `apply_preview` recomputes the digest over the request's own
+patches, so a candidate altered in transit fails the check. Do not describe
+this as a missing ADR, and do not add a second apply path.
 Semantic tokens are only a presentation overlay for the exact controller
 revision that was queried; malformed UTF-16 ranges, overlap, unsupported types,
 or revision changes fall back to plain text.

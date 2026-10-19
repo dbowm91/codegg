@@ -35,12 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this was reported as "not ready", which sent you looking for a server that was
   already running and had already answered. The panel names the missing
   capability.
-- **Rename and format are offered as previews only.** `space r` asks the
-  language server what renaming the symbol under the cursor would touch, and `=`
-  asks what formatting would change. Both show you the answer and **write
-  nothing**. `space r` collects the new name on the `:` line — the same
-  line the editor's other argument-taking commands use — and refuses an empty
-  or over-long name without spending a request on it.
+- **Rename and format are previewed, and a preview you can apply is offered
+  for review.** `space r` asks the language server what renaming the symbol
+  under the cursor would touch, and `=` asks what formatting would change.
+  When the whole change is known, the preview opens the **change review**:
+  the diff you see is the change that would be written, `[a]pply` writes it
+  through the daemon's checked apply path — the same one `/lsp-preview-apply`
+  uses — and `Esc` rejects it. A preview that cannot be applied (a truncated
+  change, one with no edits, one too large) stays a preview and says so.
+  `space r` collects the new name on the `:` line — the same line the editor's
+  other argument-taking commands use — and refuses an empty or over-long name
+  without spending a request on it.
 - **Helix's insert-mode chords are available in `INS`.** `Ctrl+h` and `Ctrl+d`
   delete one character backward and forward, `Ctrl+j` inserts a newline, `Ctrl+k`
   and `Ctrl+u` delete to the end and the start of the line, `Ctrl+w` and
@@ -107,6 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that turns a preview into a reviewed edit, these two keys become the apply
   step instead. That change is registered here now, while the preview is what
   you learn, so it arrives as a documented upgrade rather than a surprise.
+  **That step has since arrived** — see the next bullet.
+- **`=` and `space r` now lead to the change review, and the review can
+  write.** This is the change of meaning the previous bullet registered in
+  advance. A preview that is complete enough now carries the material the
+  apply path consumes — the patches, the base each was computed against, and
+  the digest that binds them — so the chord opens the **change review** on it:
+  the diff on screen is the change that would be written, `[a]pply` sends it
+  through the daemon's checked apply path (the same path `/lsp-preview-apply`
+  uses, with the same revalidation of the file it was computed against), and
+  `Esc` rejects it. Nothing is written until you accept, and the daemon still
+  refuses an apply over unsaved edits or over a file that changed since the
+  preview was built. A preview that cannot be applied — a truncated change, one
+  with no edits, one too large — stays a preview and says so. **The keys do
+  not move**: they were "show me" before and they are "review and apply" now,
+  which is why the change is called out here.
 - **`space f` now opens the file browser instead of reading this document's
   symbols.** It was a second name for `space s`, so the file browser was
   unreachable from the editor and the symbols panel had two keys for one

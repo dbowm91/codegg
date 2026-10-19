@@ -889,29 +889,61 @@ The result names the actual `ServerCapabilities` key via
 `LspReadOperation::capability`, so a client can point at the server's own
 documentation rather than at a protocol-invented label.
 
-**Previews are previews.** `FormatPreview` and `RenamePreview` return a diff and
-a file list. Neither applies anything, and both are **previews** in the editor
-today — and they are no longer unbound: `=` reaches `FormatPreview` and
-`space r` reaches `RenamePreview`, so the two reads are on the wire and on
-screen. A rename preview additionally requires `new_name`: the whole question is
-what *that* name would touch, and inventing a placeholder when the server
-advertised no `prepareRename` would be a guess about what the user is renaming.
-`new_name` is rejected on every other operation, so a rename name cannot ride
-along on an unrelated read where nothing would consume it.
+**A preview is a read, and — when it is complete — it carries a candidate.**
+`FormatPreview` and `RenamePreview` return a diff and a file list. Neither
+applies anything: a read never writes. But a complete preview now carries the
+**material the apply path consumes** — the per-file patches, the base hash each
+was computed against, and the digest that binds a request to them — so the
+editor can offer the change for review instead of only describing it. A preview
+that could not become a candidate (a truncated one, one with no edits, one too
+large to apply) carries none, and says which it was. `=` reaches
+`FormatPreview` and `space r` reaches `RenamePreview`, so the two reads are on
+the wire and on screen. A rename preview additionally requires `new_name`: the
+whole question is what *that* name would touch, and inventing a placeholder
+when the server advertised no `prepareRename` would be a guess about what the
+user is renaming. `new_name` is rejected on every other operation, so a rename
+name cannot ride along on an unrelated read where nothing would consume it.
 
-**The apply path exists; the editor's previews cannot reach it.** This
+**The apply path exists, and the editor's previews now reach it.** This
 document already describes ADR-0008's write path above: the transport
 `CoreRequest::LspPreviewApply` is authorized as `via_session` + `file.modify`,
-and it applies a **registered, still-current reviewable preview** by id —
-through the change-review surface (`/lsp-preview-apply <id>`) or the
-model-facing `lsp_preview_apply` tool. What the editor's `=` and `space r`
-produce is a **read result**, not such an artifact: no preview id, no patches,
-no `register_preview_artifact` call anywhere in the editor path, and no
-reference to `change_review` in `src/tui/commands/editor.rs` or
-`src/tui/editor.rs`. So the two chords cannot reach the apply path — **not
-because an ADR is missing, but because the bridge from a rendered preview to a
-reviewable artifact does not exist.** That is the gap a future milestone
-closes, and it is an implementation gap rather than a decision gap.
+and it applies a digest-bound candidate through the change-review surface
+(`/lsp-preview-apply <id>`) or the model-facing `lsp_preview_apply` tool.
+
+The bridge is the **candidate**, and it travels in the read result rather than
+in a registry. That shape is forced by three facts:
+
+- `LspReadGet` registers nothing, and no protocol request lists or exports a
+  preview, so there is no registry for the editor's preview to land in;
+- the frontend's own registry — `app.lsp_tool`'s — is `None` in socket/remote
+  mode (`src/main.rs:3454`) and empty in production, because nothing in the
+  TUI calls a preview-producing operation on it. A path that needed it would
+  not reach the apply at all in the transport a remote user is on;
+- `apply_preview` never resolves a preview id. It recomputes the digest over
+  the request's **own** patches and revalidates every `original_hash` against
+  the file on disk (`src/lsp/mutation.rs:380-436`). A candidate that travelled
+  from the daemon and was altered in transit fails the check.
+
+So the daemon mints the candidate — the rename preview's per-file `patch` and
+`original_hash` were already computed by `egglsp` and **discarded** at
+`daemon_lsp.rs:664-667` — the editor carries it, and the review's accept
+builds the one request: `build_apply_request` in
+`src/tui/commands/change_review.rs`, the single place a
+`CoreRequest::LspPreviewApply` is constructed.
+`scripts/check_tui_editor_apply_path.py` makes that structural rather than
+conventional: the variant may appear in one file, with one construction,
+inside that one function.
+
+**The preview/apply transition landed, and it was registered before it did.**
+M015 recorded the change of meaning while the preview was still what a reader
+learned: *"When the bridge is built — when the editor's preview becomes a
+reviewable artifact the apply path can consume — `=` and `space r` stop showing
+what would change and start doing it."* M016 built the bridge, so `=` and
+`space r` now open the review on the candidate instead of only describing it.
+The chords do not move, so the change is invisible to anyone who did not learn
+the preview — which is why the roadmap, the closure record and the
+`CHANGELOG.md` record it, and why the preview panel says *ready to apply*
+rather than *not applied*.
 
 **A preview reaches the editor through a name the reader supplied.**
 `space r` cannot issue the read directly: the request needs a new name, and
@@ -920,14 +952,6 @@ the name is not in the buffer — it is in the reader's head. So the editor's
 pattern, and the read is issued when the line is submitted. The alternative —
 a second input mode for one more argument — would be a worse editor, and the
 `:` line already has the text handling, the bound, and the way out.
-
-**The preview/apply transition is a registered change of meaning.** When the
-bridge is built — when the editor's preview becomes a reviewable artifact the
-apply path can consume — `=` and `space r` stop showing what *would* change
-and start doing it. The chords do not move, so the change is invisible to
-anyone who did not learn the preview — which is why the roadmap, the closure
-record and the `CHANGELOG.md` all record it while the preview is what a
-reader learns.
 
 #### Warm-only reads
 

@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M013 and M015 closed; M014 blocked on ADR-0034)
+Status: active (M001–M013, M015 and M016 closed; M017 and M018 ready; M014 blocked on ADR-0034)
 
 Long-term references:
 
@@ -1430,6 +1430,184 @@ Plan: `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md`
 >    generated from `EditorCommandName::ALL` — so the new command is
 >    documented in the new "The preview keys" section instead.
 
+### M016 — The bridge: a reviewable preview
+
+**Class:** capability.
+
+**Objective.** Turn the editor's LSP **preview** into a **reviewable artifact**
+that ADR-0008's apply path can consume, so that `=` and `space r` stop only
+*showing* what would change and start *doing* it.
+
+This is the transition M015 registered in three places and deliberately did not
+land: *"When the bridge is built — when the editor's preview becomes a
+reviewable artifact ADR-0008's apply path can consume — `=` and `space r` stop
+showing what would change and start doing it."*
+(`plans/closure/tui-editor-helix-parity/015-status.md` §3.5.)
+
+**Deliverable boundary.**
+
+1. The protocol carries a **candidate** — the preview's patches, their base
+   hashes, and the identity the apply path needs — alongside the two preview
+   payloads.
+2. The daemon **mints** that candidate for the format and rename previews, and
+   mints none when the preview is truncated, patch-omitted, or empty.
+3. The editor **carries** the candidate and opens the existing change-review
+   surface on it. The review is the apply step.
+4. The **one** apply path resolves a carried candidate as well as a registry
+   entry, and the editor's buffer is reloaded after a successful apply.
+5. The preview panel's wording changes with the meaning: a candidate is *under
+   review*; a preview that cannot become one says why.
+
+**Dependencies.** M015 closed (hard — the chords and the preview reads exist).
+ADR-0008 accepted (the write path it owns). No new ADR.
+
+**Non-goals.** A code-action preview (M017). The dirty-buffer merge (named,
+deferred). A preview registry — the candidate travels in the read result. Any
+change to the model's `lsp_preview_apply` tool.
+
+> **Amendment A1 (2026-10-19) — M016 is `closed`, and the bridge's shape is
+> recorded.**
+>
+> 1. **The candidate is carried, not registered.** "Register the editor's
+>    preview so the existing apply path can find it" is **not available**:
+>    `LspReadGet` registers nothing, there is no protocol request that lists or
+>    exports a preview, and the TUI's own `app.lsp_tool` registry is `None` in
+>    socket/remote mode (`src/main.rs:3454`) and empty in production — nothing
+>    in the TUI ever calls a preview-producing operation on it. So the read
+>    result carries the candidate and the TUI relays it into the apply
+>    request. That works in **both** transports and adds no daemon state.
+> 2. **The apply path needs no registry either.** `apply_preview` verifies a
+>    digest recomputed over the request's *own* patches
+>    (`src/lsp/mutation.rs:380-401`) and revalidates every `original_hash`
+>    against the file on disk. It never resolves a preview id. So the daemon
+>    computes the digest over the same material the request carries, and a
+>    candidate altered in transit fails the check.
+> 3. **The material already exists and is discarded.** The rename preview's
+>    per-file `patch` and `original_hash` are computed by `egglsp` and dropped
+>    at `src/core/daemon_lsp.rs:664-667`.
+> 4. **The meaning change is recorded in six places**, not three: this entry,
+>    the closure record, `CHANGELOG.md` under `### Changed`, `docs/tui.md`,
+>    `architecture/tui.md` and `architecture/lsp.md` — plus the two skill
+>    files, which describe the chords to an implementing agent.
+> 5. **The dirty-buffer refusal stands.** `apply_preview` refuses to apply
+>    over a dirty buffer, and the editor is the surface that makes buffers
+>    dirty. The refusal is correct as written; the deferred ADR that would
+>    change it is not this milestone's.
+
+Plan: `plans/implementation/tui-editor-helix-parity/016-preview-apply-bridge.md`
+
+### M017 — The code-action read
+
+**Class:** capability.
+
+**Objective.** Give the code action a **read**, so `space a` previews instead of
+stating that there is nothing to preview.
+
+`space a` is the last leaf that names a thing it cannot do, and its reason is
+true: the protocol has no operation that asks a server what code actions it
+would offer. This milestone adds that read and binds the leaf to it.
+
+**Deliverable boundary.**
+
+1. The protocol gains a **code-action preview** operation and payload. The
+   read family stays read-only by construction: what travels is a summary and
+   a diff, never an edit.
+2. The daemon asks for the code actions **once** and previews each action's
+   own edit locally, so the action the user is shown is the action that would
+   be applied — there is no index to go stale between two requests.
+3. Each action that carries an edit gets a **candidate** of kind
+   `code_action`, minted through M016's bridge and reaching the apply through
+   M016's one builder.
+4. The **panel is the picker**: `j`/`k` select, `Enter` opens the change
+   review on the selected action's candidate.
+5. A command-only or disabled action cannot be applied, and says why.
+
+**Dependencies.** M016 closed (hard — the candidate and the bridge are its
+machinery). ADR-0012's read family, whose "read-only by construction" note is
+corrected in place rather than deleted: a *preview*'s payload is a diff, and
+the raw action's payload is an edit.
+
+**Non-goals.** Executing a command-only action. Choosing an action by name.
+A code-action picker as its own surface. The `Ctrl-x` completion-key blind
+spot (M018).
+
+> **Amendment A1 (2026-10-19) — M017 is `ready`, and the read's shape is
+> recorded.**
+>
+> 1. **One request, many previews.** The alternative — summaries first, then
+>    a second request naming the chosen action — has a hazard the
+>    model-facing tool already carries: the action's *index* is only
+>    meaningful for the list the server returned in that moment. A second
+>    `textDocument/codeAction` may return a different list, and the index
+>    would then name a different action than the user picked. So the daemon
+>    asks once and previews each action's own `WorkspaceEdit` locally, with
+>    `egglsp`'s `preview_workspace_edit`.
+> 2. **The panel is the picker.** A code action is a choice, and a choice
+>    needs a list. The editor's LSP panel already has that machinery — `j`/`k`
+>    move `selected_index` and `Enter` acts on the selected item — so a second
+>    input mode for one more choice would be a worse editor.
+> 3. **The candidates in one result are bounded together.** The per-candidate
+>    bound is not enough when a result carries several, so the read result
+>    gets a total bound, and the daemon says when it stops minting rather
+>    than silently offering fewer.
+> 4. **The read family's rule is corrected, not deleted.** The protocol says
+>    `CodeAction` is absent "because its answers are edits". That is true of
+>    the *raw* action. A preview's payload is a diff, which is what the
+>    format and rename previews already return.
+
+Plan: `plans/implementation/tui-editor-helix-parity/017-code-action-read.md`
+
+### M018 — The completion-trigger guard
+
+**Class:** infrastructure.
+
+**Objective.** Make the completion **triggers** visible to a guard.
+
+`handle_completion_key` sits outside the key-authority guard's scope, so the
+`Ctrl-x` chord M011 bound is invisible to it. That is the same blind spot the
+leaf tables had, and M010 closed that one with a **separate** guard rather
+than by widening the key guard. This milestone does the same thing here.
+
+**Deliverable boundary.**
+
+1. A new guard, `scripts/check_tui_editor_completion_authority.py`, reads the
+   **triggers** — the arms before the popup-open check — and asserts that
+   `F8` and `Ctrl-x` are each claimed exactly once.
+2. The guard reads the key guard's **model** for the guard-block chords, the
+   way the leaf guard does, and fails when a trigger shadows one of them.
+3. The guard checks that `Ctrl-x` is claimed in **Insert mode only** — the
+   arm's own comment says why, and a comment is not a mechanism.
+4. The popup's **own keys** (`Esc`, `Enter`, `Up`, `Down`, `j`, `k`) are not
+   editor chords: they are claimed only while the popup is open, and their
+   overlap with the Normal-mode verbs is the point of a popup.
+
+**Dependencies.** None. This milestone changes no behaviour.
+
+**Non-goals.** Changing the editor's keys. Teaching the key guard about a
+surface above its chain. A guard for the popup's own keys.
+
+> **Amendment A1 (2026-10-19) — M018 is `ready`, and the answer to §13.4
+> question 5 is recorded.**
+>
+> **Question 5 asked: "Does M011's `Ctrl-x` need a guard?"** It does, and this
+> milestone writes one. The answer is a **separate** guard, for the same
+> reason M010's leaf guard is a separate one: the completion popup is a
+> surface **above** the dispatch chain, with a modality the key guard's model
+> does not have — a claim that is conditional on a surface being open.
+>
+> 1. **The triggers and the popup's keys are told apart structurally.** The
+>    triggers are the arms **before** the popup-open check; the popup's keys
+>    are unreachable until the popup is open. A guard that counted both would
+>    report `j` and `k` twice and call it a defect.
+> 2. **The guard reads the key guard's model**, not the chain — the same
+>    relationship the leaf guard has with it. Two parsers for one dispatch
+>    shape would be two models of it.
+> 3. **A shape the guard cannot resolve is an error, not a skip.** The rule
+>    the key guard already follows, for the same reason: a guard that skips
+>    what it does not understand passes by not looking.
+
+Plan: `plans/implementation/tui-editor-helix-parity/018-completion-trigger-guard.md`
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -1569,6 +1747,9 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M013 | **closed** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | `plans/closure/tui-editor-helix-parity/013-status.md` | — |
 | M014 | **blocked** | — | — | ADR-0034 acceptance; its plan is written after the ADR selects an option |
 | M015 | **closed** | `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md` | `plans/closure/tui-editor-helix-parity/015-status.md` | M013 closed; the previews are delivered and unreachable until this lands. Closed 2026-10-19 (Amendment A1): the two previews M013 shipped now have keys — `=` shows the format preview and `space r` collects a new name on the `:` line and shows the rename preview — both apply nothing, `space a` states that no code-action request exists, and the guard's Normal chord count is **71**, one for the `=` arm |
+| M016 | **closed** | `plans/implementation/tui-editor-helix-parity/016-preview-apply-bridge.md` | `plans/closure/tui-editor-helix-parity/016-status.md` | M015 closed (hard); ADR-0008 accepted, so no new ADR. The bridge the M015 closure named: the editor's preview becomes a **reviewable artifact**, the chords lead to the change review, and the review is the apply step (Amendment A1). Closed 2026-10-19: the **candidate is carried, not registered** — `LspReadGet` registers nothing, no protocol request exports a preview, and the frontend's own registry is `None` in socket mode (`src/main.rs:3454`) and empty in production, so the read result carries the candidate and the TUI relays it. The apply path needs no registry either: `apply_preview` recomputes the digest over the request's own patches, so a candidate altered in transit fails the check. `build_apply_request` takes a *source* — the registry or a carried candidate — and is still the single place a `CoreRequest::LspPreviewApply` is constructed, which `scripts/check_tui_editor_apply_path.py` now enforces structurally. The chord and leaf counts did not move: **2 / 71 / 8** and **5 / 44 / 12** |
+| M017 | **ready** | `plans/implementation/tui-editor-helix-parity/017-code-action-read.md` | — | M016 closed (hard — the candidate and the bridge are its machinery); ADR-0012's read family, whose "read-only by construction" note is corrected in place. The code-action read: one request, many local previews, the panel as the picker (Amendment A1) |
+| M018 | **ready** | `plans/implementation/tui-editor-helix-parity/018-completion-trigger-guard.md` | — | None — this milestone changes no behaviour. The completion-trigger guard: a **separate** guard, for the same reason M010's leaf guard is (the popup is a surface above the chain, with a modality the key guard's model does not have). It reads the key guard's **model** for the guard-block chords, and it tells the triggers from the popup's own keys **structurally** — the arms before the popup-open check (Amendment A1) |
 
 **M013 is closed** (`plans/closure/tui-editor-helix-parity/013-status.md`).
 It discharges **M010**'s last dependency edge, and it found **six** further
@@ -1886,3 +2067,34 @@ session-navigation` residuals are **registered, not discharged here**. A
 closure record states the **new** failure set, not the total: if the failing
 count is not exactly 69 with the same names, that is a regression of this
 work and must be fixed before closure.
+
+### 13.6 The third wave (2026-10-19)
+
+Wave 2 (§13.2) delivered the five plans' remaining work packages. With those
+closed, the roadmap's milestones are M001–M013 and M015 `closed`, and M014
+`blocked` on ADR-0034. What remains is the **residual** the M015 closure
+registered in its own §10 table — three items, each with a named owner:
+
+| # | Residual | Owner | Milestone |
+|---|---|---|---|
+| 1 | Applying a rename, a format or a code action | The **bridge** from the editor's preview to a reviewable artifact — ADR-0008's apply path already exists | **M016** |
+| 2 | A code-action **read** (and therefore a code-action preview) | A protocol extension, then a leaf | **M017** |
+| 3 | The `Ctrl-x` guard blind spot | The key-authority guard does not scan `handle_completion_key` | **M018** |
+
+**The order is M016 → M017 → M018**, and the residual forces it: M017 mints a
+candidate of kind `code_action` through the machinery M016 builds, and M018's
+guard has to know the final shape of the chords M016 and M017 bind.
+
+**M016 is closed** (2026-10-19): the bridge is built, the candidate is carried
+rather than registered, and `=` and `space r` open the change review on it.
+M017 and M018 are `ready`.
+
+**M014 stays out of the wave.** ADR-0034 is still `proposed`, and it records
+that *"no option is selected by this record"*. Option A (a frontend tree-sitter
+dependency) and Option B (daemon-owned structural reads) produce different
+contracts and would need different plans, so writing one would be guessing at
+a decision that is not the implementation's to make.
+
+**The `Ctrl-s` / `Ctrl+r` Insert-mode conflict stays out of it too.** M011
+decided it — both keep their mode-independent meaning — and it is not a
+residual of this wave.

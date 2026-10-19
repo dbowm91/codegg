@@ -911,10 +911,10 @@ nothing, are both reported and both leave your buffer alone.
 
 ### The preview keys
 
-`=` and `space r` ask the language server what it **would** change, and show
-you the answer. Neither writes to your buffer.
+`=` and `space r` ask the language server what it **would** change, and — when
+the whole change is known — offer it for review.
 
-| Key | What it shows |
+| Key | What it does |
 |---|---|
 | `=` | the format preview for this document: the diff, and how many edits that is |
 | `space r` | the rename preview for the symbol under the cursor: the old and new names, the files that would change, and the edits in each |
@@ -926,16 +926,26 @@ could have typed by hand — `:rename-preview newname` — and it is in the
 palette like the others. An empty name is refused before a request is sent,
 and so is one longer than the server's limit; the refusal names the limit.
 
+**A preview you can apply opens the review.** The diff in the review is the
+change that would be written, and the review is where you decide:
+
+- `[a]pply` sends the change through the daemon's checked apply path — the
+  same path `/lsp-preview-apply` uses, with the same revalidation of the file
+  it was computed against;
+- `Esc` rejects it. Nothing is written.
+
+A preview that **cannot** be applied stays a preview and says so: a truncated
+change, a change with no edits, and a change too large to apply are all
+previews still. The daemon's own refusals — unsaved edits in the file, or a
+file that changed since the preview was built — appear verbatim in the review.
+
+After a successful apply the editor reloads the file it wrote, unless your
+buffer holds edits the editor has not saved; then it keeps them and tells you
+that the file changed on disk.
+
 `space a` — the code action — is not bound to a preview, because there is no
 code-action *request* to make: nothing in the protocol asks a server what
 code actions it would offer. Pressing it says so.
-
-Applying a preview is a **write**, and it is a separate, reviewed step that
-these two keys do not perform: they show you what the language server would
-change and stop there. When they grow that step, they become the apply key
-rather than the preview key — a change of meaning, and one this documentation
-and the changelog record in advance so it is an upgrade rather than a
-surprise.
 
 ### Multi-key gestures
 
@@ -1013,8 +1023,9 @@ nothing: no language server implements it here, so the editor tells you that
 instead of leaving the key dead.
 
 Two more language-server features are bound as **previews** rather than
-jumps: `=` and `space r` show what a format or a rename *would* change and
-apply nothing. See [The preview keys](#the-preview-keys).
+jumps: `=` and `space r` show what a format or a rename *would* change, and
+open the review when the whole change is known and can be applied.
+See [The preview keys](#the-preview-keys).
 
 ### The space menu
 
@@ -1025,7 +1036,7 @@ cannot. Nothing in it is dead.
 |---|---|
 | `space f` | open the workspace file browser |
 | `space ?` | open the editor's own command palette — the `:` list, filtered as you type |
-| `space r` | open the rename **preview** prompt — the `:` line, pre-filled |
+| `space r` | open the rename prompt — the `:` line, pre-filled — and preview the rename |
 | `space y` | copy every selection |
 | `space Y` | copy **only** the main selection |
 | `space p` | paste after the selection, or after the character under the cursor |
@@ -1042,9 +1053,9 @@ browser, and the two are different requests.
 `space ?` is the editor's own list of what it can do. Bare `?` still opens
 the general help; `space ?` is the editor's catalogue.
 
-`space r` and `=` show what the language server **would** change and apply
-nothing: the rename preview lists the files a rename would touch, and the
-format preview shows the diff. They are reads, and they stop at the read.
+`space r` and `=` show what the language server **would** change, and open the
+review when the change can be applied: the rename preview lists the files a
+rename would touch, and the format preview shows the diff.
 See [The preview keys](#the-preview-keys).
 
 These eight say why they cannot run rather than doing nothing:

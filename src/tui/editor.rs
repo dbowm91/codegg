@@ -548,10 +548,10 @@ pub const GOTO_LEAVES: &[PrefixLeaf] = &[
 ///
 /// - `space r` (rename) — bound to the rename **preview**
 ///   (`LspReadOperation::RenamePreview`). Helix's renames, which is an LSP
-///   *write*; CodeGG's shows what *would* change and applies nothing. The
-///   write path is not missing — ADR-0008 owns it — but it consumes a
-///   *registered reviewable artifact*, and a rendered preview is not one, so
-///   the gap is the bridge rather than the authorization.
+///   *write*; CodeGG's shows what *would* change and — since M016 — opens the
+///   change review on it when the whole rename is known. The write path is
+///   ADR-0008's, and the editor reaches it by carrying the candidate to the
+///   one builder, so nothing is registered anywhere.
 /// - `space a` (code action) — bound to a **statement**: no code-action
 ///   *read* exists in the protocol to ask with, so there is nothing to
 ///   preview.
@@ -640,10 +640,10 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
         action: PrefixAction::Effect(EditorPendingEffect::YankPrimary),
     },
     // `space r` — the rename **preview**. Helix's `space r` renames, which is
-    // an LSP *write*; CodeGG's shows what *would* change and applies nothing.
-    // The write path is not missing — ADR-0008 owns it — but it consumes a
-    // *registered reviewable artifact*, and a rendered preview is not one, so
-    // the gap is the bridge and not the authorization. The new name is
+    // an LSP *write*; CodeGG's shows what *would* change and — since M016 —
+    // opens the change review on it when the whole rename is known. The write
+    // path is ADR-0008's, and the editor reaches it by carrying the candidate
+    // to the one builder rather than by registering anything. The new name is
     // collected through the `:` command line, so the leaf arms the prompt
     // rather than issuing the read.
     PrefixLeaf {
