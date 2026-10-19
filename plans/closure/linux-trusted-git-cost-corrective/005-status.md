@@ -49,7 +49,8 @@ python3 scripts/check_git_forbidden_patterns.py
 scripts/verify.sh quick
 ```
 
-- Full CI on exact head `59ab0d2d`: [run 39255875342](https://github.com/dbowm91/codegg/actions/runs/39255875342), failed after 12,464 passed, 1 failed, 7 skipped, with 2,374 not run. The failure was a pre-v83 migration test fixture missing the `runtime_preferences` table that every real v69 database already has. The fixture was corrected to include the v69 table shape; all four `cached_models_composite_key` tests pass locally. Exact-head full CI rerun is required after push.
+- Full CI on exact head `59ab0d2d`: [run 39255875342](https://github.com/dbowm91/codegg/actions/runs/39255875342), failed after 12,464 passed, 1 failed, 7 skipped, with 2,374 not run. Its stale pre-v83 fixture lacked the `runtime_preferences` table present in every real v69 database; that fixture was corrected and all four `cached_models_composite_key` tests passed locally.
+- Full CI on exact head `1320c0b6`: [run 39259914428](https://github.com/dbowm91/codegg/actions/runs/39259914428), failed after 12,540 passed, 1 failed, 7 skipped, with 2,298 not run. The remaining failure pinned `STORAGE_LAYOUT_VERSION` to 82 after M005 added migration v83. Both `user_prompt_queue` and `user_prompt_queue_mutation` now pin v83 and document why; the focused migration test and all 34 queue-mutation tests pass locally. Rerun exact-head full CI after pushing this correction.
 - macOS target compile on `59ab0d2d`: [run 39255837320](https://github.com/dbowm91/codegg/actions/runs/39255837320), passed.
 - Latest protected-mount qualification on `59ab0d2d`: [run 39256064866](https://github.com/dbowm91/codegg/actions/runs/39256064866), passed.
 - Linux restricted-user-namespace refusal checks in run 39254354958 passed. Its positive process job was canceled during PTY qualification and is not counted as a full pass.
@@ -57,7 +58,7 @@ scripts/verify.sh quick
 
 ### Results
 
-ADR integrity and quick verification passed on the reconciled branch before this closure-record edit. The focused fixture test and entire `cached_models_composite_key` integration target pass after the correction. No hosted evidence in this section constitutes production admission.
+ADR integrity and quick verification passed on the reconciled branch before this closure-record edit. The `cached_models_composite_key` target (4/4), the focused v80 queue migration test (1/1), and the queue-mutation target (34/34) pass locally after both fixture/assertion corrections. No hosted evidence in this section constitutes production admission.
 
 ## 5. Invariant review
 
@@ -91,7 +92,7 @@ The Linux trusted Git roadmap and C002/C004 closures distinguish candidate infra
 | high | C002 writer-race, consistency, setup/resource and compatibility evidence is incomplete | A fast single-operation pilot cannot establish safe routine Git behavior | Complete the C002 closure gates and independent review. |
 | high | C004 lacks production-owned durable publication/recovery | Ordinary mutations could not safely publish index/object/ref/worktree effects | Implement and qualify a daemon-owned publisher and failure recovery. |
 | high | M005 production-owner host/configuration acceptance and independent M003/C010 admission are absent | No supported-host or release admission is established | Complete M005 owner matrix and record a separate explicit admission/rollback decision. |
-| medium | Full hosted CI after the fixture correction has not completed | Final branch integration status is not yet known | Rerun on pushed source and record final result before merge. |
+| medium | Full hosted CI after the v69 fixture and v83 assertion corrections has not completed | Final branch integration status is not yet known | Rerun on pushed source and record final result before merge. |
 
 ## 11. Roadmap disposition
 
