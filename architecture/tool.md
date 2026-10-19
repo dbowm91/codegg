@@ -792,6 +792,17 @@ projection policy. See [tool_broker.md](tool_broker.md).
 
 ## Security Considerations
 
+### Repository retrieval workspace authority
+
+Local repository retrieval is scoped from the accepted `ToolExecutionContext`
+only when it carries an allowed decision, session, decision identifier and
+workspace path-policy identity/revision. The root comes from that trusted
+context's resolved `cwd`; model arguments never select it. Missing or
+incomplete context sends an explicit disabled scope to the CodeGG-managed
+Eggsearch child. The child authenticates private metadata and isolates its
+bounded inventory view per root. This does not add file-level ACL semantics;
+workspace path policy must authorize the selected root as a whole.
+
 1. **Path validation**: All file paths validated before access
 2. **Symlink protection**: `check_path_for_symlinks()` rejects symlinks
 3. **Permission enforcement**: Tools check permissions before execution

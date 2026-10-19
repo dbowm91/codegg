@@ -326,9 +326,17 @@ See `architecture/scheduler.md`, `architecture/jobs.md`, and
 
 ## Web search and research
 
+`repo_search`, `repo_fetch`, and `repo_map` use the CodeGG-managed Eggsearch
+child for local repository retrieval. CodeGG derives one authorized workspace
+root from the accepted tool execution context for each call. If that authority
+is unavailable, local retrieval is disabled for that call; the model cannot
+choose a filesystem root. Eggsearch 0.4.4 or newer is required for this private
+host-scoped behavior. Standalone Eggsearch and explicit remote MCP connections
+do not receive CodeGG local workspace authority.
+
 CodeGG's web, repository, security, research, batch-fetch, and evidence-bundle
 tools are **wrappers** around the external `eggsearch` MCP server. Prebuilt
-installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.4.3;
+installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.4.4;
 a source install must provide it separately.
 
 ```bash

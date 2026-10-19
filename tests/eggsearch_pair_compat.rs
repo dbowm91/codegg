@@ -21,7 +21,7 @@ use codegg::tool::websearch::WebSearchTool;
 use codegg::tool::Tool;
 use serde_json::{json, Value};
 
-const EXPECTED_VERSION: &str = "0.4.3";
+const EXPECTED_VERSION: &str = "0.4.4";
 
 fn exact_version_line(output: &str) -> Option<&str> {
     let line = output.lines().next()?.trim();
@@ -116,7 +116,7 @@ fn write_offline_config(path: &Path, workspace: &Path, local_enabled: bool) {
     std::fs::write(path, contents).expect("write private eggsearch offline config");
 }
 
-fn make_private_repo(workspace: &Path) -> (PathBuf, String) {
+fn make_private_repo(workspace: &Path, label: &str) -> (PathBuf, String) {
     let repo = workspace.join("private-repo");
     std::fs::create_dir_all(&repo).expect("local_fixture: create private repository");
     std::fs::write(
@@ -124,7 +124,7 @@ fn make_private_repo(workspace: &Path) -> (PathBuf, String) {
         "CODEGG_OUT_OF_ROOT_MUST_NOT_APPEAR\n",
     )
     .expect("local_fixture: write out-of-root sentinel");
-    let marker = format!("CODEGG_EGGSEARCH_LOCAL_ONLY_{}", std::process::id());
+    let marker = format!("CODEGG_EGGSEARCH_LOCAL_ONLY_{label}_{}", std::process::id());
     std::fs::write(
         repo.join("LOCAL_ONLY_MARKER.md"),
         format!("# Private local qualification fixture\n\n{marker}\n"),
@@ -147,6 +147,18 @@ fn make_private_repo(workspace: &Path) -> (PathBuf, String) {
     (repo, marker)
 }
 
+fn authorized_context(root: &Path) -> codegg::tool::ToolExecutionContext {
+    let mut context =
+        codegg::tool::ToolExecutionContext::with_backend(codegg::tool::ToolBackendKind::Mcp);
+    context.cwd = root.to_path_buf();
+    context.session_id = Some(format!("pair-session-{}", std::process::id()));
+    context.decision_id = Some("pair-accepted-decision".into());
+    context.decision_outcome = Some("allowed".into());
+    context.workspace_path_policy_id = Some("pair-workspace-policy".into());
+    context.workspace_path_policy_revision = Some("1".into());
+    context
+}
+
 #[cfg(unix)]
 fn write_echo_launcher(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -163,6 +175,7 @@ case " $* " in
       printf 'xdg_data=%s\n' "${XDG_DATA_HOME-}"
       printf 'xdg_cache=%s\n' "${XDG_CACHE_HOME-}"
       printf 'child_sentinel=%s\n' "${CODEGG_PAIR_CHILD_SENTINEL-}"
+      printf 'host_scope_token_present=%s\n' "${CODEGG_EGGSEARCH_HOST_SCOPE_TOKEN+x}"
       printf 'parent_secret_present=%s\n' "${BRAVE_API_KEY+x}"
       printf 'parent_proxy_present=%s\n' "${HTTP_PROXY+x}"
       printf 'parent_sentinel_present=%s\n' "${CODEGG_PAIR_PARENT_SECRET_SENTINEL+x}"
@@ -269,7 +282,10 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     ] {
         std::fs::create_dir_all(dir).expect("child_environment: create private directory");
     }
-    let (private_repo, marker) = make_private_repo(&workspace);
+    let (private_repo, marker) = make_private_repo(&workspace, "workspace-a");
+    let workspace_b = private_path.join("workspace-b");
+    std::fs::create_dir_all(&workspace_b).expect("local_fixture: create second root");
+    let (private_repo_b, marker_b) = make_private_repo(&workspace_b, "workspace-b");
     write_offline_config(&eggsearch_config, &private_repo, true);
 
     #[cfg(unix)]
@@ -289,7 +305,7 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
 
     let revision = std::env::var("CODEGG_REVISION").unwrap_or_else(|_| "unknown".to_string());
     let upstream_tag = std::env::var("CODEGG_EGGSEARCH_TAG")
-        .unwrap_or_else(|_| "v0.4.3 (binary-supplied)".to_string());
+        .unwrap_or_else(|_| "0.4.4 (binary-supplied)".to_string());
     println!(
         "version_identity codegg_revision={revision} eggsearch_tag={upstream_tag} binary={} version={version_line}",
         binary.display(),
@@ -330,7 +346,7 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     assert_eq!(
         report.server_version_compatible,
         Some(true),
-        "tool_schema: compatibility"
+        "tool_schema: exact managed sidecar pin"
     );
     assert_eq!(
         report.bundled_surface_complete,
@@ -364,6 +380,27 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
                 .is_empty(),
             "tool_schema: raw MCP tools became model-visible"
         );
+        for tool in service
+            .server_tools()
+            .get("eggsearch")
+            .expect("tool_schema: discovered Eggsearch tools")
+            .iter()
+            .filter(|tool| {
+                matches!(
+                    tool.name.as_str(),
+                    "repo_search" | "repo_fetch" | "repo_map"
+                )
+            })
+        {
+            assert!(
+                tool.input_schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .is_none_or(|properties| !properties.contains_key("host_local_scope")),
+                "tool_schema: private host scope appeared in {} schema",
+                tool.name
+            );
+        }
     }
 
     let raw_status = handle
@@ -521,6 +558,11 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
             Some("injected-by-codegg"),
             "child_environment: configured sentinel missing"
         );
+        assert_eq!(
+            observed.get("host_scope_token_present").map(String::as_str),
+            Some("x"),
+            "child_environment: private host scope token missing"
+        );
         assert!(
             observed
                 .get("parent_secret_present")
@@ -642,10 +684,11 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
             json!({
                 "query": marker,
                 "include_local": true,
+                "host_local_scope": {"root": private_repo_b},
                 "providers": ["duckduckgo"],
                 "max_results": 5
             }),
-            None,
+            Some(authorized_context(&private_repo)),
         )
         .await
         .expect("repo_search: private local-only search should complete through native wrapper");
@@ -680,6 +723,25 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     assert!(
         !local_json.contains("CODEGG_OUT_OF_ROOT_MUST_NOT_APPEAR"),
         "repo_search: result escaped configured local root"
+    );
+
+    let raw_unscoped = handle
+        .read()
+        .await
+        .call_tool_structured(
+            "eggsearch",
+            "repo_search",
+            json!({"query": marker, "include_local": true}),
+        )
+        .await
+        .expect("raw MCP call must be bounded and authenticated as local-disabled");
+    let raw_value = raw_unscoped
+        .structured
+        .or_else(|| serde_json::from_str(&raw_unscoped.text).ok());
+    let raw_json = serde_json::to_string(&raw_value).expect("serialize raw MCP response");
+    assert!(
+        !raw_json.contains("LOCAL_ONLY_MARKER.md"),
+        "raw MCP call without CodeGG workspace authority leaked local file data: {raw_json}"
     );
     let queried = local_value
         .get("providers_queried")
@@ -716,10 +778,60 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     );
     println!("wrapper_request native=repo_search upstream=repo_search mode=off local_marker=pass providers_queried=local_workspace remote_attempts=0 local_provenance=pass");
 
+    let repo_search_b = RepoSearchTool::with_search_runtime(runtime.clone());
+    let repo_search_a = RepoSearchTool::with_search_runtime(runtime.clone());
+    let search_b = repo_search_b.execute_structured(
+        json!({"query": marker_b, "include_local": true, "max_results": 5}),
+        Some(authorized_context(&private_repo_b)),
+    );
+    let search_a = repo_search_a.execute_structured(
+        json!({"query": marker, "include_local": true, "max_results": 5}),
+        Some(authorized_context(&private_repo)),
+    );
+    let (second_search, first_again) = tokio::join!(search_b, search_a);
+    let second_search = second_search.expect("repo_search: second authorized workspace search");
+    let first_again = first_again.expect("repo_search: concurrent workspace A search");
+    let second_json = serde_json::to_string(&second_search.value).expect("serialize second scope");
+    assert!(
+        second_json.contains(&marker_b),
+        "workspace B marker missing"
+    );
+    assert!(
+        !second_json.contains(&marker),
+        "workspace A leaked into workspace B"
+    );
+    let concurrent_a_json =
+        serde_json::to_string(&first_again.value).expect("serialize concurrent workspace A");
+    assert!(
+        concurrent_a_json.contains(&marker),
+        "concurrent workspace A marker missing"
+    );
+    assert!(
+        !concurrent_a_json.contains(&marker_b),
+        "concurrent workspace B leaked into A"
+    );
+
+    let first_warm = RepoSearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(
+            json!({"query": marker, "include_local": true, "max_results": 5}),
+            Some(authorized_context(&private_repo)),
+        )
+        .await
+        .expect("repo_search: warm-cache workspace A search");
+    let first_again_json = serde_json::to_string(&first_warm.value).expect("serialize warm scope");
+    assert!(
+        first_again_json.contains(&marker),
+        "workspace A warm cache lost its marker"
+    );
+    assert!(
+        !first_again_json.contains(&marker_b),
+        "workspace B leaked into warm workspace A search"
+    );
+
     let no_match = RepoSearchTool::with_search_runtime(runtime.clone())
         .execute_structured(
             json!({"query": "CODEGG_NO_MATCH_7d6f8162", "include_local": true}),
-            None,
+            Some(authorized_context(&private_repo)),
         )
         .await
         .expect("repo_search: scoped local no-match should return truthful structured coverage");
@@ -760,7 +872,10 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     );
 
     let local_denied = RepoSearchTool::with_search_runtime(runtime.clone())
-        .execute_structured(json!({"query": marker, "include_local": false}), None)
+        .execute_structured(
+            json!({"query": marker, "include_local": false}),
+            Some(authorized_context(&private_repo)),
+        )
         .await
         .expect("repo_search: include_local=false should preserve typed policy response");
     assert!(
@@ -777,7 +892,7 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     let package_selection = RepoSearchTool::with_search_runtime(runtime.clone())
         .execute_structured(
             json!({"query": "crate serde", "include_local": true, "providers": ["duckduckgo"], "package": "serde", "ecosystem": "crates_io", "include_security_context": true}),
-            None,
+            Some(authorized_context(&private_repo)),
         )
         .await
         .expect("repo_search: package/security context should retain local-only result");
@@ -850,7 +965,7 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     let mut disabled_service = codegg::mcp::McpService::new();
     tokio::time::timeout(
         Duration::from_secs(10),
-        disabled_service.connect_stdio(
+        disabled_service.connect_stdio_host_scoped(
             "eggsearch",
             &binary.to_string_lossy(),
             &disabled_config
