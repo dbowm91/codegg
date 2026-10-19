@@ -976,13 +976,16 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
                 successful_race_reads += 1;
             }
             Err(codegg::managed_process::ManagedProcessError::SandboxFailed(message))
-                if message.contains("cannot inspect Git metadata identity")
-                    && message.contains("No such file or directory") =>
+                if (message.contains("cannot inspect Git metadata identity")
+                    && message.contains("No such file or directory"))
+                    || message
+                        .contains("hardlinked protected Git metadata cannot be mounted safely") =>
             {
-                // Git may remove a pack between directory enumeration and the
-                // safety scan's no-follow identity check. The launcher refuses
-                // before spawning rather than weakening the protected-tree
-                // validation; count that typed refusal as fail-closed behavior.
+                // Git's pack replacement can expose either a just-removed
+                // entry or a transient hardlink to the safety scan. The
+                // launcher refuses before spawning rather than weakening the
+                // protected-tree validation; count either typed refusal as
+                // fail-closed behavior.
                 fail_closed_race_reads += 1;
             }
             Err(error) => {
@@ -997,6 +1000,9 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
     let ref_result = ref_worker.await;
     repack_result.expect("join external repack worker");
     ref_result.expect("join external ref-update worker");
+    eprintln!(
+        "C002 repack/ref race: {successful_race_reads} enforced reads, {fail_closed_race_reads} fail-closed launch refusals"
+    );
     assert!(
         successful_race_reads > 0,
         "race probe obtained no contained reads ({} fail-closed refusals)",
