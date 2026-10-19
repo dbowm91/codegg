@@ -1935,6 +1935,322 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_staging_cancellation_kills_filter_and_preserves_source() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 for the contained Git cancellation probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("contained Git cancellation probe requires qualified M004 setup: {reason}");
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path().join("repository");
+    std::fs::create_dir(&repository).expect("create repository root");
+    let operation_scratch = tempfile::tempdir().expect("operation-owned Git scratch");
+    let operation_scratch_path = operation_scratch.path().to_path_buf();
+    let private_gitdir = operation_scratch.path().join("private.gitdir");
+    let empty_hooks = operation_scratch.path().join("empty-hooks");
+    std::fs::create_dir(&empty_hooks).expect("create empty hook directory");
+
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+    let setup = |cwd: &Path, args: &[String]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git cancellation fixture")
+    };
+
+    let init = setup(&repository, &["init".into(), "--quiet".into()]);
+    assert!(init.status.success(), "git init failed: {init:?}");
+    std::fs::write(repository.join(".gitattributes"), "slow.txt filter=slow\n")
+        .expect("write repository filter attribute");
+    std::fs::write(repository.join("slow.txt"), "baseline content\n")
+        .expect("write baseline filtered file");
+    let baseline_add = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "filter.slow.clean=cat".into(),
+            "add".into(),
+            "--".into(),
+            ".gitattributes".into(),
+            "slow.txt".into(),
+        ],
+    );
+    assert!(
+        baseline_add.status.success(),
+        "stage baseline Git fixture: {}",
+        String::from_utf8_lossy(&baseline_add.stderr)
+    );
+    let commit = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "user.name=Fixture".into(),
+            "-c".into(),
+            "user.email=fixture@example.invalid".into(),
+            "commit".into(),
+            "--quiet".into(),
+            "-m".into(),
+            "contained cancellation fixture".into(),
+        ],
+    );
+    assert!(
+        commit.status.success(),
+        "commit Git cancellation fixture: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let source_gitdir = repository.join(".git");
+    let source_odb = source_gitdir.join("objects");
+    let source_index = source_gitdir.join("index");
+    let original_index = std::fs::read(&source_index).expect("capture source index");
+    let source_gitdir_metadata = std::fs::metadata(&source_gitdir).expect("stat source gitdir");
+    let source_odb_metadata = std::fs::metadata(&source_odb).expect("stat source ODB");
+    let source_gitdir_identity = (source_gitdir_metadata.dev(), source_gitdir_metadata.ino());
+    let source_odb_identity = (source_odb_metadata.dev(), source_odb_metadata.ino());
+    let head = setup(&repository, &["rev-parse".into(), "HEAD".into()]);
+    assert!(
+        head.status.success(),
+        "resolve source HEAD failed: {head:?}"
+    );
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+
+    let private_init = setup(
+        operation_scratch.path(),
+        &[
+            "init".into(),
+            "--bare".into(),
+            "--quiet".into(),
+            private_gitdir.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        private_init.status.success(),
+        "initialize private gitdir: {}",
+        String::from_utf8_lossy(&private_init.stderr)
+    );
+    std::fs::write(
+        private_gitdir.join("objects/info/alternates"),
+        format!("{}\n", source_odb.display()),
+    )
+    .expect("point private ODB at source objects");
+    for args in [
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "update-ref".into(),
+            "refs/heads/main".into(),
+            head.clone(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "symbolic-ref".into(),
+            "HEAD".into(),
+            "refs/heads/main".into(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "read-tree".into(),
+            "HEAD".into(),
+        ],
+    ] {
+        let prepared = setup(&repository, &args);
+        assert!(
+            prepared.status.success(),
+            "prepare private Git index with {args:?}: {}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+    }
+
+    let filter_started = repository.join("filter-started");
+    let filter_survived = repository.join("filter-survived-cancellation");
+    let filter_script = operation_scratch.path().join("slow-clean-filter.sh");
+    std::fs::write(
+        &filter_script,
+        format!(
+            "#!/bin/sh\nprintf started > {}\n/usr/bin/sleep 1\nprintf survived > {}\ncat\n",
+            shell_quote(&filter_started.to_string_lossy()),
+            shell_quote(&filter_survived.to_string_lossy())
+        ),
+    )
+    .expect("write contained slow clean filter");
+    let mut filter_permissions = std::fs::metadata(&filter_script)
+        .expect("stat slow clean filter")
+        .permissions();
+    filter_permissions.set_mode(0o755);
+    std::fs::set_permissions(&filter_script, filter_permissions)
+        .expect("make slow clean filter executable");
+    for (key, value) in [
+        (
+            "filter.slow.clean",
+            filter_script.to_string_lossy().into_owned(),
+        ),
+        ("filter.slow.required", "true".into()),
+        ("core.hooksPath", empty_hooks.to_string_lossy().into_owned()),
+        ("core.fsmonitor", "false".into()),
+    ] {
+        let configured = setup(
+            &repository,
+            &[
+                format!("--git-dir={}", private_gitdir.display()),
+                "config".into(),
+                key.into(),
+                value,
+            ],
+        );
+        assert!(
+            configured.status.success(),
+            "configure private Git setting {key}: {}",
+            String::from_utf8_lossy(&configured.stderr)
+        );
+    }
+    std::fs::write(
+        repository.join("slow.txt"),
+        "cancelled content must remain private\n",
+    )
+    .expect("write updated filtered file");
+    let prospective_blob = setup(
+        &repository,
+        &[
+            "hash-object".into(),
+            "--no-filters".into(),
+            "slow.txt".into(),
+        ],
+    );
+    assert!(
+        prospective_blob.status.success(),
+        "calculate prospective filtered blob: {}",
+        String::from_utf8_lossy(&prospective_blob.stderr)
+    );
+    let prospective_blob = String::from_utf8_lossy(&prospective_blob.stdout)
+        .trim()
+        .to_owned();
+
+    let args = vec![
+        format!("--git-dir={}", private_gitdir.display()),
+        format!("--work-tree={}", repository.display()),
+        "add".into(),
+        "--".into(),
+        "slow.txt".into(),
+    ];
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_allowed_paths(vec![
+            repository.to_string_lossy().into_owned(),
+            operation_scratch.path().to_string_lossy().into_owned(),
+        ])
+        .with_linux_offline_network(true)
+        .launch_spec(&git, &args, Some(&repository))
+        .expect("construct contained Git cancellation launch");
+    assert!(
+        spec.protected_readonly_paths.contains(&source_gitdir),
+        "cancellation launch did not protect the source gitdir"
+    );
+    assert!(
+        spec.path_identities
+            .iter()
+            .any(|identity| identity.path == source_gitdir),
+        "cancellation launch did not capture the source gitdir identity"
+    );
+    let argv = std::iter::once(spec.target.as_os_str().to_owned())
+        .chain(spec.args.iter().map(OsString::from))
+        .collect();
+    let mut request = ManagedProcessRequest::new(
+        argv,
+        repository.clone(),
+        ProcessProvenance::new("linux-trusted-git-c004", "private-add-cancellation"),
+    );
+    request.timeout = Some(Duration::from_secs(10));
+    request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+        .with_var("GIT_CONFIG_NOSYSTEM", "1")
+        .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+        .with_var("HOME", "/tmp/codegg-empty-home");
+    let cancellation = CancellationToken::new();
+    request.cancellation = cancellation.clone();
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let task = tokio::spawn(ManagedProcessService::run(request));
+    for _ in 0..500 {
+        if filter_started.exists() {
+            break;
+        }
+        if task.is_finished() {
+            let early = task
+                .await
+                .expect("join early contained Git cancellation task");
+            panic!("contained Git completed before the clean filter started: {early:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        filter_started.exists(),
+        "contained clean filter did not start"
+    );
+    cancellation.cancel();
+    let result = task
+        .await
+        .expect("join contained Git cancellation task")
+        .expect("required contained Git cancellation must return its receipt");
+    assert_eq!(
+        result.termination,
+        codegg::managed_process::TerminationReason::Cancelled
+    );
+    assert!(
+        matches!(result.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+        "cancelled Git staging did not retain obtained sandbox enforcement"
+    );
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(
+        !filter_survived.exists(),
+        "contained Git cancellation left its filter process running"
+    );
+    assert_eq!(
+        std::fs::read(&source_index).expect("source index after cancellation"),
+        original_index,
+        "cancelled staging changed the protected source index"
+    );
+    assert!(
+        !source_gitdir.join("index.lock").exists(),
+        "cancelled staging left a source index lock"
+    );
+    assert!(
+        !source_odb
+            .join(&prospective_blob[..2])
+            .join(&prospective_blob[2..])
+            .exists(),
+        "cancelled staging imported its prospective blob into the source ODB"
+    );
+    let source_gitdir_after = std::fs::metadata(&source_gitdir).expect("stat gitdir after cancel");
+    let source_odb_after = std::fs::metadata(&source_odb).expect("stat ODB after cancel");
+    assert_eq!(
+        (source_gitdir_after.dev(), source_gitdir_after.ino()),
+        source_gitdir_identity,
+        "cancelled staging replaced the source gitdir"
+    );
+    assert_eq!(
+        (source_odb_after.dev(), source_odb_after.ino()),
+        source_odb_identity,
+        "cancelled staging replaced the source ODB"
+    );
+
+    drop(operation_scratch);
+    assert!(
+        !operation_scratch_path.exists(),
+        "cancelled staging retained its operation-owned private Git scratch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_network_runs_cargo_metadata_and_check_without_network() {
     if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
         eprintln!("skipped: set {M005_OPT_IN}=1 for the native M005 toolchain probe");
