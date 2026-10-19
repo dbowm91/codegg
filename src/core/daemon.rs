@@ -6016,6 +6016,10 @@ mod tests {
             let dir = tempfile::tempdir().expect("temporary credential home");
             let config_home = dir.path().join("config");
             std::fs::create_dir_all(&config_home).expect("create temporary config home");
+            // macOS resolves dirs::cache_dir() below HOME/Library/Caches;
+            // create that platform directory before session scratch setup.
+            std::fs::create_dir_all(dir.path().join("Library/Caches"))
+                .expect("create temporary cache home");
             let names = ["HOME", "XDG_CONFIG_HOME", "APPDATA"];
             let previous = names
                 .into_iter()
