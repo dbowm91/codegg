@@ -435,6 +435,16 @@ fn assert_allowed(observations: &HashMap<String, String>, name: &str) {
     );
 }
 
+/// Assert a probe that reports `correct`/`wrong` rather than
+/// `allowed`/`denied`.
+fn assert_correct(observations: &HashMap<String, String>, name: &str) {
+    assert_eq!(
+        observations.get(name).map(String::as_str),
+        Some("correct"),
+        "{name} must point at the authorized root; observations were {observations:?}"
+    );
+}
+
 /// A workspace-rooted sandbox configuration for a `WorkspaceWrite` launch.
 fn workspace_write_config(workspace: &Path) -> SandboxConfig {
     SandboxConfig::new()
@@ -789,8 +799,8 @@ async fn required_launch_confines_scratch_to_the_granted_roots() {
     let observations = parse_observations(&result.stdout.to_string_lossy());
     assert_allowed(&observations, "PRIVATE_WRITE");
     assert_allowed(&observations, "GRANTED_SHARED_WRITE");
-    assert_allowed(&observations, "PRIVATE_TEMP_VARS");
-    assert_allowed(&observations, "SHARED_ALIAS_VAR");
+    assert_correct(&observations, "PRIVATE_TEMP_VARS");
+    assert_correct(&observations, "SHARED_ALIAS_VAR");
 
     assert_denied(&observations, "UNGRANTED_SIBLING_WRITE");
     assert_denied(&observations, "FOREIGN_SESSION_WRITE");
@@ -854,8 +864,8 @@ async fn model_owned_bash_tool_confines_scratch_to_the_granted_roots() {
     let observations = parse_observations(&output.output);
     assert_allowed(&observations, "PRIVATE_WRITE");
     assert_allowed(&observations, "GRANTED_SHARED_WRITE");
-    assert_allowed(&observations, "PRIVATE_TEMP_VARS");
-    assert_allowed(&observations, "SHARED_ALIAS_VAR");
+    assert_correct(&observations, "PRIVATE_TEMP_VARS");
+    assert_correct(&observations, "SHARED_ALIAS_VAR");
 
     assert_denied(&observations, "UNGRANTED_SIBLING_WRITE");
     assert_denied(&observations, "FOREIGN_SESSION_WRITE");
