@@ -187,8 +187,56 @@ request and tries to escape the bound.
 | `cargo test --test build_quota_admission` | 18 passed |
 | `cargo test -p codegg-core --test session_launch` | 11 passed (M006, shared run) |
 | `cargo test -p codegg-core --lib jobs::quota` | 5 passed |
+| `cargo test -p codegg-core --lib jobs` | 38 passed |
+| `cargo test --test scheduler_resource_profiles` | 8 passed |
+| `cargo test --test scheduler_permit_lifecycle` | 19 passed |
+| `cargo test -p codegg-core --lib --tests` | whole crate green |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `scripts/verify.sh quick` | pass |
+
+### A pre-existing failure this milestone surfaced
+
+`crates/codegg-core/tests/user_prompt_queue.rs` and
+`…/user_prompt_queue_mutation.rs` both **hard-coded** the storage layout
+version (`assert_eq!(STORAGE_LAYOUT_VERSION, 83)`). C002 bumped the
+layout to 84 and did not update them, so both tests had been failing
+since `7fb56e11`. Nothing caught it: `verify.sh quick` does not run the
+workspace tests, and the failure was invisible to every gate CI runs.
+
+M006's own v85 bump would have failed them again. Both assertions are
+now **floors** (`>= 80` and `>= 82`) rather than equalities. The
+relationship that actually matters — the constant equals the highest
+wired migration — is already asserted directly above in both files, and
+it fails closed if a bump ever lands on one side only. The equalities
+tested nothing that the floors do not, and broke on every unrelated
+migration.
+
+### What was **not** run
+
+The **full workspace test suite** (`cargo nextest run --workspace --locked
+--profile ci`) was **not** completed on this host: the run stalled for
+more than twenty minutes on a cargo lock held by another session on the
+same machine, and was cancelled. The suite was never observed to fail —
+it never got past the lock — but it was not observed to pass either.
+
+The verification above is therefore: the whole workspace **compiles**
+(`cargo check --workspace --all-targets`, inside `verify.sh quick`), the
+whole workspace is **clippy-clean** at `-D warnings`, every guard in
+`verify.sh quick` passes, the whole `codegg-core` crate's tests are
+green, and the root-crate test suites that cover the changed areas pass.
+What is missing is the broad regression sweep over the ~6,700 root-crate
+tests.
+
+The one known pre-existing failure in that sweep is unchanged by this
+milestone: `check_policy_surface.py` fails on `tool_batch.rs` ("Always-choice
+persist must derive the capability scope"). That guard is in neither
+`verify.sh quick` nor CI, and it fails identically on the base branch.
+
+The three `agent_loop_harness` failures recorded earlier in this line are
+**environmental**, not code: this machine's `~/.cache` is mode 777 and
+`src/scratch.rs:474` refuses a group/world-writable cache root. Pointing
+`XDG_CACHE_HOME` at a 700-mode temporary directory makes that suite pass
+67/67.
 
 ## 7. Known gaps and deferred work
 

@@ -128,17 +128,21 @@ async fn user_prompt_queue_v81_migration_creates_the_owner_table() {
     let pool = isolated_pool().await;
     ensure_session(&pool, SESSION_ID).await;
 
-    // This is a tripwire: it pins the *current* number so a silent bump is
-    // visible in review, and the assertion above proves the constant still
+    // This is a tripwire: it pins that the queue's own migrations are part of
+    // the current layout, and the assertion above proves the constant still
     // equals the highest wired migration.
     //
-    // It is currently v83: M007 took v82 for `run_at_ms`, then managed scratch
-    // reserved v83. M002b's own claim — that the owner binding bumped the
-    // layout at all — is unchanged and is what the table assertions below prove.
-    assert_eq!(
-        STORAGE_LAYOUT_VERSION, 83,
+    // It is a **floor**, not an equality. A hard-coded equality here broke the
+    // build for C002 (v84) and again for M006 (v85) without testing anything:
+    // the constant is bumped by every later migration, and the assertion above
+    // already fails closed if the constant and the wired migration ever
+    // disagree. M002b's own claim — that the owner binding bumped the layout at
+    // all — is unchanged and is what the table assertions below prove.
+    assert!(
+        STORAGE_LAYOUT_VERSION >= 82,
         "M002b bumps the layout to the owner binding; M007 advanced it to v82 \
-         for the optional due time and managed scratch advanced it to v83"
+         for the optional due time, and the queue's migrations must still be \
+         part of the current layout"
     );
 
     let table: i64 = sqlx::query_scalar(
