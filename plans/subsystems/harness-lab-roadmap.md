@@ -1,6 +1,6 @@
 # Developer Harness Lab Roadmap
 
-Status: active planning — M001 and M002 ready for handoff; M003/M004 staged behind dependent evidence
+Status: active — M001 and M002 in implementation; M003/M004 staged behind dependent evidence
 
 Long-term references:
 
@@ -137,7 +137,7 @@ Two independent CodeGG versions can run headlessly and concurrently via ACP on t
 
 | Milestone | Status | Implementation plan | Closure | Blocker |
 |---|---|---|---|---|
-| M001 | ready | `implementation/harness-lab/001-concurrent-daemon-subject-lanes.md` | — | none |
-| M002 | ready | `implementation/harness-lab/002-acp-unattended-execution-contract.md` | — | none |
+| M001 | active | `implementation/harness-lab/001-concurrent-daemon-subject-lanes.md` | — | none |
+| M002 | active | `implementation/harness-lab/002-acp-unattended-execution-contract.md` | — | none |
 | M003 | blocked | `implementation/harness-lab/003-trajectory-evaluation-and-ledger.md` | — | hard: M001/M002 |
 | M004 | blocked | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | — | hard: M003 |

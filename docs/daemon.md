@@ -10,9 +10,13 @@ The daemon is the core runtime: the part of CodeGG that owns session state,
 job execution, and the event stream. Frontends — the TUI, the HTTP server —
 are clients of it.
 
-There is exactly **one daemon per OS user**, enforced by an advisory lock
-(`daemon.lock`) that the daemon holds for its whole lifetime. This is not an
-optimization; it is the invariant the rest of the system is built on.
+Ordinary CodeGG clients share exactly **one default daemon per OS user**,
+enforced by an advisory lock (`daemon.lock`) that the daemon holds for its
+whole lifetime. This is not an optimization; it is the invariant the rest of
+the system is built on. `CODEGG_DAEMON_HOME` deliberately selects a separate
+runtime root, with its own lock and state; CodeGG does not discover or attach
+to those roots unless that override is supplied. The developer-only Harness
+Lab uses private roots this way and does not change the ordinary user daemon.
 
 It exists so that:
 
@@ -50,7 +54,10 @@ Defaults per platform:
 
 Set **`CODEGG_DAEMON_HOME`** to move that root somewhere else. Every daemon
 subcommand and every frontend honors it, so pointing the whole system at one
-directory keeps them consistent.
+directory keeps them consistent. The override must identify state you intend
+to keep separate: lock, metadata, socket, catalog, configuration, and other
+user-scoped writers are rooted through their corresponding CodeGG/XDG
+overrides. See `dev/harness_lab/README.md` for the isolated test setup.
 
 ## You do not normally start the daemon
 
