@@ -223,6 +223,7 @@ async fn observer_cannot_steer_cancel_or_mutate_through_daemon() {
             messages: Vec::new(),
             reasoning: None,
             human_shell_promotion_ids: Vec::new(),
+            max_model_tokens: None,
         },
         CoreRequest::TurnCancel {
             session_id: session_id.to_owned(),
@@ -407,6 +408,7 @@ async fn target_owner_disconnect_grants_no_control_and_observer_survives() {
                 messages: Vec::new(),
                 reasoning: None,
                 human_shell_promotion_ids: Vec::new(),
+                max_model_tokens: None,
             },
         ),
         "client-watcher",

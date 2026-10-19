@@ -710,6 +710,7 @@ async fn chat_policy_matrix_end_to_end() {
             messages: Vec::new(),
             reasoning: None,
             human_shell_promotion_ids: Vec::new(),
+            max_model_tokens: None,
         },
     )
     .await;

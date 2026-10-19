@@ -198,6 +198,7 @@ async fn request_dtos_carry_no_authority() {
             current_agent_idx: 0,
             messages: Vec::new(),
             human_shell_promotion_ids: Vec::new(),
+            max_model_tokens: None,
         },
         CoreRequest::ProjectGet {
             project_id: "project-victim".to_owned(),
@@ -327,6 +328,7 @@ async fn daemon_gate_denies_remote_turn_with_zero_side_effect() {
                 current_agent_idx: 0,
                 messages: Vec::new(),
                 human_shell_promotion_ids: Vec::new(),
+                max_model_tokens: None,
             },
         ),
         "client-viewer",
@@ -359,6 +361,7 @@ async fn daemon_gate_denies_remote_turn_with_zero_side_effect() {
                 current_agent_idx: 0,
                 messages: Vec::new(),
                 human_shell_promotion_ids: Vec::new(),
+                max_model_tokens: None,
             },
         ),
         "client-controller",
