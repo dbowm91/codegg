@@ -44,7 +44,7 @@ rtk scripts/verify.sh full
 rtk cargo nextest run -p codegg --locked --profile ci -E 'test(socket_daemon_mode_never_takes_the_remote_input_path)'
 ```
 
-Results: formatting passed; harness 61/61 passed; workspace default suite 14,614 passed across 288 binaries; quick and clippy passed. The full-script attempt ran before the final test-only harness addition; it passed quick and clippy, then reported 5,128 passed and one failed before fail-fast cancellation. The implementation and TUI fixture sources are identical at the verified implementation head.
+Results at the implementation head: formatting passed; harness 61/61 passed; workspace default suite 14,614 passed across 288 binaries; quick and clippy passed. The full-script attempt at that head ran before the final test-only harness addition; it passed quick and clippy, then reported 5,128 passed and one failed before fail-fast cancellation.
 
 ## 5. Invariant review
 
@@ -66,15 +66,19 @@ No authorization ceiling was widened. Search is permission-filtered, source pagi
 
 Updated agent, context, permission, provider, and tool architecture docs plus `docs/tools.md`. Quick guards and workspace clippy pass.
 
-## 10. Unresolved findings
+## 10. Follow-up verification and findings
 
-| Severity | Finding | Impact | Required action |
-|---|---|---|---|
-| low | `socket_daemon_mode_never_takes_the_remote_input_path` fails because its socket-daemon test fixture has no `core_client`, so a bound-session submit returns Error. The fixture and submit implementation are unchanged from the reviewed baseline; baseline execution was not completed because its fresh build exceeded the available wait. | Existing TUI test does not qualify that submission path. It is outside this roadmap's implementation scope and is not a high-severity production finding. | Correct the TUI fixture in its owning workstream by installing a test `CoreClient`; rerun the test and feature-configured full verification. |
+The previously reported `socket_daemon_mode_never_takes_the_remote_input_path` fixture failure is resolved. Its test now installs a recording `CoreClient`, submits through the socket-daemon path, and asserts the accepted `TurnSubmit` request. The focused regression passes.
+
+The same verification follow-up supplied explicit canonical workspace roots to the background-shell and command-routing integration fixtures. Their binaries pass (12/12 and 21/21). A feature-enabled test build also required the server status mapper to classify `MissingWorkspaceRoot` as `400 Bad Request`; the focused feature build then passed both previously timing-out LSP scenarios.
+
+`scripts/verify.sh full` has not completed cleanly in this environment. With default concurrency, two unrelated LSP security-context cases exceeded the 120-second nextest timeout; both passed in isolation and passed in a rerun with two concurrent tests. That rerun then stopped at `live_derived_workspace_reuse_under_required_isolation`: the local Eggwork node did not advertise `isolation.landlock.workspace-rw.v1`, so the environment cannot qualify that required-isolation trajectory. Quick guards and clippy pass. This is recorded as an environment-limited verification result, not as a passing full suite.
+
+No unresolved TUI or agent-loop implementation finding remains.
 
 ## 11. Roadmap disposition
 
-M007 is closed. M001–M006 were closed first, which unblocked M007; M007 then completed the dependency audit. No future plan in this line remains eligible or blocked. The unrelated low-severity TUI fixture follow-up belongs to the TUI owner.
+M007 is closed. M001–M006 were closed first, which unblocked M007; M007 then completed the dependency audit. No future plan in this line remains eligible or blocked. The TUI test fixture correction is included as a verification follow-up; no successor plan is required.
 
 ## 12. Registry updates
 
