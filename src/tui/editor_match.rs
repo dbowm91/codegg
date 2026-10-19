@@ -289,8 +289,126 @@ pub fn enclosing_pair(text: &str, cursor: usize, pair: Pair, max_bytes: usize) -
     }
 }
 
-// ── The budget ───────────────────────────────────────────────────────────────
+/// The **innermost** pair of `pair`'s kind enclosing `cursor`.
+///
+/// The mirror of [`enclosing_pair`], which finds the **outermost** one. The
+/// difference matters whenever the same delimiter nests: on `(a(b))` with the
+/// cursor on the `b`, the outermost paren pair is the whole `(a(b))` and the
+/// innermost is `(b)` — and "the pair around the cursor" means the inner one.
+///
+/// The cursor must be strictly **inside** the pair; a cursor sitting on a
+/// delimiter is the caller's business, as for [`enclosing_pair`].
+///
+/// `max_bytes` bounds the bytes the scan may walk in total, across the
+/// backward and the forward walk. A scan that runs out of budget reports
+/// [`MatchOutcome::BudgetExhausted`].
+pub fn innermost_pair(text: &str, cursor: usize, pair: Pair, max_bytes: usize) -> MatchOutcome {
+    let mut budget = Budget::new(max_bytes);
+    innermost_pair_with(text, cursor, pair, &mut budget)
+}
 
+/// [`innermost_pair`] against a budget the caller shares.
+fn innermost_pair_with(text: &str, cursor: usize, pair: Pair, budget: &mut Budget) -> MatchOutcome {
+    let cursor = clamp_boundary(text, cursor);
+
+    if pair.is_quote() {
+        // A quote does not nest, so the innermost quote pair around the cursor
+        // is the run the cursor is inside — and the parity of the unescaped
+        // quotes before it is what says whether it is inside one at all.
+        let Some((nearest, inside)) = nearest_quote_before(text, cursor, pair.open, budget) else {
+            return if budget.exhausted {
+                MatchOutcome::BudgetExhausted
+            } else {
+                MatchOutcome::Unbalanced
+            };
+        };
+        if !inside {
+            return MatchOutcome::Unbalanced;
+        }
+        return match scan_forward(text, nearest, pair, budget) {
+            MatchOutcome::Found { open, close } if close > cursor => {
+                MatchOutcome::Found { open, close }
+            }
+            MatchOutcome::Found { .. } => MatchOutcome::Unbalanced,
+            other => other,
+        };
+    }
+
+    // Walk backward and keep the **first** opening delimiter met at depth
+    // zero: that is the nearest one, and so the innermost that can enclose the
+    // cursor. A closing delimiter met on the way is counted, not matched —
+    // it belongs to a pair that ends before the cursor.
+    let mut depth = 0usize;
+    let mut offset = cursor;
+    while let Some(start) = prev_char_start(text, offset) {
+        let len = offset - start;
+        if !budget.charge(len) {
+            return MatchOutcome::BudgetExhausted;
+        }
+        let Some(ch) = text
+            .get(start..offset)
+            .and_then(|slice| slice.chars().next())
+        else {
+            break;
+        };
+        if ch == pair.close {
+            depth += 1;
+        } else if ch == pair.open {
+            if depth == 0 {
+                return match scan_forward(text, start, pair, budget) {
+                    MatchOutcome::Found { open, close } if close > cursor => {
+                        MatchOutcome::Found { open, close }
+                    }
+                    MatchOutcome::Found { .. } => MatchOutcome::Unbalanced,
+                    other => other,
+                };
+            }
+            depth -= 1;
+        }
+        offset = start;
+    }
+    MatchOutcome::Unbalanced
+}
+
+/// The **innermost** pair of any kind enclosing `cursor`.
+///
+/// Helix's "closest pair" object. Every pair type is resolved on its own and
+/// the **tightest** result wins, which is the innermost whatever the
+/// delimiters happen to be: on `(a[b])` with the cursor on the `b`, the
+/// bracket pair is the tighter one and is the answer.
+///
+/// The budget is **shared** across the types, so one call cannot cost more
+/// than `max_bytes` in total however many pair types the table holds. A scan
+/// that runs out of budget reports [`MatchOutcome::BudgetExhausted`].
+pub fn closest_pair(text: &str, cursor: usize, max_bytes: usize) -> MatchOutcome {
+    let mut budget = Budget::new(max_bytes);
+    let cursor = clamp_boundary(text, cursor);
+    let mut best: Option<(usize, usize)> = None;
+    for pair in PAIRS {
+        let MatchOutcome::Found { open, close } =
+            innermost_pair_with(text, cursor, pair, &mut budget)
+        else {
+            continue;
+        };
+        let tighter = match best {
+            None => true,
+            Some((best_open, best_close)) => (close - open) < (best_close - best_open),
+        };
+        if tighter {
+            best = Some((open, close));
+        }
+    }
+    if let Some((open, close)) = best {
+        return MatchOutcome::Found { open, close };
+    }
+    if budget.exhausted {
+        MatchOutcome::BudgetExhausted
+    } else {
+        MatchOutcome::Unbalanced
+    }
+}
+
+// ── The budget ───────────────────────────────────────────────────────────────
 /// A byte budget a scan draws down as it walks.
 ///
 /// The budget is the bound the roadmap's exit condition asks for: no object
@@ -1031,5 +1149,101 @@ mod tests {
         let text = "(日本語)";
         let outcome = enclosing_pair(text, 2, PAREN, PLENTY);
         assert_eq!(outcome, MatchOutcome::Found { open: 0, close: 10 });
+    }
+
+    // ── the innermost pair ──
+
+    #[test]
+    fn the_innermost_pair_is_the_nearest_one_that_encloses_the_cursor() {
+        // `(a(b))` — the outer pair is `(a(b))` and the inner one is `(b)`.
+        // The cursor is on the `b`, so the inner one is the answer.
+        let text = "(a(b))";
+        assert_eq!(
+            innermost_pair(text, 3, PAREN, PLENTY),
+            MatchOutcome::Found { open: 2, close: 4 }
+        );
+        // And the **outermost** scan still says what it always said, because
+        // the two rules are different questions.
+        assert_eq!(
+            enclosing_pair(text, 3, PAREN, PLENTY),
+            MatchOutcome::Found { open: 0, close: 5 }
+        );
+    }
+
+    #[test]
+    fn the_innermost_pair_of_a_type_the_cursor_is_outside_of_is_unbalanced() {
+        let text = "f(a)b";
+        // The `b` is after the closed pair, so no paren pair encloses it.
+        assert_eq!(
+            innermost_pair(text, 5, PAREN, PLENTY),
+            MatchOutcome::Unbalanced
+        );
+    }
+
+    #[test]
+    fn the_innermost_pair_of_an_unclosed_delimiter_is_unbalanced() {
+        let text = "(abc";
+        assert_eq!(
+            innermost_pair(text, 1, PAREN, PLENTY),
+            MatchOutcome::Unbalanced
+        );
+    }
+
+    #[test]
+    fn the_innermost_pair_of_a_quote_needs_an_odd_number_of_quotes_before_it() {
+        let text = "\"abc\"";
+        // Inside the run: the opening quote is the opener.
+        assert_eq!(
+            innermost_pair(text, 2, DOUBLE_QUOTE, PLENTY),
+            MatchOutcome::Found { open: 0, close: 4 }
+        );
+        // Outside it: the quotes before the cursor balance, so there is no
+        // enclosing run.
+        assert_eq!(
+            innermost_pair(text, 6, DOUBLE_QUOTE, PLENTY),
+            MatchOutcome::Unbalanced
+        );
+    }
+
+    // ── the closest pair ──
+
+    #[test]
+    fn the_closest_pair_is_the_tightest_one_of_any_kind() {
+        // `(a[b])` with the cursor on the `b`: the bracket pair is the
+        // tighter one, and it is the answer.
+        let text = "(a[b])";
+        assert_eq!(
+            closest_pair(text, 3, PLENTY),
+            MatchOutcome::Found { open: 2, close: 4 }
+        );
+    }
+
+    #[test]
+    fn the_closest_pair_is_the_innermost_one_of_a_single_kind() {
+        let text = "(a(b))";
+        assert_eq!(
+            closest_pair(text, 3, PLENTY),
+            MatchOutcome::Found { open: 2, close: 4 }
+        );
+    }
+
+    #[test]
+    fn the_closest_pair_of_text_with_no_pair_around_the_cursor_is_unbalanced() {
+        let text = "abc";
+        assert_eq!(closest_pair(text, 1, PLENTY), MatchOutcome::Unbalanced);
+    }
+
+    #[test]
+    fn the_closest_pair_shares_one_budget_across_every_type() {
+        // Seven pair types, one budget: the whole call may not cost more
+        // than the budget says, however many types it tried.
+        let text = "(a[b])";
+        assert_eq!(
+            closest_pair(text, 3, PLENTY),
+            MatchOutcome::Found { open: 2, close: 4 }
+        );
+        // A budget too small to walk the text reports the exhaustion rather
+        // than a wrong answer.
+        assert_eq!(closest_pair(text, 3, 1), MatchOutcome::BudgetExhausted);
     }
 }

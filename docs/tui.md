@@ -720,7 +720,10 @@ Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
 `W`/`B`/`E` jump by WORD, `v` selects by character, `x` selects the whole line
 (press again for one more), `d` deletes the selection, `y` and `space y` copy
 it, and `p`/`P` paste it back — the same keys `/terminal` uses in its viewing
-mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`, where typing goes into the file and
+mode. `m` is Helix's match mode: `m m` jumps to the mate of the bracket under
+the cursor, `m s`/`m d`/`m r` surround the selection, and `m a`/`m i` select a
+text object — see [Match mode and text objects](#match-mode-and-text-objects).
+`i`/`a`/`I`/`A`/`o`/`O` enter `INS`, where typing goes into the file and
 `Esc` returns. `u`/`U` undo and redo, the Helix pair, and `Alt+u`/`Alt+U` walk
 the same history one entry at a time — see
 [History gestures](#history-gestures). In `NOR` anything the
@@ -906,13 +909,20 @@ indicator is there because a prefix that shows nothing is a prefix you cannot
 predict. `r` is a gesture too, for the same reason: it shows `r` while it waits
 for the character to write.
 
+`m` is the one mode that takes **three** keys: `m` names a command, and the
+command may name an argument. It shows `m`, then `m s`, then `m r (` — the last
+of which is the *second* half of the replace, and it has to say so, because the
+two halves are otherwise the same word on screen. See
+[Match mode and text objects](#match-mode-and-text-objects).
+
 The two gestures finish differently, on purpose. After `g`, any key belongs to
 the chord — `g j` does nothing, because `g j` is not a gesture. After `space`,
-an unmapped key is just a normal-mode key: `space j` moves down. `[` and `]`
-are Helix's unimpaired prefixes; they show their indicator too, and any key
-after them still does what it normally does. A prefix never survives leaving
-the editor, opening a different file, reloading, or moving focus to the file
-tree.
+an unmapped key is just a normal-mode key: `space j` moves down. After `m`, an
+unmapped key is a normal-mode key too: `m z` is not a gesture, so `z` is
+what you asked for. `[` and `]` are Helix's unimpaired prefixes; they show their
+indicator too, and any key after them still does what it normally does. A
+prefix never survives leaving the editor, opening a different file, reloading,
+or moving focus to the file tree.
 
 ### Goto mode
 
@@ -970,6 +980,52 @@ could only ever preview, they are absent.
 
 The function keys do the same jobs and keep working: F2 diagnostics, F3 hover,
 F4 definition, F5 references, F6 document symbols, F7 workspace symbols.
+
+### Match mode and text objects
+
+`m` is a mode, and it is the only **two-level** one: `m` names a command, and
+for most of those commands the key after it names an argument. The status row
+says which half you are in — `m`, then `m s`, then `m r (` for the two halves
+of the replace.
+
+| Gesture | What it does |
+|---|---|
+| `m m` | jump to the mate of the bracket under the cursor |
+| `m s (` | surround the selection with a pair |
+| `m d (` | remove the pair around the selection, keeping the contents |
+| `m r ( [` | replace the outer pair around the selection with another pair |
+| `m a w` | select **around** the word under the cursor |
+| `m i w` | select **inside** the word under the cursor |
+| `m i (` | select the inside of the pair under the cursor |
+| `m i m` | select the inside of the innermost pair under the cursor |
+
+The objects are `w` (word), `W` (WORD — the whitespace-delimited run), `p`
+(paragraph), a delimiter pair such as `(`, and `m` (the innermost pair of any
+kind). `a` takes the object **with** its boundary and `i` takes it **without**:
+`m a w` is the word plus the space after it, `m i w` is the word alone. `m i (`
+is the text between the brackets; `m a (` is the brackets too.
+
+A character outside that vocabulary is not an object, so it is handed back to
+the input box rather than swallowed. `m i z` types a `z`.
+
+**`m m` is a delimiter match, not a syntax match.** It counts brackets over the
+bytes around the cursor, so it finds the mate of `(`, `[`, `{`, `<`, `'`, `"`
+and `` ` ``, and it does not know what your language calls a string. When it
+cannot answer it says which of the two things went wrong — **no bracket under
+the cursor** when there is no delimiter there, and **no matching bracket** when
+the delimiter has no mate. The two are different answers and both are worth
+saying: the first means *move the cursor*, the second means *the code is
+unbalanced*.
+
+**`m r` replaces the outer pair.** On `(a(b))`, `m r ( [` gives `[a(b)]`, not
+`[a(b])` — the inner pair is left alone, so the nesting you wrote survives the
+edit. `m d` is the other way round: it removes the pair **immediately** around
+your selection, so unwrapping `b` in `(a(b))` gives `(a)`.
+
+The three surround gestures work on your selection, or on the character under
+the cursor when nothing is selected. `m s` leaves the surrounded text selected,
+so you can go on to delete or replace it as one thing. Each is one undo step,
+and each is refused on a file you cannot write.
 
 ### Unimpaired navigation
 

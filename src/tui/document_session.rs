@@ -24,7 +24,7 @@ use crate::core::CoreClient;
 
 use super::editor::{
     EditorCommand, EditorMode, EditorPoint, EditorPrefix, EditorUndoEntry, FindMotion, FindNote,
-    ParagraphNote, SelectionMotion,
+    MatchNote, ParagraphNote, SelectionMotion,
 };
 use super::helix_selection::Selection;
 
@@ -103,6 +103,18 @@ pub struct TuiDocumentPresentation {
     /// command layer immediately after — so it describes exactly one keystroke
     /// and cannot survive to be re-read as the answer to the next one.
     pub paragraph_note: ParagraphNote,
+    /// Why the last bracket-match motion did not land, if it did not.
+    ///
+    /// The third member of the same family as [`find_note`](Self::find_note)
+    /// and [`paragraph_note`](Self::paragraph_note): a motion that scans can
+    /// fail, and a failure the status row cannot see is a keypress that looks
+    /// like a dropped one.
+    ///
+    /// Written by [`editor::apply_motion`](super::editor::apply_motion) next to
+    /// the resolution that produced it, and lifted into the notice by the
+    /// command layer immediately after — so it describes exactly one keystroke
+    /// and cannot survive to be re-read as the answer to the next one.
+    pub match_note: MatchNote,
     /// The held Helix selections, in document order, or empty when nothing is
     /// selected.
     ///

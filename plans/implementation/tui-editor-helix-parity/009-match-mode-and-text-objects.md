@@ -1,8 +1,10 @@
 # TUI editor Helix parity Milestone 009 — Match mode and text objects
 
-Status: active
+Status: implemented - closed 2026-10-19
 Repository baseline: `a8778e87c` (`feat/auto-20261018-12255c45`); W1 was
 implemented against the same baseline (uncommitted at the time of writing)
+Closure: `plans/closure/tui-editor-helix-parity/009-status.md`
+Implementation decisions and recorded deviations: §17 below
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7 M009
 Long-term requirements: `plans/000-long-term-specification.md` (IDE-grade
@@ -753,3 +755,261 @@ Stop and report rather than continue if any of these holds.
   §6.1 resolves it with a payload in the enum, which keeps the
   presentation's field count at one and the prefix-state guard green. A
   reviewer should check that claim rather than trust it.
+
+## 17. Implementation decisions and recorded deviations (2026-10-19)
+
+Everything below was decided while implementing, against the code as it stood.
+Each is a place where the plan was wrong, incomplete, or silent, and where
+the implementation had to answer the question rather than guess. They are
+recorded here because **a plan that disagrees with the code is a defect**, and
+because the next reader of this milestone deserves to know which decisions
+were open and how they were settled.
+
+### 17.1 The `PrefixAction` payload is `Capture(MatchArg)` — neither §6.2 option
+
+§6.2 offered two choices and preferred (a) (`PrefixAction::Verb(HelixVerb)`,
+dropping `Copy` from `PrefixAction` and `PrefixLeaf`). **Neither was taken.**
+
+The observation that settles it: the two-level commands' leaves do not need to
+carry a *verb* at all. `m s`, `m r`, `m d`, `m a` and `m i` all say the same
+thing — **which argument is being waited for** — and the argument is the key
+after them. So the leaf carries `PrefixAction::Capture(MatchArg)`, whose
+payload is a `Copy` enum, and the verb is produced when the *capture*
+resolves.
+
+The consequences are strictly smaller than either option predicted:
+
+- `PrefixAction` and `PrefixLeaf` keep `Copy`; the leaf tables stay `const`.
+- `HelixVerb` never becomes reachable from the public `PrefixLeaf` type, so
+  its `String`-bearing variants stay out of the public surface.
+- The leaf lookup keeps `.copied()`; nothing became `Clone`-only.
+- `PrefixAction::Capture` is a *capture* arm, so it sits beside the other
+  capture grammars rather than beside the motions.
+
+§14's stop condition ("`PrefixAction` losing `Copy` causes a wider ripple than
+§6.2 predicts") did not fire, because `Copy` was never lost. The plan's
+framing was wrong about where the payload belonged.
+
+### 17.2 `EditorPrefix::display()` returns a `Cow`, so the two halves of `m r` differ
+
+§6.1 said the indicator renders `"m s"`, `"m r"`, `"m d"`, `"m a"`, `"m i"`.
+That is **not enough**: `m r` takes two characters, and
+`MatchArg::SurroundReplaceFrom` and `::SurroundReplaceTo(ch)` would both
+render `"m r"`. A reader who cannot tell the halves apart cannot predict what
+the next key does, and a pending prefix they cannot predict is a prefix they
+will get wrong.
+
+So `display()` changed from `&'static str` to
+`std::borrow::Cow<'static, str>`, and the second half renders `"m r ("` with
+the character already captured. `"m r ("` is five bytes, which is exactly
+`MAX_EDITOR_PENDING_PREFIX`, so the indicator bound is unchanged — the bound
+was chosen for the longest label and now has one.
+
+This is the roadmap's §13.4 question 4, and it is answered.
+
+### 17.3 The `m` arming arm is **one** Normal-mode chord: 69 → **70**
+
+The `m` arming arm is a single `(NONE, Char('m'))` arm. The guard counts
+**chords**, not gestures, so the count moves 69 → 70. The roadmap's stage-C
+figure was already corrected to 70 in the W1 commit; the final figure moves
+to 71 with M009 closed.
+
+### 17.4 The match-argument capture reconciles capitals; the find capture does not
+
+`MatchArg`'s object vocabulary includes `W`, and terminals disagree about how
+a capital is encoded: some send `Char('W')` with no modifier, others send
+`Char('w')` plus `SHIFT`. The `m`-grammar capture therefore upper-cases a
+`SHIFT` glyph, the way `leaf_lookup_char` does for a capital leaf.
+
+The **find and replace captures do not**, and that is a pre-existing
+difference, not a choice made here: `capture_char` takes a character as data
+and has no case to reconcile. It is recorded rather than fixed, because
+changing the find capture's behaviour is not this milestone's to change and
+would move a gesture three other milestones own.
+
+The `:` and `/` refusal **is** shared, for the same reason the find capture
+refuses them: they open modal lines that own the keyboard outright, and a
+capture that swallowed them would eat a key the reader can see doing
+something.
+
+### 17.5 An object character outside the vocabulary **retries**
+
+§6.1 says the object arguments are "restricted to the object set". It does not
+say what happens to a character outside it. The answer is **retry**: the key
+reaches the composer and the machine is left disarmed, the same rule every
+other capture follows.
+
+Not "swallow": a key that is eaten with nothing on screen is the M002
+failure mode this whole programme exists to end. Not "keep the prefix
+armed": the machine's one rule is that a prefix is disarmed when a key
+arrives, and a second rule that re-arms it would be the first.
+
+### 17.6 `m m` is a delimiter-table match, and a quote's mate is the **next** quote
+
+The pair-table divergence was already recorded in the roadmap's Amendment A3;
+it is repeated here because the implementation had to answer a question the
+plan did not: **which** quote is the mate of a quote.
+
+A quote is both an opening and a closing delimiter, so "the mate" is
+ambiguous. The implementation answers **the next unescaped quote**, which is
+the reading every editor gives a string delimiter. The alternative — the
+previous quote — would make `m m` on the *opening* quote of a string jump
+backwards past the string.
+
+### 17.7 `m d` uses the **innermost** pair and `m r` the **outermost**, on purpose
+
+§6.3 and the acceptance criteria name `(a(b))` → `[a(b)]` for `m r`, which
+fixes `m r` on the **outermost** enclosing pair: replacing the inner one
+would give `[a(b])` and lose the nesting.
+
+`m d` is not fixed by the plan, and it is deliberately **different**: it
+removes the **innermost** enclosing pair, which is the one immediately around
+the selection. Unwrapping is a local operation — on `(a(b))` with `b`
+selected, `m d` gives `(a)`, because the delimiters that come off are the ones
+touching the text you named.
+
+The asymmetry is real and is recorded rather than smoothed over: the two
+verbs answer different questions, and each rule is the one that makes its own
+criterion true.
+
+### 17.8 The surround verbs needed a **new outcome variant**
+
+§6.2 assumed a surround is "a selection-shaping verb". It is not — it is an
+**edit** that also leaves a selection behind, and `submit_edit` clears every
+selection on success, because a selection is a set of byte offsets into text
+that no longer exists.
+
+So `HelixVerbOutcome` gained `EditAndSelect(EditorEdit, Option<String>,
+Vec<Selection<EditorPoint>>)`, and the command layer applies the members
+**after** the submission. The members are in post-edit coordinates.
+
+### 17.9 The post-edit member offsets are **computed**, not read
+
+The first implementation read the member's head out of the pre-edit snapshot
+with `last_char_start(snapshot, range.end)`, where `range.end` is a post-edit
+offset. That is wrong in a way that is easy to miss: `clamp_offset` pulls a
+post-edit offset back to the **old** end of the document, so the member
+covered one character too few and the selection looked like it had not grown.
+
+The offsets are now computed: the surround-add head is
+`range.end + open_len` (the closing delimiter's own start), and the
+delete/replace heads are the content's last character **in pre-edit
+coordinates**, moved by the shift the edit causes. The shift is applied to a
+pre-edit offset on purpose, because a post-edit offset past the old end of
+the document cannot be read from the pre-edit snapshot at all.
+
+### 17.10 The scan window's field is named `chunk`, not `text`
+
+The window is a bounded slice — at most `MAX_SET_VERB_READ_BYTES` (256 KiB),
+built per keystroke and dropped at the end of it. It is **not** a retained
+document.
+
+It is nevertheless named `chunk` rather than `text`, because
+`scripts/check_tui_editor_text_authority.py` rejects a struct field named
+`text` outright, and the honest name for a bounded window is not the name of
+a document. The guard caught the planned name; the field was renamed rather
+than the guard weakened.
+
+### 17.11 `next_char_boundary`'s doc and its **tested** behaviour disagree
+
+`next_char_boundary` is documented as returning "the end of the document" and
+"`None` only when `offset` is already the end". The implementation returns
+`None` for the **last character** of a document as well, and the existing
+test `char_boundary_walk_crosses_multibyte_text` asserts that. The
+**tested** behaviour is the contract; the doc comment is loose.
+
+This cost a real bug: `char_at` used `next_char_boundary` and therefore could
+not see the last character of a document, so `m m` on a `)` at the very end
+of a file reported "no bracket under the cursor" for a bracket that was
+right there. `char_at` now uses `char_end`, which already draws the
+distinction. The helper itself was **not** changed: its behaviour is depended
+on by eleven call sites, and changing a shared helper's semantics in a
+keybinding milestone is exactly the kind of drift this programme's closure
+records exist to prevent. The doc mismatch is left for a milestone that owns
+the helper.
+
+### 17.12 The WORD object is the **non-whitespace** run, and the plan's wording is loose
+
+§6.3 calls `W` "the whitespace-delimited run". The editor's own `W`/`B`/`E`
+motions use `is_long_word_byte`, which is **"not whitespace"** — so a WORD is
+everything up to whitespace, punctuation included, exactly as `docs/tui.md`
+says. On `a.b` that is one WORD and two words.
+
+The object follows the **motion** (`is_long_word_byte`), because the object
+must agree with the `W` the reader just used to get there — the same rule
+that puts `m i w` on `is_word_byte` and not on `word_at`'s local `is_word`.
+The plan's phrase is corrected here rather than the code.
+
+### 17.13 A text object is a selection, so the read-only gate refuses it
+
+§5 and the acceptance criteria call out the *surround* verbs on a read-only
+attachment. The **object** verbs are refused there too: `m a` and `m i`
+enlarge what the reader holds, which is the same thing `v` and `x` do, and
+the read-only rule is "a reader on a document they cannot write may walk it
+but may not enlarge what it holds". `grows_selection` gained
+`HelixVerb::SelectObject` for that reason, and `mutates_buffer` gained the
+three surround verbs.
+
+### 17.14 The indicator-bound test was missing `ReplaceChar`
+
+`every_pending_prefix_display_fits_the_indicator_bound` asserted the bound
+against an explicit list of variants, and `ReplaceChar` was not on it — so the
+test's own claim ("the bound is asserted against every label") was false
+before M009 touched it. `ReplaceChar` was added, and so were the seven `m`
+rows. The bound was already true for all of them; the test was not.
+
+### 17.15 The plan's "the word must be able to span a line boundary" is imprecise
+
+§6.3 says the word object "must be able to span a line boundary the way
+Helix's does". With `is_word_byte`, a newline is a **separator**, so a word
+can never span one. The requirement that is actually implementable — and
+implemented — is that the resolver must handle a cursor at a line start or a
+line end, which it does by delegating to the same `word_forward` /
+`word_backward` / `word_end` helpers the `w` motion uses.
+
+### 17.16 The prefix-state guard learned the `m` grammar's names
+
+§6.8 said the guard "asserts the *presence* of specific names, not
+exhaustiveness, so a new variant does not fail it — but the plan should add
+the new names to the guard's required-declarations list so the grammar cannot
+be deleted silently".
+
+That was done, and the reason is sharper than the plan made it. Deleting the
+`m` grammar leaves the guard **entirely green** without it: the one-field
+rule still holds, the capture classifier still holds, and every other
+assertion is about machinery the grammar does not use. So the guard's
+required-declarations list now names `MATCH_LEAVES`, `pub enum MatchArg`,
+`PrefixAction::Capture` and `EditorPrefix::MatchArg` — and the injection
+proof (§5.3 of the closure record) renames the leaf table and watches the
+guard notice.
+
+The guard's **output** is unchanged: the required list is a set of names
+whose presence is checked, not a count, so adding names does not move the
+"one pending-prefix field" line.
+
+### 17.17 The plan's §6.8 chord figure was 66 → 67; the guard says 69 → 70
+
+§6.8 wrote "the new Normal-mode chord count (66 → 67 for the `m` arming
+arm)". Both numbers are stale: the plan counted from a baseline that predated
+M011 and M012, and the guard counts **chords**, not gestures.
+
+The `m` arming arm is one chord, so the count moves **69 → 70** from where
+M012 left it. The roadmap's stage-C figure was already corrected to 70 in
+the W1 commit, and the final figure is still **71**, recomputed once at the
+end.
+
+### 17.18 The prefix-state guard's required-declaration check moved to comment-free text
+
+§17.16 added the `m` grammar's names to the guard's required-declaration
+list. The first version of that check ran against the **raw** source, and
+the injection proof showed why that is not enough: `EditorPrefix::Match`'s
+own **doc comment** names `MATCH_LEAVES`, so renaming the leaf table left
+the name in the source and the guard stayed green.
+
+A doc comment that mentions a name is prose about the grammar, not the
+grammar. The check now runs against the same comment-stripped text the
+guard's forbidden-name scan already used, and the injection renames **every**
+occurrence — including the prose — to prove the check is real.
+
+The guard's **output** is unchanged: the required list is a set of names
+whose presence is checked, not a count.

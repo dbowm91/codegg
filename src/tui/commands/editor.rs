@@ -1671,33 +1671,42 @@ pub(crate) fn editor_motion(state: &mut EditorState, command: EditorCommand, vis
     // describe the keystroke that just happened. Left in the presentation it
     // would be overwritten by the next `j` while the notice kept describing a
     // `]p` the reader never sent.
-    lift_paragraph_note(state);
+    lift_motion_notes(state);
 }
 
-/// Move a paragraph motion's disclosure from the presentation into the notice.
+/// Move a motion's disclosure from the presentation into the notice.
 ///
-/// One function for both motion entry points, because a paragraph motion
-/// reaches the presentation by either of two routes — [`editor_motion`] for a
-/// bare `j`/`k`/`h`/`l` and a leaf, [`helix_motion`] for `Alt-.` and the
-/// page keys — and a clear that only happened on one of them let a refusal
-/// outlive its keystroke: `]p` at the last paragraph, then `h`, left "no next
+/// One function for every motion entry point, because a motion reaches the
+/// presentation by either of two routes — [`editor_motion`] for a bare
+/// `j`/`k`/`h`/`l` and a leaf, [`helix_motion`] for `Alt-.` and the page
+/// keys — and a clear that only happened on one of them let a refusal outlive
+/// its keystroke: `]p` at the last paragraph, then `h`, left "no next
 /// paragraph" on screen beside a cursor that had since moved left.
+///
+/// The paragraph and the bracket notes are read **together**, because only one
+/// motion can have run: a keystroke is either a `]p` or an `m m`, never
+/// both, so at most one of the two notes is ever set. Reading them in one
+/// place is what keeps that true — two separate lifts would let the second
+/// clear the first's words.
 ///
 /// Set **or** clear, so a motion with nothing to say takes the previous
 /// motion's words down. That is safe because no motion path sets a notice
 /// except this one; the read-only refusals belong to the *edit* funnels, which
 /// never come through here.
-fn lift_paragraph_note(state: &mut EditorState) {
-    let note = state
+fn lift_motion_notes(state: &mut EditorState) {
+    let label = state
         .session
         .as_mut()
         .map(|session| {
-            let note = session.presentation().paragraph_note;
-            session.presentation_mut().paragraph_note = editor::ParagraphNote::None;
-            note
+            let presentation = session.presentation_mut();
+            let paragraph = presentation.paragraph_note;
+            presentation.paragraph_note = editor::ParagraphNote::None;
+            let bracket = presentation.match_note;
+            presentation.match_note = editor::MatchNote::None;
+            paragraph.label().or_else(|| bracket.label())
         })
         .unwrap_or_default();
-    match note.label() {
+    match label {
         Some(label) => state.set_notice(EditorNotice::Note(label)),
         None => state.clear_notice(),
     }
@@ -3117,6 +3126,93 @@ fn leaf_lookup_char(key: KeyEvent) -> Option<char> {
     }
 }
 
+/// The character an `m`-grammar argument should use, if `key` carries one.
+///
+/// **Not** [`capture_char`]. The `m` grammar's object arguments include `W` —
+/// the WORD object — and terminals disagree about how a capital is encoded:
+/// some send `Char('W')` with no modifier, others send `Char('w')` plus
+/// `SHIFT`. The find and replace captures take a character as data and have
+/// no case to reconcile; the object arguments do, and a capital that arrived
+/// as a lowercase `w` would name the *word* object instead of the *WORD* one.
+///
+/// The `:` and `/` refusal is the one [`capture_char`] makes, for the same
+/// reason: they open modal lines that own the keyboard outright, and a
+/// capture that swallowed them would eat a key the reader can see doing
+/// something.
+fn match_arg_char(key: KeyEvent) -> Option<char> {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Char(':')) | (KeyModifiers::NONE, KeyCode::Char('/')) => None,
+        (KeyModifiers::NONE, KeyCode::Char(target)) => Some(target),
+        (KeyModifiers::SHIFT, KeyCode::Char(target)) => Some(target.to_ascii_uppercase()),
+        _ => None,
+    }
+}
+
+/// Arm the second level of the `m` grammar.
+///
+/// The one place the `m` sub-state is written, so the transition cannot be
+/// spelled two ways.
+fn arm_match_arg(state: &mut EditorState, arg: editor::MatchArg) {
+    if let Some(session) = state.session.as_mut() {
+        session
+            .presentation_mut()
+            .arm_prefix(EditorPrefix::MatchArg(arg));
+    }
+}
+
+/// Resolve one `m`-grammar argument against the character it captured.
+///
+/// The argument's **command** decides what happens; the character is data.
+/// The two object arguments are the exception: their vocabulary is fixed, and
+/// a character outside it is not a slightly-wrong object but not an object
+/// at all — so the key is handed back to the composer rather than eaten.
+fn resolve_match_arg(
+    state: &mut EditorState,
+    arg: editor::MatchArg,
+    target: char,
+) -> PrefixResolution {
+    match arg {
+        // The replace takes **two** characters: the first is held while the
+        // second is waited for, which is why the prefix's variant carries a
+        // payload rather than being a plain flag.
+        editor::MatchArg::SurroundReplaceFrom => {
+            arm_match_arg(state, editor::MatchArg::SurroundReplaceTo(target));
+            PrefixResolution::Handled(BufferKey::Consumed)
+        }
+        editor::MatchArg::SurroundAdd => {
+            apply_helix_edit(state, editor::HelixVerb::SurroundAdd { ch: target });
+            PrefixResolution::Handled(BufferKey::Consumed)
+        }
+        editor::MatchArg::SurroundDelete => {
+            apply_helix_edit(state, editor::HelixVerb::SurroundDelete { ch: target });
+            PrefixResolution::Handled(BufferKey::Consumed)
+        }
+        editor::MatchArg::SurroundReplaceTo(from) => {
+            apply_helix_edit(
+                state,
+                editor::HelixVerb::SurroundReplace { from, to: target },
+            );
+            PrefixResolution::Handled(BufferKey::Consumed)
+        }
+        editor::MatchArg::AroundObject | editor::MatchArg::InnerObject => {
+            let Some(kind) = editor::ObjectKind::from_char(target) else {
+                // Not an object. The key falls through to the composer rather
+                // than being swallowed, and the machine is left disarmed —
+                // the same rule every other capture follows.
+                return PrefixResolution::Retry;
+            };
+            apply_helix(
+                state,
+                editor::HelixVerb::SelectObject {
+                    kind,
+                    around: matches!(arg, editor::MatchArg::AroundObject),
+                },
+            );
+            PrefixResolution::Handled(BufferKey::Consumed)
+        }
+    }
+}
+
 /// Resolve `key` against the armed prefix, disarming it either way.
 ///
 /// This is the single place prefix state is read or written on the dispatch
@@ -3135,14 +3231,23 @@ fn resolve_pending_prefix(
     key: KeyEvent,
     visible_lines: usize,
 ) -> PrefixResolution {
-    let Some(session) = state.session.as_mut() else {
-        return PrefixResolution::Idle;
+    // The armed prefix is read and the machine disarmed in one step, and the
+    // session borrow is **released** before anything else happens. The
+    // resolutions below call back into `state`, and a borrow that spanned
+    // them would make the second call a second mutable borrow of the same
+    // state — which is why the `m` grammar's second level, which has to arm
+    // the prefix again, needed this split.
+    let pending = {
+        let Some(session) = state.session.as_mut() else {
+            return PrefixResolution::Idle;
+        };
+        let pending = session.presentation().pending_prefix;
+        if !pending.is_pending() {
+            return PrefixResolution::Idle;
+        }
+        session.presentation_mut().disarm_prefix();
+        pending
     };
-    let pending = session.presentation().pending_prefix;
-    if !pending.is_pending() {
-        return PrefixResolution::Idle;
-    }
-    session.presentation_mut().disarm_prefix();
 
     // Capture prefixes are resolved *before* the leaf table because their next
     // key is data, not a leaf: `EditorPrefix::leaves` is empty for all of
@@ -3154,6 +3259,18 @@ fn resolve_pending_prefix(
     // once — so a third capture grammar added later cannot arrive with its
     // own copy of any of the three.
     if pending.is_capture() {
+        // The `m` grammar's second level has its **own** capture rule, because
+        // its object arguments include a capital and the terminals disagree
+        // about how one is encoded. It is resolved first, and it owns its
+        // whole branch, so the find and replace captures cannot grow a case
+        // rule by accident.
+        if let Some(arg) = pending.match_arg() {
+            let Some(target) = match_arg_char(key) else {
+                // Not a target: hand the key back rather than swallow it.
+                return PrefixResolution::Retry;
+            };
+            return resolve_match_arg(state, arg, target);
+        }
         let Some(target) = capture_char(key) else {
             // Not a target: hand the key back rather than swallow it.
             return PrefixResolution::Retry;
@@ -3205,7 +3322,12 @@ fn resolve_pending_prefix(
                 PrefixResolution::Handled(BufferKey::Consumed)
             }
             editor::PrefixAction::YankSelection => {
-                let ranges = yank_ranges(session);
+                let ranges = {
+                    let Some(session) = state.session.as_mut() else {
+                        return PrefixResolution::Handled(BufferKey::Consumed);
+                    };
+                    yank_ranges(session)
+                };
                 PrefixResolution::Handled(if ranges.is_empty() {
                     BufferKey::Consumed
                 } else {
@@ -3224,6 +3346,13 @@ fn resolve_pending_prefix(
             // is the exact behaviour the milestone forbids.
             editor::PrefixAction::Edit(command) => {
                 editor_editing_command(state, command);
+                PrefixResolution::Handled(BufferKey::Consumed)
+            }
+            // The second level of a two-level grammar. The leaf does not run a
+            // verb: it says **which argument is being waited for**, and the
+            // argument itself is the key after it.
+            editor::PrefixAction::Capture(arg) => {
+                arm_match_arg(state, arg);
                 PrefixResolution::Handled(BufferKey::Consumed)
             }
             // Name the request; do not perform it. Running an LSP read needs
@@ -3426,6 +3555,17 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // second key is consumed rather than retried.
         (m, KeyCode::Char('g')) if m == none => {
             session.presentation_mut().arm_prefix(EditorPrefix::Goto);
+            BufferKey::Consumed
+        }
+        // Helix's `m` — match mode. The **first** level of a two-level
+        // grammar: the next key is the command (`m m`, `m s`, `m a`), and for
+        // most of those commands the key after that is the argument.
+        //
+        // The second level rides in the prefix's own payload rather than in a
+        // second field on the presentation, so the machine stays one prefix
+        // wide — see `EditorPrefix::MatchArg`.
+        (m, KeyCode::Char('m')) if m == none => {
+            session.presentation_mut().arm_prefix(EditorPrefix::Match);
             BufferKey::Consumed
         }
         (m, KeyCode::Char('w')) if m == none => {
@@ -4005,7 +4145,7 @@ fn helix_motion(state: &mut EditorState, command: EditorCommand, _visible_lines:
     // `j`/`k`/`h`/`l` arrive via `editor_motion`; `Alt-.` and the page keys
     // arrive here. Without this a refusal disclosed through the repeat would
     // be resolved on the probe and then discarded with it.
-    lift_paragraph_note(state);
+    lift_motion_notes(state);
 }
 
 /// Apply a Helix verb, returning a delete/yank effect when one is requested.
@@ -4047,18 +4187,39 @@ fn apply_helix(state: &mut EditorState, verb: editor::HelixVerb) -> editor::Heli
 /// implementation that could disagree about any of them.
 fn apply_helix_edit(state: &mut EditorState, verb: editor::HelixVerb) -> editor::HelixVerbOutcome {
     let outcome = apply_helix(state, verb);
-    if let editor::HelixVerbOutcome::Edit(edit, note) = outcome {
-        submit_edit(state, edit);
-        // **After** the submission: `submit_edit` clears the notice on
-        // success, so a disclosure set before it would be erased by the very
-        // edit it describes. `&` uses this to say a selection was too wide to
-        // measure exactly.
-        if let Some(note) = note {
-            state.set_notice(EditorNotice::Note(note));
+    match outcome {
+        editor::HelixVerbOutcome::Edit(edit, note) => {
+            submit_edit(state, edit);
+            // **After** the submission: `submit_edit` clears the notice on
+            // success, so a disclosure set before it would be erased by the very
+            // edit it describes. `&` uses this to say a selection was too wide to
+            // measure exactly.
+            if let Some(note) = note {
+                state.set_notice(EditorNotice::Note(note));
+            }
+            editor::HelixVerbOutcome::Handled
         }
-        editor::HelixVerbOutcome::Handled
-    } else {
-        outcome
+        // The surround verbs, which leave a selection behind.
+        //
+        // The order matters twice over. `submit_edit` clears every selection
+        // on success — a selection is a set of byte offsets into text that
+        // no longer exists — so the selection the verb produced is applied
+        // **after** the submission, not before. And the members are in
+        // post-edit coordinates, so they can only be right once the edit has
+        // landed.
+        editor::HelixVerbOutcome::EditAndSelect(edit, note, selections) => {
+            submit_edit(state, edit);
+            if let Some(note) = note {
+                state.set_notice(EditorNotice::Note(note));
+            }
+            if let Some(session) = state.session.as_mut() {
+                let presentation = session.presentation_mut();
+                presentation.selections = selections;
+                presentation.primary_index = 0;
+            }
+            editor::HelixVerbOutcome::Handled
+        }
+        other => other,
     }
 }
 
@@ -4072,7 +4233,14 @@ fn apply_helix_edit(state: &mut EditorState, verb: editor::HelixVerb) -> editor:
 fn grows_selection(verb: &editor::HelixVerb) -> bool {
     matches!(
         verb,
-        editor::HelixVerb::SelectChar | editor::HelixVerb::SelectLine
+        editor::HelixVerb::SelectChar
+            | editor::HelixVerb::SelectLine
+            // A text object is a selection the reader asked for by name, and
+            // it is refused on a read-only attachment for the same reason `v`
+            // and `x` are: it enlarges what the reader holds, and a reader
+            // looking at a file they cannot write has no business enlarging
+            // it.
+            | editor::HelixVerb::SelectObject { .. }
     )
 }
 
@@ -4085,7 +4253,15 @@ fn grows_selection(verb: &editor::HelixVerb) -> bool {
 fn mutates_buffer(verb: &editor::HelixVerb) -> bool {
     matches!(
         verb,
-        editor::HelixVerb::AlignSelections | editor::HelixVerb::RotateSelectionContents { .. }
+        editor::HelixVerb::AlignSelections
+            | editor::HelixVerb::RotateSelectionContents { .. }
+            // The three surround verbs write: they insert, remove or replace
+            // delimiters. They are gated here rather than only by the shared
+            // edit funnel, so a reader on a read-only attachment is told the
+            // gesture is not available instead of watching it appear to work.
+            | editor::HelixVerb::SurroundAdd { .. }
+            | editor::HelixVerb::SurroundDelete { .. }
+            | editor::HelixVerb::SurroundReplace { .. }
     )
 }
 
@@ -5758,12 +5934,13 @@ mod tests {
         // the character-finding gestures, and `y`, `p` and `~` left it in
         // M004, when they became Normal-mode verbs of their own rather than
         // only a leaf of `space`. `%` left it in M008, with the rest of the
-        // selection-manipulation surface. That is the intended shape of the
+        // selection-manipulation surface, and `m` left it in M009, when the
+        // match-mode grammar claimed it. That is the intended shape of the
         // failure: the list asserts which keys the buffer has *not* taken, so
         // claiming a key is supposed to require removing it here rather than
         // quietly widening the buffer. It is a to-do list for whoever claims
         // the next one, not a permanent record.
-        for letter in ['q', 'z', 'c', 'm', 's', 'J', '?'] {
+        for letter in ['q', 'z', 'c', 's', 'J', '?'] {
             assert_eq!(
                 normal(&mut state, KeyCode::Char(letter)),
                 BufferKey::Unhandled,
@@ -9924,6 +10101,312 @@ mod tests {
             state.notice,
             Some(EditorNotice::ReadOnly),
             "the refusal is surfaced explicitly"
+        );
+    }
+
+    // ── M009: match mode and text objects ─────────────────────────────────
+
+    /// Hold one member over `start..end`, the way a verb that grew a
+    /// selection would.
+    ///
+    /// The head is the **last character's start**, because a character
+    /// selection's range runs to `char_end(head)` — a head at `end` would
+    /// cover one character too many.
+    fn hold_range(state: &mut EditorState, start: usize, end: usize) {
+        let snapshot = snapshot_of(state);
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(&snapshot, byte),
+        };
+        let member = Selection {
+            anchor: point(start),
+            head: point(end.saturating_sub(1)),
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        };
+        let presentation = state.session.as_mut().unwrap().presentation_mut();
+        presentation.selections = vec![member];
+        presentation.primary_index = 0;
+    }
+
+    /// Press the keys of a gesture, in order.
+    fn press_all(state: &mut EditorState, keys: &[KeyCode]) {
+        for key in keys {
+            assert_eq!(
+                normal(state, *key),
+                BufferKey::Consumed,
+                "{key:?} was not claimed by the gesture"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn m_arms_the_match_prefix_and_the_indicator_shows_it() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
+        assert_eq!(
+            pending(&state),
+            "m",
+            "an armed `m` that draws nothing is indistinguishable from a dropped key"
+        );
+    }
+
+    #[tokio::test]
+    async fn m_then_an_unlisted_glyph_reaches_the_composer() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('z')),
+            BufferKey::Unhandled,
+            "an unmatched second key must reach the composer, not be eaten"
+        );
+        assert_eq!(pending(&state), "", "and the machine is left disarmed");
+    }
+
+    #[tokio::test]
+    async fn m_m_jumps_to_the_mate_of_the_bracket_under_the_cursor() {
+        let (mut state, _daemon) = opened_writer("(abc)").await;
+        park(&mut state, 0);
+        press_all(&mut state, &[KeyCode::Char('m'), KeyCode::Char('m')]);
+        assert_eq!(cursor(&state), 4, "the `)` is the mate of the `(`");
+
+        let (mut state, _daemon) = opened_writer("(abc)").await;
+        park(&mut state, 4);
+        press_all(&mut state, &[KeyCode::Char('m'), KeyCode::Char('m')]);
+        assert_eq!(cursor(&state), 0, "and back again");
+    }
+
+    #[tokio::test]
+    async fn m_m_on_a_non_delimiter_refuses_with_a_reason() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        park(&mut state, 1);
+        press_all(&mut state, &[KeyCode::Char('m'), KeyCode::Char('m')]);
+        assert_eq!(cursor(&state), 1, "the cursor does not move");
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("no bracket")),
+            "a refused motion must say why: {:?}",
+            notice_of(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn m_m_on_an_unbalanced_delimiter_refuses_with_the_unbalanced_reason() {
+        let (mut state, _daemon) = opened_writer("(abc").await;
+        park(&mut state, 0);
+        press_all(&mut state, &[KeyCode::Char('m'), KeyCode::Char('m')]);
+        assert_eq!(cursor(&state), 0, "the cursor does not move");
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("no matching bracket")),
+            "the two refusals must be distinguishable: {:?}",
+            notice_of(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn m_i_selects_the_interior_of_the_pair_under_the_cursor() {
+        let (mut state, _daemon) = opened_writer("f(abc)g").await;
+        park(&mut state, 3);
+        press_all(&mut state, &[KeyCode::Char('m'), KeyCode::Char('i')]);
+        assert_eq!(pending(&state), "m i", "the second level shows itself");
+        assert_eq!(normal(&mut state, KeyCode::Char('(')), BufferKey::Consumed);
+        assert_eq!(
+            held_ranges(&state),
+            vec![2..5],
+            "the interior, without the delimiters"
+        );
+    }
+
+    #[tokio::test]
+    async fn m_i_m_selects_the_innermost_pair_not_the_outer_one() {
+        let (mut state, _daemon) = opened_writer("(a(b)c)").await;
+        park(&mut state, 3);
+        press_all(
+            &mut state,
+            &[KeyCode::Char('m'), KeyCode::Char('i'), KeyCode::Char('m')],
+        );
+        assert_eq!(
+            held_ranges(&state),
+            vec![3..4],
+            "the innermost pair, not the outer one"
+        );
+    }
+
+    #[tokio::test]
+    async fn m_a_w_takes_the_trailing_space_and_m_i_w_does_not() {
+        let (mut state, _daemon) = opened_writer("ab cd").await;
+        park(&mut state, 0);
+        press_all(
+            &mut state,
+            &[KeyCode::Char('m'), KeyCode::Char('i'), KeyCode::Char('w')],
+        );
+        assert_eq!(held_ranges(&state), vec![0..2], "the word alone");
+
+        let (mut state, _daemon) = opened_writer("ab cd").await;
+        park(&mut state, 0);
+        press_all(
+            &mut state,
+            &[KeyCode::Char('m'), KeyCode::Char('a'), KeyCode::Char('w')],
+        );
+        assert_eq!(
+            held_ranges(&state),
+            vec![0..3],
+            "the word and the whitespace that follows it"
+        );
+    }
+
+    #[tokio::test]
+    async fn m_i_w_reads_a_capital_sent_as_a_shifted_lowercase() {
+        // Terminals disagree about how a capital is encoded: some send
+        // `Char('W')` with no modifier, others send `Char('w')` plus `SHIFT`.
+        // The WORD object is the one that has a capital in it, so the
+        // disagreement has to be reconciled or `W` would name the *word*
+        // object on half the terminals.
+        //
+        // The text is chosen so the two objects differ: a word is
+        // alphanumerics and `_`, a WORD is everything up to whitespace, so
+        // `a.b` is one WORD and two words.
+        let (mut state, _daemon) = opened_writer("a.b cd").await;
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char('i')), BufferKey::Consumed);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('w'), KeyModifiers::SHIFT),
+            BufferKey::Consumed
+        );
+        assert_eq!(held_ranges(&state), vec![0..3], "the WORD, not the word");
+    }
+
+    #[tokio::test]
+    async fn the_two_spellings_of_the_capital_name_the_same_object() {
+        // The other half of the same question: the two spellings must agree
+        // with each other, and disagree with the lowercase.
+        let (mut state, _daemon) = opened_writer("a.b cd").await;
+        park(&mut state, 0);
+        press_all(
+            &mut state,
+            &[KeyCode::Char('m'), KeyCode::Char('i'), KeyCode::Char('w')],
+        );
+        assert_eq!(held_ranges(&state), vec![0..1], "the word");
+
+        let (mut state, _daemon) = opened_writer("a.b cd").await;
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char('i')), BufferKey::Consumed);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('W'), KeyModifiers::NONE),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            held_ranges(&state),
+            vec![0..3],
+            "the WORD, under the other spelling"
+        );
+    }
+
+    #[tokio::test]
+    async fn m_i_with_a_character_outside_the_object_vocabulary_reaches_the_composer() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('m')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char('i')), BufferKey::Consumed);
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('z')),
+            BufferKey::Unhandled,
+            "a character that names no object must not be swallowed"
+        );
+        let empty: Vec<std::ops::Range<usize>> = Vec::new();
+        assert_eq!(held_ranges(&state), empty, "and nothing was selected");
+    }
+
+    #[tokio::test]
+    async fn m_s_surrounds_the_selection_and_grows_it_over_the_new_delimiters() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        hold_range(&mut state, 0, 3);
+        park(&mut state, 0);
+        press_all(&mut state, &[KeyCode::Char('m'), KeyCode::Char('s')]);
+        assert_eq!(pending(&state), "m s");
+        assert_eq!(normal(&mut state, KeyCode::Char('(')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "(abc)");
+        assert_eq!(
+            held_ranges(&state),
+            vec![0..5],
+            "the selection grew over the new delimiters"
+        );
+        assert_eq!(undo_depth(&state), 1, "and it is one undo step");
+    }
+
+    #[tokio::test]
+    async fn m_d_removes_the_delimiters_and_keeps_the_contents() {
+        let (mut state, _daemon) = opened_writer("(abc)").await;
+        hold_range(&mut state, 1, 4);
+        park(&mut state, 1);
+        press_all(
+            &mut state,
+            &[KeyCode::Char('m'), KeyCode::Char('d'), KeyCode::Char('(')],
+        );
+        assert_eq!(editor_text(&state), "abc");
+        assert_eq!(
+            held_ranges(&state),
+            vec![0..3],
+            "the contents stay selected"
+        );
+        assert_eq!(undo_depth(&state), 1, "and it is one undo step");
+    }
+
+    #[tokio::test]
+    async fn m_r_replaces_the_outermost_pair_and_keeps_the_inner_ones() {
+        let (mut state, _daemon) = opened_writer("(a(b))").await;
+        hold_range(&mut state, 1, 5);
+        park(&mut state, 1);
+        press_all(&mut state, &[KeyCode::Char('m'), KeyCode::Char('r')]);
+        assert_eq!(pending(&state), "m r", "the first half of the replace");
+        assert_eq!(normal(&mut state, KeyCode::Char('(')), BufferKey::Consumed);
+        assert_eq!(pending(&state), "m r (", "and the second half says so");
+        assert_eq!(normal(&mut state, KeyCode::Char('[')), BufferKey::Consumed);
+        assert_eq!(
+            editor_text(&state),
+            "[a(b)]",
+            "the outer pair is replaced, so the inner one survives"
+        );
+        assert_eq!(undo_depth(&state), 1, "and it is one undo step");
+    }
+
+    #[tokio::test]
+    async fn m_s_is_refused_on_a_read_only_attachment() {
+        let (mut state, _daemon) = opened_reader("abc").await;
+        hold_range(&mut state, 0, 3);
+        park(&mut state, 0);
+        press_all(
+            &mut state,
+            &[KeyCode::Char('m'), KeyCode::Char('s'), KeyCode::Char('(')],
+        );
+        assert_eq!(editor_text(&state), "abc", "nothing was written");
+        assert_eq!(undo_depth(&state), 0, "and nothing was recorded");
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("Read-only")),
+            "the refusal is surfaced explicitly: {:?}",
+            notice_of(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn m_a_is_refused_on_a_read_only_attachment() {
+        let (mut state, _daemon) = opened_reader("abc").await;
+        park(&mut state, 0);
+        press_all(
+            &mut state,
+            &[KeyCode::Char('m'), KeyCode::Char('a'), KeyCode::Char('w')],
+        );
+        let empty: Vec<std::ops::Range<usize>> = Vec::new();
+        assert_eq!(
+            held_ranges(&state),
+            empty,
+            "a text object enlarges the selection, and a reader may not enlarge one"
+        );
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("Read-only")),
+            "the refusal is surfaced explicitly: {:?}",
+            notice_of(&state)
         );
     }
 }

@@ -2399,6 +2399,18 @@ mod tests {
             EditorPrefix::FindPrevious,
             EditorPrefix::FindTillNext,
             EditorPrefix::FindTillPrevious,
+            // The `m` grammar's two levels. Both are here because the `m`
+            // level is the one pending state whose *second* level is a
+            // different state again: a reader who armed `m` and then `m r`
+            // has to be able to see which half they are in, and the two
+            // halves must not render alike.
+            EditorPrefix::Match,
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundAdd),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundDelete),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceFrom),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceTo('(')),
+            EditorPrefix::MatchArg(editor::MatchArg::AroundObject),
+            EditorPrefix::MatchArg(editor::MatchArg::InnerObject),
         ] {
             let lines = render(
                 "content",
@@ -2421,16 +2433,23 @@ mod tests {
                     EditorPrefix::FindPrevious,
                     EditorPrefix::FindTillNext,
                     EditorPrefix::FindTillPrevious,
+                    EditorPrefix::Match,
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundAdd),
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundDelete),
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceFrom),
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceTo('(')),
+                    EditorPrefix::MatchArg(editor::MatchArg::AroundObject),
+                    EditorPrefix::MatchArg(editor::MatchArg::InnerObject),
                 ] {
                     assert!(
-                        !banner.contains(armed.display()),
+                        !banner.contains(armed.display().as_ref()),
                         "an idle editor must not show {armed:?}'s indicator {:?}: {banner:?}",
                         armed.display()
                     );
                 }
             } else {
                 assert!(
-                    banner.contains(prefix.display()),
+                    banner.contains(prefix.display().as_ref()),
                     "{prefix:?} renders {:?} but the banner reads {banner:?}",
                     prefix.display()
                 );

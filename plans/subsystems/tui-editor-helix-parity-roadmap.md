@@ -783,6 +783,39 @@ and never scan the whole buffer per keystroke.
 >
 > Plan: `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md`
 
+> **Amendment A4 (2026-10-19) — M009 is closed, and the `PrefixAction`
+> question is answered by a third answer.**
+>
+> 1. **M009 is `closed`.** Closure record:
+>    `plans/closure/tui-editor-helix-parity/009-status.md`. The `m` grammar
+>    landed whole: `m m` (bracket match), `m s` / `m d` / `m r` (surround,
+>    unsurround, re-surround), and `m a` / `m i` (the word, WORD, paragraph,
+>    delimiter-pair and closest-pair text objects). The status row shows
+>    which half of the grammar is pending, and a bracket match that cannot
+>    land says **which** of the two things went wrong — "no bracket under
+>    the cursor" and "no matching bracket" are different answers.
+> 2. **§13.4 question 2 is answered, and neither option (a) nor option (b)
+>    was taken.** The leaf table does not need to carry a *verb*: the
+>    two-level commands' leaves all say the same thing — **which argument is
+>    being waited for** — so the leaf carries `PrefixAction::Capture(MatchArg)`,
+>    whose payload is a `Copy` enum, and the verb is produced when the
+>    *capture* resolves. `Copy` was never lost, the leaf tables stayed
+>    `const`, and §14's stop condition never fired. Recorded in the plan's
+>    §17.1.
+> 3. **§13.4 question 4 is answered: the indicator renders on the
+>    presentation's own banner row**, beside the history cursor and the
+>    pending find, and the two halves of `m r` are told apart by the
+>    **character already captured** — `"m r"` and `"m r ("`. That required
+>    `EditorPrefix::display()` to return a `Cow<'static, str>` rather than a
+>    `&'static str`. `"m r ("` is five bytes, which is exactly
+>    `MAX_EDITOR_PENDING_PREFIX`, so the indicator bound is unchanged. See the
+>    plan's §17.2.
+> 4. **The Normal-mode chord count moves 69 → 70**, one chord for the `m`
+>    arming arm. The final figure is still 71, recomputed once at the end.
+> 5. **The byte-derived boundary is what landed, and it is the whole of this
+>    milestone's scope.** The syntax-node object slice (`f`, `t`, `a`, `c`,
+>    `T`, `x`) and a syntax-aware `m m` remain M014's, blocked on ADR-0034.
+
 ### M013 — LSP read delivery and editor reachability
 
 Class: invariant (delivery) + enabling capability (reach)
@@ -1386,7 +1419,7 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M006 | **closed** | `plans/implementation/tui-editor-helix-parity/006-unimpaired-navigation-non-ts-subset.md` | `plans/closure/tui-editor-helix-parity/006-status.md` | — |
 | M007 | **closed** | `plans/implementation/tui-editor-helix-parity/007-multi-selection-core.md` | `plans/closure/tui-editor-helix-parity/007-status.md` | — |
 | M008 | **closed** | `plans/implementation/tui-editor-helix-parity/008-multi-selection-command-surface.md` | `plans/closure/tui-editor-helix-parity/008-status.md` | — |
-| M009 | **active** | `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md` | — | Byte-derived boundary only; the syntax-node slice moved to M014 (Amendment A3). W1 landed: the byte foundation, in `src/tui/editor_match.rs` |
+| M009 | **closed** | `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md` | `plans/closure/tui-editor-helix-parity/009-status.md` | Byte-derived boundary only; the syntax-node slice moved to M014 (Amendment A3). Closed 2026-10-19 (Amendment A4): the `m` grammar landed whole — bracket match, three surrounds, five text objects — and the guard's Normal chord count is **70**, one for the `m` arming arm |
 | M010 | **active** | `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md` | — | M013 closed; M005 closed earlier — unblocked. W1 landed: the pending-effect mechanism is editor-level, in `src/tui/editor_effect.rs` |
 | M011 | **closed** | `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md` | `plans/closure/tui-editor-helix-parity/011-status.md` | M002 edge discharged; the `Ctrl+s`/`Ctrl+r` conflict is decided (Amendment A1). Closed 2026-10-19 (Amendment A2): the nine insert-mode chords are bound with one owner each, the two mode-blind panels are fixed, a typing burst is one undo step, and the guard's Insert chord count is **8** — not the 9 §13 originally recorded |
 | M012 | **closed** | `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md` | `plans/closure/tui-editor-helix-parity/012-status.md` | M002 edge discharged; sequenced after M011 (Amendment A1). Closed 2026-10-19 (Amendment A2): the history is one list with a cursor in it, `Alt-u`/`Alt-U` walk it and report their boundary, the position is observable on the banner row, the memory bound is one cap, and the guard's Normal chord count is **69** — not the 68 the plan recorded, because the two spellings of the capital differ in the key code |
@@ -1632,11 +1665,15 @@ Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
    would have been wrong: `EditorState` is not where the history lives, and
    a session that had to be discarded from two places would eventually be
    discarded from one.
-2. **M009's `PrefixAction` payload: option (a) or (b)?** Option (a) drops
-   `Copy` from `PrefixLeaf` and constrains every future leaf to a
-   const-constructible payload; option (b) costs one mapping arm and keeps
-   the M005-frozen `leaves()` interface. M009 §6.2 records (a) as preferred
-   and §14's stop condition fires on it.
+2. ~~**M009's `PrefixAction` payload: option (a) or (b)?**~~ **Answered by
+   M009 (2026-10-19), by a third answer.** Option (a) drops `Copy` from
+   `PrefixLeaf` and constrains every future leaf to a const-constructible
+   payload; option (b) costs one mapping arm and keeps the M005-frozen
+   `leaves()` interface. Neither was taken: the leaf carries
+   `PrefixAction::Capture(MatchArg)`, whose payload is a `Copy` enum, and
+   the verb is produced when the **capture** resolves. `Copy` was never
+   lost, the leaf tables stayed `const`, and §14's stop condition never
+   fired. See Amendment A4 and the plan's §17.1.
 3. ~~**Is the count test 24 or 25?**~~ **Answered by M012 (2026-10-19).** It
    is **24**, with `Alt-U`'s second spelling exercised by a **separate** test
    — `alt_u_accepts_both_terminal_spellings_of_the_capital` — so the number
@@ -1646,9 +1683,14 @@ Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
    different spelling of the same chord. The guard's own count is **69**,
    not 68: it counts *chords* (arms), and the two spellings of the capital
    differ in the key code, so they need two arms. See Amendment A2.
-4. **Where does M009's `m`-prefix indicator render, and what does `MatchArg`
-   display?** `MatchArg::SurroundReplaceFrom` and `::SurroundReplaceTo` would
-   both display `"m r"`, and the reader cannot tell which half is pending.
+4. ~~**Where does M009's `m`-prefix indicator render, and what does
+   `MatchArg` display?**~~ **Answered by M009 (2026-10-19).** The indicator
+   renders on the presentation's own banner row, beside the history cursor
+   and the pending find. `MatchArg::SurroundReplaceFrom` and
+   `::SurroundReplaceTo(ch)` are told apart by the **character already
+   captured**: the second half renders `"m r ("`, which required
+   `EditorPrefix::display()` to return a `Cow<'static, str>` rather than a
+   `&'static str`. See Amendment A4 and the plan's §17.2.
 5. **Does M011's `Ctrl-x` need a guard?** `handle_completion_key` is outside
    the key-authority guard's scope, so the chord is invisible to it — the
    same blind spot the plans note for the leaf tables.

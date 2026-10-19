@@ -3456,6 +3456,9 @@ would have changed a gesture while looking like a refactor.
 | `OpenBracket` | `[` | none until M006 | retried | `[` |
 | `CloseBracket` | `]` | none until M006 | retried | `]` |
 | `FindNext`/`FindPrevious`/`FindTillNext`/`FindTillPrevious` | `f`/`F`/`t`/`T` | none — the next key is data | retried | the key itself |
+| `ReplaceChar` | `r` | none — the next key is data | retried | `r` |
+| `Match` | `m` | `m`, `s`, `r`, `d`, `a`, `i` | retried | `m` |
+| `MatchArg(arg)` | `m` then a command | none — the next key is data | retried | `m s`, `m r`, `m r (`, `m a`, `m i` |
 
 The unimpaired prefixes retry rather than swallow because their leaves are two
 milestones away: swallowing there would mean a `[` followed by a letter lost
@@ -3805,6 +3808,90 @@ when they are absent. The command performs only a *lexical* path check — no
 filesystem access, no path resolution; containment, `file.read`
 authorization, and symlink policy remain the daemon's decision in
 `DocumentOpen`.
+
+#### The `m` grammar: one prefix, two levels, one field
+
+Helix's `m` is the only **two-level** grammar in this editor: `m` names a
+command, and for most of those commands the key after it names an argument
+(`m s (`, `m r ( [`, `m a w`). One pending-prefix field cannot hold that
+directly — but it does not have to.
+
+**The sub-state rides in the variant.** `EditorPrefix` is
+`EditorPrefix::Match` for the first level and `EditorPrefix::MatchArg(arg)`
+for the second, with `MatchArg` carrying *which* argument is pending. The
+presentation still has exactly one prefix field, so
+`scripts/check_tui_editor_prefix_state.py` stays green — and the alternative
+(a second `pending_*` field) is what that guard exists to prevent.
+
+**The leaf table does not carry the verb.** `MATCH_LEAVES` pairs a glyph with
+a `PrefixAction`, and the two-level commands' leaves carry
+`PrefixAction::Capture(MatchArg)`, which says **which argument is being
+waited for** and nothing else. The verb is produced when the *capture*
+resolves. That is what keeps `PrefixAction` and `PrefixLeaf` `Copy` and the
+leaf tables `const`: the payload is a `Copy` enum, not a `HelixVerb` — which
+is not `Copy`, because the regex verbs carry a `String`.
+
+**The two halves of `m r` must not look alike.** `m r` takes two characters.
+`MatchArg::SurroundReplaceFrom` and `::SurroundReplaceTo(ch)` would both
+render `"m r"`, and a reader who cannot tell them apart cannot predict what
+the next key does — so `EditorPrefix::display()` returns a
+`Cow<'static, str>` and the second half renders `"m r ("`, with the
+character already captured. `"m r ("` is five bytes, which is exactly
+`MAX_EDITOR_PENDING_PREFIX`, so the indicator bound is unchanged.
+
+**A capital is reconciled, not passed through.** The object vocabulary
+includes `W`, and terminals disagree about how a capital is encoded: some
+send `Char('W')` with no modifier, others `Char('w')` plus `SHIFT`. The
+`m`-grammar capture upper-cases a `SHIFT` glyph, the way `leaf_lookup_char`
+does for a capital leaf. The find and replace captures take a character as
+*data* and do **not** reconcile case — a latent difference, recorded rather
+than fixed, because changing the find capture's behaviour is not this
+milestone's to change.
+
+**The `m` grammar retries, it does not swallow.** `m z` is not a gesture, so
+`z` is what the reader asked for: the key reaches the composer and the
+machine is left disarmed. `EditorPrefix::Match::swallows_unmatched` is
+`false` for that reason.
+
+**Pair scanning is byte-derived and bounded.** `src/tui/editor_match.rs` owns
+the delimiter table (`PAIRS`: `(`, `[`, `{`, `<`, `'`, `"`, `` ` ``) and the
+scans. Every scan runs inside a **window** of at most
+`MAX_SET_VERB_READ_BYTES` (256 KiB) centred on the cursor and snapped to
+character boundaries, so one keystroke cannot cost more than one screenful
+of the document. The window's offsets are window-relative and are mapped
+back with the window's base.
+
+**`m m` is a delimiter match, not a syntax match.** Helix marks it `TS`; this
+editor counts brackets over bytes. The divergence is deliberate and
+recorded — the alternative is a key that does nothing. A syntax-aware `m m`
+is M014's slice, behind ADR-0034.
+
+**Three refusals, not one.** "No bracket under the cursor" and "no matching
+bracket" are different answers and both are reported: the first says *move
+the cursor*, the second says *the code is unbalanced*. The disclosure lives
+on `TuiDocumentPresentation::match_note`, beside the find and paragraph
+notes, and is lifted into the notice by `lift_motion_notes` immediately
+after the motion — so it describes exactly one keystroke and cannot outlive
+it.
+
+**The surround verbs edit through the shared funnel, and then hold a
+selection.** `submit_edit` clears every selection on success, because a
+selection is a set of byte offsets into text that no longer exists. The
+surround verbs mean to leave one behind — `m s` grows it over the new
+delimiters — so `HelixVerbOutcome::EditAndSelect` carries the members, and
+the caller applies them **after** the submission. The members are in
+post-edit coordinates, and they are computed rather than read: a post-edit
+offset past the old end of the document cannot be read from the pre-edit
+snapshot at all, because `clamp_offset` would pull it back to the old end.
+
+**`m d` and `m r` disagree about which pair they mean, on purpose.** `m r`
+replaces the **outermost** enclosing pair, so the nesting inside survives
+(`(a(b))` → `[a(b)]`). `m d` removes the **innermost** pair, which is the
+one immediately around the selection, so unwrapping is local.
+
+**A text object is a selection, and it is gated like one.** `m a` and `m i`
+enlarge what the reader holds, so they are refused on a read-only
+attachment, for the same reason `v` and `x` are.
 
 #### The change verbs, and why `p` reads the system clipboard
 

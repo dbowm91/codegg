@@ -450,6 +450,37 @@ model to the wrong connection.
   binding that does not exist. When the two spellings differ in the *key
   code* — `Alt+U` is `Char('U')` with `ALT` **or** `Char('u')` with
   `ALT | SHIFT` — they need two arms, and the guard counts arms.
+- **The `m` grammar is two levels, and the sub-state rides in the variant.**
+  `EditorPrefix::Match` is the first level and `EditorPrefix::MatchArg(arg)`
+  is the second, with `MatchArg` naming the argument being waited for — so
+  the presentation still has **one** pending-prefix field and
+  `scripts/check_tui_editor_prefix_state.py` stays green. A second
+  `pending_*` field is exactly what that guard exists to prevent.
+  The leaf table does not carry a **verb**: the two-level commands' leaves
+  all carry `PrefixAction::Capture(MatchArg)`, whose payload is a `Copy`
+  enum, and the verb is produced when the *capture* resolves — which is what
+  keeps `PrefixAction` and `PrefixLeaf` `Copy` and the leaf tables `const`.
+  `EditorPrefix::display()` returns a `Cow` so the two halves of `m r` do
+  not render alike: the second half shows the character already captured
+  (`m r (`).
+- **A bracket match that cannot land says which of the two things went
+  wrong.** `m m` on no delimiter and `m m` on a delimiter with no mate are
+  different answers — one means *move the cursor*, the other means *the code
+  is unbalanced* — and both are reported. The disclosure lives on
+  `TuiDocumentPresentation::match_note`, beside the find and paragraph
+  notes, and `lift_motion_notes` lifts it into the notice immediately after
+  the motion, so it describes exactly one keystroke.
+- **A surround edits, and then holds a selection.** `submit_edit` clears
+  every selection on success, so a verb that means to leave one behind says
+  which one: `HelixVerbOutcome::EditAndSelect` carries the members, and the
+  command layer applies them **after** the submission. The members are in
+  **post-edit** coordinates, and they are **computed** rather than read — a
+  post-edit offset past the old end of the document cannot be read from the
+  pre-edit snapshot, because `clamp_offset` pulls it back to the old end.
+- **A text object follows the motion, not a private rule.** `m i w` uses
+  `is_word_byte` and `m i W` uses `is_long_word_byte`, so each object agrees
+  with the `w`/`W` the reader just used to get there. A WORD is everything
+  up to whitespace, punctuation included — on `a.b` the two objects differ.
 - **A panel never claims a key that means text.** In `INS` a printable is
   text. The completion popup and the LSP diagnostics panel are mode-aware:
   their `j`/`k`/`r`/`Enter` claims are Normal-mode claims, and in `INS` the
@@ -1212,6 +1243,8 @@ adding TUI code - they are the executable form of the invariants above.
 |---|---|
 | `python3 scripts/check_tui_project_authority.py` | Scans `tui/app/state/**`, `tui/app/mod.rs`, `tui/commands/**`, `tui/runtime/**`, `tui/command.rs`, and `tui/components/dialogs/command.rs`; rejects `session_state.project_dir` and `std::env::current_dir()` as project authority. Only clearly marked bootstrap boundaries and test fixtures are exempt. |
 | `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
+| `python3 scripts/check_tui_editor_key_authority.py` | Scans the editor's dispatch stages and rejects a chord claimed twice, a chord claimed by a later stage after an earlier one took it, and a shadowed arm. The conflict model is the **exact modifier bitmask**, so `ALT` and `ALT \| SHIFT` are disjoint. `--self-test` runs ten cases, including one the guard cannot resolve — that must be an error, not a pass. |
+| `python3 scripts/check_tui_editor_prefix_state.py` | Rejects a second pending-prefix mechanism: the presentation must hold exactly one, typed `EditorPrefix`. A grammar that wants a second level puts it in the **variant** (`EditorPrefix::MatchArg`), not in a second field. |
 
 ## Testing
 

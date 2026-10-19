@@ -60,6 +60,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history cursor is not at the newest change, the status row says
   `history 1/3`; at the newest change it says nothing, so the ordinary case
   is unchanged.
+- **Helix's match mode is available in `NOR`.** `m m` jumps to the mate of
+  the bracket under the cursor; `m s`/`m d`/`m r` surround, unsurround and
+  re-surround the selection; and `m a`/`m i` select a text object — a word,
+  a WORD, a paragraph, a bracket pair or the innermost pair around the
+  cursor. The status row shows which half of the grammar you are in, so
+  `m r (` tells you that the first character of the replacement pair has
+  already been taken.
+- **A bracket match that cannot land now says which of the two things went
+  wrong.** "No bracket under the cursor" and "no matching bracket" are
+  different answers — one means *move the cursor*, the other means *the code
+  is unbalanced* — and both appear in the status row instead of leaving the
+  key looking dropped.
+- **The surround gestures keep their selection.** `m s` leaves the
+  surrounded text selected so you can go on to delete or replace it as one
+  thing, and each surround is a single undo step.
 
 ### Changed
 

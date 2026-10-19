@@ -123,6 +123,19 @@ REQUIRED_MODEL_DECLARATIONS = [
     # removing it satisfies every other assertion here while leaving `r`
     # unable to resolve at all.
     "ReplaceChar",
+    # The `m` grammar's two levels. The first level's leaf table and the
+    # second level's payload are both asserted by name: deleting either
+    # satisfies every other assertion here — the one-field rule still
+    # holds, the capture classifier still holds — while leaving `m` with
+    # nothing to resolve.
+    "MATCH_LEAVES",
+    "pub enum MatchArg",
+    # The arm that carries the second level, and the variant that holds it.
+    # Together they are the shape a future two-level grammar must copy
+    # rather than invent: a `Copy` payload in the variant, not a second
+    # field on the presentation.
+    "PrefixAction::Capture",
+    "EditorPrefix::MatchArg",
     "MAX_EDITOR_PENDING_PREFIX",
 ]
 
@@ -221,6 +234,14 @@ def main() -> int:
         return 2
 
     raw_text = "\n".join(path.read_text() for path in sources)
+    # The required declarations are checked against **comment-free** text. A
+    # doc comment that mentions a name is prose about the grammar, not the
+    # grammar: `EditorPrefix::Match`'s own doc comment names `MATCH_LEAVES`,
+    # so without this the whole `m` grammar could be deleted and the guard
+    # would still be green — the prose would still be there. The forbidden
+    # names below are checked against the same stripped text, for the same
+    # reason.
+    code_text = "\n".join(strip_comments(path.read_text()) for path in sources)
 
     # 1. The deleted names anywhere under src/ — including tests, so a helper
     #    that resurrects one fails the build rather than merely compiling.
@@ -269,7 +290,7 @@ def main() -> int:
     #    and the two operations live on the presentation in `document_session`,
     #    while the resolver lives with the dispatch tables in `commands`.
     for needle in REQUIRED_MODEL_DECLARATIONS + REQUIRED_STATE_DECLARATIONS:
-        if needle not in raw_text:
+        if needle not in code_text:
             violations.append(f"expected declaration `{needle}` is absent from src/")
 
     if violations:

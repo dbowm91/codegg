@@ -46,6 +46,7 @@ use codegg_protocol::lsp::LspReadOperation;
 use super::document_session::TuiDocumentPresentation;
 use crate::tui::editor_effect::EditorPendingEffect;
 use crate::tui::editor_lsp::EditorDiagnosticStep;
+use crate::tui::editor_match;
 use crate::tui::helix_selection::{Selection, SelectionMode, SelectionState};
 
 /// Maximum retained undo/redo entries per document attachment.
@@ -121,6 +122,80 @@ pub enum EditorPrefix {
     /// four find prefixes are: `r` has no single-key spelling, and the key it
     /// takes next is **data**. See [`Self::is_capture`] and [`Self::leaves`].
     ReplaceChar,
+    /// Helix `m` — the match-mode prefix. Leaves: [`MATCH_LEAVES`].
+    ///
+    /// The first level of a **two-level** grammar. Helix's `m` takes a
+    /// command (`m m`, `m s`, `m a`) and then, for most of those commands, an
+    /// argument (`m s (`, `m a w`). One field still carries that: the second
+    /// level is [`Self::MatchArg`], whose payload says which half of the
+    /// gesture is pending.
+    Match,
+    /// Helix's `m` **argument** — the second level of the `m` grammar.
+    ///
+    /// A **capture**: the next key is the argument as *data*, not a command.
+    /// The payload rides in the variant, so the presentation still has
+    /// exactly one prefix field and the prefix-state guard stays green.
+    ///
+    /// [`MatchArg::SurroundReplaceTo`] is the one variant that carries a
+    /// character, and it is there because `m r` takes **two**: the first
+    /// character is held while the second is waited for, and a single
+    /// `EditorPrefix` value has to be able to say which half is pending.
+    MatchArg(MatchArg),
+}
+
+/// What the `m` grammar is waiting for.
+///
+/// The second level of Helix's two-level `m`. Every variant except
+/// [`Self::SurroundReplaceTo`] is waiting for its **first** character; the
+/// replace is the one gesture that takes two, and its second half carries the
+/// first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchArg {
+    /// `m s` — surround the selection with the captured character.
+    SurroundAdd,
+    /// `m d` — remove the captured character's pair around the selection.
+    SurroundDelete,
+    /// `m r` — waiting for the **first** character of the replacement pair.
+    ///
+    /// On capture it arms [`Self::SurroundReplaceTo`], which takes the
+    /// second.
+    SurroundReplaceFrom,
+    /// `m r` — the first character is captured; waiting for the second.
+    SurroundReplaceTo(char),
+    /// `m a` — select **around** the captured object.
+    AroundObject,
+    /// `m i` — select **inside** the captured object.
+    InnerObject,
+}
+
+impl MatchArg {
+    /// The command this argument belongs to, as the `m`-grammar's second
+    /// level names it.
+    ///
+    /// The label the pending indicator shows, and the only thing that
+    /// distinguishes the two halves of `m r` from each other: both are "the
+    /// replace argument", and only the payload says which half is pending.
+    pub fn command(self) -> &'static str {
+        match self {
+            MatchArg::SurroundAdd => "m s",
+            MatchArg::SurroundDelete => "m d",
+            MatchArg::SurroundReplaceFrom | MatchArg::SurroundReplaceTo(_) => "m r",
+            MatchArg::AroundObject => "m a",
+            MatchArg::InnerObject => "m i",
+        }
+    }
+
+    /// Whether this argument is drawn from a **fixed vocabulary** rather than
+    /// from any character.
+    ///
+    /// The surround arguments take any character — Helix's surround accepts
+    /// one, and the quotes need a character that is both an opening and a
+    /// closing delimiter. The object arguments take one of five, and a
+    /// character outside that set is not a slightly-wrong object, it is not an
+    /// object at all.
+    pub fn is_restricted(self) -> bool {
+        matches!(self, MatchArg::AroundObject | MatchArg::InnerObject)
+    }
 }
 
 impl EditorPrefix {
@@ -164,7 +239,22 @@ impl EditorPrefix {
     /// dispatch without also being added here — which is what would leave it
     /// resolving an armed prefix down the leaf lookup and out to the composer.
     pub fn is_capture(self) -> bool {
-        self.is_find() || self == EditorPrefix::ReplaceChar
+        self.is_find() || self == EditorPrefix::ReplaceChar || self.match_arg().is_some()
+    }
+
+    /// The `m` argument this prefix is waiting for, when it is one.
+    ///
+    /// The classifier for the `m` grammar's second level, beside
+    /// [`Self::find_kind`] for the find grammars' first level. One answer
+    /// rather than a `==` test at each call site, so a third argument grammar
+    /// cannot arrive without being added here — which is what would leave it
+    /// resolving an armed prefix down the leaf lookup and out to the
+    /// composer.
+    pub fn match_arg(self) -> Option<MatchArg> {
+        match self {
+            EditorPrefix::MatchArg(arg) => Some(arg),
+            _ => None,
+        }
     }
 
     /// Whether this prefix is waiting for the character `r` replaces with.
@@ -200,18 +290,33 @@ impl EditorPrefix {
     /// cannot predict. The find prefixes show their key for the same reason
     /// — an armed `f` that drew nothing would be indistinguishable from a
     /// dropped keypress.
-    pub fn display(self) -> &'static str {
+    ///
+    /// **One label is not a closed set.** The `m r` gesture takes two
+    /// characters, and the second half has to say which half it is: the
+    /// indicator shows the character already captured, so `m r (` reads
+    /// `"m r ("` rather than the same `"m r"` the first half shows. A reader
+    /// who cannot tell the halves apart cannot predict what the next key
+    /// does, and a pending prefix they cannot predict is a prefix they will
+    /// get wrong. The captured character is a single glyph, not accumulated
+    /// text — the label is still bounded by
+    /// [`MAX_EDITOR_PENDING_PREFIX`].
+    pub fn display(self) -> std::borrow::Cow<'static, str> {
         match self {
-            EditorPrefix::Idle => "",
-            EditorPrefix::Goto => "g",
-            EditorPrefix::Space => "space",
-            EditorPrefix::OpenBracket => "[",
-            EditorPrefix::CloseBracket => "]",
-            EditorPrefix::FindNext => "f",
-            EditorPrefix::FindPrevious => "F",
-            EditorPrefix::FindTillNext => "t",
-            EditorPrefix::FindTillPrevious => "T",
-            EditorPrefix::ReplaceChar => "r",
+            EditorPrefix::Idle => "".into(),
+            EditorPrefix::Goto => "g".into(),
+            EditorPrefix::Space => "space".into(),
+            EditorPrefix::OpenBracket => "[".into(),
+            EditorPrefix::CloseBracket => "]".into(),
+            EditorPrefix::FindNext => "f".into(),
+            EditorPrefix::FindPrevious => "F".into(),
+            EditorPrefix::FindTillNext => "t".into(),
+            EditorPrefix::FindTillPrevious => "T".into(),
+            EditorPrefix::ReplaceChar => "r".into(),
+            EditorPrefix::Match => "m".into(),
+            EditorPrefix::MatchArg(MatchArg::SurroundReplaceTo(from)) => {
+                format!("{} {}", MatchArg::SurroundReplaceFrom.command(), from).into()
+            }
+            EditorPrefix::MatchArg(arg) => arg.command().into(),
         }
     }
 
@@ -245,12 +350,14 @@ impl EditorPrefix {
             EditorPrefix::Space => SPACE_LEAVES,
             EditorPrefix::OpenBracket => OPEN_BRACKET_LEAVES,
             EditorPrefix::CloseBracket => CLOSE_BRACKET_LEAVES,
+            EditorPrefix::Match => MATCH_LEAVES,
             EditorPrefix::Idle
             | EditorPrefix::FindNext
             | EditorPrefix::FindPrevious
             | EditorPrefix::FindTillNext
             | EditorPrefix::FindTillPrevious
-            | EditorPrefix::ReplaceChar => &[],
+            | EditorPrefix::ReplaceChar
+            | EditorPrefix::MatchArg(_) => &[],
         }
     }
 
@@ -274,6 +381,12 @@ impl EditorPrefix {
     /// `r` retries for that same reason and no other one: `r` then `Left`
     /// moves the cursor one character left rather than replacing nothing and
     /// eating the arrow.
+    ///
+    /// `m` retries too, and for the sharper reason still: Helix swallows an
+    /// unrecognised key after `m`, but the editor-wide rule is that a prefix
+    /// which does not recognise the next key returns it to the composer
+    /// rather than eating it. A swallowed `m z` would type nothing at all,
+    /// which is the M002 failure mode this milestone exists to end.
     pub fn swallows_unmatched(self) -> bool {
         self == EditorPrefix::Goto
     }
@@ -313,6 +426,21 @@ pub enum PrefixAction {
     /// `&mut EditorState`; a read needs the App's core client. See
     /// [`EditorPendingEffect`].
     Effect(EditorPendingEffect),
+    /// Arm this **capture** — the second level of a two-level grammar.
+    ///
+    /// The `m` grammar's commands take their argument as data, exactly as
+    /// `f`/`t`/`F`/`T`/`r` do, so the leaf that completes `m s` does not run a
+    /// verb: it says *which argument is being waited for*, and the argument
+    /// itself is the next key.
+    ///
+    /// A fifth arm rather than a bool on [`Self::Motion`], because the
+    /// difference is a whole second level: the motion arm promises to move
+    /// the cursor, and arming a capture moves nothing.
+    ///
+    /// The payload is a `Copy` enum, so this arm does **not** cost
+    /// [`PrefixAction`] its `Copy` — which is what keeps the leaf tables
+    /// `const`, and every future leaf payload const-constructible.
+    Capture(MatchArg),
 }
 
 /// One row of a prefix's leaf table.
@@ -556,6 +684,47 @@ pub const CLOSE_BRACKET_LEAVES: &[PrefixLeaf] = &[
         action: PrefixAction::Effect(EditorPendingEffect::DiagnosticStep(
             EditorDiagnosticStep::Forward,
         )),
+    },
+];
+
+/// `m` mode's leaves: the *commands* of Helix's two-level `m` grammar.
+///
+/// The first level. Each leaf either runs a verb (`m m`) or says **which
+/// argument the second level is waiting for** (`m s`, `m r`, `m d`, `m a`,
+/// `m i`) — the argument itself is the key after it, taken as data.
+///
+/// The two-level grammar is Helix's, and the machine is one field wide, so the
+/// second level rides in [`EditorPrefix::MatchArg`]'s payload rather than in a
+/// second field on the presentation. See the `EditorPrefix` docs.
+///
+/// The object kinds Helix marks `TS` — `f`, `t`, `a`, `c`, `T`, `x` — are
+/// **not** here. They need a syntax tree, which is milestone M014's slice and
+/// is gated on ADR-0034; a variant nothing constructs is a claim, not a hook.
+pub const MATCH_LEAVES: &[PrefixLeaf] = &[
+    // `m m` — jump to the mate of the pair under the cursor.
+    PrefixLeaf {
+        glyph: 'm',
+        action: PrefixAction::Motion(EditorCommand::MatchBracket),
+    },
+    PrefixLeaf {
+        glyph: 's',
+        action: PrefixAction::Capture(MatchArg::SurroundAdd),
+    },
+    PrefixLeaf {
+        glyph: 'r',
+        action: PrefixAction::Capture(MatchArg::SurroundReplaceFrom),
+    },
+    PrefixLeaf {
+        glyph: 'd',
+        action: PrefixAction::Capture(MatchArg::SurroundDelete),
+    },
+    PrefixLeaf {
+        glyph: 'a',
+        action: PrefixAction::Capture(MatchArg::AroundObject),
+    },
+    PrefixLeaf {
+        glyph: 'i',
+        action: PrefixAction::Capture(MatchArg::InnerObject),
     },
 ];
 
@@ -1411,6 +1580,15 @@ pub enum EditorCommand {
     FindTillNext(char),
     /// Helix `T {char}` — see [`Self::FindPrevious`].
     FindTillPrevious(char),
+    /// Helix `m m` — jump to the mate of the pair under the cursor.
+    ///
+    /// A **motion**, so it belongs beside the other motions rather than in
+    /// the edit path: it moves the cursor and changes no byte.
+    ///
+    /// The mate is found with the **delimiter-pair table**, not a syntax
+    /// tree: Helix marks `m m` as `TS`, and CodeGG's is a deliberate
+    /// pair-table match. See the `editor_match` module.
+    MatchBracket,
     InsertBefore,
     InsertAfter,
     InsertLineStart,
@@ -1572,6 +1750,42 @@ impl ParagraphNote {
             }
             ParagraphNote::ScanBounded => Some(format!(
                 "paragraph scan stopped after {MAX_PARAGRAPH_SCAN_BYTES} bytes — \
+                 the answer is not known"
+            )),
+        }
+    }
+}
+
+/// Why the last bracket-match motion did not land, if it did not.
+///
+/// The bracket analogue of [`FindNote`] and [`ParagraphNote`], and for the
+/// same reason: `m m` can fail in three distinguishable ways, and a reader
+/// who cannot tell them apart sees a keypress that was dropped. "There is no
+/// bracket here" and "the bracket here has no mate" call for different
+/// answers — one says *move the cursor*, the other says *the code is
+/// unbalanced* — so they are not one refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchNote {
+    /// The last bracket motion landed, or none has run.
+    #[default]
+    None,
+    /// No delimiter is under the cursor.
+    NoBracket,
+    /// A delimiter is under the cursor, but no mate was found for it.
+    Unbalanced,
+    /// The scan hit its byte budget before it could answer.
+    ScanBounded,
+}
+
+impl MatchNote {
+    /// The status-row text, or `None` when there is nothing to say.
+    pub fn label(self) -> Option<String> {
+        match self {
+            MatchNote::None => None,
+            MatchNote::NoBracket => Some("no bracket under the cursor".to_string()),
+            MatchNote::Unbalanced => Some("no matching bracket".to_string()),
+            MatchNote::ScanBounded => Some(format!(
+                "bracket scan stopped after {MAX_SET_VERB_READ_BYTES} bytes — \
                  the answer is not known"
             )),
         }
@@ -2186,6 +2400,51 @@ pub fn editor_point(snapshot: &DocumentSnapshot, byte: usize) -> EditorPoint {
     }
 }
 
+/// The text objects the `m` grammar can name.
+///
+/// Five, and five is the whole of Helix's **parser-free** set. The
+/// syntax-node objects (`f`, `t`, `a`, `c`, `T`, `x`) need a grammar this
+/// editor does not have, and they are milestone M014's slice — a variant
+/// nothing constructs is a claim, not a hook, so they are not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectKind {
+    /// `w` — the word under the cursor.
+    ///
+    /// The byte classification is [`is_word_byte`]'s, so a CJK run is one
+    /// word and the object agrees with the `w` motion the reader just used
+    /// to get there.
+    Word,
+    /// `W` — the whitespace-delimited run under the cursor.
+    LongWord,
+    /// `p` — the paragraph under the cursor.
+    Paragraph,
+    /// A **delimiter pair**, named by either of its delimiters.
+    ///
+    /// The pair is the one in the delimiter table — see the `editor_match`
+    /// module — so `(` and `)` name the same pair.
+    Pair(char),
+    /// `m` — the **innermost** pair enclosing the cursor.
+    ClosestPair,
+}
+
+impl ObjectKind {
+    /// The object a character names, when it names one.
+    ///
+    /// The fixed vocabulary the `m a` / `m i` arguments are drawn from. A
+    /// character outside it is not a slightly-wrong object, it is not an
+    /// object at all, and the argument capture hands it back rather than
+    /// guessing.
+    pub fn from_char(ch: char) -> Option<Self> {
+        match ch {
+            'w' => Some(ObjectKind::Word),
+            'W' => Some(ObjectKind::LongWord),
+            'p' => Some(ObjectKind::Paragraph),
+            'm' => Some(ObjectKind::ClosestPair),
+            other => crate::tui::editor_match::pair_for(other).map(|_| ObjectKind::Pair(other)),
+        }
+    }
+}
+
 /// One Helix selection verb, resolved against a document.
 ///
 /// No longer `Copy`: the regex verbs carry the pattern they were given, and a
@@ -2252,6 +2511,26 @@ pub enum HelixVerb {
     KeepSelections { pattern: String },
     /// `Alt-K` — remove the members whose text matches a regex.
     RemoveSelections { pattern: String },
+    /// `m a` / `m i` — select **around** or **inside** a text object.
+    ///
+    /// A selection-shaping verb: it sets the selection set and edits no
+    /// byte, so it goes through the plain verb path and pushes no undo
+    /// entry.
+    SelectObject { kind: ObjectKind, around: bool },
+    /// `m s` — surround the held selection with a character.
+    ///
+    /// The character is the delimiter to add *as a pair*: `(` adds `(` and
+    /// `)`, and a character that is both an opening and a closing delimiter
+    /// (a quote) adds itself twice.
+    SurroundAdd { ch: char },
+    /// `m d` — remove a character's pair around the held selection.
+    SurroundDelete { ch: char },
+    /// `m r` — replace a character's pair around the held selection.
+    ///
+    /// The **outermost** enclosing pair of `from` is replaced, so the
+    /// replaced text keeps its inner pairs intact: `(a(b))` with `m r ([`
+    /// becomes `[a(b)]`.
+    SurroundReplace { from: char, to: char },
 }
 
 /// A selection-shaping motion that `Alt-.` can repeat.
@@ -2412,6 +2691,7 @@ pub fn apply_helix_verb(
     // cursor and deliberately left the repeatable-motion slot alone.
     let mut find_record: Option<(Option<FindMotion>, FindNote)> = None;
     let mut paragraph_record: Option<ParagraphNote> = None;
+    let mut match_record: Option<MatchNote> = None;
     // Seeded from the real presentation so a verb that never resolves a
     // motion — `v`, `x` — leaves the column exactly as it found it.
     let mut probe_desired_column = presentation.desired_column;
@@ -2490,6 +2770,10 @@ pub fn apply_helix_verb(
                 // resolves on the probe, so a disclosure left on the probe
                 // would be a refusal the repeat could not explain.
                 paragraph_note: presentation.paragraph_note,
+                // Same reason as the two above: the bracket note describes
+                // the motion that just ran, and a motion that resolves on the
+                // probe must not leave a stale one behind.
+                match_note: presentation.match_note,
                 ..TuiDocumentPresentation::default()
             };
             let next = apply_motion(&mut probe, snapshot, command, NOMINAL_HELIX_PAGES);
@@ -2502,6 +2786,7 @@ pub fn apply_helix_verb(
             outcome = HelixVerbOutcome::Moved(next);
             find_record = Some((probe.last_find, probe.find_note));
             paragraph_record = Some(probe.paragraph_note);
+            match_record = Some(probe.match_note);
         }
         // ── Set verbs ────────────────────────────────────────────────────
         //
@@ -2598,6 +2883,7 @@ pub fn apply_helix_verb(
                         probe_desired_column,
                         find_record,
                         paragraph_record,
+                        match_record,
                     );
                     HelixVerbOutcome::Handled
                 }
@@ -2618,6 +2904,7 @@ pub fn apply_helix_verb(
                         probe_desired_column,
                         find_record,
                         paragraph_record,
+                        match_record,
                     );
                     HelixVerbOutcome::Handled
                 }
@@ -2638,10 +2925,50 @@ pub fn apply_helix_verb(
                         probe_desired_column,
                         find_record,
                         paragraph_record,
+                        match_record,
                     );
                     HelixVerbOutcome::Handled
                 }
                 Ok(SetVerbOutcome::NothingToDo(reason)) => HelixVerbOutcome::NothingToDo(reason),
+                Err(reason) => HelixVerbOutcome::NothingToDo(reason),
+            };
+        }
+        // ── The `m` grammar ──────────────────────────────────────────────
+        //
+        // A text object is a **selection**, so it goes through the plain verb
+        // path: it sets the set and edits no byte, and it pushes no undo
+        // entry. The three surround verbs are the opposite — they edit, so
+        // they return their transaction to the caller and the caller submits
+        // it through the shared funnel.
+        HelixVerb::SelectObject { kind, around } => {
+            let cursor = presentation.cursor_byte;
+            let range = match resolve_object(snapshot, kind, around, cursor) {
+                Ok(range) => range,
+                Err(reason) => return HelixVerbOutcome::NothingToDo(reason),
+            };
+            let Some(member) = member_for_range(snapshot, range) else {
+                return HelixVerbOutcome::NothingToDo("the object is empty".to_string());
+            };
+            // The cursor moves to the object: the reader asked for a thing,
+            // and leaving the cursor where it was would make the selection
+            // appear somewhere they did not ask about.
+            state.set_members(editor_point(snapshot, member.anchor.byte), vec![member], 0);
+        }
+        HelixVerb::SurroundAdd { ch } => {
+            return match surround_add(snapshot, &state, ch) {
+                Ok(outcome) => outcome,
+                Err(reason) => HelixVerbOutcome::NothingToDo(reason),
+            };
+        }
+        HelixVerb::SurroundDelete { ch } => {
+            return match surround_delete(snapshot, &state, ch) {
+                Ok(outcome) => outcome,
+                Err(reason) => HelixVerbOutcome::NothingToDo(reason),
+            };
+        }
+        HelixVerb::SurroundReplace { from, to } => {
+            return match surround_replace(snapshot, &state, from, to) {
+                Ok(outcome) => outcome,
                 Err(reason) => HelixVerbOutcome::NothingToDo(reason),
             };
         }
@@ -2653,6 +2980,7 @@ pub fn apply_helix_verb(
         probe_desired_column,
         find_record,
         paragraph_record,
+        match_record,
     );
     outcome
 }
@@ -2683,6 +3011,7 @@ fn write_back(
     desired_column: Option<usize>,
     find_record: Option<(Option<FindMotion>, FindNote)>,
     paragraph_record: Option<ParagraphNote>,
+    match_record: Option<MatchNote>,
 ) {
     presentation.cursor_byte = state.cursor().byte;
     presentation.selections = state.selections().to_vec();
@@ -2699,6 +3028,9 @@ fn write_back(
     }
     if let Some(paragraph_note) = paragraph_record {
         presentation.paragraph_note = paragraph_note;
+    }
+    if let Some(match_note) = match_record {
+        presentation.match_note = match_note;
     }
 }
 
@@ -2774,6 +3106,24 @@ pub enum HelixVerbOutcome {
     /// so its padding is approximate. Carried beside the edit rather than on
     /// the presentation so it is impossible to leave it behind.
     Edit(EditorEdit, Option<String>),
+    /// Apply this edit, **and** hold the selection it produced.
+    ///
+    /// The surround verbs need this. `m s` inserts the delimiters and the
+    /// surrounded text must stay selected, so the reader can go on to delete
+    /// or replace it as one thing; `m d` and `m r` leave the contents
+    /// selected.
+    ///
+    /// A separate variant rather than a field on [`Self::Edit`] because the
+    /// two outcomes are decided in different places: the edit is built by the
+    /// verb, and the selection is built from offsets that only make sense
+    /// **after** the edit lands. `submit_edit` clears every selection on
+    /// success — a selection is a set of byte offsets into text that no
+    /// longer exists — so a verb that *means* to leave a selection behind
+    /// has to say which one, and the caller has to apply it after the
+    /// submission.
+    ///
+    /// The members are in **post-edit** coordinates.
+    EditAndSelect(EditorEdit, Option<String>, Vec<Selection<EditorPoint>>),
     /// The verb had nothing to act on, carrying the reader-facing reason.
     ///
     /// Distinct from `Handled` because "you have nothing selected" and "`C`
@@ -3889,6 +4239,14 @@ pub fn apply_motion(
     let paragraph = command
         .paragraph_motion()
         .map(|motion| (motion, motion.outcome(snapshot, from)));
+    // The bracket match is the third motion with an **outcome** to disclose,
+    // and it joins the other two for the same reason: `m m` on a bracket with
+    // no mate must be able to say so, and the scan must run once so the note
+    // and the offset cannot come from two passes that saw different text.
+    let bracket = match command {
+        EditorCommand::MatchBracket => Some(bracket_mate(snapshot, from)),
+        _ => None,
+    };
     let resolved = match (find, paragraph) {
         (Some((_, FindOutcome::Found(offset))), _) => offset,
         // A find that found nothing leaves the cursor exactly where it was,
@@ -3899,7 +4257,13 @@ pub fn apply_motion(
         // must still be explained, and the catch-all would explain nothing.
         (_, Some((_, ParagraphOutcome::Landed(offset)))) => offset,
         (_, Some((_, ParagraphOutcome::NoParagraph | ParagraphOutcome::Bounded))) => from,
-        (None, None) => apply_motion_inner(presentation, snapshot, command, visible_lines),
+        (None, None) => match bracket {
+            Some(BracketOutcome::Landed(offset)) => offset,
+            // A bracket that did not match leaves the cursor exactly where it
+            // was, and the note says which of the three reasons it was.
+            Some(_) => from,
+            None => apply_motion_inner(presentation, snapshot, command, visible_lines),
+        },
     };
     presentation.cursor_byte = resolved;
     presentation.viewport_line =
@@ -3914,7 +4278,22 @@ pub fn apply_motion(
     }
     if let Some((motion, outcome)) = paragraph {
         presentation.paragraph_note = motion.note(outcome).unwrap_or_default();
+    } else {
+        // A motion that is not a paragraph motion has nothing to say about
+        // paragraphs, and the note from the *previous* motion must not
+        // outlive it: `]p` at the last paragraph and then `j` would leave
+        // "no next paragraph" on screen beside a cursor that had since moved.
+        presentation.paragraph_note = ParagraphNote::None;
     }
+    // The same rule for the bracket note, and the same reason: the note
+    // describes exactly the keystroke that just happened.
+    presentation.match_note = match bracket {
+        Some(BracketOutcome::Landed(_)) => MatchNote::None,
+        Some(BracketOutcome::NoBracket) => MatchNote::NoBracket,
+        Some(BracketOutcome::Unbalanced) => MatchNote::Unbalanced,
+        Some(BracketOutcome::Bounded) => MatchNote::ScanBounded,
+        None => MatchNote::None,
+    };
     resolved
 }
 
@@ -4972,6 +5351,703 @@ pub fn offset_for_position(snapshot: &DocumentSnapshot, position: BytePosition) 
         .ok()
         .map(|offset| clamp_offset(snapshot, offset))
         .unwrap_or_else(|| clamp_offset(snapshot, snapshot.len_bytes()))
+}
+
+// ── M009: match mode and text objects ───────────────────────────────────────
+
+/// A bounded slice of the document, centred on a byte offset.
+///
+/// Every pair scan and every text-object resolver in this milestone needs the
+/// same thing: a window of the document it is allowed to look at, whose
+/// offsets are **window-relative** and have to be mapped back to document
+/// offsets before they are used for anything.
+///
+/// The window is **centred** on the cursor rather than starting at it,
+/// because a bracket's mate is as often behind the cursor as in front of it.
+/// The budget is [`MAX_SET_VERB_READ_BYTES`], so one keystroke costs no more
+/// than one screenful of the document — the same bound every other set verb
+/// obeys, and the bound the roadmap's exit condition names.
+///
+/// The window is a **bounded** slice, never a copy of the document: it is
+/// built per keystroke, dropped at the end of it, and cannot exceed the
+/// budget above. The field is named `chunk` rather than `text` so the
+/// text-authority guard's name-based rule can see at a glance that this is a
+/// window and not a retained document.
+struct ScanWindow {
+    /// The window's bytes.
+    chunk: String,
+    /// The document byte offset the window starts at.
+    base: usize,
+}
+
+impl ScanWindow {
+    /// The window of at most `budget` bytes centred on `cursor`.
+    ///
+    /// `None` when the window could not be read — a range the snapshot
+    /// refuses, which is a refusal and never a panic.
+    fn around(snapshot: &DocumentSnapshot, cursor: usize, budget: usize) -> Option<Self> {
+        let cursor = clamp_offset(snapshot, cursor);
+        // Both ends are snapped **down** onto a character boundary: a window
+        // that started mid-character could not be read at all, because
+        // `read_bytes` needs a boundary at both ends.
+        let start = clamp_offset(snapshot, cursor.saturating_sub(budget / 2));
+        let end = clamp_offset(
+            snapshot,
+            (start.saturating_add(budget)).min(snapshot.len_bytes()),
+        )
+        .max(cursor);
+        let chunk = snapshot.read_bytes(start, end).ok()?;
+        Some(Self { chunk, base: start })
+    }
+
+    /// The window-relative offset of a document offset inside this window.
+    fn relative(&self, offset: usize) -> usize {
+        offset.saturating_sub(self.base)
+    }
+
+    /// The document offset of a window-relative offset.
+    fn absolute(&self, offset: usize) -> usize {
+        self.base + offset
+    }
+}
+
+/// The character starting at `offset`, when there is one.
+///
+/// `None` at the end of the document, and at any offset that is not a
+/// character boundary.
+///
+/// [`char_end`], not [`next_char_boundary`]: the latter is `None` for the
+/// **last** character of a document as well as for the end of one, and a
+/// bracket at the end of a line is a bracket. `char_end` is the helper that
+/// already draws that distinction.
+fn char_at(snapshot: &DocumentSnapshot, offset: usize) -> Option<char> {
+    let offset = clamp_offset(snapshot, offset);
+    let end = char_end(snapshot, offset);
+    if end <= offset {
+        return None;
+    }
+    snapshot.read_bytes(offset, end).ok()?.chars().next()
+}
+
+/// Where `m m` lands, or why it does not.
+///
+/// Three refusals and one landing, because the reader's next move differs in
+/// each case: "there is no bracket here" says *move the cursor*, "the bracket
+/// here has no mate" says *the code is unbalanced*, and "the scan hit its
+/// budget" says *the file is too big to answer*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BracketOutcome {
+    /// The mate of the pair under the cursor is at this document offset.
+    Landed(usize),
+    /// No delimiter is under the cursor.
+    NoBracket,
+    /// A delimiter is under the cursor, but no mate was found for it.
+    Unbalanced,
+    /// The scan hit its byte budget before it could answer.
+    Bounded,
+}
+
+/// The mate of the pair under the cursor, or why there is none.
+///
+/// A **pair-table** match, not a syntax-tree match: Helix marks `m m` as
+/// `TS`, and CodeGG's is a deliberate local divergence — see the milestone
+/// plan, `docs/tui.md` and `architecture/tui.md`.
+fn bracket_mate(snapshot: &DocumentSnapshot, cursor: usize) -> BracketOutcome {
+    let cursor = clamp_offset(snapshot, cursor);
+    let Some(ch) = char_at(snapshot, cursor) else {
+        return BracketOutcome::NoBracket;
+    };
+    let Some(pair) = editor_match::pair_for(ch) else {
+        return BracketOutcome::NoBracket;
+    };
+    let Some(window) = ScanWindow::around(snapshot, cursor, MAX_SET_VERB_READ_BYTES) else {
+        return BracketOutcome::Bounded;
+    };
+    let anchor = window.relative(cursor);
+    // A quote is both an opening and a closing delimiter, and its mate is
+    // the **next** unescaped quote — the same reading every editor gives a
+    // string delimiter. A bracketing pair is matched from the side the cursor
+    // is on.
+    let outcome = if pair.is_quote() || ch == pair.open {
+        editor_match::pair_from_open(&window.chunk, anchor, pair, window.chunk.len())
+    } else {
+        editor_match::pair_from_close(&window.chunk, anchor, pair, window.chunk.len())
+    };
+    match outcome {
+        editor_match::MatchOutcome::Found { open, close } => {
+            let mate = if ch == pair.close && !pair.is_quote() {
+                open
+            } else {
+                close
+            };
+            BracketOutcome::Landed(window.absolute(mate))
+        }
+        editor_match::MatchOutcome::Unbalanced => BracketOutcome::Unbalanced,
+        editor_match::MatchOutcome::BudgetExhausted => BracketOutcome::Bounded,
+    }
+}
+
+/// The byte range one text object covers, or why it covers nothing.
+///
+/// `around` selects the object **with** its boundary — Helix's `a` — and
+/// `inside` selects it **without** it — Helix's `i`.
+///
+/// The cursor is the only anchor: a text object is a thing *under* the
+/// cursor, and there is no selection-shaped variant of it.
+fn resolve_object(
+    snapshot: &DocumentSnapshot,
+    kind: ObjectKind,
+    around: bool,
+    cursor: usize,
+) -> Result<std::ops::Range<usize>, String> {
+    let cursor = clamp_offset(snapshot, cursor);
+    match kind {
+        ObjectKind::Word => {
+            let range = word_object(snapshot, cursor)?;
+            Ok(if around {
+                extend_over_trailing_space(snapshot, range)
+            } else {
+                range
+            })
+        }
+        ObjectKind::LongWord => {
+            let range = long_word_object(snapshot, cursor)?;
+            Ok(if around {
+                extend_over_trailing_space(snapshot, range)
+            } else {
+                range
+            })
+        }
+        ObjectKind::Paragraph => paragraph_object(snapshot, cursor, around),
+        ObjectKind::Pair(ch) => pair_object(snapshot, cursor, ch, around),
+        ObjectKind::ClosestPair => closest_pair_object(snapshot, cursor, around),
+    }
+}
+
+/// The word under the cursor.
+///
+/// The byte classification is [`is_word_byte`]'s, so a CJK run is one word
+/// and the object agrees with the `w` motion the reader just used to get
+/// there.
+fn word_object(
+    snapshot: &DocumentSnapshot,
+    cursor: usize,
+) -> Result<std::ops::Range<usize>, String> {
+    let cursor = clamp_offset(snapshot, cursor);
+    // The word **at** the cursor. A cursor on a separator names the next
+    // word, the same rule Helix's `e` uses to step onto one.
+    let start = if is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
+        word_start_at(snapshot, cursor)
+    } else {
+        word_forward(snapshot, cursor)
+    };
+    let end = char_end(snapshot, word_end(snapshot, start));
+    if end <= start {
+        return Err("no word under the cursor".to_string());
+    }
+    Ok(start..end)
+}
+
+/// The start of the word run that contains `cursor`.
+fn word_start_at(snapshot: &DocumentSnapshot, cursor: usize) -> usize {
+    let mut start = clamp_offset(snapshot, cursor);
+    while start > 0 {
+        let previous = prev_char_boundary(snapshot, start);
+        if !is_word_byte(leading_byte(snapshot, previous).unwrap_or(0)) {
+            break;
+        }
+        start = previous;
+    }
+    start
+}
+
+/// The whitespace-delimited run under the cursor.
+fn long_word_object(
+    snapshot: &DocumentSnapshot,
+    cursor: usize,
+) -> Result<std::ops::Range<usize>, String> {
+    let cursor = clamp_offset(snapshot, cursor);
+    let start = if is_long_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
+        long_word_start_at(snapshot, cursor)
+    } else {
+        long_word_forward(snapshot, cursor)
+    };
+    let end = char_end(snapshot, long_word_end(snapshot, start));
+    if end <= start {
+        return Err("no WORD under the cursor".to_string());
+    }
+    Ok(start..end)
+}
+
+/// The start of the whitespace-delimited run that contains `cursor`.
+fn long_word_start_at(snapshot: &DocumentSnapshot, cursor: usize) -> usize {
+    let mut start = clamp_offset(snapshot, cursor);
+    while start > 0 {
+        let previous = prev_char_boundary(snapshot, start);
+        if !is_long_word_byte(leading_byte(snapshot, previous).unwrap_or(0)) {
+            break;
+        }
+        start = previous;
+    }
+    start
+}
+
+/// Extend `range` over the whitespace that follows it.
+///
+/// Helix's "around word" is the word **plus the whitespace after it**: the
+/// difference between `a w` and `i w` is that trailing boundary, and a reader
+/// who selects a word to replace it usually wants the space that separated
+/// it from the next one to go with it.
+///
+/// The run stops at a line terminator: a paragraph break is not the word's
+/// trailing whitespace, and swallowing it would make `a w` select across a
+/// blank line.
+fn extend_over_trailing_space(
+    snapshot: &DocumentSnapshot,
+    range: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let mut end = range.end;
+    while end < snapshot.len_bytes() {
+        let Some(byte) = leading_byte(snapshot, end) else {
+            break;
+        };
+        if !byte.is_ascii_whitespace() || byte == b'\n' || byte == b'\r' {
+            break;
+        }
+        // `char_end`, not `next_char_boundary`: the latter is `None` for the
+        // last character of the document, so a file ending in a space would
+        // lose that space from the "around word" range.
+        let next = char_end(snapshot, end);
+        if next <= end {
+            break;
+        }
+        end = next;
+    }
+    range.start..end
+}
+
+/// The paragraph under the cursor.
+///
+/// A paragraph is a run of **content** lines; a blank line ends it. The
+/// "inside" form is the paragraph's own bytes, and the "around" form adds
+/// the blank run that follows it — Helix's `a p`, which takes the separator
+/// with the paragraph so that replacing one replaces the break too.
+///
+/// A cursor on a blank line has no paragraph under it, and says so rather
+/// than guessing which of the two neighbours was meant.
+fn paragraph_object(
+    snapshot: &DocumentSnapshot,
+    cursor: usize,
+    around: bool,
+) -> Result<std::ops::Range<usize>, String> {
+    let line = cursor_line(snapshot, cursor);
+    if line_is_blank(snapshot, line) {
+        return Err("the cursor is on a blank line — no paragraph here".to_string());
+    }
+    let last_line = last_line_of(snapshot);
+    let mut first = line;
+    while first > 0 && !line_is_blank(snapshot, first - 1) {
+        first -= 1;
+    }
+    let mut last = line;
+    while last < last_line && !line_is_blank(snapshot, last + 1) {
+        last += 1;
+    }
+    let start = line_start(snapshot, first).unwrap_or(0);
+    let mut end = line_content_end(snapshot, last).unwrap_or(start);
+    if around {
+        // The separator: the blank run that follows the paragraph.
+        let mut separator = last + 1;
+        while separator <= last_line && line_is_blank(snapshot, separator) {
+            separator += 1;
+        }
+        end = line_start(snapshot, separator)
+            .unwrap_or_else(|| snapshot.len_bytes())
+            .min(snapshot.len_bytes());
+    }
+    if end <= start {
+        return Err("the paragraph is empty".to_string());
+    }
+    Ok(start..end)
+}
+
+/// The pair named by `ch`, and the cursor's place in it.
+///
+/// `ch` names the **kind** of pair: `(` and `)` name the same one. A cursor
+/// sitting on one of the pair's delimiters names that pair; a cursor inside
+/// one names the innermost pair of that kind that encloses it.
+fn pair_object(
+    snapshot: &DocumentSnapshot,
+    cursor: usize,
+    ch: char,
+    around: bool,
+) -> Result<std::ops::Range<usize>, String> {
+    let Some(pair) = editor_match::pair_for(ch) else {
+        return Err(format!("{ch:?} is not a delimiter pair"));
+    };
+    let Some(window) = ScanWindow::around(snapshot, cursor, MAX_SET_VERB_READ_BYTES) else {
+        return Err("the bracket scan could not read a window".to_string());
+    };
+    let anchor = window.relative(cursor);
+    // The character **under the cursor** decides how the pair is found — not
+    // the character the reader typed. The typed one names the *kind* of pair;
+    // the one under the cursor says whether the cursor is standing on a
+    // delimiter of that kind, and a cursor standing on one names that pair
+    // while a cursor inside one names the innermost pair that encloses it.
+    //
+    // A quote is its own opener and closer, so the two readings cannot be
+    // told apart by the character alone: a cursor on a quote names the run
+    // that starts there, and a cursor inside a run names the run it is in.
+    let under = char_at(snapshot, cursor);
+    let outcome = match under {
+        Some(ch) if ch == pair.open => {
+            editor_match::pair_from_open(&window.chunk, anchor, pair, window.chunk.len())
+        }
+        Some(ch) if ch == pair.close && !pair.is_quote() => {
+            editor_match::pair_from_close(&window.chunk, anchor, pair, window.chunk.len())
+        }
+        _ => editor_match::innermost_pair(&window.chunk, anchor, pair, window.chunk.len()),
+    };
+    let (open, close) = match outcome {
+        editor_match::MatchOutcome::Found { open, close } => (open, close),
+        editor_match::MatchOutcome::BudgetExhausted => {
+            return Err("the bracket scan hit its byte budget".to_string())
+        }
+        editor_match::MatchOutcome::Unbalanced => {
+            return Err("no matching pair around the cursor".to_string())
+        }
+    };
+    let open = window.absolute(open);
+    let close = window.absolute(close);
+    let range = if around {
+        open..close + pair.close.len_utf8()
+    } else {
+        open + pair.open.len_utf8()..close
+    };
+    if range.is_empty() {
+        return Err("the pair is empty".to_string());
+    }
+    Ok(range)
+}
+
+/// The innermost pair around the cursor, of any kind.
+fn closest_pair_object(
+    snapshot: &DocumentSnapshot,
+    cursor: usize,
+    around: bool,
+) -> Result<std::ops::Range<usize>, String> {
+    let Some(window) = ScanWindow::around(snapshot, cursor, MAX_SET_VERB_READ_BYTES) else {
+        return Err("the bracket scan could not read a window".to_string());
+    };
+    let anchor = window.relative(cursor);
+    let (open, close) = match editor_match::closest_pair(&window.chunk, anchor, window.chunk.len())
+    {
+        editor_match::MatchOutcome::Found { open, close } => (open, close),
+        editor_match::MatchOutcome::BudgetExhausted => {
+            return Err("the bracket scan hit its byte budget".to_string())
+        }
+        editor_match::MatchOutcome::Unbalanced => {
+            return Err("no matching pair around the cursor".to_string())
+        }
+    };
+    let open = window.absolute(open);
+    let close = window.absolute(close);
+    let Some(ch) = char_at(snapshot, open) else {
+        return Err("no matching pair around the cursor".to_string());
+    };
+    let Some(pair) = editor_match::pair_for(ch) else {
+        return Err("no matching pair around the cursor".to_string());
+    };
+    let range = if around {
+        open..close + pair.close.len_utf8()
+    } else {
+        open + pair.open.len_utf8()..close
+    };
+    if range.is_empty() {
+        return Err("the pair is empty".to_string());
+    }
+    Ok(range)
+}
+
+/// The one member that covers `range`.
+///
+/// A character selection's range runs to `char_end(head)`, so a member built
+/// to cover `start..end` must name the **last character's start** as its head
+/// — pointing `head` at `end` would cover one character too many.
+fn member_for_range(
+    snapshot: &DocumentSnapshot,
+    range: std::ops::Range<usize>,
+) -> Option<Selection<EditorPoint>> {
+    let head = last_char_start(snapshot, range.end)?;
+    let mut member = Selection::new(editor_point(snapshot, range.start), SelectionMode::Char);
+    member.head = editor_point(snapshot, head);
+    Some(member)
+}
+
+/// The member that covers the content, moved by `shift` in the post-edit text.
+///
+/// `range` is in **pre-edit** coordinates and the head is the content's last
+/// character, so the post-edit head is that character moved by `shift`.
+///
+/// The shift is applied to a **pre-edit** offset on purpose. A post-edit
+/// offset past the old end of the document cannot be read from the pre-edit
+/// snapshot at all — `clamp_offset` would pull it back to the old end, and
+/// the member would cover one character too few. Every surround removes or
+/// adds single-character delimiters, and none of them is a newline, so no
+/// line boundary moves and the pre-edit line of the same logical position is
+/// the post-edit line.
+fn member_shifted(
+    snapshot: &DocumentSnapshot,
+    range: std::ops::Range<usize>,
+    shift: isize,
+) -> Option<Selection<EditorPoint>> {
+    let head_before = last_char_start(snapshot, range.end)?;
+    let anchor = EditorPoint {
+        byte: (range.start as isize + shift).max(0) as usize,
+        line: cursor_line(snapshot, range.start),
+    };
+    let head = EditorPoint {
+        byte: (head_before as isize + shift).max(0) as usize,
+        line: cursor_line(snapshot, head_before),
+    };
+    let mut member = Selection::new(anchor, SelectionMode::Char);
+    member.head = head;
+    Some(member)
+}
+
+/// The range a surround verb acts on: the held selection, or the character
+/// under the cursor when nothing is selected.
+///
+/// Helix's surround applies to the selection; with nothing selected it
+/// applies to the character under the cursor, which is the same gesture with
+/// the smallest possible target.
+///
+/// The **primary** member only. A surround that rewrites several members at
+/// once is a different gesture, and Helix's is not offered here.
+fn surround_target(
+    snapshot: &DocumentSnapshot,
+    state: &SelectionState<EditorPoint>,
+) -> Option<std::ops::Range<usize>> {
+    let primary = state.primary_index().unwrap_or_default();
+    if let Some(member) = state.selections().get(primary) {
+        if let Some(range) = member_range(snapshot, member) {
+            return Some(range);
+        }
+    }
+    let cursor = clamp_offset(snapshot, state.cursor().byte);
+    let end = char_end(snapshot, cursor);
+    (end > cursor).then_some(cursor..end)
+}
+
+/// The delimiters a surround character stands for.
+///
+/// A character that is one of the table's delimiters brings its **pair** with
+/// it: `(` adds `(` and `)`. A character that is not in the table is its own
+/// one-character pair, which is what a quote needs and what Helix's surround
+/// accepts for any character at all.
+fn surround_delimiters(ch: char) -> (char, char) {
+    match editor_match::pair_for(ch) {
+        Some(pair) => (pair.open, pair.close),
+        None => (ch, ch),
+    }
+}
+
+/// `m s` — surround the held selection with a character's pair.
+///
+/// The selection **grows** to cover the new delimiters: Helix's `m s`
+/// selects the surrounded text, so the reader can go on to delete or replace
+/// it as one thing.
+fn surround_add(
+    snapshot: &DocumentSnapshot,
+    state: &SelectionState<EditorPoint>,
+    ch: char,
+) -> Result<HelixVerbOutcome, String> {
+    let Some(range) = surround_target(snapshot, state) else {
+        return Err("nothing to surround".to_string());
+    };
+    let (open, close) = surround_delimiters(ch);
+    let open_text = open.to_string();
+    let close_text = close.to_string();
+    let edits = if range.is_empty() {
+        vec![TextEdit::new(
+            range.start..range.start,
+            format!("{open_text}{close_text}"),
+        )]
+    } else {
+        vec![
+            TextEdit::new(range.start..range.start, open_text.clone()),
+            TextEdit::new(range.end..range.end, close_text.clone()),
+        ]
+    };
+    let cursor = clamp_offset(snapshot, state.cursor().byte);
+    let cursor_after = if cursor >= range.start {
+        cursor + open_text.len()
+    } else {
+        cursor
+    };
+    let edit = build_edit(snapshot, TextTransaction::new(edits), cursor_after, false)
+        .ok_or("the surround produced no edit".to_string())?;
+    // The selection, in **post-edit** coordinates: the opening delimiter
+    // pushed the content right, and the closing delimiter is the last
+    // character of the surrounded text.
+    // The selection, in **post-edit** coordinates: the opening delimiter is
+    // the first character and the closing one is the last, so the member's
+    // head is the closing delimiter's start.
+    //
+    // Computed rather than read: the post-edit offsets are past the end of
+    // the pre-edit text, and the pre-edit snapshot cannot answer for them.
+    let anchor = EditorPoint {
+        byte: range.start,
+        line: cursor_line(snapshot, range.start),
+    };
+    let head = EditorPoint {
+        byte: range.end + open_text.len(),
+        line: cursor_line(snapshot, range.end),
+    };
+    let mut member = Selection::new(anchor, SelectionMode::Char);
+    member.head = head;
+    Ok(HelixVerbOutcome::EditAndSelect(edit, None, vec![member]))
+}
+
+/// `m d` — remove a character's pair around the held selection, keeping the
+/// contents.
+///
+/// The **innermost** enclosing pair is the one removed: those are the
+/// delimiters immediately around the selected text, and removing them
+/// unwraps it in place. The contents stay selected.
+fn surround_delete(
+    snapshot: &DocumentSnapshot,
+    state: &SelectionState<EditorPoint>,
+    ch: char,
+) -> Result<HelixVerbOutcome, String> {
+    let Some(range) = surround_target(snapshot, state) else {
+        return Err("nothing to unsurround".to_string());
+    };
+    let Some(pair) = editor_match::pair_for(ch) else {
+        return Err(format!("{ch:?} is not a delimiter pair"));
+    };
+    let Some(window) = ScanWindow::around(snapshot, range.start, MAX_SET_VERB_READ_BYTES) else {
+        return Err("the bracket scan could not read a window".to_string());
+    };
+    let anchor = window.relative(range.start);
+    let (open, close) =
+        match editor_match::innermost_pair(&window.chunk, anchor, pair, window.chunk.len()) {
+            editor_match::MatchOutcome::Found { open, close } => (open, close),
+            editor_match::MatchOutcome::BudgetExhausted => {
+                return Err("the bracket scan hit its byte budget".to_string())
+            }
+            editor_match::MatchOutcome::Unbalanced => {
+                return Err("no matching pair around the selection".to_string())
+            }
+        };
+    let open = window.absolute(open);
+    let close = window.absolute(close);
+    // The delimiters have to actually surround the target.
+    if open >= range.start || close < range.end {
+        return Err("no matching pair around the selection".to_string());
+    }
+    let edits = vec![
+        TextEdit::new(open..open + pair.open.len_utf8(), String::new()),
+        TextEdit::new(close..close + pair.close.len_utf8(), String::new()),
+    ];
+    let cursor = clamp_offset(snapshot, state.cursor().byte);
+    // The cursor moves with the text it was on. The opening delimiter's
+    // bytes are gone, so anything **after** it shifts left; a cursor before
+    // it, or on it, does not move. The closing delimiter is after the
+    // contents, and the same rule applies to it.
+    let mut cursor_after = cursor;
+    if cursor >= open + pair.open.len_utf8() {
+        cursor_after = cursor_after.saturating_sub(pair.open.len_utf8());
+    }
+    if cursor >= close + pair.close.len_utf8() {
+        cursor_after = cursor_after.saturating_sub(pair.close.len_utf8());
+    }
+    let edit = build_edit(snapshot, TextTransaction::new(edits), cursor_after, false)
+        .ok_or("the unsurround produced no edit".to_string())?;
+    // The contents, in post-edit coordinates: only the opening delimiter's
+    // bytes are gone, and they were before the contents.
+    let member = member_shifted(snapshot, range.clone(), -(pair.open.len_utf8() as isize));
+    Ok(HelixVerbOutcome::EditAndSelect(
+        edit,
+        None,
+        member.into_iter().collect(),
+    ))
+}
+
+/// `m r` — replace a character's pair around the held selection with another
+/// character's pair.
+///
+/// The **outermost** enclosing pair of `from` is the one replaced, so the
+/// replaced text keeps its inner pairs intact: `(a(b))` with `m r ([` becomes
+/// `[a(b)]`, not `[a(b])`.
+fn surround_replace(
+    snapshot: &DocumentSnapshot,
+    state: &SelectionState<EditorPoint>,
+    from: char,
+    to: char,
+) -> Result<HelixVerbOutcome, String> {
+    let Some(range) = surround_target(snapshot, state) else {
+        return Err("nothing to resurround".to_string());
+    };
+    let Some(pair) = editor_match::pair_for(from) else {
+        return Err(format!("{from:?} is not a delimiter pair"));
+    };
+    let (open, close) = surround_delimiters(to);
+    let Some(window) = ScanWindow::around(snapshot, range.start, MAX_SET_VERB_READ_BYTES) else {
+        return Err("the bracket scan could not read a window".to_string());
+    };
+    let anchor = window.relative(range.start);
+    let (found_open, found_close) =
+        match editor_match::enclosing_pair(&window.chunk, anchor, pair, window.chunk.len()) {
+            editor_match::MatchOutcome::Found { open, close } => (open, close),
+            editor_match::MatchOutcome::BudgetExhausted => {
+                return Err("the bracket scan hit its byte budget".to_string())
+            }
+            editor_match::MatchOutcome::Unbalanced => {
+                return Err("no matching pair around the selection".to_string())
+            }
+        };
+    let found_open = window.absolute(found_open);
+    let found_close = window.absolute(found_close);
+    if found_open >= range.start || found_close < range.end {
+        return Err("no matching pair around the selection".to_string());
+    }
+    let edits = vec![
+        TextEdit::new(
+            found_open..found_open + pair.open.len_utf8(),
+            open.to_string(),
+        ),
+        TextEdit::new(
+            found_close..found_close + pair.close.len_utf8(),
+            close.to_string(),
+        ),
+    ];
+    // The cursor moves with the text it was on: the opening delimiter's
+    // replacement can be a different width, and the closing one is after the
+    // cursor.
+    let cursor = clamp_offset(snapshot, state.cursor().byte);
+    let mut cursor_after = cursor as isize;
+    if cursor >= found_close {
+        cursor_after += close.len_utf8() as isize - pair.close.len_utf8() as isize;
+    }
+    if cursor >= found_open {
+        cursor_after += open.len_utf8() as isize - pair.open.len_utf8() as isize;
+    }
+    let edit = build_edit(
+        snapshot,
+        TextTransaction::new(edits),
+        cursor_after.max(0) as usize,
+        false,
+    )
+    .ok_or("the resurround produced no edit".to_string())?;
+    // The contents, in post-edit coordinates.
+    let shift = open.len_utf8() as isize - pair.open.len_utf8() as isize;
+    let member = member_shifted(snapshot, range.clone(), shift);
+    Ok(HelixVerbOutcome::EditAndSelect(
+        edit,
+        None,
+        member.into_iter().collect(),
+    ))
 }
 
 /// A one-member range set.
@@ -6979,7 +8055,7 @@ mod tests {
             &'static str,
             Option<FindKind>,
         );
-        let cases: [Case; 9] = [
+        let cases: [Case; 10] = [
             (EditorPrefix::Idle, vec![], false, "", None),
             (
                 EditorPrefix::Goto,
@@ -7039,6 +8115,17 @@ mod tests {
                 false,
                 "T",
                 Some(FindKind::TillPrevious),
+            ),
+            // The `m` grammar's first level. It **retries** an unmatched key
+            // rather than swallowing it: `m z` is not a gesture, and a gesture
+            // that ate the key would leave the reader with a keyboard that
+            // silently stopped answering.
+            (
+                EditorPrefix::Match,
+                vec!['m', 's', 'r', 'd', 'a', 'i'],
+                false,
+                "m",
+                None,
             ),
         ];
         for (prefix, leaves, swallows, display, find_kind) in cases {
@@ -7122,6 +8209,18 @@ mod tests {
             EditorPrefix::FindPrevious,
             EditorPrefix::FindTillNext,
             EditorPrefix::FindTillPrevious,
+            // `r` was missing from this list, which made the test's own claim
+            // — "the bound is asserted against every label" — false. It fits.
+            EditorPrefix::ReplaceChar,
+            // The `m` grammar's two levels. `"m r ("` is the longest label in
+            // the set, and it is exactly the bound.
+            EditorPrefix::Match,
+            EditorPrefix::MatchArg(MatchArg::SurroundAdd),
+            EditorPrefix::MatchArg(MatchArg::SurroundDelete),
+            EditorPrefix::MatchArg(MatchArg::SurroundReplaceFrom),
+            EditorPrefix::MatchArg(MatchArg::SurroundReplaceTo('(')),
+            EditorPrefix::MatchArg(MatchArg::AroundObject),
+            EditorPrefix::MatchArg(MatchArg::InnerObject),
         ] {
             assert!(
                 prefix.display().len() <= MAX_EDITOR_PENDING_PREFIX,
@@ -7135,8 +8234,50 @@ mod tests {
             "the bound is the longest label, not a guess"
         );
         assert_eq!(
+            EditorPrefix::MatchArg(MatchArg::SurroundReplaceTo('('))
+                .display()
+                .len(),
+            MAX_EDITOR_PENDING_PREFIX,
+            "the `m r (` half of the replace is exactly the bound too"
+        );
+        assert_eq!(
             MAX_EDITOR_FIND_BYTES, MAX_EDITOR_SEARCH_BYTES,
             "a find motion inherits the search window rather than inventing a second bound"
+        );
+    }
+
+    /// The `m` grammar's second level: every argument is a **capture**, and the
+    /// two halves of `m r` must not render alike.
+    ///
+    /// The rows carry a payload, so they cannot go in the table above — which
+    /// is itself the point: the second level is a different *state*, not
+    /// another row of the first.
+    #[test]
+    fn every_match_argument_is_a_capture_and_the_two_halves_of_m_r_differ() {
+        let args = [
+            (MatchArg::SurroundAdd, "m s", false),
+            (MatchArg::SurroundDelete, "m d", false),
+            (MatchArg::SurroundReplaceFrom, "m r", false),
+            (MatchArg::SurroundReplaceTo('('), "m r (", false),
+            (MatchArg::AroundObject, "m a", true),
+            (MatchArg::InnerObject, "m i", true),
+        ];
+        for (arg, display, restricted) in args {
+            let prefix = EditorPrefix::MatchArg(arg);
+            assert!(prefix.is_capture(), "{arg:?} takes a character as data");
+            assert!(
+                prefix.leaves().is_empty(),
+                "{arg:?} has no leaves: its next key is data, not a command"
+            );
+            assert_eq!(prefix.display(), display, "{arg:?} indicator");
+            assert_eq!(arg.is_restricted(), restricted, "{arg:?} vocabulary");
+            assert_eq!(prefix.match_arg(), Some(arg), "{arg:?} classifier");
+        }
+        assert_ne!(
+            EditorPrefix::MatchArg(MatchArg::SurroundReplaceFrom).display(),
+            EditorPrefix::MatchArg(MatchArg::SurroundReplaceTo('(')).display(),
+            "the two halves of `m r` must not render alike: a reader who cannot \
+             tell them apart cannot predict what the next key does"
         );
     }
 
