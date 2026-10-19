@@ -126,7 +126,32 @@ python3 scripts/check_queue_write_transaction_shape.py     # pass
 bash scripts/check-core-boundary.sh                        # pass
 cargo fmt --all -- --check                                # clean
 scripts/verify.sh quick                                    # "Quick verification passed."
+gh run list --workflow=linux-m004-native.yml               # hosted qualification
 ```
+
+### The hosted run against this source
+
+Run `39313802793` (2026-10-19, push, commit `d03b6267`) exercised this
+branch's exact source on the hosted Linux runner. Its two qualification jobs
+produced **different** results, and the difference is recorded rather than
+flattened:
+
+- `restricted-userns-fails-closed`: **success** (17m36s of a 20-minute
+  budget). The required M004 launch refuses before the target under a host
+  userns policy, and the constrained PTY and constrained LSP routes refuse the
+  same way. This is the native restricted-userns proof, and it is now
+  evidence.
+- `process-ipc`: **cancelled** at the job's 20-minute timeout with the
+  `linux_m004_process_ipc` binary still running. The cold-cache workspace
+  build inside that job took 5m14s before the suite started, so the job's
+  budget was spent on setup plus part of the suite. The cancelled step's log
+  was truncated by the cancellation, so it records neither a pass nor a
+  failure for the M005 netns proof in that suite.
+
+The budget defect is corrected in the same branch: `process-ipc` 20 → 45
+minutes, `restricted-userns-fails-closed` 20 → 35 (it passed with only
+2m24s of headroom), and the C007 contained-staging proof is moved into its
+own step with its own 10-minute budget ahead of the wider suite.
 
 ### The three new negative owner-path tests
 
@@ -285,15 +310,36 @@ reason it is allowed, so the allowlist cannot grow silently.
    requires, so native execution is unsupported there and the evidence has to
    come from the hosted runner. The refusal is a runtime probe, not a declared
    capability set.
-4. **The hosted exact-source run has not executed against this source.** The
-   qualification job runs on a **push** to this branch whose changed paths
-   match the trigger list. A `workflow_dispatch` on this branch does **not**
-   run it: the workflow's dispatch condition is
-   `github.event_name != 'workflow_dispatch' || github.ref_name != '<this branch>'`,
-   so a dispatch on this branch runs only the C002 cost pilot.
+4. **The hosted run has now executed against this source, but only half of
+   it.** Run `39313802793` (2026-10-19, push, commit `d03b6267`) exercised this
+   branch's exact source. Its `restricted-userns-fails-closed` job **passed**:
+   the required M004 launch refuses before the target under a host userns
+   policy, and the constrained PTY and constrained LSP routes refuse the same
+   way. That is the native restricted-userns proof, and it is now evidence
+   rather than an open item.
+
+   The sibling `process-ipc` job in the same run was **cancelled** — not
+   failed — when it reached the workflow's 20-minute job timeout with the
+   `linux_m004_process_ipc` binary still running. The job's own budget was
+   the cause, not a test result: the cold-cache workspace build inside that
+   job took 5m14s before the suite even started, and the suite was still
+   running 14 minutes later. The cancelled step's log was truncated by the
+   cancellation, so it records **no** pass and **no** failure for the suite.
+
+   The CI defect is corrected in the same branch: the `process-ipc` budget is
+   raised from 20 to 45 minutes to cover the cold build plus the full suite,
+   the `restricted-userns-fails-closed` budget is raised from 20 to 35
+   minutes because it passed with only 2m24s of headroom, and the C007
+   contained-staging proof is moved into its own step with its own 10-minute
+   budget so a long suite cannot hide it. A `workflow_dispatch` on this branch
+   still runs only the C002 cost pilot: the workflow's dispatch condition is
+   `github.event_name != 'workflow_dispatch' || github.ref_name != '<this branch>'`.
 5. **The M005 netns has no hosted end-to-end proof yet.** The hosted
-   `process-ipc` job has never run `managed_process_owner_applies_authenticated_offline_network_intent`
-   against this branch's source.
+   `process-ipc` job has still not completed a run of
+   `managed_process_owner_applies_authenticated_offline_network_intent` against
+   this branch's source, for the time-budget reason in item 4. The proof is
+   written and the job now has the budget to reach it; it has not been
+   observed passing, so it is recorded as **not run**.
 
 ## 6. Downstream effect
 

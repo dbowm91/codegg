@@ -28,7 +28,11 @@ Two things are **not** established by this closure, and neither is waived:
    M004 process/IPC tier and the M005 offline-network candidate — is
    implemented but not yet executed on a qualified host. The workstation's
    Landlock ABI is below the ABI 6 the M004/M005 scope requires, so the
-   contained path can only be exercised by the hosted Linux runner.
+   contained path can only be exercised by the hosted Linux runner. The first
+   hosted run against this source was cancelled by the job's time budget and
+   produced no evidence either way (§4, §8); the budget defect is corrected
+   and the run is re-triggered, but until a run reports the test passing this
+   stays **not run**.
 2. The **obtained network fact** is still not reported anywhere in the
    system. C014's open item stands. This closure makes no M005 production
    claim, and the receipt says so by construction: the receipt states the
@@ -59,7 +63,7 @@ Linux host is admitted.
 | An unconfigured backend refuses rather than downgrades | `an_unconfigured_backend_refuses_the_add_mutation` | pass | No silent fallback to the in-place `git add` route. |
 | A path outside the repository is refused before any child runs | `a_path_outside_the_repository_is_refused_before_any_child_runs` | pass | Nothing is recorded in the journal. |
 | The publisher executes no hook, filter, helper or worktree-controlled code | `PRIVATE_GITDIR_CONFIG`; the private gitdir is authored by the daemon and contains no `filter.*` section; `core.attributesFile = /dev/null`; the staging child runs with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` | pass (design) | The staging child's configuration is pinned by the daemon, so a repository-controlled clean/smudge filter has no command to run. The empirical filter probe remains hosted-run evidence (see below). |
-| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | **not run** | The test is written and compiled, and the workflow's path triggers now cover the C007 publisher surface so the next push exercises it. The workstation's Landlock ABI is below the ABI 6 the M004/M005 scope requires, so the run itself must come from the hosted runner. |
+| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | **not run** | The test is written and compiled. The first hosted run against this source (run `39313802793`, 2026-10-19) was **cancelled** by the job's 20-minute timeout with the test binary still running, so it produced no pass and no failure. The CI budget defect is corrected (20 → 45 minutes, and the C007 proof is isolated into its own step with its own 10-minute budget) and the run is re-triggered, but until that run reports the test passing, this row stays **not run**. The workstation's Landlock ABI is below the ABI 6 the M004/M005 scope requires, so the run itself must come from the hosted runner. |
 | The receipt states the obtained network boundary truthfully | `GitIndexPublicationReceipt` | partial | The receipt states the published resource and the imported objects. It does **not** state a network boundary, because the obtained network fact is not reported anywhere in the system (C014's open item). No M005 claim is made. |
 
 ## 3. Production implementation evidence
@@ -144,6 +148,24 @@ cargo fmt --all -- --check
   from the upgrade chain makes it fail with
   `storage layout marker tracks highest wired schema migration` (6/7 checks,
   exit 1), and restoring the block makes it pass 7/7 again.
+- **The first hosted run against this source produced no C007 evidence.**
+  Run `39313802793` (2026-10-19, push, commit `d03b6267`) was
+  **cancelled**: the `process-ipc` job reached its 20-minute timeout with the
+  `linux_m004_process_ipc` binary still running, and the cancelled step's log
+  was truncated, so it records neither a pass nor a failure for the C007
+  test. The cause was the job's budget, not the test: the cold-cache
+  workspace build inside that job took 5m14s before the suite started, and
+  the suite was still running 14 minutes later.
+- **The C007 test is not what overran the job.** Run locally on this host
+  (Landlock ABI below 6), the test binary refuses in 0.19 s with a typed
+  refusal rather than hanging:
+  `Refused(StagingFailed { reason: "the staging child failed to run: managed process sandbox failed: Linux launch dimensions unavailable: process-ipc-landlock-abi-6" })`.
+  The test therefore cannot consume the job's budget; the suite around it
+  can. The CI defect is corrected in the same branch — the `process-ipc`
+  budget goes from 20 to 45 minutes, the `restricted-userns-fails-closed`
+  budget from 20 to 35 (it passed with only 2m24s of headroom), and the C007
+  proof is moved into its own step with its own 10-minute budget, placed
+  **before** the wider suite so a long suite cannot hide its result.
 
 ## 5. Invariant review
 
@@ -205,6 +227,14 @@ cargo fmt --all -- --check
    compare-and-swap publication, the object import, the journal entry, and
    the proof that the repository's own `filter.*` configuration does not run.
    The workstation cannot run it (Landlock ABI below 6).
+
+   The first hosted run against this source (run `39313802793`) was
+   **cancelled** by the job's 20-minute time budget before the suite
+   finished, so it produced no evidence either way (§4). The budget defect is
+   corrected in the same branch and the run is re-triggered. Until a hosted
+   run reports this test passing, the contained staging step remains **not
+   run** — the cancellation is not evidence of a pass, and it is not evidence
+   of a failure either.
 2. **The obtained network fact is not reported.** C014's open item stands.
    The receipt deliberately does not claim an M005 boundary.
 3. **`stage_all` and `stage_tracked` still use the legacy in-place route.**

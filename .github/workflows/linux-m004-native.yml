@@ -108,7 +108,13 @@ jobs:
   process-ipc:
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref_name != 'planning/linux-sandbox-next-admission-and-adr-cleanup' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # This job builds the whole workspace from a cold cargo cache (~6 min on
+    # the hosted runner) and then runs the M004/M005 suite, which launches a
+    # contained process per case. The previous 20-minute budget was consumed
+    # by the build alone plus part of the suite, so the job was cancelled
+    # before it could finish and the qualification produced no evidence at
+    # all. The budget is raised to cover the cold build plus the full suite.
+    timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: 4
       CODEGG_RUN_M004_BWRAP_NATIVE: '1'
@@ -154,6 +160,14 @@ jobs:
       - name: Build trusted sandbox helper
         run: cargo build --locked --bin codegg-sandbox-helper
 
+      - name: C007 private-index publication under containment
+        # Run first, and with its own budget, so the C007 qualification is
+        # recorded independently of the wider suite: a suite that runs long
+        # must not be able to hide this result, and a hang here must fail
+        # this step rather than cancel the whole job.
+        timeout-minutes: 10
+        run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support production_private_index_publisher_stages_and_publishes_under_containment -- --nocapture --test-threads=1
+
       - name: M004 managed-process host PID and IPC denial probes
         run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support -- --nocapture
 
@@ -176,7 +190,9 @@ jobs:
   restricted-userns-fails-closed:
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref_name != 'planning/linux-sandbox-next-admission-and-adr-cleanup' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # This job passed its 20-minute budget with 2m24s to spare, so the
+    # headroom is thin enough to turn a slow runner into a lost qualification.
+    timeout-minutes: 35
     env:
       CARGO_BUILD_JOBS: 4
       CODEGG_RUN_M004_RESTRICTED_USERNS: '1'
