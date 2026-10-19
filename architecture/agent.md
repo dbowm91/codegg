@@ -217,6 +217,13 @@ blocks new child admission while an
 already-admitted attempt retains its durable scratch lease until its child run
 and managed processes have completed.
 
+Terminal run-private scratch is reclaimed after the supervised child process
+returns. When the owning session is soft-deleted, its complete managed scratch
+tree is reclaimed only after all durable runs and jobs are terminal. Cleanup
+defers while work remains active, stops if the session is restored, and is
+re-armed by daemon startup reconciliation. Durable transcripts, run results,
+and Git worktrees are stored outside this tree.
+
 Prompt-block precedence for overlapping work state (M002 §6.9, M004 §6.5):
 current turn user input outranks an active goal revision newer than the
 checkpoint, which outranks the installed continuation projection

@@ -278,8 +278,12 @@ the revoked shared resource beneath an opaque tombstone. Reparse points are
 quarantined on Windows; deleting a hardlink inside the tombstone only removes
 that name and leaves its outside target intact. Other unsupported platforms
 retain revoked shared scratch rather than guessing at safe recursive removal.
-Session and run-private scratch remains disposable cache data and is not
-recursively collected by CodeGG.
+Terminal delegated-run scratch is reclaimed after the child process returns.
+When a session is soft-deleted, its complete scratch tree is reclaimed after
+all durable runs and jobs are terminal; cleanup is deferred while work remains
+active and stops if the session is restored. The daemon resumes cleanup for
+deleted sessions after restart. Durable transcripts, run results, and Git
+worktrees live outside this disposable tree.
 
 ## Testing and the scheduler
 

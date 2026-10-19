@@ -1,6 +1,6 @@
 # Managed Agent Scratch Spaces Roadmap
 
-Status: active — M004 closes private session/agent scratch reclamation. M003 remains conditionally closed pending Linux/Windows native qualification.
+Status: conditionally closed — M004 session/agent-private reclamation is closed. M003 remains conditionally closed pending Linux and Windows native sandbox qualification.
 
 Planning baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (main inspected 2026-10-16).
 
@@ -83,7 +83,7 @@ M002 — delegated private scratch + explicit shared ScratchId grants [closed]
 M003 — actionable permission hints, cleanup hardening/qualification [conditionally closed: `plans/closure/managed-agent-scratch/003-status.md`]
        |
        v
-M004 — session and agent-private scratch reclamation [active: `plans/implementation/managed-agent-scratch/004-private-scratch-reclamation.md`]
+M004 — session and agent-private scratch reclamation [closed: `plans/closure/managed-agent-scratch/004-status.md`]
 ```
 
 M001 is an end-to-end single-agent vertical slice, not merely a directory allocation type. M002 is a separate durable delegation contract with direct-parent and ownership checks. M003 qualifies security/restart/diagnostic behavior and closes the workstream; correctness blockers found earlier must be corrected *in that milestone*, not deferred as polish.
@@ -112,10 +112,10 @@ Exit: structured path denial / approval-needed results suggest authorized scratc
 
 ### M004 — Session and agent-private scratch reclamation
 
-Class: invariant / lifecycle correctness. Status: **active**.
+Class: invariant / lifecycle correctness. Status: **closed**.
 Plan: `plans/implementation/managed-agent-scratch/004-private-scratch-reclamation.md`.
-Dependencies: M001 session ownership, M002 durable run/job leases, M003 validated tombstone cleanup.
-Exit: terminal delegated runs reclaim only their private scratch; deleted sessions reclaim their full scratch tree only after all durable runs/jobs are terminal; busy cleanup retries and restored sessions retain their data. Durable transcripts, run results, and Git worktrees remain separate. M003's native-platform condition is unchanged.
+Closure: `plans/closure/managed-agent-scratch/004-status.md`.
+Exit: terminal delegated runs reclaim only their private scratch; deleted sessions reclaim their full scratch tree only after all durable runs/jobs are terminal; busy cleanup retries and restored sessions retain their data. Daemon startup resumes cleanup for deleted sessions. Durable transcripts, run results, and Git worktrees remain separate. M003's native sandbox qualification condition remains open.
 
 ## 8. Cross-cutting requirements
 
@@ -149,4 +149,5 @@ All three milestones have accepted `plans/closure/managed-agent-scratch/00N-stat
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/managed-agent-scratch/001-private-session-scratch-and-launch-wiring.md` | `plans/closure/managed-agent-scratch/001-status.md` | none |
 | M002 | closed | `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md` | `plans/closure/managed-agent-scratch/002-status.md` | none |
-| M003 | conditionally closed | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | `plans/closure/managed-agent-scratch/003-status.md` | Authenticated workspace/private/shared-scratch native mutations bypass the general Ask default; explicit tool/path rules remain authoritative. Unix cleanup and macOS native containment verified; Linux/Windows native qualification and non-Unix shared cleanup remain unqualified. No successor milestone is registered. |
+| M003 | conditionally closed | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | `plans/closure/managed-agent-scratch/003-status.md` | Authenticated workspace/private/shared-scratch mutations bypass only the implicit default Ask; explicit tool/path rules remain authoritative. Unix and Windows shared cleanup implementations are qualified by platform tests; Linux and Windows native sandbox containment remain unqualified. M004 was the corrective successor and is closed; no later milestone is registered. |
+| M004 | closed | `plans/implementation/managed-agent-scratch/004-private-scratch-reclamation.md` | `plans/closure/managed-agent-scratch/004-status.md` | Exact-head cleanup, full CI, Windows lifecycle, and desktop evidence recorded. No successor plan in this line is currently eligible or blocked. |

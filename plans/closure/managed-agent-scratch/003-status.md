@@ -149,3 +149,22 @@ Added verification:
 - `cargo fmt --all -- --check` and `git diff --check`: passed after the correction.
 - `scripts/verify.sh quick`: passed on ARM64 macOS after the correction.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed on ARM64 macOS.
+
+## 14. Factual correction — Windows reclamation and M004 successor (2026-10-19)
+
+Later changes supersede this record's statements that cleanup is disabled on
+non-Unix platforms. `f97db619` added Windows shared-scratch reclamation using
+stable reparse-point inspection, and `3051ffb9` added a native reparse-point
+fixture. Windows scratch lifecycle tests are run by the Windows process
+launcher workflow. The exact-head Windows managed-scratch lifecycle step passed in run
+[39201781430](https://github.com/dbowm91/codegg/actions/runs/39201781430),
+recorded in M004's closure record. This qualifies the cleanup implementation only; Windows
+Required-sandbox containment remains unqualified, as does Linux native
+containment beyond the hosted Linux unit suite.
+
+M004 was subsequently registered as the corrective successor for session and
+agent-private reclamation and is now closed at
+`plans/closure/managed-agent-scratch/004-status.md`. No later managed-agent-
+scratch milestone is registered. M003 remains conditionally closed for its
+native sandbox qualification conditions; its former “no successor” disposition
+is historical and does not block or imply another plan.

@@ -304,9 +304,14 @@ launches remain unavailable. Constrained
 launches also retain a separate collision-resistant 0700 per-launch staging directory,
 which is reaped with the process tree. Python's temporary script is held in
 its own private run directory. Shared `/tmp` and global HOME caches are not
-writable grants. Revoked shared directories are removed after the last
-attempt lease releases. Run-private scratch is retained as disposable cache
-data and may be removed by host cache maintenance.
+writable grants. Revoked shared directories are removed after the last attempt lease releases.
+Terminal delegated-run private roots are reclaimed only after the supervised
+child returns. A soft-deleted session's scratch tree is reclaimed only after
+durable runs and jobs become terminal; active work defers cleanup, and
+restoring the session prevents deletion. Cleanup rechecks the deleted-session
+row under the SQLite writer lock before claiming the tree. Startup keyset-scans
+deleted sessions and re-arms cleanup after daemon restart. Transcripts,
+durable run results, and managed Git worktrees are outside the scratch tree.
 On Unix and Windows, shared-resource reclamation first atomically renames the
 managed directory to an opaque tombstone, validates its owner marker, and walks
 entries without following links. Unix quarantines symlinks, non-regular
@@ -316,9 +321,8 @@ recursive edges, so deleting a link under the tombstone only removes that link
 and leaves the outside file intact. Windows recursive removal uses the Rust
 standard library's handle-based implementation. A later retry recovers an
 orphaned tombstone after daemon interruption, and concurrent reclamation is
-serialized. Other platforms remain fail-closed. Cleanup applies to explicitly
-revoked shared resources only; CodeGG does not recursively collect session or
-run-private cache roots.
+serialized. Other platforms remain fail-closed. Session and run lifecycle
+reclaimers use this same owner-validated tombstone path.
 Existing denied regular files with hardlink aliases cause the required launch
 to fail because path-based backends cannot distinguish the aliases. As before,
 paths are canonicalized so Seatbelt matches resolved paths such as

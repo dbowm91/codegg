@@ -49,6 +49,9 @@ instructions into the candidate. See `architecture/agent.md`.
    A structured write rejected under a known host temp root can return an
    advisory path under private scratch; preserve the original path and all
    explicit permission decisions. Reads and shell commands are not redirected.
+   Terminal run-private scratch is reclaimed after the child returns; a
+   soft-deleted session's tree is reclaimed after all durable runs and jobs
+   are terminal. Restore prevents cleanup, and startup resumes it.
 2. **Never edit `src/agent/builtins/generated.rs`.** Edit
    `assets/agents/*.toml` or `assets/prompts/` then run
    `python3 scripts/generate_builtin_agents.py` (`--check` in CI).

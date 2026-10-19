@@ -285,8 +285,11 @@ Revocation prevents new grants and new lease acquisition; it does not remove
 scratch from an attempt already admitted. Startup/recovery reconciliation
 removes leases only when the durable job attempt is no longer created, admitted,
 or running. Revoked shared roots are reclaimed only after the last attempt
-lease releases; ordinary run-private roots remain disposable cache data and
-may be removed by host cache maintenance.
+lease releases. Terminal run-private scratch is reclaimed after the supervised
+child returns. Soft-deleted session scratch is reclaimed after all durable
+runs and jobs are terminal; active work defers cleanup, session restoration
+cancels it, and daemon startup resumes cleanup for deleted sessions. Durable
+run results and Git worktrees are stored separately from scratch.
 
 ## Configuration Surface
 
