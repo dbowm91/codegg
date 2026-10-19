@@ -1,6 +1,6 @@
 # Eggwork Worker M003 — Remote Resource Policy and Scheduler Capacity Convergence
 
-Status: **blocked until CodeGG worker M001 closes**; independently implementable without Gregg/Eggwork telemetry M002
+Status: **implemented** — closed in `plans/closure/eggwork-worker-telemetry-and-targeting/003-status.md`
 Class: scheduler / resource enforcement
 Source: `plans/subsystems/eggwork-worker-telemetry-and-targeting-roadmap.md`
 Reviewed baseline (2026-10-19): `src/scheduler/eggwork.rs::build_spec`, `crates/codegg-core/src/jobs/mod.rs::ResourceRequest`, `src/scheduler/admission.rs`, `src/scheduler/permit.rs`, `src/scheduler/scheduler.rs`; Eggwork `ResourceRequirements`, `Requirement<T>`, resource capabilities and server admission.
