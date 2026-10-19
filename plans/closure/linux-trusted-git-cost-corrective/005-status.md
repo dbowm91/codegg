@@ -50,7 +50,7 @@ scripts/verify.sh quick
 ```
 
 - Full CI on exact head `59ab0d2d`: [run 39255875342](https://github.com/dbowm91/codegg/actions/runs/39255875342), failed after 12,464 passed, 1 failed, 7 skipped, with 2,374 not run. Its stale pre-v83 fixture lacked the `runtime_preferences` table present in every real v69 database; that fixture was corrected and all four `cached_models_composite_key` tests passed locally.
-- Full CI on exact head `1320c0b6`: [run 39259914428](https://github.com/dbowm91/codegg/actions/runs/39259914428), failed after 12,540 passed, 1 failed, 7 skipped, with 2,298 not run. The remaining failure pinned `STORAGE_LAYOUT_VERSION` to 82 after M005 added migration v83. Both `user_prompt_queue` and `user_prompt_queue_mutation` now pin v83 and document why; the focused migration test and all 34 queue-mutation tests pass locally. Rerun exact-head full CI after pushing this correction.
+- Full CI on final implementation head `99a3743d`: [run 39263811371](https://github.com/dbowm91/codegg/actions/runs/39263811371), passed all guards, formatting, Clippy, and all 14,839 workspace tests (7 skipped). The exact-head macOS target compile [run 39263805234](https://github.com/dbowm91/codegg/actions/runs/39263805234) passed.
 - macOS target compile on `59ab0d2d`: [run 39255837320](https://github.com/dbowm91/codegg/actions/runs/39255837320), passed.
 - Latest protected-mount qualification on `59ab0d2d`: [run 39256064866](https://github.com/dbowm91/codegg/actions/runs/39256064866), passed.
 - Linux restricted-user-namespace refusal checks in run 39254354958 passed. Its positive process job was canceled during PTY qualification and is not counted as a full pass.
@@ -58,7 +58,7 @@ scripts/verify.sh quick
 
 ### Results
 
-ADR integrity and quick verification passed on the reconciled branch before this closure-record edit. The `cached_models_composite_key` target (4/4), the focused v80 queue migration test (1/1), and the queue-mutation target (34/34) pass locally after both fixture/assertion corrections. No hosted evidence in this section constitutes production admission.
+ADR integrity, execution-ownership, sandbox-contract, Git-policy, formatting, and diff checks passed. The `cached_models_composite_key` target (4/4), the focused v80 queue migration test (1/1), and the queue-mutation target (34/34) passed locally after both fixture/assertion corrections. Final exact-head hosted CI passed as recorded above. No hosted evidence in this section constitutes production admission.
 
 ## 5. Invariant review
 
@@ -92,11 +92,11 @@ The Linux trusted Git roadmap and C002/C004 closures distinguish candidate infra
 | high | C002 writer-race, consistency, setup/resource and compatibility evidence is incomplete | A fast single-operation pilot cannot establish safe routine Git behavior | Complete the C002 closure gates and independent review. |
 | high | C004 lacks production-owned durable publication/recovery | Ordinary mutations could not safely publish index/object/ref/worktree effects | Implement and qualify a daemon-owned publisher and failure recovery. |
 | high | M005 production-owner host/configuration acceptance and independent M003/C010 admission are absent | No supported-host or release admission is established | Complete M005 owner matrix and record a separate explicit admission/rollback decision. |
-| medium | Full hosted CI after the v69 fixture and v83 assertion corrections has not completed | Final branch integration status is not yet known | Rerun on pushed source and record final result before merge. |
+| low | Two earlier full CI runs failed on stale pre-v83 test fixtures/assertions | They delayed integration but did not reveal a product migration defect; corrections now pass full CI | Preserve run history and retain the updated migration tripwires. |
 
 ## 11. Roadmap disposition
 
-C005 is blocked. It cannot hand off positive local Git recovery to Linux C002 or M008, cannot alter M003/C010 admission, and does not unblock remote C003. Reopen implementation only after the named ADR and proof gates are resolved.
+C005 is blocked. It cannot hand off positive local Git recovery to Linux C002 or M008, cannot alter M003/C010 admission, and does not unblock remote C003. Reopen implementation only after the named ADR and proof gates are resolved. Branch integration CI and cross-platform compile are green; those results do not waive the production/security gates.
 
 ## 12. Registry updates
 
