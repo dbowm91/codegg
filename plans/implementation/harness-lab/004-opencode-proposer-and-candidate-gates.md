@@ -1,6 +1,6 @@
 # Developer Harness Lab M004 — Optional OpenCode Proposer and Candidate Qualification Loop
 
-Status: blocked — hard dependency on Harness Lab M003 closure; design handoff prepared
+Status: implemented — conditional closure; see `plans/closure/harness-lab/004-status.md`
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (`main`, reviewed 2026-10-18). Rebase reasoning on M003 closure before implementation.
 
@@ -99,7 +99,7 @@ python3 -m unittest discover -s dev/harness_lab/tests -v
 python3 -m dev.harness_lab improve --proposer manual --max-iterations 1 --dry-run
 python3 -m dev.harness_lab improve --proposer opencode --max-iterations 1 --max-candidate-retries 1
 cargo fmt --all -- --check
-./verify.sh quick
+scripts/verify.sh quick
 ```
 
 The real OpenCode step is opt-in, requires an installed authenticated OpenCode binary, and must not be a routine CI requirement. Include exact build, focused test and candidate ACP commands in closure.

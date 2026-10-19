@@ -1,6 +1,6 @@
 # Developer Harness Lab M002 — ACP Unattended Execution and Truthful Terminal Contract
 
-Status: active
+Status: implemented
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (`main`, 2026-10-18). Refresh source before implementing.
 
@@ -98,7 +98,7 @@ cargo test -p codegg --lib policy_surface
 cargo test -p codegg --lib approval
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-./verify.sh quick
+scripts/verify.sh quick
 ```
 
 Adjust test targets to actual crate names at implementation time; document if a specified filter selects zero tests, which is **not** evidence.
