@@ -3998,6 +3998,16 @@ pub enum CoreEvent {
         /// that has no registry (an older recorded event, or a path that never
         /// assigned one), in which case consumers fall back to `agent`.
         display_name: Option<String>,
+        /// The leased pool entry's character description.
+        ///
+        /// Carried in the event rather than re-derived downstream for the same
+        /// reason as `display_name`: replay must reproduce what the live view
+        /// showed. `None` when the name was not drawn from the pool, or from a
+        /// producer with no registry.
+        profile: Option<String>,
+        /// The leased pool entry's candid operational guidance, carried for
+        /// the same determinism reason as `profile`.
+        usefulness: Option<String>,
         /// Durable run id when this subagent is scheduler-owned.
         ///
         /// The daemon-local `task_id` above is a `u64` and cannot be joined

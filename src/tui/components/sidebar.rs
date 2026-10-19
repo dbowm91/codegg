@@ -144,7 +144,7 @@ pub struct SidebarConvergence {
 /// looks similar. `name` is the curated display name when the projection
 /// carried one and the agent type otherwise — the same fallback rule
 /// [`crate::tui::app::state::subagents::SubagentRow::label`] applies, so the
-/// panel, the `Shift+T` overlay, and the tab bar never disagree about what a
+/// panel, the `Ctrl+T` overlay, and the tab bar never disagree about what a
 /// subagent is called.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidebarSubagent {
@@ -152,13 +152,19 @@ pub struct SidebarSubagent {
     pub name: String,
     pub agent: String,
     pub status: String,
+    /// The pool's description of this agent, copied from the projection.
+    ///
+    /// `None` for a node recorded before descriptors existed. The row is
+    /// unchanged when it is `None` — a descriptor that did not arrive must not
+    /// leave a gap or an ellipsis where nothing used to be.
+    pub profile: Option<String>,
 }
 
 /// One in-flight job advertised by the `Jobs` section.
 ///
 /// Only jobs the session is still waiting on reach here; the caller filters
 /// with [`crate::tui::app::state::tasks::is_live_state`] so the panel and the
-/// `Shift+T` overlay apply one rule rather than two that can drift.
+/// `Ctrl+T` overlay apply one rule rather than two that can drift.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidebarJob {
     pub job_id: String,
@@ -178,6 +184,15 @@ pub struct SidebarJob {
 pub const MAX_SIDEBAR_SUBAGENT_ROWS: usize = 16;
 pub const MAX_SIDEBAR_JOB_ROWS: usize = 12;
 
+/// Narrowest a subagent descriptor may be trimmed to before it is dropped.
+///
+/// The subagent row is one line, so the descriptor competes with the name,
+/// agent type, and status for the column's width. Below this many characters
+/// what survives is a stub that reads as a rendering fault rather than as
+/// prose, so the row falls back to exactly what it showed before descriptors
+/// existed.
+pub const MIN_SIDEBAR_DESCRIPTOR_CHARS: usize = 12;
+
 pub struct SidebarWidget {
     pub theme: Arc<Theme>,
     pub session: Option<Session>,
@@ -186,7 +201,7 @@ pub struct SidebarWidget {
     pub model: String,
     pub todos: Vec<TodoEntry>,
     /// Subagent rows, derived from the same `SubagentRow` set the main
-    /// buffer's strip and the `Shift+T` overlay read.
+    /// buffer's strip and the `Ctrl+T` overlay read.
     pub subagents: Vec<SidebarSubagent>,
     /// Live jobs the session is still waiting on.
     pub jobs: Vec<SidebarJob>,
@@ -1349,17 +1364,33 @@ impl SidebarWidget {
                     let target = SidebarFocusTarget::Subagent(row.task_id.clone());
                     let agent = clean_inline_text(&row.agent, 16);
                     let status = clean_inline_text(&row.status, 12);
-                    lines.push(self.with_row_style(
-                        Line::from(vec![
-                            Span::styled(format!("  {icon} "), style),
-                            Span::styled(
-                                clean_inline_text(&row.name, 24),
-                                Style::default().fg(self.theme.primary),
-                            ),
-                            Span::raw(format!(" ({agent}) {status}")),
-                        ]),
-                        &target,
-                    ));
+                    let name = clean_inline_text(&row.name, 24);
+                    let tail = format!(" ({agent}) {status}");
+                    // The descriptor takes whatever the identity above did not
+                    // use. A sidebar column is shared with the sections below
+                    // it, so a second line per subagent is not available — and
+                    // a descriptor squeezed to three characters reads as a
+                    // rendering fault rather than as prose. Below the floor the
+                    // row is exactly what it was before descriptors existed.
+                    let used = 4 + name.chars().count() + tail.chars().count();
+                    let room = (area_width as usize).saturating_sub(used + 3);
+                    let mut spans = vec![
+                        Span::styled(format!("  {icon} "), style),
+                        Span::styled(name, Style::default().fg(self.theme.primary)),
+                        Span::raw(tail),
+                    ];
+                    if let Some(profile) = row
+                        .profile
+                        .as_deref()
+                        .filter(|p| !p.trim().is_empty())
+                        .filter(|_| room >= MIN_SIDEBAR_DESCRIPTOR_CHARS)
+                    {
+                        spans.push(Span::raw(format!(
+                            " — {}",
+                            clean_inline_text(profile, room)
+                        )));
+                    }
+                    lines.push(self.with_row_style(Line::from(spans), &target));
                 }
                 let hidden = self.truncated_subagents();
                 if hidden > 0 {
@@ -2098,6 +2129,8 @@ mod tests {
             completed_at: None,
             result_summary: None,
             display_name: None,
+            profile: None,
+            usefulness: None,
             run_id: None,
         }
     }
@@ -2220,6 +2253,53 @@ mod tests {
         assert_eq!(
             sidebar.activate_focused(),
             SidebarActivation::InspectRun("run-7".to_string())
+        );
+    }
+
+    #[test]
+    fn a_subagent_row_shows_its_descriptor_when_the_column_has_room() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(vec![SidebarSubagent {
+            profile: Some("Reconnaissance generalist.".into()),
+            ..subagent("t1", "Sally", "explore", "running")
+        }]);
+        let lines = sidebar.content_lines(60);
+        let rendered = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            rendered.contains("Reconnaissance generalist."),
+            "the panel row dropped the descriptor: {rendered}"
+        );
+        assert!(rendered.contains("Sally"), "{rendered}");
+    }
+
+    /// Below the floor the row is byte-identical to what it was before
+    /// descriptors existed — a three-character stub would read as a rendering
+    /// fault rather than as prose.
+    #[test]
+    fn a_subagent_row_drops_the_descriptor_when_the_column_is_too_narrow() {
+        let mut with_descriptor = SidebarWidget::default();
+        with_descriptor.set_subagents(vec![SidebarSubagent {
+            profile: Some("Reconnaissance generalist.".into()),
+            ..subagent("t1", "Sally", "explore", "running")
+        }]);
+        let mut without = SidebarWidget::default();
+        without.set_subagents(vec![subagent("t1", "Sally", "explore", "running")]);
+
+        let text = |w: &SidebarWidget| -> String {
+            w.content_lines(30)
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(
+            text(&with_descriptor),
+            text(&without),
+            "a narrow column must fall back to the pre-descriptor row, not to a stub"
         );
     }
 
@@ -2472,6 +2552,7 @@ mod tests {
             name: name.to_string(),
             agent: agent.to_string(),
             status: status.to_string(),
+            profile: None,
         }
     }
 

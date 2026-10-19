@@ -711,17 +711,49 @@ stays in the toast, and `/logs` retains 50 of them via `ToastManager::history`.
 
 Rows come from `sync_subagents_from_snapshot`, which reads the same
 `active_turn` (falling back to the newest `recent_turns`) agent tree the
-sidebar renders. Every field on a row — including `run_id` and `display_name` —
-is copied **verbatim off the projected node**; nothing is joined, looked up, or
-synthesized here. An earlier revision described this as being "joined to durable
-runs by exact canonical task id only to attach a `run_id`", and that join never
-worked: the node's `task_id` is a daemon-local `u64` rendered in decimal while
-`AgentRunSummary::task_id` is a UUID string, so the two could never match and
-`run_id` was permanently `None`. The durable id now arrives inside
-`CoreEvent::SubagentStarted` and is carried through the projection as a field.
+sidebar renders. Every field on a row — including `run_id`, `display_name`,
+`profile`, and `usefulness` — is copied **verbatim off the projected node**;
+nothing is joined, looked up, or synthesized here. An earlier revision
+described this as being "joined to durable runs by exact canonical task id only
+to attach a `run_id`", and that join never worked: the node's `task_id` is a
+daemon-local `u64` rendered in decimal while `AgentRunSummary::task_id` is a UUID
+string, so the two could never match and `run_id` was permanently `None`. The
+durable id now arrives inside `CoreEvent::SubagentStarted` and is carried through
+the projection as a field.
 A snapshot that *arrives* replaces the rows; **a missing snapshot does not**,
 because absence is not evidence that no subagents exist and clearing on it
 would blank the strip mid-turn.
+
+**Descriptors are carried, never resolved.** `SubagentRow::profile` and
+`usefulness` are the curated pool entry's one-line character description and
+operational guidance. They are drawn once at spawn by `SubagentNameLease::entry`
+— which resolves the entry behind **its own leased name**, so the descriptor is
+by construction the one that was leased — and put on
+`AppEvent::SubagentStarted`, from where the projection adapter copies them
+verbatim. The reducer has no pool and cannot re-derive them; a re-drawn value
+would make replay non-deterministic, the same failure `display_name` already had.
+
+The TUI resolves nothing. `SubagentRow::descriptor()` returns only what arrived.
+A display name is not a stable key: the registry appends numeric variants
+(`Sally-2`), a name outside the pool must render *no* descriptor rather than a
+guessed one, and a released name can be re-drawn to a different subagent while a
+stale snapshot is still on screen. `scripts/check_tui_subagent_name_pool_isolation.py`
+enforces this and carries a `--self-test` proving it fails on a planted
+violation; run the guard, not the absence of a complaint.
+
+**One row, five surfaces, and a deliberate trade.** The strip, the sidebar panel,
+the `Ctrl+T` overlay, the `/sessions` dialog, and the subagent tab all render the
+same derived vector. The four one-line surfaces show `SubagentRow::topic()` — the
+descriptor when the projection carried one, the task description otherwise —
+because a single terminal line cannot legibly carry two pieces of prose and
+whichever is ellipsized second reads as noise. The sidebar additionally drops the
+descriptor entirely below `MIN_SIDEBAR_DESCRIPTOR_CHARS`, since a three-character
+stub reads as a rendering fault; a narrow column shows exactly what it showed
+before. The **subagent tab is the full-fidelity surface**: it renders `Task` and
+`Agent` side by side, wrapped and untruncated, which is what makes the
+one-line trade lossless. A node recorded before descriptors existed has neither
+field, so every surface falls back and the tab omits the `Agent` heading rather
+than leaving one over an empty body.
 
 **Subagent buffer** (`SubagentState::open`). Clicking a row replaces the
 transcript in the viewport rect rather than opening a modal, so `Esc` has one
@@ -813,6 +845,53 @@ the open, and the caller then has a defined outcome to report — `App::
 open_subagent_tab` toasts only when a row exists *and* the set is at capacity.
 Note that `open_task` requires the row to still exist: a panel row alone cannot
 open a tab, because a tab with nothing to render is not a tab.
+
+### Addressing a reply to a running subagent
+
+`/subagent-send` arms the composer to address one running subagent
+(`state/subagent_addressee.rs`, `commands/subagent_steer.rs`). This is ADR-0040
+**Option A**, and three properties are load-bearing:
+
+- **The addressee is composer data, not a focus mode.** `InputTarget` stays
+  `{Build, Chat}`; arming changes what Enter *means* on submit, never where
+  keystrokes go. A variant here would have made the badge lie about who holds
+  the keyboard.
+- **The recipient is the controlling parent turn, not the subagent.** The
+  request is `TurnSteer { session_id, turn_id }` where `turn_id` is
+  `session_state.active_turn_id` — read at send time, never the subagent's
+  `task_id`. `TurnSteer` is keyed on a *session turn*; naming a subagent's
+  daemon-local `u64` would resolve to `turn_id_mismatch` every time. The
+  subagent is named inside the payload as an addressee, and the parent decides
+  whether to relay (ADR-0040, *Indirect*).
+- **An armed composer cannot fall through to `TurnSubmit`.** The branch sits
+  after the observer return and before `pending_send`, so an addressed reply
+  that is refused reports in the steering vocabulary instead of silently
+  starting a new turn with a message written for a subagent.
+
+`SubagentAddressee` is invalidated three ways, all read from evidence rather
+than guessed: `from_tab`/`from_row` refuse a finished or detached run at arm
+time; `reconcile_addressee` clears it on **every** arriving snapshot when the
+run has left the tree *or* is still present but no longer running (presence
+alone is not liveness); and a `TurnStarted` drops it, because a subagent
+dispatched by the previous turn is not one this turn's agent is running. The
+single funnel is `App::apply_subagent_rows` — both `set_rows` call sites route
+through it, so a second call site cannot forget the rule.
+
+**A refused reply has no durable home, so the compositor restores it.**
+`TuiCommand::SubagentSteerFinished` carries the user's own words back, and the
+applier puts them into an *empty* composer. Unlike a queued prompt, a steer is
+never stored: it goes to the loop's `pending_steer` and into the in-flight
+provider transcript, nothing else. That is also why the TUI writes **no**
+transcript message for an accepted reply — one would render as durable on
+screen and vanish on reload. The toast is the record, and every sentence names
+the parent as recipient: the vocabulary is `send_now_outcome_message` with
+`SteerConsequence::ComposerOnly`, one function shared with M006's send-now
+rather than a second table that could drift on the codes.
+
+Addressing binds **no key**. A mode the user must be able to see, name, and undo
+from the palette is a command; a chord would give it none of those. Arming
+issues no request at all, so it cannot cancel, interrupt, or evict anything
+(I5).
 
 These keys name the buffer itself, adjacent to `Tab` for project tabs, but the
 two axes never consult each other — subagents are inside one session, projects
@@ -3618,11 +3697,11 @@ user-facing statement of the editor's chords is `docs/tui.md` ("Editor
 language features") plus the table above. The shipped `/help` surface
 (`components::dialogs::help::HelpDialog`, fed by `input::default_help_entries`)
 lists global bindings only and names no editor chord at all, so it cannot
-drift here or there. Note also that `src/tui/components/help_overlay.rs` is
-**not** a live surface: it is absent from `components/mod.rs`, so it is never
-compiled, and its `editor_bindings()` table still advertises `Ctrl+R (redo)`
-and a `dd dw` row for bindings that do not exist. Do not read it as the
-implemented keymap.
+drift here or there. Note also that `src/tui/components/help_overlay.rs`
+existed only as dead source — it was absent from `components/mod.rs`, so it was
+never compiled, and its `editor_bindings()` table advertised `Ctrl+R (redo)`
+and a `dd dw` row for bindings that do not exist. C001 deleted it and moved its
+one unique asset, the editor key table, into `docs/tui.md`.
 
 **Selection is the shared state machine.** `tui::helix_selection::SelectionState`
 is instantiated with `EditorPoint { byte, line }` — byte offsets plus the line
@@ -4315,6 +4394,7 @@ tui/
 │       ├── routing.rs      # Route routing helpers
 │       ├── session.rs      # SessionState (session, history, git info)
 │       ├── snapshot.rs     # Remote snapshot building
+│       ├── subagent_addressee.rs # C007: who the composer is addressed to
 │       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
 │       ├── subagents.rs    # SubagentRow projection rows + strip/buffer view state
 │       ├── tasks.rs        # Ctrl+T tasks overlay rows (todos, subagents, jobs)
@@ -4399,7 +4479,7 @@ tui/
 │   │   ├── review.rs       # ReviewDialog
 │   │   ├── run_detail.rs   # RunDetailDialog
 │   │   ├── security_review.rs # SecurityReviewDialog
-│   │   ├── session.rs      # SessionDialog
+│   │   ├── session.rs      # SessionDialog (sessions + Subagents/Jobs sections)
 │   │   ├── share.rs        # ShareDialog
 │   │   ├── source_preview.rs # SourcePreviewDialog
 │   │   ├── task_schedule.rs # TaskScheduleDialog (WorkOrder sheet)
@@ -4415,7 +4495,7 @@ tui/
 │   ├── diff.rs             # DiffViewer
 │   ├── editor.rs           # M006-A buffer widget
 │   ├── file_tree.rs        # M006-D file tree widget
-│   ├── help_overlay.rs     # Dead code (help is mode-aware via input.rs)
+│   ├── help_overlay.rs     # (removed in C001 — help is mode-aware via input.rs)
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── messages/           # MessagesWidget submodules
@@ -4718,7 +4798,11 @@ action.
   a dialog must write through `focus_manager.with_dialog_mut::<D, _>(..)`
   (or `dialog_mut`) as well. `/sessions` shipped broken for exactly this
   reason — see `reload_fills_the_painted_focus_manager_instance` in
-  `src/tui/commands/sessions.rs`.
+  `src/tui/commands/sessions.rs`. The C002 subagent/job sections obey the
+  same rule on open *and* on every live refresh
+  (`App::refresh_sessions_dialog_pending_rows`), and
+  `tests/tui_sessions_pending_sections.rs::both_instances_receive_the_sections`
+  reads the painted clone rather than the App-owned field.
 - **The terminal's own text selection is unavailable**: `EnableMouseCapture`
   (`src/tui/terminal.rs`) makes the terminal stop offering drag-select, so
   the TUI implements its own over the rendered frame buffer

@@ -996,12 +996,23 @@ async fn run_subagent_task_with_cancel(
         task_id,
     );
 
+    // The descriptor is read off the lease rather than through a second,
+    // caller-keyed lookup: it is by construction the entry behind the name
+    // this subagent was actually given. A fallback name yields `None`, which
+    // is carried honestly instead of substituting some other entry's profile.
+    let descriptor = name_lease.entry();
+
     GlobalEventBus::publish(AppEvent::SubagentStarted {
         session_id: session_id.clone(),
         task_id,
         agent: request.agent.clone(),
         description: request.description.clone(),
         display_name: Some(name_lease.name_owned()),
+        // Carried in the event for the same reason as the name: the projection
+        // must be a pure function of its input, so it copies these verbatim
+        // rather than re-deriving them from a name it cannot resolve.
+        profile: descriptor.map(|entry| entry.profile.to_string()),
+        usefulness: descriptor.map(|entry| entry.usefulness.to_string()),
         // The durable run id travels with the event. The TUI cannot recover it
         // by joining `task_id`: this node's `task_id` is a daemon-local `u64`
         // while `AgentRunSummary::task_id` is a UUID string, so that join can

@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 use crate::projection::limits::{
-    truncate_str, MAX_PROJECTION_DISPLAY_NAME_BYTES, MAX_PROJECTION_RUN_SUMMARY_BYTES,
-    MAX_PROJECTION_STRING_BYTES,
+    truncate_str, MAX_PROJECTION_DESCRIPTOR_BYTES, MAX_PROJECTION_DISPLAY_NAME_BYTES,
+    MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_STRING_BYTES,
 };
 
 /// Visibility classification carried on every projection DTO.
@@ -464,6 +464,23 @@ pub struct AgentTreeNodeProjection {
     /// disagree about what a given subagent was called.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// The leased pool entry's character description, e.g. "Generalist who
+    /// has seen something like this before".
+    ///
+    /// Additive and defaulted for the same reason as `display_name`, and
+    /// carried by the same contract: drawn from the pool entry at spawn, put
+    /// in the event, copied here verbatim. The reducer has no pool, so it
+    /// cannot re-draw this — and a re-drawn value would make replay
+    /// non-deterministic in exactly the way `display_name` already was.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// The leased pool entry's candid operational guidance.
+    ///
+    /// Additive and defaulted for the same reason as `profile`. Rows render
+    /// `profile`; this is the operational half, carried on the node so a
+    /// consumer that can address a subagent has it without re-deriving.
+    #[serde(default)]
+    pub usefulness: Option<String>,
     /// Durable run id for this node, when the run was scheduler-owned.
     ///
     /// Additive and defaulted for the same reason as `display_name`. This is
@@ -486,6 +503,14 @@ impl AgentTreeNodeProjection {
         if let Some(name) = self.display_name.as_deref() {
             self.display_name =
                 Some(truncate_str(name, MAX_PROJECTION_DISPLAY_NAME_BYTES).into_owned());
+        }
+        if let Some(profile) = self.profile.as_deref() {
+            self.profile =
+                Some(truncate_str(profile, MAX_PROJECTION_DESCRIPTOR_BYTES).into_owned());
+        }
+        if let Some(usefulness) = self.usefulness.as_deref() {
+            self.usefulness =
+                Some(truncate_str(usefulness, MAX_PROJECTION_DESCRIPTOR_BYTES).into_owned());
         }
         if let Some(run_id) = self.run_id.as_deref() {
             self.run_id = Some(truncate_str(run_id, MAX_PROJECTION_STRING_BYTES).into_owned());
@@ -1070,6 +1095,211 @@ pub enum NotificationClassification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::projection::limits::{
+        MAX_PROJECTION_SUBAGENTS, MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES,
+    };
+
+    fn subagent_node() -> AgentTreeNodeProjection {
+        AgentTreeNodeProjection {
+            task_id: 7,
+            agent: "explore".into(),
+            description: "walking the tree".into(),
+            status: AgentTreeStatus::Running,
+            parent_task_id: None,
+            created_at: 4,
+            completed_at: None,
+            result_summary: None,
+            display_name: Some("Sally".into()),
+            profile: Some("Reconnaissance generalist.".into()),
+            usefulness: Some("Useful for broad recon.".into()),
+            run_id: Some("018f-run-7".into()),
+        }
+    }
+
+    /// C005: descriptors are bounded by their **own** named cap.
+    ///
+    /// The cap is deliberately much smaller than
+    /// [`MAX_PROJECTION_STRING_BYTES`]: a node already carries up to 4 KB of
+    /// `description`, so reusing that bound would leave the descriptor's own
+    /// budget unenforced and a 16-node tree would carry 128 KB of prose.
+    #[test]
+    fn subagent_descriptors_truncate_at_their_own_cap() {
+        let mut node = subagent_node();
+        node.profile = Some("p".repeat(MAX_PROJECTION_DESCRIPTOR_BYTES * 4));
+        node.usefulness = Some("u".repeat(MAX_PROJECTION_DESCRIPTOR_BYTES * 4));
+        node.normalise();
+
+        for (field, value) in [("profile", &node.profile), ("usefulness", &node.usefulness)] {
+            let value = value.as_deref().expect("still present after truncation");
+            assert!(
+                value.len() <= MAX_PROJECTION_DESCRIPTOR_BYTES,
+                "{field} is {} bytes, over the {} cap",
+                value.len(),
+                MAX_PROJECTION_DESCRIPTOR_BYTES
+            );
+            assert!(
+                value.ends_with(crate::projection::limits::TRUNCATION_MARKER),
+                "{field} must mark that it was truncated"
+            );
+        }
+        // A descriptor inside the cap is untouched — truncation must not
+        // rewrite a curated value that was never too long.
+        assert_eq!(node.display_name.as_deref(), Some("Sally"));
+    }
+
+    /// A descriptor within the cap is passed through byte-for-byte.
+    #[test]
+    fn a_descriptor_within_the_cap_is_left_alone() {
+        let mut node = subagent_node();
+        let before = (
+            node.profile.clone(),
+            node.usefulness.clone(),
+            node.display_name.clone(),
+        );
+        node.normalise();
+        assert_eq!(
+            (
+                node.profile.clone(),
+                node.usefulness.clone(),
+                node.display_name.clone(),
+            ),
+            before
+        );
+    }
+
+    /// A node recorded before descriptors existed decodes with both absent.
+    ///
+    /// The mixed-version guarantee, stated at the DTO: a new frontend reading a
+    /// snapshot an old daemon recorded must not error, and must render the row
+    /// exactly as it did before.
+    #[test]
+    fn a_node_without_descriptors_decodes_with_them_absent() {
+        let json = serde_json::json!({
+            "task_id": 7,
+            "agent": "explore",
+            "description": "walking the tree",
+            "status": "running",
+            "parent_task_id": null,
+            "created_at": 4,
+            "completed_at": null,
+            "result_summary": null,
+        });
+        let node: AgentTreeNodeProjection =
+            serde_json::from_value(json).expect("a pre-descriptor node must still decode");
+        assert!(node.profile.is_none());
+        assert!(node.usefulness.is_none());
+        assert!(node.display_name.is_none());
+    }
+
+    /// C004: the identity fields survive the wire in the **present** direction.
+    ///
+    /// This struct is not an in-process convenience. `TuiMessage::ProjectionSnapshot`
+    /// ships a `SessionProjectionSnapshot` to the frontend over the WebSocket
+    /// (`crates/codegg-protocol/src/tui.rs`), so a subagent node genuinely
+    /// crosses a serde boundary between the daemon and the TUI that renders the
+    /// row.
+    ///
+    /// Every other test in this chain builds the node as a Rust literal, which
+    /// bypasses serde entirely. A `#[serde(skip)]`, a stray `rename`, or a
+    /// `skip_serializing_if` added to one of these fields would leave all of them
+    /// green while the name quietly stopped crossing the daemon boundary — the
+    /// absent-decodes test above covers the *missing* direction, and nothing
+    /// covered the *present* one, which is the direction every live subagent
+    /// takes.
+    #[test]
+    fn a_subagent_node_survives_the_serde_wire_boundary() {
+        let node = subagent_node();
+        let encoded = serde_json::to_value(&node).expect("a subagent node must serialize");
+        let decoded: AgentTreeNodeProjection =
+            serde_json::from_value(encoded).expect("a subagent node must deserialize");
+
+        assert_eq!(decoded.task_id, node.task_id);
+        assert_eq!(
+            decoded.display_name.as_deref(),
+            Some("Sally"),
+            "display_name dropped crossing the wire"
+        );
+        assert_eq!(
+            decoded.profile.as_deref(),
+            Some("Reconnaissance generalist."),
+            "profile dropped crossing the wire"
+        );
+        assert_eq!(
+            decoded.usefulness.as_deref(),
+            Some("Useful for broad recon."),
+            "usefulness dropped crossing the wire"
+        );
+        assert_eq!(
+            decoded.run_id.as_deref(),
+            Some("018f-run-7"),
+            "run_id dropped crossing the wire"
+        );
+        assert_eq!(decoded, node, "the node changed crossing the wire");
+    }
+
+    /// C005: a 16-node tree of maximal descriptors stays inside the budget.
+    ///
+    /// The real figures — 46 entries, longest profile 223 B, longest
+    /// combined 291 B, so 16 × 291 = 4,656 B — are asserted against the real
+    /// pool in the root crate, where the pool lives. This asserts the enforced
+    /// ceiling itself: that the derived budget is exactly what the caps imply,
+    /// so the constant cannot drift away from the caps it claims to bound.
+    /// The budget is **derived**, not tuned, so it cannot drift from the caps it
+    /// claims to bound.
+    ///
+    /// Both halves are compile-time constants, so they are asserted as constants:
+    /// a runtime `assert_eq!` between two `const usize`s folds to `assert!(true)`,
+    /// which clippy rejects — rightly, since a test the optimizer deletes is not a
+    /// test. The runtime half of this claim is
+    /// [`a_full_turn_of_maximal_descriptors_fits_the_budget`].
+    const _: () = assert!(
+        MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES
+            == MAX_PROJECTION_SUBAGENTS * MAX_PROJECTION_DESCRIPTOR_BYTES * 2,
+        "the total budget is derived from the per-field cap and the node count; if \
+     either changes, this must change with it"
+    );
+    const _: () = assert!(
+        MAX_PROJECTION_DESCRIPTOR_BYTES < MAX_PROJECTION_STRING_BYTES,
+        "a per-descriptor cap at or above the generic string bound would leave the \
+     descriptor budget unenforced"
+    );
+
+    /// C005: a full turn of maximal descriptors fits the asserted budget.
+    ///
+    /// Measured, not asserted from constants: sixteen nodes each carrying a
+    /// descriptor at exactly the cap, aggregated over the whole tree. The real
+    /// curated figures (16 × 291 B = 4,656 B, measured against the shipped pool in
+    /// the root crate) sit well inside this — the point is that the ceiling holds
+    /// for *any* producer, not only for today's pool.
+    #[test]
+    fn a_full_turn_of_maximal_descriptors_fits_the_budget() {
+        let maximal = "d".repeat(MAX_PROJECTION_DESCRIPTOR_BYTES);
+        let mut total = 0usize;
+        let mut nodes = Vec::with_capacity(MAX_PROJECTION_SUBAGENTS);
+        for task_id in 0..MAX_PROJECTION_SUBAGENTS as u64 {
+            let mut node = subagent_node();
+            node.task_id = task_id;
+            node.profile = Some(maximal.clone());
+            node.usefulness = Some(maximal.clone());
+            node.normalise();
+            total += node.profile.as_deref().map(str::len).unwrap_or(0);
+            total += node.usefulness.as_deref().map(str::len).unwrap_or(0);
+            nodes.push(node);
+        }
+
+        assert_eq!(nodes.len(), MAX_PROJECTION_SUBAGENTS);
+        assert!(
+            total <= MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES,
+            "a full tree of maximal descriptors totals {total} B, over the \
+         {MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES} B budget"
+        );
+        // The truncation marker is part of the retained bytes, so an over-cap
+        // descriptor lands exactly at the cap rather than under it.
+        assert_eq!(
+            nodes[0].profile.as_deref().map(str::len),
+            Some(MAX_PROJECTION_DESCRIPTOR_BYTES)
+        );
+    }
 
     #[test]
     fn session_summary_truncates_long_strings() {

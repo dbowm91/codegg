@@ -270,7 +270,8 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser |
+| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent transcript; job rows are read-only) |
+| `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
 | `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
 | `/approval` | Approval-mode fast-select (`/approval-mode` is an alias) |
@@ -434,12 +435,27 @@ when it finishes, so two concurrent runs never share a name, and a name is not
 a durable handle for that run. Read it as "the subagent I was watching a minute
 ago", not as an identifier you can rely on later.
 
-Three surfaces show this, and all three read one projection:
+**Every named agent also has a character.** The same curated pool each name
+comes from describes it — Greg is a confident generalist who changes three
+unrelated files before finding the missing environment variable; Susan is blunt
+about when she is the wrong tool. That description rides along with the name
+onto the row wherever it appears, so a fan-out reads as a team rather than as a
+list of `explore` calls.
+
+A one-line row has room for the character *or* the task, not both, so it shows
+the character and keeps the task as its fallback. Opening the subagent gives you
+both: the tab shows the **Task** and the **Agent** side by side. Subagents started
+before this existed have neither, so they show the task exactly as they always
+did.
+
+Five surfaces show this, and all five read one projection:
 
 | Surface | Open it with | What it shows |
 |---|---|---|
 | Tasks overlay | `Ctrl+T` in `INS` or `NOR` | Todos, subagents, and jobs together |
 | Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
+| Sessions dialog | `/sessions` | The session list plus its live `Subagents` and `Jobs` sections |
+| Working strip | always on, above the input box | One row per in-flight subagent |
 | Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's transcript per tab, in the main buffer |
 
 `Ctrl+T` works in **both** modes — the app boots in `[INS]`, and a chord that
@@ -501,6 +517,40 @@ A subagent tab shows that subagent's transcript. Closing it cancels nothing —
 the run keeps going whether or not you are watching it. When a run drops out of
 the projection the tab stays open and stops claiming to be live, so the buffer
 cannot show "running" for something the daemon has stopped vouching for.
+
+### Talking to a subagent
+
+`/subagent-send` points your next prompt at one running subagent.
+
+```
+/subagent-send            address the subagent in the tab you are looking at
+/subagent-send Sally      address the running subagent named Sally
+/subagent-send 42         address task 42 — exact, and never ambiguous
+/subagent-send off        clear it again
+```
+
+While it is armed the badge beside the input reads `[TO Sally]` instead of
+`[LLM]`, and the input placeholder says what the prompt is for. The tab strip
+stays where it is — this does not take the keyboard away from the input box.
+
+**What actually happens:** your message is handed to **the agent running this
+turn**, addressed to Sally by name, with the task she was given. That agent
+decides whether to pass it on. Nothing is delivered to the subagent directly,
+and the confirmation toast says exactly that rather than telling you it was
+"sent". If you need a subagent to actually do something, that is what the
+parent agent is for.
+
+Two rules worth knowing:
+
+- **A reply can only be addressed while a turn is running**, because the turn
+  is what carries it. With nothing running, the prompt stays in the box and you
+  are told why — it never quietly starts a new turn instead.
+- **A finished subagent drops the address.** If Sally finishes while you are
+  typing, the badge goes back to `[LLM]`, so what you have written is treated as
+  an ordinary prompt instead of being steered at work that is already done.
+
+If a reply is refused, your text comes back to the input box so you can send it
+again — nothing durable keeps it for you.
 
 ### Session panel sections
 

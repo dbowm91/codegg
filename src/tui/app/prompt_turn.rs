@@ -96,6 +96,34 @@ impl App {
             self.prompt_state.show_completions = false;
             return;
         }
+        // C007: the composer is addressed to one subagent.
+        //
+        // Placed after the observer branch — which returns unconditionally, so
+        // an observer provably cannot reach here, and arming is an
+        // `AgentInvoke` capability an observer does not hold — and *before*
+        // `pending_send`, so an armed composer always answers in the steering
+        // vocabulary instead of the generic submit one.
+        //
+        // The property that matters is the fall-through. Past this `if`, an
+        // armed composer can never reach `TurnSubmit`: a reply written for a
+        // subagent that silently started a new turn would look to the user
+        // exactly like one that worked, and the run it was about would receive
+        // nothing.
+        if self.prompt_state.subagent_addressee.is_some() {
+            // Slash input stays a command, mirroring the chat-armed branch
+            // above. Typing `/queue` while addressed must open the queue, not
+            // hand the literal string "/queue" to the parent agent.
+            if trimmed_text.starts_with('/') && self.handle_slash_command(&text) {
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                return;
+            }
+            // The prompt is cleared inside the sender, and only once its
+            // pre-flight has passed, so a refused steer leaves the user's
+            // words in the composer.
+            crate::tui::commands::subagent_steer::start_subagent_reply(self, trimmed_text);
+            return;
+        }
         if self.handle_slash_command(&text) {
             tracing::debug!(target: "codegg::tui::app", "send_prompt: handled slash command, clearing prompt");
             self.prompt_state.prompt.clear();

@@ -74,6 +74,30 @@ pub struct PromptState {
     /// on its own so a confirmation prompt cannot sit on screen forever after
     /// the user has looked away.
     pub stop_armed_at: Option<std::time::Instant>,
+    /// C007: the subagent the next composer submission is addressed to.
+    ///
+    /// Deliberately **not** an `InputTarget` variant. Arming records what the
+    /// text means; it does not move the keyboard, so the composer still owns
+    /// Enter and `input_target()` is unchanged (ADR-0040, *Neutral or
+    /// deferred*). Setting it routes the next submit to `TurnSteer` for the
+    /// controlling parent turn; clearing it restores the ordinary
+    /// `TurnSubmit` path exactly.
+    ///
+    /// Invariants, both enforced rather than assumed:
+    ///
+    /// * **A finished or detached run cannot be armed.**
+    ///   [`SubagentAddressee::from_tab`] refuses, and every arriving snapshot
+    ///   re-checks through [`reconcile_addressee`](super::reconcile_addressee).
+    /// * **It is dropped whenever a new turn starts**, because a reply aimed at
+    ///   the run of the previous turn has no meaning under the next one.
+    pub subagent_addressee: Option<super::SubagentAddressee>,
+    /// C007: the in-flight addressed reply. Its own generation, so a slow steer
+    /// cannot be completed by — or overwrite — a later one.
+    ///
+    /// Composer state rather than dialog state: there is no box to close, and
+    /// the stale rule that matters is "a newer reply was sent since", which is
+    /// exactly what this generation records.
+    pub subagent_steer_request: crate::tui::app::state::AsyncUiRequestState,
 }
 
 /// How long the stop confirmation stays armed before it lapses.

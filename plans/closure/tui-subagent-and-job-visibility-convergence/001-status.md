@@ -174,6 +174,32 @@ now covers it where the picker used to.
 
 ## 8. Milestones beyond C001
 
+### Factual correction — 2026-10-18
+
+The paragraph above is accurate **as of this record's closure** and is left
+unedited, per `plans/closure/README.md` (immutable except factual corrections).
+Three of its statements stopped being true later the same day, and are corrected
+here rather than by rewriting history:
+
+- **C005 is no longer "not started".** It has an implementation plan,
+  `plans/implementation/tui-subagent-and-job-visibility-convergence/003-agent-descriptors.md`,
+  registered **ready for handoff**. Its hard dependency is C004, which remains
+  *implemented and unclosed* — the dependency is satisfied in substance (the
+  additive-field contract is stable and pinned by four named tests), not in
+  process.
+- **C007 is no longer blocked.** ADR-0040 was **accepted 2026-10-18** (Option A:
+  route an addressed reply through the controlling parent turn's existing
+  controller predicate). C007 is therefore *eligible for fresh planning* and is
+  recorded as such. It remains **not implemented**: no plan exists, `TurnSteer`
+  still has zero TUI callers, `InputTarget` still has only `Build` and `Chat`,
+  and a subagent tab is still read-only.
+- **C003/C004/C006 remain implemented and unclosed** — unchanged by this
+  correction.
+
+Registry rows for C001 and C002 were, until this correction, missing entirely
+from the registry's *Recently closed* section while the dependency-ready table
+still labelled C002 `ready`. Both rows are now present and C002 reads `closed`.
+
 This record covers **C001 only**. C003, C004, and C006 are implemented in the
 same working tree and have **no closure record yet** — the registry still lists
 them as `proposed`, which is the honest state until each has its own record.

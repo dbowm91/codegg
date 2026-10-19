@@ -187,6 +187,8 @@ pub fn projection_events_from_core(
             agent,
             description,
             display_name,
+            profile,
+            usefulness,
             run_id,
         } => {
             let event = ProjectionEvent::SubagentStarted {
@@ -202,8 +204,11 @@ pub fn projection_events_from_core(
                     // Replayed verbatim from the recorded event. This is the
                     // determinism contract: a replay that re-drew the name
                     // would make the historical view disagree with the live
-                    // one about what a given subagent was called.
+                    // one about what a given subagent was called. The
+                    // descriptors are carried under the same contract.
                     display_name: display_name.clone(),
+                    profile: profile.clone(),
+                    usefulness: usefulness.clone(),
                     run_id: run_id.clone(),
                 },
             };
@@ -670,6 +675,11 @@ mod tests {
                 agent: "explore".into(),
                 description: "map the auth flow".into(),
                 display_name: display_name.map(str::to_string),
+                // Mirrors the real publisher: a pool name has a descriptor
+                // behind it, a fallback name has none. Replay must carry
+                // whatever the recording captured, not invent it.
+                profile: display_name.map(|_| "Reconnaissance generalist.".to_string()),
+                usefulness: display_name.map(|_| "Useful for broad recon.".to_string()),
                 run_id: Some("run-42".into()),
             },
         }

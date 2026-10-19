@@ -49,6 +49,20 @@ pub struct SubagentRow {
     /// `None` for a node recorded before display names existed; see
     /// [`SubagentRow::label`].
     pub display_name: Option<String>,
+    /// The pool entry's character description, e.g. "Generalist who has seen
+    /// something like this before".
+    ///
+    /// Carried on the event and copied through, never looked up here: the TUI
+    /// has no name pool and must not grow one, or the main buffer and the
+    /// projection could disagree about what a subagent is. `None` for a node
+    /// recorded before descriptors existed; see [`SubagentRow::descriptor`].
+    pub profile: Option<String>,
+    /// The pool entry's candid operational guidance.
+    ///
+    /// Carried under the same contract as `profile`. Rows render `profile`;
+    /// this is held on the row so an addressing surface has it without
+    /// re-deriving anything.
+    pub usefulness: Option<String>,
     /// The subagent's name, e.g. `explore`.
     pub agent: String,
     /// What the subagent was asked to do.
@@ -68,6 +82,36 @@ impl SubagentRow {
         match self.display_name.as_deref() {
             Some(name) if !name.trim().is_empty() => name,
             _ => self.agent.as_str(),
+        }
+    }
+
+    /// What this subagent's agent **is**, as the curated pool describes it.
+    ///
+    /// `None` for a node recorded before descriptors existed. Callers treat
+    /// that as "render what this surface rendered before", so a pre-milestone
+    /// snapshot is indistinguishable from one whose producer simply had no
+    /// pool — an absent descriptor must never leave an empty column.
+    ///
+    /// Only ever the value that arrived in the projection. There is no pool
+    /// lookup here and none may be added: the TUI has no curated names, and a
+    /// frontend that resolved them itself could name a subagent the daemon
+    /// never called that.
+    pub fn descriptor(&self) -> Option<&str> {
+        self.profile.as_deref().filter(|p| !p.trim().is_empty())
+    }
+
+    /// The one-line "what is this row about" text.
+    ///
+    /// Prefers the descriptor when the projection carried one and falls back
+    /// to the task description otherwise. A single terminal line cannot
+    /// legibly carry both pieces of prose — whichever is ellipsized second
+    /// becomes noise — so the one-line surfaces carry the descriptor and keep
+    /// the description as their exact fallback. Nothing is lost: the subagent
+    /// tab shows Task and Agent side by side, untruncated.
+    pub fn topic(&self) -> &str {
+        match self.descriptor() {
+            Some(profile) => profile,
+            None => self.description.as_str(),
         }
     }
 
@@ -91,10 +135,13 @@ impl SubagentRow {
 
     /// The single buffer row for this subagent, ellipsized to `width`.
     ///
-    /// The activity column carries the *description* rather than a free-form
-    /// progress string: the projection adapter hardcodes `progress: None`, so
-    /// there is no live progress text to show. The description is what the
-    /// user can actually act on, and it is what identifies the work.
+    /// The activity column carries [`SubagentRow::topic`] — the pool's
+    /// descriptor when one arrived, the task description otherwise — rather
+    /// than a free-form progress string, because the projection adapter
+    /// hardcodes `progress: None` so there is no live progress text to show.
+    /// The description is what identifies the work, and the descriptor is what
+    /// identifies *who* is doing it; `topic()` picks whichever the projection
+    /// actually carried.
     ///
     /// The lead shows the curated display name when there is one. The agent
     /// type still matters, so a name is shown *with* its type rather than
@@ -132,11 +179,11 @@ impl SubagentRow {
             return format!("{head}{tail}");
         }
 
-        // Reserve the tail before the description so an ellipsized
-        // description still leaves the status readable.
+        // Reserve the tail before the topic so an ellipsized topic still
+        // leaves the status readable.
         let budget = width - fixed;
-        let description = ellipsize_to_width(&self.description, budget);
-        format!("{lead}{sep}{description}{tail}")
+        let topic = ellipsize_to_width(self.topic(), budget);
+        format!("{lead}{sep}{topic}{tail}")
     }
 }
 
@@ -273,7 +320,23 @@ mod tests {
             display_name: Some("Sally".into()),
             agent: "explore".into(),
             description: "Find the auth flow".into(),
+            profile: None,
+            usefulness: None,
             status: status.into(),
+        }
+    }
+
+    /// The same row as the projection delivers it once descriptors exist.
+    ///
+    /// Deliberately a *separate* fixture rather than a profile on [`row`]:
+    /// every test built on `row` is exercising the pre-milestone shape, and
+    /// giving the shared fixture a profile would silently move all of them off
+    /// the fallback they are meant to pin.
+    fn described(status: &str) -> SubagentRow {
+        SubagentRow {
+            profile: Some("Reconnaissance generalist.".into()),
+            usefulness: Some("Useful for broad recon.".into()),
+            ..row(status)
         }
     }
 
@@ -304,6 +367,61 @@ mod tests {
         let line = row("running").summary_line(60);
         assert!(line.contains("Sally"), "{line}");
         assert!(line.contains("explore"), "{line}");
+    }
+
+    /// C005: a row whose node carried a descriptor shows it.
+    #[test]
+    fn summary_line_shows_the_descriptor_when_one_arrived() {
+        let line = described("running").summary_line(80);
+        assert!(line.contains("Reconnaissance generalist."), "{line}");
+        assert!(
+            !line.contains("Find the auth flow"),
+            "a one-line row cannot carry both prose fields; the tab shows the \
+             task in full: {line}"
+        );
+    }
+
+    /// C005: a node recorded before descriptors existed renders exactly what
+    /// it rendered before — its task description.
+    #[test]
+    fn summary_line_falls_back_to_the_description_without_a_descriptor() {
+        let line = row("running").summary_line(80);
+        assert!(line.contains("Find the auth flow"), "{line}");
+    }
+
+    #[test]
+    fn descriptor_is_the_projected_profile_or_nothing() {
+        assert_eq!(
+            described("running").descriptor(),
+            Some("Reconnaissance generalist.")
+        );
+        assert_eq!(row("running").descriptor(), None);
+    }
+
+    /// A blank profile is absent, not an empty column — the same rule
+    /// `label()` already applies to a blank display name.
+    #[test]
+    fn a_blank_descriptor_is_treated_as_absent() {
+        let mut r = row("running");
+        r.profile = Some("   ".into());
+        assert_eq!(r.descriptor(), None);
+        assert_eq!(r.topic(), "Find the auth flow");
+    }
+
+    #[test]
+    fn topic_is_the_descriptor_when_present_and_the_task_otherwise() {
+        assert_eq!(described("running").topic(), "Reconnaissance generalist.");
+        assert_eq!(row("running").topic(), "Find the auth flow");
+    }
+
+    /// The tab is the one surface that carries Task *and* Agent, which is what
+    /// lets the one-line rows spend their single slot on the descriptor without
+    /// losing the task. Both fields survive onto the row either way.
+    #[test]
+    fn the_row_keeps_the_task_alongside_the_descriptor() {
+        let r = described("running");
+        assert_eq!(r.description, "Find the auth flow");
+        assert_eq!(r.usefulness.as_deref(), Some("Useful for broad recon."));
     }
 
     #[test]

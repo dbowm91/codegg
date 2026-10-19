@@ -11,9 +11,10 @@
 #
 # Fields:
 #   name        - the display name, assigned to the subagent identifier.
-#   profile     - one-line character description; carried for later use as
-#                 subagent context. Not rendered by the TUI today.
-#   usefulness  - candid operational guidance. Not rendered by the TUI today.
+#   profile     - one-line character description. Carried on the spawn event
+#                 and rendered on subagent rows.
+#   usefulness  - candid operational guidance. Carried with `profile` and
+#                 shown in the subagent tab.
 #   sprite      - optional sprite identifier reserved for future TUI use. Empty
 #                 means "no sprite assigned yet" and decodes to `None`.
 

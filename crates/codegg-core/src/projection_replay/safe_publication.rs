@@ -289,6 +289,8 @@ mod tests {
                 agent: "a".into(),
                 description: "d".into(),
                 display_name: Some("Sally".into()),
+                profile: Some("Reconnaissance generalist.".into()),
+                usefulness: Some("Useful for broad recon.".into()),
                 run_id: None,
             },
             CoreEvent::SubagentProgress {

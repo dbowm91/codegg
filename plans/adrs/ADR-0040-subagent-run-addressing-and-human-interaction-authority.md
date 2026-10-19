@@ -1,8 +1,10 @@
 # ADR-0040: Subagent Run Addressing and Human Interaction Authority
 
-Status: proposed
+Status: **accepted**
 
 Date: 2026-10-18
+
+Accepted: 2026-10-18
 
 Decision owners: project maintainers
 
@@ -247,8 +249,9 @@ An implementation of Option A is conformant only when:
    swallowed.
 3. The controller predicate refuses a non-controller exactly as it does for an
    unaddressed steer.
-4. A subagent tab remains read-only until this ADR is accepted, and closing a
-   tab still cancels nothing (I5).
+4. A subagent tab remains read-only until a C007 implementation of Option A
+   lands, and closing a tab still cancels nothing (I5). Acceptance of this ADR
+   authorizes the design; it does not itself make the tab writable.
 5. `scripts/check_execution_ownership.py` and
    `scripts/check_scheduler_bypass.py` remain green and
    `docs/execution-ownership.toml` is unchanged — a reply is not a new execution
@@ -259,5 +262,21 @@ An implementation of Option A is conformant only when:
 None. This ADR narrows nothing in ADR-0036; it decides the addressing question
 that ADR-0036 explicitly left to "who is speaking to whom".
 
-Until this ADR moves to **accepted**, milestone C007 stays blocked and C001–C006
-must not imply that interacting with a subagent is possible.
+## Acceptance record
+
+Accepted 2026-10-18, selecting **Option A**. The decision, its consequences, and
+the Option B deferral conditions above are unchanged and are now binding.
+
+Acceptance discharges C007's ADR blocker and **only** that blocker. What it does
+not do:
+
+- **It implements nothing.** C007 has no implementation plan and no work has
+  started. It is eligible for planning; it is not delivered.
+- **It does not make a subagent tab writable.** A tab stays read-only until a
+  C007 implementation of Option A lands. See §Verification item 4.
+- **It adds no authority.** A reply is delivered under the parent turn's existing
+  controller predicate, exactly as ADR-0036 specifies.
+- **It binds no key.** The `Shift+X` close, `Ctrl+T`, and the tab-cycling chords
+  keep their current meanings, and I5 stands.
+
+C001–C006 must still not imply that interacting with a subagent is possible.

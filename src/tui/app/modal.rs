@@ -273,6 +273,16 @@ impl App {
             Dialog::Session => {
                 self.load_sessions_dialog();
                 let project_context = self.active_project_display_context();
+                // Both instances get the live sections, in the same order the
+                // session rows are filled below. `open_dialog` pushes a
+                // *clone* onto the focus manager and `render_dialog` paints
+                // whichever instance is on that stack, so filling only the
+                // App-owned field would ship a dialog that every App-owned
+                // test passes and the user sees with no subagents and no jobs.
+                let pending = self.session_dialog_pending_rows();
+                self.dialog_state
+                    .session_dialog
+                    .set_pending_rows(pending.0, pending.1);
                 self.dialog_state
                     .session_dialog
                     .set_project_context(project_context);

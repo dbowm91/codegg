@@ -415,6 +415,8 @@ pub fn subagent_event_script() -> Vec<ReducerEventInput> {
                 completed_at: None,
                 result_summary: None,
                 display_name: Some("Sally".into()),
+                profile: Some("Reconnaissance generalist.".into()),
+                usefulness: Some("Useful for broad recon.".into()),
                 run_id: None,
             },
         },

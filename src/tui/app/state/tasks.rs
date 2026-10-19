@@ -1,10 +1,10 @@
-//! Rows for the unified tasks overlay (`Shift+T`).
+//! Rows for the unified tasks overlay (`Ctrl+T`).
 //!
 //! The overlay answers one question — *what is this session waiting on?* —
 //! across three kinds of work that used to need three different places to
-//! look: the todo list (`Ctrl+T`), the main buffer's subagent strip, and the
-//! job list that previously had no surface at all. Grouping them behind one
-//! key is the whole point; splitting them again per group would defeat it.
+//! look: the todo strip, the main buffer's subagent strip, and the job list
+//! that previously had no surface at all. Grouping them behind one key is the
+//! whole point; splitting them again per group would defeat it.
 //!
 //! # Two rules shape this module
 //!
@@ -85,11 +85,27 @@ pub enum TaskRow {
         agent: String,
         /// What the subagent was asked to do.
         description: String,
+        /// The pool's descriptor for this subagent's agent, or `None` for a
+        /// node recorded before descriptors existed.
+        ///
+        /// Rendered in place of `description` when present, and `None` falls
+        /// back to `description` — the same rule
+        /// [`crate::tui::app::state::subagents::SubagentRow::topic`] applies
+        /// on the strip, so the two rows cannot describe the same subagent two
+        /// different ways.
+        profile: Option<String>,
         /// Raw status from the projection.
         status: String,
     },
     /// An in-flight job.
     Job {
+        /// The projection's canonical job identity.
+        ///
+        /// Carried for the same reason [`TaskRow::Subagent::task_id`] is: a
+        /// surface that navigates rows must key on identity, because a list
+        /// position moves the moment a job finishes and the row before it
+        /// disappears.
+        job_id: String,
         /// Job kind, e.g. `test` or `build`.
         kind: String,
         /// Bounded human summary of the job.
@@ -170,6 +186,7 @@ pub fn build_task_rows(
             label: row.label().to_string(),
             agent: row.agent.clone(),
             description: row.description.clone(),
+            profile: row.descriptor().map(str::to_string),
             status: row.status.clone(),
         }));
     }
@@ -183,6 +200,7 @@ pub fn build_task_rows(
             group: TaskGroup::Jobs,
         });
         rows.extend(live_jobs.into_iter().map(|job| TaskRow::Job {
+            job_id: job.job_id.clone(),
             kind: job.kind.clone(),
             summary: job.summary.clone(),
             state: job.state.clone(),
@@ -256,6 +274,7 @@ pub struct TodoLike {
 /// does not silently change what the overlay shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobLike {
+    pub job_id: String,
     pub kind: String,
     pub summary: String,
     pub state: String,
@@ -396,12 +415,15 @@ mod tests {
             display_name: Some("Sally".into()),
             agent: agent.into(),
             description: "work".into(),
+            profile: None,
+            usefulness: None,
             status: status.into(),
         }
     }
 
     fn job(kind: &str, state: &str) -> JobLike {
         JobLike {
+            job_id: format!("job-{kind}"),
             kind: kind.into(),
             summary: "build the thing".into(),
             state: state.into(),
@@ -436,6 +458,42 @@ mod tests {
             r,
             TaskRow::Job { kind, .. } if kind == "test"
         )));
+    }
+
+    #[test]
+    fn a_subagent_row_carries_the_projected_descriptor() {
+        // C005: the overlay's subagent rows are derived from `SubagentRow`, and
+        // this is where the `/sessions` dialog gets its copy too. If the
+        // descriptor were dropped here, *both* of those surfaces would silently
+        // fall back to the task description.
+        let mut row = subagent("explore", "running");
+        row.profile = Some("Reconnaissance generalist.".into());
+        let rows = build_task_rows(&[], &[row], &[]);
+        let carried = rows.iter().find_map(|r| match r {
+            TaskRow::Subagent { profile, .. } => Some(profile.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            carried.flatten().as_deref(),
+            Some("Reconnaissance generalist."),
+            "the overlay row dropped the descriptor"
+        );
+    }
+
+    #[test]
+    fn a_subagent_row_without_a_descriptor_carries_none() {
+        // The C002-era shape: no descriptor, and the surface falls back to the
+        // description it always showed.
+        let rows = build_task_rows(&[], &[subagent("explore", "running")], &[]);
+        let carried = rows.iter().find_map(|r| match r {
+            TaskRow::Subagent { profile, .. } => Some(profile.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            carried.flatten(),
+            None,
+            "a row with no descriptor must carry None rather than a blank string"
+        );
     }
 
     #[test]

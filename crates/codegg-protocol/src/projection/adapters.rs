@@ -464,6 +464,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             agent,
             description,
             display_name,
+            profile,
+            usefulness,
             run_id,
             ..
         } => {
@@ -479,6 +481,12 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 // Copied from the event, never re-drawn: the reducer must be a
                 // pure function of its input or replay diverges from live.
                 display_name: display_name.clone(),
+                // The adapter has no name pool and cannot resolve a name back
+                // to an entry, so this is exactly the same carried-value
+                // contract as `display_name` — and the same reason it cannot
+                // be reconstructed downstream.
+                profile: profile.clone(),
+                usefulness: usefulness.clone(),
                 run_id: run_id.clone(),
             };
             node.normalise();
@@ -1051,6 +1059,10 @@ mod tests {
     /// diverge from live — and it is exactly the kind of field that silently
     /// stops being copied without any other test noticing, because nothing
     /// else in the adapter's output depends on it.
+    ///
+    /// C005 extends that same contract to the descriptors, so they are asserted
+    /// here rather than in a parallel test: this is the one adapter seam, and a
+    /// second test for the same hop would be a second thing to keep in step.
     #[test]
     fn subagent_started_carries_name_and_run_id_into_the_node() {
         let env = envelope(
@@ -1060,6 +1072,8 @@ mod tests {
                 agent: "explorer".into(),
                 description: "exploring the tree".into(),
                 display_name: Some("Sally".into()),
+                profile: Some("Sally is a reconnaissance generalist.".into()),
+                usefulness: Some("Surprisingly useful for broad recon.".into()),
                 run_id: Some("018f-run-7".into()),
             },
             9,
@@ -1069,14 +1083,23 @@ mod tests {
             ProjectionEvent::SubagentStarted { node } => {
                 assert_eq!(node.display_name.as_deref(), Some("Sally"));
                 assert_eq!(node.run_id.as_deref(), Some("018f-run-7"));
+                assert_eq!(
+                    node.profile.as_deref(),
+                    Some("Sally is a reconnaissance generalist.")
+                );
+                assert_eq!(
+                    node.usefulness.as_deref(),
+                    Some("Surprisingly useful for broad recon.")
+                );
                 assert_eq!(node.task_id, 7);
             }
             other => panic!("expected a subagent node, got {other:?}"),
         }
     }
 
-    /// A node recorded before display names existed decodes as unnamed rather
-    /// than failing: the field is additive and defaulted for exactly this.
+    /// A node recorded before display names or descriptors existed decodes as
+    /// unnamed rather than failing: every added field is additive and
+    /// defaulted for exactly this.
     #[test]
     fn subagent_started_without_a_name_is_still_a_node() {
         let env = envelope(
@@ -1086,6 +1109,8 @@ mod tests {
                 agent: "explorer".into(),
                 description: "no name yet".into(),
                 display_name: None,
+                profile: None,
+                usefulness: None,
                 run_id: None,
             },
             10,
@@ -1095,6 +1120,12 @@ mod tests {
             ProjectionEvent::SubagentStarted { node } => {
                 assert!(node.display_name.is_none());
                 assert!(node.run_id.is_none());
+                assert!(
+                    node.profile.is_none(),
+                    "an event without descriptors must still produce a node \
+                     whose descriptors are absent, not blank strings"
+                );
+                assert!(node.usefulness.is_none());
             }
             other => panic!("expected a subagent node, got {other:?}"),
         }

@@ -2025,6 +2025,8 @@ mod tests {
                         completed_at: None,
                         result_summary: None,
                         display_name: Some("Sally".into()),
+                        profile: Some("Reconnaissance generalist.".into()),
+                        usefulness: Some("Useful for broad recon.".into()),
                         run_id: Some("018f-run-7".into()),
                     },
                 },
@@ -2037,12 +2039,17 @@ mod tests {
             .expect("node must be in the active turn's tree");
         assert_eq!(node.display_name.as_deref(), Some("Sally"));
         assert_eq!(node.run_id.as_deref(), Some("018f-run-7"));
+        assert_eq!(node.profile.as_deref(), Some("Reconnaissance generalist."));
+        assert_eq!(node.usefulness.as_deref(), Some("Useful for broad recon."));
     }
 
     /// Replaying the same script twice must produce byte-identical agent trees.
     ///
     /// Determinism is the whole justification for carrying the name in the
-    /// event, and it is only observable by doing it twice.
+    /// event, and it is only observable by doing it twice. C005 rides the same
+    /// contract with the descriptors: `subagent_event_script` carries them, so
+    /// this test would fail if the reducer ever re-drew either field instead
+    /// of copying it.
     #[test]
     fn replaying_a_subagent_script_is_deterministic() {
         use crate::projection::fixtures::subagent_event_script;
@@ -2067,21 +2074,32 @@ mod tests {
         );
     }
 
-    /// C006: a `SubagentStarted` with no active turn is **correctly** dropped.
+    /// C006: a `SubagentStarted` with no active turn is dropped **and
+    /// diagnosed** — the behaviour this test pins. Whether the drop is
+    /// *right* was the milestone's actual question, and the answer is no: the
+    /// node is genuinely reachable with no active turn.
     ///
-    /// The reducer records `orphan_subagent_started` and does not attach the
-    /// node, which looks like data loss until you check who publishes the
-    /// event. The only publisher is `src/agent/worker.rs`, and it publishes
-    /// from inside a subagent execution the parent turn is still awaiting
-    /// (`execution.await`, optionally under a wall-clock timeout). A turn that
-    /// has already completed is therefore not a turn a subagent can start
-    /// under, so the drop is a guard against a malformed log rather than a
-    /// missing branch.
+    /// This test's earlier justification was that the drop could only ever see
+    /// a malformed log, because `run_subagent_task_with_cancel`
+    /// (`src/agent/worker.rs`) was believed to publish from inside an execution
+    /// the parent turn was still awaiting. Reading the worker settles it the
+    /// other way: the publish is **unconditional and first**, at the top of the
+    /// function, *before* the `tokio::select!` that observes
+    /// `scheduler_cancel` / `cancel_token` / `lineage_token`. Two reachable
+    /// paths therefore emit it against a terminal turn:
     ///
-    /// This test pins that reasoning. If a future change lets a delegated run
-    /// outlive — or start after — its parent turn, this fails and the reducer
-    /// has to grow a real place to put the node instead of silently dropping
-    /// the work the user asked for.
+    /// - a turn is stopped or cancelled while the request is still queued on
+    ///   `request_tx`; the worker later dequeues it, publishes `SubagentStarted`
+    ///   and then immediately `SubagentFailed`, after `active_turn` is `None`;
+    /// - `specialized_runtime.rs` wraps `send_and_wait` in `MAX_CHILD_TIMEOUT`,
+    ///   so expiry drops the awaiting future while the worker keeps running.
+    ///
+    /// Retaining such a node needs somewhere to put it that is not
+    /// `active_turn.agent_tree`, which means durable subagent identity — the
+    /// addendum's own stop condition for C006, and parent **D-5**. So the drop
+    /// stays, and this test now pins *what happens* rather than claiming it is
+    /// unavoidable. If the durable identity lands, this test is the place that
+    /// must change.
     #[test]
     fn a_subagent_started_without_an_active_turn_is_diagnosed_not_applied() {
         use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
@@ -2107,6 +2125,8 @@ mod tests {
                         completed_at: None,
                         result_summary: None,
                         display_name: Some("Sally".into()),
+                        profile: Some("Reconnaissance generalist.".into()),
+                        usefulness: Some("Useful for broad recon.".into()),
                         run_id: None,
                     },
                 },

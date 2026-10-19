@@ -36,6 +36,11 @@ pub(super) mod security;
 pub(super) mod session_selection;
 pub(super) mod sessions;
 pub(super) mod shell;
+/// C007: the composer's subagent addressee and the `TurnSteer` it
+/// issues. Public so the `TuiCommand` completion variant and the
+/// integration target can both reach the applier without a test-only
+/// App shim, matching `queue`.
+pub mod subagent_steer;
 pub(super) mod tasks;
 pub(super) mod team;
 pub(super) mod test;

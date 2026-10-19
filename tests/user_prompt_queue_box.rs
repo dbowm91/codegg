@@ -26,6 +26,7 @@ use codegg::protocol::core::{
     UserPromptQueueSendNowResult,
 };
 use codegg::tui::app::state::is_observer_allowed_command;
+use codegg::tui::app::state::subagents::SubagentRow;
 use codegg::tui::app::{App, Dialog, TuiCommand};
 use codegg::tui::command::{BuiltinSlashAction, CommandAction, CommandRegistry};
 use codegg::tui::components::component::{Component, DialogType};
@@ -66,6 +67,9 @@ struct FakeQueueClient {
     /// M006. When set, send-now answers `Accepted` *and* removes the row, which
     /// is the whole point of the feature.
     send_now_accepted: Mutex<bool>,
+    /// C007. When set, `TurnSteer` answers `CoreResponse::Error` with this code
+    /// — the shape every channel refusal takes.
+    steer_refusal: Mutex<Option<String>>,
 }
 
 impl FakeQueueClient {
@@ -78,6 +82,7 @@ impl FakeQueueClient {
             send_now_unsettled: Mutex::new(false),
             send_now_missing: Mutex::new(false),
             send_now_accepted: Mutex::new(false),
+            steer_refusal: Mutex::new(None),
         })
     }
 
@@ -235,6 +240,32 @@ impl CoreClient for FakeQueueClient {
                     entries: self.projection.lock().unwrap().clone(),
                 })
             }
+            // C007: the addressed reply. Recorded in full because the
+            // identity in the request is the thing under test — a steer naming
+            // anything other than the parent turn's id is the dead join the
+            // roadmap already records, and it would be invisible here unless
+            // the id were part of the record.
+            CoreRequest::TurnSteer {
+                session_id,
+                turn_id,
+                text,
+            } => {
+                self.record(&format!("steer:{session_id}:{turn_id}:{text}"));
+                if let Some(code) = self.steer_refusal.lock().unwrap().clone() {
+                    return Ok(CoreResponse::Error {
+                        code,
+                        message: format!(
+                            "Requested turn_id '{turn_id}' does not match active turn_id \
+                             'turn-other'"
+                        ),
+                    });
+                }
+                Ok(CoreResponse::Ack)
+            }
+            CoreRequest::TurnSubmit { text, .. } => {
+                self.record(&format!("submit:{text}"));
+                Ok(CoreResponse::Ack)
+            }
             other => panic!("the queue box must not issue {other:?}"),
         }
     }
@@ -278,13 +309,27 @@ async fn settle_until(client: &FakeQueueClient, kind: &str, expected: usize) {
     );
 }
 
-/// The same, for requests recorded under a prefix.
+/// Block until at least one request of either kind has been recorded.
 ///
-/// `count` is exact equality, and an M005 mutation is recorded as
-/// `add:<id>:<text>` or `reorder:<a,b,c>` because the id and the permutation
-/// are the thing under test. Waiting on the bare `"add:"` therefore waits for a
-/// kind that can never be recorded — which is a timeout that looks exactly like
-/// "the box never sent the request".
+/// Used where a test asserts the *absence* of one request alongside the
+/// presence of another: settling on the expected kind alone would make the
+/// absent-kind assertion unreachable when the expected kind never arrives, so
+/// a removed code path would report as a timeout rather than as the fall-through
+/// it actually is.
+async fn settle_until_either(client: &FakeQueueClient, first: &str, second: &str) {
+    for _ in 0..400 {
+        let kinds = client.kinds();
+        if count_prefix(&kinds, first) >= 1 || count_prefix(&kinds, second) >= 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!(
+        "timed out waiting for any `{first}…` or `{second}…` request; saw {:?}",
+        client.kinds()
+    );
+}
+
 /// Drive the two-step composer to an actual commit.
 ///
 /// M007 makes `a`/`e` two steps — text, then duration — so one `Enter` now only
@@ -296,6 +341,13 @@ fn commit_compose(app: &mut codegg::tui::app::App) {
     press(app, KeyCode::Enter); // duration -> commit
 }
 
+/// The same, for requests recorded under a prefix.
+///
+/// `count` is exact equality, and an M005 mutation is recorded as
+/// `add:<id>:<text>` or `reorder:<a,b,c>` because the id and the permutation
+/// are the thing under test. Waiting on the bare `"add:"` therefore waits for a
+/// kind that can never be recorded — which is a timeout that looks exactly like
+/// "the box never sent the request".
 async fn settle_prefix_until(client: &FakeQueueClient, prefix: &str, expected: usize) {
     for _ in 0..400 {
         if count_prefix(&client.kinds(), prefix) >= expected {
@@ -323,11 +375,20 @@ fn entry(id: &str, ordinal: i64, text: &str, status: &str) -> UserPromptQueueEnt
 }
 
 /// An app with a bound session, so `active_session_id` resolves.
+///
+/// `session_state.session` is bound too, not just the project tab: a turn
+/// submit reads the session from *there* and refuses with "No session is bound
+/// to this view" otherwise. A harness that set only the tab would make an
+/// unarmed-submit test pass a timeout while proving nothing.
 fn app_with_session() -> App {
     let mut app = App::new_for_testing("/tmp/m004".to_string());
     if let Some(tab) = app.project_tabs.active_mut() {
         tab.session_id = Some(SESSION.to_string());
     }
+    app.session_state.session = Some(codegg::session::Session {
+        id: SESSION.to_string(),
+        ..codegg::session::Session::default()
+    });
     app
 }
 
@@ -2037,7 +2098,7 @@ async fn user_prompt_queue_a_channel_refusal_keeps_the_row_and_its_place() {
 /// went out when it did not — or that it did not when it did.
 #[test]
 fn user_prompt_queue_the_send_now_sentences_are_all_different() {
-    use codegg::tui::commands::queue::send_now_outcome_message;
+    use codegg::tui::commands::queue::{send_now_outcome_message, SteerConsequence};
     let outcomes = [
         UserPromptQueueSendNowResult::Accepted {
             turn_id: "t".into(),
@@ -2062,7 +2123,7 @@ fn user_prompt_queue_the_send_now_sentences_are_all_different() {
     ];
     let mut seen: Vec<&str> = Vec::new();
     for outcome in &outcomes {
-        let (message, _) = send_now_outcome_message(outcome);
+        let (message, _) = send_now_outcome_message(outcome, SteerConsequence::DurableQueue);
         assert!(
             !seen.contains(&message.as_str()),
             "two outcomes share one sentence: {message:?}"
@@ -2086,12 +2147,14 @@ fn user_prompt_queue_the_send_now_sentences_are_all_different() {
 /// refusal.
 #[test]
 fn user_prompt_queue_an_unsettled_settlement_does_not_ask_the_user_to_resend() {
-    use codegg::tui::commands::queue::send_now_outcome_message;
-    let (message, tone) =
-        send_now_outcome_message(&UserPromptQueueSendNowResult::AcceptedNotSettled {
+    use codegg::tui::commands::queue::{send_now_outcome_message, SteerConsequence};
+    let (message, tone) = send_now_outcome_message(
+        &UserPromptQueueSendNowResult::AcceptedNotSettled {
             turn_id: "t".into(),
             code: "user_prompt_queue_storage_error".into(),
-        });
+        },
+        SteerConsequence::DurableQueue,
+    );
     assert!(
         message.contains("treat it as sent"),
         "the wording must say the turn took it: {message:?}"
@@ -2107,10 +2170,13 @@ fn user_prompt_queue_an_unsettled_settlement_does_not_ask_the_user_to_resend() {
 /// unrecognised refusal can never render as success.
 #[test]
 fn user_prompt_queue_an_unmapped_send_now_code_stays_honest() {
-    use codegg::tui::commands::queue::send_now_outcome_message;
-    let (message, tone) = send_now_outcome_message(&UserPromptQueueSendNowResult::Refused {
-        code: "some_future_code".into(),
-    });
+    use codegg::tui::commands::queue::{send_now_outcome_message, SteerConsequence};
+    let (message, tone) = send_now_outcome_message(
+        &UserPromptQueueSendNowResult::Refused {
+            code: "some_future_code".into(),
+        },
+        SteerConsequence::DurableQueue,
+    );
     assert!(
         message.contains("some_future_code") && message.contains("stays queued"),
         "the fallback must name the code and say nothing went out: {message:?}"
@@ -2523,4 +2589,232 @@ async fn user_prompt_queue_copy_never_promises_a_promised_delivery_time() {
             );
         }
     }
+}
+
+// ── C007: the addressed reply reaches the parent turn ──────────────
+
+/// Put the app in the socket-daemon frontend shape: `RemoteCore` **without**
+/// a `remote_send_tx`, which is exactly what `App::send_prompt` branches on to
+/// reach `dispatch_turn_submit_request`.
+///
+/// This is a test-side mode set, not a production gate — the App decides
+/// transport through `App::is_ws_attach_transport()`, which
+/// `scripts/check_tui_transport_authority.py` enforces, and that derivation is
+/// left alone.
+fn as_socket_daemon_frontend(app: &mut App) {
+    app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore {
+        endpoint: "socket".to_string(),
+    };
+    debug_assert!(app.remote_send_tx.is_none());
+}
+
+/// Seed one running subagent for the addressed-reply tests.
+fn seed_running_subagent(app: &mut App) {
+    app.ui_state.subagents.set_rows(vec![SubagentRow {
+        task_id: "task-1".to_string(),
+        run_id: None,
+        display_name: Some("Sally".to_string()),
+        profile: None,
+        usefulness: None,
+        agent: "explore".to_string(),
+        description: "find the retry path".to_string(),
+        status: "running".to_string(),
+    }]);
+}
+
+/// Type `text` into the composer through the real key path and press Enter.
+fn submit(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+/// The milestone's central claim, stated as a measurement: an addressed submit
+/// issues exactly one `TurnSteer` naming the **parent turn**, and issues no
+/// `TurnSubmit` at all.
+///
+/// The parent turn is the point. `TurnSteer` is keyed on a session turn, so a
+/// steer naming the subagent's `task_id` — the identity the UI actually has —
+/// would resolve to `turn_id_mismatch` every single time, and the UI would look
+/// like it had a bug rather than a wrong id.
+#[tokio::test]
+async fn an_addressed_reply_steers_the_parent_turn_and_submits_nothing() {
+    let (mut app, client) = app_with_queue_and_core(Vec::new());
+    // The same transport shape the unarmed regression test uses. Without it
+    // the unarmed path here would dispatch nothing at all, so "no TurnSubmit
+    // went out" would hold for the wrong reason — the harness, not the arm.
+    as_socket_daemon_frontend(&mut app);
+    app.session_state.active_turn_id = Some("turn-live".to_string());
+    app.ui_state.subagents.set_rows(vec![SubagentRow {
+        task_id: "task-1".to_string(),
+        run_id: Some("run-1".to_string()),
+        display_name: Some("Sally".to_string()),
+        profile: None,
+        usefulness: None,
+        agent: "explore".to_string(),
+        description: "find the retry path".to_string(),
+        status: "running".to_string(),
+    }]);
+    assert!(codegg::tui::commands::subagent_steer::arm_addressee(
+        &mut app, "task-1"
+    ));
+    submit(&mut app, "try the second retry first");
+
+    // Settle on either request, not on the steer alone. Waiting for the steer
+    // and then asserting the submit is absent would report a removed addressed
+    // branch as a *timeout* — true, but indirect, and it reads the same as a
+    // hang rather than as the fall-through it is.
+    settle_until_either(&client, "steer:", "submit:").await;
+    let kinds = client.kinds();
+    assert_eq!(
+        count_prefix(&kinds, "submit:"),
+        0,
+        "an addressed reply must never fall through to TurnSubmit: {kinds:?}"
+    );
+    let steer = kinds
+        .iter()
+        .find(|k| k.starts_with("steer:"))
+        .expect("one steer");
+    assert!(
+        steer.starts_with("steer:session-queue-1:turn-live:"),
+        "the steer must name the parent session and turn, not the subagent's task_id: \
+         {steer:?}"
+    );
+    assert!(
+        steer.contains("Sally"),
+        "the captured name travels: {steer:?}"
+    );
+    assert!(
+        steer.ends_with("try the second retry first"),
+        "the user's own words are sent verbatim: {steer:?}"
+    );
+}
+
+/// The unarmed path is untouched. This is the regression pin: the addressed
+/// branch sits in `send_prompt` ahead of a dozen other guards, and a branch
+/// that ran when unarmed would divert ordinary prompts into a steer.
+#[tokio::test]
+async fn an_unarmed_prompt_still_submits_a_normal_turn() {
+    let (mut app, client) = app_with_queue_and_core(Vec::new());
+    as_socket_daemon_frontend(&mut app);
+    submit(&mut app, "hello there");
+    settle_prefix_until(&client, "submit:", 1).await;
+    let kinds = client.kinds();
+    assert_eq!(
+        count_prefix(&kinds, "steer:"),
+        0,
+        "nothing is addressed, so nothing is steered: {kinds:?}"
+    );
+    assert!(kinds.iter().any(|k| k == "submit:hello there"), "{kinds:?}");
+}
+
+/// A refused steer says where the words are and keeps them there.
+///
+/// The compositor is the only durable home a bare reply has, so a cleared
+/// prompt on a refused send destroys the user's text with no copy anywhere.
+#[tokio::test]
+async fn a_refused_steer_keeps_the_users_words_in_the_composer() {
+    let (mut app, client) = app_with_queue_and_core(Vec::new());
+    app.session_state.active_turn_id = Some("turn-live".to_string());
+    seed_running_subagent(&mut app);
+    *client.steer_refusal.lock().unwrap() = Some("turn_id_mismatch".to_string());
+    assert!(codegg::tui::commands::subagent_steer::arm_addressee(
+        &mut app, "task-1"
+    ));
+    submit(&mut app, "never mind, do the other one");
+
+    settle_prefix_until(&client, "steer:", 1).await;
+    // Driven through the applier because nothing in this target drains the
+    // command channel — the same split every other assertion here uses.
+    let request_id = app.prompt_state.subagent_steer_request.begin();
+    codegg::tui::commands::subagent_steer::apply_subagent_steer_finished(
+        &mut app,
+        request_id,
+        "Sally".to_string(),
+        "never mind, do the other one".to_string(),
+        Some("turn_id_mismatch".to_string()),
+        Some("refused".to_string()),
+    );
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "never mind, do the other one",
+        "a refused reply must survive in the composer"
+    );
+    assert!(
+        app.prompt_state.subagent_addressee.is_some(),
+        "and the address stays armed, so Enter again is a real retry against the \
+         then-current turn"
+    );
+}
+
+/// An accepted steer clears the composer and leaves the address armed, so a
+/// second reply to the same run is one keystroke away.
+#[tokio::test]
+async fn an_accepted_steer_clears_the_composer_and_keeps_the_addressee() {
+    let (mut app, client) = app_with_queue_and_core(Vec::new());
+    app.session_state.active_turn_id = Some("turn-live".to_string());
+    seed_running_subagent(&mut app);
+    assert!(codegg::tui::commands::subagent_steer::arm_addressee(
+        &mut app, "task-1"
+    ));
+    submit(&mut app, "focus on the retry loop");
+
+    settle_prefix_until(&client, "steer:", 1).await;
+    let request_id = app.prompt_state.subagent_steer_request.begin();
+    codegg::tui::commands::subagent_steer::apply_subagent_steer_finished(
+        &mut app,
+        request_id,
+        "Sally".to_string(),
+        "focus on the retry loop".to_string(),
+        None,
+        None,
+    );
+    assert!(app.prompt_state.subagent_addressee.is_some());
+}
+
+/// A slash command typed while addressed stays a command. Handing the literal
+/// string "/queue" to the parent agent would be absurd, and the chat-armed
+/// branch already sets this precedent.
+#[tokio::test]
+async fn a_slash_command_typed_while_addressed_is_not_steered() {
+    let (mut app, client) = app_with_queue_and_core(Vec::new());
+    app.session_state.active_turn_id = Some("turn-live".to_string());
+    seed_running_subagent(&mut app);
+    assert!(codegg::tui::commands::subagent_steer::arm_addressee(
+        &mut app, "task-1"
+    ));
+    run_slash_command(&mut app, "/queue");
+    settle_until(&client, "list", 1).await;
+    assert_eq!(
+        count_prefix(&client.kinds(), "steer:"),
+        0,
+        "a command is a command: {:?}",
+        client.kinds()
+    );
+}
+
+/// Addressing requires a run that is actually running. With none, the reply is
+/// refused **before** any request is built — there is no turn to steer.
+#[tokio::test]
+async fn addressing_with_no_running_turn_issues_no_request() {
+    let (mut app, client) = app_with_queue_and_core(Vec::new());
+    seed_running_subagent(&mut app);
+    assert!(codegg::tui::commands::subagent_steer::arm_addressee(
+        &mut app, "task-1"
+    ));
+    submit(&mut app, "are you there");
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let kinds = client.kinds();
+    assert_eq!(count_prefix(&kinds, "steer:"), 0, "{kinds:?}");
+    assert_eq!(
+        count_prefix(&kinds, "submit:"),
+        0,
+        "and no silent TurnSubmit either: {kinds:?}"
+    );
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "are you there",
+        "the words survive a refusal that never left the process"
+    );
 }

@@ -576,6 +576,8 @@ mod tests {
             display_name: Some(format!("name-{task_id}")),
             agent: "explore".into(),
             description: "work".into(),
+            profile: None,
+            usefulness: None,
             status: status.into(),
         }
     }

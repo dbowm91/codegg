@@ -1050,6 +1050,8 @@ impl App {
                 task_model_choice: None,
                 chat_seed: None,
                 stop_armed_at: None,
+                subagent_addressee: None,
+                subagent_steer_request: crate::tui::app::state::AsyncUiRequestState::default(),
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1634,6 +1636,8 @@ impl App {
                 task_model_choice: None,
                 chat_seed: None,
                 stop_armed_at: None,
+                subagent_addressee: None,
+                subagent_steer_request: crate::tui::app::state::AsyncUiRequestState::default(),
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -2141,6 +2145,13 @@ impl App {
                 // just announced. It was discarded here, which is why nothing
                 // in the TUI could interrupt a running agent.
                 self.session_state.active_turn_id = Some(turn_id.clone());
+                // C007: a subagent addressee belongs to the turn it was armed
+                // under. A subagent dispatched by the *previous* turn is not
+                // one this turn's agent is running, so keeping the address
+                // would let a reply written about it ride along into a turn
+                // that never owned it. Cleared silently — a turn starting is
+                // its own visible event, and a toast here would talk over it.
+                self.prompt_state.subagent_addressee = None;
                 // A fresh turn supersedes any earlier stop.
                 self.session_state.stopped_turn = false;
                 // The agent is running again, so the reason the last turn died
@@ -4654,11 +4665,24 @@ impl App {
                 Dialog::Session => {
                     if self.dialog_state.session_dialog.bulk_mode {
                         self.dialog_state.session_dialog.toggle_bulk_mode();
-                    } else if let Some(session) =
-                        self.dialog_state.session_dialog.selected_session()
-                    {
-                        self.set_session(session.clone());
-                        self.close_dialog();
+                    } else {
+                        // Row-type dispatch, matching the component's own
+                        // `handle_key`. This arm is `#[cfg(any())]`-disabled
+                        // today (the FocusManager-owned component is the sole
+                        // input authority); it is kept in step deliberately so
+                        // the retained source history does not contradict the
+                        // live route.
+                        match self.dialog_state.session_dialog.activate_selected() {
+                            Some(crate::tui::app::TuiMsg::SelectSession(session)) => {
+                                self.set_session(*session);
+                                self.close_dialog();
+                            }
+                            Some(msg) => {
+                                self.process_msg(msg);
+                                self.close_dialog();
+                            }
+                            None => {}
+                        }
                     }
                 }
                 Dialog::Theme => {
@@ -5369,6 +5393,32 @@ impl App {
         }
     }
 
+    /// Adopt a freshly arrived set of subagent rows and re-check the composer
+    /// addressee against them.
+    ///
+    /// The single funnel for "the projection spoke". Both the sidebar path and
+    /// the strip path route through here rather than calling
+    /// [`SubagentState::set_rows`] themselves, because the addressee rule —
+    /// drop an address whose run is no longer live — has to run on *every*
+    /// snapshot, and a second call site that forgot to call it would leave a
+    /// composer armed to a run that had left the tree.
+    ///
+    /// A snapshot that has not arrived is not evidence of emptiness and never
+    /// reaches this method, so a hiccup in the stream cannot silently disarm a
+    /// user mid-reply.
+    pub fn apply_subagent_rows(&mut self, rows: Vec<crate::tui::app::state::SubagentRow>) {
+        let cleared = crate::tui::app::state::reconcile_addressee(
+            &mut self.prompt_state.subagent_addressee,
+            &rows,
+        );
+        self.ui_state.subagents.set_rows(rows);
+        if cleared {
+            self.messages_state
+                .toasts
+                .warning("That subagent finished, so your next prompt starts a normal turn again.");
+        }
+    }
+
     fn dispatch_builtin_command(
         &mut self,
         action: crate::tui::command::BuiltinSlashAction,
@@ -5385,6 +5435,9 @@ impl App {
             }
             B::Queue => {
                 crate::tui::commands::queue::open_queue_box(self);
+            }
+            B::SubagentSend => {
+                crate::tui::commands::subagent_steer::dispatch_addressee_command(self, raw_input);
             }
             B::Reload => {
                 self.enqueue_tui_command(TuiCommand::RefreshAssets);
@@ -9314,7 +9367,9 @@ impl App {
                     }
                 }
                 Dialog::Session => {
-                    self.dialog_state.session_dialog.selected = idx;
+                    // `select_index` snaps off a section heading rather than
+                    // parking the cursor on a line `Enter` does nothing with.
+                    self.dialog_state.session_dialog.select_index(idx);
                 }
                 Dialog::Tree => {
                     let cur = self.dialog_state.tree_dialog.selected;
@@ -9384,9 +9439,9 @@ impl App {
                 }
             }
             Dialog::Session => {
-                let total = self.dialog_state.session_dialog.sessions.len();
+                let total = self.dialog_state.session_dialog.rows().len();
                 if idx < total {
-                    self.dialog_state.session_dialog.selected = idx;
+                    self.dialog_state.session_dialog.select_index(idx);
                 }
             }
             Dialog::Tree => {
@@ -14595,7 +14650,7 @@ impl App {
     ///
     /// Returns 0 only when collapsed. An expanded overlay always claims at
     /// least one row, which is the "Nothing pending" line: with every group
-    /// empty there are no headers to draw, and reserving nothing made `Shift+T`
+    /// empty there are no headers to draw, and reserving nothing made `Ctrl+T`
     /// a silently dead key on an idle session — the very first thing a user
     /// tries. The height is deliberately independent of `todo_strip_height`:
     /// the overlay is on-demand, and coupling them would make expanding one
@@ -14630,6 +14685,7 @@ impl App {
                     .jobs
                     .iter()
                     .map(|job| crate::tui::app::state::tasks::JobLike {
+                        job_id: job.job_id.clone(),
                         kind: job.kind.clone(),
                         summary: job.summary.clone(),
                         state: job.state.clone(),
@@ -14639,6 +14695,91 @@ impl App {
             })
             .unwrap_or_default();
         crate::tui::app::state::tasks::build_task_rows(&todos, &self.ui_state.subagents.rows, &jobs)
+    }
+
+    /// The live subagents and jobs shown under the `/sessions` session list.
+    ///
+    /// Derived from [`App::task_rows`] rather than re-read from the snapshot,
+    /// so the liveness rule has exactly one implementation: the two surfaces
+    /// cannot disagree about which subagents or jobs exist. Headers and todos
+    /// are dropped here because the dialog builds its own section headings and
+    /// has no todo section; every other row is carried across whole, keeping
+    /// the identity (`task_id` / `job_id`) the row was created with.
+    ///
+    /// The overlay's [`crate::tui::app::state::tasks::bounded`] cap is
+    /// deliberately *not* applied. That cap exists because the overlay is
+    /// carved out of the prompt allocation and can starve its own block; a
+    /// scrolling modal has no such budget, and truncating to twelve rows here
+    /// would hide live work for no reason.
+    pub fn session_dialog_pending_rows(
+        &self,
+    ) -> (
+        Vec<crate::tui::components::dialogs::session::SubagentListRow>,
+        Vec<crate::tui::components::dialogs::session::JobListRow>,
+    ) {
+        use crate::tui::app::state::tasks::TaskRow;
+        use crate::tui::components::dialogs::session::{JobListRow, SubagentListRow};
+
+        let mut subagents = Vec::new();
+        let mut jobs = Vec::new();
+        for row in self.task_rows() {
+            match row {
+                TaskRow::Subagent {
+                    task_id,
+                    label,
+                    agent,
+                    description,
+                    profile,
+                    status,
+                } => subagents.push(SubagentListRow {
+                    task_id,
+                    label,
+                    agent,
+                    description,
+                    profile,
+                    status,
+                }),
+                TaskRow::Job {
+                    job_id,
+                    kind,
+                    summary,
+                    state,
+                    error_class,
+                } => jobs.push(JobListRow {
+                    job_id,
+                    kind,
+                    summary,
+                    state,
+                    error_class,
+                }),
+                TaskRow::Header { .. } | TaskRow::Todo { .. } => {}
+            }
+        }
+        (subagents, jobs)
+    }
+
+    /// Push the current live rows into the open `/sessions` dialog.
+    ///
+    /// A no-op unless the dialog is mounted. Like the session list itself, the
+    /// **painted** instance is the focus-manager clone, so both receive the
+    /// rows: filling only `dialog_state.session_dialog` would refresh a dialog
+    /// nobody is looking at. Cursor focus is carried by identity inside
+    /// `set_pending_rows`, so a row appearing or disappearing mid-scroll does
+    /// not slide the cursor onto a different entity.
+    pub fn refresh_sessions_dialog_pending_rows(&mut self) {
+        if !matches!(self.ui_state.dialog, Dialog::Session) {
+            return;
+        }
+        let (subagents, jobs) = self.session_dialog_pending_rows();
+        let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
+            dialog.set_pending_rows(subagents.clone(), jobs.clone());
+        };
+        apply(&mut self.dialog_state.session_dialog);
+        self.focus_manager
+            .with_dialog_mut::<crate::tui::components::dialogs::session::SessionDialog, _>(
+                crate::tui::components::component::DialogType::Session,
+                apply,
+            );
     }
 
     /// The single-character status bubble for a todo entry.

@@ -740,6 +740,29 @@ pub enum TuiCommand {
         outcome: Option<crate::protocol::core::UserPromptQueueSendNowResult>,
         error: Option<String>,
     },
+    /// C007: an addressed reply reached — or failed to reach — the turn that
+    /// owns the addressed subagent.
+    ///
+    /// Carries the daemon's **code** rather than its prose. `TurnSteer` answers
+    /// `CoreResponse::Error { code, message }`, and the frontend renders through
+    /// the queue's shared refusal vocabulary so the two steering paths cannot
+    /// drift; the daemon's own sentence is only kept as a transport-error
+    /// fallback, and is scrubbed of turn ids first.
+    SubagentSteerFinished {
+        request_id: u64,
+        /// The name shown to the user, so the toast can say what it addressed.
+        addressee: String,
+        /// The user's own words, exactly as typed.
+        ///
+        /// Carried so a **refusal** can put them back. A bare addressed reply has
+        /// no durable queue behind it — the daemon hands it to the loop's
+        /// steering channel and stores nothing — so the composer is the only
+        /// copy that will ever exist. Clearing it on dispatch and not carrying
+        /// it here would destroy the text on every refusal.
+        body: String,
+        code: Option<String>,
+        error: Option<String>,
+    },
     /// A normal next turn accepted or rejected staged shell evidence.
     ShellPromotionsSubmitted {
         promotions: Vec<(uuid::Uuid, u64)>,

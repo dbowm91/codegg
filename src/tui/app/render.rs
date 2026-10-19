@@ -192,7 +192,7 @@ impl App {
         //
         // The clamp is what makes this a budget rather than two independent
         // wishes. Without it the overlay and the prompt box together can exceed
-        // a short pane, the carve below silently yields, and `Shift+T` looks
+        // a short pane, the carve below silently yields, and `Ctrl+T` looks
         // like a dead key on exactly the terminals where a status overlay would
         // be most wanted. A too-short pane shows neither rather than a wrong
         // one.
@@ -1295,7 +1295,7 @@ impl App {
     /// The floor is the load-bearing part. `session_layout` splits the pane
     /// into `Min(10)` for the transcript and a fixed height for the prompt, so
     /// an overlay that overshoots does not merely render short — it makes the
-    /// carve below yield, and `Shift+T` stops doing anything at all. Clamping
+    /// carve below yield, and `Ctrl+T` stops doing anything at all. Clamping
     /// here makes a short pane drop the overlay instead, which is the honest
     /// outcome: a truncated transcript is worse than no overlay.
     fn tasks_overlay_allowance(
@@ -1319,7 +1319,7 @@ impl App {
         pane_height.saturating_sub(claimed)
     }
 
-    /// Draw the unified tasks overlay (`Shift+T`) directly above the input.
+    /// Draw the unified tasks overlay (`Ctrl+T`) directly above the input.
     ///
     /// Renders three projection-backed groups — todos, in-flight subagents,
     /// in-flight jobs — each preceded by its own header, with empty groups
@@ -1343,7 +1343,7 @@ impl App {
             // Say so rather than rendering an empty block, so the user learns
             // the key works instead of concluding it is broken.
             lines.push(Line::from(Span::styled(
-                " Nothing pending · Shift+T close ".to_string(),
+                " Nothing pending · Ctrl+T close ".to_string(),
                 Style::default().fg(theme.muted),
             )));
         } else {
@@ -1388,6 +1388,7 @@ impl App {
                         label,
                         agent,
                         description,
+                        profile,
                         status,
                         ..
                     } => {
@@ -1398,10 +1399,15 @@ impl App {
                         } else {
                             format!(" {label} ({agent}) ")
                         };
-                        let text = if description.trim().is_empty() {
+                        // Descriptor when the projection carried one, the task
+                        // description otherwise — `SubagentRow::topic`'s rule,
+                        // applied to the same row so this overlay and the
+                        // working strip cannot describe one subagent two ways.
+                        let topic = profile.as_deref().unwrap_or(description.as_str());
+                        let text = if topic.trim().is_empty() {
                             text
                         } else {
-                            format!("{text}· {status} — {description}")
+                            format!("{text}· {status} — {topic}")
                         };
                         if is_selected {
                             strip_line_selected(&theme, area.width, lead, &text, theme.foreground)
@@ -1414,6 +1420,7 @@ impl App {
                         summary,
                         state,
                         error_class,
+                        ..
                     } => {
                         let text = if summary.trim().is_empty() {
                             format!(" {kind} · {state}")
@@ -1438,7 +1445,7 @@ impl App {
                 if selected.is_some() {
                     " Shift+N/P open · ↵ select · Esc close "
                 } else {
-                    " Shift+T close "
+                    " Ctrl+T close "
                 }
                 .to_string(),
                 Style::default().fg(theme.muted),
@@ -1515,6 +1522,37 @@ impl App {
             format!("   {}", tab.row.description),
             Style::default().fg(theme.foreground),
         )));
+        // The curated pool's description of this agent. This is the one
+        // surface that carries Task *and* Agent side by side, which is why the
+        // one-line rows may spend their single slot on the descriptor: here
+        // both are shown, wrapped and untruncated. A node recorded before
+        // descriptors existed has neither field and the section is omitted —
+        // no heading over an empty body.
+        let profile = tab.row.profile.as_deref().filter(|p| !p.trim().is_empty());
+        let usefulness = tab
+            .row
+            .usefulness
+            .as_deref()
+            .filter(|u| !u.trim().is_empty());
+        if profile.is_some() || usefulness.is_some() {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                " Agent",
+                Style::default().fg(theme.muted),
+            )));
+            if let Some(profile) = profile {
+                lines.push(Line::from(Span::styled(
+                    format!("   {profile}"),
+                    Style::default().fg(theme.foreground),
+                )));
+            }
+            if let Some(usefulness) = usefulness {
+                lines.push(Line::from(Span::styled(
+                    format!("   Best used for: {usefulness}"),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        }
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             " Identity",
@@ -1902,19 +1940,37 @@ impl App {
         let target = self.input_target();
         // One destination badge, naming the surface that currently has the
         // keyboard. See `App::composer_destination_title`.
-        let destination_title = self.composer_destination_title();
-        let destination_style = if target == crate::tui::panels::InputTarget::Chat {
-            Style::default()
-                .fg(self.ui_state.theme.warning)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(self.ui_state.theme.primary)
-                .add_modifier(Modifier::BOLD)
+        //
+        // C007 overrides it when a subagent addressee is armed. `[LLM]` beside a
+        // `[TO Sally]` badge would be two claims about one destination and the
+        // wrong one: Enter does not start a turn, it hands text to the agent
+        // that is already running. The badge names what Enter actually does.
+        let addressee_badge = self
+            .prompt_state
+            .subagent_addressee
+            .as_ref()
+            .map(|addressee| addressee.label().to_string());
+        let destination_title: String = match addressee_badge.as_deref() {
+            Some(name) => format!("TO {name}"),
+            None => self.composer_destination_title().to_string(),
         };
+        let destination_style =
+            if target == crate::tui::panels::InputTarget::Chat || addressee_badge.is_some() {
+                Style::default()
+                    .fg(self.ui_state.theme.warning)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD)
+            };
         // The agent only runs a prompt; naming it while chat is armed would
         // imply a delivery that is not going to happen.
         let agent_badge = match target {
+            // C007: an addressed reply is not run by the selected agent — it
+            // is read by the agent already running the turn. Naming the
+            // selected one would imply this submission picks a runner.
+            _ if addressee_badge.is_some() => String::new(),
             crate::tui::panels::InputTarget::Chat => String::new(),
             crate::tui::panels::InputTarget::Build => self
                 .agent_state
@@ -1992,7 +2048,9 @@ impl App {
         self.prompt_state.prompt.set_prefix(session_prefix);
 
         let prompt_text = self.prompt_state.prompt.get_text();
-        let placeholder = if target == crate::tui::panels::InputTarget::Chat {
+        let placeholder = if let Some(name) = addressee_badge.as_deref() {
+            format!("Reply to the agent about {name}…")
+        } else if target == crate::tui::panels::InputTarget::Chat {
             "Message the project chat…".to_string()
         } else if prompt_text.starts_with('!') {
             "shell: run locally; not included in model context".to_string()
@@ -2481,7 +2539,7 @@ impl App {
                     })
                     .collect(),
             );
-            // Jobs are filtered with the *same* `is_live_state` the `Shift+T`
+            // Jobs are filtered with the *same* `is_live_state` the `Ctrl+T`
             // overlay uses, so "jobs this session is waiting on" means one
             // thing across both surfaces rather than two rules that drift the
             // first time a producer invents a new state token.
@@ -2516,7 +2574,7 @@ impl App {
         if let Some(rows) = subagent_rows {
             // The panel reads the *same* derived rows rather than re-projecting
             // the agent tree a third time. That is what makes the panel, the
-            // `Shift+T` overlay, and the tab bar show one name per subagent:
+            // `Ctrl+T` overlay, and the tab bar show one name per subagent:
             // they are three renderings of one vector, not three independent
             // reads that could disagree. `label()` supplies the same
             // name-else-agent-type fallback the overlay uses.
@@ -2527,10 +2585,11 @@ impl App {
                         name: row.label().to_string(),
                         agent: row.agent.clone(),
                         status: row.status.clone(),
+                        profile: row.descriptor().map(str::to_string),
                     })
                     .collect(),
             );
-            self.ui_state.subagents.set_rows(rows);
+            self.apply_subagent_rows(rows);
         }
     }
 
@@ -2559,8 +2618,15 @@ impl App {
             return;
         };
         if let Some(rows) = Self::sync_subagents_from_snapshot(snapshot) {
-            self.ui_state.subagents.set_rows(rows);
+            self.apply_subagent_rows(rows);
         }
+        // A subagent that starts while `/sessions` is open has to appear there
+        // without the user closing and reopening the dialog. Refreshing only
+        // when the dialog is mounted keeps this off the hot path for the
+        // common case where it is closed, and — as with the rows above — a
+        // snapshot that has not arrived is not evidence of emptiness, so a
+        // missing snapshot leaves the sections exactly as they were.
+        self.refresh_sessions_dialog_pending_rows();
     }
 
     /// Returns `None` when there is no snapshot to read at all, which is not
@@ -2599,6 +2665,13 @@ impl App {
                         run_id: node.run_id.clone(),
                         task_id,
                         display_name: node.display_name.clone(),
+                        // Descriptors are carried on the event and copied here
+                        // under the same contract as the name: this is the one
+                        // projection→row derivation, and it reads only what
+                        // the projection said. There is deliberately no pool
+                        // lookup anywhere in the TUI.
+                        profile: node.profile.clone(),
+                        usefulness: node.usefulness.clone(),
                         agent: node.agent.clone(),
                         description: node.description.clone(),
                         status: match node.status {
@@ -2870,7 +2943,7 @@ impl App {
 
 #[cfg(test)]
 mod subagent_row_chain_tests {
-    //! C004: the untested middle of the subagent naming chain.
+    //! The untested middle of the subagent naming chain.
     //!
     //! Every TUI test that shows a named subagent hand-seeds `display_name`,
     //! which means the chain
@@ -2879,6 +2952,12 @@ mod subagent_row_chain_tests {
     //! name and the suite would stay green while the feature stopped working.
     //! The user-visible symptom is a subagent row that shows its agent type
     //! instead of `Sally`, with nothing failing.
+    //!
+    //! C005 rides the same seam with the pool descriptors. They are asserted
+    //! **in these tests rather than in parallel ones**: this chain has exactly
+    //! one snapshot→row derivation, and a second suite for the second pair of
+    //! fields would be a second thing to keep in step rather than a second
+    //! defect to catch.
 
     use super::App;
     use crate::protocol::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
@@ -2901,6 +2980,8 @@ mod subagent_row_chain_tests {
             completed_at: None,
             result_summary: None,
             display_name: name.map(str::to_string),
+            profile: Some("Reconnaissance generalist.".into()),
+            usefulness: Some("Useful for broad recon.".into()),
             run_id: Some("018f-run-7".into()),
         };
 
@@ -2929,6 +3010,12 @@ mod subagent_row_chain_tests {
             Some("Sally"),
             "the name dropped between the snapshot and the row"
         );
+        assert_eq!(
+            row.profile.as_deref(),
+            Some("Reconnaissance generalist."),
+            "the descriptor dropped between the snapshot and the row"
+        );
+        assert_eq!(row.usefulness.as_deref(), Some("Useful for broad recon."));
         assert_eq!(row.run_id.as_deref(), Some("018f-run-7"));
         assert_eq!(row.agent, "explore");
         assert_eq!(row.status, "running");
@@ -2936,6 +3023,10 @@ mod subagent_row_chain_tests {
 
     /// A node recorded before names existed still renders — as its agent type,
     /// never as a blank row.
+    ///
+    /// C005: the same holds for the descriptors. A pre-milestone node has no
+    /// descriptor, so the row must fall back to its task description rather
+    /// than leaving an empty column.
     #[test]
     fn an_unnamed_node_still_renders_a_row() {
         let mut snapshot = active_turn_snapshot();
@@ -2957,6 +3048,8 @@ mod subagent_row_chain_tests {
                         completed_at: None,
                         result_summary: None,
                         display_name: None,
+                        profile: None,
+                        usefulness: None,
                         run_id: None,
                     },
                 },
@@ -2965,6 +3058,13 @@ mod subagent_row_chain_tests {
         let rows = App::sync_subagents_from_snapshot(&snapshot).expect("rows");
         let row = rows.iter().find(|r| r.task_id == "9").expect("row 9");
         assert!(row.display_name.is_none());
+        assert!(row.descriptor().is_none());
+        assert_eq!(
+            row.topic(),
+            "reading",
+            "a node with no descriptor must fall back to its task description, \
+             not to an empty string"
+        );
         assert!(
             !row.label().is_empty(),
             "an unnamed subagent must still be identifiable"
@@ -2998,6 +3098,8 @@ mod subagent_row_chain_tests {
                         completed_at: None,
                         result_summary: None,
                         display_name: Some("Ada".into()),
+                        profile: Some("Reconnaissance generalist.".into()),
+                        usefulness: None,
                         run_id: None,
                     },
                 },

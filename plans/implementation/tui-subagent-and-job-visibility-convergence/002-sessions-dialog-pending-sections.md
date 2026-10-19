@@ -1,8 +1,10 @@
 # TUI Subagent and Job Visibility Convergence — Milestone 002 — `/sessions` Gains Subagents and Jobs Sections
 
-Status: ready for handoff
+Status: **implemented; closed**
 
-Repository baseline: `2acce2138` (plus the uncommitted C001/C003/C004/C006 tree)
+Closure record: `plans/closure/tui-subagent-and-job-visibility-convergence/002-status.md`
+
+Repository baseline: `2acce2138`, plus the committed C001/C003/C004/C006 tree at `e8a6b5ca2`
 
 Source roadmap: `plans/subsystems/tui-subagent-and-job-visibility-convergence-corrective-addendum.md#c002--sessions-gains-subagents-and-jobs-sections`
 Parent roadmap: `plans/subsystems/tui-subagent-and-job-visibility-roadmap.md`

@@ -11,12 +11,14 @@
 //! These drive the real key path — `/`, the characters, Enter — because the
 //! recursion started at submit time, not at open time.
 //!
-//! Bare `/agents` opens the "Send agents to panel" picker rather than jumping
-//! straight into the column, so the path continues through the box: the picker
-//! opens on the active panel, `j` walks the registry to Agents, and Enter
-//! commits. The picker cursor addresses `SidePanelId::ALL` (filtering never
-//! re-aims it), so the walk below is computed from the registry, not
-//! hand-numbered.
+//! Bare `/agents` now opens the **agent dialog** (`Dialog::Agent`), the same
+//! surface `/agent` opens. It used to open the "Send agents to panel" picker,
+//! which answered a placement question the user had not asked; that picker is
+//! gone from this path and panel *placement* lives on `/panels` instead. The
+//! recursion below is pinned by driving `/panels` — the entry point that now
+//! owns placement — through the same `/`, characters, Enter path. The picker
+//! cursor addressed `SidePanelId::ALL` (filtering never re-aimed it), so the
+//! walk below is computed from the registry, not hand-numbered.
 
 use codegg::tui::app::App;
 use codegg::tui::components::component::DialogType;
@@ -52,20 +54,21 @@ fn bare_agents_opens_the_agent_dialog() {
     );
 }
 
-/// `/agents` and `/agent` are the same command wearing two spellings; they must
-/// not disagree about what a user gets.
-#[test]
-fn agents_and_agent_open_the_same_surface() {
-    let mut via_plural = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    type_command(&mut via_plural, "/agents");
-    let mut via_singular = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    type_command(&mut via_singular, "/agent");
-    assert_eq!(
-        via_plural.focus_manager.active_dialog_type(),
-        via_singular.focus_manager.active_dialog_type(),
-        "/agents and /agent must open the same surface"
-    );
-}
+// **Removed as vacuous.** This test used to assert that `/agents` and `/agent`
+// open the same surface. It could not fail.
+//
+// Both spellings resolve through the completion popup: `handle_command_key`
+// prefers `completion_rows()[completion_sel].label` over the raw query, and
+// "agent" ranks `/agents` above `/agent`, so **both executed the same command**
+// and the assertion compared a value with itself. Repointing bare `/agents` at
+// `Dialog::Help` left it green.
+//
+// It is deleted rather than rewritten here. The assertion that *should* exist —
+// that `/agent <name>` changes the selected agent — is not C003's to settle:
+// it is a different command (`B::AgentSelect`), and driving it from an
+// integration test runs into completion-popup routing that is a product
+// question rather than a missing assertion. See
+// `plans/closure/tui-subagent-and-job-visibility-convergence/006-status.md` §7.
 
 /// Selecting the Agents *panel* is still a real thing; it just lives on the
 /// panel manager now, where every other panel selection lives. This is the

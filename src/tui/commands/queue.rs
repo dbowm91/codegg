@@ -57,25 +57,25 @@ const ENTRY_TOO_LARGE_CODE: &str = "user_prompt_queue_entry_too_large";
 const INVALID_CODE: &str = "user_prompt_queue_invalid";
 /// M006. No session is bound, so there is no turn to steer. Raised before the
 /// request is built rather than by the daemon.
-const SESSION_NOT_FOUND_CODE: &str = "session_not_found";
+pub(super) const SESSION_NOT_FOUND_CODE: &str = "session_not_found";
 /// M006. The session has no active turn. The daemon is the authority for this
 /// one; the box's own pre-flight only avoids a pointless round trip.
-const NO_ACTIVE_TURN_CODE: &str = "no_active_turn";
+pub(super) const NO_ACTIVE_TURN_CODE: &str = "no_active_turn";
 /// M006. The turn ended between the box reading its id and the daemon reaching
 /// the runtime, so the prompt was never handed over.
-const TURN_ID_MISMATCH_CODE: &str = "turn_id_mismatch";
+pub(super) const TURN_ID_MISMATCH_CODE: &str = "turn_id_mismatch";
 /// M006. The steering channel's receiver is gone — the turn is finishing.
-const STEER_UNAVAILABLE_CODE: &str = "steer_unavailable";
+pub(super) const STEER_UNAVAILABLE_CODE: &str = "steer_unavailable";
 /// M006. The steering channel is saturated; the turn is not accepting more.
-const STEER_QUEUE_FULL_CODE: &str = "steer_queue_full";
+pub(super) const STEER_QUEUE_FULL_CODE: &str = "steer_queue_full";
 /// M006. This turn was started without a steering channel at all.
-const STEER_NOT_SUPPORTED_CODE: &str = "steer_not_supported";
+pub(super) const STEER_NOT_SUPPORTED_CODE: &str = "steer_not_supported";
 /// M006. Another principal holds this session's turn controller (ADR-0007).
-const NOT_CONTROLLER_CODE: &str = "session_control_not_controller";
+pub(super) const NOT_CONTROLLER_CODE: &str = "session_control_not_controller";
 /// M006. The turn controller is held by someone else at the claimed revision.
-const CONTROL_CONFLICT_CODE: &str = "session_control_conflict";
+pub(super) const CONTROL_CONFLICT_CODE: &str = "session_control_conflict";
 /// M006. The session has no durable queue to steer out of.
-const QUEUE_UNAVAILABLE_CODE: &str = "user_prompt_queue_unavailable";
+pub(super) const QUEUE_UNAVAILABLE_CODE: &str = "user_prompt_queue_unavailable";
 
 /// The tone for a send-now outcome: informational when the user's press did
 /// what they asked, a warning when something else decided instead.
@@ -103,28 +103,96 @@ pub fn send_now_refusal_message(
     }
 }
 
-/// M006: the sentence for what the daemon did with a queued prompt.
+/// Who receives a steering payload, and who still holds it if the daemon
+/// refuses.
+///
+/// The *codes* are shared — the daemon rejects a queued send-now and a bare
+/// addressed reply with the same words, because they push into the same channel
+/// on the same turn. What differs is the **consequence**, and a sentence that
+/// ignores it lies in one direction or the other: telling an author whose
+/// composer still holds their text that it "stays queued" promises a resend
+/// nothing is going to perform, and telling them a reply "was delivered" names
+/// as recipient a party that ADR-0040 explicitly does not deliver to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SteerConsequence {
+    /// The running turn takes it as its next instruction, and the session's
+    /// durable prompt queue still holds it if refused. M006 send-now.
+    DurableQueue,
+    /// The **controlling parent agent** takes it as an instruction about one
+    /// subagent, and nothing durable holds it if refused — the text is still in
+    /// the composer and the user must press Enter again themselves. C007.
+    ComposerOnly,
+}
+
+impl SteerConsequence {
+    /// The clause describing where a refused payload ended up.
+    fn tail(self) -> &'static str {
+        match self {
+            SteerConsequence::DurableQueue => {
+                " It stays queued, so a later turn is offered it again."
+            }
+            SteerConsequence::ComposerOnly => {
+                " Nothing was sent; your text is still in the composer and nothing will \
+                 resend it for you."
+            }
+        }
+    }
+
+    /// The sentence for a payload the turn accepted.
+    ///
+    /// `addressee` is the subagent's name for [`ComposerOnly`](Self::ComposerOnly)
+    /// and `None` for [`DurableQueue`](Self::DurableQueue), which has no
+    /// subagent to name. The two cannot share a sentence: "marked delivered to
+    /// it" describes a queue write that never happens for a bare steer, and a
+    /// steer that claimed delivery to the *subagent* would be the exact
+    /// misrepresentation ADR-0040's failure modes forbid.
+    pub fn accepted(self, addressee: Option<&str>) -> String {
+        match (self, addressee) {
+            (SteerConsequence::DurableQueue, _) => {
+                "Handed to the turn that is running now, and marked delivered to it.".to_string()
+            }
+            (SteerConsequence::ComposerOnly, Some(name)) => format!(
+                "Handed to the agent running this turn, addressed to {name}. Whether it \
+                 relays that to the subagent is its call — nothing reached the subagent \
+                 directly."
+            ),
+            (SteerConsequence::ComposerOnly, None) => {
+                "Handed to the agent running this turn. Whether it relays that to the \
+                 subagent is its call — nothing reached the subagent directly."
+                    .to_string()
+            }
+        }
+    }
+}
+
+/// M006/C007: the sentence for what the daemon did with a steering payload.
 ///
 /// **Every sentence says what was accepted, never what the model will do.** A
-/// queued prompt that reaches a turn's steering channel has been *handed over*;
+/// payload that reaches a turn's steering channel has been *handed over*;
 /// whether the model reads it, believes it, or acts on it this turn is not
-/// something this daemon knows at the moment it accepts. Six distinct outcomes
-/// therefore get six distinct sentences: a user who is told "sent" for a channel
+/// something this daemon knows at the moment it accepts. Distinct outcomes
+/// therefore get distinct sentences: a user who is told "sent" for a channel
 /// that was full has been lied to, and a user told the same for a closed channel
-/// cannot tell that their prompt did not go anywhere.
+/// cannot tell that their message did not go anywhere.
+///
+/// One vocabulary, two callers. `TurnSteer` (C007, an addressed reply) and
+/// send-now (M006, a queued prompt) fail identically, so they must not render
+/// identically-with-a-different-consequence: `consequence` supplies the clauses
+/// that actually differ, rather than a second thinner function that could drift
+/// on the codes this one already gets right.
 ///
 /// `AcceptedNotSettled` gets its own sentence because it is the one case where
 /// "resend it" would duplicate a prompt that already ran — the wording has to
 /// tell the user to trust the turn, not the queue.
 pub fn send_now_outcome_message(
     outcome: &crate::protocol::core::UserPromptQueueSendNowResult,
+    consequence: SteerConsequence,
 ) -> (String, SendNowTone) {
     use crate::protocol::core::UserPromptQueueSendNowResult;
     match outcome {
-        UserPromptQueueSendNowResult::Accepted { .. } => (
-            "Handed to the turn that is running now, and marked delivered to it.".to_string(),
-            SendNowTone::Info,
-        ),
+        UserPromptQueueSendNowResult::Accepted { .. } => {
+            (consequence.accepted(None), SendNowTone::Info)
+        }
         UserPromptQueueSendNowResult::AcceptedNotSettled { .. } => (
             "The running turn took it, but this queue could not record that — so treat \
              it as sent, and check before sending it again."
@@ -136,65 +204,103 @@ pub fn send_now_outcome_message(
             SendNowTone::Warning,
         ),
         UserPromptQueueSendNowResult::Refused { code } => {
-            let message = match code.as_str() {
+            // The arms that reach `consequence.tail()` are the ones where the
+            // message itself was the thing refused, so the only open question
+            // is where it ended up. The arms that return early are the ones
+            // whose remedy is to look somewhere else entirely: a session that
+            // is gone retains nothing under either mode, a turn held by
+            // another frontend is not this user's to retry at all, and the
+            // queue's own codes describe an entry rather than a message.
+            let sentence: String = match code.as_str() {
                 STEER_QUEUE_FULL_CODE => {
-                    "The running turn has no room for another message right now. It stays \
-                     queued — try again in a moment."
-                        .to_string()
+                    "The running turn has no room for another message right now.".to_string()
                 }
                 STEER_UNAVAILABLE_CODE => {
-                    "That turn is finishing and is no longer accepting messages. It stays \
-                     queued for the next one."
-                        .to_string()
+                    "That turn is finishing and is no longer accepting messages.".to_string()
                 }
                 STEER_NOT_SUPPORTED_CODE => {
-                    "This turn cannot take messages while it runs. It stays queued for the \
-                     next one."
+                    "This turn cannot take messages while it runs.".to_string()
+                }
+                NO_ACTIVE_TURN_CODE => "That turn ended before the message reached it.".to_string(),
+                // `turn_id_mismatch` (the runtime is running a different turn)
+                // and `session_control_conflict` (the controller lease covers a
+                // different turn — `check_turn_controller` returns it when
+                // `lease_turn != turn_id`) are different codes with one cause
+                // as far as the user is concerned: the turn they addressed is
+                // no longer this session's current turn. One sentence, because
+                // the remedy is identical.
+                TURN_ID_MISMATCH_CODE | CONTROL_CONFLICT_CODE => {
+                    "The turn you addressed is no longer this session's current turn, so the \
+                     message was not handed over."
                         .to_string()
                 }
-                NO_ACTIVE_TURN_CODE => {
-                    "That turn ended before the prompt reached it, so it is still queued for \
-                     the next one."
-                        .to_string()
-                }
-                TURN_ID_MISMATCH_CODE => {
-                    "That turn is no longer the one running, so the prompt stayed queued."
-                        .to_string()
-                }
-                NOT_CONTROLLER_CODE | CONTROL_CONFLICT_CODE => {
-                    "This session's turn belongs to another frontend, which is the one that \
-                     can steer it."
-                        .to_string()
+                NOT_CONTROLLER_CODE => {
+                    return (
+                        "This session's turn belongs to another frontend, which is the one \
+                         that can steer it."
+                            .to_string(),
+                        SendNowTone::Warning,
+                    );
                 }
                 SESSION_NOT_FOUND_CODE => {
-                    "This session is no longer available, so nothing was sent.".to_string()
+                    return (
+                        "This session is no longer available, so nothing was sent.".to_string(),
+                        SendNowTone::Warning,
+                    );
                 }
                 QUEUE_UNAVAILABLE_CODE => {
-                    "There is no durable queue for this session, so nothing was sent.".to_string()
+                    return (
+                        "There is no durable queue for this session, so nothing was sent."
+                            .to_string(),
+                        SendNowTone::Warning,
+                    );
                 }
                 // The queue's own vocabulary, reusing the sentences M004/M005
                 // already own rather than restating them differently.
                 DELIVERING_CODE => {
-                    "That prompt is being delivered right now — a turn is already running for it."
-                        .to_string()
+                    return (
+                        "That prompt is being delivered right now — a turn is already \
+                         running for it."
+                            .to_string(),
+                        SendNowTone::Warning,
+                    );
                 }
                 EXPIRED_CODE => {
-                    "That prompt is no longer waiting; it left the queue before you got to it."
-                        .to_string()
+                    return (
+                        "That prompt is no longer waiting; it left the queue before you \
+                         got to it."
+                            .to_string(),
+                        SendNowTone::Warning,
+                    );
                 }
-                NOT_FOUND_CODE => "That prompt is already gone. Refreshing…".to_string(),
+                NOT_FOUND_CODE => {
+                    return (
+                        "That prompt is already gone. Refreshing…".to_string(),
+                        SendNowTone::Warning,
+                    );
+                }
                 NOT_OWNER_CODE => {
-                    "This session's queue belongs to another frontend; it can only be changed \
-                     there."
-                        .to_string()
+                    return (
+                        "This session's queue belongs to another frontend; it can only be \
+                         changed there."
+                            .to_string(),
+                        SendNowTone::Warning,
+                    );
                 }
                 UNOWNED_CODE => {
-                    "This session's queue has no owner, so nothing can change it from here."
-                        .to_string()
+                    return (
+                        "This session's queue has no owner, so nothing can change it from \
+                         here."
+                            .to_string(),
+                        SendNowTone::Warning,
+                    );
                 }
-                other => format!("The running turn did not take it ({other}). It stays queued."),
+                other => format!("The running turn did not take it ({other})."),
             };
-            (message, SendNowTone::Warning)
+            (
+                format!("{sentence}{}", consequence.tail()),
+                SendNowTone::Warning,
+            )
         }
     }
 }
@@ -206,7 +312,7 @@ pub fn send_now_outcome_message(
 /// remedy is to look at a different queue — ownership, delivery state, expiry.
 /// Returning text into the composer in those cases would suggest the retry
 /// will work when it cannot.
-fn refusal_keeps_text(code: &str) -> bool {
+pub(super) fn refusal_keeps_text(code: &str) -> bool {
     matches!(
         code,
         ENTRY_TOO_LARGE_CODE | TOO_MANY_ENTRIES_CODE | INVALID_CODE
@@ -218,7 +324,7 @@ fn refusal_keeps_text(code: &str) -> bool {
 /// `None` for anything unrecognized, which falls back to the code alone. That
 /// fallback is deliberate: an unmapped code must still produce *some* honest
 /// message rather than silently looking like success.
-fn refusal_message(code: &str) -> String {
+pub(super) fn refusal_message(code: &str) -> String {
     match code {
         DELIVERING_CODE => {
             "That prompt is being delivered right now — a turn is already running for it."
@@ -822,14 +928,17 @@ pub fn apply_queue_send_now_finished(
             // one — it names the turn's condition, which a transport error
             // cannot.
             let message = match outcome {
-                Some(ref outcome) => send_now_outcome_message(outcome).0,
+                Some(ref outcome) => {
+                    send_now_outcome_message(outcome, SteerConsequence::DurableQueue).0
+                }
                 None => message,
             };
             app.messages_state.toasts.warning(&message);
         }
         RefusalOutcome::Applied => {
             if let Some(outcome) = outcome {
-                let (message, tone) = send_now_outcome_message(&outcome);
+                let (message, tone) =
+                    send_now_outcome_message(&outcome, SteerConsequence::DurableQueue);
                 match tone {
                     SendNowTone::Info => app.messages_state.toasts.info(&message),
                     SendNowTone::Warning => app.messages_state.toasts.warning(&message),
@@ -878,7 +987,7 @@ fn send_now_answer(
 /// arrived after `close_dialog` cancelled it as a success and writes its
 /// projection anyway — exactly what the close-during-mutation guard exists to
 /// prevent. The distinction is the whole point of the request generation.
-enum RefusalOutcome {
+pub(super) enum RefusalOutcome {
     /// Current, and it was a success. Apply the projection it returned.
     Applied,
     /// Current, and the daemon refused. `restore_text` says whether the user's
@@ -889,7 +998,7 @@ enum RefusalOutcome {
     Stale,
 }
 
-fn apply_refusal(
+pub(super) fn apply_refusal(
     state: &mut crate::tui::app::state::AsyncUiRequestState,
     request_id: u64,
     code: &Option<String>,

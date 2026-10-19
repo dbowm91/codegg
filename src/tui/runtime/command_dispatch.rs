@@ -2050,6 +2050,17 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, session_id, entries, outcome, error,
             );
         }
+        TuiCommand::SubagentSteerFinished {
+            request_id,
+            addressee,
+            body,
+            code,
+            error,
+        } => {
+            crate::tui::commands::subagent_steer::apply_subagent_steer_finished(
+                app, request_id, addressee, body, code, error,
+            );
+        }
         TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
             app.apply_shell_promotions_submitted(&promotions, error);
         }

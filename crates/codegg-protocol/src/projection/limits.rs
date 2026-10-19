@@ -74,6 +74,35 @@ pub const MAX_PROJECTION_SUBAGENTS: usize = 16;
 /// is the projection's defence in depth.
 pub const MAX_PROJECTION_DISPLAY_NAME_BYTES: usize = 32;
 
+/// Maximum byte length of any one subagent descriptor (`profile` or
+/// `usefulness`) in the projection.
+///
+/// **Not** [`MAX_PROJECTION_STRING_BYTES`]. That bound is for an arbitrary
+/// producer's arbitrary field; a node already carries up to 4 KB of
+/// `description`, so reusing it would leave the per-descriptor bound
+/// unenforced — sixteen descriptors at 4 KB each is a 64 KB snapshot.
+///
+/// Sized above the curated pool's own maximum rather than at it. Measured over
+/// all 46 entries at `e8a6b5ca2`: the longest `profile` is 223 bytes (Greg) and
+/// the longest `usefulness` is 107 (Susan). 256 leaves authoring headroom while
+/// still truncating a runaway producer, and it does not truncate a single
+/// descriptor the pool ships today.
+pub const MAX_PROJECTION_DESCRIPTOR_BYTES: usize = 256;
+
+/// Total descriptor bytes one turn's agent tree may carry, across every node.
+///
+/// Derived rather than measured, so the ceiling is enforced rather than
+/// observed: [`MAX_PROJECTION_SUBAGENTS`] nodes × two descriptors ×
+/// [`MAX_PROJECTION_DESCRIPTOR_BYTES`] = 8,192 B.
+///
+/// The *real* figure is well under it — the pool's worst single node carries
+/// 291 B, so a full tree of the largest entries grows a snapshot by 4,656 B —
+/// but a bound that is only as large as today's data is a bound that is
+/// violated by the first longer entry someone authors. A test asserts the
+/// measured worst case still fits.
+pub const MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES: usize =
+    MAX_PROJECTION_SUBAGENTS * MAX_PROJECTION_DESCRIPTOR_BYTES * 2;
+
 /// Maximum number of durable delegated runs retained in one session
 /// projection. Detached/background runs remain inspectable without making
 /// the projection an unbounded history store.
