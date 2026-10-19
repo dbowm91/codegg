@@ -6,9 +6,7 @@ use codegg::tool::lsp::to_lsp_position;
 use codegg::tool::{Tool, ToolCategory, ToolExecutionContext};
 
 fn make_tool() -> codegg::tool::lsp::LspTool {
-    codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
-        codegg::lsp::config::LspConfig::Disabled(true),
-    ))
+    make_tool_with_root(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
 fn make_live_tool() -> codegg::tool::lsp::LspTool {
@@ -1895,7 +1893,7 @@ fn hierarchy_direction_rejects_invalid() {
 #[test]
 #[allow(non_snake_case)]
 fn callHierarchy_invalid_direction_rejected() {
-    let tool = make_tool_with_root(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+    let tool = make_tool();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let err = tool
@@ -1918,7 +1916,7 @@ fn callHierarchy_invalid_direction_rejected() {
 #[test]
 #[allow(non_snake_case)]
 fn typeHierarchy_invalid_direction_rejected() {
-    let tool = make_tool_with_root(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+    let tool = make_tool();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let err = tool
