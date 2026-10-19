@@ -1,11 +1,11 @@
 # M005 Writer-Containment Corrective C003 — Native File and Git Writer Interposition (Q2)
 
-Status: blocked — C002 strict closure; accepted ADR-0042 required upstream
+Status: ready — both upstream gates met (C002 closed, ADR-0042 option B accepted 2026-10-19); not started
 Primary class: invariant / capability foundation
 Planning baseline: plan/agent-workstream-m005-writer-audit audit 2026-10-19; recheck current source before implementation.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C003
 Original: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md, Q2
-ADRs: ADR-0002, ADR-0032 and **accepted ADR-0042 (option B, 2026-10-19)**. The ADR gate is satisfied upstream; C002 strict closure is not.
+ADRs: ADR-0002, ADR-0032 and **accepted ADR-0042 (option B, 2026-10-19)**. Both upstream gates are satisfied: ADR-0042 option B was accepted on 2026-10-19, and C002 closed at `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md` (implementation `7fb56e11`). C003 is the routing milestone — it must show that a writer *without* the permit is refused, and it enables no shared mutation on its own. C004–C006 remain blocked on their own ordered predecessors.
 
 ## Objective
 
