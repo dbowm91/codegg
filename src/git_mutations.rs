@@ -770,6 +770,27 @@ impl GitMutationExecutor {
         paths: &[RepoPath],
         repo_root: &Path,
     ) -> Result<MutationResult, GitMutationError> {
+        // C007: the `Add` arm runs the **same** preflight every other
+        // mutation runs, before the publisher is consulted.
+        //
+        // The preflight classifies the argv as a trusted Git request and
+        // resolves the repository. Skipping it would let `Add` reach the
+        // publisher with a request the policy would have refused, and it
+        // would replace a typed policy refusal with a generic publication
+        // error — which is how a caller would learn that a *policy* said no
+        // only as "the publication backend is not configured". The rendered
+        // command is prepared and then dropped: nothing is spawned here.
+        let argv = render_argv(operation);
+        if argv.is_empty() {
+            return Err(GitMutationError::execution(
+                operation,
+                "empty rendered argv",
+            ));
+        }
+        if let Err(outcome) = self.env_policy.apply(&argv, repo_root) {
+            self.emit_git_policy_outcome(operation, &outcome).await;
+            return Err(GitMutationError::Policy(outcome));
+        }
         let Some(publisher) = self.publication.as_ref() else {
             return Err(GitMutationError::PublicationFailed(
                 "the private index publication backend is not configured".into(),

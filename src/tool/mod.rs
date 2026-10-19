@@ -598,6 +598,14 @@ impl ToolRegistry {
         } else {
             crate::tool::bash::BashTool::default()
         };
+        // C007: a bash-routed `git add` is an authorized `Add`, so the bash
+        // route reaches the same private-index publisher as the native `git`
+        // and `commit` tools. Without it the typed executor refuses the
+        // `Add` instead of falling back to the in-place route.
+        let bash_tool = match options.publication.as_ref() {
+            Some(publication) => bash_tool.with_publication(publication.clone()),
+            None => bash_tool,
+        };
         let bash_tool = bash_tool.with_windows_shell(options.windows_shell);
         let bash_tool = if let Some(root) = workspace_root.as_ref() {
             bash_tool.with_allowed_paths(vec![root.to_string_lossy().into_owned()])

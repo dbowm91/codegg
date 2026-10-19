@@ -56,13 +56,14 @@ Linux host is admitted.
 | Crash recovery: committed / aborted / ambiguous | `reconciler_closes_a_committed_publication`, `reconciler_aborts_an_unchanged_index_and_discards_the_private_artifact`, `reconciler_escalates_an_ambiguous_publication_and_retains_the_private_artifact` | pass | Ambiguity is never reported as success; the private index is retained for inspection. |
 | Recovery is idempotent across restarts | `reconciliation_is_idempotent_across_restarts` | pass | A second pass resolves nothing and changes nothing. |
 | A leftover lock is removed only when attributable | `reconciler_removes_only_a_leftover_lock_it_can_attribute` | pass | A lock that holds another writer's bytes is left alone. |
-| An ordinary dispatch caller reaches the publisher | `GitMutationExecutor::execute` `Add` arm; `git` tool `stage_paths`; `commit` tool | pass | The `Add` arm routes to the publisher. |
+| An ordinary dispatch caller reaches the publisher | `GitMutationExecutor::execute` `Add` arm; `git` tool `stage_paths`; `commit` tool; the **bash route** (`BashTool::git_mutation_executor`); `the_bash_git_executor_carries_the_publication_backend` | pass | The `Add` arm routes to the publisher, and every caller that can reach an authorized `Add` — including a bash-routed `git add` — is given the backend. |
 | An unconfigured backend refuses rather than downgrades | `an_unconfigured_backend_refuses_the_add_mutation` | pass | No silent fallback to the in-place `git add` route. |
 | A path outside the repository is refused before any child runs | `a_path_outside_the_repository_is_refused_before_any_child_runs` | pass | Nothing is recorded in the journal. |
 | The publisher executes no hook, filter, helper or worktree-controlled code | `PRIVATE_GITDIR_CONFIG`; the private gitdir is authored by the daemon and contains no `filter.*` section; `core.attributesFile = /dev/null`; the staging child runs with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` | pass (design) | The staging child's configuration is pinned by the daemon, so a repository-controlled clean/smudge filter has no command to run. The empirical filter probe remains hosted-run evidence (see below). |
 | The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | pass | Hosted run `39318206124` (2026-10-19, commit `d024a838`): the isolated C007 step reports `running 1 test` / `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out`, and the same test is among the 17 that passed in the full M004/M005 suite. The whole production path ran under containment on a qualified host. The first hosted attempt (`39313802793`) was cancelled by the job's time budget and produced no evidence either way; the budget defect was corrected rather than the evidence inferred (§4). |
 | The receipt states the obtained network boundary truthfully | `GitIndexPublicationReceipt::network_boundary`; `ObtainedNetworkBoundary::NotReported` | pass | The receipt states the boundary **explicitly** as `not_reported` rather than staying silent about the network, so a caller never has to infer an omission. The type carries one variant because one answer has a producer: the system still cannot report the fact it obtained (C014's open item), and the reported case will be added with its producer, not as a claim. |
 | A non-`Add` mutation is never published | `a_non_add_mutation_is_never_published`; the `Add` arm of `GitMutationExecutor::execute` | pass | A non-`Add` mutation keeps the legacy route, the branch is created, and the publication journal records **no** intent — the publisher never sees it, so a caller cannot route around the publisher's preflight by choosing a different mutation. |
+| The `Add` arm runs the **same** preflight every other mutation runs | `execute_add_publication`'s `env_policy.apply` gate in `src/git_mutations.rs`; `stage_paths_returns_paths_in_delta`, `stage_all_marks_changes_staged`, `git_stage_and_branch_mutation_emit_once_each` | pass | The `Add` arm renders the operation and applies the environment policy **before** the publisher is consulted, so a request the policy refuses is refused with the policy's typed outcome, not with a publication error. The workspace sweep found the arm short-circuiting this gate; see §4. |
 
 ## 3. Production implementation evidence
 
@@ -91,10 +92,15 @@ Linux host is admitted.
 - `src/core/daemon_bootstrap.rs` — the reconciler runs as bootstrap phase 5
   (after `recover_jobs`), in the in-process path and in both socket/daemon
   entry points.
-- `src/tool/factory.rs`, `src/tool/git.rs`, `src/tool/commit.rs` — the
-  publisher is built from the daemon's session pool (the same pool the
-  reconciler reads) and the pinned Git executable, and is injected into the
-  `git` and `commit` tools.
+- `src/tool/factory.rs`, `src/tool/git.rs`, `src/tool/commit.rs`,
+  `src/tool/bash.rs`, `src/tool/bash/process.rs` — the publisher is built from
+  the daemon's session pool (the same pool the reconciler reads) and the pinned
+  Git executable, and is injected into the `git` tool, the `commit` tool, and
+  the **bash route**. The bash route matters as much as the two tools: a
+  bash-routed `git add` is an authorized `Add`, and without the backend the
+  typed executor **refuses** it rather than falling back to the in-place
+  route, so an ordinary `git add` in a shell would break. The wiring is
+  proven by `the_bash_git_executor_carries_the_publication_backend`.
 
 ### Deviations from the plan text
 
@@ -139,6 +145,49 @@ cargo fmt --all -- --check
 - `scripts/verify.sh quick`: passed.
 - The storage-layout guard compares `STORAGE_LAYOUT_VERSION` against the
   highest wired migration live, so the 83 → 84 bump is checked, not asserted.
+- **The full workspace sweep found a real defect in the `Add` arm.**
+  `cargo nextest run --workspace --locked --profile ci` reported 6 failures
+  out of 14868, all of them the same root cause: the `Add` arm consulted the
+  publisher **before** the executor's own policy preflight, so a request the
+  policy refused came back as the generic
+  `PublicationFailed("the private index publication backend is not
+  configured")` instead of the policy's typed outcome
+  (`GitMutationError::Policy(BackendUnavailable)`). The affected tests were
+  `stage_paths_returns_paths_in_delta`, `stage_all_marks_changes_staged`,
+  `git_stage_and_branch_mutation_emit_once_each`,
+  `bash_routed_git_mutation_emits_single_git_event`,
+  `missing_contained_git_capability_emits_structural_policy_event`, and
+  `single_host_trajectory_is_ordered_correlated_and_secret_free`.
+  The fix applies the environment policy to the rendered argv at the top of
+  `execute_add_publication`, before the publisher is consulted; the rendered
+  command is prepared and dropped, so nothing is spawned. This is the plan's
+  own §6 requirement — "a non-`Add` mutation is still refused by the same
+  preflight" — and the arm was **violating** it, not merely leaving it
+  unproven. The sixth failure was a separate trap: `storage_migrations.rs`
+  pinned the latest layout version as a literal `83`, which every later
+  migration has to move; the pin now reads the declared
+  `STORAGE_LAYOUT_VERSION`, and the network-intent migration stays pinned by
+  the column appearing over the v81 fixture instead.
+  `scripts/verify.sh quick` does **not** run the workspace suite, so this
+  class of defect is only caught by the sweep or by CI's `verify` job.
+- **The final sweep is clean.** `cargo nextest run --workspace --locked
+  --profile ci --no-fail-fast` reports `14869 tests run: 14867 passed, 0
+  failed, 2 timed out, 7 skipped`. The two timeouts are
+  `tool::lsp::tests::security_context_preset_scenarios_share_one_service` and
+  `..._call_expansion_scenarios_share_one_service`; they are **load**-related
+  and pre-existing — they appear in the earlier sweep too, they pass in
+  isolation (30.4 s each), and the C014 closure already records `3 timed out`
+  as this profile's baseline under contention. The order-dependent
+  `core::daemon::tests::poolless_standalone_human_shell_uses_registered_workspace`
+  flake did not recur in the final sweep and passes in isolation.
+- `an_unconfigured_backend_refuses_the_add_mutation` was rewritten rather
+  than deleted. The `Add` arm now runs the same preflight as every other
+  mutation, and `git add` is classified as requiring contained execution, so
+  on a host without that backend the preflight refuses **first** with
+  `Policy(BackendUnavailable)` and the missing publisher is never reached.
+  The test therefore asserts the property that does not depend on the host:
+  the `Add` is refused with a typed error, and the repository index is
+  byte-identical afterwards — a refusal, never a silent in-place stage.
 - After the v84 DDL was moved inline into `schema.rs` (§3), the gate was
   re-run on the edited tree: `scripts/verify.sh quick` passed again and
   `tests/git_index_publication.rs` still reported 21 passed / 0 failed. The

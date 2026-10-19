@@ -393,10 +393,12 @@ async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
         codegg::storage::STORAGE_LAYOUT_VERSION as i64,
         "latest migration must land exactly at the declared storage layout version"
     );
-    assert_eq!(
-        final_version, 85,
-        "the network-intent migration follows v83 and the publication journal follows v84"
-    );
+    // The network-intent migration is v84 — it follows v83's managed-scratch
+    // migration (v82 was the queue `run_at_ms` migration). It is pinned by the
+    // column appearing over this v81 fixture, whose pre-v82 queue row the v82
+    // upgrade preserved, and **not** by a hard-coded "latest version" number:
+    // a hard-coded number here has to move with every later migration, and the
+    // assertion above already proves the chain reached the declared latest.
 
     let network_intent: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('runtime_preferences') WHERE name = 'network_intent'",

@@ -188,9 +188,13 @@ reset, clean, fetch, push, and pull are out of scope.
 
 `Add` is **refused** when no publisher is configured
 (`GitMutationError::PublicationRefused`) rather than downgraded to the
-in-place route, which cannot be made compare-and-swap safe. `stage_all` and
-`stage_tracked` still use the legacy in-place route — they carry whole-tree
-`-A` / `-u` semantics that the path-scoped publisher does not model.
+in-place route, which cannot be made compare-and-swap safe. Every caller that
+can reach an authorized `Add` is therefore given the backend: the `git` tool,
+the `commit` tool, and the **bash route** — a bash-routed `git add` is an
+authorized `Add` too, and without the backend it would be refused rather than
+published. `stage_all` and `stage_tracked` still use the legacy in-place
+route — they carry whole-tree `-A` / `-u` semantics that the path-scoped
+publisher does not model.
 
 ### Network path
 

@@ -48,6 +48,7 @@ use crate::command_intent::CommandIntentKind;
 use crate::command_outcome::ActualExecutor;
 use crate::config::schema::CommandIntentFamily;
 use crate::error::ToolError;
+use crate::git_mutations::{GitEnvPolicy, GitMutationExecutor};
 
 /// Bytes of partial output carried into a timeout result.
 ///
@@ -332,6 +333,27 @@ pub(crate) fn synth_output(
 }
 
 impl BashTool {
+    /// The Git mutation executor this tool builds for a bash-routed Git
+    /// operation.
+    ///
+    /// C007: a bash-routed `git add` is an authorized `Add`, so it is
+    /// published through the same private-index path the native `git` and
+    /// `commit` tools use. Without the backend the typed executor **refuses**
+    /// the `Add` rather than falling back to the in-place `git add` route, so
+    /// an ordinary `git add` in a shell would break.
+    pub(crate) fn git_mutation_executor(
+        &self,
+        timeout: std::time::Duration,
+    ) -> GitMutationExecutor {
+        let exec = GitMutationExecutor::new()
+            .with_env_policy(GitEnvPolicy::default())
+            .with_timeout(timeout);
+        match self.publication.as_ref() {
+            Some(publication) => exec.with_publication(publication.clone()),
+            None => exec,
+        }
+    }
+
     /// Execute a command via raw shell (`sh -c`). This is the original behavior
     /// used by observe mode and as a fallback when active routing is disabled
     /// or dispatch fails.
@@ -985,9 +1007,7 @@ impl BashTool {
         audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
     ) -> Result<DispatchOutcome, ToolError> {
         use crate::git_mutation_projector::project_mutation;
-        use crate::git_mutations::{
-            resolve_repo_root, GitEnvPolicy, GitMutationError, GitMutationExecutor,
-        };
+        use crate::git_mutations::{resolve_repo_root, GitMutationError};
 
         // Resolve the working directory. Precedence:
         //   1. `canonical_workdir` (BashTool-resolved via allowed_paths).
@@ -1033,9 +1053,7 @@ impl BashTool {
             }
         };
 
-        let exec = GitMutationExecutor::new()
-            .with_env_policy(GitEnvPolicy::default())
-            .with_timeout(timeout);
+        let exec = self.git_mutation_executor(timeout);
         let exec = match audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()) {
             Some(authorization) => exec.with_execution_authorization(authorization),
             None => exec,

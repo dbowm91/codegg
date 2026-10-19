@@ -91,6 +91,13 @@ pub struct BashTool {
     /// `/tmp/…`, and `/usr/bin/git`.
     pub(crate) child_workspace_ceiling: Option<PathBuf>,
     pub(crate) windows_shell: Option<crate::config::schema::WindowsShellKind>,
+    /// C007: the private index publication backend.
+    ///
+    /// A bash-routed `git add` is an authorized `Add`, so it must reach the
+    /// same publisher the native `git` and `commit` tools reach. Without it,
+    /// the typed executor **refuses** the `Add` — it does not fall back to
+    /// the in-place route — so an ordinary `git add` in a shell would break.
+    pub(crate) publication: Option<Arc<crate::git_publication::GitIndexPublisher>>,
 }
 
 impl BashTool {
@@ -115,6 +122,7 @@ impl BashTool {
             workspace_root: None,
             child_workspace_ceiling: None,
             windows_shell: None,
+            publication: None,
         }
     }
 
@@ -165,6 +173,17 @@ impl BashTool {
 
     pub fn with_run_store(mut self, store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
         self.run_store = Some(store);
+        self
+    }
+
+    /// C007: give the bash-routed Git mutations the private index
+    /// publication backend, so a bash `git add` is published rather than
+    /// refused.
+    pub fn with_publication(
+        mut self,
+        publication: Arc<crate::git_publication::GitIndexPublisher>,
+    ) -> Self {
+        self.publication = Some(publication);
         self
     }
 
@@ -992,6 +1011,61 @@ mod tests {
         // repository is what the process cwd used to supply implicitly.
         tool.workspace_root = Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         tool
+    }
+
+    /// C007: a bash-routed `git add` is an authorized `Add`, so the bash
+    /// tool must build its Git mutation executor **with** the private index
+    /// publication backend.
+    ///
+    /// Without it the typed executor refuses the `Add` rather than falling
+    /// back to the in-place `git add` route, so an ordinary `git add` in a
+    /// shell would break with "the private index publication backend is not
+    /// configured".
+    #[tokio::test]
+    async fn the_bash_git_executor_carries_the_publication_backend() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let url = format!(
+            "file:codegg_bash_publication_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let options = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite options")
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect to in-memory sqlite");
+        let store = std::sync::Arc::new(
+            codegg_core::git_publication::GitIndexPublicationStore::new(pool.clone()),
+        );
+        let publisher = std::sync::Arc::new(crate::git_publication::GitIndexPublisher::new(
+            store,
+            std::env::temp_dir(),
+            std::sync::Arc::new(crate::git_publication::ContainedGitIndexStaging::new(
+                std::path::PathBuf::from("/usr/bin/git"),
+            )),
+            std::time::Duration::from_secs(1),
+        ));
+
+        let without = BashTool::new();
+        assert!(
+            without
+                .git_mutation_executor(std::time::Duration::from_secs(1))
+                .publication
+                .is_none(),
+            "a bash tool without a backend must not claim one"
+        );
+
+        let with = BashTool::new().with_publication(publisher);
+        assert!(
+            with.git_mutation_executor(std::time::Duration::from_secs(1))
+                .publication
+                .is_some(),
+            "a bash-routed `git add` must reach the publisher"
+        );
     }
 
     fn accepted_full_host_context() -> ToolExecutionContext {

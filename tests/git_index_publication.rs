@@ -670,9 +670,22 @@ async fn a_held_index_lock_produces_a_typed_conflict() {
 async fn an_unconfigured_backend_refuses_the_add_mutation() {
     // The `Add` arm must be refused rather than silently downgraded to the
     // legacy in-place route when no publication backend is configured.
+    //
+    // The refusal is **typed**, and which typed refusal it is depends on the
+    // host: the `Add` arm runs the same preflight every other mutation runs,
+    // and `git add` requires the contained-execution tier, so on a host
+    // without that backend the preflight refuses first with
+    // `Policy(BackendUnavailable)`, while where the preflight passes the
+    // missing publisher refuses with `PublicationFailed`. Both are
+    // refusals. What must never happen is a silent in-place `git add`.
     let executor = codegg::git_mutations::GitMutationExecutor::new();
     let repo = TempDir::new().unwrap();
     init_repo(repo.path());
+    // A change that an in-place `git add` would stage, so the check below
+    // can tell "refused" from "silently staged".
+    std::fs::write(repo.path().join("tracked.txt"), "changed\n").unwrap();
+    let gitdir = repo_gitdir(repo.path());
+    let index_before = read_bytes(&gitdir.join("index")).expect("index exists");
     let root = codegg_git::path::RepoRoot::new(repo.path()).expect("repo root");
     let path = codegg_git::path::RepoPath::new(&root, "tracked.txt").expect("repo path");
     let operation = codegg_git::GitOperation::Add { paths: vec![path] };
@@ -683,9 +696,17 @@ async fn an_unconfigured_backend_refuses_the_add_mutation() {
     assert!(
         matches!(
             error,
-            codegg::git_mutations::GitMutationError::PublicationFailed(_)
+            codegg::git_mutations::GitMutationError::Policy(_)
+                | codegg::git_mutations::GitMutationError::PublicationFailed(_)
         ),
         "unexpected error: {error}"
+    );
+    // Nothing was staged: the refusal is not a downgrade to the in-place
+    // route.
+    let index_after = read_bytes(&gitdir.join("index")).expect("index exists");
+    assert_eq!(
+        index_after, index_before,
+        "a refused Add must not stage anything"
     );
 }
 
