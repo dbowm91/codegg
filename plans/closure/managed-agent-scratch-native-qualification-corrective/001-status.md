@@ -428,16 +428,16 @@ Windows half of the M003 gap is unchanged and still blocked.
     recorded under *Recently closed or conditionally closed work* as
     **closed**, pointing at
     `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`,
-    with the source commit `2597ec9e` and the native Linux CI run
-    `39294747903`.
+    with the source commits `2597ec9e` / `ea400ff7` / `83fc052f` and the
+    native Linux CI run `39294747903`.
   - C002 stays in the *Dependency-ready implementation plans* table as
     **blocked** — its blocker is unchanged — and gains a pointer to
     `plans/closure/managed-agent-scratch-native-qualification-corrective/002-status.md`.
-  - The *Active subsystem roadmaps* row for this corrective addendum moves
-    to **closing**: C001 is closed and C002 is closed-as-blocked, so the
-    addendum's own milestones are resolved. The original M003 remains
-    conditional, and the Windows Required backend remains blocked in its
-    owning roadmap.
+  - The *Active subsystem roadmaps* row for this corrective addendum moves to
+    **closed**: C001 is closed and C002 is closed-as-blocked, so the
+    addendum's own milestones are resolved and its completion condition is
+    met. The original M003 remains conditional for its Windows half, and the
+    Windows Required backend remains blocked in its owning roadmap.
 - `plans/subsystems/managed-agent-scratch-native-qualification-corrective-addendum.md`:
   milestone status table, dependency graph and the C001/C002 milestone
   sections are reconciled with this record.
