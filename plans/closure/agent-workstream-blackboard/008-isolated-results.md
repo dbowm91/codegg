@@ -2,11 +2,12 @@
 
 Evidence status: exploratory partial result; M008 remains active and is not
 strictly closed. Three trials stayed within their equal all-agent ceilings: IM-1/S0, IM-1/S1,
-and SI-1/S0 at repetition 1. OA-1/S0 and OA-2/S0 repetition-1 attempts both
-exceeded 700,000 tokens; OA-1 returned no candidate, while OA-2 produced an
-accepted integrated candidate after evaluator reruns. The OA results do not
-count as in-budget trajectories. No repeatable effectiveness advantage is
-established.
+and SI-1/S0 at repetition 1. OA-1/S0 and OA-2/S0 each exceeded 700,000 tokens;
+OA-1 returned no candidate, while OA-2 produced an accepted S0 candidate after
+evaluator reruns. OA-2/S1 exceeded both its 300,000 coordinator allocation
+and 700,000 all-agent ceiling; the children stayed within their fixed
+allocations but returned no usable work. These OA results are not in-budget
+trajectories. No repeatable effectiveness advantage is established.
 
 Source plan: `plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md`
 CodeGG source: `a0d7acef8e428d55971514addf685741a25ce047`
@@ -622,3 +623,22 @@ passed. The evaluator committed the two implementation files as
 removed generated caches. This is a valid integrated candidate but is excluded
 from equal-budget effectiveness comparisons because actual usage exceeded B.
 Cost is unknown; full measurements are in the JSON record.
+
+
+## 23. OA-2, S1, repetition 1 (2026-10-19)
+
+The two isolated children shared a fixed 400,000-token aggregate ceiling
+(200,000 each); the coordinator had one 300,000-token turn ceiling, for an
+all-agent budget of 700,000. The journal recorded 968,141 input plus 8,224
+output tokens for the coordinator (976,365 total) and 114,165 total across
+the children. The all-agent total was 1,090,530, exceeding B by 390,530; the
+coordinator alone exceeded C by 676,365. Both children completed within their
+allocations but returned no usable text, changed paths, or commits. No
+acceptance or integration ran.
+
+The headless client interrupt did not stop the daemon-side turn; usage
+continued growing after disconnect. The evaluator terminated the isolated
+daemon after confirming the overrun. No child commits existed, and the root
+worktree remained clean. The observed result is a budget-enforcement failure,
+not a performance sample. Cost is unknown; per-run totals and spans are in the
+JSON record.

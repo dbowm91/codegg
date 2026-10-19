@@ -1,5 +1,5 @@
 {
-  "evidence_kind": "partial exploratory measurement; three under-budget cells for IM-1/S0, IM-1/S1, SI-1/S0; OA-1/S0 and OA-2/S0 produced accepted candidates after crossing their equal 700,000-token ceilings; not M008 closure",
+  "evidence_kind": "partial exploratory measurement; three under-budget cells for IM-1/S0, IM-1/S1, SI-1/S0; OA-1/S0, OA-2/S0, and OA-2/S1 exceeded their fixed all-agent ceilings; not M008 closure",
   "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
   "fixture_baseline": "f5e27d388255726b0b85226a144fdcce2e91b73a",
   "binary": {
@@ -1798,6 +1798,88 @@
       },
       "status": "valid integrated candidate after evaluator verification, but over-budget by 3779 tokens; excluded from equal-budget effectiveness comparison",
       "result": "OA-2 passed its eight Rust tests, nine Python tests, and exact cross-language report evaluator. Actual use was 703779 against the 700000 ceiling. The final in-flight response crossed the budget and the agent did not return a final report; evaluator reran the Python command rejected by the runner and committed the validated implementation. Cost is unknown. The accepted outcome is retained but does not count as an in-budget trajectory."
+    },
+    {
+      "trial_id": "OA-2-S1-R1",
+      "matrix_version": "008-task-matrix-v1",
+      "fixture": "plans/closure/agent-workstream-blackboard/008-overlapping-api-fixtures/oa2",
+      "fixture_baseline_source_commit": "9260fda525284b821beda2782de23f6888d37b56",
+      "fixture_baseline_tree": "edaa7d38feb37c8cc829f46daad88a24dd663c7e",
+      "fixture_content_digest": "8c0ac4b26b6a042843d629455d9fb689a6c684121026919118c2f966cdb6f436",
+      "condition": "S1",
+      "repetition": 1,
+      "session_id": "a9041d05-db86-44db-bf31-44e9dfb95705",
+      "turn_id": "turn-fec34f67-b60b-4a76-aebc-fc17f632e93f",
+      "group_id": "agent-group-99f8f4e9826bdd25cdc6096bb2785a9ec5205b6789979ca070cdcfe6ba01d480",
+      "provider": "OpenCode Go",
+      "model": "gpt-6-luna",
+      "all_agent_budget_tokens": 700000,
+      "coordinator_budget_tokens": 300000,
+      "worker_budget_tokens": 400000,
+      "worker_allocations": [
+        200000,
+        200000
+      ],
+      "actual_usage": {
+        "coordinator": {
+          "input_tokens": 968141,
+          "output_tokens": 8224,
+          "cached_tokens": 0,
+          "total_tokens": 976365,
+          "overrun_vs_coordinator_allocation_tokens": 676365,
+          "usage_rows": 35,
+          "provider_usage_span_seconds": 197.561,
+          "reported_cost_usd": 0.0,
+          "cost_available": false
+        },
+        "workers": [
+          {
+            "run_id": "80a58924-eff0-43ae-b8aa-7619920778d4",
+            "allocation_tokens": 200000,
+            "input_tokens": 49817,
+            "output_tokens": 872,
+            "cached_tokens": 0,
+            "total_tokens": 50689,
+            "usage_rows": 4,
+            "provider_usage_span_seconds": 10.427,
+            "reported_cost_usd": 0.0,
+            "cost_available": false,
+            "status": "completed; no text output, no changed paths, no commit"
+          },
+          {
+            "run_id": "66d462e1-9bae-433a-846f-15b3ace9841d",
+            "allocation_tokens": 200000,
+            "input_tokens": 62409,
+            "output_tokens": 1067,
+            "cached_tokens": 0,
+            "total_tokens": 63476,
+            "usage_rows": 5,
+            "provider_usage_span_seconds": 12.267,
+            "reported_cost_usd": 0.0,
+            "cost_available": false,
+            "status": "completed; no text output, no changed paths, no commit"
+          }
+        ],
+        "all_agent_input_tokens": 1080367,
+        "all_agent_output_tokens": 10163,
+        "all_agent_cached_tokens": 0,
+        "all_agent_total_tokens": 1090530,
+        "overrun_tokens": 390530,
+        "all_agent_reported_cost_usd": 0.0,
+        "all_agent_cost_available": false,
+        "group_elapsed_seconds": 20.391
+      },
+      "evaluator": {
+        "valid_integrated_result": false,
+        "accepted_contract_checks_passed": 0,
+        "merge_conflicts": null,
+        "interventions": 1,
+        "intervention_detail": "The headless client interrupt did not stop the daemon turn; the evaluator stopped the isolated daemon after usage continued above the 300,000 coordinator ceiling. No candidate was integrated.",
+        "scratch_cleanup": "The root worktree stayed clean; no child result commits or changed paths existed.",
+        "integration_wall_seconds": null
+      },
+      "status": "incomplete and over-budget; delegated child ceilings held, but coordinator usage reached 976365 against C=300000 and all-agent usage reached 1090530 against B=700000; no candidate",
+      "result": "The children stayed below their 200000 allocations but each completed with no usable text or changes. The coordinator exceeded its reserved 300000 tokens by 676365. The all-agent total exceeded B by 390530. The headless client interrupt did not stop the daemon-side turn, so the isolated daemon was explicitly terminated after the breach was observed. No acceptance tests or integration ran. This is a budget enforcement failure and not a scored result."
     }
   ]
 }

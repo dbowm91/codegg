@@ -2794,6 +2794,7 @@ mod tests {
     struct RecordingTurnRuntime {
         called: AtomicBool,
         repository_id: tokio::sync::Mutex<Option<codegg_core::identity::RepositoryId>>,
+        max_model_tokens: tokio::sync::Mutex<Option<u64>>,
     }
 
     #[async_trait::async_trait]
@@ -2804,6 +2805,7 @@ mod tests {
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
             self.called.store(true, Ordering::SeqCst);
             *self.repository_id.lock().await = input.repository_id;
+            *self.max_model_tokens.lock().await = input.max_model_tokens;
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
             Ok(crate::agent::turn_runtime::TurnRunOutput {
@@ -2840,6 +2842,7 @@ mod tests {
         let runtime = Arc::new(RecordingTurnRuntime {
             called: AtomicBool::new(false),
             repository_id: tokio::sync::Mutex::new(None),
+            max_model_tokens: tokio::sync::Mutex::new(None),
         });
         let deps = CoreRuntimeDeps::new(Some(pool), None, None)
             .with_turn_runtime(
@@ -3218,6 +3221,60 @@ mod tests {
             Some(expected_repository),
             "the resolved workspace repository identity must reach TaskTool"
         );
+
+        if let Some(value) = previous {
+            std::env::set_var("OPENCODE_GO_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENCODE_GO_API_KEY");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn headless_prompt_token_budget_reaches_turn_runtime() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous = std::env::var("OPENCODE_GO_API_KEY").ok();
+        std::env::set_var("OPENCODE_GO_API_KEY", "test-key-not-used");
+
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id =
+            seed_connection(&pool, ProviderKind::Other("opencode_go".to_string())).await;
+        seed_catalog(&pool, &connection_id, &["minimax-m3"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "minimax-m3",
+        )
+        .await;
+
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "req-headless-budget".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id,
+                    text: "bounded prompt".into(),
+                    plan_mode: false,
+                    human_shell_promotion_ids: Vec::new(),
+                    max_model_tokens: Some(300_000),
+                },
+            ))
+            .await
+            .expect("submit bounded headless prompt");
+        assert!(
+            matches!(response, CoreResponse::TurnAdmissionReceipt { ref receipt } if receipt.status == "accepted"),
+            "bounded prompt should be admitted: {response:?}"
+        );
+        assert!(runtime.called.load(Ordering::SeqCst));
+        assert_eq!(*runtime.max_model_tokens.lock().await, Some(300_000));
 
         if let Some(value) = previous {
             std::env::set_var("OPENCODE_GO_API_KEY", value);
