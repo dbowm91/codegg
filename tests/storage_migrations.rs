@@ -332,7 +332,7 @@ async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
 
     // This v81 fixture predates the Linux M005 preference column but already
     // contains the preference table. Keep its schema minimal so the upgrade
-    // proves the additive v83 migration runs after the queue v82 migration.
+    // proves the additive v84 migration runs after the queue v82 migration.
     sqlx::query(
         "CREATE TABLE runtime_preferences (principal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
     )
@@ -394,8 +394,8 @@ async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
         "latest migration must land exactly at the declared storage layout version"
     );
     assert_eq!(
-        final_version, 83,
-        "the network-intent migration follows v82"
+        final_version, 84,
+        "the network-intent migration follows v83"
     );
 
     let network_intent: i64 = sqlx::query_scalar(
@@ -404,7 +404,7 @@ async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
     .fetch_one(&pool)
     .await
     .expect("failed to inspect network-intent migration");
-    assert_eq!(network_intent, 1, "v83 adds the nullable network intent");
+    assert_eq!(network_intent, 1, "v84 adds the nullable network intent");
 
     // The column exists and is nullable.
     let run_at_type: String = sqlx::query_scalar(

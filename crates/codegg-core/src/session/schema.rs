@@ -271,6 +271,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 83 {
         migrate_and_record(pool, 83).await?;
     }
+    if current_version < 84 {
+        migrate_and_record(pool, 84).await?;
+    }
 
     Ok(())
 }
@@ -366,6 +369,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             81 => migrate_v81(&mut tx).await?,
             82 => migrate_v82(&mut tx).await?,
             83 => migrate_v83(&mut tx).await?,
+            84 => migrate_v84(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3726,7 +3730,7 @@ async fn migrate_v32(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 
 /// Linux execution isolation M005: persist the principal's explicit network
 /// intent. Missing values resolve to the legacy unrestricted behavior.
-async fn migrate_v83(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS {
         add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
     }
