@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability — Post-Audit Corrective Addendum
 
-Status: active planning; C001/C003/C004/C005/C006/C008 closed; C002 ready; C007 blocked.
+Status: active planning; C001–C006 and C008 closed; C007 active.
 Planning baseline: CodeGG `4c86bac2a608dd717be085247838fd2f37d81ab6` (main, 2026-10-19)
 Evidence: 2026-10-19 agent tool-surface exercise (Agent Findings 2); source review of the same main revision. This is reported runtime evidence, not a reproduced CI result.
 
@@ -81,7 +81,7 @@ These six bounded owner-specific slices may proceed on separate worktrees. Avoid
 | C004 | polish | `plans/implementation/agent-tool-use-operability-post-audit-corrective/004-task-and-todo-status-contracts.md` | closed | Model-visible TaskTool status/get/group and cross-session denial; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md`. |
 | C005 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/005-project-compatible-verify-defaults.md` | closed | Typed bounded Cargo scope, feature and CWD tests; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md`. |
 | C006 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/006-batch-permit-admission-liveness.md` | closed | Parent/subagent overlap, admission deadline race, and admitted native timeout with partial output; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md`. |
-| C007 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/007-real-agent-tool-trajectory-qualification.md` | ready | All strict predecessors including C002 and C008 are closed; run integrated production-path qualification and create the final closure record. |
+| C007 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/007-real-agent-tool-trajectory-qualification.md` | active | All strict predecessors including C002 and C008 are closed; integrated production-path qualification is in progress. |
 | C008 | infrastructure | `plans/implementation/agent-tool-use-operability-post-audit-corrective/008-shared-eggsearch-host-scoped-local-retrieval.md` | closed | Closure `plans/closure/agent-tool-use-operability-post-audit-corrective/008-status.md`; one shared Eggsearch child with authenticated CodeGG workspace scope, isolated bounded local views, real-child and AgentLoop A/B/A privacy proof, and quick verification. C002 ready; C007 still waits for C002. |
 
 ## 8. Cross-cutting requirements
