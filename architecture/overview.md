@@ -292,7 +292,7 @@ after reconciling the search-backend retirement with current `main`.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 244 | `tests/*.rs` |
+| Integration test files | 266 | `tests/*.rs` |
 | CI guard scripts | 53 | `scripts/check_*` |
 
 ## Feature gates
@@ -558,7 +558,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (215 files)
+├── tests/                      # Integration tests (266 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates

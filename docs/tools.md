@@ -265,6 +265,17 @@ sandboxes deny writes to ungranted sibling roots. Some native backends permit
 broad reads for tool compatibility, so scratch grants do not claim OS-level
 read confidentiality.
 
+On a native Linux host with Landlock ABI >= 3, this containment is qualified
+end to end: the granted shared root and the run's private root are writable
+while an ungranted sibling, another session's scratch, the scratch parent, an
+unrelated host temporary directory, and a symlink planted inside the workspace
+that points out of it are all refused by the kernel. The evidence is produced
+by `tests/linux_native_scratch_containment.rs`, which admits the delegated
+run through the real task, submission, and scheduler path and launches it
+through the real managed-process owner. A host that cannot obtain Landlock
+fails that qualification rather than skipping it. Other platforms are not
+covered by it.
+
 If a structured write targets a known host temp directory outside the
 authorized workspace and scratch roots, CodeGG suggests the corresponding
 path under the run's private scratch directory. The suggestion is not an

@@ -169,3 +169,46 @@ agent-private reclamation and is now closed at
 scratch milestone is registered. M003 remains conditionally closed for its
 native sandbox qualification conditions; its former “no successor” disposition
 is historical and does not block or imply another plan.
+
+## 15. Factual correction — Linux native scratch containment qualified (2026-10-19)
+
+This record's earlier statements that "Linux native containment" was
+unqualified beyond a hosted Linux unit suite are superseded for the
+**delegated scratch grant path** only. The post-closure corrective
+addendum's C001 milestone closed at
+`plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`
+with native evidence: implementation `2597ec9e` with the fixture correction
+`ea400ff7`, repository `CI` workflow
+run [39291133332](https://github.com/dbowm91/codegg/actions/runs/39291133332)
+on `ubuntu-latest`, adding `tests/linux_native_scratch_containment.rs`.
+
+On a native Linux host with Landlock ABI >= 3, an authenticated, admitted
+delegated run was shown to hold exactly the write roots its frozen grant
+snapshot authorizes: the run-private root and the explicitly granted shared
+root are writable, and the kernel refuses an ungranted sibling, another
+session's run-private root, the scratch parent, an unrelated host temporary
+directory, a pre-existing file outside the granted roots, a cross-boundary
+hard link or rename, and a symlink planted inside the workspace. The
+obtained status (Landlock, ABI >= 3, `no_new_privs`) was asserted on the
+same launch, and a defect-injection control proved the denials were not
+vacuous.
+
+What remains unqualified, and what this correction does **not** change:
+
+- **Windows Required-sandbox containment remains unqualified.** The owning
+  `plans/subsystems/windows-native-sandbox-roadmap.md` still records M004 as
+  blocked and states that constrained Windows production
+  `SandboxRequest::Required` stays unavailable. The corrective C002 stopped
+  at its own work-package-A condition and was recorded as a blocked closure
+  at `plans/closure/managed-agent-scratch-native-qualification-corrective/002-status.md`.
+- The historical M003 findings, the date-specific failed assertions, the
+  macOS-only evidence base, and the original conditional disposition are
+  **not** rewritten. M003 remains conditionally closed; only the Linux half
+  of its native-containment condition is now satisfied.
+- The Linux qualification covers the **filesystem** dimension only. It makes
+  no claim about process, IPC, or network isolation, and no claim about read
+  confidentiality — the read policy deliberately exposes curated toolchain
+  roots.
+- The historical Windows cleanup evidence (workflow `39262822248`, 11/11
+  lifecycle; 8/8 launcher) remains **lifecycle** evidence and is still not
+  containment evidence.

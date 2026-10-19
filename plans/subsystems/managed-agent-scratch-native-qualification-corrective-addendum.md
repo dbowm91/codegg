@@ -1,8 +1,8 @@
 # Managed Agent Scratch Native Qualification — Post-Closure Corrective Addendum
 
-Status: active planning — C001 ready; C002 blocked on independent Windows Required-backend qualification.
+Status: closed — C001 closed with native Linux evidence; C002 closed as blocked on the independent Windows Required backend.
 
-Planning baseline: `fb84bee63dda0b1c3407f377c695db99ec78324b` on `plan/managed-scratch-spaces` (2026-10-19); PR #128 open and currently mergeable. At this head, hosted CI `39262822255`, Windows process launcher `39262822248`, and Desktop E2E `39262822144` succeeded. Do not reintroduce already-corrected PR merge or private-scratch reclamation work.
+Planning baseline: `ea400ff7` on `plan/managed-scratch-spaces` (2026-10-19); PR #128 open and still unmerged. The C001 native Linux evidence was produced by the repository's existing `CI` workflow, run [39291133332](https://github.com/dbowm91/codegg/actions/runs/39291133332) on `ubuntu-latest` at that exact SHA. C002 stopped at work package A and was recorded as a blocked closure. Do not reintroduce already-corrected PR merge or private-scratch reclamation work.
 
 Source subsystem roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md`.
 Historical implementation and closure (do not rewrite their facts):
@@ -46,10 +46,12 @@ The M004 optional macOS `server,plugins,lsp-test-support` failures are documente
 - `src/scratch.rs` provides deterministic session/run-private roots and typed shared `ScratchId` paths, owner records, tombstone reclamation and symlink/junction/hardlink checks; `crates/codegg-core/src/agent_run.rs` persists authorized shared grants and attempt leases.
 - `src/managed_process.rs` wires scratch environment and authorized read/write paths into `SandboxRequest::Required`; Python and shell paths have demonstrated macOS behavior.
 - `tests/sandbox_containment.rs` has Linux Landlock negative fixtures for outside writes, truncation and link/rename, plus cross-platform `scratch_space_is_writable_so_tooling_still_works` and `delegated_shared_scratch_is_explicitly_granted_to_the_contained_child` using helper launch specs. Those latter tests do not alone prove actual authenticated **session → ToolBroker → scheduler → ManagedProcessService** grant propagation on Linux.
+- `tests/linux_native_scratch_containment.rs` is the C001 native Linux qualification fixture. It is a whole-file `cfg(target_os = "linux")` target, admits a delegated run through the real `TaskTool` → `JobSubmissionService` → `JobScheduler` path, rebuilds the effective scope from the durable `AgentRunRecord`, and launches it through the real `ManagedProcessService` and the real `codegg-sandbox-helper` with a spec that names only the workspace. A Linux host that cannot obtain Landlock **fails** the fixture instead of skipping it, so an unavailable qualification can never be counted as a satisfied one.
 - `src/security/sandbox/landlock.rs` requires ABI >=3, `no_new_privs`, and reports obtained backend status; Linux enhanced containment roadmap remains separately active. C001 may test existing Landlock, not implement that roadmap.
 - Windows shared cleanup **is implemented** after original M003 closure; M003's appended factual correction and M004 closure already cite successful native Windows lifecycle tests (11/11) and Windows launcher (8/8). Do not fabricate a missing Windows cleanup feature.
 - The existing Windows Required-sandbox enforcement path remains **unqualified/unsupported** under the independent `plans/subsystems/windows-native-sandbox-roadmap.md`. A passing scratch cleanup unit test is not native Required containment evidence.
 - Current `plan/managed-scratch-spaces` head CI and Desktop E2E passed; PR #128 is mergeable. No new PR reconciliation or generic regression-plan milestone is justified by that former blocker.
+- The C001 native Linux qualification ran in the repository's ordinary CI lane on the Linux runner: implementation `2597ec9e` with the fixture correction `ea400ff7`, run `39291133332`. The `pull_request` trigger did not start for that commit during the closure session, so the same existing workflow was dispatched explicitly on the branch ref; a dispatch checks out the reviewed tree rather than a synthetic merge commit, which is the stricter placement for this evidence. The `main` branch's own push run `39282749528` is red for an unrelated reason (`clippy::unnecessary_sort_by` in `crates/codegg-core/src/workspace_services.rs`, code that is not on this branch). PR #128 remains unmerged; no merge was performed by this milestone.
 
 Historical M003 requirement gap: **Linux native end-to-end scratch confinement and Windows Required-sandbox scratch confinement remain unqualified**. The previous M003 tests ran on an x86_64 macOS host; a Linux hosted unit suite and Windows ordinary launcher don't establish corresponding effective Requested→Obtained per-attempt native boundaries.
 
@@ -64,27 +66,29 @@ Qualification must identify OS/kernel/runner, Landlock ABI or Windows backend, h
 ```text
 M001/M002 closed, M003 conditional, M004 closed, existing Landlock ABI>=3
   |
-  +-- C001 Linux native scratch admission/containment qualification [ready]
+  +-- C001 Linux native scratch admission/containment qualification [closed]
   |      (hard: existing managed scratch; operational: capable Linux host)
   |
   +-- C002 Windows Required sandbox scratch qualification [blocked]
          (hard: independent Windows native Required filesystem backend qualification)
 ```
 
-C002 does not depend on C001; C001 closure cannot make an unavailable Windows backend available. Independent Windows scratch reclamation is already qualified and must not be reimplemented.
+C002 does not depend on C001; C001 closure cannot make an unavailable Windows backend available. Independent Windows scratch reclamation is already qualified and must not be reimplemented. C002 reached its own stop condition at work package A and was recorded as a blocked closure rather than started speculatively.
 
 ## 7. Milestones
 
 ### C001 — Native Linux Required scratch and delegated grant qualification
 
-Class: invariant. **Ready for handoff**, subject to operational availability of a native Linux host meeting Landlock ABI 3+.
+Class: invariant. **Closed** with native evidence.
 
 Plan: `plans/implementation/managed-agent-scratch-native-qualification-corrective/001-linux-native-scratch-containment-qualification.md`.
+Closure: `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`.
 Exit: actual model/process launch with authenticated session/child grant scope on Linux proves positive private/shared scratch and negative sibling/outside writes, with obtained Landlock status, concurrency/lease semantics and truthful documentation. A missing capable host means *blocked for evidence*, not passed.
+Result: met. Implementation `2597ec9e` with the fixture correction `ea400ff7`; native Linux evidence from the repository's existing `CI` workflow, run `39291133332` on `ubuntu-latest`. The delegated grant path is qualified on a real Landlock enforcement, the obtained status (Landlock, ABI >= 3, `no_new_privs`) is asserted, and a defect-injection control proves the denials are discriminating. A Linux host that cannot obtain Landlock **fails** the fixture rather than skipping it. Filesystem dimension only.
 
 ### C002 — Windows Required sandbox scratch compatibility and native proof
 
-Class: invariant. **Blocked** until `plans/subsystems/windows-native-sandbox-roadmap.md` delivers an accepted, implemented and natively qualified Required filesystem-writing backend contract.
+Class: invariant. **Blocked** until `plans/subsystems/windows-native-sandbox-roadmap.md` delivers an accepted, implemented and natively qualified Required filesystem-writing backend contract. Work package A was executed and found that contract absent, so the milestone stopped at its own stop condition and was recorded as a blocked closure: `plans/closure/managed-agent-scratch-native-qualification-corrective/002-status.md`.
 
 Plan: `plans/implementation/managed-agent-scratch-native-qualification-corrective/002-windows-required-scratch-native-proof.md`.
 Exit: genuine Windows Required process launch enforces only the authorized scratch roots and excludes siblings/outside paths, with claim-grade obtaining evidence; otherwise retain the conditional status. Existing Windows scratch cleanup tests remain accepted separately.
@@ -113,9 +117,11 @@ Linux CI kernel LSM availability, CI container/runner policy or inability to acq
 
 C001 and C002 each have accepted `plans/closure/managed-agent-scratch-native-qualification-corrective/00N-status.md` with native target evidence and stop-condition disposition; original M003 remains historically conditional, with later supplemental evidence appended/linked rather than its history overwritten. Only then may the corrected roadmap/registry advertise full Linux+Windows scoped native qualification. Any unavailable Required backend remains explicitly blocked.
 
+Met. C001 closed with native Linux evidence and C002 closed as blocked at its work-package-A stop condition; the original M003 received a factual correction recording the Linux qualification while its Windows condition, its historical findings and its conditional disposition were left intact. The corrected roadmap and registry therefore advertise the qualification **as it actually stands**: the Linux filesystem dimension is qualified, and the Windows Required backend remains explicitly blocked in its owning roadmap.
+
 ## 12. Milestone status
 
 | Milestone | Status | Implementation plan | Closure | Blocker |
 |---|---|---|---|---|
-| C001 | ready | `plans/implementation/managed-agent-scratch-native-qualification-corrective/001-linux-native-scratch-containment-qualification.md` | — | operational: Linux with available Landlock ABI>=3 for obtained evidence |
-| C002 | blocked | `plans/implementation/managed-agent-scratch-native-qualification-corrective/002-windows-required-scratch-native-proof.md` | — | hard: independently qualified Windows Required filesystem sandbox backend |
+| C001 | closed | `plans/implementation/managed-agent-scratch-native-qualification-corrective/001-linux-native-scratch-containment-qualification.md` | `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md` | — (discharged: native Linux Landlock ABI>=3 evidence, CI run `39291133332` at `ea400ff7`) |
+| C002 | blocked (stop condition reached; closure recorded) | `plans/implementation/managed-agent-scratch-native-qualification-corrective/002-windows-required-scratch-native-proof.md` | `plans/closure/managed-agent-scratch-native-qualification-corrective/002-status.md` | hard: independently qualified Windows Required filesystem sandbox backend |

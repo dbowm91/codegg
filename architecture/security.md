@@ -197,7 +197,9 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 `default_construction_defers_registry_building`.
 
 **Platform outcomes:**
-- Linux with Landlock ABI: `Enforced { backend: landlock, abi: Some(v) }`
+- Linux with Landlock ABI >= 3: `Enforced { backend: landlock, abi: Some(v) }` — the
+  delegated-scratch grant path is qualified natively; see "Native Linux scratch
+  containment" below
 - macOS: `Enforced { backend: seatbelt, abi: None, .. }`
 - Windows: managed finite processes receive Job Object lifecycle
   supervision, but no filesystem or network enforcement backend is registered;
@@ -312,6 +314,31 @@ restoring the session prevents deletion. Cleanup rechecks the deleted-session
 row under the SQLite writer lock before claiming the tree. Startup keyset-scans
 deleted sessions and re-arms cleanup after daemon restart. Transcripts,
 durable run results, and managed Git worktrees are outside the scratch tree.
+
+**Native Linux scratch containment (qualified).** The delegated-grant path is
+qualified on a native Linux host with Landlock ABI >= 3 by
+`tests/linux_native_scratch_containment.rs`. The fixture admits a delegated
+run through the real `TaskTool` → `JobSubmissionService` → `JobScheduler`
+path, rebuilds the effective scope from the durable `AgentRunRecord` exactly
+as the delegated worker does, and launches it through the real
+`ManagedProcessService` and the real `codegg-sandbox-helper`. The launch spec
+it hands over names only the workspace: every scratch write root is added by
+the production owner from the authorization scope, so the observed result
+proves the owner composed the grant rather than the test writing one. The
+child may write its run-private root and its explicitly granted shared root,
+and the kernel refuses an ungranted sibling, another session's run-private
+root, the scratch parent, an unrelated host temporary directory, a
+pre-existing file outside the granted roots, a cross-boundary hard link or
+rename, and a symlink planted inside the workspace that points out of it. The
+obtained status is asserted as Landlock with ABI >= 3 and `no_new_privs`; a
+host that cannot obtain Landlock **fails** the fixture rather than skipping
+it, so an unavailable qualification can never be counted as a satisfied one.
+The fixture also carries a defect-injection control: an artificially broad
+grant makes the same ungranted sibling writable, which is what makes the
+denials above non-vacuous. This qualifies the **filesystem** dimension only.
+It makes no claim about process, IPC, or network isolation, and it says
+nothing about a Windows host, where the Required backend is still absent.
+Closure: `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`.
 On Unix and Windows, shared-resource reclamation first atomically renames the
 managed directory to an opaque tombstone, validates its owner marker, and walks
 entries without following links. Unix quarantines symlinks, non-regular
