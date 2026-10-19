@@ -207,6 +207,14 @@ What the acceptance did and did not do:
   The isolated worktree remains the default placement for mutating agents,
   and accepted ADR-0002 and ADR-0032 are unmodified.
 
+*What happened next.* C002 closed on 2026-10-19 with the durable,
+generation-fenced checkout writer permit
+(`plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md`).
+**No writer is routed through it** — C003 and C004 are what do that — so the
+permit still fences nothing and no shared mutation is enabled. The decision
+this record describes was necessary for C002 to start; it was never, by
+itself, an enablement.
+
 The audit and decision package this decision rested on — the 48-root matrix,
 the two-axis policy matrix, the refusal contract, the lock order and the
 inventory guard — is unchanged and remains the contract C002–C006 implement

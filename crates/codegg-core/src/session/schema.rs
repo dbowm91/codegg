@@ -271,6 +271,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 83 {
         migrate_and_record(pool, 83).await?;
     }
+    if current_version < 84 {
+        migrate_and_record(pool, 84).await?;
+    }
 
     Ok(())
 }
@@ -366,6 +369,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             81 => migrate_v81(&mut tx).await?,
             82 => migrate_v82(&mut tx).await?,
             83 => migrate_v83(&mut tx).await?,
+            84 => migrate_v84(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3543,6 +3547,70 @@ async fn migrate_v83(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         )
         "#,
         "CREATE INDEX IF NOT EXISTS idx_agent_scratch_attempt_lease_attempt ON agent_scratch_attempt_lease(job_id, attempt_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Migration(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M005 writer-containment corrective C002: the durable checkout writer permit.
+///
+/// One row per managed worktree — the checkout is the unit of serialization, so
+/// the permit is keyed by the checkout, not by the writer. A writer that wants
+/// to write takes this row's token; a writer that does not hold it does not
+/// write.
+///
+/// The row is deliberately a **single** row per checkout rather than a table of
+/// leases: there is exactly one writer token per checkout, so there is exactly
+/// one place where "who may write right now" is decided. A separate lease table
+/// would make that question answerable in more than one place.
+///
+/// `revision` is the monotonic compare-and-swap counter, `owner_token` is the
+/// non-duplicable possession token, and `lease_generation` fences the row to
+/// the worktree lease generation it was granted under. Together they defeat a
+/// stale actor acting on a row it has not re-read — the ABA case.
+///
+/// `state` is a closed enum: `available`, `held`, `releasing`, `quarantined`.
+/// `quarantined` is terminal until an operator releases it; a lease deadline
+/// never frees a permit.
+async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS writer_permit (
+            worktree_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            repository_id TEXT,
+            workspace_id TEXT NOT NULL,
+            lease_generation INTEGER NOT NULL DEFAULT 1 CHECK (lease_generation >= 1),
+            group_id TEXT,
+            state TEXT NOT NULL CHECK (state IN ('available','held','releasing','quarantined')),
+            owner_principal_id TEXT,
+            owner_agent_run_id TEXT,
+            owner_group_id TEXT,
+            owner_attempt_id TEXT CHECK (owner_attempt_id IS NULL OR length(owner_attempt_id) <= 128),
+            owner_token TEXT CHECK (owner_token IS NULL OR length(owner_token) <= 64),
+            operation TEXT CHECK (operation IS NULL OR length(operation) <= 64),
+            revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+            idempotency_key TEXT CHECK (idempotency_key IS NULL OR length(idempotency_key) BETWEEN 1 AND 128),
+            request_fingerprint TEXT CHECK (request_fingerprint IS NULL OR length(request_fingerprint) <= 1024),
+            lease_expires_at_ms INTEGER,
+            quarantine_reason TEXT,
+            quarantine_detail TEXT CHECK (quarantine_detail IS NULL OR length(quarantine_detail) <= 512),
+            quarantined_at_ms INTEGER,
+            acquired_at_ms INTEGER,
+            updated_at_ms INTEGER NOT NULL DEFAULT 0,
+            CHECK (
+                (owner_principal_id IS NULL AND owner_token IS NULL)
+                OR (owner_principal_id IS NOT NULL AND owner_token IS NOT NULL)
+            )
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_writer_permit_state ON writer_permit(state)",
+        "CREATE INDEX IF NOT EXISTS idx_writer_permit_project ON writer_permit(project_id, state)",
+        "CREATE INDEX IF NOT EXISTS idx_writer_permit_group ON writer_permit(group_id)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

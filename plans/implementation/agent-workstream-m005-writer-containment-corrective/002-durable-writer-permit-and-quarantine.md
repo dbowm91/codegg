@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective C002 — Durable Fenced Checkout Writer Permit (Q1)
 
-Status: active — C001 strict closure met; ADR-0042 option B accepted 2026-10-19
+Status: closed — closure record `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md`
 Primary class: infrastructure / invariant
 Planning baseline: plan/agent-workstream-m005-writer-audit (2026-10-19 source audit; revalidate at execution).
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C002.
@@ -36,3 +36,32 @@ Commands: cargo test -p codegg-core [focused module], cargo test -p codegg [root
 ## Acceptance / stop / closure
 
 Q1 is closed only with proven generation-fenced *store and daemon consumer*, deterministic persistence/restart quarantine and race/tenant tests. C002 is not shared-write readiness. Stop on lease expiry automatic release, bypassable actor IDs, second scheduler, held-permit wait deadlock, unversioned schema or need to expose a bearer token to models. Write plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md and unblock C003 only after strict closure.
+
+## Delivered by
+
+- **Authority (codegg-core):** `crates/codegg-core/src/writer_permit.rs` — the
+  typed scope, the four-state machine, the durable store with its
+  single-owner CAS under a monotonic revision, the idempotency binding, the
+  evidence-gated release, the quarantine transitions, the operator recovery,
+  and the restart reconciliation.
+- **Shared write transaction:** `crates/codegg-core/src/storage/immediate.rs`
+  — the `BEGIN IMMEDIATE` primitive, extracted out of the user-prompt queue
+  store so both use one mechanism. `scripts/check_queue_write_transaction_shape.py`
+  follows it and still proves it rejects a deferred read-then-write path and a
+  closing rollback.
+- **Schema:** `migrate_v84` — the additive `writer_permit` table;
+  `STORAGE_LAYOUT_VERSION` 83 → 84.
+- **Daemon adapter:** `src/core/writer_permit.rs` — the authority resolution
+  over the worktree/group/team stores, the bounded per-checkout waiter, the
+  `WriterPermitGuard` holder contract, and the redacted operator surface.
+- **Wiring:** `src/core/runtime_deps.rs` (the daemon owns exactly one permit
+  service), `src/core/daemon_construct.rs` (startup reconciliation).
+- **Qualification:** `crates/codegg-core/tests/writer_permit.rs` (21 tests)
+  and `tests/writer_permit_service.rs` (12 tests).
+- **Documentation:** `architecture/writer_permit.md`, `architecture/overview.md`,
+  `.opencode/skills/scheduler/SKILL.md`.
+
+**What it did not do.** No writer is routed through the permit. No shared-write
+mode, no user-visible shared-mutation selector, and no user-facing enablement
+exists; the isolated worktree remains the default placement for mutating
+agents. Routing writers is C003 and C004.

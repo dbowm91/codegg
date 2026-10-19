@@ -49,6 +49,7 @@ pub mod session_runtime;
 pub mod session_selection;
 pub mod transport;
 pub mod work_order_coordinator;
+pub mod writer_permit;
 
 const CORE_EVENT_CHANNEL_CAPACITY: usize = 256;
 

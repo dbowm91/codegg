@@ -38,6 +38,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STORE = REPO_ROOT / "crates" / "codegg-core" / "src" / "session" / "user_prompt_queue.rs"
 
+# The `BEGIN IMMEDIATE` primitive itself lives in one shared module. C002
+# extracted it out of the queue store so the new writer-permit store could use
+# the same mechanism instead of forking a subtle one — and this guard follows
+# it, because the rollback contract is a property of the *primitive*, not of
+# whichever store happens to call it.
+IMMEDIATE_MODULE = (
+    REPO_ROOT / "crates" / "codegg-core" / "src" / "storage" / "immediate.rs"
+)
+
 DEFERRED_BEGIN = "self.pool.begin()"
 IMMEDIATE_BEGIN = "begin_immediate("
 
@@ -123,14 +132,25 @@ def _check_source(source: str) -> list[str]:
             f"not a constraint."
         )
 
-    # The immediate path must actually be immediate, not a renamed `begin()`.
-    if "BEGIN IMMEDIATE" not in source:
-        violations.append(
-            f"{IMMEDIATE_BEGIN} exists but never issues BEGIN IMMEDIATE; the "
-            f"transaction is deferred again."
-        )
-
     return violations
+
+
+def check_immediate_is_immediate() -> bool:
+    """The immediate path must actually be immediate, not a renamed `begin()`.
+
+    This lives with the shared primitive, because that is where the statement is
+    issued.
+    """
+    if not IMMEDIATE_MODULE.is_file():
+        print(f"  FAIL: immediate-transaction module not found at {IMMEDIATE_MODULE}")
+        return False
+    if "BEGIN IMMEDIATE" not in _read(IMMEDIATE_MODULE):
+        print(
+            f"  FAIL: {IMMEDIATE_BEGIN} exists but never issues BEGIN IMMEDIATE; "
+            f"the transaction is deferred again."
+        )
+        return False
+    return True
 
 
 def check_store() -> bool:
@@ -150,8 +170,14 @@ def check_rollback_contract() -> bool:
     in-memory database, where dropping the last connection destroys the
     database — the mutation suite caught that as an unowned-queue refusal
     turning into `no such table` two operations later.
+
+    The contract belongs to the shared `ImmediateWrite` primitive, so it is
+    checked where the primitive now lives.
     """
-    source = _read(STORE)
+    if not IMMEDIATE_MODULE.is_file():
+        print(f"  FAIL: immediate-transaction module not found at {IMMEDIATE_MODULE}")
+        return False
+    source = _read(IMMEDIATE_MODULE)
     ok = True
     if "impl Drop for ImmediateWrite" not in source:
         print("  FAIL: ImmediateWrite has no Drop, so a dropped future leaks its transaction")
@@ -196,9 +222,11 @@ def _self_test() -> int:
         return 1
     print("  ok: injected deferred read-then-write path rejected")
 
-    # Violation 2: a rollback that closes the connection.
-    closing = source.replace("SqliteTx::start_rollback(&mut conn);", "drop(conn.detach());")
-    if closing == source:
+    # Violation 2: a rollback that closes the connection. The contract lives in
+    # the shared primitive, so that is where the violation is injected.
+    primitive = _read(IMMEDIATE_MODULE)
+    closing = primitive.replace("SqliteTx::start_rollback(&mut conn);", "drop(conn.detach());")
+    if closing == primitive:
         print("  FAIL: self-test could not find the rollback call to replace")
         return 1
     match = re.search(r"impl Drop for ImmediateWrite.*?\n\}", closing, re.DOTALL)
@@ -223,6 +251,7 @@ def main() -> int:
 
     checks = [
         ("queue write paths take the write lock at BEGIN", check_store),
+        ("the immediate path issues BEGIN IMMEDIATE", check_immediate_is_immediate),
         ("an uncommitted queue transaction rolls back without closing", check_rollback_contract),
     ]
     failed = []

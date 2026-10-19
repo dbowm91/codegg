@@ -538,6 +538,35 @@ impl CoreDaemon {
             None
         };
 
+        // M005 corrective C002: a permit that was live when the daemon went
+        // down is an orphan — the process that held it is gone — so it is
+        // quarantined rather than freed. The holder's operation is never
+        // replayed: repairing metadata by re-running a mutation would be a
+        // second effect, not a repair.
+        let writer_permit_reconcile_handle = if deps.pool.is_some() {
+            tokio::runtime::Handle::try_current()
+                .ok()
+                .zip(deps.writer_permit_service.clone())
+                .map(|(handle, service)| {
+                    handle.spawn(async move {
+                        match service.reconcile_after_restart().await {
+                            Ok(records) if !records.is_empty() => {
+                                tracing::warn!(
+                                    count = records.len(),
+                                    "quarantined checkout writer permits left live by a previous daemon"
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                tracing::warn!(?error, "writer permit startup reconciliation failed");
+                            }
+                        }
+                    })
+                })
+        } else {
+            None
+        };
+
         Self {
             daemon_id,
             generation,
@@ -568,6 +597,7 @@ impl CoreDaemon {
             workspace_services,
             worktree_service,
             _worktree_reconcile_handle: worktree_reconcile_handle,
+            _writer_permit_reconcile_handle: writer_permit_reconcile_handle,
             eggpool_provisioner,
             selection_service,
             asset_refresh,

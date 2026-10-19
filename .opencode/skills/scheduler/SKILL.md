@@ -226,9 +226,36 @@ behaviour switch**: the only consumer is `JobScheduler::is_mandatory()`
 `enabled = false` is the only setting that rejects submission, and it does so
 explicitly rather than by falling back.
 
+## The checkout writer permit is NOT a scheduler permit
+
+M005 corrective C002 added a second, unrelated authority: the **checkout
+writer permit** (`crates/codegg-core/src/writer_permit.rs`,
+`src/core/writer_permit.rs`, `architecture/writer_permit.md`). It answers "who
+may write to this managed checkout right now" — the scheduler answers "may this
+job run right now".
+
+They are not interchangeable, and the scheduler's admission machinery **cannot**
+carry the writer permit:
+
+- The writer-bearing job kinds (`Shell`, `ManagedProcess`, `Test`, `Lint`,
+  `Python`, `ToolProgram`) have **empty** exclusivity-key sets, and only
+  `exclusive:`-prefixed keys conflict at all. A key-based permit would be a
+  no-op for exactly the writers it must protect.
+- The writer permit is **per checkout**, not per resource class. Two
+  checkouts write in parallel; a global worktree-mutation key would serialize
+  unrelated work.
+- The writer permit has its own **quarantine** semantics. An admission failure
+  is retryable; a quarantined checkout is parked until an operator releases it.
+
+So the writer permit has its own durable store, its own compare-and-swap, and
+its own bounded per-checkout waiter. Do not add it to `src/scheduler/`, and do
+not route it through `JobSubmissionService`. `scripts/check_scheduler_bypass.py`
+is the guard for the first; the second is a design rule, not a static check.
+
 ## See Also
 
 - `architecture/scheduler.md`, `architecture/jobs.md`
+- `architecture/writer_permit.md` — the checkout writer permit (C002)
 - `.opencode/skills/jobs/SKILL.md` — durable store, attempts, recovery
 - `.opencode/skills/permission/SKILL.md` — tool-permission boundaries
 - `docs/execution-ownership.md` + `docs/execution-ownership.toml` — the

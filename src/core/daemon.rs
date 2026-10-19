@@ -52,6 +52,9 @@ pub struct CoreDaemon {
     pub worktree_service: Arc<codegg_core::worktree_service::WorktreeService>,
     /// Bounded startup reconciliation against Git's actual worktree list.
     pub(crate) _worktree_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
+    /// M005 corrective C002: the startup reconciliation of checkout writer
+    /// permits. Held so the task is not detached.
+    pub(crate) _writer_permit_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
     /// Daemon-owned Eggpool provisioning service. It is present only for
     /// SQLite-backed daemons; legacy in-memory daemons retain compatibility.
     pub eggpool_provisioner: Option<Arc<crate::core::eggpool::EggpoolProvisioner>>,

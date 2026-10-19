@@ -45,3 +45,4 @@ pub mod workspace_services;
 pub mod workstream_claim;
 pub mod worktree;
 pub mod worktree_service;
+pub mod writer_permit;

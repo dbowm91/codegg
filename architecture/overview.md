@@ -187,6 +187,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Collaboration | Project-scoped channels, threads, mentions, edits, retention | [collaboration.md](collaboration.md) |
 | Presence | Ephemeral project-scoped presence — leases, heartbeat, expiry | [presence.md](presence.md) |
 | Workstream Claims | Durable group-scoped task/path/interface claims and prerequisite edges; intent only | [workstream_claims.md](workstream_claims.md) |
+| Checkout Writer Permit | Durable, generation-fenced per-checkout writer token; state machine, CAS, quarantine, bounded waiter; enables no writer yet | [writer_permit.md](writer_permit.md) |
 | Server | Axum HTTP/WS server (feature `server`) — remote TUI, REST, SSE, token auth | [server.md](server.md) |
 | Client | Remote TUI WebSocket client with resume/replay | [client.md](client.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | [exec.md](exec.md) |
@@ -228,7 +229,7 @@ Codegg follows a **library-first, MCP-second** tool architecture: durable tool d
 
 | Crate | Purpose |
 |-------|---------|
-| `codegg-core` | Domain types: agent convergence, authorization, audit, bus, decision semantics, error, goal, identity, jobs, memory, model profile, project catalog/discovery/storage, projection replay, provider connections, repository lineage, resilience, run store, session, snapshot, storage, task state, tool programs, workspace, workspace services, worktree |
+| `codegg-core` | Domain types: agent convergence, authorization, audit, bus, decision semantics, error, goal, identity, jobs, memory, model profile, project catalog/discovery/storage, projection replay, provider connections, repository lineage, resilience, run store, session, snapshot, storage, task state, tool programs, workspace, workspace services, worktree, writer permit |
 | `codegg-config` | Configuration schema, paths, loading, validation, watching |
 | `codegg-protocol` | `CoreRequest`/`CoreResponse`/`CoreEvent`, TUI frames, plugin DTOs, runtime asset DTOs |
 | `codegg-client` | Frontend-side native client and identity |
@@ -266,16 +267,19 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 Every count below was re-measured against the current tree on
 **2026-10-13**, each against its own listed `Source`. The tool-source,
 integration-test, and guard-script counts were remeasured on **2026-10-15**
-after reconciling the search-backend retirement with current `main`.
+after reconciling the search-backend retirement with current `main`. The rows
+the M005 corrective C002 moved — architecture docs, `codegg-core` modules,
+database tables, storage layout version, and integration test files — were
+remeasured against their own `Source` on **2026-10-19**.
 
 | Item | Count | Source |
 |------|-------|--------|
-| Architecture docs | 86 | `architecture/*.md` |
+| Architecture docs | 88 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
 | Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
 | Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
-| `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
+| `codegg-core` modules | 48 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
 | `CoreRequest` variants | 243 (219 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreResponse` variants | 158 | `crates/codegg-protocol/src/core.rs` |
@@ -287,12 +291,12 @@ after reconciling the search-backend retirement with current `main`.
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 31 (32 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 87 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 79 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 93 | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | 84 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 244 | `tests/*.rs` |
+| Integration test files | 267 | `tests/*.rs` |
 | CI guard scripts | 53 | `scripts/check_*` |
 
 ## Feature gates
@@ -435,6 +439,7 @@ Every architecture document in this directory, grouped by theme.
 - [Protocol](protocol.md) — shared request/response/event envelopes
 - [Workspace](workspace.md) — registry, execution context
 - [Workspace Services](workspace_services.md) — per-workspace bundles, migration
+- [Checkout Writer Permit](writer_permit.md) — durable generation-fenced writer token, quarantine, bounded waiter
 - [Jobs](jobs.md) — durable jobs, attempts, schedules, recovery
 - [Scheduler](scheduler.md) — admission control, fair queue, dispatch
 - [Session](session.md) — SQLite storage, message history

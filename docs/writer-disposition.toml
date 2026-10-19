@@ -9,12 +9,19 @@
 #   It is not a permission, a permit, a fence, or an enablement. No entry
 #   here authorizes any writer. `fenced-native` names a CANDIDATE for the
 #   successor milestones C002/C003 to consider -- it does not fence anything
-#   today, and no permit exists.
+#   today.
 #
 #   ADR-0042 option B was ACCEPTED on 2026-10-19. That acceptance unblocked
 #   C002 only; it enabled no writer, and C003-C006 remain blocked on their
 #   own predecessor closures. This manifest exists so that a new writer route
 #   cannot appear without someone deciding its disposition explicitly.
+#
+#   C002 has since shipped the checkout writer permit itself
+#   (crates/codegg-core/src/writer_permit.rs, src/core/writer_permit.rs).
+#   **No writer consults it yet** -- C003 and C004 are what route writers
+#   through it -- so the permit exists without fencing anything, and every
+#   disposition below is still a statement of intent rather than a fact about
+#   the running system.
 #
 # GUARD
 #   scripts/check_writer_disposition.py fails when a model-facing writer tool

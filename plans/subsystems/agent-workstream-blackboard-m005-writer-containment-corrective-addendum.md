@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective Addendum — Restricted Shared Checkout
 
-Status: active planning; C001 closed; C002 active (ADR-0042 accepted, option B); C003–C006 blocked. SerializedShared remains unavailable.
+Status: active planning; C001–C002 closed; C003 ready; C004–C006 blocked. SerializedShared remains unavailable.
 
 Planning baseline: branch plan/agent-workstream-m005-writer-audit inspected 2026-10-19, main ancestor 61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649. Revalidate exact branch head and mainline status before any implementation.
 
@@ -36,9 +36,9 @@ Independent M006 isolated session/worktree launch, M007 per-workspace build admi
                |
                +-- explicit acceptance of proposed ADR-0042   [HARD GATE — SATISFIED
                    |                                            2026-10-19, option B]
-                   +-- C002 durable fenced checkout permit Q1 [ACTIVE]
+                   +-- C002 durable fenced checkout permit Q1 [CLOSED]
                            |
-                           +-- C003 native file/Git writers Q2 [BLOCKED]
+                           +-- C003 native file/Git writers Q2 [READY]
                                    |
                                    +-- C004 non-broker sink mediation Q3 [BLOCKED]
                                            |
@@ -48,15 +48,15 @@ Independent M006 isolated session/worktree launch, M007 per-workspace build admi
                                            +-- C006 restricted end-to-end
                                                     Q1–Q5 / opt-in [BLOCKED: C004+C005]
 
-C001 may document and test negative current behavior without accepted ADR-0042. C002 implementation may now proceed under accepted ADR-0042, but no C002 implementation or product enablement may proceed on an unaccepted decision, and acceptance alone still enables nothing: C002–C006 must land and qualify before any shared mutation exists. C006 must not claim M005 strict closure if it cannot demonstrate a production path and native evidence.
+C001 may document and test negative current behavior without accepted ADR-0042. C002 implementation proceeded under accepted ADR-0042 and closed on 2026-10-19; no product enablement proceeded on it, and acceptance alone still enables nothing: C003–C006 must land and qualify before any shared mutation exists. C002 built the permit's authority; **no writer is routed through it yet**, so the permit exists without fencing anything. C006 must not claim M005 strict closure if it cannot demonstrate a production path and native evidence.
 
 ## Milestone contracts
 
 | Milestone | Primary class | Status | Objective | Hard gate |
 |---|---|---|---|---|
 | C001 | invariant / decision contract | closed | Explicit boundary proposal, canonical effect-sink inventory, pre-effect deny matrix and handoff decision record | M005 audit |
-| C002 | infrastructure / invariant | active | One durable CAS/generation-fenced permit with quarantine, contention and restart tests (Q1) | C001 closed + ADR-0042 accepted — **both met** |
-| C003 | invariant / capability | blocked | Final-effect file and typed Git write interposition without double acquisition/deadlock (Q2) | C002 closed |
+| C002 | infrastructure / invariant | closed | One durable CAS/generation-fenced permit with quarantine, contention and restart tests (Q1) | C001 closed + ADR-0042 accepted — **both met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md` |
+| C003 | invariant / capability | ready | Final-effect file and typed Git write interposition without double acquisition/deadlock (Q2) | C002 closed — **met** |
 | C004 | invariant / capability | blocked | Every other CodeGG project-root writer either holds permit or refuses; includes human CodeGG file APIs and workspace-local state (Q3) | C003 closed |
 | C005 | invariant / capability | blocked | Prevent unqualified direct/persistent process launch pre-effect; per-OS negative/proven lifecycle matrix (Q3–Q4) | C004 closed |
 | C006 | capability / closure | blocked | Real two-AgentRun restricted checkout, full Q1–Q5, restart, Git provenance, honest supported-OS opt-in or negative disposition | C004+C005 closed |

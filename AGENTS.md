@@ -213,6 +213,21 @@ change-triggered (`ls scripts/check_*` for the full list):
   ladder goes blind to a loop. The outer run bound is `ExecutionLimits::max_turns`, not the
   recovery ladder. A `ProgressSignal` variant with no producer is a claim, not a hook: `ChildAdvanced`
   sat hardcoded `false` at the only construction site until it was deleted.
+- The **checkout writer permit** is a third authority, and it is neither of the
+  two it resembles. The *worktree lease* says who owns a checkout; the
+  *scheduler* says whether a job may run; the permit says **who may write to
+  this checkout right now** (`codegg_core::writer_permit` +
+  `src/core/writer_permit.rs`, `architecture/writer_permit.md`). The scheduler's
+  exclusivity keys cannot carry it — the writer-bearing job kinds
+  (`Shell`/`ManagedProcess`/`Test`/`Lint`/`Python`/`ToolProgram`) have **empty**
+  key sets and only `exclusive:`-prefixed keys conflict at all — so the permit
+  has its own durable store, its own compare-and-swap, and its own bounded
+  per-checkout waiter. Two rules that are easy to get wrong: a permit is never
+  freed without **positive** quiescence evidence (unproven evidence quarantines
+  it, and a lease deadline never frees a live writer), and **dropping** a
+  `WriterPermitGuard` quarantines the permit rather than releasing it. Nothing
+  is routed through the permit yet — C003/C004 do that — so its presence
+  enables no shared mutation.
 - The **working strip row 0 is reserved unconditionally** and is the main buffer's only
   status surface. Its height is subtracted from the transcript (`session_layout` splits
   `prompt_height` against `Min(10)`), so gating it on turn state reflowed the transcript

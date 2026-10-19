@@ -16,10 +16,12 @@ have separate corrective handoffs in
 plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md
 (C001–C006), with executable plans under
 plans/implementation/agent-workstream-m005-writer-containment-corrective/.
-ADR-0042 option B was **accepted on 2026-10-19**, which unblocks C002 only
-and enables no shared mutation; C001 is closed with the restricted
-CodeGG-mediated writer profile and denial matrix, while C003–C006
-are blocked. Do **not** enable SerializedShared from this audit or treat
+ADR-0042 option B was **accepted on 2026-10-19**, which unblocked C002
+only and enabled no shared mutation; C001 is closed with the restricted
+CodeGG-mediated writer profile and denial matrix, and C002 is closed with
+the durable generation-fenced checkout writer permit. C003 is
+dependency-ready; C004–C006 are blocked. **No writer is routed through the
+permit yet**, so nothing is fenced. Do **not** enable SerializedShared from this audit or treat
 current global scheduler keys, request-scoped guards, or process-group
 cleanup as the missing checkout writer permit. M005 remains active; parent
 strict closure requires positively qualified Q1–Q5 and the corrective gates.

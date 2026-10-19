@@ -218,8 +218,8 @@ fn every_writer_tool_has_a_disposition_that_is_not_a_read() {
 /// The manifest is a contract, not an authority.
 ///
 /// C001 enables nothing. If a future edit gives the manifest an enabling
-/// vocabulary, this trips -- a permit must arrive with C002 and an accepted
-/// ADR-0042, not by editing a disposition table.
+/// vocabulary, this trips -- the permit arrived with C002 under an accepted
+/// ADR-0042, and the dispositions were not edited to accommodate it.
 #[test]
 fn the_disposition_manifest_grants_no_authority() {
     let raw = std::fs::read_to_string(manifest_path())
@@ -275,9 +275,9 @@ fn the_legacy_isolated_mutator_still_dispatches() {
         );
     }
 
-    // The restricted profile has no writer permit yet, so no catalog entry
-    // may claim one. C002 introduces the permit; until then this is empty
-    // by construction.
+    // C002 shipped the checkout writer permit, and deliberately did **not**
+    // put it in the tool catalog: C003 and C004 are what route writers
+    // through it. So no catalog entry may claim one yet.
     let permit_bearing = broker
         .catalog()
         .get("write")
@@ -285,6 +285,6 @@ fn the_legacy_isolated_mutator_still_dispatches() {
         .unwrap_or_default();
     assert!(
         !permit_bearing.contains("permit"),
-        "the catalog must not carry a shared-checkout permit before C002"
+        "the catalog must not carry a shared-checkout permit before C003 routes writers through it"
     );
 }
