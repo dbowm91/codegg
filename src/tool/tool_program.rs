@@ -423,6 +423,23 @@ impl ToolProgramTool {
             .workspace_id_for_root(&workspace_root)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let current_path_policy = submission
+            .workspace_path_policy_fingerprint_for_root(&workspace_root)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        if execution_context
+            .as_ref()
+            .and_then(|context| context.workspace_path_policy_id.as_deref())
+            != Some(current_path_policy.as_str())
+            || execution_context
+                .as_ref()
+                .and_then(|context| context.workspace_path_policy_revision.as_deref())
+                != Some(current_path_policy.as_str())
+        {
+            return Err(ToolError::Permission(
+                "accepted invocation workspace path policy is stale or mismatched".into(),
+            ));
+        }
 
         let invocation_key = execution_context
             .as_ref()

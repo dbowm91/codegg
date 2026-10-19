@@ -152,6 +152,22 @@ impl JobSubmissionService {
             .map_err(|e| JobSubmissionError::Workspace(e.to_string()))
     }
 
+    /// Resolve the current daemon-owned workspace path-policy identity for a
+    /// root. Tool Program uses this at its submission boundary to reject a
+    /// stale policy projection before persisting executable source or a job.
+    pub async fn workspace_path_policy_fingerprint_for_root(
+        &self,
+        root: &Path,
+    ) -> Result<String, JobSubmissionError> {
+        let workspace_id = self.workspace_id_for_root(root).await?;
+        let lease = self
+            .workspaces
+            .acquire(&workspace_id)
+            .await
+            .map_err(|e| JobSubmissionError::Workspace(e.to_string()))?;
+        Ok(lease.path_policy().authority_fingerprint())
+    }
+
     pub async fn submit(
         &self,
         key: Option<SubmissionKey>,

@@ -372,17 +372,17 @@ Three deadlines wrap one tool call and **must stay strictly ordered**:
 | `T + 5s` | broker watchdog (`BROKER_WATCHDOG_GRACE_MS`) | backstop for a tool whose own teardown wedges |
 | `T + 10s` | batch wrapper (`2 × TOOL_TIMEOUT_GRACE`) | last-resort backstop |
 
-The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
-around the whole invocation, so that field must be strictly greater than the
-tool's own deadline. It previously carried `exec_ctx.timeout_ms` unchanged, and
-with no `deadline` the broker resolved it to exactly `T` — arming a timer
-microseconds before the tool's own. The watchdog therefore *always* fired
-first, converting `partial_timeout_report()` into a bare "broker invocation
-timed out". That silently disabled `TOOL_TIMEOUT_GRACE`, `timeout_notice()`,
-`tail_bounded()` and `TIMEOUT_OUTPUT_BYTES` on the bash path: a simple
-`bash ls … | grep …` reported as an opaque timeout carrying no output and no
-indication of where it stopped. `broker_watchdog_timeout_ms` owns the ordering
-and is covered by `broker_watchdog_ordering_tests`.
+An inherited absolute deadline remains a hard cap on the broker watchdog. If
+that parent deadline arrives before the grace window, it takes precedence.
+
+The broker arms its invocation watchdog at `T + 5s` internally while keeping
+`BrokerInvocationContext::timeout_ms` at `T`; this lets the tool and its
+`ToolExecutionContext` share the same execution budget. Passing the grace
+duration through the context would lengthen the child process timeout itself,
+so a requested one-second command could run for six seconds. When the tool
+returns a typed timeout, the broker preserves its bounded diagnostic text,
+including `partial_timeout_report()` output, in the terminal timed-out value.
+The batch wrapper remains at `T + 10s` as a last-resort backstop.
 
 `AppEvent::ToolResult` is published per *batch*, not per tool, so a slow call
 freezes every sibling row in the chat area on "waiting for command/tool

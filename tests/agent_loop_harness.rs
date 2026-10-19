@@ -539,6 +539,51 @@ struct ParallelTool {
     barrier: Arc<Mutex<()>>,
 }
 
+struct BatchOwnerTool {
+    name: String,
+    owner_active: Arc<AtomicUsize>,
+    owner_peak: Arc<AtomicUsize>,
+    total_active: Arc<AtomicUsize>,
+    total_peak: Arc<AtomicUsize>,
+    rendezvous: Arc<tokio::sync::Barrier>,
+}
+
+fn update_peak(peak: &AtomicUsize, current: usize) {
+    let mut seen = peak.load(Ordering::SeqCst);
+    while current > seen {
+        match peak.compare_exchange(seen, current, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => seen = actual,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for BatchOwnerTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        "Tracks the owner of a concurrent batch admission slot"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object", "properties":{}})
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        let owner_now = self.owner_active.fetch_add(1, Ordering::SeqCst) + 1;
+        let total_now = self.total_active.fetch_add(1, Ordering::SeqCst) + 1;
+        update_peak(&self.owner_peak, owner_now);
+        update_peak(&self.total_peak, total_now);
+        self.rendezvous.wait().await;
+        self.owner_active.fetch_sub(1, Ordering::SeqCst);
+        self.total_active.fetch_sub(1, Ordering::SeqCst);
+        Ok(self.name.clone())
+    }
+}
+
 impl ParallelTool {
     fn new(
         name: String,
@@ -4013,6 +4058,233 @@ async fn test_max_parallel_tools_enforcement() {
     assert_no_orphan_tool_results(&last.messages);
 }
 
+#[tokio::test]
+async fn parent_and_subagent_batches_keep_independent_permit_owners() {
+    let total_active = Arc::new(AtomicUsize::new(0));
+    let total_peak = Arc::new(AtomicUsize::new(0));
+    let rendezvous = Arc::new(tokio::sync::Barrier::new(4));
+    let parent_active = Arc::new(AtomicUsize::new(0));
+    let parent_peak = Arc::new(AtomicUsize::new(0));
+    let child_active = Arc::new(AtomicUsize::new(0));
+    let child_peak = Arc::new(AtomicUsize::new(0));
+    let mut parent_registry = ToolRegistry::new();
+    let mut child_registry = ToolRegistry::new();
+    for index in 0..2 {
+        parent_registry.register(BatchOwnerTool {
+            name: format!("parent_batch_{index}"),
+            owner_active: parent_active.clone(),
+            owner_peak: parent_peak.clone(),
+            total_active: total_active.clone(),
+            total_peak: total_peak.clone(),
+            rendezvous: rendezvous.clone(),
+        });
+        child_registry.register(BatchOwnerTool {
+            name: format!("subagent_batch_{index}"),
+            owner_active: child_active.clone(),
+            owner_peak: child_peak.clone(),
+            total_active: total_active.clone(),
+            total_peak: total_peak.clone(),
+            rendezvous: rendezvous.clone(),
+        });
+    }
+    let config = Config {
+        server: Some(ServerConfig {
+            max_parallel_tools: Some(2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let names = [
+        "parent_batch_0",
+        "parent_batch_1",
+        "subagent_batch_0",
+        "subagent_batch_1",
+    ];
+    let permission_checker = || {
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: names
+                .iter()
+                .map(|name| codegg::permission::ToolRule {
+                    tool: (*name).into(),
+                    level: PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: None,
+                })
+                .collect(),
+            path_rules: vec![],
+        })
+    };
+    let make_provider = |prefix: &str| {
+        let mut calls: Vec<_> = (0..2)
+            .map(|index| {
+                let name = format!("{prefix}_batch_{index}");
+                ChatEvent::ToolCall(ToolCall {
+                    id: format!("{prefix}-call-{index}").into(),
+                    name: name.into(),
+                    arguments: serde_json::json!({}),
+                })
+            })
+            .collect();
+        calls.push(ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        });
+        Box::new(ScriptedProvider::new(vec![
+            calls,
+            vec![
+                ChatEvent::TextDelta("done".to_string().into()),
+                ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ]))
+    };
+    let root = std::env::current_dir()
+        .expect("workspace")
+        .canonicalize()
+        .expect("canonical workspace");
+    let make_loop = |name: &str, mode: codegg::agent::AgentMode, provider, registry| {
+        AgentLoop::new(
+            vec![Agent {
+                git_read_only: false,
+                name: name.into(),
+                role: None,
+                description: name.into(),
+                mode,
+                mode_name: None,
+                model: None,
+                variant: None,
+                temperature: None,
+                top_p: None,
+                color: None,
+                steps: None,
+                system_prompt: None,
+                permissions: Default::default(),
+                hidden: false,
+                thinking_budget: None,
+                reasoning_effort: None,
+                fallback_model: None,
+                runtime_kind: None,
+            }],
+            provider,
+            permission_checker(),
+            registry,
+            config.clone(),
+            None,
+            None,
+            Arc::new(InMemoryArtifactStore::new()),
+            root.clone(),
+            format!("{name}-session"),
+        )
+    };
+    let mut parent = make_loop(
+        "build",
+        codegg::agent::AgentMode::Primary,
+        make_provider("parent"),
+        parent_registry,
+    );
+    let mut subagent = make_loop(
+        "subagent",
+        codegg::agent::AgentMode::Subagent,
+        make_provider("subagent"),
+        child_registry,
+    );
+    subagent.set_session_id("build-session");
+    attach_test_workspace_authority(&mut parent, &root).await;
+    attach_test_workspace_authority(&mut subagent, &root).await;
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            parent.run(make_chat_request("parent batch")),
+            subagent.run(make_chat_request("subagent batch")),
+        )
+    })
+    .await
+    .expect("both batches must make progress");
+    assert!(result.0.is_ok(), "parent failed: {:?}", result.0.err());
+    assert!(result.1.is_ok(), "subagent failed: {:?}", result.1.err());
+    assert_eq!(parent_peak.load(Ordering::SeqCst), 2);
+    assert_eq!(child_peak.load(Ordering::SeqCst), 2);
+    assert_eq!(total_peak.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn admitted_native_command_timeout_preserves_partial_output_in_agent_transcript() {
+    let root = std::env::current_dir()
+        .expect("workspace")
+        .canonicalize()
+        .expect("canonical workspace");
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        codegg::tool::bash::BashTool::new()
+            .with_workspace_root(root)
+            .with_sandbox_profile(
+                codegg_core::approval::SandboxProfile::FullHost,
+                &std::env::current_dir().expect("workspace"),
+            ),
+    );
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "native-timeout-partial".to_string().into(),
+                name: "bash".to_string().into(),
+                arguments: serde_json::json!({
+                    "command": "printf C006-PARTIAL-OUTPUT; sleep 5",
+                    "timeout": 1
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("observed timeout output".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent = build_test_agent_loop(Box::new(provider.clone()), registry).await;
+    agent.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        agent.run(make_chat_request("run a bounded native command")),
+    )
+    .await
+    .expect("admitted timeout should remain bounded");
+    assert!(result.is_ok(), "agent turn failed: {result:?}");
+    let requests = provider.get_requests().await;
+    assert!(
+        requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .any(|message| {
+                matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "native-timeout-partial"
+                && content.as_ref().contains("C006-PARTIAL-OUTPUT")
+                && content.as_ref().contains("timed out"))
+            }),
+        "the native timeout must reach the model with partial output: {:?}",
+        requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .filter_map(|message| match message {
+                Message::Tool {
+                    tool_call_id,
+                    content,
+                } if tool_call_id.as_ref() == "native-timeout-partial" => {
+                    Some(content.as_ref().to_string())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
 // =============================================================================
 // Packet 10: Task Tool Integration With Subagents
 // =============================================================================
@@ -4352,6 +4624,637 @@ async fn test_task_tool_integration_with_subagent() {
     // We can verify by trying to get a task (even if we don't know the ID,
     // the fact that the tool returned successfully means it was created)
     // For now, just verify the tool result is in the transcript (already done above)
+}
+
+#[tokio::test]
+async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visible() {
+    use codegg::agent::run_control::RunControlService;
+    use codegg::tool::task::TaskStore;
+    use codegg_core::agent_run::{
+        AgentRunBudget, AgentRunStore, AgentRunTerminalOutcome, InMemoryAgentRunStore, NewAgentRun,
+        NewAgentTask,
+    };
+    use codegg_core::agent_run_group::{
+        AgentRunGroupOwner, AgentRunGroupService, NewAgentRunGroup, RunJoinPolicy,
+    };
+    use codegg_core::identity::{AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId};
+    use codegg_core::workspace::WorkspaceId;
+
+    let session = "task-contract-session";
+    let turn = "task-contract-turn";
+    let workspace = WorkspaceId::new_unchecked("task-contract-workspace");
+    let task_id = AgentTaskId::new();
+    let run_id = AgentRunId::new();
+    let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+    let _accepted = runs
+        .create_or_get(
+            NewAgentTask {
+                task_id: task_id.clone(),
+                parent_task_id: None,
+                originating_session_id: session.into(),
+                originating_turn_id: Some(turn.into()),
+                project_id: ProjectId::new(),
+                repository_id: None,
+                workspace_id: workspace.clone(),
+                requested_agent: "subagent".into(),
+                delegation_key: "task-contract-delegation".into(),
+                request_fingerprint: "task-contract-request".into(),
+                description: "completed fixture child".into(),
+            },
+            NewAgentRun {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                depth: 1,
+                workspace_id: workspace,
+                agent_name: "subagent".into(),
+                agent_digest: Some("fixture-agent-digest".into()),
+                provider: "scripted".into(),
+                model: "fixture-model".into(),
+                authority_digest: "fixture-authority".into(),
+                budget: AgentRunBudget::default(),
+            },
+        )
+        .await
+        .expect("seed durable run");
+    runs.transition_task(&task_id, codegg_core::agent_run::AgentTaskStatus::Queued)
+        .await
+        .expect("queue task");
+    runs.transition(&run_id, codegg_core::agent_run::AgentRunStatus::Queued)
+        .await
+        .expect("queue run");
+    runs.transition(&run_id, codegg_core::agent_run::AgentRunStatus::Preparing)
+        .await
+        .expect("prepare run");
+    runs.transition(&run_id, codegg_core::agent_run::AgentRunStatus::Running)
+        .await
+        .expect("start run");
+    let completed = runs
+        .finish(
+            &run_id,
+            AgentRunTerminalOutcome::Completed,
+            Some("fixture-result-private-marker".into()),
+            None,
+            None,
+        )
+        .await
+        .expect("complete run");
+    let groups = AgentRunGroupService::in_memory(runs.clone());
+    let group_id = AgentRunGroupId::new();
+    groups
+        .create(NewAgentRunGroup {
+            group_id: group_id.clone(),
+            root_run_id: completed.root_run_id.clone(),
+            owner_run_id: run_id.clone(),
+            owner: AgentRunGroupOwner::Turn {
+                session_id: session.into(),
+                turn_id: turn.into(),
+            },
+            member_run_ids: vec![run_id.clone()],
+            join_policy: RunJoinPolicy::All,
+            cancel_remaining_on_satisfaction: false,
+            idempotency_key: "task-contract-group".into(),
+        })
+        .await
+        .expect("seed group");
+
+    let task_tool = TaskTool::new(
+        Arc::new(tokio::sync::Mutex::new(TaskStore::new())),
+        None,
+        Some(session.into()),
+        vec![],
+    )
+    .with_agent_run_store(runs.clone())
+    .with_run_control_opt(Some(RunControlService::in_memory(runs.clone())))
+    .with_run_group_service(Some(groups.clone()))
+    .with_turn_owner(session.into(), turn.into())
+    .with_project_context(None, None, Some(turn.into()));
+    let mut registry = ToolRegistry::new();
+    registry.register(task_tool);
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-status".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"status", "run_id":run_id}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-wait".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"wait", "run_id":run_id, "timeout_ms":10}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-get".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"get", "task_id":task_id}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-group-status".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"status_group", "group_id":group_id}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-group-wait".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"wait_group", "group_id":group_id, "timeout_ms":10}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("retrieval complete".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent = build_test_agent_loop(Box::new(provider.clone()), registry).await;
+    agent.set_session_id(session);
+    assert!(agent
+        .run(make_chat_request("inspect the delegated task"))
+        .await
+        .is_ok());
+    let requests = provider.get_requests().await;
+    let tool_results: Vec<_> = requests
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .filter_map(|message| match message {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => Some((tool_call_id.to_string(), content.to_string())),
+            _ => None,
+        })
+        .collect();
+    for id in [
+        "task-status",
+        "task-wait",
+        "task-get",
+        "task-group-status",
+        "task-group-wait",
+    ] {
+        assert!(
+            tool_results.iter().any(|(call_id, _)| call_id == id),
+            "missing result for {id}: {tool_results:?}"
+        );
+    }
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-get" && output.contains("fixture-result-private-marker")));
+    assert!(
+        tool_results
+            .iter()
+            .any(|(id, output)| id == "task-status" && output.contains("Status: completed")),
+        "status output was not completed: {tool_results:?}"
+    );
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-wait" && output.contains("Status: completed")));
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-group-status" && output.contains("Status: completed")));
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-group-wait" && output.contains("Status: completed")));
+
+    let attacker_tool = TaskTool::new(
+        Arc::new(tokio::sync::Mutex::new(TaskStore::new())),
+        None,
+        Some("other-session".into()),
+        vec![],
+    )
+    .with_agent_run_store(runs.clone())
+    .with_run_control_opt(Some(RunControlService::in_memory(runs)))
+    .with_run_group_service(Some(groups))
+    .with_turn_owner("other-session".into(), "other-turn".into());
+    let mut attacker_registry = ToolRegistry::new();
+    attacker_registry.register(attacker_tool);
+    let attacker_provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "cross-session-get".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"get", "task_id":task_id}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("done".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut attacker =
+        build_test_agent_loop(Box::new(attacker_provider.clone()), attacker_registry).await;
+    attacker.set_session_id("other-session");
+    assert!(attacker
+        .run(make_chat_request("try to inspect another session's task"))
+        .await
+        .is_ok());
+    let requests = attacker_provider.get_requests().await;
+    let denied = requests
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .any(|message| {
+            matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "cross-session-get"
+                && content.as_ref().contains("not found")
+                && !content.as_ref().contains("fixture-result-private-marker"))
+        });
+    assert!(
+        denied,
+        "cross-session get must return not-found without exposing task result"
+    );
+}
+
+#[tokio::test]
+async fn tool_program_foreground_and_background_run_through_agent_broker_and_scheduler() {
+    use codegg::scheduler::tool_program_executor::ToolProgramExecutor;
+    use codegg::scheduler::{
+        JobScheduler, JobSubmissionService, ResolvedSchedulerConfig, SchedulerShutdownMode,
+    };
+    use codegg::tool::tool_program::ToolProgramTool;
+    use codegg_core::jobs::{DaemonGeneration, InMemoryJobStore, JobKind, JobState, JobStore};
+    use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
+    use codegg_core::workspace_services::{
+        ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
+    };
+
+    let root = tempfile::tempdir().expect("workspace fixture");
+    let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+        .await
+        .expect("workspace registry");
+    let workspace = workspace_registry
+        .get_or_register(root.path())
+        .await
+        .expect("workspace");
+    let workspace_services = WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(ProductionWorkspaceServicesFactory),
+        WorkspaceServicePolicy::default(),
+    );
+    let workspace_lease = workspace_services
+        .acquire(&workspace.id)
+        .await
+        .expect("workspace lease");
+
+    let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let scheduler = JobScheduler::new(
+        job_store.clone(),
+        workspace_services.clone(),
+        ResolvedSchedulerConfig::default(),
+        DaemonGeneration::new_unchecked("agent-tool-program-test"),
+    );
+    let submission = JobSubmissionService::new(
+        job_store.clone(),
+        scheduler.clone(),
+        workspace_services.clone(),
+        DaemonGeneration::new_unchecked("agent-tool-program-test"),
+    );
+    scheduler
+        .register_executor_sync(Arc::new(
+            ToolProgramExecutor::default().with_submission(submission.clone()),
+        ))
+        .expect("register native Tool Program executor");
+    let scheduler_task = scheduler.spawn_run();
+
+    let mut tools = ToolRegistry::with_defaults();
+    tools.register(ToolProgramTool::new().with_submission(submission.clone()));
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "tool-program-foreground".to_string().into(),
+                name: "tool_program".to_string().into(),
+                arguments: serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "foreground"
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "tool-program-background".to_string().into(),
+                name: "tool_program".to_string().into(),
+                arguments: serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "background"
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("complete".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent = AgentLoop::new(
+        vec![Agent {
+            git_read_only: false,
+            name: "build".into(),
+            role: None,
+            description: "test agent".into(),
+            mode: codegg::agent::AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: Default::default(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }],
+        Box::new(provider.clone()),
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        }),
+        tools,
+        Config::default(),
+        None,
+        None,
+        Arc::new(InMemoryArtifactStore::new()),
+        root.path().to_path_buf(),
+        "tool-program-session".into(),
+    );
+    agent.set_workspace_id(workspace.id.clone());
+    agent.set_workspace_services_lease(workspace_lease);
+
+    let result = agent
+        .run(make_chat_request("run a restricted arithmetic program"))
+        .await;
+    assert!(result.is_ok(), "agent turn failed: {result:?}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let jobs = loop {
+        let jobs = job_store
+            .list_job_records(codegg_core::jobs::JobStoreQuery {
+                kinds: vec![JobKind::ToolProgram],
+                ..Default::default()
+            })
+            .await
+            .expect("list Tool Program jobs");
+        if jobs.len() == 2 && jobs.iter().all(|job| job.state.is_terminal()) {
+            break jobs;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Tool Program jobs did not reach terminal states: {jobs:?}; results: {:?}",
+            provider
+                .get_requests()
+                .await
+                .iter()
+                .flat_map(|request| request.messages.iter())
+                .filter_map(|message| match message {
+                    Message::Tool {
+                        tool_call_id,
+                        content,
+                    } => {
+                        Some((tool_call_id.to_string(), content.to_string()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(
+        jobs.len(),
+        2,
+        "expected foreground and background scheduler jobs"
+    );
+    assert!(jobs.iter().all(|job| job.state == JobState::Completed));
+    let requests = provider.get_requests().await;
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.messages.iter().any(|message| {
+                matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "tool-program-foreground"
+                && content.as_ref().contains("program status: completed"))
+            }) && requests
+                .iter()
+                .flat_map(|request| request.messages.iter())
+                .any(|message| {
+                    matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "tool-program-background"
+                && content.as_ref().contains("submitted"))
+                })),
+        "model transcript must contain the structured native result: {:?}",
+        requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .filter_map(|message| match message {
+                Message::Tool {
+                    tool_call_id,
+                    content,
+                } => {
+                    Some((tool_call_id.to_string(), content.to_string()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+
+    let denied_provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "tool-program-denied".to_string().into(),
+                name: "tool_program".to_string().into(),
+                arguments: serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "foreground"
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("denied as requested".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut denied_tools = ToolRegistry::new();
+    denied_tools.register(ToolProgramTool::new().with_submission(submission.clone()));
+    let mut denied_agent = AgentLoop::new(
+        vec![Agent {
+            git_read_only: false,
+            name: "build".into(),
+            role: None,
+            description: "test agent".into(),
+            mode: codegg::agent::AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: Default::default(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }],
+        Box::new(denied_provider.clone()),
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![codegg::permission::ToolRule {
+                tool: "tool_program".into(),
+                level: PermissionLevel::Deny,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: vec![],
+        }),
+        denied_tools,
+        Config::default(),
+        None,
+        None,
+        Arc::new(InMemoryArtifactStore::new()),
+        root.path().to_path_buf(),
+        "tool-program-denied-session".into(),
+    );
+    denied_agent.set_workspace_id(workspace.id.clone());
+    denied_agent.set_workspace_services_lease(
+        workspace_services
+            .acquire(&workspace.id)
+            .await
+            .expect("denied workspace lease"),
+    );
+    assert!(denied_agent
+        .run(make_chat_request("attempt a denied Tool Program"))
+        .await
+        .is_ok());
+    let after_deny = job_store
+        .list_job_records(codegg_core::jobs::JobStoreQuery {
+            kinds: vec![JobKind::ToolProgram],
+            ..Default::default()
+        })
+        .await
+        .expect("list jobs after denied invocation");
+    assert_eq!(
+        after_deny.len(),
+        2,
+        "denied call must not create a scheduler job"
+    );
+    assert!(denied_provider
+        .get_requests()
+        .await
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .any(|message| matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "tool-program-denied" && content.as_ref().contains("denied"))));
+
+    let manifest_registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        workspace_root: Some(root.path().to_path_buf()),
+        ..Default::default()
+    });
+    let manifest_broker = codegg::tool::broker::ToolBroker::new(&manifest_registry);
+    let manifest = codegg::tool::tool_program_context::resolve_contract_snapshot(
+        &manifest_broker,
+        &["read".to_string()],
+    )
+    .expect("resolve frozen read manifest");
+    let path_policy = submission
+        .workspace_path_policy_fingerprint_for_root(root.path())
+        .await
+        .expect("current path policy");
+    let accepted_context = || {
+        let mut context = codegg::tool::backend::ToolExecutionContext::with_backend(
+            codegg::tool::backend::ToolBackendKind::Native,
+        );
+        context.session_id = Some("tool-program-negative-session".into());
+        context.cwd = root.path().to_path_buf();
+        context.invocation_key = Some("negative-authority-fixture".into());
+        context.decision_id = Some("accepted-decision-fixture".into());
+        context.decision_outcome = Some("allowed".into());
+        context.workspace_path_policy_id = Some(path_policy.clone());
+        context.workspace_path_policy_revision = Some(path_policy.clone());
+        context.permission_policy_revision = Some("policy-fixture".into());
+        context.principal_identity = Some("fixture-agent".into());
+        context.caller_class = Some("agent".into());
+        context.max_effect_class = Some("read_only".into());
+        context.decision_issued_at = Some(chrono::Utc::now().timestamp_millis());
+        context.program_contract_snapshot = Some(manifest.clone());
+        context
+    };
+    let invalid_authorities = [
+        ("missing decision", 0),
+        ("mismatched workspace policy", 1),
+        ("revoked decision", 2),
+        ("expired decision", 3),
+    ];
+    for (case, kind) in invalid_authorities {
+        let mut context = accepted_context();
+        match kind {
+            0 => context.decision_id = None,
+            1 => context.workspace_path_policy_revision = Some("stale-policy".into()),
+            2 => context.decision_revoked_at = Some(chrono::Utc::now().timestamp_millis()),
+            3 => context.decision_expires_at = Some(chrono::Utc::now().timestamp_millis() - 1),
+            _ => unreachable!(),
+        }
+        let rejected = codegg::tool::tool_program::ToolProgramTool::new()
+            .with_submission(submission.clone())
+            .execute_structured(
+                serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "foreground"
+                }),
+                Some(context),
+            )
+            .await;
+        assert!(rejected.is_err(), "{case} authority must be refused");
+    }
+    let after_invalid_authorities = job_store
+        .list_job_records(codegg_core::jobs::JobStoreQuery {
+            kinds: vec![JobKind::ToolProgram],
+            ..Default::default()
+        })
+        .await
+        .expect("list jobs after invalid authority cases");
+    assert_eq!(
+        after_invalid_authorities.len(),
+        2,
+        "invalid authority must not create executable jobs"
+    );
+    scheduler
+        .shutdown(SchedulerShutdownMode::ImmediateInterrupt)
+        .await;
+    scheduler_task.abort();
 }
 
 #[tokio::test]
