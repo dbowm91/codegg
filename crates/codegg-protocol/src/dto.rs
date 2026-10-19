@@ -115,6 +115,195 @@ impl<'de> Deserialize<'de> for ExecutionTargetDto {
     }
 }
 
+/// How strongly a remote resource limit must hold on the node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteLimitEnforcementDto {
+    /// The node must enforce the limit or the submission is refused.
+    Required,
+    /// The node may apply the limit; a node that cannot says so.
+    BestEffort,
+}
+
+/// One remote resource limit on the wire.
+///
+/// The unit is carried by the *field* that holds this value, never by the
+/// value itself:
+///
+/// - `memory_bytes` — bytes of resident memory.
+/// - `cpu_quota_milli_percent` — milli-percent of one CPU's quota. This is
+///   **not** a CPU-time budget: `1000` means one full CPU (`100.0%`).
+/// - `pids` — process/thread count.
+///
+/// This is a physically-unit limit, deliberately distinct from the
+/// abstract scheduler tokens (`cpu_weight`, `memory_mb_hint`) carried by
+/// the job's resource request. The two never convert into one another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RemoteResourceLimitDto {
+    /// The limit value in the dimension's own unit.
+    pub value: u64,
+    /// How strongly the limit must hold.
+    pub enforcement: RemoteLimitEnforcementDto,
+}
+
+impl RemoteResourceLimitDto {
+    /// Decode a wire value into a limit without ever failing.
+    ///
+    /// A value that is absent, not a number, or not an unsigned integer
+    /// decodes to `0`, which the daemon refuses: a limit of zero is not
+    /// "unlimited", it is an invalid limit. An unrecognized `enforcement`
+    /// keyword decodes to `required` — the stricter reading — so an
+    /// unknown keyword can never quietly weaken a limit. An unrecognized
+    /// *key* is refused as well, so a credential-bearing locator cannot
+    /// ride along inside a limit.
+    pub fn from_json_value(value: &serde_json::Value) -> Self {
+        let raw = value.as_object();
+        if let Some(raw) = raw {
+            let unknown: Vec<&str> = raw
+                .keys()
+                .map(String::as_str)
+                .filter(|key| !matches!(*key, "value" | "enforcement"))
+                .collect();
+            if !unknown.is_empty() {
+                return Self {
+                    value: 0,
+                    enforcement: RemoteLimitEnforcementDto::Required,
+                };
+            }
+        }
+        let limit = raw.and_then(|object| object.get("value"));
+        let value = limit.and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let enforcement = match raw
+            .and_then(|object| object.get("enforcement"))
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("best_effort") => RemoteLimitEnforcementDto::BestEffort,
+            _ => RemoteLimitEnforcementDto::Required,
+        };
+        Self { value, enforcement }
+    }
+}
+
+impl<'de> Deserialize<'de> for RemoteResourceLimitDto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&value))
+    }
+}
+
+/// A set of remote resource limits on the wire.
+///
+/// An absent dimension means the dimension is *not requested*. The whole
+/// set is optional: omitting it preserves the pre-M003 behavior of running
+/// remote work without resource limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum RemoteResourceLimitsDto {
+    /// A well-formed set of limits.
+    Limits {
+        /// Resident-memory limit in bytes.
+        memory_bytes: Option<RemoteResourceLimitDto>,
+        /// CPU quota limit in milli-percent of one CPU.
+        cpu_quota_milli_percent: Option<RemoteResourceLimitDto>,
+        /// Process/thread limit.
+        pids: Option<RemoteResourceLimitDto>,
+    },
+    /// The submitted limits could not be understood.
+    ///
+    /// This variant exists so that a malformed limit produces a typed
+    /// refusal from the daemon instead of failing the decode of the
+    /// enclosing request. Transports drop frames they cannot decode, so a
+    /// decode failure here would leave the caller waiting forever.
+    ///
+    /// The daemon never echoes this variant back to a client.
+    Invalid {
+        /// Human-readable reason the limits were refused.
+        reason: String,
+    },
+}
+
+impl RemoteResourceLimitsDto {
+    /// Decode a wire value into a typed limit set without ever failing.
+    ///
+    /// An unrecognized key is an error rather than something to ignore: a
+    /// client that sent `cpu_weight` here meant to constrain the node, and
+    /// silently dropping the key would run the job unconstrained.
+    pub fn from_json_value(value: &serde_json::Value) -> Self {
+        let Some(object) = value.as_object() else {
+            return Self::Invalid {
+                reason: "remote resource limits must be an object".to_owned(),
+            };
+        };
+        let known = ["kind", "memory_bytes", "cpu_quota_milli_percent", "pids"];
+        let unknown: Vec<&str> = object
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !known.contains(key))
+            .collect();
+        if !unknown.is_empty() {
+            return Self::Invalid {
+                reason: format!(
+                    "remote resource limits do not accept {}; expected memory_bytes, cpu_quota_milli_percent or pids",
+                    unknown.join(", ")
+                ),
+            };
+        }
+        // The wire form is tagged, so `kind` is either absent (a bare
+        // object) or exactly "limits". Anything else is a shape this
+        // decoder does not understand.
+        match object.get("kind").and_then(serde_json::Value::as_str) {
+            None | Some("limits") => {}
+            Some(other) => {
+                return Self::Invalid {
+                    reason: format!("unknown remote resource limits kind '{other}'"),
+                };
+            }
+        }
+        Self::Limits {
+            // An explicit `null` dimension is an *absent* dimension, not a
+            // zero limit. Treating it as zero would turn a request that
+            // simply omits a dimension into one the daemon refuses.
+            memory_bytes: object
+                .get("memory_bytes")
+                .filter(|value| !value.is_null())
+                .map(RemoteResourceLimitDto::from_json_value),
+            cpu_quota_milli_percent: object
+                .get("cpu_quota_milli_percent")
+                .filter(|value| !value.is_null())
+                .map(RemoteResourceLimitDto::from_json_value),
+            pids: object
+                .get("pids")
+                .filter(|value| !value.is_null())
+                .map(RemoteResourceLimitDto::from_json_value),
+        }
+    }
+
+    /// `true` when the set carries no dimension at all.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Limits {
+                memory_bytes,
+                cpu_quota_milli_percent,
+                pids,
+            } => memory_bytes.is_none() && cpu_quota_milli_percent.is_none() && pids.is_none(),
+            Self::Invalid { .. } => false,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RemoteResourceLimitsDto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&value))
+    }
+}
+
 /// Bounds applied to project catalog payloads at the protocol boundary.
 pub const MAX_PROJECT_LIST_ITEMS: usize = 128;
 pub const MAX_PROJECT_WORKSPACES: usize = 64;
@@ -963,6 +1152,14 @@ pub struct JobSubmitDto {
     /// administrator approved that node.
     #[serde(default)]
     pub target: Option<ExecutionTargetDto>,
+    /// Optional remote resource limits for a job that targets a node.
+    ///
+    /// These are physical limits in the node's own units, never the
+    /// abstract scheduler tokens. The daemon refuses any request that
+    /// exceeds the operator's configured ceiling for the target node, and
+    /// refuses any request that would weaken a `required` limit.
+    #[serde(default)]
+    pub remote_resources: Option<RemoteResourceLimitsDto>,
 }
 
 /// Parameters for `ScheduleCreate`.
@@ -1203,5 +1400,135 @@ mod execution_target_tests {
         assert_eq!(json["node_id"], "builder");
         let decoded: ExecutionTargetDto = serde_json::from_value(json).unwrap();
         assert_eq!(decoded, target);
+    }
+
+    // ── M003: remote resource limits ────────────────────────────────────
+
+    #[test]
+    fn remote_limits_decode_into_their_dimensions() {
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({
+            "memory_bytes": {"value": 536870912u64, "enforcement": "required"},
+            "cpu_quota_milli_percent": {"value": 1000u64, "enforcement": "best_effort"},
+            "pids": {"value": 64u64}
+        }));
+        let RemoteResourceLimitsDto::Limits {
+            memory_bytes,
+            cpu_quota_milli_percent,
+            pids,
+        } = limits
+        else {
+            panic!("expected a decoded limit set")
+        };
+        assert_eq!(
+            memory_bytes,
+            Some(RemoteResourceLimitDto {
+                value: 536_870_912,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            })
+        );
+        assert_eq!(
+            cpu_quota_milli_percent,
+            Some(RemoteResourceLimitDto {
+                value: 1000,
+                enforcement: RemoteLimitEnforcementDto::BestEffort,
+            })
+        );
+        // An absent enforcement keyword decodes to the stricter reading.
+        assert_eq!(
+            pids,
+            Some(RemoteResourceLimitDto {
+                value: 64,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_enforcement_keyword_never_decodes_to_best_effort() {
+        let limit = RemoteResourceLimitDto::from_json_value(&serde_json::json!({
+            "value": 10u64,
+            "enforcement": "best-effort"
+        }));
+        assert_eq!(limit.enforcement, RemoteLimitEnforcementDto::Required);
+    }
+
+    #[test]
+    fn an_unusable_value_decodes_to_zero_rather_than_failing() {
+        // A non-numeric value must not fail the enclosing frame decode:
+        // transports drop frames they cannot decode.
+        let limit = RemoteResourceLimitDto::from_json_value(&serde_json::json!({
+            "value": "536870912"
+        }));
+        assert_eq!(limit.value, 0);
+        let limit = RemoteResourceLimitDto::from_json_value(&serde_json::json!("nope"));
+        assert_eq!(limit.value, 0);
+    }
+
+    #[test]
+    fn an_unknown_dimension_is_refused_rather_than_ignored() {
+        // `cpu_weight` is an abstract scheduler token, not a remote limit.
+        // Silently ignoring it would run the job unconstrained.
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({
+            "cpu_weight": 3
+        }));
+        assert!(matches!(limits, RemoteResourceLimitsDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn a_non_object_limit_set_is_refused() {
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!(7));
+        assert!(matches!(limits, RemoteResourceLimitsDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn an_empty_limit_set_carries_no_dimension() {
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({}));
+        assert!(limits.is_empty());
+    }
+
+    #[test]
+    fn an_explicit_null_dimension_is_absent_not_a_zero_limit() {
+        // A `null` dimension means "not requested". Decoding it as a zero
+        // limit would make the daemon refuse a request that merely omits
+        // a dimension.
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({
+            "memory_bytes": {"value": 1024u64},
+            "cpu_quota_milli_percent": null,
+            "pids": null
+        }));
+        let RemoteResourceLimitsDto::Limits {
+            memory_bytes,
+            cpu_quota_milli_percent,
+            pids,
+        } = limits
+        else {
+            panic!("expected a decoded limit set")
+        };
+        assert_eq!(
+            memory_bytes,
+            Some(RemoteResourceLimitDto {
+                value: 1024,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            })
+        );
+        assert_eq!(cpu_quota_milli_percent, None);
+        assert_eq!(pids, None);
+    }
+
+    #[test]
+    fn remote_limits_round_trip_through_the_wire_form() {
+        let limits = RemoteResourceLimitsDto::Limits {
+            memory_bytes: Some(RemoteResourceLimitDto {
+                value: 1024,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            }),
+            cpu_quota_milli_percent: None,
+            pids: None,
+        };
+        let json = serde_json::to_value(&limits).unwrap();
+        assert_eq!(json["kind"], "limits");
+        assert_eq!(json["memory_bytes"]["value"], 1024);
+        let decoded: RemoteResourceLimitsDto = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, limits);
     }
 }

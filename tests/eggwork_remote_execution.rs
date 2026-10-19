@@ -24,7 +24,7 @@ use codegg_core::jobs::{
     InMemoryJobStore, JobId, JobKind, JobPayload, JobPriority, JobRecord, JobSource, JobState,
     JobStore, NewJob, ResourceRequest, RetryPolicy, SqliteJobStore,
 };
-use codegg_core::run_store::MemRunStore;
+use codegg_core::run_store::{MemRunStore, RunStore};
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRegistry};
 use codegg_core::workspace_services::{
     ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
@@ -68,6 +68,16 @@ struct ScriptedClient {
     /// with typed `invalid_lease` instead of succeeding.
     fencing: AtomicBool,
     accepted_leases: Mutex<HashMap<String, String>>,
+    /// Full submitted specs, so a test can assert on the *limits* the
+    /// daemon asked the node to enforce.
+    submitted_specs: Mutex<Vec<ExecutionSpec>>,
+    /// How many more `status()` probes report the node as busy. Each
+    /// probe decrements the counter, so a node can be busy for the first
+    /// probe and free afterwards.
+    busy_probes: Mutex<u32>,
+    /// How many more `capabilities()` probes fail as if the node were
+    /// unreachable.
+    unreachable_probes: Mutex<u32>,
 }
 
 fn test_capabilities(features: Vec<String>) -> NodeCapabilities {
@@ -137,6 +147,9 @@ impl ScriptedClient {
             hang_events: Mutex::new(false),
             fencing: AtomicBool::new(false),
             accepted_leases: Mutex::new(HashMap::new()),
+            submitted_specs: Mutex::new(Vec::new()),
+            busy_probes: Mutex::new(0),
+            unreachable_probes: Mutex::new(0),
         }
     }
 
@@ -169,10 +182,26 @@ impl ScriptedClient {
 #[async_trait]
 impl EggworkNodeClient for ScriptedClient {
     async fn capabilities(&self) -> Result<NodeCapabilities, EggworkClientError> {
+        let mut unreachable = self.unreachable_probes.lock().unwrap();
+        if *unreachable > 0 {
+            *unreachable -= 1;
+            return Err(EggworkClientError::Api {
+                status: 503,
+                code: "node_unavailable".to_string(),
+                message: "node is unreachable".to_string(),
+            });
+        }
         Ok(self.capabilities.lock().unwrap().clone())
     }
 
     async fn status(&self) -> Result<NodeStatus, EggworkClientError> {
+        let mut busy = self.busy_probes.lock().unwrap();
+        if *busy > 0 {
+            *busy -= 1;
+            let mut status = self.status.lock().unwrap().clone();
+            status.active_executions = status.capabilities.max_active_executions;
+            return Ok(status);
+        }
         Ok(self.status.lock().unwrap().clone())
     }
 
@@ -252,6 +281,7 @@ impl EggworkNodeClient for ScriptedClient {
             });
         }
         self.submits.fetch_add(1, Ordering::SeqCst);
+        self.submitted_specs.lock().unwrap().push(spec.clone());
         self.submitted_argv
             .lock()
             .unwrap()
@@ -351,6 +381,7 @@ fn test_node() -> ResolvedEggworkNode {
         required_capabilities: Vec::new(),
         isolation_policy: codegg_config::schema::EggworkIsolationPolicy::None,
         network_policy: codegg_config::schema::EggworkNetworkPolicy::Unrestricted,
+        resource_limits: None,
     }
 }
 
@@ -1112,6 +1143,7 @@ async fn lease_is_renewed_while_execution_is_live() {
             nodes,
             store: None,
             lease_renew_interval: Duration::from_millis(50),
+            remote_retry: codegg_config::schema::ResolvedRemoteRetryPolicy::default(),
         },
         Arc::new(ScriptedFactory {
             client: client.clone(),
@@ -1501,4 +1533,392 @@ async fn named_target_survives_a_store_restart() {
         Some(ExecutorKind::Eggwork),
         "a restarted daemon still routes the job to the remote node"
     );
+}
+
+// ── M003: remote resource limits and typed node outcomes ──────────────────
+
+/// Capability names a node advertises when it can enforce cgroup limits.
+const CAP_MEMORY: &str = "resources.cgroups-v2.memory";
+const CAP_CPU: &str = "resources.cgroups-v2.cpu";
+const CAP_PIDS: &str = "resources.cgroups-v2.pids";
+
+fn remote_limit(
+    value: u64,
+    enforcement: codegg_config::schema::RemoteLimitEnforcement,
+) -> codegg_config::schema::RemoteResourceLimit {
+    codegg_config::schema::RemoteResourceLimit { value, enforcement }
+}
+
+/// A node whose operator ceiling requires a memory, CPU, and PID limit.
+fn limited_node(enforcement: codegg_config::schema::RemoteLimitEnforcement) -> ResolvedEggworkNode {
+    let mut node = test_node();
+    node.resource_limits = Some(codegg_config::schema::RemoteResourceLimits {
+        memory_bytes: Some(remote_limit(512 * 1024 * 1024, enforcement)),
+        cpu_quota_milli_percent: Some(remote_limit(1000, enforcement)),
+        pids: Some(remote_limit(64, enforcement)),
+    });
+    node
+}
+
+/// A client whose node advertises the cgroup capabilities.
+fn capable_client() -> Arc<ScriptedClient> {
+    let client = Arc::new(ScriptedClient::succeeding());
+    let features = vec![
+        "exec.argv.v1".to_string(),
+        CAP_MEMORY.to_string(),
+        CAP_CPU.to_string(),
+        CAP_PIDS.to_string(),
+    ];
+    *client.capabilities.lock().unwrap() = test_capabilities(features.clone());
+    client.status.lock().unwrap().capabilities = test_capabilities(features);
+    client
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resolved_limits_reach_the_node_spec_in_the_nodes_own_units() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    let node = limited_node(codegg_config::schema::RemoteLimitEnforcement::Required);
+    let exec = executor_with_node(&client, node, None);
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(
+        completion.status,
+        ExecutorStatus::Completed,
+        "{completion:?}"
+    );
+
+    let specs = client.submitted_specs.lock().unwrap();
+    assert_eq!(specs.len(), 1);
+    let resources = &specs[0].command.resources;
+    assert_eq!(
+        resources.memory_bytes,
+        Requirement::Required(512 * 1024 * 1024)
+    );
+    // The node's CPU field is a quota in milli-percent of one CPU, so
+    // 1000 means one full CPU — not a thousand milliseconds of CPU time.
+    assert_eq!(resources.cpu_millis, Requirement::Required(1000));
+    assert_eq!(resources.pids, Requirement::Required(64));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_required_limit_the_node_cannot_enforce_fails_before_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    // The node advertises no cgroup capability at all.
+    let client = Arc::new(ScriptedClient::succeeding());
+    let node = limited_node(codegg_config::schema::RemoteLimitEnforcement::Required);
+    let exec = executor_with_node(&client, node, None);
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(
+        completion
+            .summary
+            .contains("remote_limit_capability_unavailable"),
+        "{completion:?}"
+    );
+    assert_eq!(client.uploads.load(Ordering::SeqCst), 0);
+    assert_eq!(client.submits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_best_effort_limit_is_submitted_even_without_the_capability() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = Arc::new(ScriptedClient::succeeding());
+    let node = limited_node(codegg_config::schema::RemoteLimitEnforcement::BestEffort);
+    let exec = executor_with_node(&client, node, None);
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(
+        completion.status,
+        ExecutorStatus::Completed,
+        "{completion:?}"
+    );
+    assert!(client.uploads.load(Ordering::SeqCst) > 0);
+    let specs = client.submitted_specs.lock().unwrap();
+    assert_eq!(
+        specs[0].command.resources.memory_bytes,
+        Requirement::BestEffort(512 * 1024 * 1024)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_limit_the_node_does_not_apply_is_recorded_truthfully() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    // The node reports that it could not apply the limit it was given.
+    {
+        let mut snapshot = client.snapshot.lock().unwrap();
+        if let Some(result) = snapshot.result.as_mut() {
+            result.resources = Some(eggwork_core::ResourceResult {
+                memory_bytes: eggwork_core::ResourceDimensionResult::NotApplied {
+                    reason: "cgroup v2 unavailable".to_string(),
+                },
+                cpu_millis: eggwork_core::ResourceDimensionResult::Applied {
+                    backend: "systemd".to_string(),
+                },
+                pids: eggwork_core::ResourceDimensionResult::NotRequested,
+            });
+        }
+    }
+    let run_store = Arc::new(MemRunStore::new());
+    let node = limited_node(codegg_config::schema::RemoteLimitEnforcement::BestEffort);
+    let exec = executor_with_node(&client, node, None);
+    let mut ctx = bound_context(build_record(eggwork_target()), dir.path().to_path_buf());
+    ctx.run_store = Some(run_store.clone());
+    let completion = exec.execute(ctx).await;
+    assert_eq!(
+        completion.status,
+        ExecutorStatus::Completed,
+        "{completion:?}"
+    );
+
+    // The durable record must say *not applied*, never *not requested*:
+    // the limit was asked for and the node declined to enforce it.
+    let manifest = run_store
+        .get_run(&completion.run_id.expect("run id"))
+        .await
+        .unwrap()
+        .expect("the run manifest");
+    let record = manifest
+        .remote_resources
+        .expect("the remote resource record");
+    assert_eq!(
+        record
+            .outcomes
+            .expect("the node reported outcomes")
+            .memory_bytes,
+        codegg_core::run_store::RemoteResourceOutcome::NotApplied {
+            reason: "cgroup v2 unavailable".to_string()
+        }
+    );
+    assert!(record.requested.is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_busy_node_is_waited_on_and_retried_on_the_same_node() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    // The first status probe reports the node as busy; the second does not.
+    *client.busy_probes.lock().unwrap() = 1;
+    let mut nodes = HashMap::new();
+    nodes.insert("node-1".to_string(), test_node());
+    let exec = EggworkExecutor::with_factory(
+        EggworkExecutorConfig {
+            nodes,
+            store: None,
+            lease_renew_interval: Duration::from_secs(30),
+            remote_retry: codegg_config::schema::ResolvedRemoteRetryPolicy {
+                max_waits: 2,
+                initial_backoff_ms: 1,
+                max_backoff_ms: 2,
+                deadline_ms: 5_000,
+            },
+        },
+        Arc::new(ScriptedFactory {
+            client: client.clone(),
+        }),
+    );
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(
+        completion.status,
+        ExecutorStatus::Completed,
+        "{completion:?}"
+    );
+    // Exactly one submission: the retry stayed on the same node and did
+    // not create a second execution.
+    assert_eq!(client.submits.load(Ordering::SeqCst), 1);
+    let handles = client.submitted_handles.lock().unwrap();
+    assert_eq!(handles.len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_draining_node_is_not_waited_on() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    client.status.lock().unwrap().draining = true;
+    let mut nodes = HashMap::new();
+    nodes.insert("node-1".to_string(), test_node());
+    let exec = EggworkExecutor::with_factory(
+        EggworkExecutorConfig {
+            nodes,
+            store: None,
+            lease_renew_interval: Duration::from_secs(30),
+            remote_retry: codegg_config::schema::ResolvedRemoteRetryPolicy {
+                max_waits: 3,
+                initial_backoff_ms: 1,
+                max_backoff_ms: 2,
+                deadline_ms: 5_000,
+            },
+        },
+        Arc::new(ScriptedFactory {
+            client: client.clone(),
+        }),
+    );
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(
+        completion.summary.contains("remote_node_draining"),
+        "{completion:?}"
+    );
+    assert_eq!(client.submits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unreachable_node_is_waited_on_a_bounded_number_of_times() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    // The node never answers.
+    *client.unreachable_probes.lock().unwrap() = 100;
+    let mut nodes = HashMap::new();
+    nodes.insert("node-1".to_string(), test_node());
+    let exec = EggworkExecutor::with_factory(
+        EggworkExecutorConfig {
+            nodes,
+            store: None,
+            lease_renew_interval: Duration::from_secs(30),
+            remote_retry: codegg_config::schema::ResolvedRemoteRetryPolicy {
+                max_waits: 2,
+                initial_backoff_ms: 1,
+                max_backoff_ms: 2,
+                deadline_ms: 5_000,
+            },
+        },
+        Arc::new(ScriptedFactory {
+            client: client.clone(),
+        }),
+    );
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(
+        completion.summary.contains("remote_node_unreachable"),
+        "{completion:?}"
+    );
+    // The wait budget is exhausted exactly: the first probe plus two
+    // waits. An unbounded retry loop would never return.
+    assert_eq!(*client.unreachable_probes.lock().unwrap(), 97);
+    assert_eq!(client.submits.load(Ordering::SeqCst), 0);
+    assert_eq!(client.uploads.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_job_request_may_narrow_the_operator_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    let node = limited_node(codegg_config::schema::RemoteLimitEnforcement::Required);
+    let exec = executor_with_node(&client, node, None);
+    let mut record = build_record(eggwork_target());
+    record.resource_request.remote = Some(codegg_config::schema::RemoteResourceLimits {
+        memory_bytes: Some(remote_limit(
+            256 * 1024 * 1024,
+            codegg_config::schema::RemoteLimitEnforcement::Required,
+        )),
+        cpu_quota_milli_percent: None,
+        pids: None,
+    });
+    let completion = exec
+        .execute(bound_context(record, dir.path().to_path_buf()))
+        .await;
+    assert_eq!(
+        completion.status,
+        ExecutorStatus::Completed,
+        "{completion:?}"
+    );
+    let specs = client.submitted_specs.lock().unwrap();
+    assert_eq!(
+        specs[0].command.resources.memory_bytes,
+        Requirement::Required(256 * 1024 * 1024)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_job_request_cannot_widen_the_operator_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    let node = limited_node(codegg_config::schema::RemoteLimitEnforcement::Required);
+    let exec = executor_with_node(&client, node, None);
+    let mut record = build_record(eggwork_target());
+    record.resource_request.remote = Some(codegg_config::schema::RemoteResourceLimits {
+        memory_bytes: Some(remote_limit(
+            4 * 1024 * 1024 * 1024,
+            codegg_config::schema::RemoteLimitEnforcement::Required,
+        )),
+        cpu_quota_milli_percent: None,
+        pids: None,
+    });
+    let completion = exec
+        .execute(bound_context(record, dir.path().to_path_buf()))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(
+        completion.summary.contains("remote_limit_exceeds_ceiling"),
+        "{completion:?}"
+    );
+    assert_eq!(client.uploads.load(Ordering::SeqCst), 0);
+    assert_eq!(client.submits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_job_request_cannot_weaken_a_mandatory_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = capable_client();
+    let node = limited_node(codegg_config::schema::RemoteLimitEnforcement::Required);
+    let exec = executor_with_node(&client, node, None);
+    let mut record = build_record(eggwork_target());
+    record.resource_request.remote = Some(codegg_config::schema::RemoteResourceLimits {
+        memory_bytes: Some(remote_limit(
+            256 * 1024 * 1024,
+            codegg_config::schema::RemoteLimitEnforcement::BestEffort,
+        )),
+        cpu_quota_milli_percent: None,
+        pids: None,
+    });
+    let completion = exec
+        .execute(bound_context(record, dir.path().to_path_buf()))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(
+        completion
+            .summary
+            .contains("remote_limit_downgrade_refused"),
+        "{completion:?}"
+    );
+    assert_eq!(client.submits.load(Ordering::SeqCst), 0);
 }

@@ -33,6 +33,7 @@ pub mod ci_watch;
 pub mod ci_watch_idle;
 pub mod config;
 pub mod eggwork;
+pub mod eggwork_limits;
 pub mod events;
 pub mod executor;
 pub mod executors;

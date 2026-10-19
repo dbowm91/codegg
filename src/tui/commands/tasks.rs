@@ -826,6 +826,7 @@ pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: S
                 depends_on: Vec::new(),
                 labels: std::collections::HashMap::new(),
                 target: None,
+                remote_resources: None,
             };
             let response = core_client
                 .request(crate::core::new_request(

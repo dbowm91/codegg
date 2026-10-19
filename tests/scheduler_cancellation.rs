@@ -36,6 +36,7 @@ fn build_config(max_process_slots: u32) -> ResolvedSchedulerConfig {
             max_memory_mb_hint: 8192,
             max_io_weight: 8,
             max_network_slots: 4,
+            max_remote_transfers: 16,
         },
         ..ResolvedSchedulerConfig::default()
     }

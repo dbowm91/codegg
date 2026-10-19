@@ -209,6 +209,116 @@ derived-transfer optimization cache is deliberately NOT persisted here:
 it is an in-memory, node-scoped, bounded hint that starts cold after
 restart and returns the executor to full materialization.
 
+### Remote resource limits (M003)
+
+A remote job may run under limits the node enforces with cgroup v2. The
+limit vocabulary is deliberately **separate** from the abstract scheduler
+tokens on `ResourceRequest`:
+
+| Vocabulary | Carried by | Units | Meaning |
+|---|---|---|---|
+| abstract scheduler tokens | `ResourceRequest.cpu_weight`, `.memory_mb_hint`, `.process_slots`, `.io_weight`, `.network_slots` | none — they are weights and hints | how the **local** admission controller weighs a job |
+| physical remote limits | `ResourceRequest.remote` (`Option<RemoteResourceLimits>`) | bytes, milli-percent of one CPU, task count | what the **node** must enforce |
+
+The two do not correspond, and this repository never translates one into
+the other. A CPU *weight* is not a CPU *quota*; a memory *hint* is not a
+byte count. `scripts/check_eggwork_target_routing.py` rule 9 rejects any
+`ResourceRequirements` literal that mentions an abstract token, and rule
+8 confines node-limit construction to
+`src/scheduler/eggwork_limits.rs` (the resolution) and
+`src/scheduler/eggwork.rs` (the command spec).
+
+#### The `cpu_millis` trap
+
+The node's CPU field is named `cpu_millis`, which reads like a
+millisecond CPU-time budget. **It is not.** It is a CPU *quota* expressed
+in *milli-percent of one CPU*, and the node renders it as
+`CPUQuota = value/10 . value%10 %`:
+
+| Value | cgroup property | Meaning |
+|---|---|---|
+| `1000` | `CPUQuota=100.0%` | one full CPU |
+| `500` | `CPUQuota=50.0%` | half a CPU |
+| `2000` | `CPUQuota=200.0%` | two CPUs |
+| `1` | `CPUQuota=0.1%` | a thousandth of a CPU |
+
+Treating it as a time budget would ask for a thousandth of the intended
+CPU — or, in the other direction, for a thousand times too much.
+`eggwork_limits::cpu_quota_percent` is the single place that mapping is
+written down, and CodeGG's own field is named
+`cpu_quota_milli_percent` for the same reason.
+
+#### Operator ceiling and job request
+
+The **operator ceiling** is authoritative. It is written per node in
+`[eggwork.nodes.<id>].resource_limits`, and each dimension carries a
+value and an enforcement kind:
+
+```jsonc
+"resource_limits": {
+  "memory_bytes":           { "value": 1073741824, "enforcement": "required" },
+  "cpu_quota_milli_percent": { "value": 1000,         "enforcement": "required" },
+  "pids":                   { "value": 64,            "enforcement": "required" }
+}
+```
+
+`required` is a hard contract: the daemon refuses to submit when the
+node cannot enforce the limit. `best_effort` is advisory: the node may
+decline to apply it, and the outcome is reported truthfully as *not
+applied* rather than being downgraded to *not requested*.
+
+A job may supply its own request (`JobSubmitDto.remote_resources`).
+The rules, in order of authority:
+
+1. A job may **narrow** a dimension. The effective value is the job's.
+2. A job may **not widen** a dimension — refused with
+   `remote_limit_exceeds_ceiling`.
+3. A job may **not introduce** a dimension the operator never configured
+   — refused with `remote_limit_not_configured`.
+4. A job may **not weaken** a `required` ceiling to `best_effort` —
+   refused with `remote_limit_downgrade_refused`.
+5. A job **may strengthen** a `best_effort` ceiling to `required`.
+
+With no ceiling configured, a node runs remote work unconstrained — the
+pre-M003 behavior — and a job that asks for limits against such a node
+is refused (`remote_limit_not_configured`), because the operator wrote
+no limit for it.
+
+Every refusal happens at the host boundary, before the job becomes
+durable, so a refused submission creates no job at all.
+
+#### Durable representation
+
+`ResourceRequest.remote` is `#[serde(default)]` and the request is
+persisted inside the existing `resource_json` blob, so a job written
+before M003 decodes as "no remote limits" and **no storage migration is
+required**. The decision is documented rather than assumed: the stored
+representation is a JSON document, so the extension is additive and
+backward compatible by construction.
+
+#### Capability gate
+
+A `required` dimension needs the node to advertise the matching
+capability (`resources.cgroups-v2.memory` / `.cpu` / `.pids`). The gate
+runs in the executor's preflight against the **fresh** authenticated
+capability set, and it refuses *before the workspace upload* — a limit
+the node cannot enforce never reaches the node. A stale or empty
+capability set refuses rather than assuming.
+
+#### Truthful outcome
+
+The node reports per-dimension outcomes (`NotRequested`, `NotApplied`,
+`Applied`, `LimitExceeded`). The executor records them, together with
+the limits that were asked for, in the RunStore manifest
+(`RunManifest.remote_resources`, a `RemoteResourceRecord`). A node that
+reported nothing leaves `outcomes` absent, which is deliberately not the
+same claim as "no limit was applied".
+
+The record never contains an endpoint, a certificate path, a key path, or
+a host measurement, and `ExecutorMetrics.cpu_time_ms` /
+`peak_memory_mb` are **not** populated from remote numbers — those are
+Gregg host telemetry and belong to M002.
+
 ### Eggwork lease-fencing contract (corrective C001)
 
 The persisted tuple must be byte-exact with the live Eggwork

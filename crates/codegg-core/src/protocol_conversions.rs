@@ -831,6 +831,12 @@ pub fn job_submit_from_dto(
         .collect();
     let resource_request = crate::jobs::ResourceRequest::for_kind(kind);
     let target = execution_target_from_dto(d.target)?;
+    // The remote limit request rides on the job's durable resource request.
+    // It is the only channel through which a client may express a physical
+    // remote limit; the abstract scheduler tokens beside it are never
+    // translated into node limits.
+    let mut resource_request = resource_request;
+    resource_request.remote = remote_resource_limits_from_dto(d.remote_resources)?;
 
     Ok(crate::jobs::NewJob {
         workspace_id: crate::workspace::WorkspaceId::new_unchecked(d.workspace_id),
@@ -855,6 +861,58 @@ pub fn job_submit_from_dto(
         parent_instruction_sequence: None,
         relation_kind: None,
         target,
+    })
+}
+
+/// DTO → Domain: convert wire remote resource limits into the durable
+/// request type.
+///
+/// The conversion only *decodes*. It refuses a shape it cannot
+/// understand, but it does not judge the values: a zero limit, an
+/// overflowing limit, a limit above the operator's ceiling, and a
+/// downgrade attempt are all policy questions, and the host boundary
+/// answers them with one typed vocabulary
+/// (`remote_limit_invalid_value`, `remote_limit_exceeds_ceiling`,
+/// `remote_limit_downgrade_refused`, `remote_limit_not_configured`).
+/// Deciding them here would answer them with the wrong code.
+pub fn remote_resource_limits_from_dto(
+    d: Option<codegg_protocol::dto::RemoteResourceLimitsDto>,
+) -> Result<Option<crate::jobs::RemoteResourceLimits>, String> {
+    let Some(d) = d else { return Ok(None) };
+    let codegg_protocol::dto::RemoteResourceLimitsDto::Limits {
+        memory_bytes,
+        cpu_quota_milli_percent,
+        pids,
+    } = d
+    else {
+        let codegg_protocol::dto::RemoteResourceLimitsDto::Invalid { reason } = d else {
+            unreachable!("remote resource limits decode to exactly two shapes")
+        };
+        return Err(format!("invalid remote resource limits: {reason}"));
+    };
+    if memory_bytes.is_none() && cpu_quota_milli_percent.is_none() && pids.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(crate::jobs::RemoteResourceLimits {
+        memory_bytes: remote_resource_limit_from_dto(memory_bytes),
+        cpu_quota_milli_percent: remote_resource_limit_from_dto(cpu_quota_milli_percent),
+        pids: remote_resource_limit_from_dto(pids),
+    }))
+}
+
+fn remote_resource_limit_from_dto(
+    limit: Option<codegg_protocol::dto::RemoteResourceLimitDto>,
+) -> Option<crate::jobs::RemoteResourceLimit> {
+    limit.map(|limit| crate::jobs::RemoteResourceLimit {
+        value: limit.value,
+        enforcement: match limit.enforcement {
+            codegg_protocol::dto::RemoteLimitEnforcementDto::Required => {
+                crate::jobs::RemoteLimitEnforcement::Required
+            }
+            codegg_protocol::dto::RemoteLimitEnforcementDto::BestEffort => {
+                crate::jobs::RemoteLimitEnforcement::BestEffort
+            }
+        },
     })
 }
 

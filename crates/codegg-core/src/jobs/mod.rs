@@ -29,6 +29,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Remote resource limits in the remote node's own physical units.
+///
+/// Re-exported from the config crate so the durable job contract and the
+/// operator-facing configuration speak exactly one vocabulary.
+pub use codegg_config::schema::{
+    RemoteLimitEnforcement, RemoteResourceLimit, RemoteResourceLimits,
+};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -695,6 +703,19 @@ pub struct ResourceRequest {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// Optional remote resource limits for a job that runs on a named
+    /// Eggwork node.
+    ///
+    /// The fields above are *abstract scheduler tokens*: a CPU weight, a
+    /// memory hint, a slot count. They are not physical quantities and are
+    /// never translated into the node's cgroup limits — the units do not
+    /// correspond. This field is the only place a physical remote limit
+    /// may be expressed, and it uses the node's own units.
+    ///
+    /// Absent means "no remote limits requested", which is exactly the
+    /// pre-M003 behavior.
+    #[serde(default)]
+    pub remote: Option<RemoteResourceLimits>,
 }
 
 impl Default for ResourceRequest {
@@ -710,6 +731,7 @@ impl Default for ResourceRequest {
             io_weight: 1,
             network_slots: 0,
             exclusivity_keys: Vec::new(),
+            remote: None,
         }
     }
 }
@@ -724,6 +746,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 1,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Build => Self {
                 cpu_weight: 3,
@@ -732,6 +755,7 @@ impl ResourceRequest {
                 io_weight: 3,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                remote: None,
             },
             JobKind::Lint => Self {
                 cpu_weight: 1,
@@ -740,6 +764,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Format => Self {
                 cpu_weight: 1,
@@ -748,6 +773,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                remote: None,
             },
             JobKind::Test => Self {
                 cpu_weight: 2,
@@ -756,6 +782,7 @@ impl ResourceRequest {
                 io_weight: 2,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Shell | JobKind::ManagedProcess => Self {
                 cpu_weight: 1,
@@ -764,6 +791,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Python => Self {
                 cpu_weight: 1,
@@ -772,6 +800,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::GitRead => Self {
                 cpu_weight: 1,
@@ -780,6 +809,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::GitMutation => Self {
                 cpu_weight: 1,
@@ -788,6 +818,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:worktree-mutation".to_string()],
+                remote: None,
             },
             JobKind::Maintenance => Self {
                 cpu_weight: 1,
@@ -796,6 +827,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::ToolProgram => Self {
                 cpu_weight: 1,
@@ -804,6 +836,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                remote: None,
             },
             JobKind::Unsupported => Self::default(),
         }

@@ -22,7 +22,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use codegg_config::schema::{EggworkConfig, EggworkIsolationPolicy, EggworkNetworkPolicy};
+use codegg_config::schema::{
+    EggworkConfig, EggworkIsolationPolicy, EggworkNetworkPolicy, RemoteResourceLimits,
+};
 
 /// The declared execution posture of one configured node.
 ///
@@ -104,6 +106,12 @@ pub struct RemoteTargetPolicy {
     approved: BTreeSet<String>,
     /// Declared posture per configured node, keyed by node table key.
     postures: BTreeMap<String, NodePosture>,
+    /// The operator's resource-limit ceiling per configured node.
+    ///
+    /// A node with no ceiling accepts no client-supplied limits at all:
+    /// the executor treats the ceiling as authoritative, so a request
+    /// against a ceiling-less node is refused rather than honored.
+    resource_ceilings: BTreeMap<String, RemoteResourceLimits>,
     /// Minimum declared filesystem isolation for a targetable node.
     isolation_ceiling: Option<EggworkIsolationPolicy>,
     /// Minimum declared network posture for a targetable node.
@@ -140,12 +148,52 @@ impl RemoteTargetPolicy {
             .as_ref()
             .map(|nodes| nodes.iter().cloned().collect())
             .unwrap_or_default();
+        let resource_ceilings = config
+            .nodes
+            .as_ref()
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|(table_key, profile)| {
+                        profile
+                            .resource_limits
+                            .clone()
+                            .map(|limits| (table_key.clone(), limits))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             approved,
             postures,
+            resource_ceilings,
             isolation_ceiling: config.required_isolation_policy,
             network_ceiling: config.required_network_policy,
         }
+    }
+
+    /// The operator's resource-limit ceiling for one node.
+    pub fn resource_ceiling(&self, node_id: &str) -> Option<&RemoteResourceLimits> {
+        self.resource_ceilings.get(node_id)
+    }
+
+    /// Check a job's remote resource request against the node's ceiling.
+    ///
+    /// This is the host-boundary half of the limit policy. It uses only
+    /// the operator's configuration, so a request that widens the
+    /// ceiling, weakens a mandatory limit, or names a dimension the
+    /// operator never configured is refused *before* the job becomes
+    /// durable.
+    ///
+    /// The node's live capabilities are checked separately, in the
+    /// executor's preflight, before any workspace upload.
+    pub fn check_resource_request(
+        &self,
+        node_id: &str,
+        request: Option<&RemoteResourceLimits>,
+    ) -> Result<(), crate::scheduler::eggwork_limits::RemoteLimitRejection> {
+        let ceiling = self.resource_ceilings.get(node_id);
+        crate::scheduler::eggwork_limits::combine_limits(ceiling, request).map(|_| ())
     }
 
     /// `true` when `node_id` is approved for client-driven targeting.

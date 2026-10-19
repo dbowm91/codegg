@@ -24,7 +24,7 @@
 //! Eggwork node via `eggwork-client`. See `docs/execution-ownership.toml`
 //! (`src/scheduler/` is scheduler-owned definition).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,7 +35,8 @@ use codegg_core::jobs::{
     AttemptId, ExecutionTarget, JobKind, JobPayload, JobRecord, JobStore, RemoteExecutionHandle,
 };
 use codegg_core::run_store::{
-    ActualBackend, ArtifactInput, ArtifactKind, BackendRecord, RiskRecord, RunCompletion, RunDraft,
+    ActualBackend, ArtifactInput, ArtifactKind, BackendRecord, RemoteResourceOutcome,
+    RemoteResourceOutcomes, RemoteResourceRecord, RiskRecord, RunCompletion, RunDraft,
     RunInvocation, RunKind, RunOwnership, RunStatus,
 };
 use eggfetch_core::{BoxBytesStream, Error as EggfetchError};
@@ -112,6 +113,10 @@ pub struct ResolvedEggworkNode {
     pub required_capabilities: Vec<String>,
     pub isolation_policy: codegg_config::schema::EggworkIsolationPolicy,
     pub network_policy: codegg_config::schema::EggworkNetworkPolicy,
+    /// Operator ceiling for the resource limits this node may be asked to
+    /// enforce. Absent means "no limits configured", which preserves the
+    /// pre-M003 behavior of running remote work unconstrained.
+    pub resource_limits: Option<codegg_config::schema::RemoteResourceLimits>,
 }
 
 /// Executor configuration: named nodes plus the durable store used for
@@ -121,6 +126,9 @@ pub struct EggworkExecutorConfig {
     pub store: Option<Arc<dyn JobStore>>,
     /// Interval between lease renewals while the remote execution is live.
     pub lease_renew_interval: Duration,
+    /// Bounded wait budget for a remote attempt that hits node contention
+    /// or a transient node outage. The wait always stays on the same node.
+    pub remote_retry: codegg_config::schema::ResolvedRemoteRetryPolicy,
 }
 
 impl Default for EggworkExecutorConfig {
@@ -129,6 +137,7 @@ impl Default for EggworkExecutorConfig {
             nodes: HashMap::new(),
             store: None,
             lease_renew_interval: LEASE_RENEW_INTERVAL,
+            remote_retry: codegg_config::schema::ResolvedRemoteRetryPolicy::default(),
         }
     }
 }
@@ -175,6 +184,7 @@ impl EggworkExecutorConfig {
                             .unwrap_or_default(),
                         isolation_policy: profile.isolation_policy.unwrap_or_default(),
                         network_policy: profile.network_policy.unwrap_or_default(),
+                        resource_limits: profile.resource_limits.clone(),
                     },
                 );
             }
@@ -183,6 +193,7 @@ impl EggworkExecutorConfig {
             nodes,
             store: None,
             lease_renew_interval: LEASE_RENEW_INTERVAL,
+            remote_retry: cfg.resolved_remote_retry(),
         })
     }
 
@@ -253,6 +264,98 @@ impl RemoteJobRejection {
             Self::InvalidPayload { kind, reason } => {
                 format!("job kind '{kind}' cannot run on a remote Eggwork node: {reason}")
             }
+        }
+    }
+}
+
+/// Why a remote attempt could not start on its target node.
+///
+/// The distinction that matters is **contention** versus **policy**. A
+/// busy node is a transient condition on the *same* node: waiting and
+/// trying again is reasonable, and it is bounded. A draining node, a
+/// missing capability, or a refused limit is a policy decision: waiting
+/// changes nothing, so the attempt fails immediately with a typed reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteAdmissionOutcome {
+    /// The node is at its own execution capacity.
+    NodeBusy {
+        /// Executions the node reports as active.
+        active: u32,
+        /// Executions the node accepts at once.
+        max: u32,
+    },
+    /// The node is draining and will not accept new work.
+    NodeDraining,
+    /// The node could not be reached.
+    NodeUnreachable {
+        /// What the transport reported.
+        detail: String,
+    },
+    /// The node did not advertise a capability the attempt requires.
+    CapabilityMismatch {
+        /// The capability that is missing.
+        capability: String,
+    },
+    /// The node answered with a different identity than configured.
+    IdentityMismatch {
+        /// The node id the daemon configured.
+        expected: String,
+        /// The node id the node reported.
+        observed: String,
+    },
+    /// The node's resource limits could not be honored.
+    LimitRefused {
+        /// Stable code of the underlying refusal.
+        code: &'static str,
+        /// What the refusal said.
+        detail: String,
+    },
+    /// The attempt was cancelled while waiting for the node.
+    Cancelled,
+}
+
+impl RemoteAdmissionOutcome {
+    /// Stable machine-readable code for the outcome.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NodeBusy { .. } => "remote_node_busy",
+            Self::NodeDraining => "remote_node_draining",
+            Self::NodeUnreachable { .. } => "remote_node_unreachable",
+            Self::CapabilityMismatch { .. } => "remote_capability_mismatch",
+            Self::IdentityMismatch { .. } => "remote_identity_mismatch",
+            Self::LimitRefused { .. } => "remote_limit_refused",
+            Self::Cancelled => "remote_cancelled",
+        }
+    }
+
+    /// `true` when the outcome is transient contention on the same node.
+    ///
+    /// Only contention is worth waiting on. A draining node, a missing
+    /// capability, a refused limit, and an identity mismatch are policy
+    /// outcomes: retrying them would burn the wait budget and then fail
+    /// the same way.
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::NodeBusy { .. } | Self::NodeUnreachable { .. })
+    }
+
+    /// Bounded, operator-facing explanation.
+    pub fn message(&self) -> String {
+        match self {
+            Self::NodeBusy { active, max } => {
+                format!("node is busy ({active}/{max} executions active)")
+            }
+            Self::NodeDraining => "node is draining and will not accept new work".to_owned(),
+            Self::NodeUnreachable { detail } => format!("node is unreachable: {detail}"),
+            Self::CapabilityMismatch { capability } => {
+                format!("node does not advertise required capability '{capability}'")
+            }
+            Self::IdentityMismatch { expected, observed } => {
+                format!("node returned identity '{observed}' but '{expected}' was configured")
+            }
+            Self::LimitRefused { code, detail } => {
+                format!("resource limits refused ({code}): {detail}")
+            }
+            Self::Cancelled => "attempt was cancelled".to_owned(),
         }
     }
 }
@@ -1027,6 +1130,55 @@ impl EggworkExecutor {
             .await
     }
 
+    /// Probe the node, waiting out transient contention on the *same* node.
+    ///
+    /// A busy or unreachable node is contention: the attempt waits and
+    /// tries the same node again. A draining node, a missing capability,
+    /// or an identity mismatch is a policy outcome and returns
+    /// immediately — waiting would change nothing.
+    ///
+    /// The wait is bounded in every dimension: a wait count, a per-wait
+    /// ceiling, and a total deadline. It never re-targets another node
+    /// and never falls back to local execution, so an explicitly targeted
+    /// job stays on the node its operator chose.
+    async fn preflight_with_wait(
+        &self,
+        client: &Arc<dyn EggworkNodeClient>,
+        node: &ResolvedEggworkNode,
+        ctx: &JobExecutionContext,
+    ) -> Result<ExecutionPolicy, RemoteAdmissionOutcome> {
+        let budget = self.config.remote_retry;
+        let started = Instant::now();
+        let mut waits = 0u32;
+        let mut backoff = budget.initial_backoff_ms;
+        loop {
+            match preflight(client, node).await {
+                Ok(policy) => return Ok(policy),
+                Err(outcome) => {
+                    if !outcome.is_retryable() || waits >= budget.max_waits {
+                        return Err(outcome);
+                    }
+                    let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                    if elapsed >= budget.deadline_ms {
+                        return Err(outcome);
+                    }
+                    let remaining = budget.deadline_ms.saturating_sub(elapsed);
+                    let wait = backoff.min(budget.max_backoff_ms).min(remaining);
+                    if wait == 0 {
+                        return Err(outcome);
+                    }
+                    // A cancelled job must not sit out the whole budget.
+                    if ctx.cancellation.is_cancelled() {
+                        return Err(RemoteAdmissionOutcome::Cancelled);
+                    }
+                    waits += 1;
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    backoff = backoff.saturating_mul(2).min(budget.max_backoff_ms);
+                }
+            }
+        }
+    }
+
     /// Load the persisted remote handle for this attempt, if any.
     async fn persisted_handle(
         &self,
@@ -1091,8 +1243,18 @@ impl EggworkExecutor {
             }
         };
         if is_terminal(&snapshot.state) {
+            let limits = effective_limits_without_capabilities(node, ctx);
             let completion = self
-                .finish_from_snapshot(ctx, client, node, &eggwork_handle, &snapshot, argv, true)
+                .finish_from_snapshot(
+                    ctx,
+                    client,
+                    node,
+                    &eggwork_handle,
+                    &snapshot,
+                    argv,
+                    true,
+                    limits.as_ref(),
+                )
                 .await;
             return ExecutionOutcome::Done(completion);
         }
@@ -1118,9 +1280,40 @@ impl EggworkExecutor {
         cwd: Option<&str>,
         timeout: Option<Duration>,
     ) -> ExecutionOutcome {
-        let policy = match preflight(client, node).await {
+        let policy = match self.preflight_with_wait(client, node, ctx).await {
             Ok(policy) => policy,
-            Err(e) => return ExecutionOutcome::Failed(e),
+            Err(RemoteAdmissionOutcome::Cancelled) => {
+                return ExecutionOutcome::Cancelled(format!(
+                    "eggwork: cancelled while waiting for node '{}'",
+                    node.node_id
+                ));
+            }
+            Err(outcome) => {
+                return ExecutionOutcome::Failed(format!(
+                    "eggwork: node '{}' {} ({}); refusing before workspace upload",
+                    node.node_id,
+                    outcome.message(),
+                    outcome.code()
+                ));
+            }
+        };
+        // Resolve the effective resource limits against the operator's
+        // ceiling and the node's *fresh* capabilities. This happens before
+        // the workspace upload, so a required limit the node cannot
+        // enforce never reaches the node at all.
+        let limits = match crate::scheduler::eggwork_limits::resolve_remote_limits(
+            node.resource_limits.as_ref(),
+            ctx.job.resource_request.remote.as_ref(),
+            &policy.features,
+        ) {
+            Ok(limits) => limits,
+            Err(rejection) => {
+                return ExecutionOutcome::Failed(format!(
+                    "eggwork: node '{}' {}: {rejection}; refusing before workspace upload",
+                    node.node_id,
+                    rejection.code()
+                ));
+            }
         };
         ctx.progress
             .progress(
@@ -1251,7 +1444,15 @@ impl EggworkExecutor {
                 .cancel_before_submit(ctx, "cancelled after upload, before submit")
                 .await;
         }
-        let spec = match build_spec(argv, remote_cwd, timeout, policy) {
+        let resources = limits
+            .as_ref()
+            .map(|limits| limits.requirements.clone())
+            .unwrap_or(ResourceRequirements {
+                memory_bytes: Requirement::NotRequested,
+                cpu_millis: Requirement::NotRequested,
+                pids: Requirement::NotRequested,
+            });
+        let spec = match build_spec(argv, remote_cwd, timeout, policy, resources) {
             Ok(spec) => spec,
             Err(e) => return ExecutionOutcome::Failed(format!("eggwork: {e}")),
         };
@@ -1322,7 +1523,16 @@ impl EggworkExecutor {
             }
         };
         let completion = self
-            .finish_from_snapshot(ctx, client, node, handle, &snapshot, argv, false)
+            .finish_from_snapshot(
+                ctx,
+                client,
+                node,
+                handle,
+                &snapshot,
+                argv,
+                false,
+                limits.as_ref().map(|limits| &limits.requested),
+            )
             .await;
         ExecutionOutcome::Done(completion)
     }
@@ -1349,6 +1559,7 @@ impl EggworkExecutor {
         snapshot: &ExecutionSnapshot,
         argv: &[String],
         reconciled: bool,
+        limits: Option<&codegg_config::schema::RemoteResourceLimits>,
     ) -> ExecutorCompletion {
         let result = snapshot.result.clone();
         let (status, mut detail) = map_terminal(&snapshot.state, result.as_ref());
@@ -1376,7 +1587,7 @@ impl EggworkExecutor {
             detail.clear();
         }
         let (run_id, artifact_note) = self
-            .import_artifacts(ctx, client, node, handle, snapshot, argv, &status)
+            .import_artifacts(ctx, client, node, handle, snapshot, argv, &status, limits)
             .await;
         if !artifact_note.is_empty() {
             summary.push_str(&format!(" {artifact_note}"));
@@ -1401,6 +1612,7 @@ impl EggworkExecutor {
         snapshot: &ExecutionSnapshot,
         argv: &[String],
         status: &ExecutorStatus,
+        limits: Option<&codegg_config::schema::RemoteResourceLimits>,
     ) -> (Option<codegg_core::run_store::RunId>, String) {
         let Some(ref store) = ctx.run_store else {
             return (None, "runstore=absent".to_string());
@@ -1516,6 +1728,7 @@ impl EggworkExecutor {
             rerun: None,
             actual_backend: Some(ActualBackend::Eggwork),
             fallback: None,
+            remote_resources: remote_resource_record(snapshot, limits),
         };
         let run_id = match store.complete_run(run, completion).await {
             Ok(manifest) => Some(manifest.run_id),
@@ -1597,30 +1810,28 @@ pub fn to_eggwork_handle(handle: &RemoteExecutionHandle) -> Result<ExecutionHand
 async fn preflight(
     client: &Arc<dyn EggworkNodeClient>,
     node: &ResolvedEggworkNode,
-) -> Result<ExecutionPolicy, String> {
+) -> Result<ExecutionPolicy, RemoteAdmissionOutcome> {
     let capabilities = match op_timeout(client.capabilities()).await {
         Ok(caps) => caps,
         Err(e) => {
-            return Err(format!(
-                "eggwork: node '{}' capability probe failed: {}",
-                node.node_id, e
-            ));
+            return Err(RemoteAdmissionOutcome::NodeUnreachable {
+                detail: format!("capability probe failed: {e}"),
+            });
         }
     };
     let status = match op_timeout(client.status()).await {
         Ok(status) => status,
         Err(e) => {
-            return Err(format!(
-                "eggwork: node '{}' status probe failed: {}",
-                node.node_id, e
-            ))
+            return Err(RemoteAdmissionOutcome::NodeUnreachable {
+                detail: format!("status probe failed: {e}"),
+            });
         }
     };
     if status.node_id.as_str() != node.node_id {
-        return Err(format!(
-            "eggwork: configured node '{}' returned status for a different node; refusing before workspace upload",
-            node.node_id
-        ));
+        return Err(RemoteAdmissionOutcome::IdentityMismatch {
+            expected: node.node_id.clone(),
+            observed: status.node_id.as_str().to_owned(),
+        });
     }
     let consistent_features: HashSet<&str> = capabilities
         .features
@@ -1632,33 +1843,33 @@ async fn preflight(
         tracing::warn!(node_id = %node.node_id, "Eggwork capability/status feature mismatch; applying conservative intersection");
     }
     if !consistent_features.contains(REQUIRED_EXEC_FEATURE) {
-        return Err(format!(
-            "eggwork: node '{}' lacks required capability '{REQUIRED_EXEC_FEATURE}'",
-            node.node_id
-        ));
+        return Err(RemoteAdmissionOutcome::CapabilityMismatch {
+            capability: REQUIRED_EXEC_FEATURE.to_owned(),
+        });
     }
     for required in &node.required_capabilities {
         if !consistent_features.contains(required.as_str()) {
-            return Err(format!(
-                "eggwork: node '{}' lacks configured capability '{required}'",
-                node.node_id
-            ));
+            return Err(RemoteAdmissionOutcome::CapabilityMismatch {
+                capability: required.clone(),
+            });
         }
     }
     if status.draining {
-        return Err(format!("eggwork: node '{}' is draining", node.node_id));
+        return Err(RemoteAdmissionOutcome::NodeDraining);
     }
     if status.active_executions >= status.capabilities.max_active_executions {
-        return Err(format!(
-            "eggwork: node '{}' is busy ({}/{})",
-            node.node_id, status.active_executions, status.capabilities.max_active_executions
-        ));
+        return Err(RemoteAdmissionOutcome::NodeBusy {
+            active: status.active_executions,
+            max: status.capabilities.max_active_executions,
+        });
     }
     let isolation = match node.isolation_policy {
         codegg_config::schema::EggworkIsolationPolicy::None => IsolationRequirement::None,
         codegg_config::schema::EggworkIsolationPolicy::Required => {
             if !consistent_features.contains(REQUIRED_ISOLATION_FEATURE) {
-                return Err(format!("eggwork: node '{}' does not satisfy required isolation capability '{REQUIRED_ISOLATION_FEATURE}'; refusing before workspace upload", node.node_id));
+                return Err(RemoteAdmissionOutcome::CapabilityMismatch {
+                    capability: REQUIRED_ISOLATION_FEATURE.to_owned(),
+                });
             }
             IsolationRequirement::Required
         }
@@ -1669,7 +1880,9 @@ async fn preflight(
         }
         codegg_config::schema::EggworkNetworkPolicy::Disabled => {
             if !consistent_features.contains(NETWORK_DISABLED_FEATURE) {
-                return Err(format!("eggwork: node '{}' does not satisfy disabled-network capability '{NETWORK_DISABLED_FEATURE}'; refusing before workspace upload", node.node_id));
+                return Err(RemoteAdmissionOutcome::CapabilityMismatch {
+                    capability: NETWORK_DISABLED_FEATURE.to_owned(),
+                });
             }
             NetworkRequirement::Disabled
         }
@@ -1683,6 +1896,10 @@ async fn preflight(
         isolation,
         network,
         derive_supported: consistent_features.contains(DERIVE_FEATURE),
+        // The *fresh* advertised feature set. Resource limits are gated
+        // on exactly this set, so a limit that the node cannot enforce is
+        // refused before any workspace upload.
+        features: consistent_features.into_iter().map(str::to_owned).collect(),
     })
 }
 
@@ -1693,6 +1910,8 @@ struct ExecutionPolicy {
     /// The fresh preflight probe advertised `workspace.derive.v1` (M003).
     /// Capability is never inferred from version strings.
     derive_supported: bool,
+    /// The fresh, mutually-consistent advertised feature set.
+    features: BTreeSet<String>,
 }
 
 /// Map a payload cwd to an Eggwork-relative cwd rooted at the workspace
@@ -2309,6 +2528,7 @@ fn build_spec(
     cwd: Option<RelativePath>,
     timeout: Option<Duration>,
     policy: ExecutionPolicy,
+    resources: ResourceRequirements,
 ) -> Result<ExecutionSpec, String> {
     let timeout_millis = timeout
         .map(|t| t.as_millis().min(u128::from(u64::MAX)) as u64)
@@ -2322,11 +2542,11 @@ fn build_spec(
         timeout_millis,
         output: OutputPolicy::default(),
         declared_outputs: Vec::new(),
-        resources: ResourceRequirements {
-            memory_bytes: Requirement::NotRequested,
-            cpu_millis: Requirement::NotRequested,
-            pids: Requirement::NotRequested,
-        },
+        // The limits the operator authorized for this node, already
+        // resolved against the job's request and the node's advertised
+        // capabilities. The node's own `cpu_millis` is a CPU *quota* in
+        // milli-percent of one CPU, not a CPU-time budget.
+        resources,
         isolation: policy.isolation,
         network: policy.network,
     };
@@ -2438,6 +2658,76 @@ fn is_terminal(state: &ExecutionState) -> bool {
 
 /// Map an authoritative terminal snapshot to a scheduler status.
 /// Non-terminal snapshots are never success: they map to interrupted.
+/// Build the durable resource-limit record for one remote execution.
+///
+/// The record carries two independent facts: the limits the daemon asked
+/// the node to enforce, and what the node reported it did with them. A
+/// node that reports nothing leaves `outcomes` as `None` — that is not
+/// the same claim as "no limit was applied".
+fn remote_resource_record(
+    snapshot: &ExecutionSnapshot,
+    limits: Option<&codegg_config::schema::RemoteResourceLimits>,
+) -> Option<RemoteResourceRecord> {
+    let reported = snapshot.result.as_ref().and_then(|r| r.resources.as_ref());
+    if reported.is_none() && limits.is_none() {
+        return None;
+    }
+    let outcomes = reported.map(|resources| RemoteResourceOutcomes {
+        memory_bytes: remote_resource_outcome(&resources.memory_bytes),
+        // The node's `cpu_millis` is a CPU *quota* in milli-percent of one
+        // CPU; the field name here says so, because the upstream name
+        // reads like a CPU-time budget.
+        cpu_quota_milli_percent: remote_resource_outcome(&resources.cpu_millis),
+        pids: remote_resource_outcome(&resources.pids),
+    });
+    Some(RemoteResourceRecord {
+        requested: limits.cloned(),
+        outcomes,
+    })
+}
+
+/// Map one node-reported dimension outcome onto the durable vocabulary.
+fn remote_resource_outcome(
+    result: &eggwork_core::ResourceDimensionResult,
+) -> RemoteResourceOutcome {
+    match result {
+        eggwork_core::ResourceDimensionResult::NotRequested => RemoteResourceOutcome::NotRequested,
+        eggwork_core::ResourceDimensionResult::NotApplied { reason } => {
+            RemoteResourceOutcome::NotApplied {
+                reason: truncate_chars(reason, 160),
+            }
+        }
+        eggwork_core::ResourceDimensionResult::Applied { backend } => {
+            RemoteResourceOutcome::Applied {
+                backend: truncate_chars(backend, 64),
+            }
+        }
+        eggwork_core::ResourceDimensionResult::LimitExceeded { backend } => {
+            RemoteResourceOutcome::LimitExceeded {
+                backend: truncate_chars(backend, 64),
+            }
+        }
+    }
+}
+
+/// Re-derive the effective limits from configuration alone.
+///
+/// Used by the restart-reconciliation path, where the attempt's original
+/// preflight is gone. The capability gate decides whether the limits were
+/// *accepted*, not what their values were, so the values are still
+/// derivable from the operator's ceiling and the job's durable request.
+fn effective_limits_without_capabilities(
+    node: &ResolvedEggworkNode,
+    ctx: &JobExecutionContext,
+) -> Option<codegg_config::schema::RemoteResourceLimits> {
+    crate::scheduler::eggwork_limits::combine_limits(
+        node.resource_limits.as_ref(),
+        ctx.job.resource_request.remote.as_ref(),
+    )
+    .ok()
+    .flatten()
+}
+
 fn map_terminal(
     state: &ExecutionState,
     result: Option<&ExecutionResult>,
@@ -2908,6 +3198,7 @@ mod tests {
             required_capabilities: Vec::new(),
             isolation_policy: codegg_config::schema::EggworkIsolationPolicy::None,
             network_policy: codegg_config::schema::EggworkNetworkPolicy::Unrestricted,
+            resource_limits: None,
         }
     }
 
@@ -2918,7 +3209,13 @@ mod tests {
         let mut node = test_node();
         node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
         let error = preflight(&client_trait, &node).await.unwrap_err();
-        assert!(error.contains("refusing before workspace upload"));
+        assert_eq!(
+            error,
+            RemoteAdmissionOutcome::CapabilityMismatch {
+                capability: REQUIRED_ISOLATION_FEATURE.to_owned(),
+            }
+        );
+        assert!(!error.is_retryable(), "a policy outcome is never waited on");
 
         client
             .status
@@ -2928,7 +3225,12 @@ mod tests {
             .features
             .push(REQUIRED_ISOLATION_FEATURE.into());
         let error = preflight(&client_trait, &node).await.unwrap_err();
-        assert!(error.contains("refusing before workspace upload"));
+        assert_eq!(
+            error,
+            RemoteAdmissionOutcome::CapabilityMismatch {
+                capability: REQUIRED_ISOLATION_FEATURE.to_owned(),
+            }
+        );
         client
             .capabilities
             .lock()
@@ -2943,8 +3245,20 @@ mod tests {
             isolation: IsolationRequirement::Required,
             network: NetworkRequirement::Unrestricted,
             derive_supported: false,
+            features: BTreeSet::new(),
         };
-        let spec = build_spec(&["true".into()], None, None, policy).unwrap();
+        let spec = build_spec(
+            &["true".into()],
+            None,
+            None,
+            policy,
+            ResourceRequirements {
+                memory_bytes: Requirement::NotRequested,
+                cpu_millis: Requirement::NotRequested,
+                pids: Requirement::NotRequested,
+            },
+        )
+        .unwrap();
         assert_eq!(spec.command.isolation, IsolationRequirement::Required);
     }
 
@@ -2955,8 +3269,12 @@ mod tests {
         let mut node = test_node();
         node.network_policy = codegg_config::schema::EggworkNetworkPolicy::Disabled;
         let error = preflight(&client_trait, &node).await.unwrap_err();
-        assert!(error.contains("network.disabled.v1"));
-        assert!(error.contains("refusing before workspace upload"));
+        assert_eq!(
+            error,
+            RemoteAdmissionOutcome::CapabilityMismatch {
+                capability: NETWORK_DISABLED_FEATURE.to_owned(),
+            }
+        );
         client
             .status
             .lock()
@@ -2965,7 +3283,12 @@ mod tests {
             .features
             .push(NETWORK_DISABLED_FEATURE.into());
         let error = preflight(&client_trait, &node).await.unwrap_err();
-        assert!(error.contains("network.disabled.v1"));
+        assert_eq!(
+            error,
+            RemoteAdmissionOutcome::CapabilityMismatch {
+                capability: NETWORK_DISABLED_FEATURE.to_owned(),
+            }
+        );
         client
             .capabilities
             .lock()
@@ -2982,6 +3305,12 @@ mod tests {
                 isolation: IsolationRequirement::None,
                 network: NetworkRequirement::Disabled,
                 derive_supported: false,
+                features: BTreeSet::new(),
+            },
+            ResourceRequirements {
+                memory_bytes: Requirement::NotRequested,
+                cpu_millis: Requirement::NotRequested,
+                pids: Requirement::NotRequested,
             },
         )
         .unwrap();

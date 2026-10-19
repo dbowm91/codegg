@@ -281,6 +281,31 @@ impl CoreDaemon {
                 Default::default()
             }
         };
+        // Per-node ceilings on concurrently admitted remote executions.
+        //
+        // A remote job does not consume the controller's local CPU, memory,
+        // or process budget — those tokens describe the *node's* capacity.
+        // It consumes a node-scoped reservation instead, bounded here.
+        // A node with no configured ceiling falls back to the controller's
+        // process-slot budget, which preserves the effective concurrency
+        // bound remote work had before the budgets were split.
+        let scheduler_config = scheduler_config.with_remote_node_capacity(
+            config
+                .eggwork
+                .as_ref()
+                .and_then(|eggwork| eggwork.nodes.as_ref())
+                .map(|nodes| {
+                    nodes
+                        .iter()
+                        .filter_map(|(table_key, profile)| {
+                            profile
+                                .max_concurrent_executions
+                                .map(|limit| (table_key.clone(), limit))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
         let (scheduler, should_spawn_scheduler) = if let Some(existing) = deps.scheduler.clone() {
             (existing, false)
         } else if scheduler_config.enabled {

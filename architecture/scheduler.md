@@ -169,11 +169,62 @@ keys are reserved together, or none:
 
 `BlockReason` variants: `InsufficientProcessSlots`,
 `InsufficientCpuWeight`, `InsufficientMemory`, `InsufficientIoWeight`,
-`InsufficientNetworkSlots`, `KeyContended`, `QueueFull`.
+`InsufficientNetworkSlots`, `KeyContended`, `QueueFull`,
+`RemoteNodeCapacity`.
 
 `UnschedulableReason` variants: `ProcessSlotsExceedBudget`,
 `CpuWeightExceedsBudget`, `MemoryExceedsBudget`,
-`IoWeightExceedsBudget`, `NetworkSlotsExceedsBudget`.
+`IoWeightExceedsBudget`, `NetworkSlotsExceedsBudget`,
+`RemoteNodeCapacityExceedsBudget`.
+
+#### Local and remote budgets (M003)
+
+A reservation carries a `remote_node: Option<String>`. The distinction
+matters because the abstract tokens on a remote job describe the
+**remote node's** capacity, not the controller's:
+
+| Reservation | Charged against the local budget |
+|---|---|
+| local job | CPU weight, memory hint, process slots, I/O weight, network slots, exclusivity keys |
+| remote job | the node's own capacity key + one controller transfer slot + exclusivity keys |
+
+A remote job therefore no longer consumes fictitious local CPU and memory:
+four remote `build` jobs, each with a CPU weight of 3 and a 2 GiB memory
+hint, do not exhaust the controller's local budget — the local budget
+describes *this* machine, and the work is not running on it.
+
+What a remote reservation *does* consume:
+
+- **A named-node capacity key.** `RemoteTargetPolicy`'s per-node ceiling
+  (`[eggwork.nodes.<id>].max_concurrent_executions`) bounds how many
+  remote executions the controller has in flight against that node. A
+  node with no configured ceiling falls back to the controller's
+  process-slot budget, which preserves the effective concurrency bound
+  remote work had before the split. `BlockReason::RemoteNodeCapacity`
+  reports the shortfall; the reservation is retried by the fair queue,
+  not clamped.
+- **A controller transfer budget.** A remote attempt moves the workspace
+  to the node and streams events back, which is real controller work. It
+  is charged against `[scheduler.resources].max_remote_transfers`
+  (default 16) — deliberately a *separate* budget from
+  `max_network_slots`, which measures the network demand of **local**
+  jobs. Charging a remote transfer against the local network budget would
+  throttle remote work by an unrelated dimension, and a local job's
+  network demand must not be throttled by remote traffic.
+  `BlockReason::RemoteTransferCapacity` reports the shortfall.
+- **Every exclusivity key.** Workspace exclusivity is not a node-local
+  property, so a remote job contends for the same keys a local one does.
+
+The node's own capacity remains the node's authority: it refuses work it
+cannot take, and the executor turns that refusal into a typed outcome
+(see below). The controller's node key exists to avoid *flooding* a
+saturated node with submissions it will only refuse. With the default
+ceilings, a single node still admits exactly as many remote executions as
+it did before the split (`max_process_slots`); two nodes now admit
+twice that, which is the point of separating the budgets.
+
+There is still exactly one scheduler, one fair queue, and one admission
+controller. No second queue and no remote-job registry were introduced.
 
 #### FairJobQueue (`fair_queue.rs`)
 
@@ -284,6 +335,9 @@ max_cpu_weight = 8
 max_memory_mb_hint = 8192
 max_io_weight = 8
 max_network_slots = 4
+# The controller's own remote-transfer budget (M003). Separate from
+# `max_network_slots`, which measures local jobs' network demand.
+max_remote_transfers = 16
 
 [scheduler.queue]
 max_total = 256
@@ -461,6 +515,47 @@ completions, still-live executions are cancelled and reported
 interrupted. Static guard: `scripts/check_eggwork_target_routing.py`.
 Live mTLS qualification: `tests/eggwork_remote_execution_live.rs`
 (Linux).
+
+#### Typed remote outcomes and the bounded wait (M003, worker telemetry and targeting)
+
+The executor's preflight returns a typed outcome, not a string:
+
+| Outcome | Class | Waited on? |
+|---|---|---|
+| `NodeBusy { active, max }` | contention | yes |
+| `NodeUnreachable { detail }` | transient | yes |
+| `NodeDraining` | policy | no |
+| `CapabilityMismatch { capability }` | policy | no |
+| `IdentityMismatch { expected, observed }` | policy | no |
+| `LimitRefused { code, detail }` | policy | no |
+| `Cancelled` | cancellation | no |
+
+Only contention is worth waiting on. A draining node, a missing
+capability, an identity mismatch, and a refused limit are decisions:
+waiting changes nothing, so they fail immediately with a typed reason
+rather than burning the wait budget.
+
+The wait itself is bounded in every dimension — a wait count, a
+per-wait ceiling, and a total deadline
+(`[eggwork.remote_retry]`, defaulting to 2 waits, 250 ms → 5 s
+exponential backoff, 30 s total). It happens **before any remote side
+effect**, so a retry cannot duplicate a submission. It always stays on
+the *same* node: an explicitly targeted job is never re-targeted
+elsewhere and never falls back to local execution.
+
+The node's own idempotency covers the remaining case. The executor
+persists the derived remote handle before the first upload, so a
+submission under the same handle is idempotent on the node, and a
+restart observes the persisted handle instead of resubmitting. A lost
+execution is reported `Interrupted` — the durable handle makes the next
+attempt reconcile rather than duplicate.
+
+Cancellation is honored between waits, so a cancelled job does not sit
+out the whole budget.
+
+The resource-limit policy itself (operator ceiling, unit-safe
+conversion, the `cpu_millis` trap, and the truthful outcome record) is
+documented in `architecture/jobs.md` under "Remote resource limits".
 
 #### Content-aware derived workspace transfer (M003)
 

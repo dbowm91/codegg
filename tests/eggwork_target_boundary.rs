@@ -222,6 +222,7 @@ fn submit_spec(
         depends_on: Vec::new(),
         labels: std::collections::HashMap::new(),
         target,
+        remote_resources: None,
     }
 }
 

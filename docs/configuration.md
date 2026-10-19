@@ -233,3 +233,16 @@ approved-node allowlist (absent means nothing is targetable), and
 posture ceiling a targetable node must declare. Naming a node also requires the
 caller to hold the project-owner node-target capability, so a contributor cannot
 reach a remote node even on a daemon that allows it.
+
+A node profile may also carry `resource_limits` — the operator's ceiling on the
+physical limits a job may ask that node to enforce — and
+`max_concurrent_executions`, which bounds how many remote executions the daemon
+runs against that node at once. Both are absent by default, so an unconfigured
+daemon behaves exactly as it did before remote limits existed. A limit is
+expressed in the node's own units: `memory_bytes` in bytes,
+`cpu_quota_milli_percent` in milli-percent of one CPU (`1000` means one full
+CPU, not a CPU-time budget), and `pids` as a task count. Each dimension says
+whether it is `required` (the daemon refuses to submit when the node cannot
+enforce it) or `best_effort` (the node may decline, and the result says so).
+A job may ask for less than the ceiling, never more, and may never weaken a
+`required` limit — such a request is refused before the job is created.

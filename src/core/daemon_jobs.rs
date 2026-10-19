@@ -93,6 +93,7 @@ impl CoreDaemon {
                         &new_job.target,
                         new_job.kind,
                         &new_job.payload,
+                        new_job.resource_request.remote.as_ref(),
                         authority.principal(),
                         authz_decision.project_id.as_ref(),
                         &authz_decision.decision_id,
@@ -388,6 +389,7 @@ impl CoreDaemon {
                         &template.job_template.target,
                         template.job_template.kind,
                         &template.job_template.payload,
+                        template.job_template.resource_request.remote.as_ref(),
                         authority.principal(),
                         authz_decision.project_id.as_ref(),
                         &authz_decision.decision_id,
@@ -1077,6 +1079,7 @@ impl CoreDaemon {
         target: &codegg_core::jobs::ExecutionTarget,
         kind: codegg_core::jobs::JobKind,
         payload: &codegg_core::jobs::JobPayload,
+        remote_request: Option<&codegg_core::jobs::RemoteResourceLimits>,
         principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
         project: Option<&codegg_core::identity::ProjectId>,
         correlation_id: &str,
@@ -1107,6 +1110,20 @@ impl CoreDaemon {
             return Err(CoreResponse::Error {
                 code: rejection.code().to_owned(),
                 message: rejection.message(),
+            });
+        }
+
+        // Gate 2b — resource limits. The operator's ceiling for the node
+        // is authoritative: a job may narrow a limit but never widen one,
+        // never introduce an unconfigured dimension, and never weaken a
+        // mandatory limit. This runs on configuration alone, so a
+        // doomed request is refused before the job becomes durable. The
+        // node's live capabilities are checked later, in the executor's
+        // preflight, before any workspace upload.
+        if let Err(rejection) = policy.check_resource_request(node_id, remote_request) {
+            return Err(CoreResponse::Error {
+                code: rejection.code().to_owned(),
+                message: rejection.to_string(),
             });
         }
 

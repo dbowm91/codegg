@@ -27,6 +27,17 @@ Enforces the CodeGG-owned target-selection invariants from
      client-supplied target into a domain target, and the durable read
      path (``crates/codegg-core/src/jobs/store.rs``) that restores one from
      the ``target_kind`` / ``target_node_id`` columns.
+  8. A node ``ResourceRequirements`` literal is built only where the
+     operator's limit policy is resolved
+     (``src/scheduler/eggwork_limits.rs``) and where the executor turns
+     the resolved requirements into a command spec
+     (``src/scheduler/eggwork.rs``). No other module may invent node
+     limits.
+  9. The abstract scheduler tokens (``cpu_weight``, ``memory_mb_hint``,
+     ``process_slots``, ``io_weight``, ``network_slots``) never appear
+     inside a ``ResourceRequirements`` literal. The two vocabularies do
+     not correspond — a weight is not a quota, a hint is not a byte count
+     — so a translation between them is a unit bug, not a convenience.
 
 The script self-tests. ``--self-test`` feeds synthetic sources through the
 same detectors used against the real tree and fails if a planted violation
@@ -84,6 +95,33 @@ TARGET_CONSTRUCTION_RE = re.compile(
     r"ExecutionTarget::EggworkNode\s*\{\s*node_id\s*:", re.MULTILINE
 )
 REMOTE_TARGET_TOKEN = "EggworkNode"
+
+# ── Remote limit construction (rules 8 and 9) ───────────────────────────
+#
+# The node's physical limits live in exactly two places: the resolution
+# module that applies the operator's ceiling, and the executor that turns
+# the resolved requirements into a command spec. Anywhere else, a
+# `ResourceRequirements` literal is a limit nobody authorized.
+SANCTIONED_LIMIT_CONSTRUCTION: dict[str, str] = {
+    "src/scheduler/eggwork_limits.rs": (
+        "the resolution module that applies the operator's limit ceiling"
+    ),
+    "src/scheduler/eggwork.rs": (
+        "the executor that turns resolved requirements into a command spec"
+    ),
+}
+
+# The abstract scheduler tokens. They describe how the *local* admission
+# controller weighs a job; they are not physical quantities.
+ABSTRACT_RESOURCE_TOKENS: tuple[str, ...] = (
+    "cpu_weight",
+    "memory_mb_hint",
+    "process_slots",
+    "io_weight",
+    "network_slots",
+)
+
+RESOURCE_REQUIREMENTS_RE = re.compile(r"ResourceRequirements\s*\{")
 
 
 def fail(message: str) -> None:
@@ -143,6 +181,69 @@ def find_unsanctioned_target_construction(sources: list[tuple[str, str]]) -> lis
     return findings
 
 
+def _matching_brace(text: str, open_index: int) -> int:
+    """Index of the ``}`` that closes the ``{`` at ``open_index``."""
+    depth = 0
+    i = open_index
+    while i < len(text):
+        char = text[i]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        elif char == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                if text[i] == "\\":
+                    i += 1
+                i += 1
+        i += 1
+    return len(text) - 1
+
+
+def find_unsanctioned_limit_construction(sources: list[tuple[str, str]]) -> list[str]:
+    """Rule 8: only the sanctioned sites may build node limits."""
+    findings: list[str] = []
+    for rel, text in sources:
+        if rel.startswith("tests/"):
+            continue
+        if rel in SANCTIONED_LIMIT_CONSTRUCTION:
+            continue
+        production = _production_source(text)
+        for match in RESOURCE_REQUIREMENTS_RE.finditer(production):
+            line = production.count("\n", 0, match.start()) + 1
+            findings.append(
+                f"{rel}:{line}: node ResourceRequirements built outside the "
+                "sanctioned sites "
+                f"({', '.join(sorted(SANCTIONED_LIMIT_CONSTRUCTION))})"
+            )
+    return findings
+
+
+def find_abstract_token_in_limits(sources: list[tuple[str, str]]) -> list[str]:
+    """Rule 9: abstract scheduler tokens never become node limits."""
+    findings: list[str] = []
+    for rel, text in sources:
+        if rel.startswith("tests/"):
+            continue
+        production = _production_source(text)
+        for match in RESOURCE_REQUIREMENTS_RE.finditer(production):
+            open_index = match.end() - 1
+            close_index = _matching_brace(production, open_index)
+            block = production[open_index:close_index]
+            for token in ABSTRACT_RESOURCE_TOKENS:
+                if re.search(rf"\b{token}\b", block):
+                    line = production.count("\n", 0, match.start()) + 1
+                    findings.append(
+                        f"{rel}:{line}: abstract scheduler token '{token}' used as a "
+                        "node limit; a weight is not a quota and a hint is not a "
+                        "byte count"
+                    )
+    return findings
+
+
 def main() -> int:
     if not EGGWORK_RS.exists():
         fail(f"missing module: {EGGWORK_RS}")
@@ -181,6 +282,9 @@ def main() -> int:
     # selections, or executions, so it cannot bypass target selection.
     allowed_prefixes = (
         "src/scheduler/eggwork.rs",
+        # The limit-resolution module owns the one conversion from the
+        # operator's ceiling to the node's physical requirements.
+        "src/scheduler/eggwork_limits.rs",
         "tests/",
         "src/scheduler/mod.rs",
         "crates/eggwork-test-node/",
@@ -227,6 +331,10 @@ def main() -> int:
     for finding in find_frontend_remote_target(rooted):
         fail(finding)
     for finding in find_unsanctioned_target_construction(rooted):
+        fail(finding)
+    for finding in find_unsanctioned_limit_construction(rooted):
+        fail(finding)
+    for finding in find_abstract_token_in_limits(rooted):
         fail(finding)
 
     if FAILURES:
@@ -306,6 +414,51 @@ SELF_TEST_CASES: list[tuple[str, list[tuple[str, str]], bool, str]] = [
         False,
         "unsanctioned_construction",
     ),
+    (
+        "node limits built outside the sanctioned sites are reported",
+        [
+            (
+                "src/scheduler/other.rs",
+                "let r = ResourceRequirements { memory_bytes: Requirement::Required(1) };",
+            )
+        ],
+        True,
+        "unsanctioned_limit_construction",
+    ),
+    (
+        "node limits built at a sanctioned site are not reported",
+        [
+            (
+                "src/scheduler/eggwork_limits.rs",
+                "let r = ResourceRequirements { memory_bytes: Requirement::Required(1) };",
+            )
+        ],
+        False,
+        "unsanctioned_limit_construction",
+    ),
+    (
+        "an abstract scheduler token used as a node limit is reported",
+        [
+            (
+                "src/scheduler/eggwork.rs",
+                "let r = ResourceRequirements { memory_bytes: Requirement::Required(job."
+                "resource_request.memory_mb_hint) };",
+            )
+        ],
+        True,
+        "abstract_token_in_limits",
+    ),
+    (
+        "an abstract scheduler token outside a limit literal is not reported",
+        [
+            (
+                "src/scheduler/eggwork.rs",
+                "let weight = job.resource_request.memory_mb_hint;",
+            )
+        ],
+        False,
+        "abstract_token_in_limits",
+    ),
 ]
 
 
@@ -314,6 +467,10 @@ def run_self_test() -> int:
     for name, sources, should_report, detector in SELF_TEST_CASES:
         if detector == "frontend_remote_target":
             findings = find_frontend_remote_target(sources)
+        elif detector == "unsanctioned_limit_construction":
+            findings = find_unsanctioned_limit_construction(sources)
+        elif detector == "abstract_token_in_limits":
+            findings = find_abstract_token_in_limits(sources)
         else:
             findings = find_unsanctioned_target_construction(sources)
         reported = bool(findings)
