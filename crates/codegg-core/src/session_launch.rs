@@ -164,6 +164,26 @@ impl SessionLaunchStage {
         })
     }
 
+    /// The stage's position in the forward-only sequence.
+    ///
+    /// `NeedsAttention` is terminal and has no rank: it is not "further
+    /// along" than anything, it is a *different* outcome. A rank lets a
+    /// resumed launch compare the stage it recorded with the stage it is
+    /// about to reach, and skip the ones it already passed — the store
+    /// refuses a repeated or backwards transition, and a resume must not
+    /// be mistaken for a contract violation.
+    pub fn rank(self) -> Option<u8> {
+        Some(match self {
+            SessionLaunchStage::Accepted => 0,
+            SessionLaunchStage::CheckoutReserved => 1,
+            SessionLaunchStage::CheckoutReady => 2,
+            SessionLaunchStage::SessionCreated => 3,
+            SessionLaunchStage::Bound => 4,
+            SessionLaunchStage::Completed => 5,
+            SessionLaunchStage::NeedsAttention => return None,
+        })
+    }
+
     /// Whether the stage is terminal.
     pub fn is_terminal(self) -> bool {
         matches!(
@@ -269,6 +289,29 @@ pub enum SessionLaunchError {
     Session(String),
     #[error("session launch store error: {0}")]
     Storage(#[from] StorageError),
+}
+
+impl SessionLaunchError {
+    /// The bounded, non-secret code recorded when a launch needs an
+    /// operator.
+    ///
+    /// The code is a *category*, never the detail: the detail is the
+    /// error's own message, which the operator surface shows in full.
+    /// A code that carried the detail would end up in a durable record
+    /// and in an operator's list, where it would be both unbounded and
+    /// misleading.
+    pub fn attention_code(&self) -> &'static str {
+        match self {
+            SessionLaunchError::NotFound(_) => "not_found",
+            SessionLaunchError::IdempotencyConflict { .. } => "idempotency_conflict",
+            SessionLaunchError::InvalidRequest(_) => "invalid_request",
+            SessionLaunchError::InvalidTransition { .. } => "invalid_transition",
+            SessionLaunchError::Checkout(_) => "checkout_failed",
+            SessionLaunchError::Workspace(_) => "workspace_failed",
+            SessionLaunchError::Session(_) => "session_failed",
+            SessionLaunchError::Storage(_) => "storage_failed",
+        }
+    }
 }
 
 const LAUNCH_COLUMNS: &str = "launch_id, project_id, intent, placement, parent_session_id, \

@@ -214,8 +214,11 @@ async fn user_prompt_queue_v80_migration_creates_table_index_and_layout() {
     // again for M006 (v85) without testing anything: the constant is bumped by
     // every later migration, and the assertion above already fails closed if the
     // constant and the wired migration ever disagree.
+    // The floor is asserted against the **durable** layout, not the
+    // constant: a comparison between two constants has a value the
+    // compiler folds away, and a folded assertion is not a test.
     assert!(
-        STORAGE_LAYOUT_VERSION >= 80,
+        layout >= 80,
         "the queue's v80 migration must be part of the current layout"
     );
 

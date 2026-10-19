@@ -373,7 +373,21 @@ pub enum TuiCommand {
         request_id: u64,
         sessions: Vec<crate::protocol::dto::Session>,
         message_counts: std::collections::HashMap<String, usize>,
+        /// M006: the managed checkouts the sessions may run in, keyed by
+        /// the checkout's path.
+        checkouts: std::collections::HashMap<
+            String,
+            crate::tui::components::dialogs::session::CheckoutInfo,
+        >,
         error: Option<String>,
+    },
+    /// M006: launch a session into an isolated checkout.
+    SessionLaunch {
+        project_id: String,
+        intent: crate::protocol::core::SessionLaunchIntentDto,
+        parent_session_id: Option<String>,
+        placement: crate::protocol::core::SessionLaunchPlacementDto,
+        idempotency_key: String,
     },
     /// Completion: a single session's metadata was refreshed.
     ///
@@ -1738,6 +1752,8 @@ pub(crate) fn send_tui(tx: &mpsc::Sender<TuiCommand>, cmd: TuiCommand) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionMutationOp {
     Delete,
+    /// M006: a session was launched into an isolated checkout.
+    Launch,
     Archive,
     Unarchive,
     Fork,

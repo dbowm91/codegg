@@ -138,8 +138,21 @@ async fn user_prompt_queue_v81_migration_creates_the_owner_table() {
     // already fails closed if the constant and the wired migration ever
     // disagree. M002b's own claim — that the owner binding bumped the layout at
     // all — is unchanged and is what the table assertions below prove.
+    let layout: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read migration marker");
+    assert_eq!(
+        layout, STORAGE_LAYOUT_VERSION as i64,
+        "layout constant must equal the highest wired migration"
+    );
+    // The floor is asserted against the **durable** layout, not the
+    // constant: a comparison between two constants has a value the
+    // compiler folds away, and a folded assertion is not a test.
     assert!(
-        STORAGE_LAYOUT_VERSION >= 82,
+        layout >= 82,
         "M002b bumps the layout to the owner binding; M007 advanced it to v82 \
          for the optional due time, and the queue's migrations must still be \
          part of the current layout"

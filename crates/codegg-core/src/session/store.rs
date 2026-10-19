@@ -1123,7 +1123,14 @@ impl SessionStore {
     /// A fork launched into a new checkout must leave the parent's
     /// workspace behind. The *canonical* binding lives in
     /// `session_project_binding`; this updates the session row's own
-    /// `workspace_id` and `directory` projection so the two agree.
+    /// `project_id`, `workspace_id` and `directory` projection so the two
+    /// agree.
+    ///
+    /// The project moves with the workspace: a fork inherits the parent's
+    /// project when it is copied, and a launch that places the fork in
+    /// another project's checkout must not leave the session row pointing
+    /// at the parent's project while its canonical binding points at the
+    /// launch's.
     ///
     /// A read-then-write path: the session is read to confirm it exists
     /// and to learn its previous workspace, and the decision is written
@@ -1134,6 +1141,7 @@ impl SessionStore {
     pub async fn rebind_workspace(
         &self,
         session_id: &str,
+        project_id: &crate::identity::ProjectId,
         workspace_id: &crate::workspace::WorkspaceId,
         directory: &str,
     ) -> Result<(), StorageError> {
@@ -1145,16 +1153,16 @@ impl SessionStore {
         let mut tx = crate::storage::immediate::ImmediateWrite::begin(&self.pool)
             .await
             .map_err(|e| StorageError::Database(e.to_string()))?;
-        let existing: Option<String> =
-            sqlx::query_scalar("SELECT workspace_id FROM session WHERE id = ?")
+        let existing: Option<(String, String)> =
+            sqlx::query_as("SELECT project_id, workspace_id FROM session WHERE id = ?")
                 .bind(session_id)
                 .fetch_optional(&mut **tx)
                 .await
                 .map_err(|e| StorageError::Database(e.to_string()))?;
-        let Some(previous) = existing else {
+        let Some((previous_project, previous_workspace)) = existing else {
             return Err(StorageError::NotFound(format!("session {session_id}")));
         };
-        if previous == workspace_id.as_str() {
+        if previous_workspace == workspace_id.as_str() && previous_project == project_id.as_str() {
             tx.commit()
                 .await
                 .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -1162,8 +1170,9 @@ impl SessionStore {
         }
         let now = Utc::now().timestamp_millis();
         sqlx::query(
-            "UPDATE session SET workspace_id = ?, directory = ?, time_updated = ? WHERE id = ?",
+            "UPDATE session SET project_id = ?, workspace_id = ?, directory = ?, time_updated = ? WHERE id = ?",
         )
+        .bind(project_id.as_str())
         .bind(workspace_id.as_str())
         .bind(directory)
         .bind(now)
@@ -1181,12 +1190,36 @@ impl SessionStore {
     /// references `message` by foreign key, so copying an orphan part would
     /// fail the constraint and lose the whole fork.
     pub async fn fork(&self, id: &str) -> Result<Session, StorageError> {
+        let child_id = Uuid::new_v4().to_string();
+        self.fork_as(id, &child_id).await
+    }
+
+    /// Fork a session under a caller-chosen child id, converging if that
+    /// child already exists.
+    ///
+    /// M006: a launch derives the child's id from the launch, so a retry
+    /// — or a resume after a crash between the fork and the launch
+    /// record's advance — finds the child the first attempt made instead
+    /// of forking a second time. A child that already exists is returned
+    /// as it is, provided it is a fork of the same parent; a child id
+    /// that belongs to a *different* parent is a conflict, not a
+    /// convergence.
+    pub async fn fork_as(&self, id: &str, child_id: &str) -> Result<Session, StorageError> {
+        if let Some(existing) = self.get(child_id).await? {
+            if existing.parent_id.as_deref() != Some(id) {
+                return Err(StorageError::Conflict(format!(
+                    "session {child_id} already exists and is not a fork of {id}"
+                )));
+            }
+            return Ok(existing);
+        }
+
         let parent = self
             .get(id)
             .await?
             .ok_or_else(|| StorageError::NotFound(format!("session {id}")))?;
 
-        let child_id = Uuid::new_v4().to_string();
+        let child_id = child_id.to_string();
         let slug = generate_slug(&Some(format!("{} (fork)", parent.title)));
         let title = format!("{} (fork)", parent.title);
         let version = "1".to_string();

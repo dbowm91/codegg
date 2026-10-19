@@ -877,6 +877,89 @@ impl CoreDaemon {
         service.authorize(&authz_request).await
     }
 
+    /// M006: the checkout half of a launch is a separate effect with its
+    /// own capability.
+    ///
+    /// The `session_launch` descriptor carries `session.create`, because
+    /// the session is the primary effect. Allocating a *managed checkout*
+    /// is a distinct effect — it creates a branch and a working tree in
+    /// the repository — and a launch that performs it must not be
+    /// authorized on the session capability alone. A grant that carries
+    /// `session.create` but not `worktree.create` therefore fails closed
+    /// for a launch that allocates a checkout.
+    ///
+    /// A launch that places the session in an **existing** managed
+    /// checkout allocates nothing, so it does not ask for
+    /// `worktree.create`; the checkout it names is already owned by the
+    /// project, and the service refuses a checkout belonging to another
+    /// project.
+    ///
+    /// Returns `Ok(None)` when the request allocates no checkout, so the
+    /// caller can tell "no second check applies" from "the second check
+    /// passed" (`Ok(Some(decision))`).
+    async fn authorize_launch_checkout(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        request_id: &str,
+        request: &CoreRequest,
+    ) -> Result<
+        Option<codegg_core::authorization::AuthorizationDecision>,
+        codegg_core::authorization::AuthorizationError,
+    > {
+        use codegg_core::authorization::{
+            AuthorizationRequest, AuthorizationService, OperationDescriptor, ScopeKind,
+        };
+        use codegg_core::team::Capability;
+
+        let CoreRequest::SessionLaunch {
+            project_id,
+            placement,
+            ..
+        } = request
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            placement,
+            codegg_protocol::core::SessionLaunchPlacementDto::NewManagedCheckout { .. }
+        ) {
+            // No checkout is allocated; the session capability is the
+            // whole authority for this request.
+            return Ok(None);
+        }
+        let correlation = format!("{}:{request_id}", authority.correlation_id());
+        let descriptor = OperationDescriptor::new(
+            "worktree_create",
+            ScopeKind::DirectProject,
+            Some(Capability::WorktreeCreate),
+        );
+        let Some(pool) = self.pool.clone() else {
+            // No durable team store: the local-only daemon has no
+            // membership model to consult, exactly like the primary gate.
+            return Ok(Some(codegg_core::authorization::AuthorizationDecision {
+                principal_id: authority.principal_id().clone(),
+                operation: descriptor.operation.to_owned(),
+                capability: descriptor.capability.map(|cap| cap.as_str().to_owned()),
+                project_id: None,
+                membership_revision: None,
+                policy: codegg_core::authorization::PolicyKind::LocalOwnerBroad,
+                decision_id: uuid::Uuid::new_v4().to_string(),
+                correlation_id: correlation,
+                reason: "no durable team store; local-only daemon".to_owned(),
+                decided_at_ms: chrono::Utc::now().timestamp_millis(),
+            }));
+        };
+        let project = codegg_core::identity::ProjectId::parse(project_id).ok();
+        let service = AuthorizationService::new(codegg_core::team::TeamStore::new(pool));
+        let authz_request = AuthorizationRequest::new(
+            authority.principal().clone(),
+            descriptor,
+            project,
+            correlation,
+        );
+        service.authorize(&authz_request).await.map(Some)
+    }
+
     /// Team collaboration corrective M002: chat data gate.
     ///
     /// Returns `Some` when this request carries a chat data gate
@@ -1130,6 +1213,12 @@ impl CoreDaemon {
             CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
+            // M006: a launch names the project it places a session in.
+            // Without this arm the `session_launch` descriptor's
+            // `DirectProject` scope resolves to `None`, and a team
+            // principal is denied for a missing scope instead of for a
+            // missing grant.
+            CoreRequest::SessionLaunch { project_id, .. } => Some(project_id.as_str()),
             CoreRequest::SessionCreate {
                 project_id: Some(project_id),
                 ..
@@ -3832,6 +3921,31 @@ impl CoreDaemon {
                 return Ok(Self::authorization_denial(&request.payload, &error));
             }
         };
+        // M006: a launch that allocates a managed checkout performs a
+        // second effect with its own capability. The check runs *before*
+        // the allow event is recorded and before dispatch, so a denied
+        // launch has no side effect at all — not even an accepted launch
+        // record — and the audit trail holds one decision, not an allow
+        // followed by a denial.
+        match Box::pin(self.authorize_launch_checkout(
+            &authority,
+            &request.request_id,
+            &request.payload,
+        ))
+        .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                Box::pin(self.emit_audit_for_denial(
+                    &authority,
+                    &request.request_id,
+                    &request.payload,
+                    &error,
+                ))
+                .await;
+                return Ok(Self::authorization_denial(&request.payload, &error));
+            }
+        }
         Box::pin(self.emit_audit_for_authorized(
             &authority,
             &authz_decision,

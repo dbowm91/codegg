@@ -597,6 +597,16 @@ pub enum StorageError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    /// The write was refused because it contradicts something already
+    /// stored — a row that exists with a different owner, a revision that
+    /// moved on, a child id that already belongs to another parent.
+    ///
+    /// It is distinct from [`StorageError::Database`] because the write
+    /// did not fail: it was *refused*, and a caller that retries it
+    /// unchanged will be refused again.
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("llm operation failed: {operation}: {message}")]
     LlmOperation { operation: String, message: String },
 

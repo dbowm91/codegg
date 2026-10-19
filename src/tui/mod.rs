@@ -1190,6 +1190,7 @@ mod async_cmd_tests {
             request_id,
             Vec::new(),
             HashMap::new(),
+            HashMap::new(),
             Some("test error".into()),
         );
         let toasts: Vec<String> = app
@@ -1208,7 +1209,14 @@ mod async_cmd_tests {
     fn apply_sessions_reloaded_clears_loading() {
         let mut app = make_test_app();
         let request_id = app.dialog_state.session_reload_request.begin();
-        apply_sessions_reloaded(&mut app, request_id, Vec::new(), HashMap::new(), None);
+        apply_sessions_reloaded(
+            &mut app,
+            request_id,
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
         assert!(!app.dialog_state.session_reload_request.is_loading());
     }
 
@@ -1674,6 +1682,7 @@ mod async_cmd_tests {
             id_a,
             Vec::new(),
             HashMap::new(),
+            HashMap::new(),
             Some("stale error".into()),
         );
         let toasts: Vec<String> = app
@@ -1690,7 +1699,14 @@ mod async_cmd_tests {
         assert!(app.dialog_state.session_reload_request.is_loading());
 
         // Current success with id_b clears loading.
-        apply_sessions_reloaded(&mut app, id_b, Vec::new(), HashMap::new(), None);
+        apply_sessions_reloaded(
+            &mut app,
+            id_b,
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
         assert!(!app.dialog_state.session_reload_request.is_loading());
     }
 
