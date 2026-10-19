@@ -1,8 +1,8 @@
 # TUI Live Work Visibility M002 — Scheduler Job Lifecycle and Snapshot Recovery
 
-Status: **ready for handoff**
+Status: **closing**
 Primary class: invariant
-Repository review baseline: `61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649` (`main`, 2026-10-19; re-pin)
+Repository review baseline: `df923802` (`plan/tui-live-work-visibility-corrective`, rebased on `origin/main`, 2026-10-19)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M002.
 Requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`, `#28-observability`, `#27-security-requirements`.
 Related accepted decisions: ADR-0031 (idle completion), ADR-0038 (queue/scheduler authority); proposed ADR-0042 is **not** required here.

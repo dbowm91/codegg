@@ -171,6 +171,9 @@ pub struct SessionDialog {
     pub search_messages: bool,
     pub message_preview: HashMap<String, String>,
     pub loading: bool,
+    /// Availability of the active session's live projection. Session rows
+    /// remain usable when the projection is loading or unavailable.
+    projection_status: Option<crate::tui::app::state::projection_client::PrimaryProjectionStatus>,
     pub scroll: CenteredScroll,
     pub bulk_mode: bool,
     pub selected_ids: HashMap<String, bool>,
@@ -197,6 +200,7 @@ impl Clone for SessionDialog {
             search_messages: self.search_messages,
             message_preview: self.message_preview.clone(),
             loading: self.loading,
+            projection_status: self.projection_status.clone(),
             scroll: self.scroll.clone(),
             bulk_mode: self.bulk_mode,
             selected_ids: self.selected_ids.clone(),
@@ -223,6 +227,7 @@ impl SessionDialog {
             search_messages: false,
             message_preview: HashMap::new(),
             loading: false,
+            projection_status: None,
             scroll: CenteredScroll::new(),
             bulk_mode: false,
             selected_ids: HashMap::new(),
@@ -251,6 +256,13 @@ impl SessionDialog {
 
     pub fn set_loading(&mut self, loading: bool) {
         self.loading = loading;
+    }
+
+    pub fn set_projection_status(
+        &mut self,
+        status: Option<crate::tui::app::state::projection_client::PrimaryProjectionStatus>,
+    ) {
+        self.projection_status = status;
     }
 
     pub fn load_sessions(&mut self, sessions: Vec<Session>) {
@@ -884,6 +896,25 @@ impl Component for SessionDialog {
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         )));
+        if let Some(status) = &self.projection_status {
+            let label = match status {
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading => {
+                    Some("live work: loading")
+                }
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Authoritative => {
+                    None
+                }
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(_) => {
+                    Some("live work: unavailable")
+                }
+            };
+            if let Some(label) = label {
+                lines.push(Line::from(Span::styled(
+                    label,
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        }
         lines.push(Line::from(""));
 
         if let Some(context) = &self.project_context {

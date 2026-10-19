@@ -147,6 +147,93 @@ impl CoreDaemon {
                 ));
             }
         }
+        // JobStore is authoritative for session-owned scheduler work. Keep
+        // live jobs ahead of recent terminals so history cannot hide active
+        // work. This bounded indexed query runs only during snapshot/resync,
+        // never in a TUI render path.
+        let live_jobs = self
+            .deps
+            .job_store
+            .list_job_records(codegg_core::jobs::JobStoreQuery {
+                session_id: Some(session_id.to_string()),
+                states: vec![
+                    codegg_core::jobs::JobState::Scheduled,
+                    codegg_core::jobs::JobState::Queued,
+                    codegg_core::jobs::JobState::Running,
+                    codegg_core::jobs::JobState::Blocked,
+                ],
+                limit: Some((codegg_protocol::projection::MAX_PROJECTION_JOBS + 1) as u32),
+                ..Default::default()
+            })
+            .await;
+        let mut jobs_added = 0usize;
+        match live_jobs {
+            Ok(jobs) => {
+                let truncated = jobs.len() > codegg_protocol::projection::MAX_PROJECTION_JOBS;
+                for job in jobs
+                    .into_iter()
+                    .take(codegg_protocol::projection::MAX_PROJECTION_JOBS)
+                {
+                    snapshot.upsert_job(job_projection(&job));
+                    jobs_added += 1;
+                }
+                if truncated {
+                    snapshot.push_diagnostic(
+                        codegg_protocol::projection::snapshot::ProjectionDiagnostic {
+                            code: "job_snapshot_truncated".into(),
+                            message: "session has more live jobs than the projection cap".into(),
+                            at_ms: Utc::now().timestamp_millis(),
+                            session_id: Some(session_id.to_string()),
+                            turn_id: None,
+                        },
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "failed to rebuild live jobs for session projection snapshot");
+                snapshot.push_diagnostic(
+                    codegg_protocol::projection::snapshot::ProjectionDiagnostic {
+                        code: "job_snapshot_unavailable".into(),
+                        message: "live job state could not be loaded".into(),
+                        at_ms: Utc::now().timestamp_millis(),
+                        session_id: Some(session_id.to_string()),
+                        turn_id: None,
+                    },
+                );
+            }
+        }
+        if jobs_added < codegg_protocol::projection::MAX_PROJECTION_JOBS {
+            let terminal_jobs = self
+                .deps
+                .job_store
+                .list_job_records(codegg_core::jobs::JobStoreQuery {
+                    session_id: Some(session_id.to_string()),
+                    states: vec![
+                        codegg_core::jobs::JobState::Completed,
+                        codegg_core::jobs::JobState::Failed,
+                        codegg_core::jobs::JobState::Cancelled,
+                        codegg_core::jobs::JobState::TimedOut,
+                        codegg_core::jobs::JobState::Interrupted,
+                        codegg_core::jobs::JobState::Expired,
+                    ],
+                    limit: Some(
+                        (codegg_protocol::projection::MAX_PROJECTION_JOBS - jobs_added) as u32,
+                    ),
+                    ..Default::default()
+                })
+                .await;
+            match terminal_jobs {
+                Ok(jobs) => {
+                    for job in jobs {
+                        snapshot.upsert_job(job_projection(&job));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%session_id, %error, "failed to load recent terminal jobs for session projection snapshot")
+                }
+            }
+        }
+
         if let Ok(worktrees) = self
             .worktree_service
             .list(codegg_core::worktree_service::WorktreeQuery {
@@ -903,6 +990,23 @@ impl CoreDaemon {
     }
 }
 
+fn job_projection(
+    job: &codegg_core::jobs::JobRecord,
+) -> codegg_protocol::projection::dto::JobProjection {
+    codegg_protocol::projection::dto::JobProjection {
+        job_id: job.job_id.as_str().to_string(),
+        workspace_id: job.workspace_id.to_string(),
+        kind: job.kind.as_str().to_string(),
+        state: job.state.as_str().to_string(),
+        summary: String::new(),
+        session_id: job.session_id.clone(),
+        turn_id: job.turn_id.clone(),
+        active_attempt_id: job.current_attempt_id.as_ref().map(ToString::to_string),
+        error_class: None,
+        updated_at: job.updated_at.timestamp_millis(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -954,6 +1058,76 @@ mod tests {
         assert!(activation.is_err());
         let refresh = daemon.refresh_project_activation("p", "w").await;
         assert!(refresh.is_err());
+    }
+
+    #[tokio::test]
+    async fn session_projection_rebuilds_owner_scoped_live_jobs() {
+        use codegg_core::jobs::{
+            IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, ResourceRequest,
+            RetryPolicy,
+        };
+
+        let daemon = CoreDaemon::new(None, None, None);
+        let workspace = daemon
+            .workspaces
+            .get_or_register(std::path::Path::new("/tmp"))
+            .await
+            .expect("register workspace");
+        let spec = NewJob {
+            workspace_id: workspace.id.clone(),
+            session_id: Some("session-owner".into()),
+            turn_id: Some("turn-owner".into()),
+            kind: JobKind::Build,
+            source: JobSource::Interactive,
+            priority: JobPriority::Normal,
+            payload: JobPayload::Maintenance {
+                task: "projection snapshot fixture".into(),
+            },
+            resource_request: ResourceRequest::default(),
+            timeout: None,
+            retry_policy: RetryPolicy::default(),
+            idempotency: IdempotencyClass::ReadOnly,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: codegg_core::jobs::ExecutionTarget::Local,
+        };
+        let job = daemon
+            .deps
+            .job_store
+            .create_job(spec.clone())
+            .await
+            .expect("persist owner-scoped job");
+        let mut other_session_spec = spec;
+        other_session_spec.session_id = Some("session-other".into());
+        other_session_spec.turn_id = Some("turn-other".into());
+        daemon
+            .deps
+            .job_store
+            .create_job(other_session_spec)
+            .await
+            .expect("persist another session's job");
+
+        let snapshot = daemon
+            .projection_snapshot_for_session(
+                "session-owner",
+                "project-owner",
+                workspace.id.as_str(),
+            )
+            .await;
+        assert_eq!(snapshot.jobs.len(), 1);
+        let projected = &snapshot.jobs[0];
+        assert_eq!(projected.job_id, job.job_id.as_str());
+        assert_eq!(projected.session_id.as_deref(), Some("session-owner"));
+        assert_eq!(projected.turn_id.as_deref(), Some("turn-owner"));
+        assert_eq!(projected.state, "queued");
     }
 
     #[tokio::test]

@@ -2154,7 +2154,7 @@ impl App {
         match event {
             E::ProjectionStreamEvent {
                 subscription_id,
-                stream_id: _,
+                stream_id,
                 envelope,
             } => {
                 // The daemon forwards live projection envelopes on this
@@ -2162,12 +2162,53 @@ impl App {
                 // `_ => false` and was discarded: the projection controller
                 // only ever learned what happened before it attached, which
                 // is why subagent and job status never appeared live.
+                let subscription_known = self
+                    .projection_client
+                    .controller()
+                    .subscription(&subscription_id)
+                    .is_some();
+                if !subscription_known
+                    && matches!(
+                        self.projection_client.primary_status(),
+                        Some(crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading)
+                    )
+                {
+                    self.projection_client.buffer_pending_envelope(
+                        crate::tui::app::state::projection_client::PendingProjectionEnvelope {
+                            subscription_id,
+                            stream_id,
+                            envelope,
+                        },
+                    );
+                    return true;
+                }
+                let is_primary = self.projection_client.primary_subscription_id()
+                    == Some(&subscription_id)
+                    && self.projection_client.primary_stream_id() == Some(&stream_id);
+                if self.projection_client.primary_subscription_id() == Some(&subscription_id)
+                    && !is_primary
+                {
+                    tracing::warn!(%stream_id, "rejected primary projection event with mismatched stream id");
+                    return false;
+                }
                 let tab_id = self
                     .projection_client
                     .active_tab_id()
                     .unwrap_or(DEFAULT_PROJECTION_TAB)
                     .to_string();
-                let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                let outcome = self.apply_projection_envelope_on_stream(
+                    &subscription_id,
+                    &stream_id,
+                    &tab_id,
+                    envelope,
+                );
+                if is_primary {
+                    crate::tui::commands::primary_projection::after_event(
+                        self,
+                        &subscription_id,
+                        outcome,
+                    );
+                }
                 true
             }
             E::TurnStarted { turn_id, .. } => {
@@ -3667,7 +3708,7 @@ impl App {
             }
             Ok(RemoteTuiMessage::ProjectionEvent {
                 subscription_id,
-                stream_id: _,
+                stream_id,
                 envelope,
             }) => {
                 let tab_id = self
@@ -3675,7 +3716,16 @@ impl App {
                     .active_tab_id()
                     .unwrap_or(DEFAULT_PROJECTION_TAB)
                     .to_string();
-                let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                if let Some(stream_id) = stream_id {
+                    let _ = self.apply_projection_envelope_on_stream(
+                        &subscription_id,
+                        &stream_id,
+                        &tab_id,
+                        envelope,
+                    );
+                } else {
+                    let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                }
             }
             Ok(RemoteTuiMessage::ProjectionResync {
                 subscription_id,
@@ -12616,6 +12666,7 @@ impl App {
 
         // Milestone 4: persist the new session binding.
         self.schedule_manifest_save();
+        crate::tui::commands::primary_projection::bind_active_session(self);
     }
 
     // -----------------------------------------------------------------
@@ -15181,8 +15232,10 @@ impl App {
             return;
         }
         let (subagents, jobs) = self.session_dialog_pending_rows();
+        let projection_status = self.projection_client.primary_status().cloned();
         let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
             dialog.set_pending_rows(subagents.clone(), jobs.clone());
+            dialog.set_projection_status(projection_status.clone());
         };
         apply(&mut self.dialog_state.session_dialog);
         self.focus_manager

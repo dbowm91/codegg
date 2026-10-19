@@ -2037,6 +2037,13 @@ impl JobScheduler {
         // durable-state backstop tick.
         if matches!(result.state, codegg_core::jobs::CancelOutcome::Cancelled) {
             self.signal_job(job_id).await;
+            if let Some(terminal) = self.store.get_job(job_id).await? {
+                self.emit_event(SchedulerEvent::JobTerminal {
+                    job_id: job_id.as_str().to_string(),
+                    state: terminal.state,
+                })
+                .await;
+            }
         }
         // Remove from in-memory queue if present.
         let mut q = self.queue.lock().await;

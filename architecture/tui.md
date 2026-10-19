@@ -621,13 +621,18 @@ point: an event can be dropped, coalesced, or simply not wired, and the wait is
 exactly the window in which that goes unnoticed.
 
 **Both inputs to that count are projection-derived, so the daemon-attached TUI
-depends on the projection actually reaching the controller.** It now does:
-`ProjectionSubscribed`'s snapshot is installed rather than discarded, live
-envelopes are consumed from `CoreEvent::ProjectionStreamEvent`, and
-`active_snapshot()` does not require a project tab that this frontend never
-switches. See `architecture/projection.md` "Daemon-attached seeding and live
-delivery" — when that chain is broken every derived status reads `idle`, which is
-indistinguishable from a healthy idle session.
+depends on the projection actually reaching the controller.** The ordinary
+`/core` TUI now starts an authorized session subscription when a session is
+bound, installs the returned snapshot, drains events received before the
+completion reaches the UI loop, and applies matching live envelopes. Session,
+project, tab, request generation, subscription, and stream identity fence stale
+completions and events. A tab switch or reconnect requests a fresh authoritative
+snapshot; reconnect resume from a stored cursor is not yet implemented. Until a
+matching snapshot is installed, `Ctrl+T` and `/sessions` report loading or
+unavailable instead of claiming the session is empty; the sidebar carries the
+same status while omitting unverified work rows. `/observe` retains its
+separate read-only subscription. See `architecture/projection.md` "Default TUI
+session subscription".
 
 `ui_state.subagents` is written from **two** render paths — the session panel
 (so the sidebar list and the strip agree on one vector) and `render_working_strip`

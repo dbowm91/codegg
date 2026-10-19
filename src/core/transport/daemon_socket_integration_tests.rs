@@ -601,6 +601,236 @@ async fn projection_daemon() -> Arc<CoreDaemon> {
     Arc::new(CoreDaemon::new(Some(pool), None, None))
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_job() {
+    use crate::core::transport::SocketCoreClient;
+    use crate::core::CoreClient;
+    use crate::protocol::core::{CoreRequest, CoreResponse};
+    use codegg_core::jobs::{
+        IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, ResourceRequest,
+        RetryPolicy,
+    };
+
+    let daemon = projection_daemon().await;
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace = daemon
+        .workspaces
+        .get_or_register(root.path())
+        .await
+        .expect("register workspace");
+    let project = codegg_core::project_catalog::ProjectCatalog::new(
+        daemon.pool.clone().expect("projection daemon pool"),
+    )
+    .register_local_project(
+        codegg_core::project_catalog::RegisterLocalProject {
+            display_name: "Primary TUI projection test".into(),
+            description: None,
+            tags: Vec::new(),
+            primary_repository_id: None,
+        },
+        &workspace.id,
+        "primary-tui-projection",
+    )
+    .await
+    .expect("register project");
+
+    let (socket_path, _socket_dir, server, shutdown) =
+        spawn_daemon_with_shutdown(Arc::clone(&daemon)).await;
+    let client = Arc::new(
+        SocketCoreClient::connect(&format!("unix://{socket_path}"))
+            .await
+            .expect("connect default socket TUI client"),
+    );
+    let session = match client
+        .request(crate::core::new_request(
+            "primary-tui-session".into(),
+            CoreRequest::SessionCreate {
+                directory: root.path().to_string_lossy().into_owned(),
+                title: Some("primary projection session".into()),
+                project_id: Some(project.project_id.as_str().into()),
+                workspace_id: Some(workspace.id.as_str().into()),
+            },
+        ))
+        .await
+        .expect("create owner session through socket")
+    {
+        CoreResponse::Session { session } => session,
+        other => panic!("session create failed: {other:?}"),
+    };
+    let job = NewJob {
+        workspace_id: workspace.id.clone(),
+        session_id: Some(session.id.clone()),
+        turn_id: Some("turn-primary-tui".into()),
+        kind: JobKind::Maintenance,
+        source: JobSource::Interactive,
+        priority: JobPriority::Normal,
+        payload: JobPayload::Maintenance {
+            task: "visible from initial projection snapshot".into(),
+        },
+        resource_request: ResourceRequest::default(),
+        timeout: None,
+        retry_policy: RetryPolicy::default(),
+        idempotency: IdempotencyClass::ReadOnly,
+        not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        deadline: None,
+        schedule_id: None,
+        depends_on: Vec::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
+        target: codegg_core::jobs::ExecutionTarget::Local,
+    };
+    let mut live_job = job.clone();
+    if let JobPayload::Maintenance { task } = &mut live_job.payload {
+        *task = "visible from live scheduler admission".into();
+    }
+    let submission = daemon
+        .deps
+        .submission
+        .as_ref()
+        .expect("daemon submission boundary");
+    let submitted_job = submission
+        .submit(None, job)
+        .await
+        .expect("submit durable owner job through scheduler boundary");
+    let stored_job = daemon
+        .deps
+        .job_store
+        .get_job(&submitted_job.job_id)
+        .await
+        .expect("read submitted job")
+        .expect("submitted job record");
+
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(64);
+    let mut app = crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    app.tui_cmd_tx = Some(command_tx);
+    app.attach_core_client(client);
+    app.set_session(
+        crate::protocol_conversions::dto_to_session(session.clone())
+            .expect("session DTO conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("default TUI projection subscription completion");
+    let (_, snapshot) = app
+        .projection_client
+        .active_snapshot()
+        .expect("default TUI installed the authoritative session snapshot");
+    assert_eq!(snapshot.primary_session.session_id, session.id);
+    assert_eq!(snapshot.jobs.len(), 1);
+    assert_eq!(snapshot.jobs[0].job_id, stored_job.job_id.as_str());
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Job { .. }))
+            .count(),
+        1
+    );
+    app.open_dialog(crate::tui::Dialog::Session);
+    let painted_session_dialog = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            |dialog| dialog.clone(),
+        )
+        .expect("painted sessions dialog");
+    assert_eq!(painted_session_dialog.job_rows().len(), 1);
+    app.close_dialog();
+    app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('t'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+    assert!(app.tasks_expanded, "Ctrl+T opens the live task overlay");
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Job { .. }))
+            .count(),
+        1
+    );
+
+    let live_submitted = submission
+        .submit(None, live_job)
+        .await
+        .expect("submit live job through the scheduler boundary");
+    let expected_subscription = app
+        .projection_client
+        .primary_subscription_id()
+        .cloned()
+        .expect("primary subscription id");
+    let expected_stream = app
+        .projection_client
+        .primary_stream_id()
+        .cloned()
+        .expect("primary stream id");
+    let event = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(event) = app
+                .core_event_rx
+                .as_mut()
+                .expect("attached event receiver")
+                .recv()
+                .await
+            {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id,
+                    stream_id,
+                    ..
+                } = &event.payload
+                {
+                    if subscription_id == &expected_subscription && stream_id == &expected_stream {
+                        break event;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("live projection event from the socket");
+    let CoreEvent::ProjectionStreamEvent {
+        subscription_id,
+        stream_id,
+        envelope,
+    } = event.payload
+    else {
+        panic!("expected projection stream event");
+    };
+    assert_eq!(subscription_id, expected_subscription);
+    assert_eq!(stream_id, expected_stream);
+    assert!(app.apply_core_event(CoreEvent::ProjectionStreamEvent {
+        subscription_id,
+        stream_id,
+        envelope,
+    }));
+    let (_, snapshot) = app
+        .projection_client
+        .active_snapshot()
+        .expect("live scheduler publication preserves authoritative snapshot");
+    assert_eq!(snapshot.jobs.len(), 2);
+    assert!(snapshot
+        .jobs
+        .iter()
+        .any(|job| job.job_id == live_submitted.job_id.as_str()));
+
+    shutdown_server(server, shutdown).await;
+}
+
 async fn publish_projection_event(daemon: &CoreDaemon, project_id: &str, session_id: &str) {
     publish_projection_event_with_turn(daemon, project_id, session_id, "turn-socket").await;
 }

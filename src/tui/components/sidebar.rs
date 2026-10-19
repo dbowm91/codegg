@@ -196,6 +196,7 @@ pub const MIN_SIDEBAR_DESCRIPTOR_CHARS: usize = 12;
 pub struct SidebarWidget {
     pub theme: Arc<Theme>,
     pub session: Option<Session>,
+    live_work_status: Option<SidebarLiveWorkStatus>,
     pub agent: String,
     pub provider: String,
     pub model: String,
@@ -256,6 +257,12 @@ pub struct SidebarWidget {
     collapsed_agent_nodes: HashSet<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarLiveWorkStatus {
+    Loading,
+    Unavailable,
+}
+
 const MAX_SIDEBAR_AGENT_TREE_NODES: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -271,6 +278,7 @@ impl SidebarWidget {
         Self {
             theme,
             session: None,
+            live_work_status: None,
             agent: String::new(),
             provider: String::new(),
             model: String::new(),
@@ -340,6 +348,10 @@ impl SidebarWidget {
 
     pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
         self.todos = todos;
+    }
+
+    pub fn set_live_work_status(&mut self, status: Option<SidebarLiveWorkStatus>) {
+        self.live_work_status = status;
     }
 
     /// Replace the subagent rows.
@@ -1005,6 +1017,9 @@ impl SidebarWidget {
         } else {
             targets.push(HoveredElement::None);
         }
+        if self.live_work_status.is_some() {
+            targets.push(HoveredElement::None);
+        }
 
         targets.push(HoveredElement::None);
         targets.push(HoveredElement::None);
@@ -1178,6 +1193,16 @@ impl SidebarWidget {
             lines.push(self.section_header(" Session "));
             lines.push(Line::from(Span::styled(
                 "no session",
+                Style::default().fg(self.theme.muted),
+            )));
+        }
+        if let Some(status) = self.live_work_status {
+            let label = match status {
+                SidebarLiveWorkStatus::Loading => "live work: loading",
+                SidebarLiveWorkStatus::Unavailable => "live work: unavailable",
+            };
+            lines.push(Line::from(Span::styled(
+                label,
                 Style::default().fg(self.theme.muted),
             )));
         }

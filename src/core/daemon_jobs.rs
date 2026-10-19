@@ -100,23 +100,10 @@ impl CoreDaemon {
                                 None
                             }
                         };
-                        self.event_log
-                            .publish(
-                                record.as_ref().and_then(|r| r.session_id.clone()),
-                                None,
-                                crate::protocol::core::CoreEvent::JobCreated {
-                                    job_id: job_id.clone(),
-                                    workspace_id: submitted.workspace_id.to_string(),
-                                    kind: record
-                                        .as_ref()
-                                        .map(|r| r.kind.as_str())
-                                        .unwrap_or("unknown")
-                                        .to_string(),
-                                    session_id: record.as_ref().and_then(|r| r.session_id.clone()),
-                                    turn_id: record.as_ref().and_then(|r| r.turn_id.clone()),
-                                },
-                            )
-                            .await;
+                        // The submission service publishes one owner-scoped
+                        // JobCreated event after durable admission. Keeping a
+                        // second publication here duplicated rows and missed
+                        // direct JobSubmissionService callers.
                         // M003: capture originating-principal attribution.
                         self.record_origin_with_decision(
                             &authority,

@@ -39,6 +39,16 @@ Load this skill when working on:
 
 ## Quick Reference
 
+The daemon's `JobSubmissionService` has a bounded post-admission lifecycle
+observer. It publishes owner-scoped `JobCreated` after durable create and
+successful enqueue, awaiting bounded-channel capacity; direct tool callers and
+`CoreRequest::JobSubmit` share this boundary, so the request handler must not
+publish a duplicate. Session
+projection snapshots rebuild live jobs from a bounded owner-scoped `JobStore`
+query, prioritizing live states before recent terminal history. See
+`architecture/projection.md` for event ordering, owner validation, and
+truncation diagnostics.
+
 ### Create a Job
 
 ```rust

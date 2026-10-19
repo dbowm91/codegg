@@ -705,8 +705,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 kind: String::new(),
                 state: "started".to_string(),
                 summary: attempt_id.clone(),
-                session_id: None,
-                turn_id: None,
+                session_id: env.session_id.clone(),
+                turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: None,
                 updated_at: env.timestamp_ms,
@@ -722,8 +722,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 kind: String::new(),
                 state: "completed".to_string(),
                 summary: attempt_id.clone(),
-                session_id: None,
-                turn_id: None,
+                session_id: env.session_id.clone(),
+                turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: None,
                 updated_at: env.timestamp_ms,
@@ -742,8 +742,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 kind: String::new(),
                 state: "failed".to_string(),
                 summary: truncate_str(message, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned(),
-                session_id: None,
-                turn_id: None,
+                session_id: env.session_id.clone(),
+                turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: Some(
                     truncate_str(error_class, MAX_PROJECTION_STRING_BYTES).into_owned(),
@@ -751,6 +751,76 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 updated_at: env.timestamp_ms,
             };
             events.push(ProjectionEvent::JobUpserted { job });
+        }
+        CoreEvent::JobCancelled { job_id, attempt_id } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "cancelled".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
+        }
+        CoreEvent::JobTimedOut { job_id, attempt_id } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "timed_out".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
+        }
+        CoreEvent::JobInterrupted {
+            job_id, attempt_id, ..
+        } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "interrupted".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
+        }
+        CoreEvent::JobRetried {
+            job_id,
+            new_attempt_id,
+            ..
+        } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "queued".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(new_attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
         }
         CoreEvent::BackgroundJobCompleted {
             session_id,

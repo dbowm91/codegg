@@ -1274,6 +1274,21 @@ pub enum TuiCommand {
     ObserveUnsubscribed {
         subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
     },
+    /// Default socket TUI session projection subscription completion.
+    PrimaryProjectionSubscribed {
+        request_id: u64,
+        project_id: String,
+        session_id: String,
+        tab_id: Option<String>,
+        subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
+        cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        projection: Option<(
+            crate::protocol::projection::replay::ProjectionStreamDescriptor,
+            crate::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
+        error: Option<String>,
+        unsupported: bool,
+    },
     /// Project Collaboration M002: explicit refresh of one project's
     /// chat window (channel ensure + history through `CoreClient`).
     RefreshChat {

@@ -219,6 +219,7 @@ impl App {
                     crate::tui::commands::chat::start_chat_history(self, pid);
                 }
             }
+            crate::tui::commands::primary_projection::bind_active_session(self);
         }
         switched
     }
@@ -238,6 +239,11 @@ impl App {
         // later metadata shows configuration and offers rotation.
         crate::tui::commands::work_orders::clear_trigger_secret_on_scope_loss(self);
         self.projection_client.on_reconnect();
+        // The prior snapshot is no longer authoritative for the new
+        // transport epoch. Do not keep session work rows or an addressed
+        // child visible while the replacement snapshot is loading.
+        self.ui_state.subagents.set_rows(Vec::new());
+        self.prompt_state.subagent_addressee = None;
         self.interactive_terminals.note_transport_disconnect();
         // Presence M002: lag/resync replaces stale presentation from the
         // authoritative snapshot. Bump the presence epoch (drops
@@ -284,6 +290,7 @@ impl App {
         if !self.editor_state.lsp.diagnostics.is_empty() {
             self.editor_state.lsp.diagnostics_stale = true;
         }
+        crate::tui::commands::primary_projection::bind_active_session(self);
     }
 
     /// Presence M002: route a daemon `PresenceUpdated { project_id }`
@@ -311,6 +318,21 @@ impl App {
     ) -> ControllerApplyOutcome {
         self.projection_client
             .apply_envelope(subscription_id, tab_id, envelope)
+    }
+
+    pub fn apply_projection_envelope_on_stream(
+        &mut self,
+        subscription_id: &ProjectionSubscriptionId,
+        stream_id: &codegg_protocol::projection::replay::ProjectionStreamId,
+        tab_id: &str,
+        envelope: ProjectionEnvelope,
+    ) -> ControllerApplyOutcome {
+        self.projection_client.apply_envelope_on_stream(
+            subscription_id,
+            stream_id,
+            tab_id,
+            envelope,
+        )
     }
 
     /// Enter raw compatibility mode. Called when the daemon does not

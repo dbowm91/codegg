@@ -389,6 +389,32 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             // Best-effort unsubscribe completion; no state to apply
             // (reducer already cleared on stop). Ignored when stale.
         }
+        TuiCommand::PrimaryProjectionSubscribed {
+            request_id,
+            project_id,
+            session_id,
+            tab_id,
+            subscription_id,
+            cursor,
+            projection,
+            error,
+            unsupported,
+        } => {
+            super::super::commands::primary_projection::apply_subscribed(
+                app,
+                super::super::commands::primary_projection::PrimaryProjectionCompletion {
+                    request_id,
+                    project_id,
+                    session_id,
+                    tab_id,
+                    subscription_id,
+                    cursor,
+                    projection,
+                    error,
+                    unsupported,
+                },
+            );
+        }
         TuiCommand::RefreshChat { project_id } => {
             super::super::commands::chat::start_chat_history(app, project_id);
         }

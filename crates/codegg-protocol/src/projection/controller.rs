@@ -51,7 +51,7 @@ use crate::projection::reducer::{
 };
 use crate::projection::replay::{
     ProjectionAck, ProjectionCursor, ProjectionReplayLimits, ProjectionResyncReason,
-    ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId,
+    ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
     ProjectionSubscriptionId, ProjectionSubscriptionRequest, ProjectionSubscriptionState,
     ProjectionSubscriptionStatus,
 };
@@ -537,6 +537,18 @@ impl ProjectionClientController {
         subscription_id: &ProjectionSubscriptionId,
         envelope: ProjectionEnvelope,
     ) -> ControllerApplyOutcome {
+        let stream_id = envelope_to_stream_id(&envelope);
+        self.apply_envelope_on_stream(subscription_id, &stream_id, envelope)
+    }
+
+    /// Apply an envelope using the stream identity carried by the transport.
+    /// Stream IDs are opaque and may not be derivable from envelope scope.
+    pub fn apply_envelope_on_stream(
+        &mut self,
+        subscription_id: &ProjectionSubscriptionId,
+        stream_id: &ProjectionStreamId,
+        envelope: ProjectionEnvelope,
+    ) -> ControllerApplyOutcome {
         if !self.mode.is_projection_primary() {
             return ControllerApplyOutcome::Error(ReducerError::UnsupportedProtocolVersion {
                 envelope_version: envelope.protocol_version,
@@ -567,7 +579,21 @@ impl ProjectionClientController {
                 envelope_seq,
             };
         }
-        if record.descriptor.stream_id != envelope_to_stream_id(&envelope) {
+        if &record.descriptor.stream_id != stream_id {
+            let last_seq = record.last_delivered_seq;
+            let envelope_seq = envelope.event_seq;
+            let _ = record;
+            self.last_resync_reason = Some(ProjectionResyncReason::StreamMismatch);
+            return ControllerApplyOutcome::ResyncRequested {
+                reason: ProjectionResyncReason::StreamMismatch,
+                last_seq,
+                envelope_seq,
+            };
+        }
+        if record.descriptor.kind == ProjectionStreamKind::Session
+            && (envelope.scope != crate::projection::event::ProjectionStreamScope::Session
+                || envelope.session_id.as_deref() != record.descriptor.session_id.as_deref())
+        {
             let last_seq = record.last_delivered_seq;
             let envelope_seq = envelope.event_seq;
             let _ = record;
@@ -1028,6 +1054,35 @@ mod tests {
         let outcome = c.apply_envelope(&sub_id, bad);
         assert!(matches!(
             outcome,
+            ControllerApplyOutcome::ResyncRequested {
+                reason: ProjectionResyncReason::StreamMismatch,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn transport_stream_id_is_opaque_but_session_scope_is_still_checked() {
+        let mut c = ProjectionClientController::new(ProjectionCapabilities::current());
+        c.negotiate(Some(&ProjectionCapabilities::default()));
+        let descriptor = dummy_descriptor("opaque-stream-id");
+        let sub_id = ProjectionSubscriptionId::new("opaque-sub");
+        let _ = c.install_subscription(sub_id.clone(), descriptor, empty_snapshot_for("s1"));
+
+        assert!(matches!(
+            c.apply_envelope_on_stream(
+                &sub_id,
+                &ProjectionStreamId::new("opaque-stream-id").unwrap(),
+                envelope("s1", 1)
+            ),
+            ControllerApplyOutcome::Applied { .. }
+        ));
+        assert!(matches!(
+            c.apply_envelope_on_stream(
+                &sub_id,
+                &ProjectionStreamId::new("opaque-stream-id").unwrap(),
+                envelope("s2", 2)
+            ),
             ControllerApplyOutcome::ResyncRequested {
                 reason: ProjectionResyncReason::StreamMismatch,
                 ..

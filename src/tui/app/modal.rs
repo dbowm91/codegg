@@ -320,6 +320,9 @@ impl App {
                     .set_pending_rows(pending.0, pending.1);
                 self.dialog_state
                     .session_dialog
+                    .set_projection_status(self.projection_client.primary_status().cloned());
+                self.dialog_state
+                    .session_dialog
                     .set_project_context(project_context);
                 self.focus_manager
                     .push(Box::new(self.dialog_state.session_dialog.clone()));

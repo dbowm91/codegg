@@ -1339,11 +1339,27 @@ impl App {
 
         let mut lines: Vec<Line> = Vec::new();
         if rows.is_empty() {
-            // The overlay is open and there is genuinely nothing to wait on.
-            // Say so rather than rendering an empty block, so the user learns
-            // the key works instead of concluding it is broken.
+            // Absence of a projection is not evidence that the session has no
+            // work. Keep loading and unavailable distinct from an authoritative
+            // empty snapshot.
+            let empty_label = match self.projection_client.primary_status() {
+                Some(
+                    crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading,
+                ) => " Loading session work… · Ctrl+T close ",
+                Some(
+                    crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(
+                        _,
+                    ),
+                ) => " Session work unavailable · Ctrl+T close ",
+                _ if self.projection_client.active_snapshot().is_none()
+                    && self.active_session_id().is_some() =>
+                {
+                    " Session work unavailable · Ctrl+T close "
+                }
+                _ => " Nothing pending · Ctrl+T close ",
+            };
             lines.push(Line::from(Span::styled(
-                " Nothing pending · Ctrl+T close ".to_string(),
+                empty_label.to_string(),
                 Style::default().fg(theme.muted),
             )));
         } else {
@@ -2491,6 +2507,19 @@ impl App {
         let derived = &self.session_state_derived;
         self.sidebar.set_goal(derived.goal.clone());
         self.sidebar.set_plan(derived.plan.clone());
+        self.sidebar
+            .set_live_work_status(match self.projection_client.primary_status() {
+            Some(crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading) => {
+                Some(crate::tui::components::sidebar::SidebarLiveWorkStatus::Loading)
+            }
+            Some(
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(_),
+            ) => Some(crate::tui::components::sidebar::SidebarLiveWorkStatus::Unavailable),
+            Some(
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Authoritative,
+            )
+            | None => None,
+        });
 
         // Derive the subagent rows first and let the snapshot borrow end
         // here: the sidebar writes below all need `&mut self`, so holding the
@@ -2646,11 +2675,10 @@ impl App {
     /// A snapshot that has not arrived yet is not evidence of emptiness, so
     /// the rows are left alone rather than cleared.
     fn sync_subagent_rows_from_projection(&mut self) {
-        let Some((_, snapshot)) = self.projection_client.active_snapshot() else {
-            return;
-        };
-        if let Some(rows) = Self::sync_subagents_from_snapshot(snapshot) {
-            self.apply_subagent_rows(rows);
+        if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
+            if let Some(rows) = Self::sync_subagents_from_snapshot(snapshot) {
+                self.apply_subagent_rows(rows);
+            }
         }
         // A subagent that starts while `/sessions` is open has to appear there
         // without the user closing and reopening the dialog. Refreshing only

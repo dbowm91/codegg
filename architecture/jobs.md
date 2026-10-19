@@ -39,6 +39,19 @@ executor. The executor creates an `AttemptRecord`, runs the work, and
 persists exactly one terminal `AttemptCompletion` that atomically
 advances the parent job to a terminal state.
 
+The daemon installs a bounded post-admission lifecycle publisher on the
+submission service. After durable creation and successful enqueue, it awaits
+channel capacity and forwards the `JobRecord` to `EventLog` as an owner-scoped
+`JobCreated`; a closed receiver is logged and later snapshots still rebuild
+from `JobStore`. Direct callers such
+as `TaskTool` and `CoreRequest::JobSubmit` therefore share one publication
+path; the request handler does not emit a duplicate. Scheduler admission and
+terminal events resolve the record from `JobStore` before publication, so
+session and turn ownership come from durable state. Session projection
+snapshots rebuild jobs from a bounded session-indexed store query, selecting
+live states before recent terminal records. See
+`architecture/projection.md` "Background job visibility".
+
 When the daemon has an active goal for the submitted session, the host
 submission boundary attaches the reserved `goal_id` label to supervised
 `Test` and `Subagent` jobs before enqueueing them. Callers do not provide

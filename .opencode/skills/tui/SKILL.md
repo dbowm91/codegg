@@ -26,6 +26,7 @@ root and lifecycle modules.
 | `src/tui/app/render.rs` | Cached render composition; no I/O or async work |
 | `src/tui/app/input.rs` | Synchronous `TuiMsg` processing |
 | `src/tui/app/project_session.rs` | Active project/session and projection lifecycle |
+| `src/tui/commands/primary_projection.rs` | Default `/core` session projection subscription, snapshot installation, bounded pre-install events, ack/resync, and teardown |
 | `src/tui/app/prompt_turn.rs` | Prompt submission and route-safe turn start |
 | `src/tui/app/modal.rs` | FocusManager-backed modal lifecycle |
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
@@ -1578,6 +1579,16 @@ invariants above.
 | `python3 scripts/check_tui_subagent_name_pool_isolation.py` | Polices **subagent descriptor provenance**: the TUI may not resolve a subagent's descriptor against the curated name pool. The descriptor is drawn once, at spawn, by the only code holding the name lease, and every surface downstream reads what the projection carried. A display name is not a stable key, so a local lookup reintroduces the attribution defect C001 recorded once. |
 
 ## Testing
+
+The default socket-connected TUI owns a session-scoped projection separately
+from `/observe`. `set_session`, active-tab switch, and reconnect start a
+generation-fenced subscription; the completion validates project/session/tab
+and stream identity before installing the snapshot. Reconnect takes a fresh
+authoritative snapshot. Until it lands, `Ctrl+T`, `/sessions`, and the sidebar
+show loading or unavailable state instead of claiming an empty session. Keep
+the live-event pre-install queue bounded and drain it only after snapshot
+installation. Do not route projection events through `AppMode` or the raw
+session event subscription.
 
 ```bash
 cargo test --test tui_render        # rendering integration tests
