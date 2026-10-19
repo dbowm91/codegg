@@ -24,6 +24,10 @@
 use sha2::Digest;
 use std::path::PathBuf;
 
+/// Let the tool's watchdog return typed timeout details and partial output
+/// before the broker's independent invocation watchdog fires.
+pub(crate) const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
+
 use crate::error::ToolError;
 
 use super::backend::{StructuredToolResult, ToolExecutionContext, ToolProvenance};
@@ -755,6 +759,19 @@ impl ToolBroker {
 
         // Steps 2-5: validation pipeline (once; retries never re-grant).
         let effective_timeout = self.validate_pre_execution(&contract, &ctx, &input)?;
+        let broker_watchdog_timeout = ctx
+            .deadline
+            .map(|deadline| {
+                let remaining = (deadline - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64;
+                effective_timeout
+                    .saturating_add(BROKER_WATCHDOG_GRACE_MS)
+                    .min(remaining)
+            })
+            .unwrap_or_else(|| effective_timeout.saturating_add(BROKER_WATCHDOG_GRACE_MS));
 
         let tool = registry
             .get(tool_name)
@@ -768,6 +785,36 @@ impl ToolBroker {
         validate_json_schema(&contract.input_schema, &input).map_err(|reason| {
             BrokerError::Execution(format!("input schema validation failed: {reason}"))
         })?;
+
+        // Tool Program receives a host-derived immutable snapshot of the
+        // exact catalog entries it requested. Derive this from the broker's
+        // live catalog once, before retries, so model arguments select only
+        // among registered contracts and cannot supply their own schemas.
+        let program_contract_snapshot = if tool_name == "tool_program" {
+            let tools = input
+                .get("tools")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    BrokerError::Execution(
+                        "Tool Program requires a frozen runtime tool manifest".into(),
+                    )
+                })?
+                .iter()
+                .map(|value| {
+                    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        BrokerError::Execution(
+                            "Tool Program manifest entries must be strings".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(
+                crate::tool::tool_program_context::resolve_contract_snapshot(self, &tools)
+                    .map_err(BrokerError::Execution)?,
+            )
+        } else {
+            None
+        };
 
         // M004 observe-only: compare the actual call against the session's
         // latest causal frontier. Evaluation only — an inadmissible
@@ -827,20 +874,21 @@ impl ToolBroker {
                 break;
             }
 
-            let exec_ctx = execution_context_for_attempt(&ctx, effective_timeout);
+            let mut exec_ctx = execution_context_for_attempt(&ctx, effective_timeout);
+            exec_ctx.program_contract_snapshot = program_contract_snapshot.clone();
             let attempt_input = input.clone();
             let result = match ctx.cancellation.clone() {
                 Some(token) => {
                     tokio::select! {
                         _ = token.cancelled() => Err(ToolError::Timeout("broker invocation cancelled".into())),
                         result = tokio::time::timeout(
-                            std::time::Duration::from_millis(effective_timeout),
+                            std::time::Duration::from_millis(broker_watchdog_timeout),
                             tool.execute_structured(attempt_input, Some(exec_ctx)),
                         ) => result.unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
                     }
                 }
                 None => tokio::time::timeout(
-                    std::time::Duration::from_millis(effective_timeout),
+                    std::time::Duration::from_millis(broker_watchdog_timeout),
                     tool.execute_structured(attempt_input, Some(exec_ctx)),
                 )
                 .await
@@ -896,7 +944,7 @@ impl ToolBroker {
                             ToolError::NotFound(name) => {
                                 ToolValue::infrastructure_error(format!("Tool not found: {name}"))
                             }
-                            ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                            ToolError::Timeout(message) => self.timeout_value(message),
                             ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
                             ToolError::Disabled(msg) => {
                                 ToolValue::infrastructure_error(format!("Tool is disabled: {msg}"))
@@ -940,7 +988,7 @@ impl ToolBroker {
                             );
                             if !will_retry {
                                 last_err_value = Some(match &e {
-                                    ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                                    ToolError::Timeout(message) => self.timeout_value(message),
                                     ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
                                     other => ToolValue::infrastructure_error(format!(
                                         "Tool error: {other}"
@@ -992,7 +1040,7 @@ impl ToolBroker {
                                 ToolError::NotFound(name) => ToolValue::infrastructure_error(
                                     format!("Tool not found: {name}"),
                                 ),
-                                ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                                ToolError::Timeout(message) => self.timeout_value(message),
                                 ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
                                 ToolError::Disabled(msg) => ToolValue::infrastructure_error(
                                     format!("Tool is disabled: {msg}"),
@@ -1136,6 +1184,23 @@ impl ToolBroker {
             value.truncated = true;
         }
         Ok(value)
+    }
+
+    fn timeout_value(&self, message: &str) -> ToolValue {
+        let display = if message.len() <= self.config.max_output_display_bytes {
+            message.to_owned()
+        } else {
+            const SUFFIX: &str = "\n...[timeout details truncated]";
+            let limit = self.config.max_output_display_bytes;
+            let suffix = if limit >= SUFFIX.len() { SUFFIX } else { "" };
+            let keep_bytes = limit.saturating_sub(suffix.len()).min(message.len());
+            let mut boundary = keep_bytes;
+            while !message.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            format!("{}{}", &message[..boundary], suffix)
+        };
+        ToolValue::timed_out_with_details(display)
     }
 
     // ── Step 9: Artifact registration ─────────────────────────
@@ -1287,7 +1352,11 @@ fn execution_context_for_attempt(
             .map(|accepted| accepted.receipt.decision_id.clone())
             .or_else(|| grant.map(|grant| grant.grant_id.clone())),
         decision_outcome: authorization
-            .map(|accepted| accepted.receipt.outcome.as_str().to_owned())
+            .map(|accepted| match &accepted.receipt.outcome {
+                crate::permission::PermissionLevel::Allow => "allowed".to_owned(),
+                crate::permission::PermissionLevel::Deny => "denied".to_owned(),
+                crate::permission::PermissionLevel::Ask => "pending".to_owned(),
+            })
             .or_else(|| grant.map(|_| "allowed".to_owned())),
         workspace_path_policy_id: ctx
             .workspace_path_policy_id

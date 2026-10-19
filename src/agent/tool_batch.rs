@@ -135,7 +135,6 @@ async fn acquire_batch_permit(
 /// internal deadline or it preempts the tool before it can return the output it
 /// collected while being killed. Expressed in milliseconds because that is the
 /// unit `BrokerContext::timeout_ms` uses.
-const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
 
 /// Deadline handed to the broker watchdog for a tool whose own deadline is
 /// `tool_timeout_ms`.
@@ -148,10 +147,6 @@ const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
 ///
 /// Returning `None` for a `None` input leaves the broker on its own configured
 /// `default_timeout_ms`, which is an independent value.
-fn broker_watchdog_timeout_ms(tool_timeout_ms: Option<u64>) -> Option<u64> {
-    tool_timeout_ms.map(|ms| ms.saturating_add(BROKER_WATCHDOG_GRACE_MS))
-}
-
 /// Resolved timeout for one tool call plus how it was arrived at.
 ///
 /// [`clamped`](Self::clamped) lets the timeout message tell the model its
@@ -470,7 +465,19 @@ impl AgentLoop {
             // These are the actual permission/path-policy decision
             // values, not synthesized from identity strings.
             decision_id: Some(receipt.decision_id.clone()),
-            decision_outcome: Some(receipt.outcome.as_str().into()),
+            // Tool Program's durable authority contract distinguishes an
+            // accepted decision as `allowed`; PermissionLevel's display
+            // vocabulary is `allow`. Normalize the trusted receipt here so
+            // the native Tool Program path consumes the same accepted
+            // decision without weakening its fail-closed validation.
+            decision_outcome: Some(
+                match &receipt.outcome {
+                    crate::permission::PermissionLevel::Allow => "allowed",
+                    crate::permission::PermissionLevel::Deny => "denied",
+                    crate::permission::PermissionLevel::Ask => "pending",
+                }
+                .into(),
+            ),
             workspace_path_policy_id: path_policy_fingerprint.clone(),
             workspace_path_policy_revision: path_policy_fingerprint,
             permission_policy_revision: receipt
@@ -1954,7 +1961,7 @@ impl AgentLoop {
                                     // so it acts as the backstop it was meant to
                                     // be: the tool still times out first and its
                                     // collected output survives.
-                                    timeout_ms: broker_watchdog_timeout_ms(exec_ctx.timeout_ms),
+                                    timeout_ms: exec_ctx.timeout_ms,
                                     // Preserve the accepted model tool-call
                                     // identity through the broker into
                                     // structured tools such as TaskTool.
@@ -2038,19 +2045,16 @@ impl AgentLoop {
                             };
                             // The tool enforces its own deadline and returns a result carrying the
                             // output it collected before being killed, so this wrapper must
-                            // not fire first and discard it. Two grace layers sit above the
-                            // tool's deadline and must stay strictly ordered:
+                            // not fire first and discard it. Broker and wrapper watchdog grace
+                            // layers sit above the tool's deadline and must stay strictly ordered:
                             //
                             //   T        tool's own timeout -> detailed `ToolError::Timeout`
                             //   T + 5s   broker watchdog   -> "broker invocation timed out"
                             //   T + 10s  this wrapper      -> last-resort backstop
                             //
-                            // The broker watchdog was previously armed at exactly T (see
-                            // `BROKER_WATCHDOG_GRACE_MS`), so it always preempted the tool
-                            // and every timeout surfaced as a bare generic error with no
-                            // partial output. This wrapper therefore has to clear the broker
-                            // layer too, or it would reintroduce the same inversion one
-                            // level out.
+                            // The broker now adds its own grace internally while the tool
+                            // keeps the original execution budget. This outer timeout remains
+                            // the final bounded backstop.
                             match tokio::time::timeout(
                                 timeout + TOOL_TIMEOUT_GRACE + TOOL_TIMEOUT_GRACE,
                                 exec_fut,
@@ -2718,8 +2722,7 @@ mod broker_watchdog_ordering_tests {
             600_000,
             MAX_MODEL_TOOL_TIMEOUT.as_millis() as u64,
         ] {
-            let broker = broker_watchdog_timeout_ms(Some(tool_ms))
-                .expect("a tool deadline must produce a broker deadline");
+            let broker = tool_ms.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS);
             assert!(
                 broker > tool_ms,
                 "broker watchdog ({broker}ms) must expire after the tool's own \
@@ -2728,7 +2731,7 @@ mod broker_watchdog_ordering_tests {
             );
             assert_eq!(
                 broker - tool_ms,
-                BROKER_WATCHDOG_GRACE_MS,
+                crate::tool::broker::BROKER_WATCHDOG_GRACE_MS,
                 "the broker must get exactly the grace window, not an unrelated value"
             );
         }
@@ -2738,15 +2741,20 @@ mod broker_watchdog_ordering_tests {
     fn broker_watchdog_does_not_wrap_at_the_top() {
         let tool_ms = u64::MAX;
         assert_eq!(
-            broker_watchdog_timeout_ms(Some(tool_ms)),
-            Some(u64::MAX),
+            tool_ms.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS),
+            u64::MAX,
             "a saturated tool deadline must not wrap into a deadline that fires immediately"
         );
     }
 
     #[test]
     fn absent_tool_deadline_defers_to_the_broker_default() {
-        assert_eq!(broker_watchdog_timeout_ms(None), None);
+        // An absent tool timeout leaves the broker's configured default
+        // intact, and that default still receives the same watchdog grace.
+        let configured_default = 120_000u64;
+        let broker =
+            configured_default.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS);
+        assert!(broker > configured_default);
     }
 
     #[test]
@@ -2754,7 +2762,7 @@ mod broker_watchdog_ordering_tests {
         // Ordering must be tool < broker < wrapper, or the wrapper reintroduces
         // the same inversion one level out.
         let tool_ms = 120_000u64;
-        let broker = broker_watchdog_timeout_ms(Some(tool_ms)).unwrap();
+        let broker = tool_ms.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS);
         let wrapper_ms = tool_ms + 2 * TOOL_TIMEOUT_GRACE.as_millis() as u64;
         assert!(
             broker < wrapper_ms,
@@ -2886,5 +2894,39 @@ mod batch_admission_tests {
         let _ = task.await;
         assert_eq!(queue_depth.load(Ordering::Acquire), 0);
         drop(held);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_deadline_edge_returns_one_terminal_outcome_and_cleans_queue() {
+        for (release_after, should_admit) in [
+            (Duration::from_millis(80), true),
+            (Duration::from_millis(120), false),
+        ] {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+            let held = Arc::clone(&semaphore)
+                .acquire_owned()
+                .await
+                .expect("hold permit");
+            let queue_depth = Arc::new(AtomicUsize::new(0));
+            let release = tokio::spawn(async move {
+                tokio::time::sleep(release_after).await;
+                drop(held);
+            });
+            let result = acquire_batch_permit(
+                Arc::clone(&semaphore),
+                Arc::clone(&queue_depth),
+                "deadline-edge-tool".into(),
+                Duration::from_millis(100),
+                1,
+            )
+            .await;
+            if should_admit {
+                drop(result.expect("permit released before deadline"));
+            } else {
+                assert!(matches!(result, Err(ToolError::Timeout(_))));
+            }
+            release.await.expect("release task");
+            assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+        }
     }
 }
