@@ -1321,7 +1321,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. Set max_model_tokens per child or aggregate_model_tokens on spawn_many to cap total delegated-worker usage. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1337,6 +1337,12 @@ impl Tool for TaskTool {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_REQUESTED_CHILD_TOOL_CALLS
+                },
+                "max_model_tokens": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000,
+                    "description": "Per-run cumulative provider-reported input plus output token ceiling."
                 },
                 "shared_scratch": {
                     "type": "array",
@@ -1411,6 +1417,18 @@ impl Tool for TaskTool {
                     "maximum": MAX_REQUESTED_CHILD_TOOL_CALLS,
                     "description": "Optional host-enforced tool-call cap for this child (action=spawn)"
                 },
+                "max_model_tokens": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000,
+                    "description": "Per-run cumulative provider-reported input plus output token ceiling. Divide aggregate worker budgets across spawn_many children."
+                },
+                "aggregate_model_tokens": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000,
+                    "description": "Aggregate cumulative provider-reported input plus output token ceiling for all spawn_many children. CodeGG divides this ceiling across children; do not also set per-request max_model_tokens."
+                },
                 "allowed_paths": {
                     "type": "array",
                     "items": { "type": "string" },
@@ -1438,7 +1456,7 @@ impl Tool for TaskTool {
                 "requests": {
                     "type": "array",
                     "maxItems": 16,
-                    "description": "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, model, allowed_paths, max_tool_calls, and explicitly granted shared_scratch.",
+                    "description": "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, model, allowed_paths, max_tool_calls, max_model_tokens, and explicitly granted shared_scratch. Use aggregate_model_tokens to divide one total token ceiling across the requests.",
                     "items": spawn_many_item
                 },
                 "member_run_ids": {
@@ -1656,6 +1674,25 @@ impl TaskTool {
                             "spawn_many requires 1 to {MAX_GROUP_MEMBERS} requests"
                         )));
                     }
+                    let aggregate_model_tokens =
+                        parse_model_token_budget(&input, "aggregate_model_tokens")?;
+                    if aggregate_model_tokens.is_some()
+                        && requests.iter().any(|request| {
+                            request
+                                .get("max_model_tokens")
+                                .is_some_and(|value| !value.is_null())
+                        })
+                    {
+                        return Err(ToolError::Execution(
+                            "aggregate_model_tokens cannot be combined with per-child max_model_tokens".into(),
+                        ));
+                    }
+                    if aggregate_model_tokens.is_some_and(|tokens| tokens < requests.len() as u64) {
+                        return Err(ToolError::Execution(
+                            "aggregate_model_tokens must allocate at least one token per child"
+                                .into(),
+                        ));
+                    }
                     let mut accepted = Vec::with_capacity(requests.len());
                     let mut rejected = Vec::new();
                     for (index, request) in requests.iter().enumerate() {
@@ -1663,6 +1700,22 @@ impl TaskTool {
                         let object = child.as_object_mut().ok_or_else(|| {
                             ToolError::Execution("each spawn_many request must be an object".into())
                         })?;
+                        if let Some(aggregate) = aggregate_model_tokens {
+                            let allocation = divide_aggregate_model_tokens(
+                                aggregate,
+                                requests.len(),
+                                index,
+                            )
+                            .ok_or_else(|| {
+                                ToolError::Execution(
+                                    "aggregate_model_tokens is too small for the requested child count".into(),
+                                )
+                            })?;
+                            object.insert(
+                                "max_model_tokens".into(),
+                                serde_json::Value::from(allocation),
+                            );
+                        }
                         object.insert("action".into(), serde_json::Value::String("spawn".into()));
                         object.insert(
                             "_fanout_group_id".into(),
@@ -1953,6 +2006,7 @@ impl TaskTool {
                 .map(ToOwned::to_owned)
                 .or_else(|| self.parent_model.clone());
             let max_tool_calls = requested_max_tool_calls(&input)?;
+            let max_model_tokens = parse_model_token_budget(&input, "max_model_tokens")?;
 
             let denied_tools = self.denied_tools.clone();
 
@@ -2019,6 +2073,7 @@ impl TaskTool {
                         &allowed_paths,
                         parent_run_id.as_ref(),
                         max_tool_calls,
+                        max_model_tokens,
                         &shared_scratch,
                     );
                     let depth = next_durable_depth(
@@ -2060,6 +2115,7 @@ impl TaskTool {
                         budget: AgentRunBudget {
                             max_tool_calls,
                             max_depth: Some(self.max_depth),
+                            max_model_tokens,
                             ..Default::default()
                         },
                         shared_scratch: shared_scratch.clone(),
@@ -2298,6 +2354,8 @@ impl TaskTool {
                     allowed_paths,
                     depth: self.depth + 1,
                     max_tool_calls: max_tool_calls.map(|limit| limit as usize),
+                    max_model_tokens: max_model_tokens
+                        .and_then(|tokens| usize::try_from(tokens).ok()),
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
                     workspace_locks: self.workspace_locks.clone(),
@@ -2571,6 +2629,35 @@ fn requested_max_tool_calls(input: &serde_json::Value) -> Result<Option<u32>, To
     Ok(Some(limit))
 }
 
+fn parse_model_token_budget(
+    input: &serde_json::Value,
+    field: &str,
+) -> Result<Option<u64>, ToolError> {
+    let Some(value) = input.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(tokens) = value
+        .as_u64()
+        .filter(|tokens| (1..=1_000_000).contains(tokens))
+    else {
+        return Err(ToolError::Execution(format!(
+            "{field} must be an integer between 1 and 1000000"
+        )));
+    };
+    Ok(Some(tokens))
+}
+
+fn divide_aggregate_model_tokens(total: u64, children: usize, index: usize) -> Option<u64> {
+    if children == 0 || index >= children || total < children as u64 {
+        return None;
+    }
+    let child_count = children as u64;
+    Some(total / child_count + u64::from((index as u64) < total % child_count))
+}
+
 fn spawn_request_fingerprint(
     agent: &str,
     description: &str,
@@ -2578,12 +2665,13 @@ fn spawn_request_fingerprint(
     allowed_paths: &[String],
     parent_run_id: Option<&AgentRunId>,
     max_tool_calls: Option<u32>,
+    max_model_tokens: Option<u64>,
     shared_scratch: &[codegg_core::agent_run::SharedScratchGrant],
 ) -> String {
     let mut normalized_paths = allowed_paths.to_vec();
     normalized_paths.sort();
     let mut hasher = Sha256::new();
-    hasher.update(b"spawn-request-v2");
+    hasher.update(b"spawn-request-v3");
     for value in [agent, description, prompt] {
         hasher.update((value.len() as u64).to_le_bytes());
         hasher.update(value.as_bytes());
@@ -2592,6 +2680,7 @@ fn spawn_request_fingerprint(
         hasher.update(parent_run_id.to_string().as_bytes());
     }
     hasher.update(max_tool_calls.unwrap_or_default().to_le_bytes());
+    hasher.update(max_model_tokens.unwrap_or_default().to_le_bytes());
     for path in normalized_paths {
         hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
@@ -2842,6 +2931,7 @@ mod tests {
                 &["src".into()],
                 None,
                 Some(32),
+                None,
                 &[],
             ),
             spawn_request_fingerprint(
@@ -2851,6 +2941,7 @@ mod tests {
                 &["src".into()],
                 None,
                 Some(32),
+                None,
                 &[],
             )
         );
@@ -2867,20 +2958,66 @@ mod tests {
             delegation_key("other-call")
         );
         assert_ne!(
-            spawn_request_fingerprint("general", "description-a", "prompt", &[], None, None, &[]),
-            spawn_request_fingerprint("general", "description-b", "prompt", &[], None, None, &[])
+            spawn_request_fingerprint(
+                "general",
+                "description-a",
+                "prompt",
+                &[],
+                None,
+                None,
+                None,
+                &[]
+            ),
+            spawn_request_fingerprint(
+                "general",
+                "description-b",
+                "prompt",
+                &[],
+                None,
+                None,
+                None,
+                &[]
+            )
         );
         assert_ne!(
-            spawn_request_fingerprint("general", "description", "prompt", &[], None, Some(32), &[]),
-            spawn_request_fingerprint("general", "description", "prompt", &[], None, Some(48), &[])
-        );
-        assert_ne!(
-            spawn_request_fingerprint("general", "description", "prompt", &[], None, None, &[]),
             spawn_request_fingerprint(
                 "general",
                 "description",
                 "prompt",
                 &[],
+                None,
+                Some(32),
+                None,
+                &[]
+            ),
+            spawn_request_fingerprint(
+                "general",
+                "description",
+                "prompt",
+                &[],
+                None,
+                Some(48),
+                None,
+                &[]
+            )
+        );
+        assert_ne!(
+            spawn_request_fingerprint(
+                "general",
+                "description",
+                "prompt",
+                &[],
+                None,
+                None,
+                None,
+                &[]
+            ),
+            spawn_request_fingerprint(
+                "general",
+                "description",
+                "prompt",
+                &[],
+                None,
                 None,
                 None,
                 &[codegg_core::agent_run::SharedScratchGrant {
@@ -2889,5 +3026,39 @@ mod tests {
                 }]
             )
         );
+        assert_ne!(
+            spawn_request_fingerprint("general", "same", "prompt", &[], None, None, Some(100), &[]),
+            spawn_request_fingerprint("general", "same", "prompt", &[], None, None, Some(200), &[])
+        );
+    }
+
+    #[test]
+    fn aggregate_model_token_budget_is_divided_without_increasing_the_total() {
+        let allocations = (0..3)
+            .map(|index| divide_aggregate_model_tokens(11, 3, index).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(allocations, vec![4, 4, 3]);
+        assert_eq!(allocations.iter().sum::<u64>(), 11);
+        assert!(divide_aggregate_model_tokens(2, 3, 0).is_none());
+        assert!(divide_aggregate_model_tokens(10, 3, 3).is_none());
+    }
+
+    #[test]
+    fn model_token_budgets_reject_zero_nonintegers_and_oversized_values() {
+        assert_eq!(
+            parse_model_token_budget(
+                &serde_json::json!({"max_model_tokens": 10}),
+                "max_model_tokens"
+            )
+            .unwrap(),
+            Some(10)
+        );
+        for value in [
+            serde_json::json!({"max_model_tokens": 0}),
+            serde_json::json!({"max_model_tokens": 1.5}),
+            serde_json::json!({"max_model_tokens": 1_000_001}),
+        ] {
+            assert!(parse_model_token_budget(&value, "max_model_tokens").is_err());
+        }
     }
 }

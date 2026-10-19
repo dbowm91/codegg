@@ -149,6 +149,9 @@ pub struct AgentRunBudget {
     pub max_tool_calls: Option<u32>,
     pub max_wall_clock_secs: Option<u64>,
     pub max_depth: Option<u32>,
+    /// Maximum cumulative provider-reported input plus output tokens for this run.
+    /// Coordinators must divide an aggregate allocation across accepted children.
+    pub max_model_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +228,7 @@ pub struct DelegatedAgentExecutionContext {
     pub worktree_id: Option<WorktreeId>,
     #[serde(default)]
     pub shared_scratch: Vec<SharedScratchGrant>,
+    pub budget: AgentRunBudget,
 }
 
 impl DelegatedAgentExecutionContext {
@@ -241,6 +245,7 @@ impl DelegatedAgentExecutionContext {
             workspace_id: task.workspace_id.clone(),
             worktree_id: run.worktree_id.clone(),
             shared_scratch: run.shared_scratch.clone(),
+            budget: run.budget.clone(),
         }
     }
 }

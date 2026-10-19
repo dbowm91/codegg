@@ -68,6 +68,10 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
+fn cumulative_model_tokens(current: usize, input: usize, output: usize) -> usize {
+    current.saturating_add(input).saturating_add(output)
+}
+
 async fn stream_with_retry(
     loop_: &mut AgentLoop,
     request: &ChatRequest,
@@ -525,6 +529,39 @@ async fn stream_once(
                         });
                     }
                     ChatEvent::Finish { usage, .. } => {
+                        let input_tokens = usage.input_tokens;
+                        let output_tokens = usage.output_tokens;
+                        let cached_tokens = usage.cached_tokens.unwrap_or(0);
+                        let input_tokens_i64 = i64::try_from(input_tokens).unwrap_or(i64::MAX);
+                        let output_tokens_i64 = i64::try_from(output_tokens).unwrap_or(i64::MAX);
+                        let cached_tokens_i64 = i64::try_from(cached_tokens).unwrap_or(i64::MAX);
+                        let cost_usd = pricing_service.calculate_cost(
+                            &provider_name,
+                            &model_name,
+                            input_tokens_i64,
+                            output_tokens_i64,
+                            cached_tokens_i64,
+                        );
+                        loop_.state.total_tokens = cumulative_model_tokens(
+                            loop_.state.total_tokens,
+                            input_tokens,
+                            output_tokens,
+                        );
+                        if loop_.run_id.is_some() {
+                            loop_
+                                .record_run_milestone(
+                                    "provider_usage",
+                                    [
+                                        ("provider".into(), provider_name.clone()),
+                                        ("model".into(), model_name.clone()),
+                                        ("input_tokens".into(), input_tokens.to_string()),
+                                        ("output_tokens".into(), output_tokens.to_string()),
+                                        ("cached_tokens".into(), cached_tokens.to_string()),
+                                        ("cost_usd".into(), cost_usd.to_string()),
+                                    ],
+                                )
+                                .await;
+                        }
                         if let Some(ref store) = usage_store {
                             let session_id = loop_
                                 .usage_session_id
@@ -533,16 +570,9 @@ async fn stream_once(
                             let agent_run_id = loop_.run_id.as_ref().map(ToString::to_string);
                             let model = model_name.clone();
                             let provider = provider_name.clone();
-                            let input_tokens = usage.input_tokens as i64;
-                            let output_tokens = usage.output_tokens as i64;
-                            let cached_tokens = usage.cached_tokens.unwrap_or(0) as i64;
-                            let cost_usd = pricing_service.calculate_cost(
-                                &provider,
-                                &model,
-                                input_tokens,
-                                output_tokens,
-                                cached_tokens,
-                            );
+                            let input_tokens = input_tokens_i64;
+                            let output_tokens = output_tokens_i64;
+                            let cached_tokens = cached_tokens_i64;
                             let timestamp = chrono::Utc::now().timestamp_millis();
                             let record = crate::session::UsageRecord {
                                 id: uuid::Uuid::new_v4().to_string(),
@@ -638,5 +668,11 @@ mod tests {
         assert_eq!(provider_disposition(&err), RetryDisposition::Permanent);
         assert_eq!(provider_error_class(&err), "non_provider");
         assert!(provider_retry_after(&err).is_none());
+    }
+
+    #[test]
+    fn cumulative_model_token_usage_adds_input_and_output_safely() {
+        assert_eq!(cumulative_model_tokens(10, 20, 30), 60);
+        assert_eq!(cumulative_model_tokens(usize::MAX - 1, 1, 1), usize::MAX);
     }
 }

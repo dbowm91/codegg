@@ -87,6 +87,7 @@ impl JobDispatcher for SubAgentJobDispatcher {
             description: format!("Durable job {}", job.job_id),
             depth: 1,
             max_tool_calls: max_tool_calls.map(|m| m as usize),
+            max_model_tokens: None,
             parent_model: model,
             workspace_root,
             workspace_locks: None,

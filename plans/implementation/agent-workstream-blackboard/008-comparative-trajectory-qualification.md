@@ -2,6 +2,13 @@
 
 Status: active — M006/M007 and M011/M012 are closed. The frozen shared-interface fixture v1 now has a successful provider-backed S0, S1, S2, and S3 round at the same 128-call per-child cap. Both S2/S3 child pairs produced Git commits, passed their language suites, and passed the frozen integrated evaluator. This qualifies the mechanics and enables the next isolated strata; it does not establish an effectiveness advantage because the matched round is one sample per arm, S0 has one child while S1–S3 have two, and provider cost is unavailable. An overlapping Rust API S1 trial produced an expected commit conflict; both child additions integrated on the capable S0 result and passed all 11 Rust tests plus the frozen cross-language evaluator, while each child on the intentionally incomplete starter base could only pass its two new tests. A sequential dependent Rust API child passed all 13 workspace tests and the evaluator. The cold full-workspace Rust compile and serialized shared-target reuse check passed; resource results are recorded in the closure evidence. Continue the remaining strata and resource measurements. M005 remains independent; S4 shared-checkout execution is unavailable until M005 qualifies it. Do not emulate shared writes.
 
+The per-run model-token ceiling and provider-usage journal are now implemented
+for the repeated comparison protocol. The existing S0–S3 results above used
+equal tool-call caps, not equal aggregate model-token ceilings, and do not
+record attributable provider usage/cost. They remain mechanics evidence and
+are not pooled into the repeated budget-controlled trial matrix. New trials
+under `008-task-matrix-v1.md` remain outstanding.
+
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
 ADRs: accepted ADR-0001/0002/0004/0005/0031/0032/0033; S4 remains gated by M005 qualification under ADR-0032/0033.

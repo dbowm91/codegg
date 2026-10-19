@@ -95,6 +95,8 @@ pub struct SubAgentRequest {
     pub description: String,
     pub depth: usize,
     pub max_tool_calls: Option<usize>,
+    /// Per-run cumulative provider token ceiling from the durable run budget.
+    pub max_model_tokens: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
     /// Shared with the owning turn when the child runs in the same workspace.
@@ -1637,6 +1639,11 @@ async fn execute_agent_task(
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }
+    if let Some(max_model_tokens) = request.max_model_tokens {
+        let mut limits = super::r#loop::ExecutionLimits::default();
+        limits.max_tokens = max_model_tokens;
+        agent_loop.set_limits(limits);
+    }
     // M005: child loop carries the narrowed sandbox ceiling. Approval mode
     // was captured from the authorized parent invocation and is independent
     // of the sandbox; it never broadens the child agent's tool/path rules.
@@ -1983,6 +1990,7 @@ mod admission_tests {
             description: format!("task-{task_id}"),
             depth: 0,
             max_tool_calls: None,
+            max_model_tokens: None,
             parent_model: None,
             workspace_root: None,
             workspace_locks: None,

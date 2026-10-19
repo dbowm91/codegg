@@ -600,6 +600,17 @@ recovery use first-terminal-wins semantics; scheduler-owned cancellation and
 generation recovery reconcile the durable run rather than relying only on a
 live `CancellationToken`.
 
+`AgentRunBudget.max_model_tokens` optionally caps cumulative provider-reported
+input plus output tokens for one delegated run. The `spawn_many` action accepts
+`aggregate_model_tokens` and divides that worker ceiling across its child
+requests; it cannot be combined with per-child caps. Each provider response
+advances the loop's cumulative token counter and adds a bounded
+`provider_usage` progress milestone to the run journal, including
+provider/model, input/output/cached token counts, and estimated cost. The
+provider's final response may cross the requested ceiling before the loop can
+stop, so recorded actual usage remains authoritative. Coordinator-session
+usage is accounted separately from child-run usage.
+
 Mutation-capable durable children are automatically allocated a
 `WorktreeLease` during `Preparing`, before the child loop is built. The
 request's filesystem, terminal, Bash, Git, and commit tools are rooted at the

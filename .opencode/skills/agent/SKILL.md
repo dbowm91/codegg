@@ -198,6 +198,14 @@ absence of `src/agent/team.rs`, the sync registry entry points, and all
 three guard scripts plus all four `cargo test` targets. Claims without a
 traceable source were removed rather than guessed.
 
+For bounded comparative runs, durable children accept
+`max_model_tokens`, a cumulative provider-reported input-plus-output ceiling.
+`spawn_many` can instead take one `aggregate_model_tokens` ceiling; CodeGG
+divides it across the requests and rejects mixed per-child caps. Sum each
+child run's bounded `provider_usage` progress milestones for actual usage and
+record coordinator-session usage separately. The response that crosses a cap
+is retained as actual usage and classified as over budget.
+
 Second pass (2026-10-06): re-verified the same surface and added the
 `## Orientation Facts` section (per-turn `AgentLoop` lifetime, 6
 `TurnPhase` variants, `MAX_ATTEMPTS`/backoff bounds, group caps), each

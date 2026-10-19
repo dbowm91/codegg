@@ -1032,6 +1032,10 @@ impl JobExecutor for SubagentJobExecutor {
                 .map(|context| context.depth as usize)
                 .unwrap_or(1),
             max_tool_calls: max_tool_calls.map(|m| m as usize),
+            max_model_tokens: durable_context
+                .as_ref()
+                .and_then(|context| context.budget.max_model_tokens)
+                .and_then(|tokens| usize::try_from(tokens).ok()),
             parent_model: model,
             workspace_root: Some(workspace_root),
             workspace_locks: None,
