@@ -424,3 +424,24 @@ proves descendant quiescence on each platform. That narrower profile still
 needs production-shaped Q1–Q5 evidence and must remain opt-in; isolated
 worktrees remain the usable coordination path meanwhile. No writer-permit
 service or shared mutation mode is enabled by this research.
+
+### Cross-platform descendant containment feasibility (2026-10-19)
+
+The escaped `setsid()` descendant is a legitimate safety blocker: a managed
+job may finish while a descendant can still write. The following operating
+system mechanisms are candidates for a future restricted CodeGG-mediated
+writer profile only; none has been qualified as CodeGG's effective writer
+lifetime boundary.
+
+| Platform | Candidate | Evidence it may provide | Qualification still required |
+|---|---|---|---|
+| Linux | Delegated cgroup v2 subtree | Descendants inherit membership; `cgroup.events` reports recursive population; `cgroup.kill` terminates the subtree. | Prevent workloads from moving out of or mutating the supervisor's cgroup; prove setup-before-exec, restart recovery, unavailability handling, and a live detached-`setsid` descendant write probe. CodeGG has no qualified delegated-cgroup or mount-namespace launch path. |
+| Windows | Job Object with breakaway disabled | Normal child creation remains associated by default; active-process accounting and kill-on-close can support teardown. | Microsoft's documented `Win32_Process.Create` exception must be denied or mediated; prove assignment before user code and show descendant writes stop before releasing the checkout permit. |
+| macOS | No qualified candidate in the current launcher | Process-group signaling handles ordinary descendants. | `setsid()` escapes the managed process group. App Sandbox inherited rights are static and do not supply a per-worktree grant to the unsandboxed daemon; Endpoint Security requires a system-extension entitlement and installation. Keep arbitrary process-backed shared writers unavailable until native evidence proves containment. |
+
+This is a feasibility decision, not implementation authorization. The accepted
+restricted CodeGG-mediated boundary under ADR-0040 does not clear the escaped
+writer result or the per-platform Q3/Q4 gates. See the [Linux cgroup v2
+documentation](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html),
+[Microsoft Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
+and [Apple setsid(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setsid.2.html).
