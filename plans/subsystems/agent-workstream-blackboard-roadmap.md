@@ -127,6 +127,11 @@ Add separate checkout ownership and participating execution access; task spawn/g
 
 Plan: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md
 
+**M005 writer-containment corrective (2026-10-19):** The source audit and native lifecycle record exposed an unresolved product-scope decision (independent same-user writers) and uncovered CodeGG-controlled non-broker and persistent-process write paths. A bounded corrective addendum now owns **C001–C006**, starting with a ready writer capability/denial matrix and proposed ADR-0042. C002–C006 remain blocked pending C001 strict closure, explicit ADR-0042 acceptance, and ordered runtime safety evidence. Shared mutation is **not enabled** by this planning. The restricted candidate coordinates only CodeGG-managed final writers; unrelated OS programs are outside its proposed guarantee. Strict parent M005 closure requires a positive C006 result and Q1–Q5. A negative/unsupported outcome preserves isolated worktrees rather than redefining closure.
+
+Corrective: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md.
+Decision: plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md (**proposed**, not accepted).
+
 ### M006 — Isolated session/worktree fork-and-launch UX (ready)
 
 Native daemon operation for 'new session in new/existing isolated worktree' and 'fork session in new/existing isolated worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. Session fork alone retains old semantics. Shared checkout execution is excluded and M005 is not a dependency.
