@@ -83,7 +83,7 @@ impl CoreDaemon {
                         });
                     }
                 };
-                let new_job = match crate::protocol_conversions::job_submit_from_dto(spec) {
+                let mut new_job = match crate::protocol_conversions::job_submit_from_dto(spec) {
                     Ok(j) => j,
                     Err(e) => {
                         return Ok(CoreResponse::Error {
@@ -92,6 +92,13 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // M005: apply the principal's authenticated execution policy to
+                // a payload that was submitted without one. The daemon owns the
+                // persisted per-principal preference, so it is the only place
+                // that can apply it to a client that has no authenticated
+                // snapshot of its own. The stamp only ever narrows.
+                self.stamp_principal_execution_policy(&authority, &mut new_job)
+                    .await;
                 // Tool Programs are admitted only through the model-facing
                 // `tool_program` tool. That path receives the daemon-owned
                 // accepted permission decision and freezes the active
@@ -844,7 +851,12 @@ impl CoreDaemon {
                         message: "daemon scheduler is unavailable for rerun".to_string(),
                     });
                 };
-                let child_job = crate::run_rerun::to_job(validated, workspace.clone());
+                let mut child_job = crate::run_rerun::to_job(validated, workspace.clone());
+                // M005: the rerun child is submitted straight to the scheduler
+                // rather than through `CoreRequest::JobSubmit`, so the
+                // principal's policy has to be stamped here as well.
+                self.stamp_principal_execution_policy(&authority, &mut child_job)
+                    .await;
                 match submission.submit(None, child_job).await {
                     Ok(submitted) => {
                         // M003: the rerun child job carries the requesting
@@ -1192,5 +1204,84 @@ impl CoreDaemon {
                 error.to_string(),
             )),
         }
+    }
+}
+
+impl CoreDaemon {
+    /// M005: apply the principal's persisted execution policy to a job
+    /// payload that was submitted without one.
+    ///
+    /// A payload produced by a client that has no authenticated snapshot of
+    /// its own — the TUI `/test` command, a run rerun, a tool-program child —
+    /// carries no network intent and no profile ceiling. The daemon owns the
+    /// persisted per-principal preference, so it is the only place that can
+    /// apply it.
+    ///
+    /// The stamp only ever narrows. A payload that already asks for offline
+    /// execution keeps it even when the principal's own preference is the
+    /// unrestricted one, and a payload whose profile is already more
+    /// contained than the principal's keeps its own.
+    pub(crate) async fn stamp_principal_execution_policy(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        new_job: &mut codegg_core::jobs::NewJob,
+    ) {
+        use codegg_core::approval::{NetworkIntent, RuntimePreferenceStore};
+
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
+        let store = RuntimePreferenceStore::new(pool);
+        let principal = authority.principal_id().as_str().to_owned();
+        let preference = match store.get(&principal).await {
+            Ok(Some(preference)) => preference,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "approval preference read failed; job admission keeps the submitted policy"
+                );
+                return;
+            }
+        };
+        let principal_intent = preference.effective_network_intent();
+        let principal_profile = preference.effective_sandbox_profile();
+
+        let (network_intent, sandbox_profile) = match &mut new_job.payload {
+            codegg_core::jobs::JobPayload::Shell {
+                network_intent,
+                sandbox_profile,
+                ..
+            }
+            | codegg_core::jobs::JobPayload::ManagedArgv {
+                network_intent,
+                sandbox_profile,
+                ..
+            }
+            | codegg_core::jobs::JobPayload::Test {
+                network_intent,
+                sandbox_profile,
+                ..
+            }
+            | codegg_core::jobs::JobPayload::Python {
+                network_intent,
+                sandbox_profile,
+                ..
+            } => (network_intent, sandbox_profile),
+            _ => return,
+        };
+
+        // Offline is the narrower intent, so the effective intent is offline
+        // when either side asks for it.
+        if principal_intent == NetworkIntent::OfflineRequired
+            || *network_intent == NetworkIntent::OfflineRequired
+        {
+            *network_intent = NetworkIntent::OfflineRequired;
+        }
+        // The profile ceiling narrows the same way.
+        *sandbox_profile = Some(match sandbox_profile {
+            Some(carried) => carried.narrow(principal_profile),
+            None => principal_profile,
+        });
     }
 }

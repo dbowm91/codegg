@@ -11,6 +11,24 @@ on:
       - 'src/lsp/**'
       - 'src/agent/turn_runtime.rs'
       - 'src/tool/mod.rs'
+      # M005 owner surface: the network intent, the durable payloads that
+      # carry it, and every launch owner that has to refuse when it cannot
+      # honor an offline request. A change to any of these must be able to
+      # trigger this qualification job.
+      - 'crates/codegg-core/src/approval.rs'
+      - 'crates/codegg-core/src/authorization/**'
+      - 'crates/codegg-core/src/jobs/**'
+      - 'crates/codegg-core/src/session/schema.rs'
+      - 'crates/codegg-protocol/src/core.rs'
+      - 'src/agent/**'
+      - 'src/core/**'
+      - 'src/interactive_process_attach.rs'
+      - 'src/python_script/**'
+      - 'src/scheduler/**'
+      - 'src/tool/bash.rs'
+      - 'src/tool/bash/**'
+      - 'src/tool/test.rs'
+      - 'src/tool/python_script.rs'
       - 'crates/egglsp/src/client.rs'
       - 'crates/egglsp/src/launch.rs'
       - 'crates/egglsp/src/runtime.rs'
@@ -28,6 +46,24 @@ on:
       - 'src/lsp/**'
       - 'src/agent/turn_runtime.rs'
       - 'src/tool/mod.rs'
+      # M005 owner surface: the network intent, the durable payloads that
+      # carry it, and every launch owner that has to refuse when it cannot
+      # honor an offline request. A change to any of these must be able to
+      # trigger this qualification job.
+      - 'crates/codegg-core/src/approval.rs'
+      - 'crates/codegg-core/src/authorization/**'
+      - 'crates/codegg-core/src/jobs/**'
+      - 'crates/codegg-core/src/session/schema.rs'
+      - 'crates/codegg-protocol/src/core.rs'
+      - 'src/agent/**'
+      - 'src/core/**'
+      - 'src/interactive_process_attach.rs'
+      - 'src/python_script/**'
+      - 'src/scheduler/**'
+      - 'src/tool/bash.rs'
+      - 'src/tool/bash/**'
+      - 'src/tool/test.rs'
+      - 'src/tool/python_script.rs'
       - 'crates/egglsp/src/client.rs'
       - 'crates/egglsp/src/launch.rs'
       - 'crates/egglsp/src/runtime.rs'

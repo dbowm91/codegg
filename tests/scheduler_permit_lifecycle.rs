@@ -65,6 +65,8 @@ fn build_build_spec(workspace_id: WorkspaceId) -> NewJob {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".into(), "build".into()],
             cwd: Some("/tmp".into()),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

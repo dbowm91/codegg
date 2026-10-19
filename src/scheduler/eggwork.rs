@@ -934,7 +934,7 @@ impl EggworkExecutor {
     /// Extract the canonical argv/cwd/timeout from an eligible payload.
     fn remote_command(job: &JobRecord) -> Option<(Vec<String>, Option<String>, Option<Duration>)> {
         match &job.payload {
-            JobPayload::ManagedArgv { argv, cwd } => {
+            JobPayload::ManagedArgv { argv, cwd, .. } => {
                 if argv.is_empty() {
                     return None;
                 }
@@ -3163,6 +3163,8 @@ mod tests {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string(), "hello".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

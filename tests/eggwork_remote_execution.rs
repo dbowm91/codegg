@@ -429,6 +429,8 @@ fn build_record(target: ExecutionTarget) -> JobRecord {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".to_string(), "hello world".to_string()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -556,6 +558,8 @@ async fn sqlite_target_and_handle_round_trip() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -622,6 +626,8 @@ async fn in_memory_handle_round_trip_preserves_lease() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -691,6 +697,8 @@ async fn submitted_lease_matches_persisted_handle() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -959,6 +967,8 @@ async fn duplicate_execute_reuses_persisted_handle() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1016,6 +1026,8 @@ async fn restart_after_remote_acceptance_does_not_resubmit() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1076,6 +1088,8 @@ async fn restart_with_live_remote_execution_cancels_and_interrupts() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1200,6 +1214,8 @@ async fn cwd_outside_workspace_lease_root_fails() {
     job.payload = JobPayload::ManagedArgv {
         argv: vec!["echo".to_string()],
         cwd: Some("/etc".to_string()),
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     let completion = exec
         .execute(bound_context(job, dir.path().to_path_buf()))
@@ -1332,6 +1348,8 @@ async fn scheduler_end_to_end_remote_only() {
                 payload: JobPayload::ManagedArgv {
                     argv: vec!["sh".to_string(), "build.sh".to_string()],
                     cwd: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
                 resource_request: ResourceRequest::default(),
                 timeout: None,

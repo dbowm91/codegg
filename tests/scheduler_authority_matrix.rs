@@ -340,6 +340,8 @@ fn managed_argv_payload(argv: Vec<&str>) -> JobPayload {
     JobPayload::ManagedArgv {
         argv: argv.into_iter().map(String::from).collect(),
         cwd: Some("/tmp".into()),
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     }
 }
 

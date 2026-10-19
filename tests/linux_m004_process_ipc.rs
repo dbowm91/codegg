@@ -202,6 +202,64 @@ async fn managed_process_owner_applies_authenticated_offline_network_intent() {
     ));
 }
 
+/// M004/M005 negative owner proof: on a host where user namespaces are
+/// restricted, a *required* process tier must refuse **before** the target
+/// execs. This is the managed-process owner half of the restricted-userns
+/// qualification; the PTY and LSP owners carry their own proofs.
+///
+/// The hosted job that runs this probe used to filter on this test name
+/// before the test existed, so the step matched zero tests and stayed
+/// vacuously green. The name is kept stable for that job.
+#[tokio::test]
+async fn required_process_tier_fails_closed_when_user_namespaces_are_restricted() {
+    if std::env::var(RESTRICTED_USERNS_OPT_IN).as_deref() != Ok("1") {
+        eprintln!(
+            "skipped: set {RESTRICTED_USERNS_OPT_IN}=1 for the restricted-userns owner probe"
+        );
+        return;
+    }
+    // The probe is only meaningful on a host that actually refuses user
+    // namespaces. A permissive host would let the target run and prove
+    // nothing about the refusal path.
+    let ceiling = std::fs::read_to_string("/proc/sys/user/max_user_namespaces")
+        .expect("read the host user-namespace ceiling");
+    assert_eq!(
+        ceiling.trim(),
+        "0",
+        "the restricted-userns probe requires user.max_user_namespaces=0"
+    );
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let marker = workspace.path().join("must-not-exist");
+    let script = format!("touch {}", marker.display());
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true)
+        .launch_spec(
+            "/bin/sh",
+            &["-c".into(), script.clone()],
+            Some(workspace.path()),
+        )
+        .expect("construct the required process tier");
+    let mut request = ManagedProcessRequest::new(
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("restricted-userns-probe", "m004-process-owner"),
+    );
+    request.required_sandbox_profile = Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let error = ManagedProcessService::run(request)
+        .await
+        .expect_err("a restricted host must refuse the required process tier before target exec");
+    assert!(
+        !marker.exists(),
+        "target ran despite denied user namespaces: {error}"
+    );
+    eprintln!("restricted host refused the required process tier: {error}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_network_blocks_host_network_and_inherited_socket_access() {
     if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {

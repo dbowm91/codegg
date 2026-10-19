@@ -309,7 +309,7 @@ pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest
                     BTreeMap::new(),
                 )
             }
-            JobPayload::ManagedArgv { argv, cwd } => {
+            JobPayload::ManagedArgv { argv, cwd, .. } => {
                 if argv.is_empty() {
                     return Err("scheduler job has no canonical argv".to_string());
                 }
@@ -1598,6 +1598,8 @@ mod tests {
             command: "echo hi".to_string(),
             argv: None,
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         };
         assert!(verification_digest_for_job(&shell).is_err());
         // Python inline source without its required digest.

@@ -347,9 +347,10 @@ impl JobExecutor for ManagedArgvExecutor {
                 "managed argv missing cwd".into(),
             );
         };
+        let launch_argv = argv.clone();
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             argv.into_iter().map(OsString::from).collect(),
-            cwd,
+            cwd.clone(),
             ctx.job.session_id.as_deref().map_or_else(
                 || {
                     crate::managed_process::ProcessProvenance::new(
@@ -366,6 +367,64 @@ impl JobExecutor for ManagedArgvExecutor {
                 },
             ),
         );
+        // M005: the durable route carries the accepted profile ceiling and the
+        // authenticated network intent. Without them the owner sees an
+        // unconstrained request and cannot tell that the principal asked for
+        // offline execution, so the intent would be silently dropped.
+        let (sandbox_profile, network_intent) = match &ctx.job.payload {
+            JobPayload::ManagedArgv {
+                sandbox_profile,
+                network_intent,
+                ..
+            }
+            | JobPayload::Shell {
+                sandbox_profile,
+                network_intent,
+                ..
+            } => (*sandbox_profile, *network_intent),
+            _ => (
+                None,
+                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            ),
+        };
+        request.required_sandbox_profile = sandbox_profile;
+        request.required_network_intent = network_intent;
+        if let Some(profile) =
+            sandbox_profile.filter(|profile| profile.requires_filesystem_containment())
+        {
+            let Some((target, args)) = launch_argv.split_first() else {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "managed argv has no executable to launch".into(),
+                );
+            };
+            // The durable route rebuilds the same containment the direct route
+            // would have used. A constrained job whose host cannot provide it
+            // fails closed here instead of running uncontained.
+            let Some(config) =
+                crate::security::sandbox::sandbox_config_for_profile(profile, &ctx.workspace_root)
+            else {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!(
+                        "filesystem containment is unavailable for accepted {profile:?} job profile"
+                    ),
+                );
+            };
+            let spec = match config.launch_spec(target, &args.to_vec(), Some(&cwd)) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("sandbox launch spec failed: {error}"),
+                    );
+                }
+            };
+            request.sandbox = crate::managed_process::SandboxRequest::Required(spec);
+        }
         #[cfg(windows)]
         if let Some(raw_command) = raw_cmd_command {
             request = request.with_raw_command(raw_command);
@@ -1992,6 +2051,8 @@ mod tests {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["cargo".into(), "build".into()],
                 cwd: Some("/tmp".into()),
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -2036,6 +2097,8 @@ mod tests {
             payload: JobPayload::ManagedArgv {
                 argv: vec![],
                 cwd: Some("/tmp".into()),
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

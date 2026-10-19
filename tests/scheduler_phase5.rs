@@ -58,6 +58,8 @@ fn build_job(workspace: &WorkspaceId, kind: JobKind) -> JobRecord {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".into(), "hi".into()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -299,6 +301,8 @@ fn build_spec(workspace_id: WorkspaceId) -> NewJob {
         payload: JobPayload::ManagedArgv {
             argv: vec!["echo".into(), "build".into()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

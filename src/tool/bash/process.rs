@@ -1187,6 +1187,8 @@ impl BashTool {
         timeout: Duration,
         kind: codegg_core::jobs::JobKind,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
+        sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     ) -> Result<DispatchOutcome, ToolError> {
         if command.executable.is_empty() {
             return Err(ToolError::Execution("empty executable".to_string()));
@@ -1218,6 +1220,8 @@ impl BashTool {
                     payload: codegg_core::jobs::JobPayload::ManagedArgv {
                         argv: argv_owned.clone(),
                         cwd: Some(cwd_owned.to_string_lossy().into_owned()),
+                        sandbox_profile,
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
                     timeout: Some(timeout),
@@ -1280,6 +1284,8 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
+        sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     ) -> Result<DispatchOutcome, ToolError> {
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Tests, // generic
@@ -1313,6 +1319,8 @@ impl BashTool {
                         command: command.to_string(),
                         argv: Some(argv.clone()),
                         cwd: Some(cwd.to_string_lossy().into_owned()),
+                        sandbox_profile,
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Shell,
@@ -1378,10 +1386,16 @@ impl BashTool {
             return Err(specialized_route_error(reason));
         }
         let session_id = audit_ctx.and_then(|ctx| ctx.session_id.clone());
-        let network_intent = audit_ctx
-            .and_then(|context| context.execution_authorization.as_ref())
+        let authorization = audit_ctx.and_then(|context| context.execution_authorization.as_ref());
+        let network_intent = authorization
             .map(|authorization| authorization.snapshot.network_intent())
             .unwrap_or_default();
+        // The accepted filesystem profile travels with the network intent: a
+        // durable route has to rebuild the same containment the direct route
+        // would have used, and the owner refuses an offline request it
+        // cannot honor.
+        let sandbox_profile =
+            authorization.map(|authorization| authorization.snapshot.sandbox_profile());
         match decision {
             CommandDispatchTarget::RouteToTestRunner {
                 argv,
@@ -1432,6 +1446,8 @@ impl BashTool {
                     timeout,
                     kind,
                     session_id.clone(),
+                    network_intent,
+                    sandbox_profile,
                 )
                 .await
             }
@@ -1454,6 +1470,14 @@ impl BashTool {
             CommandDispatchTarget::RouteToShell { command, .. } => {
                 self.dispatch_to_shell(command, canonical_workdir, timeout, session_id)
                     .await
+                self.dispatch_to_shell(
+                    command,
+                    canonical_workdir,
+                    timeout,
+                    network_intent,
+                    sandbox_profile,
+                )
+                .await
             }
             CommandDispatchTarget::Rejected { reason } => Err(ToolError::Execution(format!(
                 "command rejected: {}",
@@ -1622,6 +1646,8 @@ impl BashTool {
             command: command.to_string(),
             argv: Some(argv),
             cwd: Some(cwd.to_string_lossy().into_owned()),
+            sandbox_profile: bg.sandbox_profile,
+            network_intent: bg.network_intent,
         };
         let cwd_ref = canonical_workdir.unwrap_or(Path::new("."));
         // Re-resolve the workspace root the same way the foreground path
@@ -1696,6 +1722,8 @@ impl BashTool {
                 let payload = codegg_core::jobs::JobPayload::ManagedArgv {
                     argv: command.full_argv(),
                     cwd: Some(cwd_owned.to_string_lossy().into_owned()),
+                    sandbox_profile: bg.sandbox_profile,
+                    network_intent: bg.network_intent,
                 };
                 let cwd_path = cwd_owned.clone();
                 self.submit_bash_background(

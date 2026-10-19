@@ -587,6 +587,8 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
                         cwd: resolved_cwd.clone(),
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     timeout,
                 )
@@ -607,6 +609,8 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
                         cwd: resolved_cwd.clone(),
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     timeout,
                 )
@@ -621,6 +625,8 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
                         cwd: resolved_cwd.clone(),
+                        sandbox_profile: None,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     timeout,
                 )

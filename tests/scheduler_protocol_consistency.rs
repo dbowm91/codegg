@@ -33,7 +33,12 @@ fn build_managed_argv_job(workspace: &WorkspaceId, argv: Vec<String>) -> NewJob 
         kind: JobKind::Build,
         source: JobSource::Interactive,
         priority: JobPriority::Interactive,
-        payload: JobPayload::ManagedArgv { argv, cwd: None },
+        payload: JobPayload::ManagedArgv {
+            argv,
+            cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        },
         resource_request: ResourceRequest::default(),
         timeout: None,
         retry_policy: RetryPolicy::no_retry(),
@@ -63,6 +68,8 @@ fn build_slow_job(workspace: &WorkspaceId) -> NewJob {
         payload: JobPayload::ManagedArgv {
             argv: vec!["sleep".into(), "10".into()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -534,6 +541,8 @@ async fn event_log_boundedness() {
         payload: JobPayload::ManagedArgv {
             argv: vec!["hold".into()],
             cwd: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -567,6 +576,8 @@ async fn event_log_boundedness() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".into(), format!("ev-{i}")],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

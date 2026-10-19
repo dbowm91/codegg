@@ -116,6 +116,20 @@ impl SandboxProfile {
         matches!(self, Self::FullHost)
     }
 
+    /// The more contained of two profiles.
+    ///
+    /// `ReadOnly` is narrower than `WorkspaceWrite`, which is narrower than
+    /// `FullHost`. Combining a carried profile with a ceiling therefore
+    /// never widens: the result keeps whichever of the two is more
+    /// contained.
+    pub const fn narrow(self, other: Self) -> Self {
+        if other.rank() < self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
     /// Legacy `SandboxMode` config name for compatibility mapping.
     ///
     /// `ReadOnly`/`WorkspaceWrite` map 1:1. `FullHost` maps to the

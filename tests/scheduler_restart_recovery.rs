@@ -318,6 +318,8 @@ async fn idempotency_key_resolves_across_restarts() {
     different_spec.payload = JobPayload::ManagedArgv {
         argv: vec!["cargo".into(), "build".into()],
         cwd: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     let conflict = submission.submit(Some(key), different_spec).await;
     assert!(

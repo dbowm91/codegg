@@ -2654,6 +2654,103 @@ mod tests {
         assert!(!marker.exists());
     }
 
+    /// Build an authorization context whose snapshot carries the requested
+    /// profile and network intent. The M005 owner reads the intent from this
+    /// snapshot, so the profile and the intent have to travel together.
+    fn authorization(
+        profile: codegg_core::approval::SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
+    ) -> crate::tool::authorization::ExecutionAuthorizationContext {
+        let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Yolo,
+            profile,
+            None,
+            Some("session".into()),
+            Some("agent".into()),
+            Some("policy".into()),
+            None,
+        )
+        .with_network_intent(network_intent)
+        .expect("narrowing the network intent is always permitted");
+        crate::tool::authorization::ExecutionAuthorizationContext {
+            snapshot,
+            receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                "yolo",
+                Some("policy".into()),
+            ),
+            command_preflight: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn offline_required_refuses_unconstrained_profile_before_spawn() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.execution_authorization = Some(authorization(
+            codegg_core::approval::SandboxProfile::FullHost,
+            codegg_core::approval::NetworkIntent::OfflineRequired,
+        ));
+
+        let error = run(process)
+            .await
+            .expect_err("OfflineRequired cannot fall back to an unconstrained profile");
+        let message = error.to_string();
+        assert!(
+            message.contains("OfflineRequired currently requires a constrained filesystem profile"),
+            "unexpected refusal: {message}"
+        );
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.required_network_intent = codegg_core::approval::NetworkIntent::OfflineRequired;
+
+        let error = run(process)
+            .await
+            .expect_err("OfflineRequired cannot run without a required sandbox launch");
+        let message = error.to_string();
+        assert!(
+            message.contains(
+                "accepted OfflineRequired policy cannot run without a required sandbox launch"
+            ),
+            "unexpected refusal: {message}"
+        );
+        assert!(!marker.exists());
+    }
+
+    /// The authorization snapshot is the ceiling for the network intent. A
+    /// request-carried `LegacyUnrestricted` must not be able to widen an
+    /// `OfflineRequired` authorization into an unconstrained launch.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_carried_network_intent_cannot_widen_an_offline_authorization() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.execution_authorization = Some(authorization(
+            codegg_core::approval::SandboxProfile::FullHost,
+            codegg_core::approval::NetworkIntent::OfflineRequired,
+        ));
+        process.required_network_intent = codegg_core::approval::NetworkIntent::LegacyUnrestricted;
+
+        let error = run(process)
+            .await
+            .expect_err("a request-carried intent must not widen the authorization ceiling");
+        let message = error.to_string();
+        assert!(
+            message.contains("OfflineRequired currently requires a constrained filesystem profile"),
+            "unexpected refusal: {message}"
+        );
+        assert!(!marker.exists());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn interior_nul_is_rejected_before_spawn() {
         let mut request = request("true");

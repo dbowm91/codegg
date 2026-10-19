@@ -1111,11 +1111,33 @@ pub enum JobPayload {
     ManagedArgv {
         argv: Vec<String>,
         cwd: Option<String>,
+        /// Accepted filesystem profile ceiling captured before scheduler
+        /// admission. The executor uses it as a ceiling and refuses a
+        /// constrained job if its sandbox request is absent. Legacy and
+        /// operator jobs omit it and decode as `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before
+        /// scheduler admission. Legacy payloads decode as the unrestricted
+        /// intent, which is the historical behavior of this payload.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Shell {
         command: String,
         argv: Option<Vec<String>>,
         cwd: Option<String>,
+        /// Accepted filesystem profile ceiling captured before scheduler
+        /// admission. The executor uses it as a ceiling and refuses a
+        /// constrained job if its sandbox request is absent. Legacy and
+        /// operator jobs omit it and decode as `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before
+        /// scheduler admission. Legacy payloads decode as the unrestricted
+        /// intent, which is the historical behavior of this payload.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Python {
         script_path: String,

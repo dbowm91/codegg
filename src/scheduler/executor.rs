@@ -529,6 +529,8 @@ mod tests {
                 JobPayload::ManagedArgv {
                     argv: vec!["cargo".into(), "check".into()],
                     cwd: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
             ),
             attempt_id: codegg_core::jobs::AttemptId::new_unchecked("attempt"),
