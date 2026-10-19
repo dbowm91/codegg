@@ -458,7 +458,10 @@ async fn program_registry_uses_configured_search_runtime() {
     // Same host-scoped wording as the dedicated disabled-backend test
     // below: the refusal names the backend the tool requires.
     assert!(
-        result.value.display.contains("requires the eggsearch backend"),
+        result
+            .value
+            .display
+            .contains("requires the eggsearch backend"),
         "unexpected: {}",
         result.value.display
     );
@@ -673,7 +676,10 @@ async fn disabled_backend_rejects_repository_search() {
     // tool needs — and the message stays distinct from the
     // eggsearch-but-unavailable wording asserted above.
     assert!(
-        result.value.display.contains("requires the eggsearch backend"),
+        result
+            .value
+            .display
+            .contains("requires the eggsearch backend"),
         "unexpected: {}",
         result.value.display
     );
