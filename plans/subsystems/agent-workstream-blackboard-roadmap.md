@@ -154,7 +154,7 @@ M010 closed the deterministic claim/worktree/Rust/Python/integration trajectory.
 Plan: `plans/implementation/agent-workstream-blackboard/010-isolated-rust-python-trajectory.md`.
 Closure: `plans/closure/agent-workstream-blackboard/010-status.md`.
 
-### M008 — Comparative validation and closure (blocked: M006)
+### M008 — Comparative validation and closure (blocked: M006; M007 closed)
 
 Measure one strong agent vs silent isolated agents vs peer-aware isolated vs claims+peer-aware using identical task/evaluation budgets; include Rust and Python fixtures, overlapping API changes, failure/recovery, CPU/RSS/disk/token cost, useful throughput and integration outcomes. Any shared checkout arm is unavailable until M005 qualifies it; never emulate shared writes unsafely. Deterministic traces support CI; provider-backed experiments are separately reported. Negative/no-improvement results must be reported without hiding them.
 
@@ -176,4 +176,4 @@ Stop and create a new corrective plan if acceptance needs a second admission aut
 
 ## Registry/unblock responsibility
 
-After M001 closure M005 remained blocked on M004 and ADR-0032. After M002 closure M003 became ready; after M003, M004 became ready. M004 is now strictly closed through M009 and ADR-0032 was accepted on 2026-10-15, making M005 eligible and active for containment feasibility and qualification. The shared-write capability remains unavailable until writer-path containment is verified. M006 isolated session/worktree UX and M007 per-workspace build admission are independent of M005. M010 is closed with deterministic functional evidence only; it unblocks no new milestone. M008 broad comparison waits on M006/M007, with any shared-checkout arm separately gated by M005. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.
+After M001 closure M005 remained blocked on M004 and ADR-0032. After M002 closure M003 became ready; after M003, M004 became ready. M004 is now strictly closed through M009 and ADR-0032 was accepted on 2026-10-15, making M005 eligible and active for containment feasibility and qualification. The shared-write capability remains unavailable until writer-path containment is verified. M006 isolated session/worktree UX and M007 per-workspace build admission are independent of M005. M007 closed on 2026-10-19; M006 is in progress (the durable launch contract and the CLI affordance are delivered; the TUI surface is outstanding). M010 is closed with deterministic functional evidence only; it unblocks no new milestone. M008 broad comparison waits on M006, with any shared-checkout arm separately gated by M005. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.
