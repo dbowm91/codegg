@@ -1640,8 +1640,10 @@ async fn execute_agent_task(
         agent_loop.set_workspace_locks(locks);
     }
     if let Some(max_model_tokens) = request.max_model_tokens {
-        let mut limits = super::r#loop::ExecutionLimits::default();
-        limits.max_tokens = max_model_tokens;
+        let limits = super::r#loop::ExecutionLimits {
+            max_tokens: max_model_tokens,
+            ..Default::default()
+        };
         agent_loop.set_limits(limits);
     }
     // M005: child loop carries the narrowed sandbox ceiling. Approval mode
