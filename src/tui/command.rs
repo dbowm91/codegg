@@ -1237,7 +1237,11 @@ mod tests {
         // `architecture/command.md` via `command_docs_count_matches_registry`.
         // Updating only the doc, as the M004 note's wording invites, leaves the
         // build red here with no indication which of the two drifted.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 167);
+        // 167 -> 168 for **M005's `/network`** (the per-principal network
+        // intent policy). `main` added `/nodes` for Eggwork M002 and this
+        // branch added `/network`; both moved the same pin, so the merged
+        // total is one higher than either side alone.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 168);
     }
 
     #[test]
@@ -1392,8 +1396,8 @@ mod tests {
         // registry total: its regexes match `(\d+)\s+(hardcoded|built-in|total)`
         // and `[Cc]ount is (\d+)`, and a `BuiltinSlashAction` **variant** count
         // is neither. That blind spot is not hypothetical — the document
-        // carried 156, then 157, then 158, and the body separately claimed 149
-        // while this paragraph claimed 158, with the suite green throughout.
+        // historical prose carried 149 and later 156–158 counts without a
+        // source-backed variant assertion; the current total is 159.
         //
         // The source of truth is `all_builtin_variants`, which
         // `every_builtin_action_is_referenced_by_a_canonical_command` already
