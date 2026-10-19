@@ -186,6 +186,14 @@ The published scope is the **index only** (`PublishedResourceScope::IndexOnly`):
 no ref is written and the worktree is not modified. Merge, rebase, checkout,
 reset, clean, fetch, push, and pull are out of scope.
 
+The receipt states the **obtained** network boundary explicitly
+(`ObtainedNetworkBoundary`), rather than leaving the caller to infer an omission.
+It currently reports `not_reported`: the system still cannot report the network
+fact it obtained, because `NetworkEnforcement::Enforced` has no producer. The
+type therefore carries exactly one variant — one answer, one producer — and the
+reported case is added with the producer that makes it true, never as a claim.
+A receipt that cannot name its boundary says so; it does not imply one.
+
 `Add` is **refused** when no publisher is configured
 (`GitMutationError::PublicationRefused`) rather than downgraded to the
 in-place route, which cannot be made compare-and-swap safe. Every caller that
@@ -505,6 +513,15 @@ the canonical `git` surface.
     equals the published fingerprint — an empty or foreign lock is left
     alone.
 
+18. **A receipt states its boundary, including "not reported".** The
+    publication receipt carries `ObtainedNetworkBoundary`, currently the
+    single variant `NotReported`, because the system still cannot report the
+    network fact it obtained (`NetworkEnforcement::Enforced` has no producer).
+    A receipt that names no boundary and a receipt that names a boundary it
+    did not obtain are both wrong; the first is silent, the second is a
+    claim. The reported variant is added together with the producer that
+    makes it true.
+
 ## Testing
 
 ### Narrowest commands
@@ -602,13 +619,18 @@ dirty/conflicted state, validation summary, and retention attention. It does
 not expose credentials, full diffs, or authority to integrate; integration
 remains an explicit parent-side typed Git operation.
 
-### Test counts (verified 2026-10-06)
+### Test counts (verified 2026-10-19)
+
+Measured from the compiled test binaries' own `--list` output, not from a
+source-text grep: `cargo test -p <crate> --lib -- --list` and
+`cargo test -p codegg --test <file> -- --list`, counting the `: test` lines. A
+grep undercounts, because a test attribute can share a line with others.
 
 | Module / file | #[test] + #[tokio::test] |
 |---------------|--------------------------|
-| `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 358 |
+| `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 362 |
 | `egggit/operation_state.rs` | 8 |
-| `egggit` (all `src/*.rs`) | 78 |
+| `egggit` (all `src/*.rs`) | 109 |
 | `egggit/conflict.rs` | 7 |
 | `tests/git_mutations_integration.rs` | 12 (tokio::test) |
 | `tests/git_network_integration.rs` | 29 |

@@ -23,10 +23,12 @@ in flight, and the `Add` mutation is reachable from an ordinary dispatch
 caller (`git` tool `stage_paths`, `commit` tool).
 
 The **contained** staging step is now **proven on a qualified host**. The
-hosted Linux runner (run `39318206124`, 2026-10-19) executed
+hosted Linux runner executed
 `production_private_index_publisher_stages_and_publishes_under_containment`
 against this branch's exact source and it passed, together with the whole
-M004/M005 suite.
+M004/M005 suite — first on run `39318206124`, and then again on run
+`39339024314` at the branch's final commit `78359fd3`, which is the run that
+qualifies the delivered source (§4).
 
 One thing remains **not** established, and it is not waived:
 
@@ -59,8 +61,8 @@ Linux host is admitted.
 | An ordinary dispatch caller reaches the publisher | `GitMutationExecutor::execute` `Add` arm; `git` tool `stage_paths`; `commit` tool; the **bash route** (`BashTool::git_mutation_executor`); `the_bash_git_executor_carries_the_publication_backend` | pass | The `Add` arm routes to the publisher, and every caller that can reach an authorized `Add` — including a bash-routed `git add` — is given the backend. |
 | An unconfigured backend refuses rather than downgrades | `an_unconfigured_backend_refuses_the_add_mutation` | pass | No silent fallback to the in-place `git add` route. |
 | A path outside the repository is refused before any child runs | `a_path_outside_the_repository_is_refused_before_any_child_runs` | pass | Nothing is recorded in the journal. |
-| The publisher executes no hook, filter, helper or worktree-controlled code | `PRIVATE_GITDIR_CONFIG`; the private gitdir is authored by the daemon and contains no `filter.*` section; `core.attributesFile = /dev/null`; the staging child runs with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` | pass (design) | The staging child's configuration is pinned by the daemon, so a repository-controlled clean/smudge filter has no command to run. The empirical filter probe remains hosted-run evidence (see below). |
-| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | pass | Hosted run `39318206124` (2026-10-19, commit `d024a838`): the isolated C007 step reports `running 1 test` / `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out`, and the same test is among the 17 that passed in the full M004/M005 suite. The whole production path ran under containment on a qualified host. The first hosted attempt (`39313802793`) was cancelled by the job's time budget and produced no evidence either way; the budget defect was corrected rather than the evidence inferred (§4). |
+| The publisher executes no hook, filter, helper or worktree-controlled code | `PRIVATE_GITDIR_CONFIG`; the private gitdir is authored by the daemon and contains no `filter.*` section; `core.attributesFile = /dev/null`; the staging child's configuration is pinned by the daemon (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`); the hosted probe `production_private_index_publisher_stages_and_publishes_under_containment` | pass | The staging child's configuration is pinned by the daemon, so a repository-controlled clean/smudge filter has no command to run. The hosted probe is **empirical**, not a design claim: it writes `tracked.txt filter=probe` into the source repository's `.gitattributes` and configures `filter.probe.clean` in the **source repository's own config** to a script that would create a `source-filter-ran` marker, then asserts the marker does not exist. The worktree `.gitattributes` *is* read by the child — that is why the probe is meaningful; what the child cannot obtain is a **command** to run for it. |
+| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | pass | Hosted run `39339024314` (2026-10-19, commit `78359fd3`, the branch's final source): the isolated C007 step reports `running 1 test` / `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out`, and the same test is among the 17 that passed in the full M004/M005 suite. The whole production path ran under containment on a qualified host. The first hosted attempt (`39313802793`) was cancelled by the job's time budget and produced no evidence either way; the budget defect was corrected rather than the evidence inferred (§4). |
 | The receipt states the obtained network boundary truthfully | `GitIndexPublicationReceipt::network_boundary`; `ObtainedNetworkBoundary::NotReported` | pass | The receipt states the boundary **explicitly** as `not_reported` rather than staying silent about the network, so a caller never has to infer an omission. The type carries one variant because one answer has a producer: the system still cannot report the fact it obtained (C014's open item), and the reported case will be added with its producer, not as a claim. |
 | A non-`Add` mutation is never published | `a_non_add_mutation_is_never_published`; the `Add` arm of `GitMutationExecutor::execute` | pass | A non-`Add` mutation keeps the legacy route, the branch is created, and the publication journal records **no** intent — the publisher never sees it, so a caller cannot route around the publisher's preflight by choosing a different mutation. |
 | The `Add` arm runs the **same** preflight every other mutation runs | `execute_add_publication`'s `env_policy.apply` gate in `src/git_mutations.rs`; `stage_paths_returns_paths_in_delta`, `stage_all_marks_changes_staged`, `git_stage_and_branch_mutation_emit_once_each` | pass | The `Add` arm renders the operation and applies the environment policy **before** the publisher is consulted, so a request the policy refuses is refused with the policy's typed outcome, not with a publication error. The workspace sweep found the arm short-circuiting this gate; see §4. |
@@ -231,6 +233,34 @@ cargo fmt --all -- --check
   C007 test's skip path prints `skipped: set CODEGG_RUN_M005_OFFLINE_NATIVE=1
   …`, and that line does **not** appear in the log. The 675.98 s the suite
   takes is also the direct explanation for the earlier cancellation.
+- **The qualification was re-run at branch HEAD.** Run `39339024314`
+  (2026-10-19, push, commit `78359fd3`) is a **success** for both qualification
+  jobs and is the run that qualifies the branch's final source. Its log is the
+  evidence:
+  - the isolated C007 step: `running 1 test` →
+    `test production_private_index_publisher_stages_and_publishes_under_containment ... ok`
+    → `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.83s`;
+  - the full M004/M005 suite: `running 17 tests` → `test result: ok. 17 passed;
+    0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 654.10s`, with
+    `test managed_process_owner_applies_authenticated_offline_network_intent ... ok`
+    (C014's M005 netns owner proof) and the C007 publication test again;
+  - the `restricted-userns-fails-closed` job: **success**, all three refusal
+    probes reporting `ok` —
+    `required_process_tier_fails_closed_when_user_namespaces_are_restricted ... ok`,
+    `m004_daemon_constrained_pty_fails_closed_when_userns_are_restricted ... ok`,
+    and `lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted ... ok`.
+
+  The non-vacuity check is repeated here rather than assumed from the earlier
+  run: the workflow exports `CODEGG_RUN_M005_OFFLINE_NATIVE: 1`, so the gate was
+  open, and the literal skip marker `skipped: set CODEGG_RUN_M005_OFFLINE_NATIVE=1`
+  appears **zero** times in the job log. The only `skipped:` lines in it belong
+  to two different gates — the restricted-userns probe and the C006 Bubblewrap
+  qualification. The `process-ipc` job took 34m31s of its 45-minute budget,
+  which is why the earlier 20-minute budget cancelled the first attempt.
+
+  This run is the one that covers the two sweep-found defects fixed in
+  `78359fd3` — the `Add` arm's own preflight and the bash route's publisher —
+  because it executed that commit's exact source.
 
 ## 5. Invariant review
 
@@ -298,7 +328,8 @@ cargo fmt --all -- --check
 
 ## 9. Next steps
 
-- The hosted M004/M005 qualification has run on this branch's exact source
-  (run `39318206124`) and passed; it is attached to this closure in §4.
+- The hosted M004/M005 qualification has run on this branch's exact source and
+  passed — first on run `39318206124`, and finally on run `39339024314` at the
+  branch's delivered commit `78359fd3`. It is attached to this closure in §4.
 - Then C005: progressively restore local Git workflows and qualify the
   lower-cost backend for ordinary use, against the limits recorded above.

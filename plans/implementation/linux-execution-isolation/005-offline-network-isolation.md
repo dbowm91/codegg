@@ -1,6 +1,6 @@
 # Linux Execution Isolation M005 — Offline Network Isolation
 
-Status: active — daemon-owned opt-in policy and launch-owner wiring implemented; exact-head hosted owner qualification pending
+Status: active — daemon-owned opt-in policy and launch-owner wiring implemented; exact-head hosted owner qualification executed and passed; the obtained network fact is still unreported
 Primary class: capability
 Repository baseline: reconciled feature branch at `81e857326b3d53a9ab2b606a0e9db736f43bc429`, 2026-10-15.
 Source: `plans/subsystems/linux-execution-isolation-roadmap.md`.
