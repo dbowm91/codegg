@@ -1,6 +1,6 @@
 # Eggwork Worker M001 — Expose Explicit Remote Job and Schedule Targets
 
-Status: **ready**
+Status: **implemented**
 Class: capability / protocol / scheduler
 Source: `plans/subsystems/eggwork-worker-telemetry-and-targeting-roadmap.md`
 Reviewed baseline: CodeGG `main` (2026-10-19); relevant current source `crates/codegg-protocol/src/dto.rs`, `crates/codegg-core/src/protocol_conversions.rs`, `crates/codegg-core/src/jobs/schedule.rs`, `src/core/daemon_jobs.rs`, `src/scheduler/eggwork.rs`, `src/scheduler/submission.rs`.
