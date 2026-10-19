@@ -7,31 +7,31 @@ Recommendation: do not start the integrated qualification until all hard predece
 
 ## 1. Finding and disposition
 
-C007 is not dependency-ready. C003 and C005 strictly closed. C001, C002, C004, and C006 did not: their closure records identify missing production-path or integration evidence, and C002 additionally depends on an upstream trusted session-root contract. Running the combined trajectory now would not discharge the explicit hard predecessor gates, so C007 remains blocked.
+C007 is not dependency-ready. C001, C003, C004, C005, and C006 strictly closed. C002 remains blocked because neither CodeGG nor Eggsearch currently binds a CodeGG workspace identity to request-scoped Eggsearch local roots. Running the combined trajectory now would not discharge the explicit hard predecessor gate, so C007 remains blocked.
 
 ## 2. Dependency audit
 
 | Hard predecessor | Status | Blocking condition |
 |---|---|---|
-| C001 authority projection | Blocked | No real AgentLoop → broker → native Tool Program foreground/background trajectory or full pre-job denial matrix. |
+| C001 authority projection | Closed | Real AgentLoop → broker → scheduler → native Tool Program foreground/background trajectory and pre-job negative matrix passed; see C001 closure. |
 | C002 live-workspace search | Blocked | No trusted session workspace binding in the Eggsearch request/runtime contract; local fixture only proves configured-root behavior. |
 | C003 grep/patch first use | Closed | Real AgentLoop/broker nested create→grep trajectory and contract regressions passed. |
-| C004 task/todo status | Blocked | No model-visible status/get/group trajectory with cross-session denial. |
+| C004 task/todo status | Closed | Model-visible status/get/group and cross-session denial trajectory passed; see C004 closure. |
 | C005 scoped verification | Closed | Typed verifier resolver and CWD/bounds tests plus quick suite passed. |
-| C006 batch admission | Blocked | No overlapping parent/subagent queue ownership or post-admission timeout qualification. |
+| C006 batch admission | Closed | Parent/subagent overlap, deadline race, and admitted native timeout with partial output passed; see C006 closure. |
 
 ## 3. C007 acceptance matrix
 
 | Required trajectory | Evidence | Status |
 |---|---|---|
-| Normal daemon/agent path covering all six corrected surfaces | Only C003 has a first-use AgentLoop trajectory; no integrated C007 matrix | Not run — blocked by predecessors |
+| Normal daemon/agent path covering all six corrected surfaces | C001/C003/C004/C005/C006 have individual qualification; C002 workspace binding is unresolved | Not run — blocked by C002 |
 | No-index and no-permission cases | Not implemented in C007 | Not run |
 | Long-queued and concurrent-use cases | Unit admission timeout/cancellation tests exist, but no integrated trajectory | Not run |
-| Closure evidence for every predecessor and final quick suite | C003/C005 records complete; C001/C002/C004/C006 remain blocked | Not satisfiable |
+| Closure evidence for every predecessor and final quick suite | C001/C003/C004/C005/C006 records complete; C002 remains blocked | Not satisfiable |
 
 ## 4. Verification
 
-This plan's required integrated qualification was not run because its hard dependencies did not close. Implementation revision `590c713e` passed `scripts/verify.sh quick`, the 62-test AgentLoop harness, and focused subsystem tests recorded in the individual closure documents. Those passes do not substitute for C007 acceptance.
+This plan's required integrated qualification was not run because C002 remains blocked. Implementation `2913da8a` passed the 66-test AgentLoop harness and `scripts/verify.sh quick`; C001/C004/C006 caller-path evidence is recorded in their closure records. Those passes do not substitute for C007 acceptance.
 
 ## 5. Security and operational boundary
 
@@ -39,4 +39,4 @@ No model-selected workspace root, permission relaxation, scheduler bypass, or li
 
 ## 6. Unblock audit
 
-C007 remains blocked on C001, C002, C004, and C006. C003/C005 are discharged. No other registered roadmap or implementation plan became eligible from this audit. Re-evaluate this plan only after all four hard predecessors receive strict closure records.
+C007 remains blocked solely on C002. C001/C003/C004/C005/C006 are discharged. C002 research confirms that the blocker is architectural: CodeGG's search runtime has no workspace identity and Eggsearch local roots are startup-configured. No other registered roadmap or implementation plan became eligible from this audit. Resume C007 only after C002's architecture/integration contract, implementation, and strict closure are complete.

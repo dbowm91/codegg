@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability Corrective C007 — Qualify the Normal Agent Tool-Use Trajectory
 
-Status: blocked — hard dependencies C001/C002/C004/C006 remain; see `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md`.
+Status: blocked — C002's trusted workspace-to-Eggsearch local retrieval scope contract remains unresolved; all other hard predecessors are closed. See `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md`.
 Repository baseline: `4c86bac2a608dd717be085247838fd2f37d81ab6` (main, 2026-10-19)
 Source roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`; `#28-observability`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`.

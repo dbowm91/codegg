@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability — Post-Audit Corrective Addendum
 
-Status: active planning; C003/C005 closed; C001/C002/C004/C006 blocked; C007 remains blocked on strict C001–C006 closures.
+Status: active planning; C001/C003/C004/C005/C006 closed; C002 and C007 blocked.
 Planning baseline: CodeGG `4c86bac2a608dd717be085247838fd2f37d81ab6` (main, 2026-10-19)
 Evidence: 2026-10-19 agent tool-surface exercise (Agent Findings 2); source review of the same main revision. This is reported runtime evidence, not a reproduced CI result.
 
@@ -74,13 +74,13 @@ These six bounded owner-specific slices may proceed on separate worktrees. Avoid
 
 | Milestone | Primary class | Plan | Status | Boundary and exit gate |
 |---|---|---|---|---|
-| C001 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/001-broker-accepted-authority-projection.md` | blocked | Real native Tool Program trajectory and pre-job denial matrix remain; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md`. |
-| C002 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/002-live-workspace-repository-search.md` | blocked | Eggsearch lacks trusted active-session workspace binding; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md`. |
+| C001 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/001-broker-accepted-authority-projection.md` | closed | Real native Tool Program foreground/background trajectory and pre-job denial matrix; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md`. |
+| C002 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/002-live-workspace-repository-search.md` | blocked | Requires a separate CodeGG/Eggsearch architecture contract binding daemon workspace identity to local retrieval scope; static configured-root tests cannot discharge it. See researched options in `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md`. |
 | C003 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/003-grep-and-patch-first-use-contract.md` | closed | Real AgentLoop create→grep path and tool contract matrix; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/003-status.md`. |
-| C004 | polish | `plans/implementation/agent-tool-use-operability-post-audit-corrective/004-task-and-todo-status-contracts.md` | blocked | Task status/get/group and cross-session denial trajectories remain; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md`. |
+| C004 | polish | `plans/implementation/agent-tool-use-operability-post-audit-corrective/004-task-and-todo-status-contracts.md` | closed | Model-visible TaskTool status/get/group and cross-session denial; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md`. |
 | C005 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/005-project-compatible-verify-defaults.md` | closed | Typed bounded Cargo scope, feature and CWD tests; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md`. |
-| C006 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/006-batch-permit-admission-liveness.md` | blocked | Parent/subagent overlap and post-admission timeout evidence remain; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md`. |
-| C007 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/007-real-agent-tool-trajectory-qualification.md` | blocked | Normal daemon/agent qualification waits on strict C001/C002/C004/C006 closure; blocker audit `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md`. |
+| C006 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/006-batch-permit-admission-liveness.md` | closed | Parent/subagent overlap, admission deadline race, and admitted native timeout with partial output; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md`. |
+| C007 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/007-real-agent-tool-trajectory-qualification.md` | blocked | Integrated qualification waits solely on C002's trusted workspace-to-Eggsearch scope contract; blocker audit `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md`. |
 
 ## 8. Cross-cutting requirements
 
@@ -108,10 +108,10 @@ C001–C006 individual closure records with exact SHA, required negative/positiv
 
 | Milestone | Status | Closure | Hard blockers |
 |---|---|---|---|
-| C001 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md` | Normal-path Tool Program trajectory and pre-job denial matrix |
-| C002 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md` | Trusted Eggsearch active-session root binding contract |
-| C003 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/003-status.md` | None; C007 still has other hard predecessors |
-| C004 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md` | Task status/get/group caller path and cross-session denial |
-| C005 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md` | None; C007 still has other hard predecessors |
-| C006 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md` | Parent/subagent contention and post-admission timeout matrix |
-| C007 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md` | Strict C001–C006 closure; C001/C002/C004/C006 remain open |
+| C001 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md` | None; C007 remains blocked on C002 |
+| C002 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md` | Separate CodeGG/Eggsearch architecture/integration contract for trusted workspace-scoped retrieval |
+| C003 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/003-status.md` | None; C007 remains blocked on C002 |
+| C004 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md` | None; C007 remains blocked on C002 |
+| C005 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md` | None; C007 remains blocked on C002 |
+| C006 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md` | None; C007 remains blocked on C002 |
+| C007 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md` | C002 trusted workspace-to-Eggsearch retrieval binding; all other hard predecessors closed |

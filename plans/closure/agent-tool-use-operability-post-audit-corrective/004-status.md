@@ -1,53 +1,71 @@
 # Agent Tool-Use Operability Corrective C004 — Closure Status
 
-Status: blocked
+Status: closed
 Source plan: `plans/implementation/agent-tool-use-operability-post-audit-corrective/004-task-and-todo-status-contracts.md`
-Implementation commit: `590c713ea377f50a741a69284060f3fdd483bf12` (`plans/agent-tool-use-operability-20261019`)
-Recommendation: blocked pending status/get and cross-session denial coverage through the model-visible TaskTool path.
+Source subsystem roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
+Repository baseline reviewed: `4c86bac2a608dd717be085247838fd2f37d81ab6`
+Implementation commit: `2913da8a` (`plans/agent-tool-use-operability-20261019`)
+Implementation summary: corrected todo profile/schema contracts and qualified model-visible TaskTool retrieval and owner-only session access.
+Recommendation: closed; C007 remains blocked on C002.
 
 ## 1. Finding and disposition
 
-The explicit todo default now accepts multiple `in_progress` items, the strict policy remains configurable, and TaskTool's schema and descriptions distinguish task, run, and group identifiers. The required caller-path matrix is incomplete: no new trajectory exercises `status(run_id)`, `get(task_id)`, group status/wait, and cross-session retrieval denial together. Tests and docs alone do not satisfy the plan's stated real trajectory gate.
+Todo status policy, TaskTool identifier semantics, and model-visible subagent retrieval now have caller-path qualification. The deterministic AgentLoop trajectory retrieves run state, task state, and group state, exercises wait behavior, and proves cross-session retrieval is denied. C004's acceptance criteria are met.
 
 ## 2. Changes landed
 
-- Explicit todo profile defaults `require_single_in_progress` to false; guided profile and explicit strict configuration retain the constraint.
-- Failure under strict policy leaves state and revision unchanged.
-- Task schema documents `run_id` vs `task_id`, supports durable string IDs and legacy integer IDs for task retrieval, and removes the false `status`/`get` alias implication.
-- AgentLoop test fixtures now carry an actual workspace service lease, preserving fail-closed workspace authority for subagent calls.
+- Explicit todo profile permits multiple `in_progress` items by default; guided and explicitly strict configuration preserve the single-item rule.
+- TaskTool schema and errors distinguish durable task IDs, run IDs, and group IDs, while retaining numeric task-ID compatibility.
+- Added a scripted AgentLoop trajectory for `status(run_id)`, `wait(run_id)`, `get(task_id)`, group status/wait, owner-visible private result, and cross-session denial.
 
 ## 3. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Status |
 |---|---|---|
-| Parallel explicit todo status and strict override | `codegg-core` `task_state` tests | Pass |
-| Task/run identifier schema and error clarity | `tool::task` schema tests and docs | Pass |
-| Real spawn and successful result trajectory | `test_task_tool_integration_with_subagent` and existing subagent tests | Pass for spawn/result |
-| `status(run_id)` and `get(task_id)` normal-path retrieval | No scripted follow-up trajectory added | Missing |
-| Cross-session retrieval denial and group status/wait | No specific new TaskTool trajectory covering these cases | Missing — blocks closure |
-| Failed input leaves state unchanged | Strict-state tests assert unchanged revision/state | Pass for todo policy |
+| Parallel explicit todo status and strict override | `cargo test --locked -p codegg-core --lib task_state` | Pass |
+| Task/run identifier schema and error clarity | `cargo test --locked -p codegg --lib tool::task` | Pass |
+| Real spawn and successful result trajectory | `test_task_tool_integration_with_subagent` in AgentLoop harness | Pass |
+| `status(run_id)`, `get(task_id)`, group status/wait | `task_tool_status_get_group_and_cross_session_contracts_are_model_visible` in AgentLoop harness | Pass |
+| Cross-session retrieval denial and private-result boundary | Same test: foreign session cannot retrieve run/task; owner can read private result | Pass |
+| Strict rejection leaves todo state unchanged | `codegg-core::task_state` assertions cover unchanged state/revision | Pass |
 
 ## 4. Verification
 
-- `cargo test --locked -p codegg-core task_state` — 18 tests passed.
-- `cargo test --locked -p codegg --lib tool::task` — 6 tests passed.
-- `cargo test --locked -p codegg --test agent_loop_harness` — 62 tests passed, including spawn/result coverage.
-- `scripts/verify.sh quick` — passed.
+Passed:
 
-The `todowrite` focused target was not separately run. No hosted CI or live provider was used.
+- `cargo test --locked -p codegg-core --lib task_state` — 18 tests.
+- `cargo test --locked -p codegg --lib tool::task` — 6 tests.
+- `cargo test --locked -p codegg --test agent_loop_harness` — 66 tests passed on implementation commit `2913da8a`.
+- `scripts/verify.sh quick` — passed on the implementation tree before the planning-only closure updates.
+
+The `tool::todowrite` unit target contains no tests; todo policy coverage is owned by `codegg-core::task_state`. No hosted CI or live provider was used.
 
 ## 5. Compatibility and security
 
-No durable task schema or protocol migration. Numeric task identifiers remain accepted for compatibility. The change does not widen cross-session access; however, the requested model-visible denial trajectory is absent, so no strict security closure is claimed.
+No durable task schema or protocol migration. Numeric task identifiers remain accepted. Cross-session access remains denied and is now exercised through the model-visible caller path.
 
 ## 6. Failure, restart, and contention
 
-Strict todo rejection is state-preserving. Existing task persistence/runtime ownership is unchanged. Restart and task completion tests elsewhere remain in place, but the corrective-specific status/get and cross-session checks are not tied together through the TaskTool caller path.
+Strict todo rejection is state-preserving. Existing persistence and task ownership are unchanged; the integration trajectory verifies session ownership at retrieval. No new scheduler or durable queue was introduced.
 
 ## 7. Limitations and severity
 
-Severity: medium model-interface/cross-session qualification gap. The production schema change is implemented; closure awaits the specified successful retrieval and denial trajectories.
+No remaining C004 acceptance gap was found. The existing task-state restart and persistence suites remain authoritative for durable lifecycle behavior; this corrective adds caller-path retrieval qualification, not a new restart protocol.
 
 ## 8. Unblock audit
 
-C007 remains blocked on C004. No downstream plan became eligible. Add real AgentLoop TaskTool trajectories for status/get/group operations and a cross-session denial before changing this status.
+C004 is strictly closed and discharges one hard C007 dependency. C007 remains blocked solely on C002 after C001 and C006 also close. No other registered plan was newly eligible.
+
+## 9. Unresolved findings
+
+| Severity | Finding | Impact | Required action |
+|---|---|---|---|
+| None | No C004 acceptance finding remains | None identified within this plan's scope | None |
+
+## 10. Roadmap disposition
+
+C004 is closed. C007 remains blocked solely by C002's unresolved workspace-to-Eggsearch scope contract. No other plan became eligible.
+
+## 11. Registry updates
+
+`plans/registry.md` and the source addendum mark C004 closed and C007 blocked on C002.

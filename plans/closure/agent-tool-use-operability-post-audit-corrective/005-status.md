@@ -42,4 +42,4 @@ No known high-severity residual. The broad full verification mode was not run; t
 
 ## 7. Unblock audit
 
-C005 is strictly closed. It discharges one C007 dependency. C007 remains blocked by C001, C002, C004, and C006; no other registered plan became eligible.
+C005 is strictly closed. It discharges one C007 dependency. After the later C001/C004/C006 closures, C007 remains blocked solely by C002's trusted workspace-to-Eggsearch scope contract; no other registered plan became eligible.
