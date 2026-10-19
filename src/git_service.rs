@@ -349,6 +349,7 @@ impl GitExecutionService {
         repository_root: &Path,
         git_binary: &Path,
         provenance_label: &str,
+        measure_child_resources: bool,
     ) -> Result<ManagedProcessResult, GitServiceError> {
         if !matches!(
             operation,
@@ -399,11 +400,26 @@ impl GitExecutionService {
             .canonicalize()
             .map_err(|error| GitServiceError::Execution(error.to_string()))?;
         let argv = render_argv(operation);
+        let (target, args) = if measure_child_resources {
+            let time = Path::new("/usr/bin/time")
+                .canonicalize()
+                .map_err(|error| GitServiceError::Execution(error.to_string()))?;
+            let mut args = vec![
+                "-f".to_owned(),
+                "CODEGG_TIME\\t%U\\t%S\\t%M".to_owned(),
+                "--".to_owned(),
+                git_binary.display().to_string(),
+            ];
+            args.extend(argv.iter().skip(1).cloned());
+            (time, args)
+        } else {
+            (git_binary, argv.iter().skip(1).cloned().collect::<Vec<_>>())
+        };
         let spec = SandboxConfig::new()
             .with_enabled(true)
             .with_mode(SandboxMode::WorkspaceWrite)
             .with_linux_offline_network(true)
-            .launch_spec(&git_binary, &argv[1..], Some(&root))
+            .launch_spec(&target, &args, Some(&root))
             .map_err(|error| GitServiceError::Execution(error.to_string()))?;
         if !spec.linux_process_isolation
             || !spec.linux_offline_network

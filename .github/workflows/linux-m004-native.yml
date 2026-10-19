@@ -189,7 +189,7 @@ jobs:
       - name: Measure packed and fragmented cold/warm Git reads
         run: |
           CODEGG_GIT_COST_FILESYSTEM="$(stat -f -c %T "$GITHUB_WORKSPACE")" \
-            cargo test --locked --test linux_git_c002_performance -- --nocapture
+            cargo test --locked --test linux_git_c002_performance --features linux-git-test-support -- --nocapture
 
       - name: Upload C002 performance report
         if: always()

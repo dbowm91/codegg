@@ -1,20 +1,15 @@
 #![cfg(target_os = "linux")]
 
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::Serialize;
 
 use codegg::git_service::{GitExecutionService, GitPayload};
-use codegg::managed_process::{
-    BoundedOutput, ManagedProcessRequest, ManagedProcessResult, ManagedProcessService,
-    ProcessProvenance, SandboxExecutionOutcome, SandboxRequest,
-};
-use codegg::security::sandbox::{SandboxConfig, SandboxMode};
+use codegg::managed_process::{BoundedOutput, ManagedProcessResult, SandboxExecutionOutcome};
 
 const BENCH_OPT_IN: &str = "CODEGG_RUN_LINUX_GIT_COST_PERF";
 const M005_OPT_IN: &str = "CODEGG_RUN_M005_OFFLINE_NATIVE";
@@ -375,24 +370,24 @@ async fn concurrent_snapshot_batch(
 }
 
 async fn concurrent_live_batch(
+    service: Arc<GitExecutionService>,
     git: &Path,
     repository: &Path,
-    argv: &[String],
     expected: &[u8],
     concurrency: usize,
 ) -> Vec<u128> {
     let mut tasks = tokio::task::JoinSet::new();
     for index in 0..concurrency {
+        let service = Arc::clone(&service);
         let git = git.to_path_buf();
         let repository = repository.to_path_buf();
-        let argv = argv.to_vec();
         let expected = expected.to_vec();
         tasks.spawn(async move {
             let started = Instant::now();
             let result = contained_live_git(
+                &service,
                 &git,
                 &repository,
-                &argv,
                 &format!("contention-{concurrency}-{index}"),
             )
             .await;
@@ -408,46 +403,13 @@ async fn concurrent_live_batch(
 }
 
 async fn contained_live_git(
+    service: &GitExecutionService,
     git: &Path,
     repository: &Path,
-    argv: &[String],
     label: &str,
 ) -> ManagedProcessResult {
-    let (target, args) = if std::env::var(BENCH_OPT_IN).as_deref() == Ok("1") {
-        let mut args = vec![
-            "-f".to_owned(),
-            "CODEGG_TIME\\t%U\\t%S\\t%M".to_owned(),
-            "--".to_owned(),
-            git.display().to_string(),
-        ];
-        args.extend(argv.iter().skip(1).cloned());
-        (PathBuf::from("/usr/bin/time"), args)
-    } else {
-        (git.to_path_buf(), argv.iter().skip(1).cloned().collect())
-    };
-    let spec = SandboxConfig::new()
-        .with_enabled(true)
-        .with_mode(SandboxMode::WorkspaceWrite)
-        .with_linux_offline_network(true)
-        .launch_spec(target, &args, Some(repository))
-        .expect("construct required contained-Git launch spec");
-    let command = std::iter::once(spec.target.as_os_str().to_owned())
-        .chain(spec.args.iter().map(OsString::from))
-        .collect();
-    let mut request = ManagedProcessRequest::new(
-        command,
-        repository.to_path_buf(),
-        ProcessProvenance::new("linux-git-c002-performance", label),
-    );
-    request.timeout = Some(Duration::from_secs(20));
-    request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
-        .with_var("GIT_CONFIG_NOSYSTEM", "1")
-        .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
-        .with_var("GIT_TERMINAL_PROMPT", "0")
-        .with_var("HOME", "/tmp/codegg-empty-home")
-        .with_var("LC_ALL", "C");
-    request.sandbox = SandboxRequest::Required(spec);
-    let result = ManagedProcessService::run(request)
+    let result = service
+        .execute_contained_live_read_test_only(&operation(), repository, git, label, true)
         .await
         .expect("required contained Git must run or fail closed");
     assert!(
@@ -602,7 +564,13 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
 
         advise_drop_object_cache(&cold_objects);
         let started = Instant::now();
-        let live = contained_live_git(git, &cold_repository, &argv, &format!("cold-{index}")).await;
+        let live = contained_live_git(
+            &typed_service,
+            git,
+            &cold_repository,
+            &format!("cold-{index}"),
+        )
+        .await;
         live_cold.push(elapsed_us(started));
         live_cold_resources.push(child_resource_sample(&live.stderr));
         assert_eq!(output_bytes(&live.stdout), native.stdout);
@@ -618,7 +586,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
     );
     assert_eq!(
         output_bytes(
-            &contained_live_git(git, &repository, &argv, "warm-prime")
+            &contained_live_git(&typed_service, git, &repository, "warm-prime")
                 .await
                 .stdout,
         ),
@@ -641,7 +609,8 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         assert_eq!(snapshot.as_bytes(), expected.as_slice());
 
         let started = Instant::now();
-        let live = contained_live_git(git, &repository, &argv, &format!("warm-{index}")).await;
+        let live =
+            contained_live_git(&typed_service, git, &repository, &format!("warm-{index}")).await;
         live_warm.push(elapsed_us(started));
         live_warm_resources.push(child_resource_sample(&live.stderr));
         assert_eq!(output_bytes(&live.stdout), expected);
@@ -671,7 +640,14 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
                 .await,
             );
             live.extend(
-                concurrent_live_batch(git, &repository, &argv, &expected, concurrent_calls).await,
+                concurrent_live_batch(
+                    Arc::clone(&typed_service),
+                    git,
+                    &repository,
+                    &expected,
+                    concurrent_calls,
+                )
+                .await,
             );
         }
         warm_contention.push(ContentionReport {

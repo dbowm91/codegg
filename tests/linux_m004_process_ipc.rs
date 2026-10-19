@@ -23,6 +23,28 @@ const OPT_IN: &str = "CODEGG_RUN_M004_BWRAP_NATIVE";
 const RESTRICTED_USERNS_OPT_IN: &str = "CODEGG_RUN_M004_RESTRICTED_USERNS";
 const M005_OPT_IN: &str = "CODEGG_RUN_M005_OFFLINE_NATIVE";
 
+#[cfg(feature = "linux-git-test-support")]
+#[tokio::test]
+async fn test_only_contained_git_adapter_refuses_mutations_before_path_access() {
+    let operation = codegg_git::GitOperation::Add { paths: vec![] };
+    let error = TypedGitExecutionService::new()
+        .execute_contained_live_read_test_only(
+            &operation,
+            Path::new("/does/not/exist"),
+            Path::new("/also/not/an/executable"),
+            "mutation-denial-control",
+            false,
+        )
+        .await
+        .expect_err("test-only live-read adapter must refuse mutation operations");
+    assert!(matches!(
+        error,
+        codegg::git_service::GitServiceError::Policy(
+            egggit::GitExecutionPolicyOutcome::InvalidRequest { .. }
+        )
+    ));
+}
+
 #[test]
 fn process_view_compiles_pid_ipc_and_proc_in_safe_mount_order() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -690,7 +712,7 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         label: &str,
     ) -> Result<ManagedProcessResult, codegg::managed_process::ManagedProcessError> {
         typed
-            .execute_contained_live_read_test_only(operation, repository, git, label)
+            .execute_contained_live_read_test_only(operation, repository, git, label, false)
             .await
             .map_err(|error| {
                 codegg::managed_process::ManagedProcessError::SandboxFailed(error.to_string())
