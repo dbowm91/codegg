@@ -1895,7 +1895,7 @@ fn hierarchy_direction_rejects_invalid() {
 #[test]
 #[allow(non_snake_case)]
 fn callHierarchy_invalid_direction_rejected() {
-    let tool = make_tool();
+    let tool = make_tool_with_root(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let err = tool
@@ -1918,7 +1918,7 @@ fn callHierarchy_invalid_direction_rejected() {
 #[test]
 #[allow(non_snake_case)]
 fn typeHierarchy_invalid_direction_rejected() {
-    let tool = make_tool();
+    let tool = make_tool_with_root(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let err = tool
