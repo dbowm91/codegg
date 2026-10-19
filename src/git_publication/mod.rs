@@ -111,6 +111,35 @@ impl PublishedResourceScope {
     }
 }
 
+/// The network boundary a publication obtained, stated truthfully.
+///
+/// The obtained network fact is **not reported** anywhere in the system: the
+/// M005 netns is obtained in reality, but `NetworkEnforcement::Enforced` has
+/// no producer, so no surface can read the fact it obtained. That makes the
+/// only truthful answer available today "not reported" — and it has to be
+/// *stated*, not merely omitted. A receipt that said nothing about the
+/// network would leave a caller unable to tell "there was no boundary" from
+/// "the boundary was not surfaced", and a receipt that claimed "offline"
+/// would be claiming something the system cannot see.
+///
+/// This type has one variant because one answer has a producer. When the
+/// obtained-facts contract lands, the reported case is added **with** its
+/// producer, not as a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObtainedNetworkBoundary {
+    /// The system does not report the network boundary it obtained.
+    NotReported,
+}
+
+impl ObtainedNetworkBoundary {
+    /// A stable, human-readable name for the boundary.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ObtainedNetworkBoundary::NotReported => "not_reported",
+        }
+    }
+}
+
 /// A request to publish a staged `git add` into the real repository index.
 #[derive(Debug, Clone)]
 pub struct GitIndexPublicationRequest {
@@ -170,6 +199,13 @@ pub struct GitIndexPublicationReceipt {
     /// The object identities that were imported into the real object
     /// database to make the published index resolvable.
     pub imported_objects: Vec<String>,
+    /// The network boundary this publication obtained.
+    ///
+    /// Stated explicitly even when the answer is "not reported", so a caller
+    /// never has to infer an omission. A receipt that said nothing about the
+    /// network would leave "there was no boundary" and "the boundary was not
+    /// surfaced" indistinguishable.
+    pub network_boundary: ObtainedNetworkBoundary,
     /// When the publication committed.
     pub published_at_ms: i64,
 }

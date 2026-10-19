@@ -19,7 +19,8 @@ use thiserror::Error;
 use super::staging::{GitIndexStaging, GitIndexStagingRequest};
 use super::{
     GitIndexPublicationConflict, GitIndexPublicationOutcome, GitIndexPublicationReceipt,
-    GitIndexPublicationRefusal, GitIndexPublicationRequest, PublishedResourceScope,
+    GitIndexPublicationRefusal, GitIndexPublicationRequest, ObtainedNetworkBoundary,
+    PublishedResourceScope,
 };
 
 /// The configuration a private staging gitdir is created with.
@@ -355,6 +356,10 @@ impl GitIndexPublisher {
                         published_index_fingerprint: published,
                         staged_paths: paths.to_vec(),
                         imported_objects: imported,
+                        // The obtained network fact is not reported anywhere in
+                        // the system, so the receipt says so explicitly rather
+                        // than staying silent about the network.
+                        network_boundary: ObtainedNetworkBoundary::NotReported,
                         published_at_ms: now_ms(),
                     },
                 ))

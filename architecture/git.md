@@ -609,7 +609,7 @@ remains an explicit parent-side typed Git operation.
 | `tests/git_mutations_integration.rs` | 12 (tokio::test) |
 | `tests/git_network_integration.rs` | 29 |
 | `tests/git_recovery_integration.rs` | 19 |
-| `tests/git_index_publication.rs` | 21 (C007 private-index publication; 16 C007 + 5 shared secret-scan) |
+| `tests/git_index_publication.rs` | 22 (C007 private-index publication; 17 C007 + 5 shared secret-scan) |
 
 ### Key test categories
 

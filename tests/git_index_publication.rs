@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use codegg::git_publication::{
     reconcile_git_index_publications_at_startup, GitIndexPublicationConflict,
     GitIndexPublicationOutcome, GitIndexPublicationRequest, GitIndexPublisher, GitIndexStaging,
-    GitIndexStagingRequest,
+    GitIndexStagingRequest, ObtainedNetworkBoundary,
 };
 use codegg_core::git_publication::{
     GitIndexPublicationIntent, GitIndexPublicationState, GitIndexPublicationStore, IndexFingerprint,
@@ -505,6 +505,16 @@ async fn publication_replaces_the_index_and_imports_the_object() {
     assert_eq!(receipt.scope.as_str(), "index");
     assert_eq!(receipt.staged_paths, vec!["tracked.txt".to_string()]);
     assert_eq!(receipt.imported_objects.len(), 1);
+    // The receipt states the obtained network boundary explicitly. The system
+    // does not report the fact it obtained, so the truthful answer is "not
+    // reported" — and it has to be *stated*, because a receipt that said
+    // nothing about the network would leave "there was no boundary" and "the
+    // boundary was not surfaced" indistinguishable.
+    assert_eq!(
+        receipt.network_boundary,
+        ObtainedNetworkBoundary::NotReported
+    );
+    assert_eq!(receipt.network_boundary.as_str(), "not_reported");
 
     // The repository's index now holds the published content.
     let after_index = read_bytes(&gitdir.join("index")).expect("index exists");
@@ -700,4 +710,52 @@ async fn a_path_outside_the_repository_is_refused_before_any_child_runs() {
     );
     let store = GitIndexPublicationStore::new(pool);
     assert!(store.get("escape").await.unwrap().is_none());
+}
+
+/// C007: the dispatch path publishes an `Add` and nothing else.
+///
+/// The publisher's preflight is the same one the test-only path used, and it
+/// serves `Add` only. A non-`Add` mutation is never handed to the publisher:
+/// it keeps the legacy route, and the journal records no publication intent
+/// for it. That is what makes the publisher's own refusal the decisive one —
+/// a caller cannot route around the preflight by choosing a different
+/// mutation, because the publisher never sees one.
+#[tokio::test]
+async fn a_non_add_mutation_is_never_published() {
+    let pool = isolated_pool().await;
+    let temp = TempDir::new().unwrap();
+    let scratch = temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let publisher = Arc::new(publisher(&pool, &scratch, LocalGitStaging));
+    let executor = codegg::git_mutations::GitMutationExecutor::new()
+        .with_env_policy(codegg::git_mutations::GitEnvPolicy::default())
+        .with_publication(publisher);
+
+    let operation = codegg_git::GitOperation::BranchCreate {
+        name: codegg_git::BranchName::new("side").expect("branch name"),
+        start_point: None,
+        force: false,
+    };
+    let result = executor
+        .execute(&operation, &repo)
+        .await
+        .expect("the legacy route still serves a non-Add mutation");
+    assert!(result.success, "the legacy route failed: {result:?}");
+
+    // The publisher was never asked to publish it: the journal is empty.
+    let store = GitIndexPublicationStore::new(pool);
+    assert!(
+        store.list_unresolved(16).await.unwrap().is_empty(),
+        "a non-Add mutation must not reach the publication journal"
+    );
+    // And the mutation did what it was asked to do, through the legacy route.
+    let branches = run_git(&repo, &["branch", "--list", "side"]);
+    assert!(
+        branches.contains("side"),
+        "the branch was not created: {branches:?}"
+    );
 }

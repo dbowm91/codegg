@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C007 — Closure Status
 
-Status: conditionally closed — the production publisher, the durable journal, and the crash reconciler exist and are proven; the contained staging step and the hosted M004/M005 owner qualification remain outstanding
+Status: closed — the production publisher, the durable journal, the crash reconciler, and the contained staging step under M004/M005 are all proven; the obtained network fact remains unreported and is owned by C014
 
 Source implementation plan:
 
@@ -22,22 +22,19 @@ daemon-start reconciler resolves any publication a prior generation left
 in flight, and the `Add` mutation is reachable from an ordinary dispatch
 caller (`git` tool `stage_paths`, `commit` tool).
 
-Two things are **not** established by this closure, and neither is waived:
+The **contained** staging step is now **proven on a qualified host**. The
+hosted Linux runner (run `39318206124`, 2026-10-19) executed
+`production_private_index_publisher_stages_and_publishes_under_containment`
+against this branch's exact source and it passed, together with the whole
+M004/M005 suite.
 
-1. The **contained** staging step — the daemon-pinned Git child under the
-   M004 process/IPC tier and the M005 offline-network candidate — is
-   implemented but not yet executed on a qualified host. The workstation's
-   Landlock ABI is below the ABI 6 the M004/M005 scope requires, so the
-   contained path can only be exercised by the hosted Linux runner. The first
-   hosted run against this source was cancelled by the job's time budget and
-   produced no evidence either way (§4, §8); the budget defect is corrected
-   and the run is re-triggered, but until a run reports the test passing this
-   stays **not run**.
-2. The **obtained network fact** is still not reported anywhere in the
-   system. C014's open item stands. This closure makes no M005 production
-   claim, and the receipt says so by construction: the receipt states the
-   published resource, not a network boundary it cannot report.
+One thing remains **not** established, and it is not waived:
 
+- The **obtained network fact** is still not reported anywhere in the system.
+  C014's open item stands. This closure makes no M005 production claim, and
+  the receipt says so by construction: the receipt states the published
+  resource, and it states the network boundary explicitly as `not_reported`,
+  because the system cannot report what it obtained.
 The publication half — the journal, the compare-and-swap, the lock, the
 object import, the atomic replacement, and the recovery — is proven on this
 workstation, because the staging step is behind a trait and the proof
@@ -63,8 +60,9 @@ Linux host is admitted.
 | An unconfigured backend refuses rather than downgrades | `an_unconfigured_backend_refuses_the_add_mutation` | pass | No silent fallback to the in-place `git add` route. |
 | A path outside the repository is refused before any child runs | `a_path_outside_the_repository_is_refused_before_any_child_runs` | pass | Nothing is recorded in the journal. |
 | The publisher executes no hook, filter, helper or worktree-controlled code | `PRIVATE_GITDIR_CONFIG`; the private gitdir is authored by the daemon and contains no `filter.*` section; `core.attributesFile = /dev/null`; the staging child runs with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1` | pass (design) | The staging child's configuration is pinned by the daemon, so a repository-controlled clean/smudge filter has no command to run. The empirical filter probe remains hosted-run evidence (see below). |
-| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | **not run** | The test is written and compiled. The first hosted run against this source (run `39313802793`, 2026-10-19) was **cancelled** by the job's 20-minute timeout with the test binary still running, so it produced no pass and no failure. The CI budget defect is corrected (20 → 45 minutes, and the C007 proof is isolated into its own step with its own 10-minute budget) and the run is re-triggered, but until that run reports the test passing, this row stays **not run**. The workstation's Landlock ABI is below the ABI 6 the M004/M005 scope requires, so the run itself must come from the hosted runner. |
-| The receipt states the obtained network boundary truthfully | `GitIndexPublicationReceipt` | partial | The receipt states the published resource and the imported objects. It does **not** state a network boundary, because the obtained network fact is not reported anywhere in the system (C014's open item). No M005 claim is made. |
+| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | pass | Hosted run `39318206124` (2026-10-19, commit `d024a838`): the isolated C007 step reports `running 1 test` / `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out`, and the same test is among the 17 that passed in the full M004/M005 suite. The whole production path ran under containment on a qualified host. The first hosted attempt (`39313802793`) was cancelled by the job's time budget and produced no evidence either way; the budget defect was corrected rather than the evidence inferred (§4). |
+| The receipt states the obtained network boundary truthfully | `GitIndexPublicationReceipt::network_boundary`; `ObtainedNetworkBoundary::NotReported` | pass | The receipt states the boundary **explicitly** as `not_reported` rather than staying silent about the network, so a caller never has to infer an omission. The type carries one variant because one answer has a producer: the system still cannot report the fact it obtained (C014's open item), and the reported case will be added with its producer, not as a claim. |
+| A non-`Add` mutation is never published | `a_non_add_mutation_is_never_published`; the `Add` arm of `GitMutationExecutor::execute` | pass | A non-`Add` mutation keeps the legacy route, the branch is created, and the publication journal records **no** intent — the publisher never sees it, so a caller cannot route around the publisher's preflight by choosing a different mutation. |
 
 ## 3. Production implementation evidence
 
@@ -124,11 +122,12 @@ cargo fmt --all -- --check
 
 ### Results
 
-- `tests/git_index_publication.rs`: 21 tests run, 21 passed, 0 failed. That
+- `tests/git_index_publication.rs`: 22 tests run, 22 passed, 0 failed. That
   count includes the five shared `common::secret_scan` tests the module tree
-  brings with it; the C007 tests are the other sixteen. They are the proof
+  brings with it; the C007 tests are the other seventeen. They are the proof
   for the journal, the reconciler, the compare-and-swap, the lock, the object
-  import, the atomic replacement, and the ordinary dispatch caller.
+  import, the atomic replacement, the receipt's network statement, and the
+  ordinary dispatch caller.
 - The proof suite found two real defects while it was being written, both
   fixed: the v84 migration was wired into the dispatch arms but **not** into
   the `migrate()` upgrade chain, so the table was never created — the
@@ -166,6 +165,23 @@ cargo fmt --all -- --check
   budget from 20 to 35 (it passed with only 2m24s of headroom), and the C007
   proof is moved into its own step with its own 10-minute budget, placed
   **before** the wider suite so a long suite cannot hide its result.
+- **The hosted qualification then passed.** Run `39318206124` (2026-10-19,
+  push, commit `d024a838`) is a **success** for both qualification jobs.
+  The `process-ipc` job's own log is the evidence, not the job badge:
+  - the isolated C007 step: `running 1 test` →
+    `test production_private_index_publisher_stages_and_publishes_under_containment ... ok`
+    → `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.27s`;
+  - the full M004/M005 suite: `running 17 tests` → `test result: ok. 17 passed;
+    0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 675.98s`,
+    which includes `test managed_process_owner_applies_authenticated_offline_network_intent ... ok`
+    (C014's M005 netns owner proof) and the C007 publication test again;
+  - the `restricted-userns-fails-closed` job: **success**, with all three
+    refusal probes reporting `ok`.
+
+  The filter matches a real test, and the test is not self-skipping: the
+  C007 test's skip path prints `skipped: set CODEGG_RUN_M005_OFFLINE_NATIVE=1
+  …`, and that line does **not** appear in the log. The 675.98 s the suite
+  takes is also the direct explanation for the earlier cancellation.
 
 ## 5. Invariant review
 
@@ -210,44 +226,30 @@ cargo fmt --all -- --check
   file is written **in** the gitdir, so the lock is taken by a same-filesystem
   hard link and the replacement is a rename within that directory.
 - No stop condition is waived by a skipped, feature-gated-off, or
-  zero-matching test. The one outstanding item — the contained staging step
-  on a qualified host — is recorded as **not run**, not as a pass.
+  zero-matching test. The one item that was outstanding — the contained
+  staging step on a qualified host — was recorded as **not run** while it
+  was outstanding, and it is recorded as a **pass** now only on the hosted
+  run's own log lines, which show the test executing (`running 1 test` /
+  `1 passed`) and not taking its own skip path.
 
 ## 8. Open items
 
-1. **Hosted M004/M005 owner qualification for the contained staging step.**
-   The `process-ipc` job of `.github/workflows/linux-m004-native.yml` runs on
-   a push to this branch whose changed paths match the trigger list, and the
-   trigger list now covers the C007 publisher surface
-   (`crates/codegg-core/src/git_publication.rs`, `src/git_publication/**`,
-   `src/git_mutations.rs`, `src/tool/factory.rs`, `src/tool/git.rs`,
-   `src/tool/commit.rs`, `tests/git_index_publication.rs`). The new hosted
-   test `production_private_index_publisher_stages_and_publishes_under_containment`
-   exercises the whole production path — contained staging, the
-   compare-and-swap publication, the object import, the journal entry, and
-   the proof that the repository's own `filter.*` configuration does not run.
-   The workstation cannot run it (Landlock ABI below 6).
-
-   The first hosted run against this source (run `39313802793`) was
-   **cancelled** by the job's 20-minute time budget before the suite
-   finished, so it produced no evidence either way (§4). The budget defect is
-   corrected in the same branch and the run is re-triggered. Until a hosted
-   run reports this test passing, the contained staging step remains **not
-   run** — the cancellation is not evidence of a pass, and it is not evidence
-   of a failure either.
-2. **The obtained network fact is not reported.** C014's open item stands.
-   The receipt deliberately does not claim an M005 boundary.
-3. **`stage_all` and `stage_tracked` still use the legacy in-place route.**
+1. **The obtained network fact is not reported.** C014's open item stands.
+   The receipt deliberately does not claim an M005 boundary; it states the
+   boundary as `not_reported`, which is the truthful answer while the system
+   cannot report what it obtained.
+2. **`stage_all` and `stage_tracked` still use the legacy in-place route.**
    They stage arbitrary paths, including deletions and whole-tree `-A`
    semantics, which the path-scoped publisher does not model. They are
    outside this vertical and were left unchanged; the inconsistency is
    recorded here rather than papered over.
-4. **C005 remains blocked** on accepted ADR-0044, M005 production-owner and
-   host qualification, and this vertical's hosted qualification.
+3. **C005 remains blocked** on accepted ADR-0044, the M005 obtained-facts
+   contract, and the supported-host policy. This vertical's own hosted
+   qualification is done; C005's remaining gates are not C007's.
 
 ## 9. Next steps
 
-- Run the hosted M004/M005 qualification on this branch's exact source and
-  attach the run to this closure.
+- The hosted M004/M005 qualification has run on this branch's exact source
+  (run `39318206124`) and passed; it is attached to this closure in §4.
 - Then C005: progressively restore local Git workflows and qualify the
   lower-cost backend for ordinary use, against the limits recorded above.

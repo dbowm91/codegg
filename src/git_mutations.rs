@@ -893,10 +893,11 @@ fn publication_receipt_summary(
 ) -> String {
     format!(
         "staged {} path(s) into the repository index (published resource: {}; \
-         imported objects: {})",
+         imported objects: {}; network boundary: {})",
         receipt.staged_paths.len(),
         receipt.scope.as_str(),
-        receipt.imported_objects.len()
+        receipt.imported_objects.len(),
+        receipt.network_boundary.as_str()
     )
 }
 
