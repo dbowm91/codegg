@@ -558,3 +558,10 @@ OA-1, and OA-2 remain unavailable until their frozen evaluators and budgets
 are added to `008-task-matrix-v1.md`. No repeated scored trial has yet run under
 this total-budget protocol. M005 remains separately gated by escaped-descendant
 writer evidence, and no downstream plan is newly unblocked.
+
+The rebuilt headless binary passed a protocol smoke with a 10,000-token turn
+ceiling. The usage journal reported 10,850 total tokens (10,845 input, 5
+output), confirming that one completed provider response can exceed the cap.
+This is calibration-only evidence from the reused setup session; no scored
+trial or additional stratum was completed. Exact usage and the unknown-cost
+status are in `008-isolated-results.json`.

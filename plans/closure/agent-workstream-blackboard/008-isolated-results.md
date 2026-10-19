@@ -506,3 +506,14 @@ S1/S2/S3 reserve 300,000 tokens for one coordinator turn and allocate the
 remainder across the workers. Additional trials must use the frozen allocation
 in `008-task-matrix-v1.md`; these setup runs do not count toward their
 repetitions.
+
+## 17. Headless budget-cap protocol smoke (2026-10-19)
+
+The rebuilt headless binary accepted `--max-model-tokens 10000`, submitted a
+response-only prompt through the isolated daemon, and completed with `READY`.
+The usage journal recorded 10,845 input plus 5 output tokens (10,850 total),
+an 850-token overrun from the final in-flight response. Cost is unknown because
+the local price table has no matching rate. This used the existing calibration
+session and is excluded from all scored task and condition cells. It confirms
+the CLI-to-daemon cap path and the need to classify actual overrun explicitly;
+it does not qualify an effectiveness trial.

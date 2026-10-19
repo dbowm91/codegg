@@ -1462,5 +1462,23 @@
     "integration": "Evaluator manually committed the two implementation files and merged them into the isolated parent worktree; no conflict.",
     "integration_wall_seconds": null,
     "result": "Candidate passes both frozen suites after manual recovery, but the child exceeded its requested budget, produced no result commit, and the coordinator had no cap. Excluded from effectiveness and budget-matched denominators; used only to set the 300,000-token coordinator reservation and demonstrate the need to report actual usage."
+  },
+  "headless_budget_cap_smoke_2026_10_19": {
+    "evidence_kind": "headless budget-cap protocol smoke; excluded from scored comparisons",
+    "binary_source_head": "88065a1c",
+    "session_id": "efe2b784-0cdb-464b-aa56-2412574c0d9d",
+    "prompt": "Reply with the single word READY.",
+    "requested_max_model_tokens": 10000,
+    "actual_usage": {
+      "input_tokens": 10845,
+      "output_tokens": 5,
+      "cached_tokens": 0,
+      "total_tokens": 10850,
+      "overrun_tokens": 850,
+      "usage_rows": 1,
+      "reported_cost_usd": 0.0,
+      "cost_available": false
+    },
+    "result": "The updated headless CLI submitted the capped turn and returned READY. Actual usage exceeded the requested cap by one in-flight response; this is a protocol smoke on a reused calibration session, not an evaluation result."
   }
 }
