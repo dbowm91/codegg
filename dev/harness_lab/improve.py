@@ -362,7 +362,9 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
                       candidate: str, target_dir: Path, allowed_prefixes: tuple[str, ...],
                       timeout: float = 900.0, max_wallclock: float = 3600.0,
                       changelog: str = "CHANGELOG.harness.md",
-                      checkpoint: Checkpoint | None = None, resume: bool = False) -> dict[str, Any]:
+                      checkpoint: Checkpoint | None = None, resume: bool = False,
+                      proposer: str = "manual", correction_prompt: str = "",
+                      max_candidate_retries: int = 0) -> dict[str, Any]:
     """Build and score a candidate without changing the frozen baseline or default worktree."""
     import hashlib
     import sys
@@ -426,7 +428,7 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
         if checkpoint.base_revision != baseline_revision or checkpoint.suite_digest != suite_digest:
             raise ValueError("candidate checkpoint does not match its frozen source and suite")
         events = [json.loads(line) for line in checkpoint.events_path.read_text(encoding="utf-8").splitlines()]
-        patched = next((event for event in events if event.get("state") == "PATCHED"), None)
+        patched = next((event for event in reversed(events) if event.get("state") == "PATCHED"), None)
         if patched is None or patched.get("evidence", {}).get("patch_sha256") != patch_digest:
             raise ValueError("candidate patch changed since its checkpoint; refusing resume")
         prior_binary_hashes = [event.get("evidence", {}).get("binary_sha256") for event in events
@@ -446,12 +448,53 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     env.pop("CODEGG_DAEMON_HOME", None)
     gates = []
     for argv in (["cargo", "fmt", "--all", "--", "--check"],
-                 ["cargo", "test", "-p", "codegg", "--test", "acp_stdio"],
-                 ["cargo", "build", "--bin", "codegg", "--bin", "codegg-sandbox-helper"]):
+                 ["cargo", "test", "-p", "codegg", "--test", "acp_stdio"]):
         remaining = max_wallclock - (time.monotonic() - started)
         if remaining <= 0:
             raise TimeoutError("candidate qualification wallclock budget exhausted during build gates")
         gates.append(_run_gate(argv, worktree, env, min(timeout, remaining)))
+    retry_count = 0
+    build_argv = ["cargo", "build", "--bin", "codegg", "--bin", "codegg-sandbox-helper"]
+    while True:
+        remaining = max_wallclock - (time.monotonic() - started)
+        if remaining <= 0:
+            raise TimeoutError("candidate qualification wallclock budget exhausted during build gates")
+        try:
+            gates.append(_run_gate(build_argv, worktree, env, min(timeout, remaining)))
+            break
+        except (RuntimeError, TimeoutError) as error:
+            if proposer != "opencode" or retry_count >= max_candidate_retries:
+                raise
+            retry_count += 1
+            if checkpoint is not None:
+                checkpoint.transition("PROPOSING", {"attempt_kind": "compile_correction",
+                                                      "retry": retry_count,
+                                                      "failure_sha256": hashlib.sha256(str(error).encode()).hexdigest()})
+            prompt = (correction_prompt.strip() + "\n\n" if correction_prompt.strip() else "") + \
+                "Correct this candidate's compile gate failure. This is a compile-correction retry, not a new candidate. " + \
+                "Keep changes within the already authorized path scope and preserve CHANGELOG.harness.md. " + \
+                "Do not claim tests passed. Failure evidence (bounded):\n" + str(error)[-4096:]
+            remaining = max_wallclock - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("candidate qualification wallclock budget exhausted before compile correction")
+            receipt = run_opencode(worktree, prompt, min(timeout, remaining))
+            corrected_paths = changed_paths(worktree)
+            check_scope(corrected_paths, allowed_prefixes + (changelog,))
+            if changelog not in corrected_paths:
+                raise ValueError(f"compile correction removed required {changelog}")
+            corrected_text = (worktree / changelog).read_text(encoding="utf-8")
+            if any(section.casefold() not in corrected_text.casefold()
+                   for section in ("Root cause", "Contracts", "Validation", "Accepted risks")):
+                raise ValueError("compile correction invalidated required candidate changelog sections")
+            if any(word.casefold() in corrected_text.casefold() for word in ("<candidate", "TODO", "TBD", "pending")):
+                raise ValueError("compile correction left an unresolved changelog placeholder")
+            patch_digest = candidate_patch_sha256(worktree, corrected_paths)
+            if checkpoint is not None:
+                checkpoint.transition("PATCHED", {"attempt_kind": "compile_correction", "retry": retry_count,
+                                                   "changed_paths": corrected_paths,
+                                                   "patch_sha256": patch_digest,
+                                                   "proposer_receipt": receipt})
+                checkpoint.transition("BUILDING", {"retry": retry_count, "patch_sha256": patch_digest})
     binary = target_dir / "debug" / ("codegg.exe" if os.name == "nt" else "codegg")
     if not binary.is_file():
         raise FileNotFoundError("candidate build did not produce the expected CodeGG executable")
@@ -517,5 +560,6 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
             "baseline_candidate": baseline_candidate, "baseline_manifests_unchanged": True,
             "gates": gates, "evaluation_exit": evaluated.returncode,
             "paired_comparison": comparison, "correctness_improvements": correctness_improvements,
+            "compile_correction_retries": retry_count,
             "wall_time_seconds": time.monotonic() - started,
             "accepted": accepted, "next_gate": None if accepted else "propose a candidate with a verified correctness improvement"}
