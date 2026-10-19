@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M005 closed; M013 ready; M010 blocked on M013; ADR-0034 proposed and gating M009)
+Status: active (M001–M008 and M013 closed; M009–M011 implementation started; M012 and M015 planned and ready; M014 blocked on ADR-0034)
 
 Long-term references:
 
@@ -750,6 +750,39 @@ Exit conditions: bracket matching survives unbalanced and multi-byte input;
 surround replace preserves nesting; objects resolve against a bounded window
 and never scan the whole buffer per keystroke.
 
+> **Amendment A3 (2026-10-19) — the ADR-0034 gate is narrower than this entry
+> says, and the milestone splits in two.**
+>
+> 1. **The byte-derived boundary is not gated on ADR-0034.** The ADR's own
+>    decision text says so: *"Word and delimiter-pair text objects are
+>    implemented frontend-side from bytes and are explicitly **not** gated on
+>    this decision — they do not need a parser."* Its Option C is written as
+>    *"Land M001–M008, M010–M012 and their non-TS slices"*, and its Context
+>    section says the same: *"word and delimiter-pair objects are computable
+>    from bytes — but block objects and syntax-node-aware selection need
+>    one."* Helix's own text-object table agrees independently: `w`, `W`, `p`,
+>    the specified surround pairs and `m` are parser-free, while `f`, `t`,
+>    `a`, `c`, `T` and `x` need a tree-sitter grammar. This entry's own
+>    deliverable boundary already names word and pair as the objects, with
+>    block as the conditional one, and its exit conditions are all
+>    parser-free. **M009 therefore delivers the byte-derived boundary and is
+>    `ready`**, and the syntax-node slice moves to a new milestone, **M014**,
+>    which is blocked on ADR-0034 acceptance.
+> 2. **Helix marks `m m` as `TS`.** The live keymap lists *"Goto matching
+>    bracket (**TS**)"*. CodeGG's `m m` will be a **delimiter-pair table**
+>    match — a depth counter over bytes, not a syntax-tree query. That is a
+>    deliberate local divergence, recorded in the plan and in the docs
+>    rather than left to be discovered, because the alternative is a key that
+>    does nothing. A syntax-aware `m m` is part of M014.
+> 3. **Helix's `m` is a two-level grammar and this editor's machine is
+>    one-prefix-one-terminal-key.** `m` + command, then command + argument
+>    (`m s (`, `m r ([`, `m a w`) does not fit a single leaf table. The
+>    resolution keeps **one** presentation field: the sub-state rides in the
+>    `EditorPrefix` variant, so the prefix-state guard stays green. A
+>    reviewer should check that claim rather than trust it.
+>
+> Plan: `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md`
+
 ### M013 — LSP read delivery and editor reachability
 
 Class: invariant (delivery) + enabling capability (reach)
@@ -796,6 +829,80 @@ need an accepted ADR; only preview is delivered here (see §10 risk 2).
 
 Plan: `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md`
 
+> **Amendment A1 (2026-10-19) — three further defects found while implementing.**
+> The two defects above were found by inspection at baseline. These three were
+> found by *running* the surface, and each one is a delivery failure of the
+> same class: correct code that is never reached.
+>
+> 3. **The read surface is unreachable for any team principal.**
+>    `LspReadGet` is `ViaSession + FileRead`, but the daemon's session-locator
+>    match had **no `LspReadGet` arm** — only `LspCompletionGet` and
+>    `LspPreviewApply`, under a comment saying the M006-B reads were
+>    "deliberately untouched". With no locator, no project resolved, so every
+>    read failed closed with `authorization_scope_required` *before* the
+>    warm-client resolver ran. A socket-connected client is a team principal,
+>    so the entire M006-B editor read surface was dead in production while
+>    reading as "you may not read this". It stayed invisible because M006-B's
+>    own tests called the daemon as LocalOwner, which bypasses scope
+>    resolution. This is the same "delivered symbol with no driver" shape the
+>    M013 plan was written to hunt, one layer above the two it recorded.
+> 4. **"Warm-only" was a claim about two different servers.** The gate
+>    resolved a client for the *session's workspace root*; the query then
+>    discarded it and re-resolved through `get_or_create_client`, which derives
+>    its own root from the target file and its own server id from the file's
+>    language. The second resolution could disagree with the first and **could
+>    start a language server**, which ADR-0012 §3 forbids. `workspace_symbols`
+>    was worse: it took no path at all and routed to `first_client_key()`, so
+>    its answer depended on hash-map iteration order rather than on the
+>    request.
+> 5. **Two smaller mis-reports.** Diagnostics were keyed by `file_name()`, so
+>    `src/lib.rs` and `tests/lib.rs` were one tracker entry and the second
+>    silently overwrote the first. And every point read mapped a *server*
+>    error to `LspReadDenial::OutsideWorkspace`, telling a user their path was
+>    unavailable when the server had simply failed; `ServerFailed` already
+>    existed for exactly this and the M006-B path was not using it.
+>
+> Consequence for the deliverable boundary: the read path had to be made
+> warm-only **structurally** (one resolved key, threaded through
+> `*_for_warm_client` entry points) rather than by adding a check, and the
+> `server_id` resolution order has to be applied to the *query*, not only to
+> the gate.
+
+> **Amendment A2 (2026-10-19).** M013 is implemented and closed
+> (`plans/closure/tui-editor-helix-parity/013-status.md`). Amendment A1 stopped
+> at "the read path had to be made warm-only *structurally*". Doing that turned
+> out to be most of the work, and it moved this milestone's boundary in three
+> ways a successor would otherwise re-derive:
+>
+> 1. **Structural warm-only is not a daemon change.** Threading one resolved key
+>    from the gate into the query required key-addressed bodies and
+>    `*_for_warm_client` entry points in **fourteen `egglsp` operations** plus the
+>    service's own document-sync helpers (`ensure_file_open_from_disk`,
+>    `open_file`, `update_file`, `set_managed_document`), each of which resolved
+>    a client of its own. Probing — which §14 requires rather than reading
+>    signatures — is what found this: `signature_help_typed`,
+>    `format_preview_typed` and `rename_preview_typed` are real, working, and
+>    **not** warm-only, three layers down from the operation you call.
+> 2. **The keys are bound here, not deferred to M010.** This entry's deliverable
+>    boundary already named them; the plan deferred them to M010 on the grounds
+>    that binding before delivery "ships keys that open always-`NotReady`
+>    panels". Once delivery was trustworthy, the remaining gap was the
+>    `pending_leaf` hop between the prefix resolver (which holds
+>    `&mut EditorState`) and the App (which holds the core client), and M010 is
+>    better spent on the pickers and the clipboard family it uniquely owns.
+>    M010's dependency line is updated accordingly.
+> 3. **One unplanned read landed on the same seam.** `Unsupported` is a
+>    *status*, not a denial: a warm server that never advertised
+>    `renameProvider` has still answered, and mapping that to `ServerFailed`
+>    tells a user their working server broke. It needed the same status path
+>    the new capabilities required, so it came along rather than being
+>    deferred to a later milestone.
+>
+> Unchanged, and still binding on whoever plans M010: `space r`, `space a` and
+> `=` remain unbound, because applying an LSP-driven mutation needs an accepted
+> ADR. The format and rename **previews** delivered here are the delivery; the
+> apply is not.
+
 ### M010 — Space mode and extended goto mode
 
 Class: capability
@@ -803,18 +910,73 @@ Class: capability
 Objective: replace the single `space y` leaf with the picker and LSP surface
 already present, and complete LSP-backed goto leaves.
 
-Dependencies: **M013 closed (hard)**, M005 closed (hard), M002 closed (hard).
+Dependencies: M013 closed (hard, discharged 2026-10-19), M005 closed (hard),
+M002 closed (hard).
 
 Deliverable boundary: space-mode leaves for file/buffer/jumplist/changed-file
 pickers, symbol and diagnostic pickers, global search, last-picker recall, and
-the clipboard yank/paste family; goto leaves `gd`/`gy`/`gi`/`gr` mapped onto
-the existing F-key LSP reads; `space c` comment toggle if a comment path exists.
+the clipboard yank/paste family; `space c` comment toggle if a comment path
+exists; and `space r` / `space a` / `=` **only if** an LSP write authorization
+ADR has been accepted by then — M013 delivered their previews, never their
+apply.
+
+**Amended 2026-10-19 (M013 closure).** The original boundary also named the
+LSP goto leaves (`gd`/`gy`/`gi`/`gr`) and the `space` LSP leaves
+(`k`/`s`/`S`/`d`/`h`/`f`), and those are **delivered** — M013 bound them in the
+M005 leaf tables once the read surface was trustworthy, rather than leaving them
+for a successor. `gd`, `gi`, `gr`, `space k`, `space s`, `space S`, `space d`,
+`space h` and `space f` are live; `gy` and `space F` are bound to a visible
+statement of why they cannot run. What this milestone uniquely owns is
+therefore the **pickers** and the clipboard family, not the LSP leaves.
 
 User value: mouse-free access to everything the function keys already reach.
 
 Exit conditions: leaves are consistent across both keymaps; LSP leaves degrade
 visibly when no server is attached; no picker leaf steals a printable character
 in Insert.
+
+> **Amendment A1 (2026-10-19) — the `space f` binding is reclaimed, and the
+> preview leaves move to a new milestone.**
+>
+> 1. **`space f` is bound to a duplicate of `space s`.** M013 bound it to
+>    `DocumentSymbols` with the comment *"Helix's file picker. Multi-document
+>    attachment is out of scope, so the closest honest reading is this
+>    document's symbols."* That reasoning was correct **then** — the
+>    workspace file browser (`Dialog::Files`) existed but was not reachable
+>    from the editor route, because `/files` is untypeable there (the editor
+>    claims `/` for its search line). The browser exists; the *route* was the
+>    problem; this milestone is the route. **`space f` becomes the file
+>    picker**, which is a **breaking change to a live M013 binding** and is
+>    recorded in the `CHANGELOG.md` under `### Changed`.
+> 2. **`space s` and `space S` are as the code has them.** The live Helix
+>    keymap binds `space s` to the **document** symbol picker and `space S` to
+>    the **workspace** symbol picker. The code is right; this entry's
+>    amendment listed the two without saying which was which, and the
+>    correction is recorded here so the next reader does not invert them.
+> 3. **The preview leaves leave this milestone.** M013 delivered the format
+>    and rename **previews** as protocol operations, daemon arms and panel
+>    renderings — and **no key reaches either of them**. A preview is a
+>    *read*, so it needs no LSP-write ADR; only the **apply** does. Binding
+>    them here would contradict this entry's own A2 amendment, which says
+>    this milestone owns "the **pickers** and the clipboard family, not the
+>    LSP leaves". They therefore move to a new milestone, **M015**, which
+>    binds `space r` (rename **preview**) and `=` (format **preview**), and
+>    leaves `space a` unbound with a visible reason because no code-action
+>    *read* exists to preview.
+> 4. **Seven space leaves have no substrate here** — buffer picker,
+>    jumplist picker, changed-file picker, global search, last-picker recall,
+>    and the three comment leaves. They are bound to a **visible statement of
+>    why they cannot run**, the M013 `space F` precedent, so that no space key
+>    is silently dead. Two of them — the changed-file picker and global
+>    search — have **no reachable data source at all** in the TUI and are
+>    recorded as deferred product work.
+> 5. **The pending-effect mechanism is generalized.** M013's
+>    `EditorLspState::pending_leaf` is LSP-typed, and a file picker is not an
+>    LSP fact. The one-hop mechanism (the resolver parks the effect; the App
+>    drains it on the next statement) is preserved exactly; the effect's
+>    *type* and *home* widen.
+>
+> Plan: `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md`
 
 ### M011 — Insert-mode control chords
 
@@ -841,6 +1003,56 @@ Exit conditions: each chord is implemented or explicitly declined with a
 recorded rationale; the mode-independent save/resync chords keep their current
 Insert behavior unless the conflict decision says otherwise.
 
+> **Amendment A1 (2026-10-19) — the conflict list was incomplete, and the
+> decision is now made.**
+>
+> 1. **The roadmap named two conflicts; the code has four.** `Ctrl+w` is
+>    bound **globally** to `CloseSession` (`src/tui/input.rs:816-819`, pinned
+>    by `bare_ctrl_w_still_closes_the_session`), `Ctrl+k` to `ClearSession`
+>    (`:749-752`), and `Ctrl+u`/`Ctrl+d` to `PageUp`/`PageDown` (`:883-886`,
+>    `:879-882`) — the last two already shadowed in Normal mode by the
+>    half-page motions. **`Ctrl+w` typed in the editor's Insert mode closes
+>    the session today.** The editor route is consulted before the global
+>    keymap, so these become **route-scoped** shadows rather than global
+>    ones, and the plan records that as a deliberate divergence.
+> 2. **The decision: `Ctrl+s` stays save and `Ctrl+r` stays resync, in every
+>    mode.** Both are a documented user-facing promise
+>    (`architecture/tui.md:3302-3303`, `docs/tui.md:728-731`) and are pinned
+>    by three live tests. Re-scoping them to Normal-only would break that
+>    promise to buy a chord whose capability is delivered better another way.
+>    The rejected alternative is recorded in the plan.
+> 3. **The checkpoint capability does not need the chord.** Helix's own
+>    documentation says *"Changes to the text are only saved for undos when
+>    escaping from insert mode to normal mode."* That is **insert-session
+>    coalescing**, and it is strictly more useful than a manual checkpoint:
+>    the reader gets one undo step for a typing burst without pressing
+>    anything. `Ctrl+s` therefore does not become an undo checkpoint; the
+>    capability is delivered by coalescing instead.
+> 4. **`Ctrl-r` has no substrate.** There is **no register** of any kind:
+>    `y`/`space y` both write the OS clipboard, `p`/`P` read it, and the
+>    roadmap already defers named registers. "Insert a register's content"
+>    has nothing to insert, so it is declined for that reason as well as the
+>    chord one.
+> 5. **Two panels are mode-blind, and the milestone fixes them.** The
+>    completion popup claims `Enter`/`Up`/`Down` in **every** mode, so with
+>    the popup open in Insert, `Enter` accepts a completion instead of
+>    inserting a newline. The LSP diagnostics panel claims `j`/`k`/`r`/
+>    `Enter` with no mode check, so those letters do not type in Insert.
+>    Both break the documented promise that *"In `INS` a printable is
+>    always text"*, and a `Ctrl-x` that opens a popup which then eats
+>    `Enter` would be worse than no `Ctrl-x`.
+> 6. **The key-authority guard must be taught.** It cannot parse an
+>    Insert-mode `Char` chord as the table is written today (it exits 2
+>    rather than passing), and it has no **Insert-only** class for guard
+>    chords. The plan teaches the new arm shape, and requires the
+>    non-vacuity proof by injection.
+> 7. **M011 and M012 share the undo model.** Coalescing changes the
+>    *granularity* of an entry; M012 changes the *traversal*. M011 should
+>    land first, or M012 must tolerate any granularity. This is the one
+>    sequencing constraint either milestone imposes on the other.
+>
+> Plan: `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md`
+
 ### M012 — Undo history traversal
 
 Class: capability
@@ -859,6 +1071,109 @@ branch, which the current two-stack model cannot express.
 Exit conditions: traversal is bounded and memory-capped; undo/redo round-trip
 still exact; a new edit after traversal truncates correctly; the existing memory
 bound on retained payload bytes is preserved.
+
+> **Amendment A1 (2026-10-19) — the roadmap's pointer is wrong, and two
+> decisions follow from the model change.**
+>
+> 1. **There is no `TextTransaction::invert()` method.** The roadmap points
+>    at one "around `src/tui/editor.rs:1854-1871`". The real function is a
+>    **free function**, `pub fn invert(snapshot: &DocumentSnapshot,
+>    transaction: &TextTransaction) -> Option<TextTransaction>` at
+>    `src/tui/editor.rs:3261-3278`, and it walks the edits in order,
+>    tracking a `shift: isize` so each inverse edit's range is expressed in
+>    post-transaction coordinates.
+> 2. **The memory bound is currently applied twice, not once.**
+>    `architecture/tui.md:3210-3212` says *"256 entries and 4 MiB **across
+>    both directions**"*, but `trim_history` enforces the cap **per stack**,
+>    so the worst case is twice the documented bound. A single history
+>    restores the documented reading — and **tightens** the worst case. The
+>    closure states the tightening rather than letting it pass as a
+>    side-effect.
+> 3. **`Alt-u`/`Alt-U` report the boundary; `u`/`U` stay silent.** In
+>    Helix, `u`/`U` and `Alt-u`/`Alt-U` are the same movement — `undo`/
+>    `redo` and `earlier`/`later` are two spellings of one history cursor.
+>    This milestone does **not** claim a capability it did not deliver: what
+>    it delivers is the model (one history, one cursor, an entry that never
+>    moves between containers), the consolidated bound, and the
+>    **observability** that makes a cursor worth having. The boundary
+>    reporting is a CodeGG convention, recorded as one.
+> 4. **`Alt-U` is a capital, and terminals disagree about how they encode
+>    one.** Some send `Char('U')` with no modifier; others send `Char('u')`
+>    plus `SHIFT`. M013 hit this exactly with `space S` and `space F` — a
+>    key that is live on one terminal and dead on the next. The `Alt-U` arm
+>    must accept **both** spellings, and a test drives both.
+> 5. **`Alt-u` and `Alt-U` are claimed by nothing**, in the editor route or
+>    anywhere else in `src/`. There is no `Alt-` prefix in this editor; the
+>    M006 `Alt-.` repeat slots are explicitly not prefix state. The
+>    milestone adds two arms and changes no prefix.
+>
+> Plan: `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md`
+
+### M014 — Syntax-tree text objects and structural selection
+
+Class: capability
+
+Objective: the syntax-node slice of M009's match-mode grammar — `m a` / `m i`
+for Helix's tree-sitter-only text objects (`f` function, `t` type, `a`
+argument/parameter, `c` comment, `T` test, `x` element), and a syntax-aware
+`m m` in place of the delimiter-pair match M009 delivers.
+
+Dependencies: **ADR-0034 accepted** (hard). M009 closed (hard).
+
+Deliverable boundary: the syntax-node object kinds; a structural read
+path that answers them; the `m m` upgrade.
+
+User value: object selection that follows the language's structure rather
+than a delimiter table.
+
+Exit conditions: every object kind resolves against a real syntax tree; an
+unavailable grammar is reported as such rather than silently falling back to
+the byte-derived object; the byte-derived objects are unchanged.
+
+**No implementation plan exists yet, deliberately.** ADR-0034 **recommends
+Option B** (extend the daemon-owned, read-only LSP surface with structural
+reads) but records that *"no option is selected by this record"*, and Option
+A (a frontend tree-sitter dependency) and Option B produce **different
+contracts** and would need different plans. Writing this plan now would be
+writing a plan against a decision nobody has made. The plan is written
+immediately after the ADR is accepted, against the option it selects.
+
+### M015 — LSP preview leaves
+
+Class: capability
+
+Objective: give the two LSP previews M013 delivered a key.
+
+M013 shipped `LspReadOperation::FormatPreview` and
+`LspReadOperation::RenamePreview` as read-only operations, with daemon
+dispatch, warm-client plumbing, protocol bounds and panel rendering — and
+**no key reaches either of them**. They are capabilities a reader cannot
+invoke.
+
+Dependencies: M013 closed (hard). M010 closed (hard, for the generalized
+pending-effect mechanism — but the milestone is written to work without it).
+
+Deliverable boundary: `space r` — the rename **preview**, with the new name
+collected through the `:` command line; `=` — the **format preview**;
+`space a` — unbound with a visible reason, because no code-action *read*
+exists to preview.
+
+User value: a reader can see exactly what a rename or a format would change
+before anything changes.
+
+Exit conditions: both previews are reachable and show their result; a
+preview **applies nothing**; a server without the capability answers
+`Unsupported` and the panel names it; an empty or over-long new name issues
+no request.
+
+**The preview/apply split is the design.** Helix's `space r` renames and
+Helix's `=` formats; CodeGG's versions **show what would change and apply
+nothing**. A preview is a read, so it needs no LSP-write ADR — only the
+apply does. When an LSP-write ADR is accepted, these two chords become the
+apply step, and that **meaning change is registered now** so the later
+milestone does not change a chord silently.
+
+Plan: `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md`
 
 ## 8. Cross-cutting requirements
 
@@ -956,8 +1271,12 @@ binding-reachability guard run in `verify.sh quick`.
 
 This roadmap closes when:
 
-- Every milestone through M012 is closed with an individual closure record, or
+- Every milestone through M015 is closed with an individual closure record, or
   the roadmap is explicitly superseded by a successor that owns its remainder.
+  **M014 is the exception, and it is a named one:** it is blocked on
+  ADR-0034, and the completion definition below already says the
+  ADR-0034-gated slices remain owned elsewhere. M014 closing is not a
+  precondition for this roadmap closing.
 - The normal-mode keymap, the `:` palette, the help overlay, and
   `docs/tui.md` describe one identical set of bindings, and that set is
   derived from the binding table rather than hand-maintained beside it.
@@ -983,11 +1302,34 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M006 | **closed** | `plans/implementation/tui-editor-helix-parity/006-unimpaired-navigation-non-ts-subset.md` | `plans/closure/tui-editor-helix-parity/006-status.md` | — |
 | M007 | **closed** | `plans/implementation/tui-editor-helix-parity/007-multi-selection-core.md` | `plans/closure/tui-editor-helix-parity/007-status.md` | — |
 | M008 | **closed** | `plans/implementation/tui-editor-helix-parity/008-multi-selection-command-surface.md` | `plans/closure/tui-editor-helix-parity/008-status.md` | — |
-| M009 | ready | — | — | ADR-0034 acceptance only; the M008 blocker is discharged |
-| M010 | **blocked** | — | — | M013 |
-| M011 | eligible for fresh planning (M002 edge discharged) | — | — | — |
-| M012 | eligible for fresh planning (M002 edge discharged) | — | — | — |
-| M013 | **ready** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | — | — |
+| M009 | **active** | `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md` | — | Byte-derived boundary only; the syntax-node slice moved to M014 (Amendment A3). W1 landed: the byte foundation, in `src/tui/editor_match.rs` |
+| M010 | **active** | `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md` | — | M013 closed; M005 closed earlier — unblocked. W1 landed: the pending-effect mechanism is editor-level, in `src/tui/editor_effect.rs` |
+| M011 | **active** | `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md` | — | M002 edge discharged; the `Ctrl+s`/`Ctrl+r` conflict is decided (Amendment A1). W1 landed: the key-authority guard is taught the new Insert shape and self-tests |
+| M012 | **ready** | `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md` | — | M002 edge discharged; sequenced after M011 (Amendment A1) |
+| M013 | **closed** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | `plans/closure/tui-editor-helix-parity/013-status.md` | — |
+| M014 | **blocked** | — | — | ADR-0034 acceptance; its plan is written after the ADR selects an option |
+| M015 | **ready** | `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md` | — | M013 closed; the previews are delivered and unreachable until this lands |
+
+**M013 is closed** (`plans/closure/tui-editor-helix-parity/013-status.md`).
+It discharges **M010**'s last dependency edge, and it found **six** further
+"correct code never reached" defects beyond the two its plan recorded — all the
+same class, and all invisible to the tests that covered them. The most serious
+is that `CoreRequest::LspReadGet` had **no session-locator arm** at all: every
+M006-B read failed `authorization_scope_required` *before* the resolver ran, so
+the whole read surface was dead in production while its 14 tests passed, because
+those tests called the daemon as `LocalOwner` and bypassed scope resolution. No
+guard script inspects that match; a guard for locator-arm completeness is the
+highest-value follow-up this milestone produced.
+
+The deliverable boundary also moved during implementation, by **Amendment A2**
+(below). M013 was planned as *delivery only* with the LSP leaves deferred to
+M010; it could not close the delivery defects without making warm-only
+structural, and that meant threading the resolved client key through eleven
+`egglsp` operations and the service's document-sync helpers. Once that was
+done, binding the keys was a smaller change than leaving them unbound behind a
+surface that now answers. **`space r`, `space a` and `=` remain unbound** —
+applying an LSP-driven mutation still has no accepted ADR, and no amount of
+delivery work changes that.
 
 **M003 is closed** (`plans/closure/tui-editor-helix-parity/003-status.md`). It
 discharged exactly one dependency edge: **M004**, whose hard dependency was the
@@ -1025,12 +1367,12 @@ keymap during implementation and recorded in the closure: `gl` is
 and are therefore deliberately unbound, because motions resolve against a fixed
 `NOMINAL_VISIBLE_LINES` guess rather than the real viewport.
 
-**M010 remains blocked**, now on **M013 alone**. A survey at baseline `84440fe7f`
-found that the LSP read surface the F2–F9 keys already call cannot deliver: the
-diagnostics publisher has no production driver, and a workspace with two warm
-servers resolves to a false `NotReady`. Those defects are owned by **M013**,
-which is **ready**. Binding Helix LSP leaves before M013 lands would ship keys
-that open always-`NotReady` panels.
+**M010's block is discharged.** It was blocked, at one point, on **M013
+alone**: a survey at baseline `84440fe7f` found that the LSP read surface the
+F2–F9 keys already call cannot deliver — the diagnostics publisher has no
+production driver, and a workspace with two warm servers resolves to a false
+`NotReady`. Those defects were owned by **M013**, which is now **closed**, so
+M010 is `ready` with a plan.
 
 M013 is numbered as a corrective insertion rather than continuing the sequence,
 so it sorts after the closed 001–003 without implying a dependency on the
@@ -1067,11 +1409,38 @@ The three corrections worth carrying forward:
   dependency.** `regex = "1"` is already in the root package and already used
   under `src/tui/`. The real cost there is the argument prompt, not the matching.
 
-M011 and M012 remain "M002 edge discharged" and are unaffected. M009 waits on
-ADR-0034 acceptance alone — its M008 edge was discharged by M008's closure.
-**M013 is the only milestone left that is `ready` with a plan**; M009 and M010
-need their dependency, and M011/M012 need plans of their own. See
-`plans/registry.md` § "Milestones eligible for fresh planning".
+**Every remaining milestone now has a plan, and the status table matches.**
+M009, M010, M011 and M012 were planned on 2026-10-19 against the live Helix
+keymap and the tree at `a8778e87c`; each is `ready` with a plan path in §12.
+Two milestones were **added** by that planning, both from gaps the plans
+exposed rather than from preference:
+
+- **M014** carries the syntax-node slice of M009's match-mode grammar.
+  ADR-0034's own decision text says the word and delimiter-pair objects are
+  *"explicitly **not** gated"* on the ADR, and Helix's text-object table
+  agrees, so M009's byte-derived boundary is not blocked and the blocked
+  remainder needed its own entry rather than staying an orphan. **M014 has
+  no plan, deliberately**: ADR-0034 records that *"no option is selected by
+  this record"*, and Option A (a frontend tree-sitter dependency) and
+  Option B (daemon-owned structural reads) produce different contracts and
+  would need different plans.
+- **M015** gives the two LSP previews M013 delivered a key. M013 shipped
+  `FormatPreview` and `RenamePreview` with daemon arms, protocol bounds and
+  panel renderings — and **no key reaches either**. A preview is a *read*,
+  so it needs no LSP-write ADR, and M010's A2 amendment reserves M010 for
+  "the **pickers** and the clipboard family, not the LSP leaves".
+
+Nine corrections were produced against this roadmap's own prose by the
+four plans, each recorded as an amendment on the milestone entry rather
+than absorbed: M009's ADR gate is narrower than stated; Helix marks `m m` as
+`TS`; M010's `space f` is bound to a duplicate of `space s` and is reclaimed
+as the file picker; M010's `space s`/`space S` mapping is as the code has
+it; M011's conflict list omitted three global chords; M011's `Ctrl+s`/
+`Ctrl+r` decision is made; M012's `TextTransaction::invert()` pointer names
+a method that does not exist; M012's memory bound is applied twice rather
+than once; and `Alt-U` must accept both terminal spellings of a capital.
+
+See `plans/registry.md` § "Milestones eligible for fresh planning".
 
 One composition note for M006: the roadmap's M003 entry lists `Alt`-`.` as
 repeating "the last `f`/`t`/`m`/`[`/`]` motion". **M006 discharged this.** The
@@ -1089,3 +1458,100 @@ lost a path. See `plans/closure/tui-editor-helix-parity/001-status.md`.
 
 Status labels here, in the plans, and in the registry must agree. A divergence
 between them is a planning defect, not a formatting detail.
+
+## 13. Implementation order for the planned milestones (2026-10-19)
+
+The five plans in `plans/implementation/tui-editor-helix-parity/` share three
+core files, one guard script, and one set of counters. They cannot be
+implemented as five independent efforts. This section is the **total order**
+that a single core owner follows, and it is derived from a source-verified
+audit of all five plans against the tree at `a8778e87c` with M013 applied.
+
+**W1 of M009, M010 and M011 has already landed** (2026-10-19) and is excluded
+from the order below. Those three packages were file-disjoint and ran
+concurrently: M009's byte foundation in `src/tui/editor_match.rs`, M010's
+pending-effect generalization in `src/tui/editor_effect.rs`, and M011's
+key-authority guard teaching.
+
+### 13.1 The mandatory constraints
+
+| # | Constraint | Source |
+|---|---|---|
+| C1 | M011's insert-session coalescing must land **before or with** M012's traversal work, or M012 must be re-derived | M011 §6.2; M012 §5; Amendment A1 |
+| C2 | M012's chords must land while the Normal-chord base is still 66, because M012's acceptance criterion 9 pins the guard's report to **68** | M012 §13.9 |
+| C3 | M010 must land before M015, because M015's acceptance criterion 8 requires `space r` and `space R` to be **distinct and both reachable** — `space R` is M010's binding | M015 §13.8 |
+| C4 | M011's mode-aware panels must land before its chords — a `Ctrl-x` popup that then eats `Enter` is worse than no `Ctrl-x` | M011 §7 W2 |
+| C5 | M012's chords must land after M012's model; M009's grammar before its resolvers; M010's W2 before W7; M015's W1 before W4 | each plan's §7 |
+
+**C2 is the one constraint that moves a milestone out of roadmap order.**
+`m` (M009) and `=` (M015) each add one Normal-mode chord; `Alt-u` and
+`Alt-U` add two. If M009 landed first, M012's report would be 69 and its own
+acceptance criterion would fail. The roadmap does not order M009 against
+M011/M012 — they sit in different branches of the dependency graph — so
+placing M012 first violates nothing and preserves M012's hard number. The
+cost is one sentence: **M009's and M015's count statements are deltas, not
+absolutes**, and only the final figure is recorded once, at the end.
+
+### 13.2 The order
+
+| Stage | Work packages | Normal chords | Insert chords |
+|---|---|---|---|
+| A | **M011** W1–W6: the guard (landed), the mode-aware panels, the deletion builders, the nine Insert arms, the coalescing, the docs | 66 (unchanged — M011 adds no Normal-mode chord) | 1 → **9** |
+| B | **M012** W1–W6: the cursor model, the apply side, the `Alt-u`/`Alt-U` arms, the boundary report and the observable cursor, the dead variants, the docs | 66 → **68** | 9 |
+| C | **M009** W2–W6: the grammar, the pair matching, the text objects, the surround verbs, the guards and the docs | 68 → **69** | 9 |
+| D | **M010** W2–W7: the file picker, the clipboard family, the command palette, the visible statements, the leaf-table guard, the docs | 69 | 9 |
+| E | **M015** W1–W4: the format preview, the rename prompt, the `space a` statement, the docs | 69 → **70** | 9 |
+
+**Final figure: `2 guard-block chord(s), 70 Normal-mode chord(s), 9
+Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
+
+### 13.3 What must not be broken by the order
+
+- **The `all_eighteen_chords_are_claimed_in_normal_mode` list is M008's
+  eighteen verbs across twenty-two spellings** — it is not "every Normal
+  chord". M009's `m` and M015's `=` must **not** be added to it, or M012's
+  `claimed.len() == 24` breaks.
+- **The insert-mode sweep stays at 93.** All five plans reaffirm it; only a
+  new *claim* moves it.
+- **One history, one bound.** M011's coalescing changes the *granularity* of
+  an undo entry; M012 changes the *traversal*. M012 must assume the history
+  holds **coalesced** entries, that the redo tail is truncated **once** per
+  session, that a coalesced session counts as **one** entry with the
+  **summed** bytes, and that an **open** session's bytes are not yet in the
+  history — M012 must either add them to the bound or record that M011 bounds
+  them separately.
+- **The doc writes are serialized** — one per plan, in its own package's
+  last step — and a skill file and its `architecture/` doc move **in the same
+  commit**.
+
+### 13.4 The open questions this order exposes
+
+1. **Where does the insert session's state live?** On the presentation beside
+   `pending_prefix` (so `clear_history` discards it in the same place) or on
+   `EditorState` (which needs a second discard path)? The field name must not
+   contain `prefix`, or the prefix-state guard's one-field rule fires.
+2. **M009's `PrefixAction` payload: option (a) or (b)?** Option (a) drops
+   `Copy` from `PrefixLeaf` and constrains every future leaf to a
+   const-constructible payload; option (b) costs one mapping arm and keeps
+   the M005-frozen `leaves()` interface. M009 §6.2 records (a) as preferred
+   and §14's stop condition fires on it.
+3. **Is the count test 24 or 25?** It is 24, with `Alt-U`'s second spelling
+   exercised by a separate test — stated in M012 §10 so the number is not 24
+   by accident.
+4. **Where does M009's `m`-prefix indicator render, and what does `MatchArg`
+   display?** `MatchArg::SurroundReplaceFrom` and `::SurroundReplaceTo` would
+   both display `"m r"`, and the reader cannot tell which half is pending.
+5. **Does M011's `Ctrl-x` need a guard?** `handle_completion_key` is outside
+   the key-authority guard's scope, so the chord is invisible to it — the
+   same blind spot the plans note for the leaf tables.
+6. **Which invariants does M010's new leaf-table guard police?** Its earlier
+   rule 4 was false and is replaced; see M010 §6.6.
+
+### 13.5 The pre-existing failures that are not this work's
+
+The 69 failing `tests/` integration binaries, the two load-sensitive
+`interactive_terminal` library failures, and the `workspace-authority-and-
+session-navigation` residuals are **registered, not discharged here**. A
+closure record states the **new** failure set, not the total: if the failing
+count is not exactly 69 with the same names, that is a regression of this
+work and must be fixed before closure.
