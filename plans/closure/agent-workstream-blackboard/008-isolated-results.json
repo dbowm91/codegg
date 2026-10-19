@@ -1,5 +1,5 @@
 {
-  "evidence_kind": "partial exploratory measurement; one completed S0 and one completed S1 shared-interface arm; additional S2/S3 diagnostic attempts remain non-qualifying; not M008 closure",
+  "evidence_kind": "partial exploratory measurement; one repetition each for IM-1/S0, IM-1/S1, and SI-1/S0; not M008 closure",
   "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
   "fixture_baseline": "f5e27d388255726b0b85226a144fdcce2e91b73a",
   "binary": {
@@ -1525,8 +1525,8 @@
       },
       "useful_throughput": {
         "accepted_contract_checks_passed": 10,
-        "checks_per_worker_token": 0.00002676,
-        "checks_per_provider_usage_minute": 6.50
+        "checks_per_worker_token": 2.676e-05,
+        "checks_per_provider_usage_minute": 6.5
       },
       "status": "valid integrated candidate after one evaluator intervention; not an autonomous-success result because the agent could not execute the Python acceptance command or create its commit",
       "result": "Both frozen suites pass on the committed candidate. Actual agent usage remained below the equal 700,000-token trial ceiling. Cost is unknown. The fixture uses an isolated managed worktree; no shared-write condition was used."
@@ -1546,7 +1546,10 @@
       "all_agent_budget_tokens": 700000,
       "coordinator_budget_tokens": 300000,
       "worker_budget_tokens": 400000,
-      "worker_allocations": [200000, 200000],
+      "worker_allocations": [
+        200000,
+        200000
+      ],
       "actual_usage": {
         "coordinator": {
           "input_tokens": 190955,
@@ -1607,7 +1610,10 @@
         "integrated_rust_acceptance": "5 passed",
         "integrated_python_acceptance": "5 passed",
         "integrated_candidate_commit": "5d558fc",
-        "integrated_child_commits": ["702b84e", "5d558fc"],
+        "integrated_child_commits": [
+          "702b84e",
+          "5d558fc"
+        ],
         "merge_conflicts": 0,
         "evaluator_command_seconds": 1.27,
         "integration_command_seconds": 0.66,
@@ -1617,12 +1623,68 @@
       },
       "useful_throughput": {
         "accepted_contract_checks_passed": 10,
-        "checks_per_worker_token": 0.00003247,
-        "checks_per_total_agent_token": 0.0000199,
+        "checks_per_worker_token": 3.247e-05,
+        "checks_per_total_agent_token": 1.99e-05,
         "checks_per_provider_usage_minute": 7.18
       },
       "status": "valid integrated candidate; both child runs and group completed without failure, followed by evaluator cherry-pick integration and integrated-suite rerun",
       "result": "S1 used 502491 of the equal 700000 all-agent token ceiling. Coordinator and each child stayed below their fixed allocations. Both isolated child commits integrated without conflict; both frozen language suites passed again in the parent worktree. Cost is unknown. No peer board, observations, claims, or shared writes were used."
+    },
+    {
+      "trial_id": "SI-1-S0-R1",
+      "matrix_version": "008-task-matrix-v1",
+      "fixture": "plans/closure/agent-workstream-blackboard/008-shared-interface-fixture",
+      "fixture_baseline_commit": "41a536ae9a2b859f319399ba1297d0d91f0e6204",
+      "fixture_tree_digest": "93c0eadb64f4ec9bc423599085863a5018800322",
+      "condition": "S0",
+      "repetition": 1,
+      "session_id": "ce5861ef-951e-4d82-b6d7-beb624c6e2e7",
+      "turn_id": "turn-73845873-fbaf-4021-a9a6-85ad6846c415",
+      "provider": "OpenCode Go",
+      "model": "gpt-6-luna",
+      "all_agent_budget_tokens": 1400000,
+      "coordinator_budget_tokens": 0,
+      "worker_budget_tokens": 1400000,
+      "actual_usage": {
+        "input_tokens": 864750,
+        "output_tokens": 9774,
+        "cached_tokens": 0,
+        "total_tokens": 874524,
+        "overrun_tokens": 0,
+        "usage_rows": 32,
+        "provider_usage_span_seconds": 155.175,
+        "reported_cost_usd": 0.0,
+        "cost_available": false
+      },
+      "agent_reported": {
+        "rust_acceptance": "cargo test --locked --workspace passed; 7 integration tests",
+        "python_acceptance": "python3 -m unittest discover -s python/tests -v passed; 7 tests",
+        "golden_acceptance": "python3 scripts/check_cross_language_golden.py passed",
+        "result_commit": "not created by agent; evaluator created candidate commit after validation"
+      },
+      "evaluator": {
+        "rust_acceptance": "7 passed; independently rerun by evaluator",
+        "python_acceptance": "7 passed; independently rerun by evaluator",
+        "golden_acceptance": "passed; independently rerun by evaluator",
+        "valid_integrated_result": true,
+        "candidate_commit": "9260fda525284b821beda2782de23f6888d37b56",
+        "candidate_paths": [
+          "rust/src/lib.rs",
+          "python/summary_report/consumer.py"
+        ],
+        "interventions": 1,
+        "intervention_detail": "Evaluator created the candidate commit after the agent reported Git backend staging errors; no source correction was needed.",
+        "integration_wall_seconds": null,
+        "scratch_cleanup": "Removed generated .codegg scratch, Python bytecode, and Rust target cache; isolated worktree clean."
+      },
+      "useful_throughput": {
+        "accepted_contract_checks_passed": 15,
+        "checks_per_worker_token": 1.715e-05,
+        "checks_per_total_agent_token": 1.715e-05,
+        "checks_per_provider_usage_minute": 5.8
+      },
+      "status": "valid integrated candidate after evaluator commit; implementation and all acceptance suites passed without source intervention",
+      "result": "SI-1/S0 used 874524 of its equal 1400000 all-agent ceiling, with no observed overrun. The two language modules were implemented in one direct session and passed the frozen cross-language golden evaluator. Cost is unavailable. One evaluator intervention created the candidate commit; no source correction was needed."
     }
   ]
 }

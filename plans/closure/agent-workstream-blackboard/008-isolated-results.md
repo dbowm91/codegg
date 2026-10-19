@@ -1,9 +1,8 @@
-# Agent Workstream Blackboard M008 — Isolated S0/S1 Results
+# Agent Workstream Blackboard M008 — Partial Results
 
 Evidence status: exploratory partial result; M008 remains active and is not
-strictly closed. This record includes a completed frozen shared-interface S0
-and one completed isolated S1 pair; it does not establish a repeatable
-effectiveness advantage.
+strictly closed. The budget-matched set now includes IM-1/S0, IM-1/S1, and SI-1/S0 at
+repetition 1. It does not establish a repeatable effectiveness advantage.
 
 Source plan: `plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md`
 CodeGG source: `a0d7acef8e428d55971514addf685741a25ce047`
@@ -559,3 +558,26 @@ took 0.66 seconds; total elapsed integration wall time was not separately
 instrumented. Generated run scratch and test caches were removed from the
 parent and both child worktrees. Per-run budgets, token totals, usage spans,
 and throughput are in `008-isolated-results.json`.
+
+
+## 20. SI-1, S0, repetition 1 (2026-10-19)
+
+The first shared-interface trajectory used the frozen `project-summary-v1`
+fixture (`HEAD` `41a536ae9a2b859f319399ba1297d0d91f0e6204`, Git tree
+`93c0eadb64f4ec9bc423599085863a5018800322`) and a 1,400,000-token
+all-agent ceiling. One direct `gpt-6-luna` session implemented the Rust
+producer and Python consumer. Rust's seven integration tests, Python's seven
+tests, and the exact cross-language golden evaluator passed both in the agent
+run and in an independent evaluator rerun. The evaluator committed only the two
+source files as `9260fda525284b821beda2782de23f6888d37b56`; no source correction
+was needed. Generated `.codegg/`, bytecode, and Cargo target artifacts were
+removed, leaving the isolated candidate worktree clean.
+
+The usage journal recorded 864,750 input plus 9,774 output tokens (874,524
+total) across 32 rows, over a 155.175-second provider-usage span. This used
+62.5% of the fixed ceiling with no overrun. Fifteen frozen evaluator checks
+passed. The local price table has no matching provider rate, so cost is
+unknown. Candidate creation was one evaluator intervention after the agent's
+Git staging failed; implementation and all tests passed without source
+intervention. There is not yet an SI-1/S1 comparison or a repeated sample.
+Exact measurements are in `008-isolated-results.json`.

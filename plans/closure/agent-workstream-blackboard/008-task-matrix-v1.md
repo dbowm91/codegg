@@ -31,8 +31,10 @@ in their respective strata.
   for the coordinator and 400,000 for workers (200,000 per child).
   `SI-1` uses `B = 1,400,000`: S0 receives 1,400,000; S1/S2/S3 reserve
   300,000 for the coordinator and 1,100,000 for workers (550,000 per child).
+  `OA-1` uses `B = 700,000`: S0 receives 700,000; S1/S2/S3 reserve
+  300,000 for the coordinator and 400,000 for workers (200,000 per child).
   These ceilings are task-specific because the observed workloads differ by
-  more than an order of magnitude. IM-2, SI-2, OA-1, and OA-2 remain unavailable
+  more than an order of magnitude. IM-2, SI-2, and OA-2 remain unavailable
   until evaluator files are frozen, their baseline failure is confirmed, and
   a task-specific `B` is recorded here before provider trials begin.
 - Budgets are provider-reported input plus output tokens. The in-flight
@@ -66,7 +68,7 @@ in their respective strata.
 | IM-2 | Independent modules | `008-shared-interface-fixture/`; implement the Rust event-summary producer and Python report consumer as separate deliverables, but do not alter the frozen schema or golden data. | Rust, Python, and end-to-end golden suites pass. This is scored as independent-module work only when the prompt explicitly assigns disjoint Rust/Python files and asks the coordinator to integrate sequentially. |
 | SI-1 | Shared interface | `008-shared-interface-fixture/`; implement both sides of `project-summary-v1`, with producer and consumer split across workers for S1/S2/S3. | Both language suites and the exact cross-language golden output pass without changing the schema/evaluator. |
 | SI-2 | Shared interface | `008-fixture/`; implement matching Rust and Python retry-delay behavior against the same frozen five-case contract, with the Rust crate acting as the reference producer and Python client consuming the published contract. | Both language suites pass and a frozen cross-language JSON-vector evaluator matches all outputs. The evaluator vector file is part of this matrix digest. |
-| OA-1 | Overlapping API/schema | `008-shared-interface-fixture/`; change the event contract to add an optional `actor` field with frozen normalization and validation rules. Both workers may edit the shared schema, Rust parser, and Python validator. | Versioned v2 schema, Rust/Python validation parity, and golden report pass; no silent v1 contract break. |
+| OA-1 | Overlapping API/schema | `008-overlapping-api-fixtures/oa1/`; add the frozen optional actor field. Trim ASCII edge whitespace, preserve case, and require 1–64 ASCII bytes matching `[A-Za-z0-9][A-Za-z0-9._@-]{0,63}`. Both workers may edit the shared schema, Rust parser, and Python validator. | Versioned v2 schema, Rust/Python validation parity, frozen v2 golden report, and unchanged v1 behavior pass. |
 | OA-2 | Overlapping API/schema | Same fixture; add a `source_revision` validation and escaping rule required by both the producer CLI and report renderer. Both workers are explicitly allowed to edit the same Rust/Python API and schema paths. | Frozen malformed-input and Markdown-escaping checks pass in both languages and integrated golden evaluation. |
 
 IM-2 deliberately uses the existing cross-language fixture as a second
@@ -76,12 +78,18 @@ classification overlaps the repository files with SI-1 by design; the task
 contract and worker assignment define whether the run measures independent
 module work or interface coordination. SI-2's new vector evaluator must be
 authored and hashed before any provider trial.
-OA-1/OA-2 require new immutable evaluator inputs and explicit expected outputs
-before they can enter provider trials. Until those files exist and their
-baseline fails for the intended reason, mark those task/condition cells
-unavailable rather than treating the contract prose as an evaluated task.
+OA-1 evaluator baseline `2b47e6b8edff74e2c50578f65ecc2461111f425352c3038fbb3fe7420e24780d`
+is frozen in `008-overlapping-api-fixtures/oa1/`. Its new Rust test fails on
+the intended unknown-actor validation, its new Python test rejects v2, and the
+cross-language evaluator fails on that same missing field. All other OA-1
+cells are now available at the frozen budget. OA-2 remains unavailable until
+its evaluator and baseline failure are frozen.
 
-Two cells have been run under this equal-total-budget protocol: IM-1 S0 and S1,
-both at repetition 1. Their results are recorded in `008-isolated-results.json`
-and `008-isolated-results.md`. Every other task/condition/repetition cell
-remains unrun; the previous pilots remain separate historical evidence.
+Three cells have been run under this equal-total-budget protocol: IM-1 S0 and
+S1 at repetition 1, and SI-1 S0 at repetition 1. The SI-1 fixture digest is
+`93c0eadb64f4ec9bc423599085863a5018800322`. OA-1 is frozen with input tree
+`17fe5b0dbe7a233d25ac842bea5011f1e9e36c20` and source baseline
+`9260fda525284b821beda2782de23f6888d37b56`; results are recorded in
+`008-isolated-results.json` and `008-isolated-results.md`. Every other
+task/condition/repetition cell remains unrun; previous pilots remain separate
+historical evidence.

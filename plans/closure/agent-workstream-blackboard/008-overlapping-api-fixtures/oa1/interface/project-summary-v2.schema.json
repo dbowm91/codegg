@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegg.invalid/schemas/project-summary-v2.schema.json",
+  "title": "CodeGG project summary v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source_revision", "events", "totals", "by_kind"],
+  "properties": {
+    "schema": { "const": "codegg.project-summary.v2" },
+    "source_revision": { "type": "string", "minLength": 1 },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "occurred_at", "kind"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "kind": { "enum": ["file_changed", "test_passed", "test_failed"] },
+          "path": { "type": "string" },
+          "insertions": { "type": "integer", "minimum": 0 },
+          "deletions": { "type": "integer", "minimum": 0 },
+          "actor": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$" }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events", "files_changed", "insertions", "deletions"],
+      "properties": {
+        "events": { "type": "integer", "minimum": 0 },
+        "files_changed": { "type": "integer", "minimum": 0 },
+        "insertions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "by_kind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_changed", "test_passed", "test_failed"],
+      "properties": {
+        "file_changed": { "type": "integer", "minimum": 0 },
+        "test_passed": { "type": "integer", "minimum": 0 },
+        "test_failed": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
