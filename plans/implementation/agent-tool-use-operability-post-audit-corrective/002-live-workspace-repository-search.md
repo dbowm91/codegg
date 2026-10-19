@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability Corrective C002 — Restore Truthful Live-Workspace Repository Search
 
-Status: blocked — Eggsearch has no session workspace binding contract; see `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md`.
+Status: implemented — strict follow-up closure `plans/closure/agent-tool-use-operability-post-audit-corrective/002-follow-up-status.md` (2026-10-19). Historical blocker record `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md` remains immutable.
 Repository baseline: `4c86bac2a608dd717be085247838fd2f37d81ab6` (2026-10-19 main)
 Source roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`; `#28-observability`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`.
