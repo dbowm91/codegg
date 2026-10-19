@@ -214,6 +214,14 @@ pub struct TuiDocumentPresentation {
     pub undo_bytes: usize,
     /// Retained redo payload bytes, for the redo memory bound.
     pub redo_bytes: usize,
+    /// The open insert session, if insert mode has typed anything.
+    ///
+    /// Held beside the history because it *is* history that has not been
+    /// written yet: the edits of one typing burst become one undo entry
+    /// when the burst ends. The name deliberately does not contain
+    /// `prefix` — the prefix-state guard allows exactly one such field on
+    /// this struct, and the pending prefix already holds it.
+    pub insert_session: Option<crate::tui::editor::InsertSession>,
 }
 
 impl TuiDocumentPresentation {

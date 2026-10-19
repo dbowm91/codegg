@@ -1,8 +1,10 @@
 # TUI editor Helix parity Milestone 011 — Insert-mode control chords
 
-Status: active
+Status: implemented - closed 2026-10-19
 Repository baseline: `a8778e87c` (`feat/auto-20261018-12255c45`); W1 was
 implemented against the same baseline (uncommitted at the time of writing)
+Closure: `plans/closure/tui-editor-helix-parity/011-status.md`
+Implementation decisions and recorded deviations: §17 below
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7 M011
 Long-term requirements: `plans/000-long-term-specification.md` (IDE-grade
@@ -495,9 +497,13 @@ mode-aware:
 | any printable | dismiss, then the key is handled by the table | dismiss, then the key **types** |
 
 `Ctrl-x` in Insert mode opens the popup and **stays in Insert**. The
-candidate is accepted with `Tab` (and `Shift-Tab` cycles). `Enter` always
-inserts a newline in Insert mode — that is the hard, testable rule. The
-implementation must check Helix's own insert-mode completion keys and
+candidate selection is moved with `Tab` and cycled backwards with
+`Shift-Tab`; `Enter` always inserts a newline in Insert mode — that is the
+hard, testable rule. (This paragraph originally said the candidate was
+*accepted* with `Tab`, which contradicted the table above it and acceptance
+criterion 4, and contradicted Helix's own completion menu, which binds `Tab`
+to *Next entry*. See §17.1.)
+The implementation must check Helix's own insert-mode completion keys and
 **record** any divergence from the table above.
 
 **LSP diagnostics panel.** `handle_lsp_panel_key` (`:2411-2445`) must not
@@ -888,3 +894,117 @@ Stop and report rather than continue if any of these holds.
   There is no register, the roadmap defers named registers, and `p`/`P`
   already paste the OS clipboard. `Ctrl-r` is declined because there is
   nothing to insert — not because the chord was contested.
+
+## 17. Implementation decisions and recorded deviations (2026-10-19)
+
+Recorded here rather than left implicit, per the planning rule that a plan
+which disagrees with the code is a defect.
+
+### 17.1 The plan's own prose contradicted its own table, and the table won
+
+§6.3's prose says *"The candidate is accepted with `Tab` (and `Shift-Tab`
+cycles)."* §6.3's **table** says `Tab` / `Shift-Tab` **move the candidate
+selection** in Insert mode, and acceptance criterion 4 says the same. The
+prose is the outlier: Helix's completion menu binds `Tab` to *Next entry* and
+`Shift-Tab` to *Previous entry*, not to accept.
+
+**Decided:** the table and criterion 4 are implemented. `Tab` moves the
+candidate selection forward, `Shift-Tab` backward, in Insert mode. The prose
+in §6.3 is corrected to match.
+
+### 17.2 The catch-all character arm is last, not first
+
+§6.6's snippet puts `(NONE|SHIFT, Char(ch))` first. It is implemented **last**.
+The tuple match makes the two orders equivalent today — `(CONTROL,
+Char('d'))` and `(NONE, Char(ch))` cannot both match one key — but a table
+whose correctness depends on the reader reading it in the right order is a
+table that will not stay correct. The guard does not care about the order.
+
+### 17.3 The insert table's plain keys accept `NONE` and `SHIFT` only
+
+Before this milestone the insert table matched `KeyCode::Backspace`,
+`KeyCode::Delete`, the arrows, `Enter` and `Tab` **regardless of modifier**,
+so `Ctrl+Backspace` and `Ctrl+Left` were the editor's. They are not any
+more: the plain arms spell out `NONE` and `SHIFT` (the latter is how a
+terminal reports `Shift-Backspace`), and a modified plain key is now an
+unclaimed insert chord — which §3.3 says is a **global** action, and which is
+Helix's arrangement. No Helix insert-mode binding is lost: Helix binds
+`Ctrl+Backspace` to nothing.
+
+### 17.4 The word deletions remove the separating whitespace too
+
+§6.4 says "delete the previous word" and "delete the next word" without
+saying what happens to the whitespace between the word and the cursor.
+
+**Decided:** the deleted range is the word *and* the whitespace that separated
+it from the cursor — the range a shell's `Ctrl-w` removes, and the range that
+makes `Alt+d` at the end of a word take the next word whole. "the word" alone
+would leave `Ctrl+w` removing `world` and leaving a trailing space, which
+reads as a chord that half-worked.
+
+### 17.5 The coalesced run is one **contiguous insertion**, and only that
+
+§6.2 offers two shapes: a merged inverse builder, or the session's
+transactions retained and merged at commit. The second was taken, and it
+constrains what may join the run.
+
+A `TextTransaction`'s edits are **all expressed in the coordinates of one
+base text** (`DocumentBuffer::apply` walks them in reverse order against the
+original). Two insertions at the same base place therefore cannot both be
+expressed in one transaction, and the application order of same-place
+insertions is not the order they were typed in. A run that is not one
+contiguous insertion has no single merged form.
+
+**Decided:** an edit joins the run only when it is a pure insertion at the
+end of the run so far. A deletion, a replacement, or an insertion anywhere
+else **ends** the run: the run is committed as one entry and the new edit
+starts a fresh one. This is exact by construction, needs no inverse builder,
+and keeps `EditorUndoEntry`'s shape — the stop condition in §14 was not
+reached, because the constraint was met by narrowing what a run is rather
+than by changing the entry.
+
+### 17.6 The guard's Insert chord count is 8, not 9
+
+The roadmap's §13 stage table says the Insert chord count goes `1 → 9`. It
+goes **`1 → 8`**.
+
+The guard counts a chord as a *character* claim. The nine chords of §1 are
+seven character chords (`Ctrl+h`, `Ctrl+d`, `Ctrl+j`, `Ctrl+k`, `Ctrl+u`,
+`Ctrl+w`, `Alt+d`), two **key-code** claims (`Alt+Backspace`, `Alt-Delete`,
+which the guard checks under rule 3 for exactly-once ownership and does not
+count), and `Ctrl+x`, which lives in `handle_completion_key` — a different
+dispatch stage, and one the guard does not scan. With the wildcard
+character arm, the count is `1 + 7 = 8`.
+
+**The roadmap's 9 is corrected by amendment**; the Normal-mode count is
+unaffected, and M012's acceptance criterion pins that one, not this one.
+
+### 17.7 Helix's insert-mode behaviour, checked and recorded
+
+§6.3 requires the implementation to check Helix's own insert-mode completion
+keys and record the divergences. Helix's published keymap
+(`docs.helix-editor.com/keymap.html`, "Insert mode" and "Completion Menu"):
+
+| Helix | CodeGG | Verdict |
+|---|---|---|
+| `Ctrl+w`, `Alt+Backspace` → delete word backward | same | match |
+| `Alt+d`, `Alt+Delete` → delete word forward | same | match |
+| `Ctrl+u` → kill to line start | same | match |
+| `Ctrl+k` → kill to line end | same | match |
+| `Ctrl+h`, `Backspace` → delete char backward | same | match |
+| `Ctrl+d`, `Delete` → delete char forward | same | match |
+| `Ctrl+j`, `Enter` → insert newline | same | match |
+| `Ctrl-x` → completion | same | match |
+| `Ctrl-s` → commit undo checkpoint | `Ctrl+s` saves | **declined** (§6.1) |
+| `Ctrl-r` → insert register | `Ctrl+r` resyncs | **declined** (§6.1) |
+| completion menu: `Tab` → next entry | same | match |
+| completion menu: `Shift+Tab` → previous entry | same | match |
+| completion menu: `Enter` → accept the completion | `Enter` is a newline in `INS` | **divergence** |
+| completion menu: `↑`/`↓` → previous/next entry | `↑`/`↓` move the cursor in `INS` | **divergence** |
+| completion menu: "any other keypresses result in the completion being accepted" | a printable **types** and dismisses the popup | **divergence** |
+
+The three divergences are all the same decision, and it is the plan's
+invariant 3: **in Insert mode a printable is text.** Helix's completion menu
+takes the keypress, and the character the reader typed is lost with it. The
+divergence is recorded in `docs/tui.md` and `architecture/tui.md`.
+

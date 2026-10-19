@@ -1079,6 +1079,20 @@ fn handle_completion_key(app: &mut App, key: KeyEvent) -> bool {
         start_editor_completion(app);
         return true;
     }
+    // `Ctrl-x` is Helix's insert-mode completion trigger. It opens the same
+    // popup and **stays** in insert mode, so the reader can look at the
+    // candidates and keep typing. `F8` remains the normal-mode trigger.
+    //
+    // Insert mode only: in normal mode `Ctrl-x` is not the editor's to
+    // take, and a chord the editor claims in a mode it does not serve is a
+    // chord the global handler can no longer reach.
+    if key.code == KeyCode::Char('x')
+        && key.modifiers == KeyModifiers::CONTROL
+        && app.editor_state.mode() == EditorMode::Insert
+    {
+        start_editor_completion(app);
+        return true;
+    }
     if !app.editor_state.completion.is_open() {
         return false;
     }
@@ -1088,15 +1102,17 @@ fn handle_completion_key(app: &mut App, key: KeyEvent) -> bool {
             app.editor_state.completion.dismiss();
             true
         }
-        KeyCode::Enter => {
+        // Accepting a candidate rewrites the text, so it is a normal-mode
+        // action. In insert mode `Enter` is a newline — always.
+        KeyCode::Enter if normal_mode => {
             accept_selected_completion(app);
             true
         }
-        KeyCode::Up => {
+        KeyCode::Up if normal_mode => {
             app.editor_state.completion.select_previous();
             true
         }
-        KeyCode::Down => {
+        KeyCode::Down if normal_mode => {
             app.editor_state.completion.select_next();
             true
         }
@@ -1108,6 +1124,22 @@ fn handle_completion_key(app: &mut App, key: KeyEvent) -> bool {
             app.editor_state.completion.select_next();
             true
         }
+        // Helix's completion menu moves the selection with `Tab` and
+        // `Shift-Tab`. In insert mode the popup is the reader's window onto
+        // the candidates, and `Tab` is the only key that moves the
+        // selection without leaving insert mode. In normal mode `Tab` keeps
+        // its old meaning and the popup is dismissed.
+        KeyCode::Tab if !normal_mode => {
+            app.editor_state.completion.select_next();
+            true
+        }
+        KeyCode::BackTab if !normal_mode => {
+            app.editor_state.completion.select_previous();
+            true
+        }
+        // Everything else dismisses the popup and is handled by the mode's
+        // own table. In insert mode that means the key **types**: a
+        // printable is text, and it is never swallowed by a panel.
         _ => {
             app.editor_state.completion.dismiss();
             false
@@ -1564,14 +1596,33 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 // `App::ui_state.input_mode` instead of racing it.
                 presentation.mode = EditorMode::Insert;
             }
-            editor::push_undo(
-                presentation,
-                forward,
-                inverse,
-                bytes,
-                cursor_before,
-                selections_before,
-            );
+            // A typing burst is **one** undo step, not one per keystroke.
+            // An insert session accumulates the edits and hands them over
+            // as a single entry; the edit that does not fit the run — a
+            // deletion, a replacement, an insertion anywhere but the end of
+            // the run — ends the session and is pushed on its own.
+            let in_insert = presentation.mode == EditorMode::Insert;
+            if in_insert
+                && editor::absorb_insert_edit(
+                    presentation,
+                    &forward,
+                    bytes,
+                    cursor_before,
+                    selections_before.clone(),
+                )
+            {
+                // The session owns this edit now; it is committed later.
+            } else {
+                editor::commit_insert_session(presentation);
+                editor::push_undo(
+                    presentation,
+                    forward,
+                    inverse,
+                    bytes,
+                    cursor_before,
+                    selections_before,
+                );
+            }
             // Spans are bound to a revision this edit has moved past, so
             // they cannot paint any more. Re-asking is deferred to the pump's
             // quiet period instead of happening per keystroke.
@@ -1760,6 +1811,17 @@ fn apply_clipboard_text(app: &mut App, verb: ClipboardVerb, read: Option<String>
 /// controller returns `LifecycleBusy`, the entry stays in history, and no
 /// transaction is queued for a phase that will refuse it.
 pub(crate) fn editor_undo(state: &mut EditorState) {
+    // A typing burst that has not been closed is one undo step, so the
+    // session is committed before the history is read. Otherwise the
+    // reader's own typing would be invisible to the `u` they just pressed:
+    // the burst would still be sitting in the session, and the `u` would
+    // reach past it to whatever came before.
+    {
+        let Some(session) = state.session.as_mut() else {
+            return;
+        };
+        editor::commit_insert_session(session.presentation_mut());
+    }
     let Some(session) = state.session.as_ref() else {
         return;
     };
@@ -1899,6 +1961,74 @@ pub(crate) fn editor_delete_backward(state: &mut EditorState) {
     submit_edit(state, edit);
 }
 
+/// Delete from the cursor back to the start of its line in insert mode.
+///
+/// Helix's `kill_to_line_start`, the insert-mode `Ctrl-u`.
+pub(crate) fn editor_kill_to_line_start(state: &mut EditorState) {
+    if !editable(state) {
+        state.set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
+        return;
+    }
+    let Some(session) = state.session.as_ref() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let cursor = session.presentation().cursor_byte;
+    let Some(edit) = editor::kill_to_line_start(&snapshot, cursor) else {
+        return;
+    };
+    submit_edit(state, edit);
+}
+
+/// Delete the word before the cursor in insert mode, stopping at the line
+/// boundary.
+///
+/// Helix's `delete_word_backward`, the insert-mode `Ctrl-w` and
+/// `Alt-Backspace`. The line boundary is a hard stop: a `Ctrl-w` in column
+/// zero deletes nothing rather than reaching into the line above.
+pub(crate) fn editor_delete_word_backward(state: &mut EditorState) {
+    if !editable(state) {
+        state.set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
+        return;
+    }
+    let Some(session) = state.session.as_ref() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let cursor = session.presentation().cursor_byte;
+    let Some(edit) = editor::delete_word_backward(&snapshot, cursor) else {
+        return;
+    };
+    submit_edit(state, edit);
+}
+
+/// Delete the word after the cursor in insert mode, stopping at the line
+/// boundary.
+///
+/// Helix's `delete_word_forward`, the insert-mode `Alt-d` and
+/// `Alt-Delete`.
+pub(crate) fn editor_delete_word_forward(state: &mut EditorState) {
+    if !editable(state) {
+        state.set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
+        return;
+    }
+    let Some(session) = state.session.as_ref() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let cursor = session.presentation().cursor_byte;
+    let Some(edit) = editor::delete_word_forward(&snapshot, cursor) else {
+        return;
+    };
+    submit_edit(state, edit);
+}
+
 // ── Mode ─────────────────────────────────────────────────────────────────────
 
 /// Return the keyboard to the Helix verbs and the bottom input box.
@@ -1908,10 +2038,26 @@ pub(crate) fn editor_delete_backward(state: &mut EditorState) {
 /// highlighted region and the place the text will land disagree.
 pub(crate) fn enter_editor_normal(app: &mut App) {
     app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
-    if let Some(session) = app.editor_state.session.as_mut() {
+    leave_insert_mode(&mut app.editor_state);
+}
+
+/// Leave insert mode: back to the Helix verbs, with the typing burst
+/// committed as one undo step.
+///
+/// Split out of [`enter_editor_normal`] so the state-level path has one
+/// name for "insert mode ended". The App version also moves the *keyboard*
+/// out of insert mode; this one moves the *model*, and the two are the
+/// same step seen from the two sides.
+pub(crate) fn leave_insert_mode(state: &mut EditorState) {
+    if let Some(session) = state.session.as_mut() {
         let presentation = session.presentation_mut();
         presentation.mode = EditorMode::Normal;
         presentation.clear_selections();
+        // Leaving insert mode closes the typing burst, and a closed burst is
+        // one undo step. Helix commits its undo checkpoint here, for the
+        // same reason: the reader's `u` after leaving insert mode is
+        // expected to take back the whole burst, not its last keystroke.
+        editor::commit_insert_session(presentation);
     }
 }
 
@@ -2385,9 +2531,14 @@ fn handle_lsp_panel_key(app: &mut App, key: KeyEvent) -> bool {
     let Some(panel) = app.editor_state.lsp.panel else {
         return false;
     };
+    // The panel's own verbs are normal-mode actions. In insert mode a bare
+    // character is text and `Enter` is a newline, so the panel must not
+    // claim either: a reader typing into a file with the panel open would
+    // lose the character to a panel that has no claim on it.
+    let normal_mode = app.editor_state.mode() == EditorMode::Normal;
     match key.code {
         KeyCode::Esc => app.editor_state.lsp.close_panel(),
-        KeyCode::Char('j') | KeyCode::Down => {
+        KeyCode::Char('j') | KeyCode::Down if normal_mode => {
             let count = if panel == EditorLspPanel::Diagnostics {
                 app.editor_state.lsp.diagnostics.len()
             } else {
@@ -2400,17 +2551,19 @@ fn handle_lsp_panel_key(app: &mut App, key: KeyEvent) -> bool {
                 .saturating_add(1)
                 .min(count.saturating_sub(1));
         }
-        KeyCode::Char('k') | KeyCode::Up => {
+        KeyCode::Char('k') | KeyCode::Up if normal_mode => {
             app.editor_state.lsp.selected_index =
                 app.editor_state.lsp.selected_index.saturating_sub(1)
         }
-        KeyCode::Char('r') if panel == EditorLspPanel::Diagnostics => {
+        KeyCode::Char('r') if normal_mode && panel == EditorLspPanel::Diagnostics => {
             refresh_editor_diagnostics(app)
         }
-        KeyCode::Enter if panel == EditorLspPanel::Diagnostics => {
+        KeyCode::Enter if normal_mode && panel == EditorLspPanel::Diagnostics => {
             jump_to_selected_diagnostic(&mut app.editor_state)
         }
-        KeyCode::Enter if panel == EditorLspPanel::ReadResult => open_selected_lsp_target(app),
+        KeyCode::Enter if normal_mode && panel == EditorLspPanel::ReadResult => {
+            open_selected_lsp_target(app)
+        }
         _ => return false,
     }
     true
@@ -2764,43 +2917,98 @@ fn visible_line_estimate() -> usize {
 const NOMINAL_VISIBLE_LINES: usize = 20;
 
 fn handle_insert_key(state: &mut EditorState, key: KeyEvent, visible_lines: usize) -> bool {
-    match key.code {
-        KeyCode::Char(ch)
-            if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
-        {
-            editor_insert_literal(state, &ch.to_string());
-            true
-        }
-        KeyCode::Backspace => {
+    // The insert table is a tuple match on (modifiers, key code), because
+    // every chord this milestone adds is a *modified* key: `Ctrl-w`,
+    // `Alt-d` and their siblings cannot be told from a plain character
+    // without looking at the modifier.
+    //
+    // The catch-all character arm is **last**, so an unmodified character
+    // chord added later would sit above it rather than under it. The tuple
+    // match makes that a matter of order rather than of correctness —
+    // `(CONTROL, Char('d'))` and `(NONE, Char(ch))` cannot both match one
+    // key — but a table that only stays correct if the reader reads it
+    // carefully is a table that will not.
+    match (key.modifiers, key.code) {
+        // Helix's insert-mode control chords. `Ctrl-h`, `Ctrl-d`, `Ctrl-j`
+        // and `Ctrl-k` are Helix's own bindings; `Ctrl-u`, `Ctrl-w` and
+        // `Alt-d` are the deletions this milestone adds. The two word
+        // deletions are line-clamped; see `editor::delete_word_backward`.
+        (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
             editor_delete_backward(state);
             true
         }
-        KeyCode::Delete => {
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
             editor_editing_command(state, EditorCommand::DeleteChar);
             true
         }
-        KeyCode::Left => {
-            editor_motion(state, EditorCommand::MoveLeft, visible_lines);
-            true
-        }
-        KeyCode::Right => {
-            editor_motion(state, EditorCommand::MoveRight, visible_lines);
-            true
-        }
-        KeyCode::Up => {
-            editor_motion(state, EditorCommand::MoveUp, visible_lines);
-            true
-        }
-        KeyCode::Down => {
-            editor_motion(state, EditorCommand::MoveDown, visible_lines);
-            true
-        }
-        KeyCode::Enter => {
+        (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
             editor_insert_literal(state, "\n");
             true
         }
-        KeyCode::Tab => {
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
+            editor_editing_command(state, EditorCommand::DeleteToLineEnd);
+            true
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            editor_kill_to_line_start(state);
+            true
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
+            editor_delete_word_backward(state);
+            true
+        }
+        (KeyModifiers::ALT, KeyCode::Char('d')) => {
+            editor_delete_word_forward(state);
+            true
+        }
+        (KeyModifiers::ALT, KeyCode::Backspace) => {
+            editor_delete_word_backward(state);
+            true
+        }
+        (KeyModifiers::ALT, KeyCode::Delete) => {
+            editor_delete_word_forward(state);
+            true
+        }
+        // The plain keys keep their old meaning and accept no modifier
+        // beyond `Shift`, which is how a terminal reports `Shift-Backspace`.
+        // A modified plain key is no longer claimed here: an unclaimed
+        // insert chord is a *global* action, and `Ctrl-Left` belongs to
+        // whatever global movement the session offers rather than to the
+        // editor's one-character step.
+        (KeyModifiers::NONE, KeyCode::Backspace) | (KeyModifiers::SHIFT, KeyCode::Backspace) => {
+            editor_delete_backward(state);
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Delete) | (KeyModifiers::SHIFT, KeyCode::Delete) => {
+            editor_editing_command(state, EditorCommand::DeleteChar);
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Left) | (KeyModifiers::SHIFT, KeyCode::Left) => {
+            editor_motion(state, EditorCommand::MoveLeft, visible_lines);
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Right) | (KeyModifiers::SHIFT, KeyCode::Right) => {
+            editor_motion(state, EditorCommand::MoveRight, visible_lines);
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::SHIFT, KeyCode::Up) => {
+            editor_motion(state, EditorCommand::MoveUp, visible_lines);
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::SHIFT, KeyCode::Down) => {
+            editor_motion(state, EditorCommand::MoveDown, visible_lines);
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::SHIFT, KeyCode::Enter) => {
+            editor_insert_literal(state, "\n");
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Tab) | (KeyModifiers::SHIFT, KeyCode::Tab) => {
             editor_insert_literal(state, "\t");
+            true
+        }
+        (KeyModifiers::NONE, KeyCode::Char(ch)) | (KeyModifiers::SHIFT, KeyCode::Char(ch)) => {
+            editor_insert_literal(state, &ch.to_string());
             true
         }
         _ => false,
@@ -4366,6 +4574,9 @@ mod tests {
         editor_insert_literal(&mut state, "!");
         assert_eq!(editor_text(&state), "alpha\nbeta!\n");
         assert_eq!(state.status, EditorStatus::DirtyLocal);
+        // Leaving insert mode closes the typing burst, and a closed burst is
+        // one undo step (M011).
+        leave_insert_mode(&mut state);
         assert_eq!(undo_depth(&state), 1);
 
         // Undo restores both the text and the cursor the user left.
@@ -4497,8 +4708,15 @@ mod tests {
         );
         assert!(daemon.change_count.load(Ordering::Acquire) > 0);
         assert_eq!(daemon.daemon_text(), "a".repeat(25));
-        // Every keystroke is individually reversible.
-        assert_eq!(undo_depth(&state), 25);
+        // The daemon still saw one change per keystroke; the *history* does
+        // not, because a typing burst is one undo step (M011). Leaving insert
+        // mode closes the burst.
+        leave_insert_mode(&mut state);
+        assert_eq!(
+            undo_depth(&state),
+            1,
+            "the whole burst is one step, and one `u` takes all of it back"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4688,6 +4906,7 @@ mod tests {
     async fn switching_documents_clears_history_and_drops_the_previous_attachment() {
         let (mut state, _daemon) = opened_writer("first document\n").await;
         editor_insert_literal(&mut state, "x");
+        leave_insert_mode(&mut state);
         assert_eq!(undo_depth(&state), 1);
 
         // Switching documents detaches the old session entirely.
@@ -4724,6 +4943,9 @@ mod tests {
         for reconcile in ["reload", "resync", "close"] {
             let (mut state, daemon) = opened_writer("base").await;
             editor_insert_literal(&mut state, "!");
+            // The burst is closed, so there is a step for the reconciliation
+            // to clear.
+            leave_insert_mode(&mut state);
             assert_eq!(undo_depth(&state), 1, "{reconcile}");
 
             let controller = state.session.as_ref().expect("open").controller();
@@ -7832,6 +8054,419 @@ mod tests {
             );
             assert_eq!(editor_text(&state), "");
         }
+    }
+
+    // ── M011: insert-mode control chords ─────────────────────────────────
+
+    /// The editor attached to an `App`, on the editor route, in insert mode.
+    ///
+    /// `handle_editor_key` refuses every key unless the editor route is
+    /// current, so a test that calls it without this reaches none of the
+    /// dispatch under test and would pass for the wrong reason.
+    async fn app_in_insert_mode(state: EditorState) -> App {
+        let mut app = app_with_the_editor_attached(state).await;
+        app.ui_state
+            .routes
+            .navigate_to(crate::tui::route::Route::Editor);
+        app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
+        app
+    }
+
+    /// The editor, opened, in insert mode, with the cursor at `offset`.
+    async fn inserting(text: &str, offset: usize) -> App {
+        let (mut state, _daemon) = opened_writer(text).await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert,
+            "the editor must be in insert mode for the chord to mean anything"
+        );
+        park(&mut state, offset);
+        app_in_insert_mode(state).await
+    }
+
+    /// A completion scope, for opening the popup without a live daemon.
+    fn a_completion_scope() -> crate::tui::editor_completion::EditorCompletionScope {
+        crate::tui::editor_completion::EditorCompletionScope {
+            read_scope: crate::tui::editor_lsp::EditorLspScope {
+                generation: 1,
+                session_id: "session-1".to_string(),
+                project_id: "project-1".to_string(),
+                workspace_id: "workspace-1".to_string(),
+                path: "/tmp/example.rs".to_string(),
+            },
+            document_id: "document-1".to_string(),
+            revision: 1,
+            line: 0,
+            character: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn ctrl_w_deletes_the_previous_word() {
+        let mut app = inserting("hello world\nsecond line\n", 11).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "hello \nsecond line\n",
+            "the previous word, and the whitespace that separated it from the cursor"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_w_stops_at_the_line_start() {
+        let mut app = inserting("abc\ndef\n", 4).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "abc\ndef\n",
+            "the scan stops at the line boundary; it must not reach into the line above"
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_backspace_is_the_same_gesture_as_ctrl_w() {
+        let mut app = inserting("hello world\n", 11).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT)
+        ));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "hello \n",
+            "`Alt-Backspace` and `Ctrl-w` are one gesture, two spellings"
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_d_deletes_the_next_word() {
+        let mut app = inserting("hello world\nsecond\n", 0).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)
+        ));
+        assert_eq!(editor_text(&app.editor_state), " world\nsecond\n");
+    }
+
+    #[tokio::test]
+    async fn alt_d_stops_at_the_line_end() {
+        let mut app = inserting("abc\ndef\n", 2).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)
+        ));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "ab\ndef\n",
+            "the scan stops at the line boundary; it must not eat the newline"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_u_deletes_to_the_line_start_and_ctrl_k_to_the_line_end() {
+        let mut app = inserting("hello world\n", 6).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(editor_text(&app.editor_state), "world\n");
+
+        let mut app = inserting("hello world\n", 6).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(editor_text(&app.editor_state), "hello \n");
+    }
+
+    #[tokio::test]
+    async fn ctrl_h_and_ctrl_d_delete_one_character_each() {
+        let mut app = inserting("abc\n", 1).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "bc\n",
+            "`Ctrl-h` deletes backward"
+        );
+
+        let mut app = inserting("abc\n", 1).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "ac\n",
+            "`Ctrl-d` deletes forward"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_j_inserts_a_newline() {
+        let mut app = inserting("ab\n", 1).await;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(editor_text(&app.editor_state), "a\nb\n");
+    }
+
+    #[tokio::test]
+    async fn ctrl_x_is_an_insert_mode_chord_only() {
+        // Insert mode: the editor claims it, and the mode does not change.
+        let (mut state, _daemon) = opened_writer("hello\n").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        let mut app = app_in_insert_mode(state).await;
+        assert!(
+            handle_editor_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
+            ),
+            "`Ctrl-x` is the insert-mode completion trigger"
+        );
+        assert_eq!(
+            app.editor_state.mode(),
+            EditorMode::Insert,
+            "and it stays in insert mode"
+        );
+
+        // Normal mode: the chord is not the editor's to take.
+        let (state, _daemon) = opened_writer("hello\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        assert!(
+            !handle_editor_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
+            ),
+            "in normal mode `Ctrl-x` is a global action, and the editor must not shadow it"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_s_and_ctrl_r_still_reach_the_lifecycle_chords_in_insert_mode() {
+        // The guard block is mode-independent and outranks the insert table,
+        // so a save or a resync must survive the new chords.
+        let (mut state, _daemon) = opened_writer("base\n").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        assert_eq!(
+            insert_event(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            BufferKey::RequestSave
+        );
+        assert_eq!(
+            editor_text(&state),
+            "base\n",
+            "a save request edits nothing"
+        );
+        assert_eq!(
+            insert_event(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+            ),
+            BufferKey::RequestResync
+        );
+        assert_eq!(editor_text(&state), "base\n", "and a resync edits nothing");
+    }
+
+    #[tokio::test]
+    async fn the_completion_popup_does_not_steal_enter_in_insert_mode() {
+        let mut app = inserting("hello\n", 5).await;
+        app.editor_state.completion.begin(&a_completion_scope());
+        assert!(
+            app.editor_state.completion.is_open(),
+            "the popup must be open for this to mean anything"
+        );
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Enter)));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "hello\n\n",
+            "`Enter` is a newline in insert mode, never an accept"
+        );
+        assert!(
+            !app.editor_state.completion.is_open(),
+            "and the popup is dismissed rather than left open over a moved cursor"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_completion_popup_does_not_steal_the_arrows_in_insert_mode() {
+        let mut app = inserting("hello\nworld\n", 5).await;
+        app.editor_state.completion.begin(&a_completion_scope());
+        assert!(app.editor_state.completion.is_open());
+
+        let before = cursor(&app.editor_state);
+        assert!(handle_editor_key(&mut app, key(KeyCode::Down)));
+        assert_ne!(
+            cursor(&app.editor_state),
+            before,
+            "`Down` moves the cursor, not the candidate selection"
+        );
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "hello\nworld\n",
+            "and it moves nothing else"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_lsp_panel_does_not_steal_characters_in_insert_mode() {
+        let mut app = inserting("hello\n", 0).await;
+        app.editor_state.lsp.open_diagnostics_panel();
+        assert!(
+            app.editor_state.lsp.panel.is_some(),
+            "the panel must be open for this to mean anything"
+        );
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('j'))));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "jhello\n",
+            "`j` is text in insert mode, not a panel gesture"
+        );
+        assert_eq!(app.editor_state.lsp.selected_index, 0);
+    }
+
+    #[tokio::test]
+    async fn the_lsp_panel_does_not_steal_enter_in_insert_mode() {
+        let mut app = inserting("hello\n", 5).await;
+        app.editor_state.lsp.open_diagnostics_panel();
+        assert!(app.editor_state.lsp.panel.is_some());
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Enter)));
+        assert_eq!(
+            editor_text(&app.editor_state),
+            "hello\n\n",
+            "`Enter` is a newline, never a jump to a diagnostic"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_typing_burst_is_one_undo_step() {
+        let (mut state, _daemon) = opened_writer("").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        for ch in "hello".chars() {
+            assert_eq!(insert(&mut state, KeyCode::Char(ch)), BufferKey::Consumed);
+        }
+        assert_eq!(editor_text(&state), "hello");
+        assert_eq!(
+            undo_depth(&state),
+            0,
+            "the burst is not committed until insert mode ends"
+        );
+
+        leave_insert_mode(&mut state);
+        assert_eq!(undo_depth(&state), 1, "one burst, one undo step");
+
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        assert_eq!(
+            editor_text(&state),
+            "",
+            "and one `u` takes back all five characters"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_undo_reverts_the_edit_before_the_burst() {
+        let (mut state, _daemon) = opened_writer("").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        insert(&mut state, KeyCode::Char('x'));
+        leave_insert_mode(&mut state);
+
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        for ch in "hello".chars() {
+            assert_eq!(insert(&mut state, KeyCode::Char(ch)), BufferKey::Consumed);
+        }
+        leave_insert_mode(&mut state);
+        assert_eq!(editor_text(&state), "xhello");
+        assert_eq!(
+            undo_depth(&state),
+            2,
+            "the burst is one step, and the earlier edit is another"
+        );
+
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "x", "the burst is gone");
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "", "and then the edit before it");
+    }
+
+    #[tokio::test]
+    async fn a_reconciliation_discards_an_open_burst() {
+        let (mut state, _daemon) = opened_writer("").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        for ch in "hello".chars() {
+            assert_eq!(insert(&mut state, KeyCode::Char(ch)), BufferKey::Consumed);
+        }
+
+        {
+            let session = state.session.as_mut().expect("open");
+            editor::clear_history(session.presentation_mut());
+        }
+        assert_eq!(
+            undo_depth(&state),
+            0,
+            "the burst is not resurrected as an undo step: it would restore the pre-reload text"
+        );
+        assert_eq!(
+            editor_text(&state),
+            "hello",
+            "and the text the reader typed is still the text"
+        );
+    }
+
+    #[tokio::test]
+    async fn typing_undoing_and_typing_again_leaves_the_redo_stack_empty() {
+        let (mut state, _daemon) = opened_writer("").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        insert(&mut state, KeyCode::Char('a'));
+        leave_insert_mode(&mut state);
+
+        assert_eq!(normal(&mut state, KeyCode::Char('u')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "");
+        assert_eq!(redo_depth(&state), 1, "the undo left a redo tail");
+
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        insert(&mut state, KeyCode::Char('b'));
+        assert_eq!(
+            redo_depth(&state),
+            0,
+            "the new burst clears the redo tail — once, on its first edit"
+        );
     }
 
     #[tokio::test]

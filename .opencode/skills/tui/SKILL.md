@@ -396,6 +396,34 @@ model to the wrong connection.
   inserted newlines, so every navigation key was an edit key until `Esc`, a
   chord nothing on screen named. `open_document` and `:new` both call
   `enter_editor_normal`; nothing puts a fresh document in `Insert`.
+- **Insert mode has its own chords, and its table is a tuple match.**
+  `handle_insert_key` dispatches on `(key.modifiers, key.code)`, because every
+  Helix insert-mode chord is a *modified* key: `Ctrl+h`, `Ctrl+d`, `Ctrl+j`,
+  `Ctrl+k`, `Ctrl+u`, `Ctrl+w`, `Alt+Backspace`, `Alt+d`, `Alt+Delete`, plus
+  `Ctrl+x` for the completion popup. A chord may mean one thing in `Normal` and
+  another in `Insert` (`Ctrl+d` pages in one and deletes a character in the
+  other) — each still has exactly one owner, and the owner is the stage that
+  claims it. **The catch-all character arm is last**, so an unmodified
+  character chord added later sits above it rather than under it. Teach
+  `scripts/check_tui_editor_key_authority.py` any new dispatch shape *before*
+  the shape lands: it reads the tuple table and the legacy `match key.code`
+  table, treats an arm it cannot resolve as an **error** and never as a pass,
+  and its `--self-test` runs synthetic tables through the same analysis the
+  real check uses.
+- **A typing burst is one undo step.**
+  `TuiDocumentPresentation::insert_session` accumulates the edits of one `INS`
+  burst and commits them as a single `EditorUndoEntry` when insert mode ends,
+  so one `u` takes back the whole run rather than its last keystroke. A run is
+  one *contiguous insertion*: a deletion, a replacement, or an insertion away
+  from the end of the run ends it, because those are separate edits. The
+  session keeps bounded `TextTransaction`s and never a copy of the text. A
+  reconciliation **discards** an open session rather than committing it — the
+  text it described is the pre-reload text.
+- **A panel never claims a key that means text.** In `INS` a printable is
+  text. The completion popup and the LSP diagnostics panel are mode-aware:
+  their `j`/`k`/`r`/`Enter` claims are Normal-mode claims, and in `INS` the
+  popup's `Enter` is a newline, its `↑`/`↓` move the cursor, and its
+  `Tab`/`Shift+Tab` move the candidate selection.
 - **`/` searches the document, not the command catalog.** On this route the
   composer arms bare text with `:`, so an unclaimed `/` became `:/` and
   resolved to no command — a key that looks like it should do something and

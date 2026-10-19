@@ -1340,6 +1340,43 @@ impl EditorUndoEntry {
     }
 }
 
+/// One open insert session: the edits since Insert mode was entered.
+///
+/// Helix commits an undo checkpoint when insert mode is escaped, so a
+/// typing burst is **one** undo step rather than one per keystroke. This
+/// is the frontend-local half of that: the session accumulates the edits
+/// and hands them over as a single [`EditorUndoEntry`].
+///
+/// **Bounded transactions, never retained text.** The session keeps the
+/// individual [`TextTransaction`]s it was given, not a copy of the text
+/// they produced, and the merged insertion is built once, at commit time.
+/// The text-authority guard rejects a retained copy of the document, and
+/// this is the shape that respects it.
+///
+/// **A contiguous run of insertions, and nothing else.** An edit joins the
+/// session when it is a pure insertion at the end of the run so far. A
+/// deletion, a replacement, or an insertion anywhere else ends the run: the
+/// session is committed as one entry and the new edit starts a fresh one.
+/// That restriction is what makes the merged entry exact. A transaction's
+/// edits are all expressed in the coordinates of one base text, so two
+/// insertions at the same place cannot both be expressed in it, and a run
+/// that is not one contiguous insertion has no single merged form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertSession {
+    /// Byte offset in the session's starting text where the run begins.
+    base_offset: usize,
+    /// The run's edits, in order. Each is a single empty-range insertion.
+    edits: Vec<TextTransaction>,
+    /// Bytes the run has inserted, which is also the length of the run.
+    inserted_len: usize,
+    /// Retained payload bytes across the run, for the memory bound.
+    bytes: usize,
+    /// Cursor byte offset observed before the run's first edit.
+    cursor_before: usize,
+    /// The selection set observed before the run's first edit.
+    selections_before: Vec<crate::tui::helix_selection::Selection<EditorPoint>>,
+}
+
 /// A resolved, document-relative edit intent from a normal-mode key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorCommand {
@@ -4264,6 +4301,115 @@ pub fn resolve_edit(
     }
 }
 
+// ── Insert-mode deletion builders ───────────────────────────────────────────
+
+/// Delete from the cursor back to the start of its line.
+///
+/// Helix's `kill_to_line_start`, the insert-mode `Ctrl-u`.
+///
+/// The range is the line's start up to the cursor, so a cursor already at
+/// the line start deletes **nothing**: there is no text between the line
+/// start and the cursor to remove. Helix joins the line with the previous
+/// one in that case, which is a different edit under a different name, so it
+/// is not smuggled in here.
+pub fn kill_to_line_start(snapshot: &DocumentSnapshot, cursor: usize) -> Option<EditorEdit> {
+    let cursor = clamp_offset(snapshot, cursor);
+    let line = cursor_line(snapshot, cursor);
+    let start = line_start(snapshot, line)?;
+    if start < cursor {
+        delete_range(snapshot, start..cursor)
+    } else {
+        None
+    }
+}
+
+/// Delete the word before the cursor, **stopping at the line boundary**.
+///
+/// Helix's `delete_word_backward`, the insert-mode `Ctrl-w` and
+/// `Alt-Backspace`.
+///
+/// **Line-clamped, deliberately.** [`word_backward`] is buffer-wide, and a
+/// buffer-wide backward word scan at the start of a line deletes the
+/// previous line's last word. That is the right answer for the `b` motion
+/// and the wrong one here: in insert mode the reader is thinking about the
+/// line they are typing, so a `Ctrl-w` in column zero deletes nothing
+/// rather than reaching into the line above.
+///
+/// The scan reuses [`is_word_byte`], so it finds the same word the
+/// `w`/`b`/`e` motions find, and it steps by [`next_char_boundary`], so a
+/// multi-byte character is never split.
+pub fn delete_word_backward(snapshot: &DocumentSnapshot, cursor: usize) -> Option<EditorEdit> {
+    let cursor = clamp_offset(snapshot, cursor);
+    let line = cursor_line(snapshot, cursor);
+    let floor = line_start(snapshot, line)?;
+    if cursor <= floor {
+        return None;
+    }
+    // Two passes: the separator run between the cursor and the word, then
+    // the word itself. The deleted range is therefore the word *and* the
+    // whitespace that separated it from the cursor, which is the range a
+    // shell's `Ctrl-w` removes.
+    let mut start = cursor;
+    while start > floor && !byte_ending_at(snapshot, start).is_some_and(is_word_byte) {
+        start = prev_char_boundary(snapshot, start);
+    }
+    while start > floor && byte_ending_at(snapshot, start).is_some_and(is_word_byte) {
+        start = prev_char_boundary(snapshot, start);
+    }
+    if start < cursor {
+        delete_range(snapshot, start..cursor)
+    } else {
+        None
+    }
+}
+
+/// Delete the word after the cursor, **stopping at the line boundary**.
+///
+/// Helix's `delete_word_forward`, the insert-mode `Alt-d` and `Alt-Delete`.
+///
+/// Line-clamped for the same reason as [`delete_word_backward`]: the next
+/// word is the next word *on this line*, and a buffer-wide scan would
+/// delete the first word of the following line.
+///
+/// From inside a word the scan stops at that word's end rather than at the
+/// next one's start, so `Alt-d` in the middle of `hello` removes `llo` —
+/// the forward half of the word the cursor is in, which is what a forward
+/// word delete does everywhere.
+pub fn delete_word_forward(snapshot: &DocumentSnapshot, cursor: usize) -> Option<EditorEdit> {
+    let cursor = clamp_offset(snapshot, cursor);
+    let line = cursor_line(snapshot, cursor);
+    let ceiling = line_content_end(snapshot, line)?;
+    if cursor >= ceiling {
+        return None;
+    }
+    // The separator run first, then the word: the deleted range is the word
+    // and whatever whitespace preceded it, so `Alt-d` at the end of a word
+    // removes the next word whole rather than stopping at its first byte.
+    let mut end = cursor;
+    while end < ceiling && !leading_byte(snapshot, end).is_some_and(is_word_byte) {
+        end = next_char_boundary(snapshot, end).unwrap_or(ceiling);
+    }
+    while end < ceiling && leading_byte(snapshot, end).is_some_and(is_word_byte) {
+        end = next_char_boundary(snapshot, end).unwrap_or(ceiling);
+    }
+    if end > cursor {
+        delete_range(snapshot, cursor..end)
+    } else {
+        None
+    }
+}
+
+/// The leading byte of the character that ends at `offset`.
+///
+/// `None` when `offset` is the start of the text, where there is no
+/// character before it to describe.
+fn byte_ending_at(snapshot: &DocumentSnapshot, offset: usize) -> Option<u8> {
+    if offset == 0 {
+        return None;
+    }
+    leading_byte(snapshot, prev_char_boundary(snapshot, offset))
+}
+
 // ── Undo history ────────────────────────────────────────────────────────────
 
 /// Record an accepted edit in the undo history and clear the redo history.
@@ -4309,6 +4455,118 @@ pub fn push_undo(
     presentation.redo.clear();
     presentation.redo_bytes = 0;
     trim_history(presentation);
+}
+
+/// Fold one accepted edit into the open insert session, if it fits.
+///
+/// Returns `true` when the edit joined the session, in which case the
+/// caller must **not** push an undo entry for it: the session commits the
+/// whole run as one entry later.
+///
+/// Returns `false` when the edit does not fit, in which case the caller
+/// must commit the session (if one is open) and push the edit on its own.
+///
+/// The redo tail is cleared when the session **opens**, and only then. A
+/// reader who undoes and then types must not have the redo tail
+/// resurrected by the next keystroke of the new burst, and clearing it on
+/// every keystroke of the burst would clear a redo the reader had earned
+/// since the burst began.
+pub fn absorb_insert_edit(
+    presentation: &mut TuiDocumentPresentation,
+    transaction: &TextTransaction,
+    bytes: usize,
+    cursor_before: usize,
+    selections_before: Vec<crate::tui::helix_selection::Selection<EditorPoint>>,
+) -> bool {
+    // Only a single, empty-range insertion can join a run.
+    if transaction.edits.len() != 1 {
+        return false;
+    }
+    let edit = &transaction.edits[0];
+    if edit.range.start != edit.range.end {
+        return false;
+    }
+    let Some(session) = presentation.insert_session.as_mut() else {
+        presentation.insert_session = Some(InsertSession {
+            base_offset: edit.range.start,
+            edits: vec![transaction.clone()],
+            inserted_len: edit.insert.len(),
+            bytes,
+            cursor_before,
+            selections_before,
+        });
+        presentation.redo.clear();
+        presentation.redo_bytes = 0;
+        return true;
+    };
+    // The run continues only at the end of the run so far. An insertion
+    // anywhere else is a different edit, and folding it in would make the
+    // merged entry describe a text the reader never had.
+    let expected = session.base_offset.saturating_add(session.inserted_len);
+    if edit.range.start != expected {
+        return false;
+    }
+    if session.bytes.saturating_add(bytes) > MAX_EDITOR_UNDO_BYTES {
+        return false;
+    }
+    session.edits.push(transaction.clone());
+    session.inserted_len = session.inserted_len.saturating_add(edit.insert.len());
+    session.bytes = session.bytes.saturating_add(bytes);
+    true
+}
+
+/// Commit the open insert session as **one** undo entry.
+///
+/// The merged entry is a single insertion of everything the run typed, at
+/// the offset the run began, with an inverse that deletes exactly those
+/// bytes. That is exact because a run is one contiguous insertion by
+/// construction — see [`InsertSession`].
+///
+/// Committing is what "leaving insert mode" means for the history. It is
+/// also what a reconciliation must **not** do: [`clear_history`] discards
+/// the session instead, because a reload must not resurrect the pre-reload
+/// text as an undo step.
+pub fn commit_insert_session(presentation: &mut TuiDocumentPresentation) {
+    let Some(session) = presentation.insert_session.take() else {
+        return;
+    };
+    if session.edits.is_empty() || session.inserted_len == 0 {
+        return;
+    }
+    // The merged payload is built here, once, and dropped with the session:
+    // the session itself never holds a copy of the text.
+    let inserted: String = session
+        .edits
+        .iter()
+        .flat_map(|transaction| transaction.edits.iter())
+        .map(|edit| edit.insert.clone())
+        .collect();
+    let total = inserted.len();
+    let forward = TextTransaction::new(vec![TextEdit::new(
+        session.base_offset..session.base_offset,
+        inserted,
+    )]);
+    let inverse = TextTransaction::new(vec![TextEdit::new(
+        session.base_offset..session.base_offset + total,
+        String::new(),
+    )]);
+    push_undo(
+        presentation,
+        forward,
+        inverse,
+        session.bytes,
+        session.cursor_before,
+        session.selections_before,
+    );
+}
+
+/// Drop the open insert session without committing it.
+///
+/// The session's edits are already in the text, so this does not undo
+/// them: it only declines to record them as an undo step. A
+/// reconciliation calls it because the text those edits described is gone.
+pub fn discard_insert_session(presentation: &mut TuiDocumentPresentation) {
+    presentation.insert_session = None;
 }
 
 /// Take the newest undo entry without applying it, so the caller can apply
@@ -4403,6 +4661,11 @@ pub fn clear_history(presentation: &mut TuiDocumentPresentation) {
     presentation.redo.clear();
     presentation.undo_bytes = 0;
     presentation.redo_bytes = 0;
+    // An open insert session is discarded, not committed. Its edits are
+    // already in the text, but the text they described is the pre-reload
+    // text: committing the session would record a step that restores a
+    // document the reader is no longer looking at.
+    discard_insert_session(presentation);
     presentation.disarm_prefix();
     presentation.forget_find();
     // The unimpaired slot and its disclosure are transient in exactly the way
@@ -4729,6 +4992,164 @@ mod tests {
         offset: usize,
     ) {
         move_cursor_to(presentation, snapshot, offset, 10);
+    }
+
+    // ── M011: insert-mode deletion builders ─────────────────────────────
+
+    /// The byte range a builder would delete, or `None` when it deletes
+    /// nothing.
+    fn deleted_range(edit: Option<EditorEdit>) -> Option<std::ops::Range<usize>> {
+        let edit = edit?;
+        let first = edit.transaction.edits.first()?;
+        Some(first.range.start..first.range.end)
+    }
+
+    /// The text a builder would delete.
+    fn deleted_text(snapshot: &DocumentSnapshot, edit: Option<EditorEdit>) -> Option<String> {
+        let range = deleted_range(edit)?;
+        snapshot.read_bytes(range.start, range.end).ok()
+    }
+
+    #[test]
+    fn kill_to_line_start_deletes_the_line_head_and_nothing_more() {
+        let snapshot = snapshot_of("hello world\nsecond\n");
+        assert_eq!(deleted_range(kill_to_line_start(&snapshot, 6)), Some(0..6));
+        assert_eq!(
+            deleted_range(kill_to_line_start(&snapshot, 0)),
+            None,
+            "a cursor already at the line start has nothing to kill"
+        );
+    }
+
+    #[test]
+    fn delete_word_backward_stops_at_the_line_start() {
+        let snapshot = snapshot_of("abc\ndef\n");
+        assert_eq!(
+            deleted_range(delete_word_backward(&snapshot, 7)),
+            Some(4..7),
+            "the word before the cursor"
+        );
+        assert_eq!(
+            deleted_range(delete_word_backward(&snapshot, 4)),
+            None,
+            "at the line start the scan must not reach into the line above"
+        );
+    }
+
+    #[test]
+    fn delete_word_forward_stops_at_the_line_end() {
+        let snapshot = snapshot_of("abc\ndef\n");
+        assert_eq!(
+            deleted_range(delete_word_forward(&snapshot, 0)),
+            Some(0..3),
+            "the word after the cursor"
+        );
+        assert_eq!(
+            deleted_range(delete_word_forward(&snapshot, 2)),
+            Some(2..3),
+            "from inside a word, the rest of that word"
+        );
+        assert_eq!(
+            deleted_range(delete_word_forward(&snapshot, 3)),
+            None,
+            "at the line end there is no next word on this line"
+        );
+    }
+
+    #[test]
+    fn the_word_deletions_never_split_a_multi_byte_character() {
+        // "é" is two bytes, and the scan steps by character boundary.
+        let snapshot = snapshot_of("café x\n");
+        assert_eq!(
+            deleted_text(&snapshot, delete_word_backward(&snapshot, 6)).as_deref(),
+            Some("café "),
+            "the accented character is one word unit, and the space with it"
+        );
+        assert_eq!(
+            deleted_text(&snapshot, delete_word_forward(&snapshot, 3)).as_deref(),
+            Some("é"),
+            "and the forward scan stops on its last byte, not its first"
+        );
+    }
+
+    // ── M011: the insert session ─────────────────────────────────────────
+
+    #[test]
+    fn a_deletion_ends_the_typing_run() {
+        let mut presentation = presentation_at(0);
+        let insertion = TextTransaction::new(vec![TextEdit::new(0..0, "a")]);
+        assert!(
+            absorb_insert_edit(&mut presentation, &insertion, 1, 0, Vec::new()),
+            "the first insertion opens the run"
+        );
+        let deletion = TextTransaction::new(vec![TextEdit::new(0..1, "")]);
+        assert!(
+            !absorb_insert_edit(&mut presentation, &deletion, 1, 0, Vec::new()),
+            "a deletion is not a continuation of an insertion run"
+        );
+        commit_insert_session(&mut presentation);
+        assert_eq!(presentation.undo.len(), 1, "the run is one step");
+    }
+
+    #[test]
+    fn an_insertion_away_from_the_end_of_the_run_ends_it() {
+        let mut presentation = presentation_at(0);
+        let insertion = TextTransaction::new(vec![TextEdit::new(0..0, "a")]);
+        assert!(absorb_insert_edit(
+            &mut presentation,
+            &insertion,
+            1,
+            0,
+            Vec::new()
+        ));
+        let elsewhere = TextTransaction::new(vec![TextEdit::new(0..0, "b")]);
+        assert!(
+            !absorb_insert_edit(&mut presentation, &elsewhere, 1, 0, Vec::new()),
+            "an insertion anywhere but the end of the run is a different edit"
+        );
+    }
+
+    #[test]
+    fn a_run_is_committed_as_one_insertion_with_one_inverse() {
+        let mut presentation = presentation_at(0);
+        let first = TextTransaction::new(vec![TextEdit::new(0..0, "a")]);
+        assert!(absorb_insert_edit(
+            &mut presentation,
+            &first,
+            1,
+            0,
+            Vec::new()
+        ));
+        let second = TextTransaction::new(vec![TextEdit::new(1..1, "b")]);
+        assert!(
+            absorb_insert_edit(&mut presentation, &second, 1, 0, Vec::new()),
+            "the run continues at the end of what it has typed"
+        );
+        commit_insert_session(&mut presentation);
+
+        assert_eq!(presentation.undo.len(), 1, "one run, one step");
+        let entry = presentation.undo.last().expect("one entry");
+        let forward = entry.forward.edits.first().expect("one edit");
+        assert_eq!(forward.range.start..forward.range.end, 0..0);
+        assert_eq!(forward.insert, "ab", "the whole run, as one insertion");
+        let inverse = entry.inverse.edits.first().expect("one edit");
+        assert_eq!(inverse.range.start..inverse.range.end, 0..2);
+        assert!(inverse.insert.is_empty(), "and an inverse that deletes it");
+    }
+
+    #[test]
+    fn the_first_edit_of_a_run_clears_the_redo_tail() {
+        let mut presentation = presentation_at(0);
+        let insertion = TextTransaction::new(vec![TextEdit::new(0..0, "a")]);
+        assert!(absorb_insert_edit(
+            &mut presentation,
+            &insertion,
+            1,
+            0,
+            Vec::new()
+        ));
+        assert!(presentation.redo.is_empty(), "the redo tail is gone");
+        assert_eq!(presentation.redo_bytes, 0);
     }
 
     // ── `Ctrl+d` continues to the end ───────────────────────────────────

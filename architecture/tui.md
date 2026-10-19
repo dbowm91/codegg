@@ -3207,9 +3207,31 @@ passes for a scoped `&DocumentSnapshot` borrow and for the bounded
 
 **Presentation record.** `TuiDocumentPresentation` owns cursor byte,
 selection range, viewport line and column, buffer mode, a two-byte pending
-command prefix, and the undo/redo stacks. Undo entries are capped at 256
-entries and 4 MiB across both directions, and retain *both* the forward and
-inverse transactions so moving an entry between stacks is exact.
+command prefix, the open insert session, and the undo/redo stacks. Undo
+entries are capped at 256 entries and 4 MiB across both directions, and
+retain *both* the forward and inverse transactions so moving an entry between
+stacks is exact.
+
+**A typing burst is one undo step.** The open insert session
+(`TuiDocumentPresentation::insert_session`) accumulates the edits of one
+`INS` burst and commits them as a single `EditorUndoEntry` when insert mode
+ends, so `u` after leaving `INS` takes back the whole burst rather than its
+last keystroke. That is Helix's undo checkpoint at the same granularity, and
+it is why the session exists at all: without it, every character of a word
+would be a separate step, and one `u` would take back one letter.
+
+A run is **one contiguous insertion**. A deletion, a replacement, or an
+insertion anywhere but the end of the run ends it, and the parts become
+separate steps, because they are separate edits. The session keeps the
+individual `TextTransaction`s it was given and never a copy of the text they
+produced; the merged insertion is built once, at commit time.
+
+A reconciliation **discards** an open session rather than committing it. The
+text the session described is the pre-reload text, and committing it would
+record a step that restores a document the reader is no longer looking at.
+The redo tail is cleared when the session **opens** and only then: a reader
+who undoes and then types must not have the redo tail resurrected by the
+next keystroke of the new burst.
 
 **Reconciliation clears history.** Open, reload, resync, reconnect, and
 close all clear undo and redo. Save does not: it writes the same local text,
@@ -3232,6 +3254,14 @@ composer badge and every dockable box already show. On `Route::Editor`:
 | `Insert` | the document | the text box — the cursor is drawn there |
 | `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `/`, `n`, `N`, `i/a/I/A/o/O`, `u`, `U`) | the bottom input box |
 
+The `Insert` row's keyboard is the document's own: printable characters, the
+arrow keys, and the Helix insert-mode chords — `Ctrl+h`, `Ctrl+d`, `Ctrl+j`,
+`Ctrl+k`, `Ctrl+u`, `Ctrl+w`, `Alt+Backspace`, `Alt+d`, `Alt+Delete` — plus
+`Ctrl+x` for the completion popup. A chord may mean one thing in `Normal` and
+another in `Insert` (`Ctrl+d` pages down in one and deletes one character
+forward in the other); each still has exactly one owner, and the owner is
+the stage that claims it.
+
 **A file opens in `Normal`, not `Insert`.** This is the same choice
 `/terminal`, the panel manager, and the chat box make: they are read before
 they are typed into, and `i` is one keystroke away. The editor used to enter
@@ -3247,6 +3277,15 @@ is the mechanism, not a fallback: the editor claims navigation and editing and
 everything else stays a composer keystroke. This is the same contract the
 interactive terminal runs on — NOR reads, INS types — and the same rule
 `focus_panel` follows for a side panel.
+
+**Insert is the same contract, and so is every panel.** In `Insert` a
+printable is text, and it reaches the document whatever else is on screen. The
+completion popup and the LSP diagnostics panel used to claim bare characters
+and `Enter` regardless of mode, so a reader typing into a file with a panel
+open lost the character to a panel that had no claim on it. Both are now
+mode-aware: their `j`/`k`/`r`/`Enter` claims are Normal-mode claims, and in
+`Insert` the popup's `Enter` inserts a newline, its `↑`/`↓` move the cursor,
+and its `Tab`/`Shift+Tab` move the candidate selection.
 
 `Esc` is a **mode step, never an exit**. Insert → Normal. Normal → a toast
 naming `:q`. It never leaves the route: the only ways out are `:q` and `:wq`,
@@ -3305,6 +3344,9 @@ earlier stage claims it. The order is the contract:
    to `replace_with_yanked` and a Normal-only guard-block `R` would have
    shadowed the verb while surviving it. Reload is `:e`
    (`EditorCommandName::Reload`), which reaches `reload_editor` directly.
+   Helix gives `Ctrl+s` an undo checkpoint and `Ctrl+r` a register prompt in
+   `Insert` mode. CodeGG declines both: the checkpoint is covered by the
+   insert session's commit, and a document has no register to prompt for.
 3. **Mode dispatch.** `handle_insert_key`, or `handle_normal_key`.
 
 The rule that follows: **every chord has exactly one owner, and that owner is

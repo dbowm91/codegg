@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M008 and M013 closed; M009–M011 implementation started; M012 and M015 planned and ready; M014 blocked on ADR-0034)
+Status: active (M001–M008, M011 and M013 closed; M009–M010 implementation started; M012 and M015 planned and ready; M014 blocked on ADR-0034)
 
 Long-term references:
 
@@ -1051,7 +1051,45 @@ Insert behavior unless the conflict decision says otherwise.
 >    land first, or M012 must tolerate any granularity. This is the one
 >    sequencing constraint either milestone imposes on the other.
 >
+> **Amendment A2 (2026-10-19) — M011 landed; §13's chord count was wrong.**
+>
+> 1. **The Insert-mode chord count is 8, not 9.** §13's stage table said the
+>    count goes `1 → 9`. It goes **`1 → 8`**, and the reason is arithmetic
+>    rather than a defect: the key-authority guard counts *character* claims,
+>    and of the nine chords two are **key-code** claims (`Alt-Backspace` and
+>    `Alt-Delete`, which it checks under rule 3 for exactly-once ownership and
+>    does not count as chords) and one (`Ctrl+x`) lives in
+>    `handle_completion_key`, a different dispatch stage the guard does not
+>    scan. With the wildcard character arm, `1 + 7 = 8`. **The Normal-mode
+>    count is unchanged at 66**, and that is the number M012's acceptance
+>    criterion pins.
+> 2. **The plan's §6.3 prose contradicted its own table about `Tab`.** The
+>    prose said the candidate is *accepted* with `Tab`; the table and
+>    acceptance criterion 4 said `Tab` *moves the candidate selection*; and
+>    Helix's completion menu binds `Tab` to *Next entry*. The table was
+>    implemented and the prose corrected (plan §17.1).
+> 3. **The insert table's plain keys now accept `NONE` and `SHIFT` only.**
+>    `Ctrl+Backspace` and `Ctrl+Left` are no longer the editor's in Insert
+>    mode; an unclaimed insert chord is a **global** action, which is the
+>    plan's §3.3 finding and Helix's arrangement (plan §17.3).
+> 4. **The coalesced run is one contiguous insertion.** A `TextTransaction`'s
+>    edits are all expressed in the coordinates of one base text, so two
+>    insertions at the same place cannot both be expressed in one
+>    transaction. An edit joins the run only when it is a pure insertion at
+>    the end of the run so far; a deletion, a replacement, or an insertion
+>    elsewhere ends it. This kept the plan's stop condition from being
+>    reached — `EditorUndoEntry`'s shape is unchanged (plan §17.5).
+> 5. **Three divergences from Helix are recorded**, all the same decision: in
+>    Insert mode a printable is text, and Helix's completion menu takes the
+>    keypress. `Enter` is a newline, `↑`/`↓` move the cursor, and a printable
+>    types instead of accepting the completion (plan §17.7).
+> 6. **The `Ctrl+w` / `Ctrl+k` / `Ctrl+u` route-scoped shadow remains open for
+>    the maintainer.** It is not a defect — it is Helix's arrangement, scoped
+>    to Insert mode — but the plan flags it as a product decision, and
+>    `Alt+Backspace` / `Alt+d` are offered as the alternative spelling.
+>
 > Plan: `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md`
+> Closure: `plans/closure/tui-editor-helix-parity/011-status.md`
 
 ### M012 — Undo history traversal
 
@@ -1304,7 +1342,7 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M008 | **closed** | `plans/implementation/tui-editor-helix-parity/008-multi-selection-command-surface.md` | `plans/closure/tui-editor-helix-parity/008-status.md` | — |
 | M009 | **active** | `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md` | — | Byte-derived boundary only; the syntax-node slice moved to M014 (Amendment A3). W1 landed: the byte foundation, in `src/tui/editor_match.rs` |
 | M010 | **active** | `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md` | — | M013 closed; M005 closed earlier — unblocked. W1 landed: the pending-effect mechanism is editor-level, in `src/tui/editor_effect.rs` |
-| M011 | **active** | `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md` | — | M002 edge discharged; the `Ctrl+s`/`Ctrl+r` conflict is decided (Amendment A1). W1 landed: the key-authority guard is taught the new Insert shape and self-tests |
+| M011 | **closed** | `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md` | `plans/closure/tui-editor-helix-parity/011-status.md` | M002 edge discharged; the `Ctrl+s`/`Ctrl+r` conflict is decided (Amendment A1). Closed 2026-10-19 (Amendment A2): the nine insert-mode chords are bound with one owner each, the two mode-blind panels are fixed, a typing burst is one undo step, and the guard's Insert chord count is **8** — not the 9 §13 originally recorded |
 | M012 | **ready** | `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md` | — | M002 edge discharged; sequenced after M011 (Amendment A1) |
 | M013 | **closed** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | `plans/closure/tui-editor-helix-parity/013-status.md` | — |
 | M014 | **blocked** | — | — | ADR-0034 acceptance; its plan is written after the ADR selects an option |
@@ -1496,14 +1534,25 @@ absolutes**, and only the final figure is recorded once, at the end.
 
 | Stage | Work packages | Normal chords | Insert chords |
 |---|---|---|---|
-| A | **M011** W1–W6: the guard (landed), the mode-aware panels, the deletion builders, the nine Insert arms, the coalescing, the docs | 66 (unchanged — M011 adds no Normal-mode chord) | 1 → **9** |
-| B | **M012** W1–W6: the cursor model, the apply side, the `Alt-u`/`Alt-U` arms, the boundary report and the observable cursor, the dead variants, the docs | 66 → **68** | 9 |
-| C | **M009** W2–W6: the grammar, the pair matching, the text objects, the surround verbs, the guards and the docs | 68 → **69** | 9 |
-| D | **M010** W2–W7: the file picker, the clipboard family, the command palette, the visible statements, the leaf-table guard, the docs | 69 | 9 |
-| E | **M015** W1–W4: the format preview, the rename prompt, the `space a` statement, the docs | 69 → **70** | 9 |
+| A | **M011** W1–W6: the guard (landed), the mode-aware panels, the deletion builders, the nine Insert arms, the coalescing, the docs | 66 (unchanged — M011 adds no Normal-mode chord) | 1 → **8** |
+| B | **M012** W1–W6: the cursor model, the apply side, the `Alt-u`/`Alt-U` arms, the boundary report and the observable cursor, the dead variants, the docs | 66 → **68** | 8 |
+| C | **M009** W2–W6: the grammar, the pair matching, the text objects, the surround verbs, the guards and the docs | 68 → **69** | 8 |
+| D | **M010** W2–W7: the file picker, the clipboard family, the command palette, the visible statements, the leaf-table guard, the docs | 69 | 8 |
+| E | **M015** W1–W4: the format preview, the rename prompt, the `space a` statement, the docs | 69 → **70** | 8 |
 
-**Final figure: `2 guard-block chord(s), 70 Normal-mode chord(s), 9
+**Final figure: `2 guard-block chord(s), 70 Normal-mode chord(s), 8
 Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
+
+> **Correction (2026-10-19, stage A landed).** This table originally said the
+> Insert chord count goes `1 → 9`. It goes **`1 → 8`**, and the reason is
+> arithmetic rather than a defect. The key-authority guard counts *character*
+> claims; of M011's nine chords, two are **key-code** claims (`Alt-Backspace` and
+> `Alt-Delete`, which the guard checks under rule 3 for exactly-once ownership
+> and does not count as chords) and one (`Ctrl+x`) lives in
+> `handle_completion_key`, a different dispatch stage the guard does not scan.
+> With the wildcard character arm, `1 + 7 = 8`. The **Normal-mode** count is
+> unaffected, and it is the one M012's acceptance criterion pins. See M011's
+> Amendment A2.
 
 ### 13.3 What must not be broken by the order
 
@@ -1526,10 +1575,15 @@ Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
 
 ### 13.4 The open questions this order exposes
 
-1. **Where does the insert session's state live?** On the presentation beside
-   `pending_prefix` (so `clear_history` discards it in the same place) or on
-   `EditorState` (which needs a second discard path)? The field name must not
-   contain `prefix`, or the prefix-state guard's one-field rule fires.
+1. ~~**Where does the insert session's state live?**~~ **Answered by M011
+   (2026-10-19).** On the presentation, beside `pending_prefix`, as
+   `TuiDocumentPresentation::insert_session` — so `clear_history` discards it
+   in the same place that clears the stacks, and there is no second discard
+   path to forget. The field name does not contain `prefix`, so the
+   prefix-state guard's one-field rule does not fire. On `EditorState` it
+   would have been wrong: `EditorState` is not where the history lives, and
+   a session that had to be discarded from two places would eventually be
+   discarded from one.
 2. **M009's `PrefixAction` payload: option (a) or (b)?** Option (a) drops
    `Copy` from `PrefixLeaf` and constrains every future leaf to a
    const-constructible payload; option (b) costs one mapping arm and keeps

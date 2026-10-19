@@ -728,7 +728,38 @@ to the agent without leaving the file. `Esc` never closes the editor; `:q` does.
 Two chords work in either mode, because they are round trips rather than
 verbs: `Ctrl+S` saves and `Ctrl+R` resyncs the replica after a transport
 failure. Each chord has exactly one owner. In particular `U` is redo and
-`Ctrl+R` is resync; they are not two spellings of the same thing.
+`Ctrl+R` is resync; they are not two spellings of the same thing. Helix gives
+`Ctrl+s` and `Ctrl+r` different Insert-mode meanings — an undo checkpoint and
+a register prompt — and CodeGG declines both; see
+[Insert-mode chords](#insert-mode-chords).
+
+### Insert-mode chords
+
+`INS` has chords of its own, and they are the Helix ones. A chord may mean one
+thing in `NOR` and another in `INS` — `Ctrl+d` pages down in `NOR` and deletes
+one character forward in `INS` — and each still has exactly one owner.
+
+| Chord | What it does in `INS` |
+|---|---|
+| `Ctrl+h` | delete one character backward |
+| `Ctrl+d` | delete one character forward |
+| `Ctrl+j` | insert a newline |
+| `Ctrl+k` | delete to the end of the line |
+| `Ctrl+u` | delete to the start of the line |
+| `Ctrl+w`, `Alt+Backspace` | delete the previous word |
+| `Alt+d`, `Alt+Delete` | delete the next word |
+| `Ctrl+x` | open the completion popup, staying in `INS` |
+
+The two word deletions stop at the line boundary: `Ctrl+w` in column zero
+deletes nothing rather than reaching into the line above, and `Alt+d` at the
+end of a line does not eat the newline.
+
+Everything you type in one go in `INS` is **one** undo step. Leaving `INS`
+closes the burst, so a single `u` takes back the whole run rather than its
+last keystroke. A run ends early if you delete something, or move the cursor
+and type somewhere else — then the parts are separate steps, because they are
+separate edits. A reload throws the burst away with the rest of the local
+draft.
 
 To reload from disk and throw the local draft away, use `:e`. It used to be `R`,
 which now means something else — see [Change verbs](#change-verbs).
@@ -1062,11 +1093,18 @@ updates.
 ### Completion
 
 Press F8 — or type `:complete` in Normal mode — to ask the language server for
-completions at the cursor. A popup
+completions at the cursor. In `INS`, `Ctrl+x` asks the same question and
+leaves you in `INS`. A popup
 lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
 Normal mode) move the selection, `Enter` applies the selected item, and
 `Esc` dismisses the popup without touching anything. Typing anything else
 dismisses the popup first and inserts normally.
+
+In `INS` the popup never takes a key that means text. `Enter` inserts a
+newline, `↑`/`↓` move the cursor, and `Tab`/`Shift+Tab` move the candidate
+selection. Helix's completion menu accepts the candidate on any other
+keypress; CodeGG does not, because a printable in `INS` is text, and losing
+one to a popup would be a quiet way to lose a character.
 
 Only supported plain-text edits can be applied, and only after the editor
 re-checks the document identity, revision, and edit range against the

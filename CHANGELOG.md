@@ -39,9 +39,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key.** You can ask what a rename would touch or what formatting would change,
   but nothing is ever written: applying a language-server-driven edit to your
   buffer has not been authorised yet.
+- **Helix's insert-mode chords are available in `INS`.** `Ctrl+h` and `Ctrl+d`
+  delete one character backward and forward, `Ctrl+j` inserts a newline, `Ctrl+k`
+  and `Ctrl+u` delete to the end and the start of the line, `Ctrl+w` and
+  `Alt+Backspace` delete the previous word, `Alt+d` and `Alt+Delete` delete the
+  next word, and `Ctrl+x` opens the completion popup without leaving `INS`. The
+  two word deletions stop at the line boundary, so `Ctrl+w` in column zero
+  deletes nothing rather than reaching into the line above.
+- **Everything you type in one go is one undo step.** Leaving `INS` closes the
+  burst, so a single `u` takes back the whole run instead of its last
+  keystroke. A run ends early if you delete something or move the cursor and
+  type somewhere else, because those are separate edits. A reload throws an
+  unfinished burst away with the rest of the local draft.
 
 ### Fixed
 
+- **The completion popup and the diagnostics panel no longer eat your typing.**
+  Both used to claim bare characters and `Enter` whether or not you were in
+  `INS`, so typing into a file with a panel open lost the character to a panel
+  that had no claim on it. In `INS` the popup's `Enter` is a newline, its `↑`/`↓`
+  move the cursor, and its `Tab`/`Shift+Tab` move the candidate selection; the
+  panel's `j`/`k`/`r` are Normal-mode gestures.
 - **Diagnostics are now collected automatically.** The editor refreshes the
   diagnostic set on its own instead of only when you asked.
 - **Language-server requests in a multi-project workspace no longer leak across
