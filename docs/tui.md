@@ -909,6 +909,34 @@ The line you get is the line you could have typed by hand, and the pattern is
 listed in the palette. A pattern that will not compile, and one that matches
 nothing, are both reported and both leave your buffer alone.
 
+### The preview keys
+
+`=` and `space r` ask the language server what it **would** change, and show
+you the answer. Neither writes to your buffer.
+
+| Key | What it shows |
+|---|---|
+| `=` | the format preview for this document: the diff, and how many edits that is |
+| `space r` | the rename preview for the symbol under the cursor: the old and new names, the files that would change, and the edits in each |
+
+`space r` needs a new name, so it opens the `:` command line already filled
+in with `rename-preview `. Type the name, press `Enter`, and the preview
+arrives. `Esc` abandons it with nothing changed. The line is the same one you
+could have typed by hand — `:rename-preview newname` — and it is in the
+palette like the others. An empty name is refused before a request is sent,
+and so is one longer than the server's limit; the refusal names the limit.
+
+`space a` — the code action — is not bound to a preview, because there is no
+code-action *request* to make: nothing in the protocol asks a server what
+code actions it would offer. Pressing it says so.
+
+Applying a preview is a **write**, and it is a separate, reviewed step that
+these two keys do not perform: they show you what the language server would
+change and stop there. When they grow that step, they become the apply key
+rather than the preview key — a change of meaning, and one this documentation
+and the changelog record in advance so it is an upgrade rather than a
+surprise.
+
 ### Multi-key gestures
 
 `gg` (buffer start) and `space y` (copy the selection) each take two keys. While
@@ -984,6 +1012,10 @@ The language-server jumps are bound, through the space and `g` menus:
 nothing: no language server implements it here, so the editor tells you that
 instead of leaving the key dead.
 
+Two more language-server features are bound as **previews** rather than
+jumps: `=` and `space r` show what a format or a rename *would* change and
+apply nothing. See [The preview keys](#the-preview-keys).
+
 ### The space menu
 
 `space` is a menu, and every key in it either does something or says why it
@@ -993,6 +1025,7 @@ cannot. Nothing in it is dead.
 |---|---|
 | `space f` | open the workspace file browser |
 | `space ?` | open the editor's own command palette — the `:` list, filtered as you type |
+| `space r` | open the rename **preview** prompt — the `:` line, pre-filled |
 | `space y` | copy every selection |
 | `space Y` | copy **only** the main selection |
 | `space p` | paste after the selection, or after the character under the cursor |
@@ -1009,7 +1042,12 @@ browser, and the two are different requests.
 `space ?` is the editor's own list of what it can do. Bare `?` still opens
 the general help; `space ?` is the editor's catalogue.
 
-These seven say why they cannot run rather than doing nothing:
+`space r` and `=` show what the language server **would** change and apply
+nothing: the rename preview lists the files a rename would touch, and the
+format preview shows the diff. They are reads, and they stop at the read.
+See [The preview keys](#the-preview-keys).
+
+These eight say why they cannot run rather than doing nothing:
 
 | Key | Why |
 |---|---|
@@ -1020,11 +1058,7 @@ These seven say why they cannot run rather than doing nothing:
 | `space c` | nothing here knows a comment syntax for the buffer you are editing |
 | `space C` | the same, for block comments |
 | `space '` | the pickers are not fuzzy, so there is no query to recall |
-
-`space r` (rename), `space a` (code action) and `=` (format) are deliberately
-**not** bound. Each would change your buffer through a language server, and
-that permission has not been decided yet — so rather than offer a key that
-could only ever preview, they are absent.
+| `space a` | no code-action request exists in this editor, so there is nothing to preview |
 
 The function keys do the same jobs and keep working: F2 diagnostics, F3 hover,
 F4 definition, F5 references, F6 document symbols, F7 workspace symbols.

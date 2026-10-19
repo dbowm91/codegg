@@ -890,14 +890,44 @@ The result names the actual `ServerCapabilities` key via
 documentation rather than at a protocol-invented label.
 
 **Previews are previews.** `FormatPreview` and `RenamePreview` return a diff and
-a file list. Neither applies anything. Applying an LSP-driven mutation needs an
-accepted ADR, which does not exist, so both are unbound in the editor today even
-though the reads are on the wire. A rename preview additionally requires
-`new_name`: the whole question is what *that* name would touch, and inventing a
-placeholder when the server advertised no `prepareRename` would be a guess about
-what the user is renaming. `new_name` is rejected on every other operation, so
-a rename name cannot ride along on an unrelated read where nothing would
-consume it.
+a file list. Neither applies anything, and both are **previews** in the editor
+today — and they are no longer unbound: `=` reaches `FormatPreview` and
+`space r` reaches `RenamePreview`, so the two reads are on the wire and on
+screen. A rename preview additionally requires `new_name`: the whole question is
+what *that* name would touch, and inventing a placeholder when the server
+advertised no `prepareRename` would be a guess about what the user is renaming.
+`new_name` is rejected on every other operation, so a rename name cannot ride
+along on an unrelated read where nothing would consume it.
+
+**The apply path exists; the editor's previews cannot reach it.** This
+document already describes ADR-0008's write path above: the transport
+`CoreRequest::LspPreviewApply` is authorized as `via_session` + `file.modify`,
+and it applies a **registered, still-current reviewable preview** by id —
+through the change-review surface (`/lsp-preview-apply <id>`) or the
+model-facing `lsp_preview_apply` tool. What the editor's `=` and `space r`
+produce is a **read result**, not such an artifact: no preview id, no patches,
+no `register_preview_artifact` call anywhere in the editor path, and no
+reference to `change_review` in `src/tui/commands/editor.rs` or
+`src/tui/editor.rs`. So the two chords cannot reach the apply path — **not
+because an ADR is missing, but because the bridge from a rendered preview to a
+reviewable artifact does not exist.** That is the gap a future milestone
+closes, and it is an implementation gap rather than a decision gap.
+
+**A preview reaches the editor through a name the reader supplied.**
+`space r` cannot issue the read directly: the request needs a new name, and
+the name is not in the buffer — it is in the reader's head. So the editor's
+`:` command line collects it, exactly as M008's three regex verbs collect a
+pattern, and the read is issued when the line is submitted. The alternative —
+a second input mode for one more argument — would be a worse editor, and the
+`:` line already has the text handling, the bound, and the way out.
+
+**The preview/apply transition is a registered change of meaning.** When the
+bridge is built — when the editor's preview becomes a reviewable artifact the
+apply path can consume — `=` and `space r` stop showing what *would* change
+and start doing it. The chords do not move, so the change is invisible to
+anyone who did not learn the preview — which is why the roadmap, the closure
+record and the `CHANGELOG.md` all record it while the preview is what a
+reader learns.
 
 #### Warm-only reads
 

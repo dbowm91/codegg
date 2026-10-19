@@ -546,11 +546,15 @@ pub const GOTO_LEAVES: &[PrefixLeaf] = &[
 /// Helix binds about twenty; the omissions are each a capability this surface
 /// does not have:
 ///
-/// - `space r` (rename) and `space a` (code action) — the **preview** halves
-///   are on the read surface (`LspReadOperation::RenamePreview`), but applying
-///   either is an LSP *write*, and write authorization for an LSP-driven
-///   mutation has no accepted ADR. Binding them to something that cannot
-///   apply would be worse than absent.
+/// - `space r` (rename) — bound to the rename **preview**
+///   (`LspReadOperation::RenamePreview`). Helix's renames, which is an LSP
+///   *write*; CodeGG's shows what *would* change and applies nothing. The
+///   write path is not missing — ADR-0008 owns it — but it consumes a
+///   *registered reviewable artifact*, and a rendered preview is not one, so
+///   the gap is the bridge rather than the authorization.
+/// - `space a` (code action) — bound to a **statement**: no code-action
+///   *read* exists in the protocol to ask with, so there is nothing to
+///   preview.
 /// - `space w` / `space W` — window/workspace switching, out of scope.
 ///
 /// `]`/`[` diagnostic stepping is already bound as bare keys, so the
@@ -634,6 +638,27 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
     PrefixLeaf {
         glyph: 'Y',
         action: PrefixAction::Effect(EditorPendingEffect::YankPrimary),
+    },
+    // `space r` — the rename **preview**. Helix's `space r` renames, which is
+    // an LSP *write*; CodeGG's shows what *would* change and applies nothing.
+    // The write path is not missing — ADR-0008 owns it — but it consumes a
+    // *registered reviewable artifact*, and a rendered preview is not one, so
+    // the gap is the bridge and not the authorization. The new name is
+    // collected through the `:` command line, so the leaf arms the prompt
+    // rather than issuing the read.
+    PrefixLeaf {
+        glyph: 'r',
+        action: PrefixAction::Effect(EditorPendingEffect::RenamePrompt),
+    },
+    // `space a` — the code action. Helix's applies one, and there is nothing
+    // to preview: no code-action *read* exists in the protocol to ask with.
+    // The reason says exactly that, rather than implying a preview exists
+    // and is merely unapplied.
+    PrefixLeaf {
+        glyph: 'a',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "code action: no code-action request exists in this editor, so there is nothing to preview",
+        )),
     },
     // `space F` — the *other* file picker. This build has one workspace
     // root, so "switch to" a file picker has nothing to switch to; the
@@ -1340,6 +1365,19 @@ pub enum EditorCommandName {
     KeepRegex,
     /// `:remove-regex <pattern>` — `Alt-K`, remove the selections that match.
     RemoveRegex,
+    /// `:rename-preview <name>` — `space r`, preview renaming the symbol under
+    /// the cursor.
+    ///
+    /// A **command** rather than a prompt, for the same reason the three
+    /// regex verbs are: the `:` line already is a modal line with an
+    /// argument, a bound, and a way out. `space r` opens this command's line
+    /// already filled in, so the chord is a shortcut for the command rather
+    /// than a second way to spell it.
+    ///
+    /// It is a **preview**: the request asks the server what *would* change
+    /// and the panel shows it. Nothing is applied, because an LSP write has
+    /// no accepted authorization ADR.
+    RenamePreview,
 }
 
 impl EditorCommandName {
@@ -1358,6 +1396,7 @@ impl EditorCommandName {
             Self::SplitRegex => "split-regex",
             Self::KeepRegex => "keep-regex",
             Self::RemoveRegex => "remove-regex",
+            Self::RenamePreview => "rename-preview",
         }
     }
 
@@ -1376,6 +1415,7 @@ impl EditorCommandName {
             Self::SplitRegex => "split each selection on regex matches",
             Self::KeepRegex => "keep the selections matching a regex",
             Self::RemoveRegex => "remove the selections matching a regex",
+            Self::RenamePreview => "preview renaming the symbol under the cursor",
         }
     }
 
@@ -1387,7 +1427,11 @@ impl EditorCommandName {
     pub fn takes_argument(self) -> bool {
         matches!(
             self,
-            Self::Open | Self::SplitRegex | Self::KeepRegex | Self::RemoveRegex
+            Self::Open
+                | Self::SplitRegex
+                | Self::KeepRegex
+                | Self::RemoveRegex
+                | Self::RenamePreview
         )
     }
 
@@ -1408,6 +1452,7 @@ impl EditorCommandName {
         Self::SplitRegex,
         Self::KeepRegex,
         Self::RemoveRegex,
+        Self::RenamePreview,
     ];
 }
 
@@ -1448,6 +1493,7 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
         "split-regex" => EditorCommandName::SplitRegex,
         "keep-regex" => EditorCommandName::KeepRegex,
         "remove-regex" => EditorCommandName::RemoveRegex,
+        "rename-preview" => EditorCommandName::RenamePreview,
         _ => return None,
     };
     let argument = argument.filter(|value| !value.is_empty());
@@ -8158,10 +8204,12 @@ mod tests {
                 // `space f` from a duplicate of `space s`, the editor's own
                 // command palette took `space ?`, the clipboard family took
                 // `space p`/`P`/`R`/`Y`, and seven leaves that have no
-                // substrate here say so rather than doing nothing.
+                // substrate here say so rather than doing nothing. M015 added
+                // `space r` (the rename preview) and `space a` (the code
+                // action, which states that there is nothing to preview).
                 vec![
-                    'y', 'k', 's', 'S', 'd', 'h', 'f', '?', 'p', 'P', 'R', 'Y', 'F', 'b', 'j', 'D',
-                    'c', 'C', '\'',
+                    'y', 'k', 's', 'S', 'd', 'h', 'f', '?', 'p', 'P', 'R', 'Y', 'r', 'a', 'F', 'b',
+                    'j', 'D', 'c', 'C', '\'',
                 ],
                 false,
                 "space",

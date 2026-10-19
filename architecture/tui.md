@@ -5183,7 +5183,9 @@ pending slot now live in `src/tui/editor_effect.rs`.)
 | `space D` | **unavailable**: no server capability backs a separate workspace-diagnostics request |
 | `space c` / `space C` | **unavailable**: no comment syntax is known for the edited buffer |
 | `space '` | **unavailable**: the pickers are not fuzzy, so there is no query to recall |
-| `space r`, `space a`, `=` | **unbound**: applying an LSP-driven mutation has no accepted ADR |
+| `space a` | **unavailable**: no code-action *request* exists, so there is nothing to preview |
+| `=` | the **format preview** — what the formatter would change, applied to nothing |
+| `space r` | the **rename preview** — what a rename would touch, applied to nothing |
 
 **The two halves of a leaf run at different authority levels.** The prefix
 resolver holds `&mut EditorState` and can decide *what* was asked for; only
@@ -5221,6 +5223,44 @@ with its reason. `space f` used to be a *second* binding of `space s`, which
 left the file browser unreachable from the editor route and gave the symbols
 panel two names for one request; the reclaim is a binding change, not a
 rename, and `CHANGELOG.md` records it under `### Changed`.
+
+**A preview is a read, and the editor's previews cannot apply** (M015). `=` and
+`space r` reach `LspReadOperation::FormatPreview` and
+`LspReadOperation::RenamePreview` — the two operations M013 delivered with
+daemon arms and panel renderings and **no key**. They show what would change
+and apply nothing. The difference from Helix is deliberate and recorded: its
+`=` formats and its `space r` renames.
+
+The apply path is **ADR-0008's, and it is accepted** —
+`CoreRequest::LspPreviewApply`, authorized `via_session` + `file.modify`,
+applying a *registered, still-current reviewable preview* by id through the
+change-review surface or the model-facing preview-apply tool. The editor's
+two chords produce a **read result**, not such an artifact: no preview id, no
+patches, and no reference to `change_review` anywhere in the editor path. So
+the chords cannot reach the apply path — **not because an ADR is missing, but
+because the bridge from a rendered preview to a reviewable artifact does not
+exist.** That is an implementation gap, and it is the gap a future milestone
+closes.
+
+`=` is a **Normal-mode** chord with no prefix, so it is attributed by the
+key-authority guard as one — the count moves. `space r` is a **prefix leaf**,
+and it is not a read: the read follows the prompt, so the leaf names the
+*step* (`EditorPendingEffect::RenamePrompt`) and the request is issued when
+the `:` line is submitted. The new name is collected through the `:` command
+line, M008's precedent, rather than through a second input mode; an empty
+name and an over-long one are refused before a request is spent on them.
+
+`space a` is **not** bound to a preview, because there is no code-action
+*read* to preview — the server capability exists, but nothing in
+`LspReadOperation` asks for one. Its reason says exactly that, rather than
+implying that a preview exists and is merely unapplied.
+
+**The preview/apply transition is registered now.** When the bridge from the
+editor's preview to a reviewable artifact is built, `=` and `space r` become
+the **apply** step. The chords do not move, so the change is invisible to
+anyone who did not learn the preview — which is why the roadmap, this closure
+record and the `CHANGELOG.md` all record it while the preview is what a
+reader learns.
 
 **Degradation is a status row, not a toast.** `EditorPendingEffect::Unavailable`
 carries the reason a key is unbound, so a Helix user pressing `gy` learns the

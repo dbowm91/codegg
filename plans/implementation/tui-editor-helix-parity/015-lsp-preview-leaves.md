@@ -1,6 +1,6 @@
 # TUI editor Helix parity Milestone 015 — LSP preview leaves
 
-Status: ready for handoff
+Status: implemented - closed 2026-10-19
 Repository baseline: `a8778e87c` (`feat/auto-20261018-12255c45`)
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7
@@ -8,7 +8,9 @@ Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7
 Long-term requirements: `plans/000-long-term-specification.md` (IDE-grade
 language intelligence); `plans/002-long-term-roadmap.md` (editor capability
 sequencing)
-Applicable ADRs: `plans/adrs/ADR-0011-editor-document-ownership-and-frontend-replication.md`
+Applicable ADRs: `plans/adrs/ADR-0011-editor-document-ownership-and-frontend-replication.md`;
+`plans/adrs/ADR-0008-lsp-preview-apply-authorization-and-runtime-ownership.md` (accepted — owns the
+LSP write path this milestone deliberately does not reach; see §17.15)
 Primary class: capability
 
 ## 1. Objective
@@ -39,7 +41,8 @@ no code-action *read* exists in the protocol to preview.
 - **A preview is a read.** The roadmap's M010 boundary gates `space r` /
   `space a` / `=` on *"an LSP write authorization ADR"* — that gate is about
   the **apply**, not the preview. A preview has no write in it, so it needs
-  no ADR.
+  no ADR. **Corrected while implementing — see §17.15:** ADR-0008 *is*
+  accepted and owns the write path; the gap is the bridge, not the ADR.
 - **The chords are free.** `space r` is not in `SPACE_LEAVES`
   (`src/tui/editor.rs:400-478`), and `grep -n "Char('=')"` finds **no**
   `=` binding in `src/tui/commands/editor.rs` or `src/tui/input.rs` — the
@@ -118,6 +121,21 @@ already refuses it.
    this milestone**, and the change is to *unbinding*, not to adding a
    write. The criterion's substance survives: **there is still no write
    path**, and the closure must say so explicitly.
+
+   > **Corrected while implementing — see §17.15.** The wording above says
+   > "no LSP write path exists", and the plan's §2 and §5 said the gate was
+   > "an LSP write authorization ADR" that "does not exist". **Both are
+   > imprecise, and the code says so.** ADR-0008 is **accepted** and owns the
+   > LSP write path: `CoreRequest::LspPreviewApply`, authorized
+   > `via_session` + `file.modify`, applying a *registered, still-current
+   > reviewable preview* by id through the change-review surface or the
+   > model-facing preview-apply tool. What the editor's chords produce is a
+   > **read result**, not such an artifact — no preview id, no patches, no
+   > `register_preview_artifact` in the editor path, and no reference to
+   > `change_review` in `src/tui/commands/editor.rs` or `src/tui/editor.rs`.
+   > So the invariant that actually holds, and that the closure states, is:
+   > **the editor's preview chords cannot reach the apply path, and they
+   > apply nothing** — the gap is the **bridge**, not an ADR.
 2. **The protocol's `new_name` coherence rule holds.** `new_name` is
    present only on a `RenamePreview` request and absent everywhere else
    (`crates/codegg-protocol/src/lsp.rs:337-341`).
@@ -153,10 +171,10 @@ already refuses it.
 
 | Deferred | Why | Owner |
 |---|---|---|
-| **Applying** a rename, a format, or a code action | An LSP write has no accepted ADR; a preview is a read | A future milestone, gated on an accepted LSP-write ADR |
+| **Applying** a rename, a format, or a code action | The editor's preview is not the *registered reviewable artifact* ADR-0008's accepted write path consumes; a preview is a read | A future milestone that builds the **bridge** (§17.15) |
 | A **code-action** preview | No code-action read exists in the protocol — the server capability is there, but nothing in `LspReadOperation` asks for it | A protocol extension, then a leaf |
 | A **diagnostic-driven code action** | Same as above | Same |
-| `space r` as an *apply* | See above | The LSP-write ADR's milestone |
+| `space r` as an *apply* | See above | The bridge's milestone |
 | A **rename preview that spans a workspace** | The daemon already bounds the file list and the edit count; widening them is not a leaf concern | — |
 
 ### The divergence this milestone records
@@ -165,13 +183,14 @@ already refuses it.
 and Helix's `=` formats. CodeGG's versions **show what would change and
 apply nothing**. This is M013's established principle — *"Previews are
 previews"* — and it is the reason the milestone is safe to land before the
-write ADR.
+bridge exists.
 
-**The transition is a user-visible change and is registered as one.** When
-an LSP-write ADR is accepted, `space r` and `=` become the **apply** step,
-and the chord's meaning changes. The roadmap's M010/M015 entries and the
-`CHANGELOG.md` must record that this transition is expected, so the change
-ADR's milestone does not surprise a reader who learned the preview.
+**The transition is a user-visible change and is registered as one.** When the
+bridge is built, `space r` and `=` become the **apply** step, and the chord's
+meaning changes. The roadmap's M010/M015 entries and the `CHANGELOG.md` must
+record that this transition is expected, so the bridge's milestone does not
+surprise a reader who learned the preview. **See §17.15** for the corrected
+ADR framing this replaces.
 
 ## 6. Required production changes
 
@@ -404,8 +423,9 @@ Stop and report rather than continue if any of these holds.
   line is the established mechanism; a new prompt surface is a different
   milestone.
 - **The preview's apply step becomes reachable by accident.** If any code
-  path can apply a rename or a format without an accepted write ADR, stop
-  — that is the invariant this milestone exists to hold.
+  path can apply a rename or a format from an editor chord, stop — that is
+  the invariant this milestone exists to hold. (The ADR wording this
+  replaced was wrong; see §17.15.)
 - **A preview cannot be shown without a stale-answer hazard.** A preview
   that reports a result for a document that has since changed is worse
   than no preview; the `diagnostics_stale` pattern is the model.
@@ -428,8 +448,8 @@ Stop and report rather than continue if any of these holds.
 - The **request-level evidence**: a test that asserts the rename request
   carries `new_name`, not only that the panel shows something.
 - The **preview/apply transition** recorded in the roadmap and the
-  `CHANGELOG.md`, so the future write ADR's milestone does not change a
-  chord's meaning silently.
+  `CHANGELOG.md`, so the future bridge's milestone does not change a chord's
+  meaning silently.
 - The guard-injection proof from §10, with the command and the observed
   failure.
 
@@ -447,7 +467,220 @@ Stop and report rather than continue if any of these holds.
 - **The rename prompt reuses the `:` line** because M008 established that
   reuse as a win. A second input mode for one more argument would be a
   worse editor.
-- **The transition to apply is a real, registered change.** When the
-  write ADR lands, `space r` and `=` change meaning. That is recorded now,
-  while the preview is what a reader learns — so the later change is a
-  documented upgrade rather than a surprise.
+- **The transition to apply is a real, registered change.** When the bridge
+  lands, `space r` and `=` change meaning. That is recorded now, while the
+  preview is what a reader learns — so the later change is a documented
+  upgrade rather than a surprise.
+
+## 17. Implementation decisions and recorded deviations (2026-10-19)
+
+Everything below was decided while implementing, against the code as it stood.
+Each is a place where the plan was wrong, incomplete, or silent, and where the
+implementation had to answer the question rather than guess. They are recorded
+here because **a plan that disagrees with the code is a defect**, and because
+the next reader of this milestone deserves to know which decisions were open
+and how they were settled.
+
+### 17.1 `=` is a **Normal-mode chord**, so it does not ride `pending_effect`
+
+§6.2 and §6.4 both said `=` becomes
+`PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::FormatPreview))`.
+That shape does not exist for `=`, and cannot: `=` is a **Normal-mode** chord
+with no prefix, and `EditorState::pending_effect` is documented as *a **prefix
+leaf's** effect* — a slot the prefix resolver fills and the next statement
+drains.
+
+So `=` reports through a new `BufferKey::LspRead(LspReadOperation)` arm: the
+buffer decides **what** was asked for, and the App layer — which holds the core
+client — does **how**. That is the same shape the other Normal-mode verbs use,
+and it is why the key-authority guard attributes `=` as a Normal-mode chord and
+the count moves 70 → 71.
+
+The `Read` effect arm itself was left alone: M013's `EditorPendingEffect::Read`
+already existed and still carries the reads that *are* prefix leaves.
+
+### 17.2 The read's argument is an **enum**, not a second `Option<String>`
+
+The plan spoke of `new_name = Some(<typed>)` without saying how the call site
+would express "the query" versus "the new name". Two `Option<String>`s would
+have compiled, and swapping them would have compiled too — the protocol's own
+`validate()` would then reject the request as `IncoherentFields`, one round
+trip later.
+
+`start_editor_lsp_read` therefore takes an `EditorLspReadArgument` enum with
+three arms — `None`, `Query(String)`, `NewName(String)` — and maps it to the
+protocol's `(query, new_name)` pair itself. The protocol's coherence rule is
+visible at the call site, and the two options cannot be swapped.
+
+### 17.3 The over-long-name check is **not reachable through the `:` line**
+
+§6.1 said a name longer than `MAX_LSP_NEW_NAME_BYTES` (200) is refused
+locally. That is implemented — `checked_new_name` refuses it and names the
+bound — but it is **unreachable through the prompt**: the `:` command line is
+bounded at `MAX_EDITOR_COMMAND_LINE` (64) characters, so a 201-character name
+cannot be typed into it in the first place.
+
+The check is kept for two reasons: the protocol enforces the same bound and
+the editor should not spend a request discovering it, and any future caller
+that reaches `run_editor_command` with an argument the line could not carry
+gets the refusal rather than a rejected request. **Its test therefore calls
+`run_editor_command` directly**, because a test that typed 201 characters into
+a 64-character line would be testing the line's cap and calling it the name's.
+
+### 17.4 `space r`'s leaf names a **step**, not a read
+
+§6.4 already said this — "not a read: the read follows the prompt" — and the
+implementation follows it. The leaf parks `EditorPendingEffect::RenamePrompt`,
+which opens the `:` line pre-filled; the read is issued when the line is
+submitted. Recording it because the leaf table is otherwise uniform: every
+other `space` leaf that touches the language server parks a `Read`.
+
+### 17.5 The `:` line carries the **command**, not a bare name
+
+§6.1 said the prompt is "armed with that command pre-selected". The
+implementation opens the line with `rename-preview ` — the command and a
+trailing space — rather than with the command merely *selected* in the
+palette. A selected row would still require the reader to type the argument
+into a line that begins with the empty command, which is a second spelling of
+the same thing.
+
+The consequence is that `:rename-preview newname` is a line the reader could
+have typed by hand, and the chord is a shortcut for it. `EditorCommandName`
+gains the `RenamePreview` variant, which is what puts the command in the
+palette and in the help.
+
+### 17.6 The `=` arm carries the `none` guard
+
+Every other Normal-mode chord in `handle_normal_key` matches on
+`(m, KeyCode::Char(c)) if m == none`, where `none` is the "no modifiers"
+pattern. `=` matches the same way, so it cannot be claimed by a modified
+spelling of `=`.
+
+### 17.7 The palette's row count moved 12 → 13
+
+`EditorCommandName::ALL` grew by one, so the palette has thirteen rows. The
+test `space_question_mark_opens_the_editors_own_command_palette` asserted
+twelve and had to change — it asserts an absolute count, which is exactly the
+kind of assertion that must be updated when the surface it describes grows.
+
+### 17.8 The leaf table's glyph count moved 42 → 44
+
+`SPACE_LEAVES` gained `r` and `a`, so the leaf-authority guard now reports
+**44 leaf glyphs** across 5 tables and 12 prefix bindings. The key-authority
+guard's counts are unchanged at **2 / 71 / 8**: a space leaf is not a Normal-
+or Insert-mode chord, so `space r` moves no count — only `=` does.
+
+### 17.9 §12 named a doc surface that does not exist
+
+§12's row for `docs/tui.md` said "the `:` palette's command list | the new
+`RenamePreview` entry". **There is no such table.** The palette's contents are
+generated from `EditorCommandName::ALL`; `docs/tui.md` describes the palette
+in prose (the "regex keys" section) and has no enumerated command list to
+extend. The new command is therefore documented in the new "The preview keys"
+section, which is where a reader would look for it.
+
+### 17.10 `lsp-ide`'s leaf table carried an M010 omission
+
+`.opencode/skills/lsp-ide/SKILL.md` still said "`space f` document symbols" —
+a statement M010 made false when it reclaimed `space f` for the file picker,
+and which M010 did not correct here. M015 edits that same paragraph, so it
+corrected the stale row rather than leaving a false statement in a table it
+was rewriting.
+
+### 17.11 The `space a` reason is a **status row**, not a toast
+
+§6.3 bound `space a` to "a visible statement". The mechanism that already
+exists for that — `EditorPendingEffect::Unavailable`, M010's — renders the
+reason as a **status row**, which stays readable after the keypress. A toast
+would have expired before the reader had read it.
+
+### 17.12 The CHANGELOG's M013 bullet was **edited in place**
+
+`CHANGELOG.md` carried an M013 bullet saying the previews were "not yet bound
+to a key". M015 makes that sentence false, and a false sentence in the
+`## [Unreleased]` section is a defect in the release notes. The bullet was
+rewritten in place to describe the bound previews, and a **new** `### Changed`
+bullet records the preview/apply transition — because a reader who learned the
+preview must be told, in advance, that the chord's meaning changes when the
+bridge lands.
+
+### 17.13 The plan's `space r` / `space R` test needed the **shifted spelling**
+
+§10 required that "`space r` does not collide with `space R`" and that "the
+`SHIFT` reconciliation that M013 built for `space S` / `space F` must be
+exercised for `space r`". The test drives all three: the lower-case leaf, the
+upper-case leaf, and the `Char('r') + SHIFT` spelling that a terminal which
+reports the shift separately produces.
+
+### 17.14 Two rendering tests, because a rendering nobody exercises is a claim
+
+M013 delivered the panel's rendering of both previews and **no test** for it.
+The milestone's value is that the preview *shows* something, so the rendering
+is now exercised: the rename preview names the files it would change, and the
+format preview shows the diff. Both assert that the panel says the change is
+**not applied**.
+
+To let a test seed a panel, the widget's test `Options` gained an owned
+`lsp: EditorLspState` field. It was previously a `Default` the render helpers
+constructed themselves, which made the panel unreachable from a test.
+
+### 17.15 The plan's "no accepted write ADR" framing was **wrong**, and the code said so
+
+§2 said the previews needed no ADR because *"only the **apply** does"*, and
+§5's divergence section said the apply *"needs an accepted LSP-write ADR"*
+that does not exist. §4's invariant 1 said *"No LSP write path exists"*.
+
+**ADR-0008 is accepted** (2026-09-20) and owns exactly that path.
+`CoreRequest::LspPreviewApply` is authorized `via_session` + `file.modify`
+(`crates/codegg-core/src/authorization/policy.rs:827-831`), and it applies a
+**registered, still-current reviewable preview** by id through
+`src/lsp/mutation.rs::apply_preview()` — reachable from the TUI's
+change-review surface (`/lsp-preview-apply <id>`) and from the model-facing
+`lsp_preview_apply` tool. `architecture/lsp.md` documents it in two places
+in this same file's subject area.
+
+So "no accepted write ADR" was never true, and the closure must not repeat
+it. The invariant that **does** hold is narrower and is the one this
+milestone preserves:
+
+> **The editor's preview chords cannot reach the apply path, and they apply
+> nothing.** The editor's `=` and `space r` produce a *read result* — no
+> preview id, no patches, no `register_preview_artifact` call anywhere in
+> `src/tui/commands/editor.rs`, `src/tui/editor.rs`, `src/tui/editor_lsp.rs`
+> or `src/tui/components/editor.rs`, and no reference to `change_review` in
+> the editor path at all. The apply path consumes a *registered preview
+> artifact*, and the editor's preview is not one.
+
+The gap is therefore an **implementation gap** — the bridge from a rendered
+preview to a reviewable artifact — and **not** a decision gap. Every surface
+this milestone touched was corrected to say so: the plan's §4 and §5, the
+closure record, `architecture/lsp.md`, `architecture/tui.md`, `docs/LSP.md`,
+`docs/tui.md`, `CHANGELOG.md` and both skill files.
+
+**The "preview/apply transition" is therefore registered against the bridge,
+not against an ADR.** When the bridge is built, `=` and `space r` become the
+apply step — and that meaning change is still registered now, while the
+preview is what a reader learns.
+
+### 17.16 `SPACE_LEAVES`'s own doc comment was **stale in two ways**, and M015 fixed both
+
+The doc comment above the space-menu table is the reader's first account of
+what the table is for, and it had drifted twice:
+
+1. It said **`space r` and `space a` are omissions** — *"the omissions are
+   each a capability this surface does not have"*. M010 had already made that
+   false for the seven statement leaves, and M015 makes it false for `space r`
+   as well. The comment now lists `space r` as bound to the rename preview and
+   `space a` as bound to a statement, and keeps `space w` / `space W` as the
+   real omission.
+2. It repeated the *"no accepted ADR"* reason (§17.15), in the one place a
+   maintainer would look first. Corrected the same way.
+
+The comment also now says *why* the preview leaves are separated from the
+apply — the **bridge**, not an authorization — so the next reader does not
+re-derive the same wrong conclusion from the same comment.
+
+**This is a doc comment on a `const`, so it changed no behaviour.** It is
+recorded because the milestone *touched* the table those comments describe,
+and leaving a comment that contradicts the code next to the code is the
+defect this roadmap exists to prevent.

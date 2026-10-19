@@ -621,7 +621,34 @@ pub(crate) fn apply_editor_diagnostics(
         .apply_diagnostics(request_id, &scope, result, error);
 }
 
-fn start_editor_lsp_read(app: &mut App, operation: LspReadOperation, query: Option<String>) {
+/// The one argument an LSP read may carry.
+///
+/// The protocol's coherence rule is that a read carries a `query` for and
+/// only for workspace symbols, and a `new_name` for and only for the rename
+/// preview. One enum makes that rule visible at the call site, and it keeps
+/// two `Option<String>`s from being swapped for one another — a swap would
+/// compile, and the protocol's own `validate()` would catch it, but the
+/// editor should not spend a round trip discovering it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EditorLspReadArgument {
+    /// No argument: every operation except the two that take one.
+    None,
+    /// The workspace-symbols query.
+    Query(String),
+    /// The proposed identifier, for a rename preview.
+    NewName(String),
+}
+
+fn start_editor_lsp_read(
+    app: &mut App,
+    operation: LspReadOperation,
+    argument: EditorLspReadArgument,
+) {
+    let (query, new_name) = match argument {
+        EditorLspReadArgument::None => (None, None),
+        EditorLspReadArgument::Query(query) => (Some(query), None),
+        EditorLspReadArgument::NewName(name) => (None, Some(name)),
+    };
     let Some(scope) = current_lsp_scope(app) else {
         app.messages_state
             .toasts
@@ -693,7 +720,7 @@ fn start_editor_lsp_read(app: &mut App, operation: LspReadOperation, query: Opti
         // The editor does not pin a server. The daemon resolves one from the
         // target's extension, and reports an ambiguity instead of guessing.
         server_id: None,
-        new_name: None,
+        new_name,
     };
     if let Err(error) = request.validate() {
         app.editor_state.lsp.read_loading = false;
@@ -859,7 +886,11 @@ pub(crate) fn request_editor_semantic_tokens(app: &mut App) {
     if current_lsp_scope(app).is_none() {
         return;
     }
-    start_editor_lsp_read(app, LspReadOperation::SemanticTokens, None);
+    start_editor_lsp_read(
+        app,
+        LspReadOperation::SemanticTokens,
+        EditorLspReadArgument::None,
+    );
     // Clear the panel unconditionally, including on the two failure paths that
     // set it. Highlighting is ambient: a server that is not up yet should
     // leave the document unhighlighted, not throw a read-result box over the
@@ -2278,19 +2309,31 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             return true;
         }
         KeyCode::F(3) => {
-            start_editor_lsp_read(app, LspReadOperation::Hover, None);
+            start_editor_lsp_read(app, LspReadOperation::Hover, EditorLspReadArgument::None);
             return true;
         }
         KeyCode::F(4) => {
-            start_editor_lsp_read(app, LspReadOperation::Definition, None);
+            start_editor_lsp_read(
+                app,
+                LspReadOperation::Definition,
+                EditorLspReadArgument::None,
+            );
             return true;
         }
         KeyCode::F(5) => {
-            start_editor_lsp_read(app, LspReadOperation::References, None);
+            start_editor_lsp_read(
+                app,
+                LspReadOperation::References,
+                EditorLspReadArgument::None,
+            );
             return true;
         }
         KeyCode::F(6) => {
-            start_editor_lsp_read(app, LspReadOperation::DocumentSymbols, None);
+            start_editor_lsp_read(
+                app,
+                LspReadOperation::DocumentSymbols,
+                EditorLspReadArgument::None,
+            );
             return true;
         }
         KeyCode::F(7) => {
@@ -2298,7 +2341,11 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
                 app.messages_state.toasts.info("No symbol at the cursor");
                 return true;
             };
-            start_editor_lsp_read(app, LspReadOperation::WorkspaceSymbols, Some(query));
+            start_editor_lsp_read(
+                app,
+                LspReadOperation::WorkspaceSymbols,
+                EditorLspReadArgument::Query(query),
+            );
             return true;
         }
         // F9 refreshes syntax highlighting. It is an explicit retry for a
@@ -2382,6 +2429,12 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             run_editor_command(app, command, argument);
             true
         }
+        // An LSP read is the App layer's, because the core client is. The
+        // buffer named the operation; the App issues the request.
+        BufferKey::LspRead(operation) => {
+            start_editor_lsp_read(app, operation, EditorLspReadArgument::None);
+            true
+        }
     };
     if let Some(effect) = app.editor_state.pending_effect.take() {
         run_editor_pending_effect(app, effect);
@@ -2432,9 +2485,15 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
                 app.messages_state.toasts.info("No symbol at the cursor");
                 return;
             };
-            start_editor_lsp_read(app, LspReadOperation::WorkspaceSymbols, Some(query));
+            start_editor_lsp_read(
+                app,
+                LspReadOperation::WorkspaceSymbols,
+                EditorLspReadArgument::Query(query),
+            );
         }
-        EditorPendingEffect::Read(operation) => start_editor_lsp_read(app, operation, None),
+        EditorPendingEffect::Read(operation) => {
+            start_editor_lsp_read(app, operation, EditorLspReadArgument::None)
+        }
         EditorPendingEffect::OpenDiagnostics => {
             refresh_editor_diagnostics(app);
             app.editor_state.lsp.open_diagnostics_panel();
@@ -2450,6 +2509,7 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
         EditorPendingEffect::YankPrimary => yank_primary_selection(app),
         EditorPendingEffect::OpenFilePicker => open_editor_file_picker(app),
         EditorPendingEffect::OpenCommandPalette => open_editor_command_palette(app),
+        EditorPendingEffect::RenamePrompt => open_editor_rename_prompt(app),
     }
 }
 
@@ -2541,6 +2601,28 @@ fn open_editor_command_palette(app: &mut App) {
     session.presentation_mut().open_command_line("");
 }
 
+/// Open the **rename prompt** — the `:` line, pre-filled with the rename
+/// command and waiting for the new name.
+///
+/// The `:` command line is the established mechanism for an argument, not a
+/// new input mode: M008's three regex verbs opened it already filled in, and
+/// this is the same gesture with a different argument. The line the reader
+/// sees is the one they could have typed by hand, the name has somewhere to
+/// live, and `Esc` already knows how to abort.
+///
+/// The preview itself is a **read** — the request is issued when the line is
+/// submitted, and only then, because it needs a name the reader has not
+/// typed yet.
+fn open_editor_rename_prompt(app: &mut App) {
+    let Some(session) = app.editor_state.session.as_mut() else {
+        return;
+    };
+    session.presentation_mut().open_command_line(&format!(
+        "{} ",
+        editor::EditorCommandName::RenamePreview.spec()
+    ));
+}
+
 /// Execute one parsed `:` command.
 ///
 /// The App layer owns every lifecycle round trip and route change, so the
@@ -2609,7 +2691,55 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
             };
             run_selection_regex(&mut app.editor_state, command, pattern);
         }
+        // `:rename-preview <name>` — the rename **preview**.
+        //
+        // The read is issued only once the name is known and known to be
+        // usable: an empty name and an over-long one are refused here, so no
+        // round trip is spent on a request the protocol would reject.
+        //
+        // A **preview**, not an apply. The request asks the server what
+        // *would* change, the panel shows it, and nothing is written.
+        //
+        // The write path is not missing — ADR-0008 owns it — but it consumes
+        // a *registered reviewable artifact*, and a rendered preview is not
+        // one. So the gap is the bridge, not an authorization.
+        EditorCommandName::RenamePreview => {
+            let name = match checked_new_name(argument.as_deref()) {
+                Ok(name) => name,
+                Err(reason) => {
+                    app.messages_state.toasts.warning(&reason);
+                    return;
+                }
+            };
+            start_editor_lsp_read(
+                app,
+                LspReadOperation::RenamePreview,
+                EditorLspReadArgument::NewName(name),
+            );
+        }
     }
+}
+
+/// Check a proposed new name before a request is spent on it.
+///
+/// The **protocol** enforces the same bound
+/// ([`MAX_LSP_NEW_NAME_BYTES`](codegg_protocol::lsp::MAX_LSP_NEW_NAME_BYTES)),
+/// but the editor should not send a request it knows will be refused, and a
+/// refusal that names the bound is a better answer than a round trip.
+///
+/// The name arrives already trimmed by the command parser, so this checks
+/// emptiness and length and does not rewrite what the reader typed.
+fn checked_new_name(name: Option<&str>) -> Result<String, String> {
+    let Some(name) = name.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err("`:rename-preview` needs a new name".to_string());
+    };
+    if name.len() > codegg_protocol::lsp::MAX_LSP_NEW_NAME_BYTES {
+        return Err(format!(
+            "`:rename-preview` name is longer than the {}-byte limit",
+            codegg_protocol::lsp::MAX_LSP_NEW_NAME_BYTES
+        ));
+    }
+    Ok(name.to_string())
 }
 
 /// Run one of the three regex selection commands against the open document.
@@ -2863,6 +2993,12 @@ enum BufferKey {
     /// every route change, so the buffer reports the parsed command rather
     /// than performing it.
     RunCommand(EditorCommandName, Option<String>),
+    /// An LSP read the App layer must issue.
+    ///
+    /// `=` — the format **preview** — is a Normal-mode chord rather than a
+    /// prefix leaf, and the buffer holds no core client, so it reports the
+    /// request the way the other Normal-mode verbs report their work.
+    LspRead(LspReadOperation),
 }
 
 /// Handle one key while the `:` command line is open.
@@ -3900,6 +4036,17 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             ));
             BufferKey::Consumed
         }
+        // Helix `=` formats the document. CodeGG's `=` shows the **preview** —
+        // what the formatter *would* change — and applies nothing. The write
+        // path is not missing (ADR-0008 owns it), but it consumes a
+        // *registered reviewable artifact*, and a rendered preview is not one:
+        // the gap is the bridge, not an authorization.
+        //
+        // The chord is a **Normal-mode** verb, not a prefix leaf, so it
+        // reports the request the way the other Normal-mode verbs report
+        // their work: the buffer decides *what* was asked for, and the App
+        // layer — which holds the core client — does *how*.
+        (m, KeyCode::Char('=')) if m == none => BufferKey::LspRead(LspReadOperation::FormatPreview),
         // Claimed even with nothing selected: an unclaimed `d` escapes to the
         // global `OpenDiff` binding, so the reader never gets "delete this".
         (m, KeyCode::Char('d')) if m == none => {
@@ -10790,7 +10937,11 @@ mod tests {
             EditorCommandName::ALL.len(),
             "the palette lists every editor command"
         );
-        assert_eq!(EditorCommandName::ALL.len(), 12, "twelve commands");
+        assert_eq!(
+            EditorCommandName::ALL.len(),
+            13,
+            "thirteen commands — M015 added the rename preview"
+        );
     }
 
     /// Insert mode types the space and the glyph. The space prefix is armed
@@ -10869,6 +11020,373 @@ mod tests {
                     .has_dialog(crate::tui::components::component::DialogType::Files),
                 "space f opens the browser under the global keymap (vim_mode = {vim_mode})"
             );
+        }
+    }
+
+    // ── M015: the LSP preview leaves ───────────────────────────────────
+    //
+    // A preview is a **read**: it shows what would change and applies
+    // nothing. Every test here drives the real dispatch path, and the
+    // request-level assertions read the request the daemon was handed —
+    // the panel shows what the server *answered*, not what was *asked*.
+
+    /// A core client that records the LSP read requests it is handed.
+    ///
+    /// The request is the only place the proposed name can be observed: the
+    /// panel shows the server's answer, and a panel assertion alone would
+    /// not prove that the name ever left the editor.
+    struct RecordingLspClient {
+        reads: tokio::sync::mpsc::UnboundedSender<LspReadRequestDto>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::core::CoreClient for RecordingLspClient {
+        async fn request(
+            &self,
+            envelope: crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>,
+        ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+            if let crate::protocol::core::CoreRequest::LspReadGet { request } = envelope.payload {
+                let _ = self.reads.send(request);
+            }
+            Ok(crate::protocol::core::CoreResponse::Error {
+                code: "stub".into(),
+                message: "stub".into(),
+            })
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
+    /// An app whose tab is bound to the session's **own** project and
+    /// workspace, so the editor's LSP scope resolves.
+    ///
+    /// The tab and the attachment have to agree: `current_lsp_scope` compares
+    /// the tab's identities with the attachment's and reports a mismatch as
+    /// "LSP is unavailable" rather than as a broken request. Without this,
+    /// every test below would pass for the wrong reason.
+    async fn app_with_a_lsp_scope(
+        state: EditorState,
+    ) -> (App, tokio::sync::mpsc::UnboundedReceiver<LspReadRequestDto>) {
+        let mut app = app_on_the_editor_route(state).await;
+        app.project_tabs.set_active_identities(
+            Some("project-1".to_string()),
+            Some("workspace-1".to_string()),
+            Some("session-1".to_string()),
+        );
+        // The read is issued from a spawned task, and a task with no command
+        // sender is never spawned at all.
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(8);
+        app.tui_cmd_tx = Some(cmd_tx);
+        let (reads_tx, reads_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.core_client = Some(std::sync::Arc::new(RecordingLspClient { reads: reads_tx }));
+        (app, reads_rx)
+    }
+
+    /// Wait for the read the daemon was handed.
+    async fn next_read(
+        reads: &mut tokio::sync::mpsc::UnboundedReceiver<LspReadRequestDto>,
+    ) -> LspReadRequestDto {
+        tokio::time::timeout(std::time::Duration::from_secs(5), reads.recv())
+            .await
+            .expect("the read must reach the daemon")
+            .expect("the channel must stay open")
+    }
+
+    /// Assert that **no** read reaches the daemon.
+    ///
+    /// The read is issued from a spawned task, so "no request" cannot be
+    /// proved by looking once — the task may simply not have run yet. A
+    /// short wait is the honest way to say it.
+    async fn assert_no_read(reads: &mut tokio::sync::mpsc::UnboundedReceiver<LspReadRequestDto>) {
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(250), reads.recv()).await;
+        assert!(
+            received.is_err(),
+            "no read may be issued, but one arrived: {:?}",
+            received.ok().flatten()
+        );
+    }
+
+    /// The messages the editor reported, newest last.
+    fn reported(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .history()
+            .map(|record| record.message.clone())
+            .collect()
+    }
+
+    /// `=` asks for the format preview and changes nothing.
+    #[tokio::test]
+    async fn the_format_preview_is_requested_and_changes_nothing() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+        let before = editor_text(&app.editor_state);
+        let history_before = undo_depth(&app.editor_state);
+
+        assert!(
+            handle_editor_key(&mut app, key(KeyCode::Char('='))),
+            "`=` belongs to the editor"
+        );
+
+        let request = next_read(&mut reads).await;
+        assert_eq!(request.operation, LspReadOperation::FormatPreview);
+        assert_eq!(request.new_name, None, "a format preview names nothing");
+        assert_eq!(
+            request.query, None,
+            "and a format preview is not a workspace-symbols query"
+        );
+        assert_eq!(
+            editor_text(&app.editor_state),
+            before,
+            "a preview changes no text"
+        );
+        assert_eq!(
+            undo_depth(&app.editor_state),
+            history_before,
+            "and records no undo step"
+        );
+    }
+
+    /// `space r` collects a name, and the request carries it.
+    #[tokio::test]
+    async fn the_rename_preview_carries_the_typed_name_on_the_request() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+
+        // `space r` arms the prompt; it does not ask the server anything yet,
+        // because it does not know the name yet.
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('r')));
+        {
+            let presentation = app.editor_state.session.as_ref().unwrap().presentation();
+            assert!(presentation.command_active, "the prompt is open");
+            assert_eq!(
+                presentation.command_line, "rename-preview ",
+                "and it is pre-filled with the command"
+            );
+        }
+        assert_no_read(&mut reads).await;
+
+        for ch in "renamed".chars() {
+            handle_editor_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        handle_editor_key(&mut app, key(KeyCode::Enter));
+
+        let request = next_read(&mut reads).await;
+        assert_eq!(request.operation, LspReadOperation::RenamePreview);
+        assert_eq!(
+            request.new_name.as_deref(),
+            Some("renamed"),
+            "the request must carry the name the reader typed"
+        );
+        assert_eq!(request.query, None, "and no workspace-symbols query");
+        assert!(
+            request.line.is_some() && request.column.is_some(),
+            "the rename targets the symbol under the cursor, so the position is the cursor's"
+        );
+    }
+
+    /// An empty name is refused **before** a request is spent on it.
+    #[tokio::test]
+    async fn an_empty_new_name_issues_no_request_and_says_why() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('r')));
+        handle_editor_key(&mut app, key(KeyCode::Enter));
+
+        assert_no_read(&mut reads).await;
+        let reported = reported(&app);
+        assert!(
+            reported
+                .iter()
+                .any(|message| message.contains("needs a new name")),
+            "the refusal says what is missing, got {reported:?}"
+        );
+    }
+
+    /// A name over the protocol's bound is refused locally, with the bound
+    /// named.
+    #[tokio::test]
+    async fn a_new_name_over_the_bound_issues_no_request_and_names_the_bound() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+        let over_long = "x".repeat(codegg_protocol::lsp::MAX_LSP_NEW_NAME_BYTES + 1);
+
+        run_editor_command(&mut app, EditorCommandName::RenamePreview, Some(over_long));
+
+        assert_no_read(&mut reads).await;
+        let reported = reported(&app);
+        assert!(
+            reported.iter().any(|message| message.contains(&format!(
+                "{}-byte limit",
+                codegg_protocol::lsp::MAX_LSP_NEW_NAME_BYTES
+            ))),
+            "the refusal names the bound, got {reported:?}"
+        );
+    }
+
+    /// Cancelling the prompt changes nothing and asks nothing.
+    #[tokio::test]
+    async fn cancelling_the_rename_prompt_issues_no_request() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+        let before = editor_text(&app.editor_state);
+
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('r')));
+        for ch in "renamed".chars() {
+            handle_editor_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        handle_editor_key(&mut app, key(KeyCode::Esc));
+
+        assert_no_read(&mut reads).await;
+        assert_eq!(editor_text(&app.editor_state), before, "nothing changed");
+        let presentation = app.editor_state.session.as_ref().unwrap().presentation();
+        assert!(!presentation.command_active, "and the prompt is closed");
+    }
+
+    /// `space a` says that there is no code-action request to make — not
+    /// that there is one and it may not be applied.
+    #[tokio::test]
+    async fn space_a_states_that_no_code_action_request_exists() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('a')));
+
+        let note = app
+            .editor_state
+            .notice
+            .as_ref()
+            .map(|notice| notice.message())
+            .expect("the reason is stated");
+        assert!(
+            note.contains("no code-action request exists in this editor"),
+            "the reason says what is actually true, got {note}"
+        );
+        assert!(
+            !note.contains("ADR"),
+            "and does not imply a preview exists and is merely unapplied, got {note}"
+        );
+    }
+
+    /// `space r` and `space R` are different leaves, and the capital is
+    /// reachable in both of the terminal's spellings.
+    #[tokio::test]
+    async fn the_lower_r_and_upper_r_leaves_are_different_and_both_spellings_reach_them() {
+        let (mut state, _daemon) = opened_writer("hello").await;
+        assert_eq!(
+            leaf(&mut state, EditorPrefix::Space, 'r'),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            parked(&state),
+            Some(EditorPendingEffect::RenamePrompt),
+            "`space r` is the rename preview"
+        );
+
+        let (mut state, _daemon) = opened_writer("hello").await;
+        assert_eq!(
+            leaf(&mut state, EditorPrefix::Space, 'R'),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            parked(&state),
+            Some(EditorPendingEffect::Clipboard(ClipboardVerb::Replace)),
+            "`space R` is the clipboard replace"
+        );
+
+        // The capital, spelled the way a terminal that reports `Char('r')`
+        // plus `SHIFT` spells it.
+        let (mut state, _daemon) = opened_writer("hello").await;
+        arm(&mut state, EditorPrefix::Space);
+        assert_eq!(
+            editor_buffer_key(
+                &mut state,
+                crate::tui::input::InputMode::Normal,
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::SHIFT),
+            ),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            parked(&state),
+            Some(EditorPendingEffect::Clipboard(ClipboardVerb::Replace)),
+            "the shifted spelling reaches the same capital leaf"
+        );
+    }
+
+    /// The rename preview's result reaches the panel, with the files it
+    /// would change.
+    #[tokio::test]
+    async fn the_rename_preview_reaches_the_panel_with_the_files_it_would_change() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, _reads) = app_with_a_lsp_scope(state).await;
+
+        // The read the daemon was asked for.
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('r')));
+        for ch in "renamed".chars() {
+            handle_editor_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        handle_editor_key(&mut app, key(KeyCode::Enter));
+
+        let scope = current_lsp_scope(&app).expect("the scope resolved");
+        let request_id = app.editor_state.lsp.read_request_id;
+        apply_editor_lsp_read(
+            &mut app,
+            request_id,
+            scope,
+            LspReadOperation::RenamePreview,
+            Some(LspReadResultDto {
+                operation: LspReadOperation::RenamePreview,
+                status: LspReadStatus::Ready,
+                payload: Some(crate::protocol::lsp::LspReadPayloadDto::RenamePreview(
+                    codegg_protocol::lsp::LspRenamePreviewDto {
+                        old_name: Some("old".to_string()),
+                        new_name: "renamed".to_string(),
+                        edit_count: 2,
+                        files: vec![codegg_protocol::lsp::LspRenameFileDto {
+                            path: "src/lib.rs".to_string(),
+                            edit_count: 2,
+                        }],
+                        warnings: Vec::new(),
+                        truncated: false,
+                        base_stale: false,
+                    },
+                )),
+            }),
+            None,
+        );
+
+        assert_eq!(
+            app.editor_state.lsp.panel,
+            Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult),
+            "the panel is open"
+        );
+        let result = app
+            .editor_state
+            .lsp
+            .read_result
+            .as_ref()
+            .expect("the result is held");
+        match result.payload.as_ref() {
+            Some(crate::protocol::lsp::LspReadPayloadDto::RenamePreview(preview)) => {
+                assert_eq!(preview.new_name, "renamed");
+                assert_eq!(preview.files.len(), 1);
+                assert_eq!(preview.files[0].path, "src/lib.rs");
+            }
+            other => panic!("a rename preview must reach the panel, got {other:?}"),
         }
     }
 }

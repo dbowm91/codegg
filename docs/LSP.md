@@ -165,8 +165,30 @@ and nothing you do will change that.
 
 Formatting and rename can both be asked for, and both return a **preview**: a
 diff, or the list of files a rename would touch. Neither writes to your buffer.
-Applying a language-server-driven edit has not been authorised yet, which is
-why `space r`, `space a` and `=` are not bound to any key.
+
+Both previews now have a key:
+
+| Key | What it shows |
+|---|---|
+| `=` | the **format preview** for the open document — the diff the formatter would produce, and how many edits that is |
+| `space r` | the **rename preview** for the symbol under the cursor — the old and new names, the files that would change, and the edits in each |
+
+`space r` asks for the new name first: it opens the editor's `:` line with
+`rename-preview ` already filled in, you type the name, and you press `Enter`.
+The line is the same one you could have typed by hand — `:rename-preview
+newname` — and `Esc` abandons it. An empty name, or one longer than the
+server's limit, is refused before a request is sent, and the refusal names the
+limit.
+
+`space a` — the code action — is **not** bound to a preview, because there is
+no code-action request to make: nothing in the protocol asks a server what
+code actions it would offer. Pressing it says so.
+
+A preview is a **read**: it asks the server what *would* change and shows you
+the answer. Turning that answer into an edit is a separate step — a reviewed
+one — and the editor's preview keys do not perform it. When they do, these two
+chords become the apply step, and this documentation and the changelog record
+that in advance so it is not a surprise.
 
 ## Error Handling
 

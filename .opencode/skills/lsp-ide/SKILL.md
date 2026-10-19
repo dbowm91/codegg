@@ -41,10 +41,23 @@ symbol search. These are existing `LspDiagnosticsGet`/`LspReadGet` operations;
 bind results to the active editor identity and generation. M013 added the
 Helix leaves on top: `space k` hover, `space s` document symbols, `space S`
 workspace symbols, `space d` diagnostics, `space h` and `gr` references,
-`gd` definition, `gi` implementation, `space f` document symbols. A leaf that
-cannot run says so in the status row rather than doing nothing. `space r`
-(rename), `space a` (code action) and `=` (format) are **unbound**: their
-preview reads exist, but applying an LSP-driven mutation needs an accepted ADR.
+`gd` definition, `gi` implementation. A leaf that cannot run says so in the
+status row rather than doing nothing. M015 added the two **preview** leaves:
+`space r` previews renaming the symbol under the cursor — the new name is
+collected on the `:` line, the same line the editor's other argument-taking
+commands use — and `=` previews what formatting would change. Both show what
+would change and **apply nothing**. `space a` (code action) stays unbound with
+a visible reason, because no code-action *read* exists to preview.
+
+**Do not say the write path is missing.** ADR-0008 is accepted and owns it:
+`CoreRequest::LspPreviewApply` is authorized `via_session` + `file.modify` and
+applies a **registered, still-current reviewable preview** by id, through the
+change-review surface or the model-facing preview-apply tool. The editor's
+preview leaves produce a *read result*, not such an artifact — no preview id,
+no patches, no `register_preview_artifact` in the editor path — so they
+cannot reach it. The gap is the **bridge**, not an ADR. When that bridge is
+built, `space r` and `=` become the apply step; that transition is registered
+in `CHANGELOG.md` now so it is a documented upgrade rather than a surprise.
 Semantic tokens are only a presentation overlay for the exact controller
 revision that was queried; malformed UTF-16 ranges, overlap, unsupported types,
 or revision changes fall back to plain text.

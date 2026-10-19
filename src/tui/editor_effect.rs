@@ -106,6 +106,13 @@ pub enum EditorPendingEffect {
     OpenFilePicker,
     /// Open the editor's `:` command palette.
     OpenCommandPalette,
+    /// Open the **rename prompt** — the `:` line, pre-filled with the rename
+    /// command, waiting for the new name.
+    ///
+    /// Not a read: the read follows the prompt, and the prompt needs a name
+    /// the reader has not typed yet. The leaf names the *step*, and the
+    /// request is issued when the `:` line is submitted.
+    RenamePrompt,
     /// A Helix leaf this build deliberately leaves unbound, with the reason a
     /// user needs.
     ///

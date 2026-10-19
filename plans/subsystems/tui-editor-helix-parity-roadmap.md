@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M013 closed; M015 planned and ready; M014 blocked on ADR-0034)
+Status: active (M001–M013 and M015 closed; M014 blocked on ADR-0034)
 
 Long-term references:
 
@@ -114,8 +114,11 @@ the terminal panel is exempt.
 - No code-action execution, automatic import edits, or LSP write operations.
   `LspReadOperation` stays read-only by construction; M013 extends it only with
   **read** variants plus rename/format **preview**. `=` format, `space r`
-  rename apply, and `space a` code-action apply remain out of scope until an
-  authorization ADR exists (see §10 risk 2).
+  rename apply, and `space a` code-action apply remain out of scope. **M015
+  binds the two previews** (`=`, `space r`) and binds `space a` to a statement,
+  and all three still apply nothing. See §10 risk 2 — the apply itself needs
+  the **bridge** from the editor's preview to the registered reviewable
+  artifact ADR-0008's accepted write path consumes, not a new ADR.
 
 ## 4. Current state
 
@@ -1072,7 +1075,10 @@ in Insert.
 >    visible reason because no code-action *read* exists to preview. They
 >    were separated rather than folded in because applying an LSP-driven
 >    mutation has no accepted authorization ADR, and a **preview** does not
->    need one — so the two were kept apart from the apply.
+>    need one — so the two were kept apart from the apply. *(M015, 2026-10-19:
+>    the ADR framing in this point was wrong — ADR-0008 is accepted — and the
+>    separation still holds, because the gap is the bridge to a reviewable
+>    artifact. See Amendment A2.)*
 > 7. **The key-authority guard's chord counts are unchanged at 2 / 70 / 8.**
 >    That is the point, and it is worth stating: the space leaves are not
 >    Normal-mode or Insert-mode chords, so growing the space menu from eight
@@ -1360,7 +1366,69 @@ apply does. When an LSP-write ADR is accepted, these two chords become the
 apply step, and that **meaning change is registered now** so the later
 milestone does not change a chord silently.
 
+> **Amendment A2 (2026-10-19) — the ADR framing above was wrong, and the
+> code said so.**
+>
+> 1. **ADR-0008 is accepted** (2026-09-20) and owns the LSP write path:
+>    `CoreRequest::LspPreviewApply` is authorized `via_session` +
+>    `file.modify`, and it applies a **registered, still-current reviewable
+>    preview** by id through `src/lsp/mutation.rs::apply_preview()` — from
+>    the TUI's change-review surface or from the model-facing preview-apply
+>    tool. So "an LSP-write ADR" was never missing, and this entry's
+>    sentence above is corrected accordingly.
+> 2. **What the editor lacks is the *bridge*.** The editor's `=` and
+>    `space r` produce a **read result** — no preview id, no patches, no
+>    `register_preview_artifact` call anywhere in the editor path, and no
+>    reference to `change_review` in `src/tui/commands/editor.rs` or
+>    `src/tui/editor.rs`. The apply path consumes a registered preview
+>    artifact, and the editor's preview is not one. So the chords cannot
+>    reach it, and they apply nothing — an **implementation** gap, not a
+>    decision gap.
+> 3. **The transition is registered against the bridge, not the ADR.** When
+>    the editor's preview becomes a reviewable artifact, `=` and `space r`
+>    become the apply step. The registration happens now, while the preview
+>    is what a reader learns, so the later change is a documented upgrade
+>    rather than a surprise. `architecture/lsp.md`, `docs/LSP.md`,
+>    `docs/tui.md`, `CHANGELOG.md` and the two skill files were corrected to
+>    the same wording in M015's commit.
+
 Plan: `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md`
+
+> **Amendment A1 (2026-10-19) — M015 is `closed`, and one of its three
+> deliverables moved shape.**
+>
+> 1. **The milestone landed whole.** `=` shows the format preview, `space r`
+>    collects a new name and shows the rename preview, and `space a` states
+>    that no code-action request exists. The closure record is
+>    `plans/closure/tui-editor-helix-parity/015-status.md`.
+> 2. **`=` is a Normal-mode chord and is reported through `BufferKey`,
+>    not through `pending_effect`.** The milestone's own boundary text said
+>    `=` becomes a `PrefixAction::Effect(...)`, but `=` has no prefix and
+>    `EditorState::pending_effect` is documented as *a **prefix leaf's**
+>    effect*. The implementation uses the new
+>    `BufferKey::LspRead(LspReadOperation)` arm — the buffer decides **what**
+>    was asked for, the App layer does **how** — which is why the
+>    key-authority guard attributes `=` as a Normal-mode chord and the count
+>    moves **70 → 71**. §13.2's stage-E row predicted exactly that figure.
+> 3. **`space r` is a leaf that names a *step*, not a read.** The leaf parks
+>    `EditorPendingEffect::RenamePrompt`, which opens the `:` command line
+>    pre-filled with `rename-preview `; the read is issued when the line is
+>    submitted. A preview is still a read — it just happens after the reader
+>    has supplied the name the request needs.
+> 4. **The preview/apply transition is registered, in three places.** This
+>    entry already said the meaning change would be registered when the write
+>    ADR lands; it is registered **now** — in this entry, in the closure
+>    record and in `CHANGELOG.md` — so the change arrives as a documented
+>    upgrade rather than as a chord that silently means something else.
+> 5. **The over-long-name refusal is real but unreachable through the `:`
+>    line.** The command line is bounded at `MAX_EDITOR_COMMAND_LINE` (64)
+>    characters, so a 201-character name cannot be typed into it. The check
+>    is kept as defence in depth and is unit-tested directly rather than
+>    through the prompt.
+> 6. **The `:` palette grew by one command**, so the palette's row count is
+>    **13**. `docs/tui.md` has no enumerated palette table — the palette is
+>    generated from `EditorCommandName::ALL` — so the new command is
+>    documented in the new "The preview keys" section instead.
 
 ## 8. Cross-cutting requirements
 
@@ -1437,7 +1505,12 @@ binding-reachability guard run in `verify.sh quick`.
    `LspReadOperation`. M013 delivers rename and format **preview** only
    (`egglsp`'s `preview_workspace_edit` / `preview_text_edits_for_file` already
    exist), so the binding can ship without a mutation path. The apply decision
-   remains deferred product work, not an omission.
+   remains deferred product work, not an omission. **M015 (2026-10-19)
+   corrected this entry's framing: the authorization contract is not missing —
+   ADR-0008 is accepted and owns `CoreRequest::LspPreviewApply` (`via_session`
+   + `file.modify`, applying a *registered, still-current reviewable preview*
+   by id). What the editor lacks is the **bridge** from a rendered preview to
+   such an artifact. M015 binds the two previews and still applies nothing.
 3. **`Ctrl+s` / `Ctrl+r` in Insert.** M011 cannot adopt Helix's insert-mode
    meanings for these two chords while the app owns them mode-independently.
    Needs an explicit decision recorded in the M011 plan.
@@ -1495,7 +1568,7 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M012 | **closed** | `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md` | `plans/closure/tui-editor-helix-parity/012-status.md` | M002 edge discharged; sequenced after M011 (Amendment A1). Closed 2026-10-19 (Amendment A2): the history is one list with a cursor in it, `Alt-u`/`Alt-U` walk it and report their boundary, the position is observable on the banner row, the memory bound is one cap, and the guard's Normal chord count is **69** — not the 68 the plan recorded, because the two spellings of the capital differ in the key code |
 | M013 | **closed** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | `plans/closure/tui-editor-helix-parity/013-status.md` | — |
 | M014 | **blocked** | — | — | ADR-0034 acceptance; its plan is written after the ADR selects an option |
-| M015 | **ready** | `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md` | — | M013 closed; the previews are delivered and unreachable until this lands |
+| M015 | **closed** | `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md` | `plans/closure/tui-editor-helix-parity/015-status.md` | M013 closed; the previews are delivered and unreachable until this lands. Closed 2026-10-19 (Amendment A1): the two previews M013 shipped now have keys — `=` shows the format preview and `space r` collects a new name on the `:` line and shows the rename preview — both apply nothing, `space a` states that no code-action request exists, and the guard's Normal chord count is **71**, one for the `=` arm |
 
 **M013 is closed** (`plans/closure/tui-editor-helix-parity/013-status.md`).
 It discharges **M010**'s last dependency edge, and it found **six** further
@@ -1516,7 +1589,9 @@ structural, and that meant threading the resolved client key through eleven
 done, binding the keys was a smaller change than leaving them unbound behind a
 surface that now answers. **`space r`, `space a` and `=` remain unbound** —
 applying an LSP-driven mutation still has no accepted ADR, and no amount of
-delivery work changes that.
+delivery work changes that. **M015 (2026-10-19) bound the two previews, and
+corrected the reason:** ADR-0008 *is* accepted, and what the editor lacked was
+the bridge to a reviewable artifact (Amendment A2).
 
 **M003 is closed** (`plans/closure/tui-editor-helix-parity/003-status.md`). It
 discharged exactly one dependency edge: **M004**, whose hard dependency was the
@@ -1598,8 +1673,10 @@ The three corrections worth carrying forward:
 
 **Every remaining milestone now has a plan, and the status table matches.**
 M009, M010, M011 and M012 were planned on 2026-10-19 against the live Helix
-keymap and the tree at `a8778e87c`; each is `ready` with a plan path in §12.
-Two milestones were **added** by that planning, both from gaps the plans
+keymap and the tree at `a8778e87c`, and M015 was planned on the same tree once
+M013 closed. **All five are now `closed`** — M009, M010, M011, M012 and M015 all
+on 2026-10-19 — each with a plan path and a closure record in §12. Two
+milestones were **added** by that planning, both from gaps the plans
 exposed rather than from preference:
 
 - **M014** carries the syntax-node slice of M009's match-mode grammar.
@@ -1614,8 +1691,12 @@ exposed rather than from preference:
 - **M015** gives the two LSP previews M013 delivered a key. M013 shipped
   `FormatPreview` and `RenamePreview` with daemon arms, protocol bounds and
   panel renderings — and **no key reaches either**. A preview is a *read*,
-  so it needs no LSP-write ADR, and M010's A2 amendment reserves M010 for
-  "the **pickers** and the clipboard family, not the LSP leaves".
+  and it needs no LSP-write ADR — the **apply** does, and ADR-0008 already
+  owns that path (see Amendment A2 and §13.4 question 7). M010's A2 amendment
+  reserves M010 for "the **pickers** and the clipboard family, not the LSP
+  leaves". **M015 is now closed** (Amendment A1): `=` and `space r` reach the
+  two previews, both apply nothing, and the preview/apply transition is
+  registered while the preview is what a reader learns.
 
 Nine corrections were produced against this roadmap's own prose by the
 four plans, each recorded as an amendment on the milestone entry rather
@@ -1782,6 +1863,20 @@ Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
    `scripts/check_tui_editor_leaf_authority.py`, and it reads the guard-block
    chords **through** `scripts/check_tui_editor_key_authority.py` rather than
    re-parsing the dispatch chain. See Amendment A5 and the plan's §17.7–§17.10.
+7. ~~**Is the LSP apply waiting on an ADR?**~~ **Answered by M015
+   (2026-10-19): no — the ADR is there, the *bridge* is not.** This roadmap,
+   the M015 plan and `architecture/lsp.md` all said the apply needs "an
+   accepted LSP-write ADR, which does not exist". **ADR-0008 is accepted**
+   (2026-09-20) and owns that path: `CoreRequest::LspPreviewApply`, authorized
+   `via_session` + `file.modify`, applying a **registered, still-current
+   reviewable preview** by id through `src/lsp/mutation.rs::apply_preview()`,
+   reachable from the change-review surface and from the model-facing
+   preview-apply tool. The editor's `=` and `space r` produce a **read
+   result** — no preview id, no patches, no `register_preview_artifact` in the
+   editor path — so they cannot reach it. The open work is therefore an
+   **implementation** task, not a decision. Every surface the M015 commit
+   touched was corrected to this wording. See Amendment A2 and the plan's
+   §17.15.
 
 ### 13.5 The pre-existing failures that are not this work's
 

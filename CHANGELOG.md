@@ -35,10 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this was reported as "not ready", which sent you looking for a server that was
   already running and had already answered. The panel names the missing
   capability.
-- **Rename and format are offered as previews only, and are not yet bound to a
-  key.** You can ask what a rename would touch or what formatting would change,
-  but nothing is ever written: applying a language-server-driven edit to your
-  buffer has not been authorised yet.
+- **Rename and format are offered as previews only.** `space r` asks the
+  language server what renaming the symbol under the cursor would touch, and `=`
+  asks what formatting would change. Both show you the answer and **write
+  nothing**. `space r` collects the new name on the `:` line — the same
+  line the editor's other argument-taking commands use — and refuses an empty
+  or over-long name without spending a request on it.
 - **Helix's insert-mode chords are available in `INS`.** `Ctrl+h` and `Ctrl+d`
   delete one character backward and forward, `Ctrl+j` inserts a newline, `Ctrl+k`
   and `Ctrl+u` delete to the end and the start of the line, `Ctrl+w` and
@@ -97,6 +99,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The rename and format previews are now reachable from the keyboard.**
+  Until now they existed only inside the language-server protocol: the daemon
+  could answer them and the editor could display them, but no key asked for
+  them. `space r` and `=` close that gap. They stay **previews** — a preview
+  shows what would change and applies nothing — and when they grow the step
+  that turns a preview into a reviewed edit, these two keys become the apply
+  step instead. That change is registered here now, while the preview is what
+  you learn, so it arrives as a documented upgrade rather than a surprise.
 - **`space f` now opens the file browser instead of reading this document's
   symbols.** It was a second name for `space s`, so the file browser was
   unreachable from the editor and the symbols panel had two keys for one

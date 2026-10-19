@@ -1477,6 +1477,12 @@ mod tests {
         writable: bool,
         busy: bool,
         scope: codegg_protocol::document::DocumentScope,
+        /// The LSP state the widget renders.
+        ///
+        /// Owned rather than borrowed so a test can seed a **panel** — the
+        /// read results the widget draws — without reaching into the
+        /// widget's own fields.
+        lsp: crate::tui::editor_lsp::EditorLspState,
     }
 
     fn defaults<'a>() -> Options<'a> {
@@ -1500,6 +1506,7 @@ mod tests {
             writable: true,
             busy: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
+            lsp: crate::tui::editor_lsp::EditorLspState::default(),
         }
     }
 
@@ -1545,7 +1552,7 @@ mod tests {
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
-        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let lsp = &options.lsp;
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1571,7 +1578,7 @@ mod tests {
                     writable: options.writable,
                     busy: options.busy,
                     snapshot: &snapshot,
-                    lsp: &lsp,
+                    lsp,
                     completion: &completion,
                     highlight: &mut highlight,
                     presentation: &mut presentation,
@@ -1616,7 +1623,7 @@ mod tests {
             ..TuiDocumentPresentation::default()
         };
         seed_history(&mut presentation, options.history);
-        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let lsp = &options.lsp;
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1642,7 +1649,7 @@ mod tests {
                     writable: options.writable,
                     busy: options.busy,
                     snapshot: &snapshot,
-                    lsp: &lsp,
+                    lsp,
                     completion: &completion,
                     highlight: &mut highlight,
                     presentation: &mut presentation,
@@ -2626,6 +2633,7 @@ mod tests {
             scope: codegg_protocol::document::DocumentScope::Workspace,
             writable: true,
             busy: false,
+            lsp: crate::tui::editor_lsp::EditorLspState::default(),
         };
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -3360,6 +3368,86 @@ mod tests {
         assert!(
             banner.contains("history 1/3"),
             "the position belongs on the banner row: {banner:?}"
+        );
+    }
+
+    /// The rename preview names the files that would change, and says that
+    /// nothing is applied.
+    ///
+    /// The rendering is M013's, but a rendering nobody exercises is a
+    /// rendering nobody knows works, and "the preview shows the files" is
+    /// the whole point of the chord.
+    #[test]
+    fn the_rename_preview_names_the_files_it_would_change() {
+        use codegg_protocol::lsp::{
+            LspReadOperation, LspReadPayloadDto, LspReadResultDto, LspReadStatus, LspRenameFileDto,
+            LspRenamePreviewDto,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::RenamePreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::RenamePreview(LspRenamePreviewDto {
+                old_name: Some("old".to_string()),
+                new_name: "renamed".to_string(),
+                edit_count: 2,
+                files: vec![LspRenameFileDto {
+                    path: "src/lib.rs".to_string(),
+                    edit_count: 2,
+                }],
+                warnings: Vec::new(),
+                truncated: false,
+                base_stale: false,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("renamed"),
+            "the preview names the new name, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("src/lib.rs"),
+            "and the file it would change, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("not applied"),
+            "and says that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// The format preview shows the diff, and says that nothing is applied.
+    #[test]
+    fn the_format_preview_shows_the_diff_and_says_it_is_not_applied() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspReadOperation, LspReadPayloadDto, LspReadResultDto,
+            LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: false,
+                base_stale: false,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("let x =  1;"),
+            "the preview shows the diff, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("not applied"),
+            "and says that nothing is applied, got:\n{painted}"
         );
     }
 }
