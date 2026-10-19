@@ -297,6 +297,19 @@ fn controller_text(controller: &Arc<DocumentController>) -> String {
         .expect("snapshot")
 }
 
+/// Where the history cursor is standing.
+///
+/// The history is one list and the cursor names a position in it, so the
+/// entry at the cursor is the one a redo would apply.
+fn presentation_history_cursor(app: &App) -> usize {
+    app.editor_state
+        .session
+        .as_ref()
+        .expect("session")
+        .presentation()
+        .history_cursor
+}
+
 fn applicable(
     label: &str,
     start: (u32, u32),
@@ -485,7 +498,7 @@ async fn ready_answer_applies_one_undo_unit_with_redo() {
             .as_ref()
             .expect("session")
             .presentation()
-            .undo
+            .history
             .is_empty(),
         "a refused accept records no history"
     );
@@ -507,7 +520,7 @@ async fn ready_answer_applies_one_undo_unit_with_redo() {
         .as_ref()
         .expect("session")
         .presentation()
-        .undo
+        .history
         .len();
     assert_eq!(undo_len, 1, "one accept is one undo unit");
 
@@ -526,8 +539,8 @@ async fn ready_answer_applies_one_undo_unit_with_redo() {
         .as_ref()
         .expect("session")
         .presentation()
-        .redo
-        .last()
+        .history
+        .get(presentation_history_cursor(&app))
         .cloned()
         .map(|entry| entry.forward);
     assert!(forward.is_some(), "undo stages exactly one redo unit");
@@ -842,7 +855,7 @@ async fn lost_writer_lease_refuses_without_side_effects() {
             .as_ref()
             .expect("session")
             .presentation()
-            .undo
+            .history
             .is_empty(),
         "a refused accept records no history"
     );

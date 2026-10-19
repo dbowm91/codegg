@@ -1805,12 +1805,39 @@ fn apply_clipboard_text(app: &mut App, verb: ClipboardVerb, read: Option<String>
     });
 }
 
-/// Undo the newest local edit by submitting its inverse transaction.
+/// Which way through the history a traversal moves.
+///
+/// The history is one ordered list and the cursor names a position in it, so
+/// "back" and "forward" are the same movement in opposite directions rather
+/// than two different operations. Helix calls them `earlier` and `later`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryStep {
+    /// One entry back — Helix's `earlier`.
+    Earlier,
+    /// One entry forward — Helix's `later`.
+    Later,
+}
+
+/// Move the history cursor one entry, and the document with it.
+///
+/// The cursor moves **only after** the apply succeeds. A refused apply
+/// leaves the document, the history and the cursor exactly where they were:
+/// a cursor that moved without a matching change of text would leave the
+/// history describing a document that does not exist. That is the one
+/// behaviour this model must not get wrong.
 ///
 /// Undo during a destructive phase fails exactly like any other edit: the
 /// controller returns `LifecycleBusy`, the entry stays in history, and no
 /// transaction is queued for a phase that will refuse it.
-pub(crate) fn editor_undo(state: &mut EditorState) {
+///
+/// `report` is the whole difference between the two spellings of the
+/// gesture. `u` and `U` are silent at the boundary — they have always been,
+/// and a reader who has just undone everything knows where they are.
+/// `Alt-u` and `Alt-U` are the *explicit* history gestures, so they say
+/// "no earlier change" or "no later change" rather than doing nothing
+/// silently. That is a CodeGG convention rather than a Helix behaviour; in
+/// Helix all four are the same movement.
+fn traverse_history(state: &mut EditorState, step: HistoryStep, report: bool) {
     // A typing burst that has not been closed is one undo step, so the
     // session is committed before the history is read. Otherwise the
     // reader's own typing would be invisible to the `u` they just pressed:
@@ -1825,12 +1852,29 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     let Some(session) = state.session.as_ref() else {
         return;
     };
-    let Some(entry) = session.presentation().undo.last().cloned() else {
+    let presentation = session.presentation();
+    let entry = match step {
+        HistoryStep::Earlier => editor::undo_entry(presentation),
+        HistoryStep::Later => editor::redo_entry(presentation),
+    };
+    let Some(entry) = entry.cloned() else {
+        // The boundary. Nothing moved and nothing changed, so the only thing
+        // left to do is say so — when this gesture says so.
+        if report {
+            let message = match step {
+                HistoryStep::Earlier => "no earlier change",
+                HistoryStep::Later => "no later change",
+            };
+            state.set_notice(EditorNotice::Note(message.to_string()));
+        }
         return;
     };
-    let cursor_leaving = session.presentation().cursor_byte;
+    let transaction = match step {
+        HistoryStep::Earlier => entry.inverse.clone(),
+        HistoryStep::Later => entry.forward.clone(),
+    };
     let controller = session.controller();
-    if let Err(error) = controller.apply_local(entry.inverse.clone()) {
+    if let Err(error) = controller.apply_local(transaction) {
         state.set_notice(EditorNotice::from_error(&error));
         return;
     }
@@ -1839,9 +1883,15 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
         return;
     };
     let presentation = session.presentation_mut();
-    let Some(entry) = editor::take_undo(presentation) else {
-        return;
+    // The cursor moves now, after the apply has been accepted.
+    let moved = match step {
+        HistoryStep::Earlier => editor::move_history_cursor_back(presentation),
+        HistoryStep::Later => editor::move_history_cursor_forward(presentation),
     };
+    debug_assert!(
+        moved,
+        "the entry was read from this cursor, so the cursor can still move"
+    );
     match &after {
         Some(snapshot) => {
             presentation.cursor_byte = editor::clamp_offset(snapshot, entry.cursor_before);
@@ -1858,10 +1908,6 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     presentation.mode = EditorMode::Normal;
     // Text changed under the cursor; see `submit_edit`.
     presentation.desired_column = None;
-    // The redo entry keeps the forward transaction and is rebased onto the
-    // position the user is leaving, so redoing returns to where the edit
-    // left the cursor rather than to the undo point.
-    editor::record_redo(presentation, entry.rebased(cursor_leaving));
     state.lsp.clear_semantic();
     state.completion.clear();
     if !state.lsp.diagnostics.is_empty() {
@@ -1871,52 +1917,38 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     state.clear_notice();
 }
 
+/// Undo the newest local edit by submitting its inverse transaction.
+///
+/// Silent at the boundary: `u` at the beginning of the history does nothing,
+/// exactly as it always has.
+pub(crate) fn editor_undo(state: &mut EditorState) {
+    traverse_history(state, HistoryStep::Earlier, false);
+}
+
 /// Redo the newest undone local edit by re-submitting its forward
 /// transaction.
+///
+/// Silent at the boundary, for the same reason [`editor_undo`] is.
 pub(crate) fn editor_redo(state: &mut EditorState) {
-    let Some(session) = state.session.as_ref() else {
-        return;
-    };
-    let Some(entry) = session.presentation().redo.last().cloned() else {
-        return;
-    };
-    let cursor_leaving = session.presentation().cursor_byte;
-    let controller = session.controller();
-    if let Err(error) = controller.apply_local(entry.forward.clone()) {
-        state.set_notice(EditorNotice::from_error(&error));
-        return;
-    }
-    let after = controller.try_snapshot().map(|(snapshot, _)| snapshot);
-    let Some(session) = state.session.as_mut() else {
-        return;
-    };
-    let presentation = session.presentation_mut();
-    let Some(entry) = editor::take_redo(presentation) else {
-        return;
-    };
-    match &after {
-        Some(snapshot) => {
-            presentation.cursor_byte = editor::clamp_offset(snapshot, entry.cursor_before);
-            presentation.restore_selections(&entry.selections_before);
-            presentation.viewport_line = presentation
-                .viewport_line
-                .min(snapshot.len_lines().saturating_sub(1));
-        }
-        None => {
-            presentation.cursor_byte = entry.cursor_before;
-            presentation.restore_selections(&entry.selections_before);
-        }
-    }
-    editor::restore_undo(presentation, entry.rebased(cursor_leaving));
-    // Text changed under the cursor; see `submit_edit`.
-    presentation.desired_column = None;
-    state.lsp.clear_semantic();
-    state.completion.clear();
-    if !state.lsp.diagnostics.is_empty() {
-        state.lsp.diagnostics_stale = true;
-    }
-    state.status = EditorStatus::DirtyLocal;
-    state.clear_notice();
+    traverse_history(state, HistoryStep::Later, false);
+}
+
+/// Helix's `earlier` — move the history cursor back one entry.
+///
+/// The explicit history gesture, so it **reports** its boundary: at the
+/// oldest entry it says "no earlier change" rather than doing nothing
+/// silently. It is the same movement `u` performs, in the same model; only
+/// the reporting differs.
+pub(crate) fn editor_history_earlier(state: &mut EditorState) {
+    traverse_history(state, HistoryStep::Earlier, true);
+}
+
+/// Helix's `later` — move the history cursor forward one entry.
+///
+/// The explicit history gesture, so it **reports** its boundary: at the tip
+/// it says "no later change".
+pub(crate) fn editor_history_later(state: &mut EditorState) {
+    traverse_history(state, HistoryStep::Later, true);
 }
 
 /// Insert literal text at the cursor in insert mode.
@@ -3334,6 +3366,11 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
     let none = KeyModifiers::NONE;
     let shift = KeyModifiers::SHIFT;
     let alt = KeyModifiers::ALT;
+    // The exact bitmask for Alt+Shift. It is a modifier of its own, not a
+    // loose "an Alt with a shift on it": an arm that accepts `ALT` accepts
+    // exactly `ALT`, and one that accepts `ALT | SHIFT` accepts exactly
+    // that. The spelling matters because the two are different keys.
+    let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
     // Each arm is `(modifiers, code)` so a bare letter and its uppercase twin
     // are one rule. Terminals disagree about how `D` is encoded, and both
     // spellings have to work.
@@ -3767,6 +3804,33 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         // start of a word rather than "redo".
         (m, KeyCode::Char('U')) if m == none || m == shift => {
             editor_redo(state);
+            BufferKey::Consumed
+        }
+        // `Alt-u` and `Alt-U` are Helix's `earlier` and `later`: the same
+        // movement through the history that `u` and `U` perform, in the same
+        // model, with one difference — they **report** their boundary instead
+        // of doing nothing silently. See `traverse_history`.
+        //
+        // Three chords, because the capital has two terminal spellings and
+        // they differ in the **key code**, not only in the modifier: a
+        // terminal that reports the shifted glyph sends `(ALT, Char('U'))`,
+        // and one that reports the modifier sends `(ALT|SHIFT, Char('U'))` or
+        // `(ALT|SHIFT, Char('u'))`. `Alt-u` is `(ALT, Char('u'))` — and it
+        // must not be confused with the third arm, which is the same glyph
+        // under a different modifier and means the *other* direction.
+        //
+        // Every modifier here is an exact bitmask, so `ALT` and `ALT|SHIFT`
+        // are disjoint claims and the guard reads them as such.
+        (m, KeyCode::Char('u')) if m == alt => {
+            editor_history_earlier(state);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('U')) if m == alt || m == alt_shift => {
+            editor_history_later(state);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('u')) if m == alt_shift => {
+            editor_history_later(state);
             BufferKey::Consumed
         }
         // Insertion entries. They move the cursor *and* hand the keyboard to
@@ -4538,24 +4602,23 @@ mod tests {
         range.end - range.start
     }
 
+    /// How many history entries are applied — the undo depth.
+    ///
+    /// The history is one ordered list and the cursor names a position in it,
+    /// so the undo depth *is* the cursor and the redo depth is whatever is
+    /// left after it.
     fn undo_depth(state: &EditorState) -> usize {
         state
             .session
             .as_ref()
             .expect("open")
             .presentation()
-            .undo
-            .len()
+            .history_cursor
     }
 
     fn redo_depth(state: &EditorState) -> usize {
-        state
-            .session
-            .as_ref()
-            .expect("open")
-            .presentation()
-            .redo
-            .len()
+        let presentation = state.session.as_ref().expect("open").presentation();
+        presentation.history.len() - presentation.history_cursor
     }
 
     // ── Trajectory: open → edit → undo → redo → save → reopen ────────────
@@ -7216,7 +7279,7 @@ mod tests {
                 .expect("replacement");
         submit_edit(&mut state, edit);
         assert_eq!(
-            state.session.as_ref().unwrap().presentation().redo.len(),
+            redo_depth(&state),
             0,
             "a new edit must not leave a redoable entry pointing at older text"
         );
@@ -7946,7 +8009,7 @@ mod tests {
         );
         assert_eq!(selection_count(&state), 2, "the set survived the abort");
         assert_eq!(
-            state.session.as_ref().unwrap().presentation().undo.len(),
+            undo_depth(&state),
             0,
             "an aborted prompt pushes no undo entry"
         );
@@ -8025,11 +8088,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_eight_alt_chords_are_inert_in_insert_mode() {
+    async fn the_eleven_alt_chords_are_inert_in_insert_mode() {
         // `handle_insert_key`'s catch-all covers `NONE` and `SHIFT` only, so
         // every `ALT` chord M008 adds falls outside it. Helix's Insert mode
         // binds no `Alt-` punctuation, so inert is the faithful answer — and
         // it has to be asserted, not assumed.
+        //
+        // The name says eleven and the list holds eleven: the nine M008
+        // chords plus M012's `Alt-u` and `Alt-U`. (The list was nine under a
+        // name that said eight; the name follows the list.)
         for code in [
             KeyCode::Char(';'),
             KeyCode::Char(':'),
@@ -8040,6 +8107,8 @@ mod tests {
             KeyCode::Char(')'),
             KeyCode::Char('-'),
             KeyCode::Char('_'),
+            KeyCode::Char('u'),
+            KeyCode::Char('U'),
         ] {
             let (mut state, _daemon) = opened_writer("").await;
             assert_eq!(
@@ -8496,11 +8565,17 @@ mod tests {
             (KeyCode::Char('&'), KeyModifiers::SHIFT),
             (KeyCode::Char('-'), KeyModifiers::ALT),
             (KeyCode::Char('_'), KeyModifiers::ALT),
+            // M012's two history gestures. `Alt-U`'s *other* terminal
+            // spelling — `Char('u')` with `ALT | SHIFT` — is exercised by
+            // its own test, so adding it here would make this count 25.
+            (KeyCode::Char('u'), KeyModifiers::ALT),
+            (KeyCode::Char('U'), KeyModifiers::ALT),
         ];
         assert_eq!(
             claimed.len(),
-            22,
-            "eighteen verbs across the spellings the terminals disagree about"
+            24,
+            "eighteen verbs across the spellings the terminals disagree about, \
+             plus M012's two history gestures"
         );
         for (code, modifiers) in claimed {
             let (mut state, _daemon) = opened_writer("ab\ncd\nef\n").await;
@@ -9597,6 +9672,258 @@ mod tests {
             notice.message().contains("diagnostic"),
             "the notice must name what is missing, got {:?}",
             notice.message()
+        );
+    }
+
+    // ── M012: the history cursor ─────────────────────────────────────────
+
+    /// Replace the character under the cursor with `ch`.
+    ///
+    /// In Normal mode, so the edit lands as **its own** history entry rather
+    /// than joining a typing burst: the history's *contents* are not what
+    /// this milestone is about, but the cursor's position in them is, and a
+    /// test that cannot count its entries cannot assert on the position.
+    fn replace_under_cursor(state: &mut EditorState, ch: char) {
+        let after = snapshot_of(state);
+        let edit = editor::replace_char(
+            &after,
+            state.session.as_ref().expect("open").presentation(),
+            ch,
+        )
+        .expect("a character under the cursor");
+        submit_edit(state, edit);
+    }
+
+    /// `Alt-u` moves the history cursor back, and the document follows.
+    ///
+    /// Driven through the **real dispatch path**, because the roadmap's §9
+    /// records why: a helper called directly proves the helper works, not
+    /// that the chord reaches it.
+    #[tokio::test]
+    async fn alt_u_moves_the_history_cursor_back_and_the_document_follows() {
+        let (mut state, _daemon) = opened_writer("ab cd\n").await;
+        park(&mut state, 0);
+        replace_under_cursor(&mut state, 'X');
+        replace_under_cursor(&mut state, 'Y');
+        assert_eq!(editor_text(&state), "Yb cd\n");
+        assert_eq!(undo_depth(&state), 2, "two edits, two entries");
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::ALT),
+            BufferKey::Consumed,
+            "`Alt-u` is the editor's chord, not a word typed into the composer"
+        );
+        assert_eq!(editor_text(&state), "Xb cd\n", "the second edit is undone");
+        assert_eq!(undo_depth(&state), 1);
+        assert_eq!(redo_depth(&state), 1, "and it is redoable");
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('U'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(editor_text(&state), "Yb cd\n", "and redone");
+        assert_eq!(undo_depth(&state), 2);
+        assert_eq!(redo_depth(&state), 0);
+    }
+
+    /// `Alt-U` has two terminal spellings, and both have to work.
+    ///
+    /// A terminal that reports the shifted glyph sends `(ALT, Char('U'))`;
+    /// one that reports the modifier sends `(ALT | SHIFT, Char('u'))`. A
+    /// chord live on one machine and dead on the next is the M013 failure
+    /// mode, so the plan requires both to be driven.
+    #[tokio::test]
+    async fn alt_u_accepts_both_terminal_spellings_of_the_capital() {
+        for (code, modifiers) in [
+            (KeyCode::Char('U'), KeyModifiers::ALT),
+            (KeyCode::Char('u'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+        ] {
+            let (mut state, _daemon) = opened_writer("ab cd\n").await;
+            park(&mut state, 0);
+            replace_under_cursor(&mut state, 'X');
+            replace_under_cursor(&mut state, 'Y');
+            // Back one entry, so there is something later to move to.
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::ALT);
+            assert_eq!(editor_text(&state), "Xb cd\n");
+            assert_eq!(undo_depth(&state), 1);
+
+            assert_eq!(
+                press(&mut state, code, modifiers),
+                BufferKey::Consumed,
+                "{code:?} with {modifiers:?} must be claimed"
+            );
+            assert_eq!(
+                editor_text(&state),
+                "Yb cd\n",
+                "{code:?} with {modifiers:?} must move the cursor forward"
+            );
+            assert_eq!(undo_depth(&state), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn alt_u_at_the_oldest_entry_reports_and_does_not_move() {
+        let (mut state, _daemon) = opened_writer("ab cd\n").await;
+        park(&mut state, 0);
+        replace_under_cursor(&mut state, 'X');
+        // The first `Alt-u` undoes the only entry, and the cursor is now at
+        // the beginning of the history.
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(undo_depth(&state), 0);
+        // At the oldest entry there is nothing earlier to move to.
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(undo_depth(&state), 0, "the cursor did not move");
+        assert_eq!(
+            notice_of(&state).as_deref(),
+            Some("no earlier change"),
+            "the boundary is reported rather than swallowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_u_at_the_tip_reports_and_does_not_move() {
+        let (mut state, _daemon) = opened_writer("ab cd\n").await;
+        park(&mut state, 0);
+        replace_under_cursor(&mut state, 'X');
+        // At the tip there is nothing later to move to.
+        assert_eq!(
+            press(&mut state, KeyCode::Char('U'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(undo_depth(&state), 1, "the cursor did not move");
+        assert_eq!(
+            notice_of(&state).as_deref(),
+            Some("no later change"),
+            "the boundary is reported rather than swallowed"
+        );
+    }
+
+    /// The recorded divergence: the **explicit** history gestures report
+    /// their boundary and the undo/redo gestures do not.
+    ///
+    /// This is a CodeGG convention rather than a Helix behaviour — in Helix
+    /// all four are the same movement — and it is recorded as one.
+    #[tokio::test]
+    async fn u_and_u_stay_silent_at_their_boundaries() {
+        // `u` at the beginning of the history. The first `u` undoes the only
+        // entry and leaves the cursor at the beginning; the second is at the
+        // boundary.
+        let (mut state, _daemon) = opened_writer("ab cd\n").await;
+        park(&mut state, 0);
+        replace_under_cursor(&mut state, 'X');
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::NONE),
+            BufferKey::Consumed
+        );
+        assert_eq!(undo_depth(&state), 0, "the entry was undone");
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::NONE),
+            BufferKey::Consumed
+        );
+        assert_eq!(undo_depth(&state), 0);
+        assert_eq!(
+            notice_of(&state),
+            None,
+            "`u` at the beginning of the history says nothing, as it always has"
+        );
+
+        // `U` at the tip. This is a different state — the cursor at the
+        // newest change — so it gets its own document; in the state above,
+        // `U` would *redo* the undone entry rather than sit at a boundary.
+        let (mut state, _daemon) = opened_writer("ab cd\n").await;
+        park(&mut state, 0);
+        replace_under_cursor(&mut state, 'X');
+        assert_eq!(
+            press(&mut state, KeyCode::Char('U'), KeyModifiers::NONE),
+            BufferKey::Consumed
+        );
+        assert_eq!(undo_depth(&state), 1, "the cursor did not move");
+        assert_eq!(
+            notice_of(&state),
+            None,
+            "and `U` at the tip says nothing either"
+        );
+    }
+
+    /// `Alt-u` and `Alt-U` are Normal-mode gestures.
+    ///
+    /// Insert mode's catch-all covers `NONE` and `SHIFT` only, so an `Alt`
+    /// chord falls outside it and reaches the composer. Helix binds no
+    /// `Alt-u` in Insert mode, so inert is the faithful answer.
+    #[tokio::test]
+    async fn alt_u_and_alt_u_are_inert_in_insert_mode() {
+        for (code, modifiers) in [
+            (KeyCode::Char('u'), KeyModifiers::ALT),
+            (KeyCode::Char('U'), KeyModifiers::ALT),
+            (KeyCode::Char('U'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+            (KeyCode::Char('u'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+        ] {
+            let (mut state, _daemon) = opened_writer("").await;
+            assert_eq!(
+                normal(&mut state, KeyCode::Char('i')),
+                BufferKey::EnterInsert
+            );
+            assert_eq!(
+                insert_event(&mut state, KeyEvent::new(code, modifiers)),
+                BufferKey::Unhandled,
+                "Alt-{:?} with {:?} must reach the composer rather than vanish",
+                code,
+                modifiers
+            );
+            assert_eq!(editor_text(&state), "", "and type nothing");
+        }
+    }
+
+    /// The one behaviour the cursor model must not get wrong.
+    ///
+    /// A refused apply leaves the cursor exactly where it was. The old
+    /// two-stack model expressed the same guarantee as "the entry goes back
+    /// on the stack"; with a cursor there is no transfer to undo, so the
+    /// guarantee is that the cursor does not move.
+    #[tokio::test]
+    async fn a_refused_undo_leaves_the_history_cursor_where_it_was() {
+        let (mut state, _daemon) = opened_reader("hello").await;
+        // A read-only attachment refuses every apply, so the undo is refused
+        // too. The entry is planted directly: a read-only attachment can
+        // never make an edit, so there is no way to earn one the ordinary
+        // way.
+        {
+            let presentation = state.session.as_mut().expect("open").presentation_mut();
+            editor::push_undo(
+                presentation,
+                codegg_document::TextTransaction::new(vec![codegg_document::TextEdit::new(
+                    0..0,
+                    "x",
+                )]),
+                codegg_document::TextTransaction::new(vec![codegg_document::TextEdit::new(
+                    0..1,
+                    "",
+                )]),
+                1,
+                0,
+                Vec::new(),
+            );
+            assert_eq!(presentation.history_cursor, 1);
+        }
+
+        editor_undo(&mut state);
+
+        let presentation = state.session.as_ref().expect("open").presentation();
+        assert_eq!(
+            presentation.history_cursor, 1,
+            "a refused apply must not move the cursor"
+        );
+        assert_eq!(presentation.history.len(), 1, "and must not drop the entry");
+        assert_eq!(
+            state.notice,
+            Some(EditorNotice::ReadOnly),
+            "the refusal is surfaced explicitly"
         );
     }
 }

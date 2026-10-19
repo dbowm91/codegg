@@ -186,6 +186,48 @@ TARGET = REPO_ROOT / "src" / "tui" / "commands" / "editor.rs"
 # unresolved shape rather than a silent pass.
 MODIFIERS = ("NONE", "SHIFT", "CONTROL", "ALT", "SUPER", "HYPER", "META")
 
+# One **exact** modifier bitmask, as the set of modifier names it carries.
+#
+# The distinction matters. A Rust predicate `m == none || m == shift` admits
+# two bitmasks — exactly `NONE` and exactly `SHIFT` — and not the combination
+# of the two. A predicate `m == alt_shift` admits exactly `ALT | SHIFT` and
+# nothing else. Flattening both into a set of modifier *names* loses the
+# difference, and then `m == alt` and `m == alt_shift` look like they overlap
+# when Rust's `==` on the bitflags says they are disjoint.
+Combo = frozenset[str]
+
+# The sentinel for an arm with no modifier predicate: it admits every
+# combination, which is the conservative reading of an unguarded arm.
+ANY_COMBO = frozenset({"*"})
+
+
+def combo_names(combos: frozenset[Combo]) -> frozenset[str]:
+    """The modifier names an arm's combinations carry.
+
+    The names are what rules 1 and 3 and the printed labels use; the
+    *combinations* are what rule 2 compares, because two arms conflict only
+    when they can be pressed with the **same** bitmask.
+    """
+    if ANY_COMBO in combos:
+        return frozenset(MODIFIERS)
+    names: set[str] = set()
+    for combo in combos:
+        names |= combo
+    return frozenset(names)
+
+
+def combos_intersect(left: frozenset[Combo], right: frozenset[Combo]) -> bool:
+    """Whether two arms can be pressed with the same modifier bitmask.
+
+    The comparison is on the exact bitmask, not on the modifier names: an
+    arm that accepts exactly `ALT` and one that accepts exactly `ALT |
+    SHIFT` are disjoint, and Rust's `==` on the bitflags agrees. A wildcard
+    arm — one with no modifier predicate — intersects everything.
+    """
+    if ANY_COMBO in left or ANY_COMBO in right:
+        return True
+    return bool(left & right)
+
 # Declarations that must exist for the guard's rules to mean anything.
 REQUIRED_SUBSTRINGS = [
     "fn editor_buffer_key(",
@@ -242,7 +284,8 @@ CATCHALL_CHAR_RE = re.compile(r"KeyCode::Char\(\s*[a-z_]\w*\s*\)")
 # tracked as a key-code claim rather than as a character chord.
 NON_CHAR_KEYCODE_RE = re.compile(r"KeyCode::(?!Char\b)(\w+)")
 LET_BINDING_RE = re.compile(
-    r"\blet\s+([a-z_]\w*)\s*(?::\s*\w+\s*)?=\s*KeyModifiers::(\w+)\s*;"
+    r"\blet\s+([a-z_]\w*)\s*(?::\s*\w+\s*)?=\s*"
+    r"((?:KeyModifiers::\w+\s*\|\s*)*KeyModifiers::\w+)\s*;"
 )
 
 # The Insert-mode word chords M011 binds, and the check the milestone asked
@@ -268,6 +311,7 @@ class Chord:
     """
 
     modifiers: frozenset[str]
+    combos: frozenset[Combo]
     char: str | None
     owner: str
     modes: frozenset[str]
@@ -289,6 +333,7 @@ class KeyCodeClaim:
     """
 
     modifiers: frozenset[str]
+    combos: frozenset[Combo]
     key_code: str
     owner: str
     modes: frozenset[str]
@@ -467,12 +512,23 @@ def match_table_any(
 
 
 def read_bindings(body: list[str]) -> dict[str, frozenset[str]]:
-    """Collect `let none = KeyModifiers::NONE;`-style modifier aliases."""
+    """Collect `let none = KeyModifiers::NONE;`-style modifier aliases.
+
+    A binding may carry **several** modifiers — `let alt_shift =
+    KeyModifiers::ALT | KeyModifiers::SHIFT;` — because the combination is a
+    modifier bitmask of its own, and the guard has to tell "exactly ALT"
+    from "exactly ALT and SHIFT".
+    """
     bindings: dict[str, frozenset[str]] = {}
     for code in body:
         match = LET_BINDING_RE.search(code)
-        if match and match.group(2) in MODIFIERS:
-            bindings[match.group(1)] = frozenset({match.group(2)})
+        if not match:
+            continue
+        names = frozenset(
+            part.split("::", 1)[1].strip() for part in match.group(2).split("|")
+        )
+        if names and names <= frozenset(MODIFIERS):
+            bindings[match.group(1)] = names
     return bindings
 
 
@@ -489,35 +545,38 @@ def resolve_modifier(token: str, bindings: dict[str, frozenset[str]]) -> frozens
 
 def resolve_predicate(
     block: str, bindings: dict[str, frozenset[str]], line_no: int
-) -> frozenset[str]:
-    """Resolve an arm's modifier predicate to the modifiers it admits.
+) -> frozenset[Combo]:
+    """Resolve an arm's modifier predicate to the bitmasks it admits.
+
+    Each `m == X` term is one **exact** bitmask, so a predicate naming two
+    terms admits two bitmasks and not their combination.
 
     No predicate at all admits every modifier: an unguarded arm claims all
     spellings of its key code, which is the conservative reading.
     """
     tokens = GUARD_PREDICATE_RE.findall(block)
     if not tokens:
-        return frozenset(MODIFIERS)
-    modifiers: set[str] = set()
+        return frozenset({ANY_COMBO})
+    combos: set[Combo] = set()
     for token in tokens:
-        modifiers |= resolve_modifier(token, bindings)
-    if not modifiers:
+        combos.add(resolve_modifier(token, bindings))
+    if not combos:
         raise ParseError(f"predicate admitted no modifier at line {line_no}")
-    return frozenset(modifiers)
+    return frozenset(combos)
 
 
 def resolve_arm_modifier(
     token: str,
-    predicate_modifiers: frozenset[str],
+    predicate_combos: frozenset[Combo],
     owner: str,
     line_no: int,
-) -> frozenset[str]:
-    """The modifiers one `(modifier, code)` alternative admits.
+) -> frozenset[Combo]:
+    """The modifier bitmasks one `(modifier, code)` alternative admits.
 
     A pattern that spells the modifier out — `(KeyModifiers::CONTROL,
     KeyCode::Char('d'))` — matches exactly that modifier and nothing else, so
     it is not subject to the arm's `if` predicate. Only a binding like `m`
-    takes its modifier set from the predicate.
+    takes its bitmasks from the predicate.
     """
     if token.startswith("KeyModifiers::"):
         named = token.split("::", 1)[1]
@@ -525,8 +584,8 @@ def resolve_arm_modifier(
             raise ParseError(
                 f"unresolved modifier {token!r} at {owner} line {line_no}"
             )
-        return frozenset({named})
-    return predicate_modifiers
+        return frozenset({frozenset({named})})
+    return predicate_combos
 
 
 def arm_blocks(table: list[str], base_line: int) -> list[tuple[int, str]]:
@@ -642,6 +701,7 @@ def collect_guard_chords(body: list[str], base_line: int) -> list[Chord]:
         chords.append(
             Chord(
                 modifiers=frozenset({match.group(2)}),
+                combos=frozenset({frozenset({match.group(2)})}),
                 char=match.group(1),
                 owner="guard-block",
                 modes=(
@@ -687,7 +747,8 @@ def collect_table_claims(
         if not alternatives:
             # The legacy shape: the pattern names key codes directly and the
             # modifier comes from the arm's `if` predicate, if it has one.
-            modifiers = resolve_predicate(block, bindings, line_no)
+            combos = resolve_predicate(block, bindings, line_no)
+            modifiers = combo_names(combos)
             literal = CHAR_LITERAL_RE.search(block)
             wildcard = CATCHALL_CHAR_RE.search(block)
             key_codes = NON_CHAR_KEYCODE_RE.findall(block)
@@ -698,6 +759,7 @@ def collect_table_claims(
                 chords.append(
                     Chord(
                         modifiers=modifiers,
+                        combos=combos,
                         char=literal.group(1),
                         owner=owner,
                         modes=frozenset({mode}),
@@ -713,6 +775,7 @@ def collect_table_claims(
                 chords.append(
                     Chord(
                         modifiers=modifiers,
+                        combos=combos,
                         char=None,
                         owner=owner,
                         modes=frozenset({mode}),
@@ -724,6 +787,7 @@ def collect_table_claims(
                 claims.append(
                     KeyCodeClaim(
                         modifiers=modifiers,
+                        combos=combos,
                         key_code=key_code,
                         owner=owner,
                         modes=frozenset({mode}),
@@ -736,19 +800,21 @@ def collect_table_claims(
             continue
 
         # The tuple shape: every alternative spells its own `(modifier, code)`.
-        predicate_modifiers = resolve_predicate(block, bindings, line_no)
+        predicate_combos = resolve_predicate(block, bindings, line_no)
         arm_chords: list[Chord] = []
         arm_claims: list[KeyCodeClaim] = []
-        wildcard_modifiers: set[str] = set()
+        wildcard_combos: set[Combo] = set()
         for modifier_token, code_expr in alternatives:
-            arm_modifiers = resolve_arm_modifier(
-                modifier_token, predicate_modifiers, owner, line_no
+            arm_combos = resolve_arm_modifier(
+                modifier_token, predicate_combos, owner, line_no
             )
+            arm_modifiers = combo_names(arm_combos)
             literal = CHAR_LITERAL_RE.search(code_expr)
             if literal is not None:
                 arm_chords.append(
                     Chord(
                         modifiers=arm_modifiers,
+                        combos=arm_combos,
                         char=literal.group(1),
                         owner=owner,
                         modes=frozenset({mode}),
@@ -762,7 +828,7 @@ def collect_table_claims(
                 # shape. It is one claim over the modifiers it admits, so the
                 # alternatives of a single arm are merged into one wildcard
                 # chord: the same model the legacy shape produces.
-                wildcard_modifiers |= arm_modifiers
+                wildcard_combos |= arm_combos
                 continue
             # A non-`Char` key code: `KeyCode::Backspace`, `KeyCode::Delete`,
             # `KeyCode::Down`, ...
@@ -772,6 +838,7 @@ def collect_table_claims(
             arm_claims.append(
                 KeyCodeClaim(
                     modifiers=arm_modifiers,
+                    combos=arm_combos,
                     key_code=key_code.group(1),
                     owner=owner,
                     modes=frozenset({mode}),
@@ -779,11 +846,12 @@ def collect_table_claims(
                     text=block,
                 )
             )
-        if wildcard_modifiers:
+        if wildcard_combos:
             arm_chords.insert(
                 0,
                 Chord(
-                    modifiers=frozenset(wildcard_modifiers),
+                    modifiers=combo_names(frozenset(wildcard_combos)),
+                    combos=frozenset(wildcard_combos),
                     char=None,
                     owner=owner,
                     modes=frozenset({mode}),
@@ -877,14 +945,20 @@ def analyse(text: str) -> Analysis:
                     )
 
     # 2. Two arms of one table claiming the same chord: the earlier wins.
+    #
+    #    The comparison is on the **exact** modifier bitmask, not on the
+    #    modifier names. An arm that accepts exactly `ALT` and one that
+    #    accepts exactly `ALT | SHIFT` are disjoint — Rust's `==` on the
+    #    bitflags says so — and flagging them would be a false positive the
+    #    source would have to be contorted to avoid.
     for chords, claims, owner in (
         (normal_chords, normal_claims, "handle_normal_key"),
         (insert_chords, insert_claims, "handle_insert_key"),
     ):
-        seen: dict[tuple[str, str, str | None], tuple[int, str]] = {}
+        seen: dict[tuple[str, str | None], list[tuple[frozenset[Combo], int, str]]] = {}
         entries = [
             (
-                chord.modifiers,
+                chord.combos,
                 "wildcard" if chord.char is None else "char",
                 chord.char,
                 chord.label(),
@@ -894,7 +968,7 @@ def analyse(text: str) -> Analysis:
             for chord in chords
         ] + [
             (
-                claim.modifiers,
+                claim.combos,
                 "code",
                 claim.key_code,
                 claim.label(),
@@ -903,22 +977,19 @@ def analyse(text: str) -> Analysis:
             )
             for claim in claims
         ]
-        for modifiers, kind, target, label, line_no, block_text in entries:
-            for modifier in sorted(modifiers):
-                key = (modifier, kind, target)
-                first = seen.get(key)
-                if first is None:
-                    seen[key] = (line_no, block_text)
-                    continue
-                violations.append(
-                    Violation(
-                        2,
-                        f"{TARGET.name}:{line_no} [{owner}] {block_text} re-declares "
-                        f"{label}, already claimed at "
-                        f"{TARGET.name}:{first[0]} ({first[1]}) — unreachable",
+        for combos, kind, target, label, line_no, block_text in entries:
+            for prior_combos, prior_line, prior_text in seen.get((kind, target), []):
+                if combos_intersect(combos, prior_combos):
+                    violations.append(
+                        Violation(
+                            2,
+                            f"{TARGET.name}:{line_no} [{owner}] {block_text} re-declares "
+                            f"{label}, already claimed at "
+                            f"{TARGET.name}:{prior_line} ({prior_text}) — unreachable",
+                        )
                     )
-                )
-                break
+                    break
+            seen.setdefault((kind, target), []).append((combos, line_no, block_text))
 
     # 3. The Insert-mode word chords are claimed by the Insert table exactly
     #    once. A modifier-less legacy arm claims its key code under every
@@ -1213,6 +1284,24 @@ SELF_TEST_CASES: list[tuple[str, str, Expectation]] = [
             )
         ),
         Expectation(violations=1, rules=(3,)),
+    ),
+    (
+        "ALT and ALT|SHIFT are disjoint bitmasks, so the two arms are not a duplicate",
+        synthetic_source(
+            "    let alt = KeyModifiers::ALT;\n"
+            "    let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;\n"
+            + TUPLE_INSERT_TABLE.replace(
+                "    match (key.modifiers, key.code) {\n",
+                "    match (key.modifiers, key.code) {\n"
+                "        (m, KeyCode::Char('u')) if m == alt => {\n"
+                "            true\n"
+                "        }\n"
+                "        (m, KeyCode::Char('u')) if m == alt_shift => {\n"
+                "            true\n"
+                "        }\n",
+            )
+        ),
+        Expectation(violations=0, rules=()),
     ),
     (
         "a shape the guard cannot resolve is an error, not a pass",

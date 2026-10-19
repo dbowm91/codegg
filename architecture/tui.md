@@ -3207,10 +3207,38 @@ passes for a scoped `&DocumentSnapshot` borrow and for the bounded
 
 **Presentation record.** `TuiDocumentPresentation` owns cursor byte,
 selection range, viewport line and column, buffer mode, a two-byte pending
-command prefix, the open insert session, and the undo/redo stacks. Undo
-entries are capped at 256 entries and 4 MiB across both directions, and
-retain *both* the forward and inverse transactions so moving an entry between
-stacks is exact.
+command prefix, the open insert session, and the **edit history**. The
+history is **one ordered list with a cursor in it** — `history`,
+`history_bytes` and `history_cursor` — not two stacks. `history_cursor` is
+the number of *applied* entries: `0` is the beginning of the history
+(everything is redoable) and `history.len()` is the tip (nothing is
+redoable). An entry never moves between containers, so "undo" and "redo" are
+the same movement in opposite directions, and an entry cannot lose the
+direction it is not currently using.
+
+Undo entries are capped at **256 entries and 4 MiB in total** — one cap over
+the history, not one per direction — and retain *both* the forward and
+inverse transactions, so a traversal in either direction is exact. The
+two-stack model enforced the bounds twice, so its worst case was twice this;
+the single history is what makes the code match the documented bound.
+
+**One history and a time cursor.** `u` and `U` move the cursor back and
+forward one entry. `Alt+u` and `Alt+U` — Helix's `earlier` and `later` — do
+the same and **report** their boundary: `Alt+u` at the oldest change says
+"no earlier change", and `Alt+U` at the newest says "no later change". `u`
+and `U` stay silent at the boundary, as they always have. That divergence is
+a CodeGG convention, not a Helix behaviour — in Helix all four are the same
+movement — and it is recorded as one.
+
+The cursor's position is **observable**: while it is not at the tip, the
+editor's banner row says `history <at>/<of>`, and at the tip it says
+nothing, so the ordinary case draws exactly what it drew before the cursor
+existed. A cursor nobody can see is a rename.
+
+The cursor moves **only after** the apply is accepted. A refused apply
+leaves the document, the history and the cursor exactly where they were: a
+cursor that moved without a matching change of text would leave the history
+describing a document that does not exist.
 
 **A typing burst is one undo step.** The open insert session
 (`TuiDocumentPresentation::insert_session`) accumulates the edits of one
@@ -3252,7 +3280,7 @@ composer badge and every dockable box already show. On `Route::Editor`:
 | Mode | Keyboard | Typing goes to |
 |---|---|---|
 | `Insert` | the document | the text box — the cursor is drawn there |
-| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `/`, `n`, `N`, `i/a/I/A/o/O`, `u`, `U`) | the bottom input box |
+| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `/`, `n`, `N`, `i/a/I/A/o/O`, `u`, `U`, `Alt+u`, `Alt+U`) | the bottom input box |
 
 The `Insert` row's keyboard is the document's own: printable characters, the
 arrow keys, and the Helix insert-mode chords — `Ctrl+h`, `Ctrl+d`, `Ctrl+j`,
@@ -3368,7 +3396,11 @@ never lose a path. Two things enforce the rule:
   stage and fails when a mode table re-declares a chord an earlier stage owns,
   or when one table declares the same chord twice. It treats an arm shape it
   cannot resolve as an **error**, never as a pass, and asserts the stages still
-  exist so it cannot pass vacuously.
+  exist so it cannot pass vacuously. Its conflict rule compares **exact
+  modifier bitmasks**, not modifier names: an arm that accepts exactly `ALT`
+  and one that accepts exactly `ALT | SHIFT` are disjoint, exactly as Rust's
+  `==` on the bitflags says they are, and the guard must not call them a
+  duplicate.
 - The dispatch-path tests in `src/tui/commands/editor.rs` drive every
   Normal-mode arm through `editor_buffer_key` and assert both the reported
   `BufferKey` and the observable state change, so a shadowed arm fails on the
@@ -3376,6 +3408,16 @@ never lose a path. Two things enforce the rule:
   Insert-mode sweep separately asserts that no Normal-mode binding reaches the
   Insert path and swallows a printable character, in all three spellings a
   terminal may send a capital (`Char('R')` with `NONE` *or* `SHIFT`).
+
+**The capital-encoding rule.** A terminal may report a capital letter as the
+shifted glyph (`Char('U')`) or as the plain glyph plus a `SHIFT` modifier
+(`Char('u')` with `SHIFT`), and the two are not the same key event. Every
+arm that claims a capital therefore accepts both spellings — `U` takes
+`Char('U')` with `NONE` *or* `SHIFT`, and `Alt+U` takes `Char('U')` with
+`ALT` *or* `ALT | SHIFT` **and** `Char('u')` with `ALT | SHIFT`. The two
+spellings of `Alt+U` differ in the *key code*, not only in the modifier, so
+they cannot share one arm; a chord that is live on one terminal and dead on
+the next is the M013 failure mode, and the tests drive both.
 
 One stage sits above this chain: `handle_editor_key` answers the App layer's
 Normal-only pane gestures (`Shift+L`/`Shift+H`) before the buffer sees the key.

@@ -1,7 +1,9 @@
 # TUI editor Helix parity Milestone 012 — Undo history traversal
 
-Status: ready for handoff
+Status: implemented - closed 2026-10-19
 Repository baseline: `a8778e87c` (`feat/auto-20261018-12255c45`)
+Closure: `plans/closure/tui-editor-helix-parity/012-status.md`
+Implementation decisions and recorded deviations: §17 below
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7 M012
 Long-term requirements: `plans/000-long-term-specification.md` (IDE-grade
@@ -393,7 +395,7 @@ they report the boundary (§6.5).
 
 ### 6.4 The chords
 
-Two arms in `handle_normal_key` (`src/tui/commands/editor.rs:3138`):
+Two gestures in `handle_normal_key` (`src/tui/commands/editor.rs:3138`):
 
 - `(alt, KeyCode::Char('u'))` → move the cursor back one entry.
 - `(alt, KeyCode::Char('U'))` **and** `(alt | shift, KeyCode::Char('u'))` →
@@ -404,13 +406,25 @@ already does this for `NONE`/`SHIFT` (`:3560`); the `Alt-U` arm must do
 the same for `ALT` and `ALT|SHIFT`. A test drives both spellings, exactly as
 M013's `leaf_lookup_char` test does for `space S`.
 
+**The modifier is an exact bitmask in every arm.** `ALT` and `ALT | SHIFT`
+are different keys, and Rust's `==` on the bitflags says so; the arms are
+written as a `let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;`
+binding rather than as the or-pattern `m == alt | m == shift`, which is not
+a bitmask at all. See §17.1.
+
+Implemented as three arms, because the two spellings of the capital differ
+in the **key code** and not only in the modifier:
+
+```rust
+(m, KeyCode::Char('u')) if m == alt => { /* earlier */ }
+(m, KeyCode::Char('U')) if m == alt || m == alt_shift => { /* later */ }
+(m, KeyCode::Char('u')) if m == alt_shift => { /* later */ }
+```
+
 **Both are Normal-mode only.** Insert mode's catch-all covers `NONE`/`SHIFT`
 only, so an `Alt` chord is inert there — the property
-`the_eight_alt_chords_are_inert_in_insert_mode` (`:7806-7836`) pins, and
-that test must be extended with `u` and `U`.
-
-`handle_normal_key` already has the `alt` let-binding (`:3156`), and eleven
-existing `Alt-*` arms use it.
+`the_eleven_alt_chords_are_inert_in_insert_mode` pins, and
+that test is extended with `u` and `U`.
 
 ### 6.5 The boundary report
 
@@ -460,19 +474,24 @@ which of the two happened.
 
 ### 6.9 Guard changes
 
-- **The key-authority guard needs no change.** `ALT` is in `MODIFIERS`,
-  `ALT_RE` parses the `alt` let-binding, and an `ALT` chord cannot collide
-  with the guard block's `CONTROL` chords. The Normal-mode count goes
-  **66 → 68**, and the closure records it.
+- **The key-authority guard's conflict model changed.** `ALT` was already in
+  `MODIFIERS` and the `alt` let-binding was already parsed, but rule 2 keyed
+  a claim by its **modifier names**, so an arm accepting exactly `ALT` and
+  one accepting exactly `ALT | SHIFT` looked like a duplicate. The rule now
+  compares **exact modifier bitmasks**, which is what Rust's `==` on the
+  bitflags compares. See §17.1. The Normal-mode count goes **66 → 69** —
+  three chords, not two, for the reason in §17.2 — and the closure records
+  it.
 - **The prefix-state guard needs no change**, provided the new field is not
   named with "prefix" in it (§4.7).
 - **The text-authority guard needs no change**, provided `EditorUndoEntry`
   and `clear_history` keep their names (§4.6).
 - **The milestone must extend two tests** that pin a *count*:
-  `the_eight_alt_chords_are_inert_in_insert_mode` (`:7834`) and
-  `all_eighteen_chords_are_claimed_in_normal_mode` (`:7866`, asserting
-  `claimed.len() == 22` → **24**). A count that is not updated is a test
-  that fails for the wrong reason.
+  `the_eleven_alt_chords_are_inert_in_insert_mode` (renamed from
+  `the_eight_alt_chords_are_inert_in_insert_mode`, whose name said eight
+  while its list held nine) and `all_eighteen_chords_are_claimed_in_normal_mode`
+  (asserting `claimed.len() == 22` → **24**). A count that is not updated is
+  a test that fails for the wrong reason.
 
 ## 7. Ordered work packages
 
@@ -619,7 +638,7 @@ not a doc surface; it is not edited.
 6. The retained history never exceeds 256 entries or 4 MiB **in total**.
 7. A refused apply leaves the cursor where it was.
 8. `Alt-u` and `Alt-U` are inert in Insert mode.
-9. The key-authority guard reports **68** Normal-mode chords, and the two
+9. The key-authority guard reports **69** Normal-mode chords, and the two
    count tests are updated to 24 and the extended Alt list.
 10. `EditorCommand::Undo` / `Redo` are either wired or deleted — no dead
     variant survives.
@@ -691,3 +710,153 @@ Stop and report rather than continue if any of these holds.
   `Char('U')` with no modifier and one that reports `Char('u')` + `SHIFT`
   are both real. M013 hit this with `space S` and `space F`; the same
   failure here would make `Alt-U` live on one machine and dead on the next.
+
+## 17. Implementation decisions and recorded deviations (2026-10-19)
+
+Recorded here rather than left implicit, per the planning rule that a plan
+which disagrees with the code is a defect.
+
+### 17.1 The guard's conflict model had to become the **exact modifier bitmask**
+
+§6.9 says *"The key-authority guard needs no change."* That is wrong, and
+§6.4's own snippet is what made it wrong.
+
+The guard's rule 2 keyed a claim by the **set of modifier names** it carried,
+so an arm accepting exactly `ALT` and one accepting exactly `ALT | SHIFT`
+looked like they overlapped — both carry the name `ALT`. Rust's `==` on
+`KeyModifiers` says they are disjoint, so the guard would have reported a
+false positive, and the source would have had to be contorted to avoid it.
+A guard that cries wolf is a guard that gets switched off.
+
+**Decided:** the guard resolves an arm's modifier predicate to the set of
+**exact bitmasks** it admits. A predicate `m == alt || m == alt_shift`
+admits two bitmasks — exactly `ALT` and exactly `ALT | SHIFT` — and not
+their combination. Rule 2 is now a pairwise **intersection** on those
+bitmasks. Rules 1 and 3 still compare modifier *names*, because what they
+ask is whether a chord is *shadowed*, not whether it is identical.
+
+The guard also learned to read a multi-modifier binding —
+`let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;` — which is how
+§6.4's `alt | shift` is spelled in Rust. §6.4's snippet used a Rust
+or-pattern, `m == alt | m == shift`, which is not a bitmask at all: the
+prose was right and the snippet was wrong.
+
+A tenth self-test case pins the new model: `ALT` and `ALT | SHIFT` are
+disjoint bitmasks, so two arms that claim them are not a duplicate.
+
+### 17.2 The Normal-mode chord count is **69**, not 68
+
+§6.9 and acceptance criterion 9 say the guard reports **68** Normal-mode
+chords, from 66. It reports **69**.
+
+The guard counts a chord as an **arm**, and the two terminal spellings of
+`Alt-U` differ in the **key code**, not only in the modifier: a terminal
+that reports the shifted glyph sends `(ALT, Char('U'))`, and one that
+reports the modifier sends `(ALT | SHIFT, Char('U'))` or
+`(ALT | SHIFT, Char('u'))`. Two spellings with different codes cannot
+share one arm — a Rust or-pattern would have to bind the same variable in
+both alternatives, and a guard that matched the *code* would have to decide
+which spelling each alternative was.
+
+So the two gestures are **three** arms: `Alt-u` is `(ALT, Char('u'))`;
+`Alt-U` is `(ALT, Char('U'))` — which also accepts
+`(ALT | SHIFT, Char('U'))` — and `(ALT | SHIFT, Char('u'))`. The plan's 68
+counted the two **verbs**; the guard counts three **chords**.
+
+**The plan's 68 is corrected to 69.** The Insert-mode count is unaffected
+(M011's 8), and the claimed-chord test count is 24 as §3.7 says.
+
+### 17.3 A redo restores the **same** recorded position an undo restores
+
+§3.1 and §6.1 say the entry is unchanged, with the same fields. The
+two-stack model gave the redo stack its **own** copy of the entry's cursor:
+`EditorUndoEntry::rebased` re-recorded the cursor as the position the
+reader was at when they pressed `u`, so a redo landed there rather than at
+the pre-edit position.
+
+With one history and one entry there is one recorded position. The redo now
+restores `entry.cursor_before` — the same value the undo restores — and
+`rebased` is deleted, because its only caller was the transfer between the
+two stacks that no longer exists.
+
+**The change is visible:** after `u` and then `U`, the cursor is at the
+entry's recorded position rather than where the reader was when they
+undid. It is also *more* symmetric: both directions restore the state the
+entry names, which is what a time cursor means.
+
+### 17.4 The entry's **doc** changed; its fields did not
+
+§6.1 says "`EditorUndoEntry` is **unchanged** — same fields, same doc." The
+fields are unchanged. The **doc** is not, because it described the model
+this milestone removed: *"An entry retains **both** directions so moving it
+between the undo and redo stacks is exact."* An entry no longer moves
+between stacks — it never moves at all — so the doc now says that, and the
+invariant becomes structural rather than a discipline.
+
+### 17.5 The dead `EditorCommand::Undo` / `Redo` variants were **deleted**
+
+§6.8 leaves the choice open. They were **deleted**.
+
+`resolve_edit` builds an edit from a snapshot; an undo cannot be built that
+way, because the inverse of an edit is not derivable from the current text
+alone — it is a property of the *entry*, and the entry is not an
+`EditorEdit`. So `PrefixAction::Edit` could not carry them either. A
+variant with no producer is a claim, not a hook, and this milestone touches
+the file they live in.
+
+### 17.6 The insert session is committed in **both** traversal directions
+
+§8 describes the session being committed for undo. It is committed for
+**every** traversal, forward included.
+
+A traversal has to read the history, and the history must describe the
+document: an open session is text that is in the document and not yet in
+the history. Committing it in one direction and not the other would make
+the same gesture mean different things depending on which way it went. For
+the forward direction the outcome is the same either way — the session
+opened by truncating the tail, so there is nothing later to move to.
+
+### 17.7 The refusal test moved to the apply side and changed its name
+
+§3.7 lists `rejected_undo_entry_returns_to_the_history_unchanged` as
+pinning §4.3. That test exercised the two-stack model's *"take the entry,
+put it back"* — a transfer that no longer exists, and the model-level fact
+it asserted (the entry is still there) is now structural: an entry never
+leaves the history.
+
+The guarantee §4.3 actually protects is an **apply-side** fact — a refused
+apply does not move the cursor — and it is now pinned by
+`a_refused_undo_leaves_the_history_cursor_where_it_was` in
+`src/tui/commands/editor.rs`. The model-level test that replaced the old
+one is `the_entry_stays_in_the_history_when_the_cursor_moves_back`.
+
+### 17.8 The status surface is the editor's **banner row**, not the fallback
+
+§6.6 says the position belongs on "the editor's status surface". The
+fallback string at `src/tui/app/render.rs:957` is the *no-snapshot* path —
+a shell drawn when the controller has no text — and it is not the status
+surface a reader looks at. The status surface is the banner row the
+`EditorWidget` paints, and that is where the position goes: it is the one
+row that carries the mode, the status word, the find disclosure and the
+pending indicator.
+
+The position is disclosed when the cursor is **not** at the tip and says
+nothing when it is, so an ordinary editing session draws exactly what it
+drew before this milestone. The evidence is the render test
+`the_history_position_is_disclosed_only_when_the_cursor_is_not_at_the_tip`
+in `src/tui/components/editor.rs`.
+
+### 17.9 The history gestures are not documented under "Multi-key gestures"
+
+§12 puts the new gesture in `docs/tui.md`'s **"Multi-key gestures"** section.
+That section is about **prefixes** — gestures whose first key is held while
+the second is waited for, and which show an indicator while they are held
+(`g`, `space`, `r`). `Alt+u` is a **single chord**: nothing is held, nothing
+is waited for, and there is no indicator to show.
+
+A chord with a modifier in a section about held prefixes would teach the
+reader to expect an indicator that never appears. The history gestures are
+therefore documented in a new **"History gestures"** section in
+`docs/tui.md`, immediately before "Insert-mode chords", and the
+editor-language-features introduction links to it. The other six
+documentation surfaces in §12 are updated as specified.

@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M008, M011 and M013 closed; M009–M010 implementation started; M012 and M015 planned and ready; M014 blocked on ADR-0034)
+Status: active (M001–M008, M011, M012 and M013 closed; M009–M010 implementation started; M015 planned and ready; M014 blocked on ADR-0034)
 
 Long-term references:
 
@@ -1147,6 +1147,52 @@ bound on retained payload bytes is preserved.
 >
 > Plan: `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md`
 
+> **Amendment A2 (2026-10-19) — the milestone landed; five corrections to
+> this entry and to the plan's own figures.**
+>
+> 1. **The guard's Normal-mode count is 69, not 68.** The plan counted the
+>    two *gestures* — `Alt-u` and `Alt-U` — and the guard counts *chords*.
+>    The two terminal spellings of `Alt-U` differ in the **key code**, not
+>    only in the modifier: a terminal that reports the shifted glyph sends
+>    `(ALT, Char('U'))`, and one that reports the modifier sends
+>    `(ALT | SHIFT, Char('U'))` or `(ALT | SHIFT, Char('u'))`. Two spellings
+>    with different codes cannot share one arm, so the two gestures are
+>    **three** arms and the count is `66 → 69`. The Insert-mode count is
+>    unaffected at 8. The plan's §6.9, §13.9 and the stage table below are
+>    corrected to 69, and the plan's §17.2 carries the reasoning.
+> 2. **The key-authority guard's conflict model had to change.** The plan's
+>    §6.9 said the guard "needs no change". It did: rule 2 keyed a claim by
+>    its **modifier names**, so an arm accepting exactly `ALT` and one
+>    accepting exactly `ALT | SHIFT` looked like a duplicate — both carry the
+>    name `ALT`. Rust's `==` on the bitflags says they are disjoint, so the
+>    old model would have reported a false positive and the source would have
+>    had to be contorted to avoid it. The rule now compares **exact modifier
+>    bitmasks**, and the guard learned to read a multi-modifier binding
+>    (`let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;`). A tenth
+>    self-test case pins the new model.
+> 3. **A redo restores the same recorded position an undo restores.** The
+>    two-stack model gave the redo stack its own copy of the entry's cursor
+>    (`EditorUndoEntry::rebased`), so a redo landed where the reader was when
+>    they pressed `u`. One history and one entry carry one recorded
+>    position, so a redo restores `entry.cursor_before` — the same value the
+>    undo restores — and `rebased` is deleted. The change is visible after
+>    `u` then `U`, and it is *more* symmetric: both directions restore the
+>    state the entry names.
+> 4. **The dead `EditorCommand::Undo` / `Redo` variants were deleted, not
+>    wired.** They were never constructed, and an undo cannot be built from a
+>    snapshot the way `resolve_edit` builds an edit — the inverse of an edit
+>    is a property of the *entry*, and the entry is not an `EditorEdit` — so
+>    `PrefixAction::Edit` could not carry them either.
+> 5. **The observable cursor is on the editor's banner row.** The plan
+>    pointed at the fallback string in `src/tui/app/render.rs`, which is the
+>    *no-snapshot* shell rather than the status surface a reader looks at.
+>    The banner row — the one that carries the mode, the status word, the
+>    find disclosure and the pending indicator — is where the position goes.
+>    It reads `history <at>/<of>` while the cursor is not at the tip, and
+>    nothing at all when it is, so the ordinary case is unchanged.
+>
+> The plan's §17 records each of these in full, with the reasoning.
+
 ### M014 — Syntax-tree text objects and structural selection
 
 Class: capability
@@ -1343,7 +1389,7 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M009 | **active** | `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md` | — | Byte-derived boundary only; the syntax-node slice moved to M014 (Amendment A3). W1 landed: the byte foundation, in `src/tui/editor_match.rs` |
 | M010 | **active** | `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md` | — | M013 closed; M005 closed earlier — unblocked. W1 landed: the pending-effect mechanism is editor-level, in `src/tui/editor_effect.rs` |
 | M011 | **closed** | `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md` | `plans/closure/tui-editor-helix-parity/011-status.md` | M002 edge discharged; the `Ctrl+s`/`Ctrl+r` conflict is decided (Amendment A1). Closed 2026-10-19 (Amendment A2): the nine insert-mode chords are bound with one owner each, the two mode-blind panels are fixed, a typing burst is one undo step, and the guard's Insert chord count is **8** — not the 9 §13 originally recorded |
-| M012 | **ready** | `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md` | — | M002 edge discharged; sequenced after M011 (Amendment A1) |
+| M012 | **closed** | `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md` | `plans/closure/tui-editor-helix-parity/012-status.md` | M002 edge discharged; sequenced after M011 (Amendment A1). Closed 2026-10-19 (Amendment A2): the history is one list with a cursor in it, `Alt-u`/`Alt-U` walk it and report their boundary, the position is observable on the banner row, the memory bound is one cap, and the guard's Normal chord count is **69** — not the 68 the plan recorded, because the two spellings of the capital differ in the key code |
 | M013 | **closed** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | `plans/closure/tui-editor-helix-parity/013-status.md` | — |
 | M014 | **blocked** | — | — | ADR-0034 acceptance; its plan is written after the ADR selects an option |
 | M015 | **ready** | `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md` | — | M013 closed; the previews are delivered and unreachable until this lands |
@@ -1516,14 +1562,16 @@ key-authority guard teaching.
 | # | Constraint | Source |
 |---|---|---|
 | C1 | M011's insert-session coalescing must land **before or with** M012's traversal work, or M012 must be re-derived | M011 §6.2; M012 §5; Amendment A1 |
-| C2 | M012's chords must land while the Normal-chord base is still 66, because M012's acceptance criterion 9 pins the guard's report to **68** | M012 §13.9 |
+| C2 | M012's chords must land while the Normal-chord base is still 66, because M012's acceptance criterion 9 pins the guard's report to **69** | M012 §13.9; Amendment A2 |
 | C3 | M010 must land before M015, because M015's acceptance criterion 8 requires `space r` and `space R` to be **distinct and both reachable** — `space R` is M010's binding | M015 §13.8 |
 | C4 | M011's mode-aware panels must land before its chords — a `Ctrl-x` popup that then eats `Enter` is worse than no `Ctrl-x` | M011 §7 W2 |
 | C5 | M012's chords must land after M012's model; M009's grammar before its resolvers; M010's W2 before W7; M015's W1 before W4 | each plan's §7 |
 
 **C2 is the one constraint that moves a milestone out of roadmap order.**
 `m` (M009) and `=` (M015) each add one Normal-mode chord; `Alt-u` and
-`Alt-U` add two. If M009 landed first, M012's report would be 69 and its own
+`Alt-U` add **three** — the two terminal spellings of the capital differ in
+the key code, so they need two arms, and `Alt-u` is the third. If M009 landed
+first, M012's report would be 70 and its own
 acceptance criterion would fail. The roadmap does not order M009 against
 M011/M012 — they sit in different branches of the dependency graph — so
 placing M012 first violates nothing and preserves M012's hard number. The
@@ -1535,12 +1583,12 @@ absolutes**, and only the final figure is recorded once, at the end.
 | Stage | Work packages | Normal chords | Insert chords |
 |---|---|---|---|
 | A | **M011** W1–W6: the guard (landed), the mode-aware panels, the deletion builders, the nine Insert arms, the coalescing, the docs | 66 (unchanged — M011 adds no Normal-mode chord) | 1 → **8** |
-| B | **M012** W1–W6: the cursor model, the apply side, the `Alt-u`/`Alt-U` arms, the boundary report and the observable cursor, the dead variants, the docs | 66 → **68** | 8 |
-| C | **M009** W2–W6: the grammar, the pair matching, the text objects, the surround verbs, the guards and the docs | 68 → **69** | 8 |
-| D | **M010** W2–W7: the file picker, the clipboard family, the command palette, the visible statements, the leaf-table guard, the docs | 69 | 8 |
-| E | **M015** W1–W4: the format preview, the rename prompt, the `space a` statement, the docs | 69 → **70** | 8 |
+| B | **M012** W1–W6: the cursor model, the apply side, the `Alt-u`/`Alt-U` arms, the boundary report and the observable cursor, the dead variants, the docs | 66 → **69** | 8 |
+| C | **M009** W2–W6: the grammar, the pair matching, the text objects, the surround verbs, the guards and the docs | 69 → **70** | 8 |
+| D | **M010** W2–W7: the file picker, the clipboard family, the command palette, the visible statements, the leaf-table guard, the docs | 70 | 8 |
+| E | **M015** W1–W4: the format preview, the rename prompt, the `space a` statement, the docs | 70 → **71** | 8 |
 
-**Final figure: `2 guard-block chord(s), 70 Normal-mode chord(s), 8
+**Final figure: `2 guard-block chord(s), 71 Normal-mode chord(s), 8
 Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
 
 > **Correction (2026-10-19, stage A landed).** This table originally said the
@@ -1589,9 +1637,15 @@ Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
    const-constructible payload; option (b) costs one mapping arm and keeps
    the M005-frozen `leaves()` interface. M009 §6.2 records (a) as preferred
    and §14's stop condition fires on it.
-3. **Is the count test 24 or 25?** It is 24, with `Alt-U`'s second spelling
-   exercised by a separate test — stated in M012 §10 so the number is not 24
-   by accident.
+3. ~~**Is the count test 24 or 25?**~~ **Answered by M012 (2026-10-19).** It
+   is **24**, with `Alt-U`'s second spelling exercised by a **separate** test
+   — `alt_u_accepts_both_terminal_spellings_of_the_capital` — so the number
+   is not 24 by accident. The list holds the two *gestures* (`Alt-u` and
+   `Alt-U` in the `Char('U')` spelling), and the `Char('u')` + `ALT | SHIFT`
+   spelling is driven by its own test because it is a different chord, not a
+   different spelling of the same chord. The guard's own count is **69**,
+   not 68: it counts *chords* (arms), and the two spellings of the capital
+   differ in the key code, so they need two arms. See Amendment A2.
 4. **Where does M009's `m`-prefix indicator render, and what does `MatchArg`
    display?** `MatchArg::SurroundReplaceFrom` and `::SurroundReplaceTo` would
    both display `"m r"`, and the reader cannot tell which half is pending.

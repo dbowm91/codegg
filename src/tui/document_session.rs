@@ -206,14 +206,20 @@ pub struct TuiDocumentPresentation {
     /// partial match list that reads as complete is the same defect as
     /// unvalidated LSP coverage.
     pub search_partial: bool,
-    /// Frontend-local undo history of inverse transactions.
-    pub undo: Vec<EditorUndoEntry>,
-    /// Frontend-local redo history of inverse transactions.
-    pub redo: Vec<EditorUndoEntry>,
-    /// Retained undo payload bytes, for the undo memory bound.
-    pub undo_bytes: usize,
-    /// Retained redo payload bytes, for the redo memory bound.
-    pub redo_bytes: usize,
+    /// Frontend-local edit history, oldest first.
+    ///
+    /// One ordered history, not two stacks. Where the document sits in it is
+    /// `history_cursor`: how many entries are applied. An entry never moves
+    /// between containers, so "undo" and "redo" are the same movement in
+    /// opposite directions.
+    pub history: Vec<EditorUndoEntry>,
+    /// Retained history payload bytes, for the history memory bound.
+    pub history_bytes: usize,
+    /// How many entries of `history` are applied.
+    ///
+    /// `0` is the beginning of the history — everything is redoable.
+    /// `history.len()` is the tip — nothing is redoable.
+    pub history_cursor: usize,
     /// The open insert session, if insert mode has typed anything.
     ///
     /// Held beside the history because it *is* history that has not been
@@ -291,6 +297,23 @@ impl TuiDocumentPresentation {
             super::helix_selection::normalize_set(selections.to_vec(), self.primary_index);
         self.selections = selections;
         self.primary_index = primary;
+    }
+
+    /// Where the history cursor is standing, when it is not at the tip.
+    ///
+    /// `(position, length)`: how many entries of the history are applied, and
+    /// how many there are in all.
+    ///
+    /// `None` at the tip — the newest change is the applied one, which is
+    /// where a reader stands almost all the time. A time cursor nobody can
+    /// see is a rename, so the position is disclosed exactly when it is
+    /// *not* the obvious one, and the ordinary case draws nothing.
+    pub fn history_position(&self) -> Option<(usize, usize)> {
+        if self.history_cursor < self.history.len() {
+            Some((self.history_cursor, self.history.len()))
+        } else {
+            None
+        }
     }
 
     /// Forget the repeatable find and clear its disclosure.

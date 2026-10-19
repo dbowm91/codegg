@@ -721,7 +721,9 @@ Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
 (press again for one more), `d` deletes the selection, `y` and `space y` copy
 it, and `p`/`P` paste it back — the same keys `/terminal` uses in its viewing
 mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`, where typing goes into the file and
-`Esc` returns. `u`/`U` undo and redo, the Helix pair. In `NOR` anything the
+`Esc` returns. `u`/`U` undo and redo, the Helix pair, and `Alt+u`/`Alt+U` walk
+the same history one entry at a time — see
+[History gestures](#history-gestures). In `NOR` anything the
 buffer does not claim types into the input box at the bottom, so you can talk
 to the agent without leaving the file. `Esc` never closes the editor; `:q` does.
 
@@ -732,6 +734,29 @@ failure. Each chord has exactly one owner. In particular `U` is redo and
 `Ctrl+s` and `Ctrl+r` different Insert-mode meanings — an undo checkpoint and
 a register prompt — and CodeGG declines both; see
 [Insert-mode chords](#insert-mode-chords).
+
+### History gestures
+
+`u` undoes and `U` redoes. `Alt+u` and `Alt+U` are Helix's `earlier` and
+`later`: they walk the same history, one entry back and one entry forward.
+
+The difference is what happens at the edge. `u` with nothing to undo, and `U`
+with nothing to redo, do nothing and say nothing — they always have. `Alt+u`
+at the oldest change says **no earlier change**, and `Alt+U` at the newest says
+**no later change**, in the status row. A key that silently does nothing is
+the one failure this editor is built to avoid, and these are the keys where
+you are most likely to be at the edge without knowing it.
+
+The history is **one** list with a cursor in it, not two stacks. An entry
+never moves to a different pile, so undo and redo are the same movement in
+opposite directions. While the cursor is not at the newest change, the status
+row says where it is — `history 1/3` — so you can see that you are standing
+in the middle of your own history. At the newest change it says nothing,
+because there is nothing to disclose.
+
+`Alt+u` and `Alt+U` are `NOR` gestures. In `INS` they are inert: the `INS`
+catch-all covers unmodified and `Shift`-modified keys only, so an `Alt` chord
+reaches the input box rather than vanishing.
 
 ### Insert-mode chords
 

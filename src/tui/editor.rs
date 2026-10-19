@@ -1300,9 +1300,15 @@ pub struct EditorEdit {
 
 /// One reversible step in the frontend-local undo history.
 ///
-/// An entry retains **both** directions so moving it between the undo and
-/// redo stacks is exact. Reusing the same transaction for both would make
-/// redo re-apply the undo, silently reverting the user's re-edit.
+/// An entry retains **both** directions, so one entry is what undo and redo
+/// each apply. Reusing the same transaction for both would make redo
+/// re-apply the undo, silently reverting the user's re-edit.
+///
+/// **The entry never moves.** The history is one ordered list and a cursor
+/// names the position in it, so "undo" and "redo" are the same movement in
+/// opposite directions rather than a transfer between two stacks. That is
+/// what makes the "both directions" invariant structural: there is no
+/// direction in which an entry can lose its other half.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorUndoEntry {
     /// Transaction that produces the newer text. Redo applies this.
@@ -1321,23 +1327,6 @@ pub struct EditorUndoEntry {
     pub selections_before: Vec<crate::tui::helix_selection::Selection<EditorPoint>>,
     /// Retained payload bytes across both directions, for the memory bound.
     pub bytes: usize,
-}
-
-impl EditorUndoEntry {
-    /// Rebase the recorded cursor onto the position the user is leaving
-    /// now, so the entry is correct on the opposite stack.
-    ///
-    /// The two transactions are **not** swapped. They are direction
-    /// labelled rather than stack labelled: `inverse` is always what
-    /// undo applies and `forward` is always what redo applies, so an entry
-    /// moves between stacks unchanged apart from its cursor. Swapping
-    /// them would make redo re-apply the undo.
-    pub fn rebased(self, cursor_before: usize) -> Self {
-        Self {
-            cursor_before,
-            ..self
-        }
-    }
 }
 
 /// One open insert session: the edits since Insert mode was entered.
@@ -1443,8 +1432,6 @@ pub enum EditorCommand {
     DeleteLine,
     DeleteToLineEnd,
     DeleteWord,
-    Undo,
-    Redo,
 }
 
 impl EditorCommand {
@@ -4430,12 +4417,16 @@ pub fn record_undo(presentation: &mut TuiDocumentPresentation, edit: &EditorEdit
     );
 }
 
-/// Push one accepted edit onto the undo history and clear the redo history.
+/// Push one accepted edit onto the history and truncate anything after it.
 ///
 /// `cursor_before` is the position observed *before*
 /// the forward transaction, so undo restores where the user actually was.
 /// `selections_before` is the same idea for the selection set: undo restores
 /// the members the reader had, not an empty buffer with the text put back.
+///
+/// A new edit after an undo **truncates the tail**: everything after the
+/// cursor is dropped, because that text is no longer reachable. This is
+/// today's `push_undo` clearing the redo stack, expressed as a cursor.
 pub fn push_undo(
     presentation: &mut TuiDocumentPresentation,
     forward: TextTransaction,
@@ -4444,17 +4435,74 @@ pub fn push_undo(
     cursor_before: usize,
     selections_before: Vec<crate::tui::helix_selection::Selection<EditorPoint>>,
 ) {
-    presentation.undo.push(EditorUndoEntry {
+    truncate_history_tail(presentation);
+    presentation.history.push(EditorUndoEntry {
         forward,
         inverse,
         cursor_before,
         selections_before,
         bytes,
     });
-    presentation.undo_bytes = presentation.undo_bytes.saturating_add(bytes);
-    presentation.redo.clear();
-    presentation.redo_bytes = 0;
+    presentation.history_bytes = presentation.history_bytes.saturating_add(bytes);
+    presentation.history_cursor = presentation.history.len();
     trim_history(presentation);
+}
+
+/// Drop everything after the history cursor, and the bytes it held.
+///
+/// The cursor is a count of applied entries, so truncating the tail leaves
+/// it where it is: the applied entries are the ones before it, and they are
+/// untouched.
+pub fn truncate_history_tail(presentation: &mut TuiDocumentPresentation) {
+    let cursor = presentation.history_cursor.min(presentation.history.len());
+    if cursor >= presentation.history.len() {
+        return;
+    }
+    let dropped: usize = presentation.history[cursor..]
+        .iter()
+        .map(|entry| entry.bytes)
+        .sum();
+    presentation.history_bytes = presentation.history_bytes.saturating_sub(dropped);
+    presentation.history.truncate(cursor);
+}
+
+/// The entry one step **back** from the cursor, if there is one.
+///
+/// This is what `u` undoes: the entry the current text was produced by.
+pub fn undo_entry(presentation: &TuiDocumentPresentation) -> Option<&EditorUndoEntry> {
+    let index = presentation.history_cursor.checked_sub(1)?;
+    presentation.history.get(index)
+}
+
+/// The entry one step **forward** from the cursor, if there is one.
+///
+/// This is what `U` redoes: the entry the text can still be moved to.
+pub fn redo_entry(presentation: &TuiDocumentPresentation) -> Option<&EditorUndoEntry> {
+    presentation.history.get(presentation.history_cursor)
+}
+
+/// Move the history cursor **back** one entry.
+///
+/// Returns `false` at the beginning of the history, where there is nothing
+/// earlier to move to.
+pub fn move_history_cursor_back(presentation: &mut TuiDocumentPresentation) -> bool {
+    if presentation.history_cursor == 0 {
+        return false;
+    }
+    presentation.history_cursor -= 1;
+    true
+}
+
+/// Move the history cursor **forward** one entry.
+///
+/// Returns `false` at the tip of the history, where there is nothing later
+/// to move to.
+pub fn move_history_cursor_forward(presentation: &mut TuiDocumentPresentation) -> bool {
+    if presentation.history_cursor >= presentation.history.len() {
+        return false;
+    }
+    presentation.history_cursor += 1;
+    true
 }
 
 /// Fold one accepted edit into the open insert session, if it fits.
@@ -4495,8 +4543,12 @@ pub fn absorb_insert_edit(
             cursor_before,
             selections_before,
         });
-        presentation.redo.clear();
-        presentation.redo_bytes = 0;
+        // The redo tail is dropped when the session **opens**, and only then.
+        // A reader who undoes and then types must not have the tail
+        // resurrected by the next keystroke of the new burst, and dropping it
+        // on every keystroke of the burst would drop a redo the reader had
+        // earned since the burst began.
+        truncate_history_tail(presentation);
         return true;
     };
     // The run continues only at the end of the run so far. An insertion
@@ -4569,65 +4621,32 @@ pub fn discard_insert_session(presentation: &mut TuiDocumentPresentation) {
     presentation.insert_session = None;
 }
 
-/// Take the newest undo entry without applying it, so the caller can apply
-/// it through the controller and restore it on rejection.
-pub fn take_undo(presentation: &mut TuiDocumentPresentation) -> Option<EditorUndoEntry> {
-    let entry = presentation.undo.pop()?;
-    presentation.undo_bytes = presentation.undo_bytes.saturating_sub(entry.bytes);
-    Some(entry)
-}
-
-/// Take the newest redo entry without applying it.
-pub fn take_redo(presentation: &mut TuiDocumentPresentation) -> Option<EditorUndoEntry> {
-    let entry = presentation.redo.pop()?;
-    presentation.redo_bytes = presentation.redo_bytes.saturating_sub(entry.bytes);
-    Some(entry)
-}
-
-/// Return an entry to the undo history after the controller rejected it.
-pub fn restore_undo(presentation: &mut TuiDocumentPresentation, entry: EditorUndoEntry) {
-    presentation.undo.push(entry);
-    presentation.undo_bytes = presentation
-        .undo_bytes
-        .saturating_add(presentation.undo.last().map_or(0, |e| e.bytes));
-    trim_history(presentation);
-}
-
-/// Record an entry on the redo history after a successful undo.
-pub fn record_redo(presentation: &mut TuiDocumentPresentation, entry: EditorUndoEntry) {
-    presentation.redo_bytes = presentation.redo_bytes.saturating_add(entry.bytes);
-    presentation.redo.push(entry);
-    trim_history(presentation);
-}
-
+/// Evict the oldest entries until the history is inside **one** cap.
+///
+/// **One cap, not one per stack.** The two-stack model enforced the depth
+/// and byte bounds twice — once per stack — so the worst case was twice the
+/// bound `architecture/tui.md` documents. A single history restores the
+/// documented reading and *tightens* the bound.
 fn trim_history(presentation: &mut TuiDocumentPresentation) {
-    while presentation.undo.len() > MAX_EDITOR_UNDO_DEPTH
-        || presentation.undo_bytes > MAX_EDITOR_UNDO_BYTES
+    while presentation.history.len() > MAX_EDITOR_UNDO_DEPTH
+        || presentation.history_bytes > MAX_EDITOR_UNDO_BYTES
     {
-        match presentation.undo.first() {
+        match presentation.history.first() {
             Some(oldest) => {
-                presentation.undo_bytes = presentation.undo_bytes.saturating_sub(oldest.bytes)
+                presentation.history_bytes = presentation.history_bytes.saturating_sub(oldest.bytes)
             }
             None => {
-                presentation.undo_bytes = 0;
+                presentation.history_bytes = 0;
                 break;
             }
         }
-        presentation.undo.remove(0);
-    }
-    while presentation.redo.len() > MAX_EDITOR_UNDO_DEPTH
-        || presentation.redo_bytes > MAX_EDITOR_UNDO_BYTES
-    {
-        match presentation.redo.first() {
-            Some(oldest) => {
-                presentation.redo_bytes = presentation.redo_bytes.saturating_sub(oldest.bytes)
-            }
-            None => {
-                presentation.redo_bytes = 0;
-                break;
-            }
+        presentation.history.remove(0);
+        // The cursor counts the applied entries, which are the ones at the
+        // front. Dropping the oldest shifts every index after it, so the
+        // count shifts with them.
+        if presentation.history_cursor > 0 {
+            presentation.history_cursor -= 1;
         }
-        presentation.redo.remove(0);
     }
 }
 
@@ -4657,10 +4676,9 @@ fn trim_history(presentation: &mut TuiDocumentPresentation) {
 /// error the user can see, it just aims the next `j` at a column of a line
 /// that is no longer there.
 pub fn clear_history(presentation: &mut TuiDocumentPresentation) {
-    presentation.undo.clear();
-    presentation.redo.clear();
-    presentation.undo_bytes = 0;
-    presentation.redo_bytes = 0;
+    presentation.history.clear();
+    presentation.history_bytes = 0;
+    presentation.history_cursor = 0;
     // An open insert session is discarded, not committed. Its edits are
     // already in the text, but the text they described is the pre-reload
     // text: committing the session would record a step that restores a
@@ -5088,7 +5106,7 @@ mod tests {
             "a deletion is not a continuation of an insertion run"
         );
         commit_insert_session(&mut presentation);
-        assert_eq!(presentation.undo.len(), 1, "the run is one step");
+        assert_eq!(presentation.history.len(), 1, "the run is one step");
     }
 
     #[test]
@@ -5127,8 +5145,8 @@ mod tests {
         );
         commit_insert_session(&mut presentation);
 
-        assert_eq!(presentation.undo.len(), 1, "one run, one step");
-        let entry = presentation.undo.last().expect("one entry");
+        assert_eq!(presentation.history.len(), 1, "one run, one step");
+        let entry = undo_entry(&presentation).expect("one entry");
         let forward = entry.forward.edits.first().expect("one edit");
         assert_eq!(forward.range.start..forward.range.end, 0..0);
         assert_eq!(forward.insert, "ab", "the whole run, as one insertion");
@@ -5139,7 +5157,21 @@ mod tests {
 
     #[test]
     fn the_first_edit_of_a_run_clears_the_redo_tail() {
+        let snapshot = snapshot_of("hello");
         let mut presentation = presentation_at(0);
+        // An entry, undone, so that there is a tail to invalidate. Without
+        // one the assertion below would hold for a history that never had
+        // anything in it.
+        record_undo(
+            &mut presentation,
+            &insert_text(&snapshot, 0, "abc").unwrap(),
+        );
+        assert!(move_history_cursor_back(&mut presentation));
+        assert!(
+            redo_entry(&presentation).is_some(),
+            "there is a tail to clear"
+        );
+
         let insertion = TextTransaction::new(vec![TextEdit::new(0..0, "a")]);
         assert!(absorb_insert_edit(
             &mut presentation,
@@ -5148,8 +5180,11 @@ mod tests {
             0,
             Vec::new()
         ));
-        assert!(presentation.redo.is_empty(), "the redo tail is gone");
-        assert_eq!(presentation.redo_bytes, 0);
+        assert!(redo_entry(&presentation).is_none(), "the redo tail is gone");
+        assert_eq!(
+            presentation.history_cursor, 0,
+            "and the cursor is back at the beginning"
+        );
     }
 
     // ── `Ctrl+d` continues to the end ───────────────────────────────────
@@ -6450,15 +6485,28 @@ mod tests {
         let mut presentation = presentation_at(0);
         let edit = insert_text(&snapshot, 0, "abc").unwrap();
         record_undo(&mut presentation, &edit);
-        assert_eq!(presentation.undo.len(), 1);
-        assert!(presentation.undo_bytes > 0);
-        assert!(presentation.redo.is_empty());
+        assert_eq!(presentation.history.len(), 1);
+        let bytes = presentation.history_bytes;
+        assert!(bytes > 0);
+        assert_eq!(
+            presentation.history_cursor, 1,
+            "a new entry is applied, so the cursor is at the tip"
+        );
 
-        let entry = take_undo(&mut presentation).unwrap();
-        assert_eq!(presentation.undo.len(), 0);
-        assert_eq!(presentation.undo_bytes, 0);
-        record_redo(&mut presentation, entry);
-        assert_eq!(presentation.redo.len(), 1);
+        // Moving the cursor back does not remove the entry. The history is
+        // one list and the cursor names a position in it, so an entry that is
+        // no longer applied is still there to be applied again.
+        assert!(move_history_cursor_back(&mut presentation));
+        assert_eq!(presentation.history.len(), 1);
+        assert_eq!(presentation.history_cursor, 0);
+        assert_eq!(
+            presentation.history_bytes, bytes,
+            "the bytes are retained too"
+        );
+        assert!(
+            redo_entry(&presentation).is_some(),
+            "the undone entry is redoable"
+        );
     }
 
     #[test]
@@ -6475,7 +6523,7 @@ mod tests {
             let _ = &edit;
             record_undo(&mut presentation, &edit);
         }
-        assert_eq!(presentation.undo.len(), MAX_EDITOR_UNDO_DEPTH);
+        assert_eq!(presentation.history.len(), MAX_EDITOR_UNDO_DEPTH);
     }
 
     #[test]
@@ -6492,21 +6540,32 @@ mod tests {
             };
             record_undo(&mut presentation, &edit);
         }
-        assert!(presentation.undo_bytes <= MAX_EDITOR_UNDO_BYTES);
-        assert!(presentation.undo.len() < 8);
+        assert!(presentation.history_bytes <= MAX_EDITOR_UNDO_BYTES);
+        assert!(presentation.history.len() < 8);
     }
 
+    /// The one behaviour the cursor model must not get wrong.
+    ///
+    /// A refused apply leaves the cursor exactly where it was. The old
+    /// two-stack model expressed the same guarantee as "the entry goes back
+    /// on the stack"; with a cursor there is no transfer to undo, so the
+    /// guarantee is that the cursor does not move. The apply side is
+    /// `traverse_history`, and its refusal test is
+    /// `a_refused_undo_leaves_the_history_cursor_where_it_was`.
     #[test]
-    fn rejected_undo_entry_returns_to_the_history_unchanged() {
+    fn the_entry_stays_in_the_history_when_the_cursor_moves_back() {
         let snapshot = snapshot_of("hello");
         let mut presentation = presentation_at(0);
         let edit = insert_text(&snapshot, 0, "abc").unwrap();
         record_undo(&mut presentation, &edit);
-        let entry = take_undo(&mut presentation).unwrap();
-        let bytes = entry.bytes;
-        restore_undo(&mut presentation, entry);
-        assert_eq!(presentation.undo.len(), 1);
-        assert_eq!(presentation.undo_bytes, bytes);
+        let bytes = presentation.history_bytes;
+        assert!(move_history_cursor_back(&mut presentation));
+        assert_eq!(presentation.history.len(), 1);
+        assert_eq!(presentation.history_bytes, bytes);
+        assert_eq!(
+            presentation.history_cursor, 0,
+            "and the cursor did not move"
+        );
     }
 
     #[test]
@@ -6527,10 +6586,12 @@ mod tests {
         });
         presentation.find_note = FindNote::Absent('h');
         clear_history(&mut presentation);
-        assert!(presentation.undo.is_empty());
-        assert!(presentation.redo.is_empty());
-        assert_eq!(presentation.undo_bytes, 0);
-        assert_eq!(presentation.redo_bytes, 0);
+        assert!(presentation.history.is_empty());
+        assert_eq!(presentation.history_bytes, 0);
+        assert_eq!(
+            presentation.history_cursor, 0,
+            "a cleared history has no position in it"
+        );
         assert_eq!(presentation.pending_prefix, EditorPrefix::Idle);
         assert_eq!(
             presentation.last_find, None,

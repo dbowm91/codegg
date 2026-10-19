@@ -51,6 +51,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keystroke. A run ends early if you delete something or move the cursor and
   type somewhere else, because those are separate edits. A reload throws an
   unfinished burst away with the rest of the local draft.
+- **Two new history gestures in `NOR`.** `Alt+u` and `Alt+U` walk the edit
+  history one entry back and one entry forward — Helix's `earlier` and
+  `later` — and they **say so** when there is nothing to move to: "no earlier
+  change" and "no later change" appear in the status row. `u` and `U` still
+  do nothing at their boundaries, silently, as they always have.
+- **The editor now shows where you are in your own history.** While the
+  history cursor is not at the newest change, the status row says
+  `history 1/3`; at the newest change it says nothing, so the ordinary case
+  is unchanged.
+
+### Changed
+
+- **The undo history is one list with a cursor in it, not two stacks.** Undo
+  and redo are now the same movement in opposite directions, so an entry can
+  never end up described one way and replayed the other. A redo restores the
+  position the entry records, which is the same position an undo restores.
+- **The editor keeps at most one history's worth of memory.** The bounds
+  (256 entries and 4 MiB) were enforced once per stack, so the worst case was
+  twice what the documentation promised. They are now a single cap over the
+  history as a whole, and the code matches what the documentation says.
 
 ### Fixed
 

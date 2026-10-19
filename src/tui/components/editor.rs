@@ -175,6 +175,19 @@ impl EditorWidget<'_> {
         } else {
             format!("  · {}", self.find_note)
         };
+        // Where the history cursor is standing, when it is not at the tip.
+        //
+        // A time cursor nobody can see is a rename, so the position is
+        // disclosed whenever the reader is standing somewhere other than the
+        // newest change — that is exactly the state an `Alt-u` leaves behind,
+        // and the state in which "is this the newest change?" is worth
+        // answering. At the tip, which is the overwhelmingly common case, it
+        // says nothing, so an ordinary editing session draws exactly what it
+        // drew before this existed.
+        let history = match self.presentation.history_position() {
+            Some((position, length)) => format!("  · history {position}/{length}"),
+            None => String::new(),
+        };
         // The `:` line replaces the status text while it is open. It owns
         // the banner row because that row is what the user is looking at
         // when they typed `:`, and a separate floating line would read as a
@@ -202,17 +215,17 @@ impl EditorWidget<'_> {
             )
         } else if let Some(notice) = self.notice {
             (
-                format!("{notice}{find}{pending}"),
+                format!("{notice}{history}{find}{pending}"),
                 Style::default().fg(theme.error),
             )
         } else if !self.writable {
             (
-                format!("{}{find}{pending}", self.status),
+                format!("{}{history}{find}{pending}", self.status),
                 Style::default().fg(theme.warning),
             )
         } else {
             (
-                format!("{}{find}{pending}", self.status),
+                format!("{}{history}{find}{pending}", self.status),
                 Style::default().fg(theme.muted),
             )
         };
@@ -1454,6 +1467,13 @@ mod tests {
         selections: Vec<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
         /// Retained `/` match offsets, for the search highlight layer.
         search_matches: Vec<usize>,
+        /// The history cursor's position and the history's length, as
+        /// `(position, length)`.
+        ///
+        /// The entries themselves are built through the real history API, so
+        /// a test that asks for a position gets a history that could have
+        /// produced it.
+        history: (usize, usize),
         writable: bool,
         busy: bool,
         scope: codegg_protocol::document::DocumentScope,
@@ -1476,10 +1496,36 @@ mod tests {
             search_partial: false,
             selections: Vec::new(),
             search_matches: Vec::new(),
+            history: (0, 0),
             writable: true,
             busy: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
         }
+    }
+
+    /// Give the presentation a history of `length` entries and park the
+    /// cursor at `position`.
+    ///
+    /// The entries are built through the real history API, so a test that
+    /// asks for a position gets a history an ordinary editing session could
+    /// have produced — not a hand-set field that the widget would read but
+    /// nothing could have created.
+    fn seed_history(
+        presentation: &mut TuiDocumentPresentation,
+        (position, length): (usize, usize),
+    ) {
+        use codegg_document::{TextEdit, TextTransaction};
+        for _ in 0..length {
+            editor::push_undo(
+                presentation,
+                TextTransaction::new(vec![TextEdit::new(0..0, "x")]),
+                TextTransaction::new(vec![TextEdit::new(0..1, "")]),
+                1,
+                0,
+                Vec::new(),
+            );
+        }
+        presentation.history_cursor = position.min(presentation.history.len());
     }
 
     /// Paint one editor frame and return the rendered rows as plain text.
@@ -1498,6 +1544,7 @@ mod tests {
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
+        seed_history(&mut presentation, options.history);
         let lsp = crate::tui::editor_lsp::EditorLspState::default();
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
@@ -1568,6 +1615,7 @@ mod tests {
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
+        seed_history(&mut presentation, options.history);
         let lsp = crate::tui::editor_lsp::EditorLspState::default();
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
@@ -2414,6 +2462,7 @@ mod tests {
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
+        seed_history(&mut presentation, options.history);
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2554,6 +2603,7 @@ mod tests {
             search_partial: false,
             selections: Vec::new(),
             search_matches: Vec::new(),
+            history: (0, 0),
             scope: codegg_protocol::document::DocumentScope::Workspace,
             writable: true,
             busy: false,
@@ -3249,5 +3299,48 @@ mod tests {
         let plain_readout = &plain[readout_row(height) as usize];
         assert!(plain_readout.contains("3 matches"), "{plain_readout:?}");
         assert!(!plain_readout.contains("partial"), "{plain_readout:?}");
+    }
+
+    // ── The history cursor's position ───────────────────────────────────
+
+    /// A time cursor nobody can see is a rename.
+    ///
+    /// The position is disclosed when the reader is standing somewhere other
+    /// than the newest change, and says nothing at the tip — so the ordinary
+    /// case draws exactly what it drew before the cursor existed.
+    #[test]
+    fn the_history_position_is_disclosed_only_when_the_cursor_is_not_at_the_tip() {
+        let height = 8;
+        let at_tip = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                history: (3, 3),
+                ..defaults()
+            },
+        );
+        let banner = &at_tip[banner_row(height) as usize];
+        assert!(
+            !banner.contains("history"),
+            "at the tip there is nothing to disclose: {banner:?}"
+        );
+
+        let behind = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                history: (1, 3),
+                ..defaults()
+            },
+        );
+        let banner = &behind[banner_row(height) as usize];
+        assert!(
+            banner.contains("history 1/3"),
+            "the position belongs on the banner row: {banner:?}"
+        );
     }
 }

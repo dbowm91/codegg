@@ -419,6 +419,37 @@ model to the wrong connection.
   session keeps bounded `TextTransaction`s and never a copy of the text. A
   reconciliation **discards** an open session rather than committing it — the
   text it described is the pre-reload text.
+- **The history is one list with a cursor in it.**
+  `TuiDocumentPresentation` holds `history`, `history_bytes` and
+  `history_cursor` — not an undo stack and a redo stack. `history_cursor` is
+  the number of *applied* entries, so undo and redo are the same movement in
+  opposite directions and an entry never moves between containers. The cursor
+  moves **only after** the apply is accepted: a refused apply leaves the
+  document, the history and the cursor exactly where they were.
+  `MAX_EDITOR_UNDO_DEPTH` (256) and `MAX_EDITOR_UNDO_BYTES` (4 MiB) are **one
+  cap over the history as a whole** — the two-stack model enforced them
+  twice, so its worst case was twice the documented bound.
+  `Alt+u` and `Alt+U` (Helix's `earlier`/`later`) are the explicit history
+  gestures and **report** their boundary ("no earlier change" / "no later
+  change" in the status row); `u` and `U` stay silent there, as they always
+  have — a CodeGG convention, not a Helix behaviour. The position is
+  observable: while the cursor is not at the tip the banner row says
+  `history <at>/<of>`, and at the tip it says nothing.
+- **A modifier is an exact bitmask, and a capital has two spellings.**
+  An arm's modifier predicate is read as the set of **exact** bitmasks it
+  admits: `m == alt || m == alt_shift` admits exactly `ALT` and exactly
+  `ALT | SHIFT`, not their combination, and the key-authority guard compares
+  those bitmasks rather than modifier *names* — `ALT` and `ALT | SHIFT` are
+  disjoint, exactly as Rust's `==` on the bitflags says they are. Write a
+  multi-modifier arm as a `let alt_shift = KeyModifiers::ALT |
+  KeyModifiers::SHIFT;` binding, never as the or-pattern `m == alt | m ==
+  shift`, which is not a bitmask at all. And a terminal may report a capital
+  as the shifted glyph (`Char('U')`) or as the plain glyph plus `SHIFT`
+  (`Char('u')` with `SHIFT`): an arm that claims a capital accepts both
+  spellings, because a chord live on one terminal and dead on the next is a
+  binding that does not exist. When the two spellings differ in the *key
+  code* — `Alt+U` is `Char('U')` with `ALT` **or** `Char('u')` with
+  `ALT | SHIFT` — they need two arms, and the guard counts arms.
 - **A panel never claims a key that means text.** In `INS` a printable is
   text. The completion popup and the LSP diagnostics panel are mode-aware:
   their `j`/`k`/`r`/`Enter` claims are Normal-mode claims, and in `INS` the
