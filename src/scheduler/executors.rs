@@ -110,13 +110,19 @@ impl JobExecutor for TestJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
-        let (argv, parent_run_id, sandbox_profile) = match &ctx.job.payload {
+        let (argv, parent_run_id, sandbox_profile, network_intent) = match &ctx.job.payload {
             JobPayload::Test {
                 argv,
                 parent_run_id,
                 sandbox_profile,
+                network_intent,
                 ..
-            } => (argv.clone(), parent_run_id.clone(), *sandbox_profile),
+            } => (
+                argv.clone(),
+                parent_run_id.clone(),
+                *sandbox_profile,
+                *network_intent,
+            ),
             _ => {
                 return failure_completion(
                     started,
@@ -149,11 +155,12 @@ impl JobExecutor for TestJobExecutor {
             cancellation: Some(ctx.cancellation.clone()),
         };
 
-        let result = crate::test_runner::runner::resolve_and_run_test_with_profile(
+        let result = crate::test_runner::runner::resolve_and_run_test_with_profile_and_network(
             request,
             self.sink.as_deref(),
             self.run_store.as_ref().or(ctx.run_store.as_ref()),
             sandbox_profile,
+            network_intent,
         )
         .await;
 
@@ -1546,7 +1553,7 @@ impl JobExecutor for PythonJobExecutor {
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
 
-        let (source, mode_str, cwd, timeout_secs, sandbox_profile, workspace_root) =
+        let (source, mode_str, cwd, timeout_secs, sandbox_profile, network_intent, workspace_root) =
             match &ctx.job.payload {
                 JobPayload::Python {
                     source,
@@ -1554,6 +1561,7 @@ impl JobExecutor for PythonJobExecutor {
                     cwd,
                     timeout_secs,
                     sandbox_profile,
+                    network_intent,
                     ..
                 } => (
                     source.clone(),
@@ -1561,6 +1569,7 @@ impl JobExecutor for PythonJobExecutor {
                     cwd.clone(),
                     *timeout_secs,
                     *sandbox_profile,
+                    *network_intent,
                     ctx.job
                         .labels
                         .get("workspace_root")
@@ -1712,12 +1721,14 @@ impl JobExecutor for PythonJobExecutor {
 
         // The canonical process service owns cancellation and descendant
         // cleanup; do not drop an in-flight execution future as a substitute.
-        let result = crate::python_script::executor::execute_python_script_with_profile(
-            &request,
-            ctx.cancellation.clone(),
-            sandbox_profile,
-        )
-        .await;
+        let result =
+            crate::python_script::executor::execute_python_script_with_profile_and_network(
+                &request,
+                ctx.cancellation.clone(),
+                sandbox_profile,
+                network_intent,
+            )
+            .await;
 
         // Emit progress: persisting artifacts
         let _ = ctx
@@ -1919,6 +1930,7 @@ mod tests {
                 scope: None,
                 parent_run_id: None,
                 sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

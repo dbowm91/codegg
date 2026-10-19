@@ -44,16 +44,20 @@ cleanup intentionally retains these resources until lease-aware reclamation
 is qualified.
 
 Test and Python carry their validated accepted filesystem profile through the
-durable scheduler job into `ManagedProcessService`. Test uses bounded managed
+durable scheduler job into `ManagedProcessService`; both also carry the
+authenticated network intent, defaulting legacy jobs to unrestricted. Test uses bounded managed
 streaming while preserving its parser and report pipeline; ReadOnly is refused
 before submission because test commands write build and result artifacts.
 Python's ReadOnly transform is refused before submission, and the process
-owner rejects constrained execution when sandbox enforcement is disabled. Do not automatically reroute a refusal. Active Bash command-intent routes share
+owner rejects constrained execution when sandbox enforcement is disabled. An
+`OfflineRequired` intent additionally requires Linux M004 process/IPC and
+offline-network containment; unsupported platforms, FullHost, or disabled
+sandbox requests refuse before target start. Do not automatically reroute a refusal. Active Bash command-intent routes share
 the accepted-receipt check and remain explicit-FullHost-only. Typed Git
 filters/hooks/remotes remain unavailable behind their independent gates.
 On Linux, the protected Bubblewrap mount view is an explicit internal opt-in
-through `SandboxConfig::with_linux_protected_mount_view`; it must remain off
-by default until native qualification closes. The helper pins mount sources,
+through `SandboxConfig::with_linux_protected_mount_view`; it remains opt-in.
+The helper pins mount sources,
 owns Bubblewrap setup, and returns its private status through the same managed
 process result. Do not launch Bubblewrap from a tool executor or infer
 network, process, IPC, seccomp, or resource enforcement from a mount result.
@@ -62,9 +66,9 @@ Landlock ABI 6 signal/abstract-socket scopes, PID/IPC namespaces, and private
 procfs; it preserves the existing network policy, closes ambient inherited
 descriptors at the helper boundary, and installs an architecture-checked
 seccomp denylist through Bubblewrap. It does not claim pathname-socket denial
-or resource enforcement. Keep it fail-closed and unregistered until M004's
-full native, descriptor, cancellation, and tool-compatibility evidence is
-accepted.
+or resource enforcement. Keep it fail-closed. Offline intent is separately
+carried through the same owner and remains subject to M005 exact-host
+qualification and admission.
 
 Long-lived PTY sessions retain a distinct `InteractiveProcessService` owner.
 Its Linux M004 path uses `ManagedProcessService` helper launch and setup

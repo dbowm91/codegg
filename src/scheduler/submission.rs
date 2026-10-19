@@ -631,6 +631,7 @@ mod tests {
                 scope: None,
                 parent_run_id: None,
                 sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -942,6 +943,7 @@ mod tests {
             cwd: Some("/tmp".into()),
             timeout_secs: None,
             sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         };
 
         let key = SubmissionKey::new(format!("python:{source_hash}")).expect("key");

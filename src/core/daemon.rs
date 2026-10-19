@@ -4140,7 +4140,7 @@ impl CoreDaemon {
                 let principal_id = audit_hook
                     .as_ref()
                     .map(|hook| hook.context.principal().principal_id().as_str().to_owned());
-                let profile = match (pool, principal_id) {
+                let (profile, network_intent) = match (pool, principal_id) {
                     (Some(pool), Some(principal_id)) => {
                         match codegg_core::approval::RuntimePreferenceStore::new(pool)
                             .get(&principal_id)
@@ -4150,10 +4150,16 @@ impl CoreDaemon {
                             // constrain an independent human PTY. Preserve
                             // the legacy FullHost terminal path unless the
                             // principal explicitly stored a profile.
-                            Ok(Some(preference)) => preference
-                                .sandbox_profile
-                                .unwrap_or(codegg_core::approval::SandboxProfile::FullHost),
-                            Ok(None) => codegg_core::approval::SandboxProfile::FullHost,
+                            Ok(Some(preference)) => (
+                                preference
+                                    .sandbox_profile
+                                    .unwrap_or(codegg_core::approval::SandboxProfile::FullHost),
+                                preference.effective_network_intent(),
+                            ),
+                            Ok(None) => (
+                                codegg_core::approval::SandboxProfile::FullHost,
+                                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                            ),
                             Err(error) => {
                                 return Ok(CoreResponse::Error {
                                     code: "interactive_policy_unavailable".into(),
@@ -4164,7 +4170,10 @@ impl CoreDaemon {
                             }
                         }
                     }
-                    (None, _) => codegg_core::approval::SandboxProfile::FullHost,
+                    (None, _) => (
+                        codegg_core::approval::SandboxProfile::FullHost,
+                        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                    ),
                     (_, None) => {
                         return Ok(CoreResponse::Error {
                             code: "interactive_policy_unavailable".into(),
@@ -4180,7 +4189,14 @@ impl CoreDaemon {
                         Err(response) => return Ok(*response),
                     };
                 Ok(protocol
-                    .create(trusted_client_id, &ctx, profile, &request, audit_hook)
+                    .create_with_network_intent(
+                        trusted_client_id,
+                        &ctx,
+                        profile,
+                        network_intent,
+                        &request,
+                        audit_hook,
+                    )
                     .await)
             }
             CoreRequest::InteractiveProcessList {

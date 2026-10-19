@@ -59,8 +59,24 @@ fn unregister_scope(service: &egglsp::service::LspService) {
 
 impl M004LspServiceScope {
     #[cfg(target_os = "linux")]
+    #[cfg(test)]
     pub(crate) fn new(
         profile: SandboxProfile,
+        workspace_root: PathBuf,
+        config: egglsp::config::LspConfig,
+    ) -> Result<Arc<Self>, String> {
+        Self::new_with_network_intent(
+            profile,
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            workspace_root,
+            config,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn new_with_network_intent(
+        profile: SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
         workspace_root: PathBuf,
         config: egglsp::config::LspConfig,
     ) -> Result<Arc<Self>, String> {
@@ -76,6 +92,7 @@ impl M004LspServiceScope {
         let shutdown = CancellationToken::new();
         let launcher = Arc::new(M004LspProcessLauncher {
             profile,
+            network_intent,
             workspace_root: workspace_root.clone(),
             shutdown: shutdown.clone(),
         });
@@ -85,8 +102,19 @@ impl M004LspServiceScope {
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[cfg(test)]
     pub(crate) fn new(
         _profile: SandboxProfile,
+        _workspace_root: PathBuf,
+        _config: egglsp::config::LspConfig,
+    ) -> Result<Arc<Self>, String> {
+        Err("constrained M004 LSP launches are available only on Linux".into())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn new_with_network_intent(
+        _profile: SandboxProfile,
+        _network_intent: codegg_core::approval::NetworkIntent,
         _workspace_root: PathBuf,
         _config: egglsp::config::LspConfig,
     ) -> Result<Arc<Self>, String> {
@@ -327,6 +355,7 @@ while True:
             LspConfig::default(),
             Arc::new(M004LspProcessLauncher {
                 profile: SandboxProfile::WorkspaceWrite,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 workspace_root: root.clone(),
                 shutdown: CancellationToken::new(),
             }),
@@ -342,6 +371,7 @@ while True:
 #[cfg(target_os = "linux")]
 struct M004LspProcessLauncher {
     profile: SandboxProfile,
+    network_intent: codegg_core::approval::NetworkIntent,
     workspace_root: PathBuf,
     shutdown: CancellationToken,
 }
@@ -378,8 +408,15 @@ impl egglsp::launch::LspProcessLauncher for M004LspProcessLauncher {
             egglsp::error::LspError::LaunchFailed(
                 "M004 LSP refused an unconstrained sandbox profile".into(),
             )
-        })?
-        .with_linux_process_isolation(true);
+        })?;
+        let config = match self.network_intent {
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted => {
+                config.with_linux_process_isolation(true)
+            }
+            codegg_core::approval::NetworkIntent::OfflineRequired => {
+                config.with_linux_offline_network(true)
+            }
+        };
         let mut sandbox = config
             .launch_spec(&launch.command, &launch.args, Some(&self.workspace_root))
             .map_err(|error| egglsp::error::LspError::LaunchFailed(error.to_string()))?;

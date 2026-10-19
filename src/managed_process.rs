@@ -472,6 +472,9 @@ pub struct ManagedProcessRequest {
     /// ephemeral permission receipt. The broker validates the receipt before
     /// submission; the process owner still enforces constrained containment.
     pub required_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// Scheduler-carried network intent when the permission receipt cannot
+    /// remain in the durable job payload.
+    pub required_network_intent: codegg_core::approval::NetworkIntent,
 }
 
 impl ManagedProcessRequest {
@@ -492,6 +495,7 @@ impl ManagedProcessRequest {
             provenance,
             execution_authorization: None,
             required_sandbox_profile: None,
+            required_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         }
     }
 
@@ -839,6 +843,7 @@ async fn run_inner(
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    let mut request = request;
     let required_profile = request.required_sandbox_profile.or_else(|| {
         request
             .execution_authorization
@@ -850,6 +855,37 @@ async fn run_inner(
     {
         return Err(ManagedProcessError::SandboxFailed(
             "accepted execution policy requires filesystem containment, but the launch request disabled it".into(),
+        ));
+    }
+
+    let required_network_intent = request
+        .execution_authorization
+        .as_ref()
+        .map(|authorization| authorization.snapshot.network_intent())
+        .unwrap_or(request.required_network_intent);
+    if required_network_intent == codegg_core::approval::NetworkIntent::OfflineRequired {
+        if required_profile.is_some_and(|profile| !profile.requires_filesystem_containment()) {
+            return Err(ManagedProcessError::SandboxFailed(
+                "OfflineRequired currently requires a constrained filesystem profile".into(),
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        match &mut request.sandbox {
+            SandboxRequest::Required(spec) => {
+                spec.linux_offline_network = true;
+                spec.linux_process_isolation = true;
+                spec.linux_protected_mount_view = true;
+            }
+            SandboxRequest::Disabled => {
+                return Err(ManagedProcessError::SandboxFailed(
+                    "accepted OfflineRequired policy cannot run without a required sandbox launch"
+                        .into(),
+                ));
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(ManagedProcessError::SandboxFailed(
+            "OfflineRequired is unavailable on this platform".into(),
         ));
     }
 
@@ -872,6 +908,7 @@ async fn run_inner(
         provenance,
         execution_authorization,
         required_sandbox_profile: _required_sandbox_profile,
+        required_network_intent: _required_network_intent,
     } = request;
 
     if executable.is_empty() {
@@ -2474,6 +2511,11 @@ fn interpret_bubblewrap_status(
         0,
         "Bubblewrap block-fd barrier releases the target only after mount setup".into(),
     );
+    if spec.linux_offline_network {
+        guarantees.push(
+            "private network namespace has no host interfaces or routes (OfflineRequired)".into(),
+        );
+    }
     let limits = if spec.linux_process_isolation {
         guarantees.extend([
             "PID namespace with a private procfs mounted after namespace creation".into(),
@@ -2481,12 +2523,17 @@ fn interpret_bubblewrap_status(
             "Landlock ABI 6 scopes outgoing signals and abstract Unix socket connections to the sandbox domain".into(),
             "architecture-checked seccomp filter denies namespace and mount changes, tracing, and selected kernel control interfaces".into(),
         ]);
-        vec![
-            "network isolation not requested; outbound networking retains its existing policy"
-                .into(),
+        let mut limits = vec![
             "resource limits are not claimed by this launch".into(),
             "pathname Unix socket access is not qualified and must not be treated as denied".into(),
-        ]
+        ];
+        if !spec.linux_offline_network {
+            limits.push(
+                "network isolation not requested; outbound networking retains its existing policy"
+                    .into(),
+            );
+        }
+        limits
     } else {
         vec![
             "network isolation not requested".into(),

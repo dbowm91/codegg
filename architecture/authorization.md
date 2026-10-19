@@ -574,6 +574,7 @@ not a Core operation):
 | `run_list` | opaque | `session.read` |
 | `run_rerun` | via_session | `agent.invoke` |
 | `runtime_policy_set` | global | `none` |
+| `network_intent_set` | global | `none` |
 | `sandbox_profile_set` | global | `none` |
 | `schedule_create` | via_session | `job.submit` |
 | `schedule_delete` | opaque | `job.cancel` |

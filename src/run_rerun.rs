@@ -145,6 +145,7 @@ pub fn to_job(spec: ValidatedRerun, workspace_id: WorkspaceId) -> NewJob {
             scope: spec.scope,
             parent_run_id: Some(spec.parent_run_id),
             sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::for_kind(JobKind::Test),
         timeout: None,

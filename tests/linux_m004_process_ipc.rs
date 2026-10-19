@@ -129,6 +129,80 @@ fn offline_network_compiles_private_network_namespace_with_m004() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_process_owner_applies_authenticated_offline_network_intent() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the native M005 owner probe");
+        return;
+    }
+    codegg::security::sandbox::landlock::probe_process_scopes()
+        .expect("M005 requires qualified M004 process/IPC scope");
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let address = listener.local_addr().expect("listener address");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let script = format!(
+        "import socket\ns=socket.socket()\ns.settimeout(1)\ntry:\n s.connect(({:?}, {}))\n print('unexpected-connected')\nexcept OSError:\n print('offline-denied')\n",
+        address.ip().to_string(),
+        address.port()
+    );
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true)
+        .launch_spec(
+            "python3",
+            &["-c".into(), script.clone()],
+            Some(workspace.path()),
+        )
+        .expect("construct M004 request; network intent comes from authority");
+    assert!(!spec.linux_offline_network);
+
+    let mut request = ManagedProcessRequest::new(
+        vec!["python3".into(), "-c".into(), script.into()],
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("m005-owner", "authenticated-offline"),
+    );
+    request.required_sandbox_profile = Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+    request.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Interactive,
+                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                Some("m005-principal".into()),
+                Some("m005-session".into()),
+                None,
+                Some("m005-policy-r1".into()),
+                None,
+            )
+            .with_network_intent(codegg_core::approval::NetworkIntent::OfflineRequired)
+            .expect("root policy can narrow to offline"),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "m005-test",
+                Some("m005-policy-r1".into()),
+            ),
+            command_preflight: None,
+        });
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("OfflineRequired is applied through the canonical process owner");
+    assert!(result.exit_status.success());
+    assert!(result.stdout.to_string_lossy().contains("offline-denied"));
+    assert!(matches!(
+        result.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_network_blocks_host_network_and_inherited_socket_access() {
     if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
         eprintln!("skipped: set {M005_OPT_IN}=1 to run the native M005 child probe");

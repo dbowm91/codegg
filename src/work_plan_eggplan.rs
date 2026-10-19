@@ -355,6 +355,7 @@ pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest
                 cwd,
                 timeout_secs: payload_timeout,
                 sandbox_profile: _,
+                network_intent: _,
             } => {
                 // Script/source digest participates; the path string alone is
                 // execution identity only when no inline source exists.
@@ -1444,6 +1445,7 @@ mod tests {
                 scope: None,
                 parent_run_id: None,
                 sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1609,6 +1611,7 @@ mod tests {
             cwd: None,
             timeout_secs: None,
             sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         };
         assert!(verification_digest_for_job(&python).is_err());
         // Legacy Subagent payloads stay verification-unavailable.

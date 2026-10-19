@@ -565,6 +565,7 @@ impl BashTool {
         _validated_command: Option<&str>,
         timeout: Duration,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<DispatchOutcome, ToolError> {
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Tests,
@@ -603,6 +604,7 @@ impl BashTool {
                         scope: Some("bash-dispatch".into()),
                         parent_run_id: None,
                         sandbox_profile: None,
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,
@@ -739,6 +741,7 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
         session_id: Option<String>,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<DispatchOutcome, ToolError> {
         use crate::python_script::PythonExecutionMode;
 
@@ -774,7 +777,7 @@ impl BashTool {
         // Scheduler-owned path: submit through JobSubmissionService
         if let Some(ref submission) = self.submission {
             return self
-                .dispatch_python_via_scheduler(&request, submission, mode, timeout)
+                .dispatch_python_via_scheduler(&request, submission, mode, timeout, network_intent)
                 .await;
         }
 
@@ -791,6 +794,7 @@ impl BashTool {
         submission: &Arc<crate::scheduler::JobSubmissionService>,
         mode: &str,
         timeout: Duration,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<DispatchOutcome, ToolError> {
         use codegg_core::jobs::{
             ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
@@ -826,6 +830,7 @@ impl BashTool {
             cwd: Some(request.cwd.to_string_lossy().to_string()),
             timeout_secs: request.timeout_secs,
             sandbox_profile: None,
+            network_intent,
         };
 
         let mut labels = std::collections::HashMap::new();
@@ -1373,6 +1378,10 @@ impl BashTool {
             return Err(specialized_route_error(reason));
         }
         let session_id = audit_ctx.and_then(|ctx| ctx.session_id.clone());
+        let network_intent = audit_ctx
+            .and_then(|context| context.execution_authorization.as_ref())
+            .map(|authorization| authorization.snapshot.network_intent())
+            .unwrap_or_default();
         match decision {
             CommandDispatchTarget::RouteToTestRunner {
                 argv,
@@ -1385,6 +1394,7 @@ impl BashTool {
                     validated_command.as_deref(),
                     timeout,
                     session_id.clone(),
+                    network_intent,
                 )
                 .await
             }
@@ -1405,6 +1415,7 @@ impl BashTool {
                     canonical_workdir,
                     timeout,
                     session_id.clone(),
+                    network_intent,
                 )
                 .await
             }
@@ -1474,12 +1485,26 @@ impl BashTool {
                 .clone()
                 .or_else(|| c.principal_identity.clone())
         });
+        let sandbox_profile = audit_ctx
+            .and_then(|c| c.sandbox_profile.as_deref())
+            .map(|raw| {
+                codegg_core::approval::SandboxProfile::parse(raw).ok_or_else(|| {
+                    ToolError::Permission("invalid accepted sandbox profile in tool context".into())
+                })
+            })
+            .transpose()?;
+        let network_intent = audit_ctx
+            .and_then(|context| context.execution_authorization.as_ref())
+            .map(|authorization| authorization.snapshot.network_intent())
+            .unwrap_or_default();
         Ok(BashBackgroundCtx {
             session_id,
             turn_id,
             invocation_key,
             disposition: crate::scheduler::job_notifications::JobCompletionDisposition::NotifyOnly,
             owner_principal,
+            sandbox_profile,
+            network_intent,
         })
     }
 
@@ -1645,6 +1670,8 @@ impl BashTool {
                     cwd: Some(cwd.to_string_lossy().into_owned()),
                     scope: Some("bash-dispatch".into()),
                     parent_run_id: None,
+                        sandbox_profile: bg.sandbox_profile,
+                        network_intent: bg.network_intent,
                 };
                 self.submit_bash_background(
                     codegg_core::jobs::JobKind::Test,
@@ -1713,6 +1740,8 @@ impl BashTool {
                     ),
                     cwd: Some(cwd.to_string_lossy().into_owned()),
                     timeout_secs: Some(timeout.as_secs()),
+                    sandbox_profile: bg.sandbox_profile,
+                    network_intent: bg.network_intent,
                 };
                 self.submit_bash_background(
                     codegg_core::jobs::JobKind::Python,
@@ -1749,6 +1778,8 @@ pub(crate) struct BashBackgroundCtx {
     pub invocation_key: String,
     pub disposition: crate::scheduler::job_notifications::JobCompletionDisposition,
     pub owner_principal: Option<String>,
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    pub network_intent: codegg_core::approval::NetworkIntent,
 }
 
 fn specialized_route_error(

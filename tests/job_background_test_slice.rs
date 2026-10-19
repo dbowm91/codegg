@@ -257,6 +257,8 @@ async fn same_invocation_reuses_handle_different_payload_conflicts() {
             cwd: None,
             scope: None,
             parent_run_id: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: codegg_core::jobs::ResourceRequest::for_kind(
             codegg_core::jobs::JobKind::Test,
@@ -318,6 +320,8 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
                     cwd: None,
                     scope: None,
                     parent_run_id: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
                 resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                     codegg_core::jobs::JobKind::Test,

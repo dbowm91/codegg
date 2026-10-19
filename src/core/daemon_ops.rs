@@ -339,6 +339,8 @@ impl CoreDaemon {
                             approval_mode: crate::protocol::core::ApprovalModeDto::Interactive,
                             sandbox_profile:
                                 crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
+                            network_intent:
+                                crate::protocol::core::NetworkIntentDto::LegacyUnrestricted,
                             revision: 0,
                             updated_at_ms: chrono::Utc::now().timestamp_millis(),
                             last_provider_connection_id: None,
@@ -360,6 +362,8 @@ impl CoreDaemon {
                                         crate::protocol::core::ApprovalModeDto::Interactive,
                                     sandbox_profile:
                                         crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
+                                    network_intent:
+                                        crate::protocol::core::NetworkIntentDto::LegacyUnrestricted,
                                     revision: 0,
                                     updated_at_ms: chrono::Utc::now().timestamp_millis(),
                                     last_provider_connection_id: None,
@@ -436,6 +440,46 @@ impl CoreDaemon {
                 let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
                 match store
                     .set_sandbox_profile(&principal_id, profile, expected_revision)
+                    .await
+                {
+                    Ok(pref) => Ok(CoreResponse::ApprovalPreference {
+                        preference: approval_preference_to_dto(&pref),
+                    }),
+                    Err(codegg_core::approval::PreferenceError::Conflict { expected, current }) => {
+                        Ok(CoreResponse::Error {
+                            code: "preference_conflict".to_string(),
+                            message: format!(
+                                "stale preference revision: expected {expected}, current {current}"
+                            ),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "preference_write_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::NetworkIntentSet {
+                network_intent,
+                expected_revision,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "preference_unavailable".to_string(),
+                        message: "network policy requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Some(intent) = codegg_core::approval::NetworkIntent::parse(&network_intent)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_network_intent".to_string(),
+                        message: format!("unknown network intent: {network_intent}"),
+                    });
+                };
+                let principal_id = authority.principal_id().as_str().to_owned();
+                let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                match store
+                    .set_network_intent(&principal_id, intent, expected_revision)
                     .await
                 {
                     Ok(pref) => Ok(CoreResponse::ApprovalPreference {
@@ -572,10 +616,11 @@ impl CoreDaemon {
             }
             CoreRequest::ExecutionPolicyGet { session_id } => {
                 let principal_id = authority.principal_id().as_str().to_owned();
-                let (mode, profile, revision) = match self.pool.clone() {
+                let (mode, profile, network_intent, revision) = match self.pool.clone() {
                     None => (
                         codegg_core::approval::ApprovalMode::Interactive,
                         codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                         None,
                     ),
                     Some(pool) => {
@@ -584,11 +629,13 @@ impl CoreDaemon {
                             Ok(Some(pref)) => (
                                 pref.effective_approval_mode(),
                                 pref.effective_sandbox_profile(),
+                                pref.effective_network_intent(),
                                 Some(pref.revision.to_string()),
                             ),
                             Ok(None) => (
                                 codegg_core::approval::ApprovalMode::Interactive,
                                 codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                                 None,
                             ),
                             Err(error) => {
@@ -608,7 +655,9 @@ impl CoreDaemon {
                     None,
                     revision,
                     None,
-                );
+                )
+                .with_network_intent(network_intent)
+                .expect("captured principal network intent is a valid policy root");
                 Ok(CoreResponse::ExecutionPolicy {
                     snapshot: execution_snapshot_to_dto(&snapshot),
                 })
@@ -650,6 +699,14 @@ fn approval_preference_to_dto(
             }
             codegg_core::approval::SandboxProfile::FullHost => {
                 crate::protocol::core::SandboxProfileDto::FullHost
+            }
+        },
+        network_intent: match pref.effective_network_intent() {
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted => {
+                crate::protocol::core::NetworkIntentDto::LegacyUnrestricted
+            }
+            codegg_core::approval::NetworkIntent::OfflineRequired => {
+                crate::protocol::core::NetworkIntentDto::OfflineRequired
             }
         },
         revision: pref.revision,
@@ -709,11 +766,21 @@ fn execution_snapshot_to_dto(
         // macOS host that is in fact fully contained.
         let capability = crate::security::sandbox::platform_sandbox_capability();
         let reason = capability.reason().map(str::to_string);
-        crate::protocol::core::SandboxEnforcementDto::for_profile_on_host(
+        let mut enforcement = crate::protocol::core::SandboxEnforcementDto::for_profile_on_host(
             sandbox_profile,
             capability.is_available(),
             reason,
-        )
+        );
+        if snapshot.network_intent() == codegg_core::approval::NetworkIntent::OfflineRequired {
+            enforcement.network = crate::protocol::core::NetworkEnforcementDto::Unavailable {
+                reason: "OfflineRequired is verified per child launch, not by the policy snapshot"
+                    .into(),
+            };
+            enforcement.summary.push_str(
+                "; OfflineRequired requested (obtained enforcement is reported per launch)",
+            );
+        }
+        enforcement
     };
     let reviewer = reviewer_availability();
     crate::protocol::core::ExecutionPolicySnapshotDto {
@@ -729,6 +796,14 @@ fn execution_snapshot_to_dto(
             }
         },
         sandbox_profile,
+        network_intent: match snapshot.network_intent() {
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted => {
+                crate::protocol::core::NetworkIntentDto::LegacyUnrestricted
+            }
+            codegg_core::approval::NetworkIntent::OfflineRequired => {
+                crate::protocol::core::NetworkIntentDto::OfflineRequired
+            }
+        },
         principal_id: snapshot.principal_id().map(str::to_owned),
         session_id: snapshot.session_id().map(str::to_owned),
         agent_id: snapshot.agent_id().map(str::to_owned),

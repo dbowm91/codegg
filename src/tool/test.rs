@@ -226,6 +226,7 @@ impl Tool for TestTool {
             }
         })?;
         let profile = snapshot.sandbox_profile();
+        let network_intent = snapshot.network_intent();
         if profile == codegg_core::approval::SandboxProfile::ReadOnly {
             return Err(ToolError::BackendUnavailable(
                 "test execution requires the accepted WorkspaceWrite profile; select it before running tests".into(),
@@ -233,7 +234,7 @@ impl Tool for TestTool {
         }
         if mode == TestExecutionMode::Background {
             let value = self
-                .submit_background(input.clone(), ctx.clone(), profile)
+                .submit_background(input.clone(), ctx.clone(), profile, network_intent)
                 .await?;
             let digest = live::command_digest_str(
                 &serde_json::to_vec(&input)
@@ -352,6 +353,7 @@ impl TestTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
         accepted_profile: codegg_core::approval::SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<serde_json::Value, ToolError> {
         let Some(submission) = self.submission.clone() else {
             return Err(ToolError::Execution(
@@ -417,6 +419,7 @@ impl TestTool {
                         scope: Some(resolved.scope_label),
                         parent_run_id: None,
                         sandbox_profile: Some(accepted_profile),
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,
@@ -512,6 +515,7 @@ impl TestTool {
                         scope: Some(resolved.scope_label),
                         parent_run_id: None,
                         sandbox_profile,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,

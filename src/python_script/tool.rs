@@ -316,6 +316,7 @@ impl PythonScriptTool {
         request: &PythonScriptRequest,
         submission: &Arc<JobSubmissionService>,
         sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<String, ToolError> {
         use codegg_core::jobs::{
             ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
@@ -354,6 +355,7 @@ impl PythonScriptTool {
             cwd: Some(request.cwd.to_string_lossy().to_string()),
             timeout_secs: request.timeout_secs,
             sandbox_profile,
+            network_intent,
         };
 
         let mut labels = std::collections::HashMap::new();
@@ -515,7 +517,14 @@ impl Tool for PythonScriptTool {
 
         // Scheduler-owned path: submit through JobSubmissionService
         if let Some(ref submission) = self.submission_service {
-            return self.execute_via_scheduler(&request, submission, None).await;
+            return self
+                .execute_via_scheduler(
+                    &request,
+                    submission,
+                    None,
+                    codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                )
+                .await;
         }
 
         // No fallback: scheduler admission is required for production Python execution
@@ -544,6 +553,7 @@ impl Tool for PythonScriptTool {
             }
         })?;
         let profile = snapshot.sandbox_profile();
+        let network_intent = snapshot.network_intent();
         if profile == codegg_core::approval::SandboxProfile::ReadOnly
             && request.mode == super::types::PythonExecutionMode::Transform
         {
@@ -557,7 +567,7 @@ impl Tool for PythonScriptTool {
             ));
         };
         let output = self
-            .execute_via_scheduler(&request, submission, Some(profile))
+            .execute_via_scheduler(&request, submission, Some(profile), network_intent)
             .await?;
         Ok(crate::tool::backend::StructuredToolResult::legacy(
             self.name(),

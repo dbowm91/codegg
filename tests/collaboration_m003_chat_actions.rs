@@ -162,6 +162,7 @@ fn test_job_spec(workspace_id: &str) -> codegg::protocol::dto::JobSubmitDto {
         scope: None,
         parent_run_id: None,
         sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     })
     .expect("test payload");
     codegg::protocol::dto::JobSubmitDto {

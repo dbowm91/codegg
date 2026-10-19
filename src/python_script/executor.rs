@@ -94,6 +94,21 @@ pub async fn execute_python_script_with_profile(
     cancellation: CancellationToken,
     required_profile: Option<codegg_core::approval::SandboxProfile>,
 ) -> PythonRunResult {
+    execute_python_script_with_profile_and_network(
+        request,
+        cancellation,
+        required_profile,
+        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+    )
+    .await
+}
+
+pub async fn execute_python_script_with_profile_and_network(
+    request: &PythonScriptRequest,
+    cancellation: CancellationToken,
+    required_profile: Option<codegg_core::approval::SandboxProfile>,
+    network_intent: codegg_core::approval::NetworkIntent,
+) -> PythonRunResult {
     let start = Instant::now();
 
     // Compute script body hash for reproducibility tracking
@@ -403,6 +418,7 @@ pub async fn execute_python_script_with_profile(
         None => crate::managed_process::SandboxRequest::Disabled,
     };
     process.required_sandbox_profile = required_profile;
+    process.required_network_intent = network_intent;
 
     let managed = match crate::managed_process::ManagedProcessService::run(process).await {
         Ok(result) => result,

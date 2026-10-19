@@ -180,6 +180,25 @@ pub async fn run_resolved_test_with_profile(
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
     sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 ) -> Result<DelegatedTestRun, TestRunError> {
+    run_resolved_test_with_profile_and_network(
+        request,
+        resolved,
+        sink,
+        run_store,
+        sandbox_profile,
+        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+    )
+    .await
+}
+
+pub async fn run_resolved_test_with_profile_and_network(
+    request: &TestRunRequest,
+    resolved: ResolvedTestCommand,
+    sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
+    sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    network_intent: codegg_core::approval::NetworkIntent,
+) -> Result<DelegatedTestRun, TestRunError> {
     let timeout_secs = request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     if timeout_secs == 0 {
         return Err(TestRunError::InvalidRequest(
@@ -243,6 +262,7 @@ pub async fn run_resolved_test_with_profile(
         request,
         &resolved,
         sandbox_profile,
+        network_intent,
         timeout_secs,
         stall_timeout_secs,
         start,
@@ -405,6 +425,7 @@ async fn run_managed_test_process(
     request: &TestRunRequest,
     resolved: &ResolvedTestCommand,
     sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    network_intent: codegg_core::approval::NetworkIntent,
     timeout_secs: u64,
     stall_timeout_secs: u64,
     start: Instant,
@@ -442,6 +463,7 @@ async fn run_managed_test_process(
         overflow: crate::managed_process::OverflowPolicy::ContinueDrain,
     };
     process.required_sandbox_profile = sandbox_profile;
+    process.required_network_intent = network_intent;
     if let Some(profile) =
         sandbox_profile.filter(|profile| profile.requires_filesystem_containment())
     {
@@ -702,7 +724,14 @@ pub async fn resolve_and_run_test(
     sink: Option<&dyn TestEventSink>,
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
 ) -> Result<DelegatedTestRun, TestRunError> {
-    resolve_and_run_test_with_profile(request, sink, run_store, None).await
+    resolve_and_run_test_with_profile_and_network(
+        request,
+        sink,
+        run_store,
+        None,
+        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+    )
+    .await
 }
 
 pub async fn resolve_and_run_test_with_profile(
@@ -711,8 +740,33 @@ pub async fn resolve_and_run_test_with_profile(
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
     sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 ) -> Result<DelegatedTestRun, TestRunError> {
+    resolve_and_run_test_with_profile_and_network(
+        request,
+        sink,
+        run_store,
+        sandbox_profile,
+        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+    )
+    .await
+}
+
+pub async fn resolve_and_run_test_with_profile_and_network(
+    request: TestRunRequest,
+    sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
+    sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    network_intent: codegg_core::approval::NetworkIntent,
+) -> Result<DelegatedTestRun, TestRunError> {
     let resolved = resolve_test_command(&request)?;
-    run_resolved_test_with_profile(&request, resolved, sink, run_store, sandbox_profile).await
+    run_resolved_test_with_profile_and_network(
+        &request,
+        resolved,
+        sink,
+        run_store,
+        sandbox_profile,
+        network_intent,
+    )
+    .await
 }
 
 /// Begin and complete a test run in the RunStore. The begin step is separate

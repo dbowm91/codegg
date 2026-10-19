@@ -295,13 +295,24 @@ use the qualified M004 helper; preference lookup or helper setup failure
 refuses before spawn. The hosted C013 probes cover positive routing,
 descendant cleanup, and restricted-userns refusal-before-target.
 
-The Linux offline-network candidate is internal and explicit: it composes
-M004 process/IPC isolation with Bubblewrap `--unshare-net` before target exec.
-It is not selected by persisted profiles and does not change the default
-`NetworkEnforcement::Unrestricted` report. Native loopback denial is one
-qualification fixture; no `OfflineRequired` production claim is available
-until UDP, IPv6, DNS, inherited descriptors, and every launch owner are
-qualified on supported and restricted hosts.
+Linux offline networking is an explicit per-principal intent, separate from
+filesystem profile and approval mode. `/network offline` stores a revisioned
+preference; the legacy default remains unrestricted. The daemon copies the
+intent into an immutable execution snapshot or durable Test/Python job payload.
+Managed finite, Test, Python, PTY, and LSP owners require a constrained profile
+and the M004 process/IPC composition before requesting Bubblewrap
+`--unshare-net`; FullHost and unsupported platforms refuse an offline-required
+launch. Old preference rows and old job payloads decode as unrestricted.
+
+This production-owner wiring is a candidate pending exact-head hosted
+qualification. Kernel candidate probes have covered TCP/UDP, IPv4/IPv6, DNS,
+resolver rebinding, and inherited connected sockets, but the new authenticated
+preference-to-owner path still needs hosted evidence on supported hosts and
+refusal evidence under restricted user namespaces. Until that evidence is
+recorded, Linux M005 remains active and no broad supported-host admission is
+claimed. `NetworkEnforcement::Enforced` is reported only from an actually
+obtained managed-process result; a requested policy or namespace flag alone is
+not evidence.
 
 **Scheduler-owned Tool Program binding:** `ToolProgramExecutor` is registered
 during `CoreDaemon` construction, which routinely happens before any frontend

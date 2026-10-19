@@ -34,6 +34,7 @@ fn build_test_spec(workspace_id: WorkspaceId) -> NewJob {
             scope: None,
             parent_run_id: None,
             sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

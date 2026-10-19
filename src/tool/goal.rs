@@ -657,6 +657,7 @@ mod tests {
                     scope: Some("workspace".into()),
                     parent_run_id: None,
                     sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
                 resource_request: ResourceRequest::for_kind(codegg_core::jobs::JobKind::Test),
                 timeout: None,

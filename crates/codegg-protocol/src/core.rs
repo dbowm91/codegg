@@ -854,12 +854,41 @@ impl SandboxProfileDto {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkIntentDto {
+    #[default]
+    LegacyUnrestricted,
+    OfflineRequired,
+}
+
+impl NetworkIntentDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyUnrestricted => "legacy_unrestricted",
+            Self::OfflineRequired => "offline_required",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "legacy_unrestricted" | "unrestricted" => Some(Self::LegacyUnrestricted),
+            "offline_required" | "offline" => Some(Self::OfflineRequired),
+            _ => None,
+        }
+    }
+}
+
 /// Daemon-owned principal preference projection. Secret-free.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimePreferenceDto {
     pub principal_id: String,
     pub approval_mode: ApprovalModeDto,
     pub sandbox_profile: SandboxProfileDto,
+    /// M005: principal opt-in for offline child networking. Missing on older
+    /// payloads means the legacy unrestricted behavior.
+    #[serde(default)]
+    pub network_intent: NetworkIntentDto,
     pub revision: u64,
     pub updated_at_ms: i64,
     /// M007: last-used provider connection identity from the durable
@@ -1004,6 +1033,10 @@ impl SandboxEnforcementDto {
 pub struct ExecutionPolicySnapshotDto {
     pub approval_mode: ApprovalModeDto,
     pub sandbox_profile: SandboxProfileDto,
+    /// M005: immutable network requirement captured with this policy.
+    /// Older payloads remain legacy unrestricted.
+    #[serde(default)]
+    pub network_intent: NetworkIntentDto,
     #[serde(default)]
     pub principal_id: Option<String>,
     #[serde(default)]
@@ -3508,6 +3541,13 @@ pub enum CoreRequest {
     /// Persist the caller's sandbox profile. CAS via `expected_revision`.
     SandboxProfileSet {
         sandbox_profile: String,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    /// Persist the caller's explicit child network intent. CAS via
+    /// `expected_revision`; older clients never need to send this request.
+    NetworkIntentSet {
+        network_intent: String,
         #[serde(default)]
         expected_revision: Option<u64>,
     },

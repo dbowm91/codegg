@@ -435,6 +435,16 @@ name = "windows_restricted_managed_process"
 path = "tests/windows_restricted_managed_process.rs"
 required-features = ["windows-sandbox-test-support"]
 
+[[test]]
+name = "linux_m004_process_ipc"
+path = "tests/linux_m004_process_ipc.rs"
+required-features = ["linux-git-test-support"]
+
+[[test]]
+name = "linux_git_c002_performance"
+path = "tests/linux_git_c002_performance.rs"
+required-features = ["linux-git-test-support"]
+
 # M003 pilot: consolidate the 11 `projection_replay_*` integration
 # targets into one. Cargo does not auto-discover `tests/<dir>/mod.rs`
 # as a test target, so the consolidated binary is declared explicitly.

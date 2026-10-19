@@ -386,6 +386,8 @@ pub struct SpawnSpec {
     /// requests cannot populate this field; the daemon-owned protocol sets it
     /// only after resolving principal policy for the qualified M004 owner.
     pub(crate) constrained_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// Daemon-resolved network intent; wire requests cannot set it.
+    pub(crate) network_intent: codegg_core::approval::NetworkIntent,
 }
 
 impl SpawnSpec {
@@ -397,6 +399,7 @@ impl SpawnSpec {
             size: PtySize::default(),
             scrollback_bytes: None,
             constrained_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         }
     }
 
@@ -1097,8 +1100,15 @@ fn build_m004_pty_spec(
                     InteractiveError::SpawnFailed(
                         "daemon-resolved profile did not produce a constrained sandbox".into(),
                     )
-                })?
-                .with_linux_process_isolation(true);
+                })?;
+        let config = match spawn.network_intent {
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted => {
+                config.with_linux_process_isolation(true)
+            }
+            codegg_core::approval::NetworkIntent::OfflineRequired => {
+                config.with_linux_offline_network(true)
+            }
+        };
         let launch_spec = config
             .launch_spec(program, &args, Some(cwd))
             .map_err(|error| InteractiveError::SpawnFailed(error.to_string()))?;

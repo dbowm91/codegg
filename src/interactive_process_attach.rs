@@ -597,6 +597,26 @@ impl InteractiveProcessProtocol {
         dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
         audit: Option<InteractiveAuditHook>,
     ) -> CoreResponse {
+        self.create_with_network_intent(
+            client_id,
+            ctx,
+            profile,
+            codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            dto,
+            audit,
+        )
+        .await
+    }
+
+    pub async fn create_with_network_intent(
+        &self,
+        client_id: &str,
+        ctx: &Arc<ExecutionContext>,
+        profile: codegg_core::approval::SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
+        dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
+        audit: Option<InteractiveAuditHook>,
+    ) -> CoreResponse {
         if let Err(error) = validate_client_id(client_id) {
             return error.response();
         }
@@ -610,6 +630,15 @@ impl InteractiveProcessProtocol {
         if profile != codegg_core::approval::SandboxProfile::FullHost {
             spec.constrained_profile = Some(profile);
         }
+        if network_intent == codegg_core::approval::NetworkIntent::OfflineRequired
+            && profile == codegg_core::approval::SandboxProfile::FullHost
+        {
+            return InteractiveAttachError::InvalidRequest(
+                "OfflineRequired PTY policy requires a constrained profile",
+            )
+            .response();
+        }
+        spec.network_intent = network_intent;
         match self.service.spawn(ctx, spec).await {
             Ok(handle) => match self.service.snapshot(&handle).await {
                 Ok(snapshot) => {

@@ -1,6 +1,6 @@
 # Linux Execution Isolation M005 — Offline Network Isolation
 
-Status: active — internal candidate path only; production qualification depends on M004 closure
+Status: active — daemon-owned opt-in policy and launch-owner wiring implemented; exact-head hosted owner qualification pending
 Primary class: capability
 Repository baseline: reconciled feature branch at `81e857326b3d53a9ab2b606a0e9db736f43bc429`, 2026-10-15.
 Source: `plans/subsystems/linux-execution-isolation-roadmap.md`.
@@ -8,11 +8,13 @@ Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `
 Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0035.
 Target closure record: `plans/closure/linux-execution-isolation/005-status.md`.
 
-Current limitation: this plan is active for a private, opt-in Bubblewrap
-network-namespace candidate and native test fixture. No persisted preference,
-public request field, runtime default, or user-facing `OfflineRequired`
-enforcement claim is enabled. M004's production-owner and host-qualification
-gates remain hard dependencies for any production use.
+Current limitation: the daemon now persists a revisioned, per-principal
+`OfflineRequired` intent and carries it through finite managed processes,
+scheduler-owned Test/Python payloads, constrained PTYs, and contained LSP
+launches. Legacy rows and payloads remain unrestricted. The default is not
+changed. Exact-head hosted qualification of the authenticated owner wiring and
+supported-host policy is pending; do not infer production admission from the
+candidate kernel probes or this implementation alone.
 
 ## 1. Objective
 Introduce operator-opted `OfflineRequired` for local Linux child execution, independent from `SandboxProfile` and `ApprovalMode`, with **measured** inability to communicate with external/host-local network services. Retain existing unrestricted networking as the legacy default. Network isolation must be installed before user code is executed, not inferred from static Python analysis or shell command classification.
@@ -155,10 +157,33 @@ reuse an inherited connected host socket. The same exact-source workflow
 passed constrained PTY live-owner and routing, constrained LSP duplex/procfs,
 protected-mount/Git (20/20), and all restricted-userns refusal checks. This
 closes the prior DNS-rebinding-fixture and M004-owner-matrix evidence gaps for
-the private candidate. It does not add an authenticated `OfflineRequired`
-launch field, production launch-owner wiring, persisted policy, supported-host
-admission, or a public `NetworkEnforcement::Enforced` claim. M005 remains
-internal-only and active.
+the private candidate at that revision. It did not add authenticated launch
+policy or persisted preference; those are tracked below. M005 remains active.
+
+### Authenticated preference and production-owner wiring — 2026-10-19
+
+The daemon now stores a revisioned per-principal network preference with an
+additive storage migration. New and legacy preference rows resolve to
+`LegacyUnrestricted` unless explicitly changed through `/network offline`.
+Immutable execution snapshots carry the intent; durable Test/Python job
+payloads carry it across scheduler admission and restart. `ManagedProcessService`
+uses the authenticated snapshot or scheduler-carried intent to require M004
+filesystem/process/IPC containment and the offline network namespace. PTY and
+LSP owners construct their launch requests with the same intent; FullHost,
+unsupported platforms, missing constrained launch specs, and setup failures
+refuse before target execution. The policy command shows requested and
+effective network intent and requires `/network unrestricted confirm` to
+restore host networking.
+
+Local formatting, library compile, root library test compilation, execution
+ownership, sandbox-contract, sandbox-policy-wiring, ADR-integrity, storage
+catalog, and diff guards passed. The new authenticated native owner probe could
+not run on this workstation: its kernel rejects the required Landlock ABI 6
+Signal/AbstractUnixSocket scope. The exact-source hosted M004/M005 workflow must
+run on the qualified ephemeral host before this wiring is called verified.
+The persisted intent is implemented, but M005 remains active pending that run,
+negative owner-path qualification, broader host support, and the separate
+production-admission decision.
 
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.

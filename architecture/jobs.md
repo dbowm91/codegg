@@ -962,9 +962,12 @@ process group and reap the direct child. Other platforms retain
 direct-child cleanup only. On Linux, constrained launches also pass through
 the internal composable launch contract owned by this service. Its host
 feature probe is diagnostic only: the service still selects the existing
-filesystem helper, and namespace, offline-network, seccomp, and cgroup
-dimensions remain unavailable until native enforcement is implemented and
-qualified. Probe results never establish a child's obtained status. The
+filesystem helper. A daemon-owned `OfflineRequired` intent is carried in
+authenticated execution snapshots or durable Test/Python job payloads and
+requires the M004 process/IPC composition plus Bubblewrap's private network
+namespace before exec. Legacy jobs remain unrestricted. Probe results never
+establish a child's obtained status; the new authenticated owner path remains
+under exact-head M005 qualification. The
 long-lived interactive PTY owner uses the same helper receipt/ack path for an
 internal M004 candidate; it retains PTY and child lifetime ownership and stays
 available through the daemon protocol only when the daemon-resolved principal

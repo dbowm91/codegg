@@ -59,6 +59,7 @@ fn test_payload() -> JobPayload {
         scope: None,
         parent_run_id: None,
         sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     }
 }
 

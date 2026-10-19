@@ -137,6 +137,7 @@ pub enum BuiltinSlashAction {
     Policy,
     Approval,
     Sandbox,
+    Network,
     Context,
     Cost,
     Usage,
@@ -537,6 +538,8 @@ impl CommandRegistry {
             Command::new("/sandbox", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Sandbox))
                 .with_aliases(&["/sandbox-profile"])
                 .with_description("Select sandbox profile: read-only, workspace-write, or full-host (/sandbox [profile])"),
+            Command::new("/network", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Network))
+                .with_description("Set child network policy: offline or unrestricted (/network [offline|unrestricted confirm])"),
             Command::new("/themes", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Themes))
                 .with_aliases(&["/theme"])
                 .with_description("Switch theme (/theme, /theme list, /theme use <name>, /theme reload, /theme diagnostics)"),

@@ -158,6 +158,9 @@ pub struct TurnRunInput {
     pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
     /// M003: sandbox profile preference, separate from approval mode.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005: principal network intent, captured with the immutable turn
+    /// policy and passed to canonical process owners.
+    pub network_intent: Option<codegg_core::approval::NetworkIntent>,
     /// M010: runtime inference feedback bound to one concrete durable provider
     /// connection revision. `None` when the turn is not bound to a durable
     /// connection, in which case no credential verdict is inferred or
@@ -237,8 +240,9 @@ impl TurnRuntime for DefaultTurnRuntime {
         {
             #[cfg(target_os = "linux")]
             {
-                match crate::lsp::m004::M004LspServiceScope::new(
+                match crate::lsp::m004::M004LspServiceScope::new_with_network_intent(
                     profile,
+                    input.network_intent.unwrap_or_default(),
                     input.execution.workspace_root.clone(),
                     crate::lsp::config_lsp_to_egglsp(input.config.lsp.clone().unwrap_or_default()),
                 ) {
@@ -293,6 +297,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             asset_pin,
             approval_mode,
             sandbox_profile,
+            network_intent,
             credential_observer,
             shared_job_notification_service,
             shared_ci_watch_service,
@@ -927,6 +932,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             ci_watch_service: Some(ci_watch_service),
             approval_mode,
             sandbox_profile,
+            network_intent,
             credential_observer,
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
