@@ -218,9 +218,18 @@ which keeps the lookup explicit and avoids writing an expanded secret to disk.
 | Plugins | `plugin`, `keybinds`, `theme`, `watcher`, `instructions` | `docs/PLUGINS.md`, `docs/themes.md` |
 | Daemon | `daemon` | `docs/daemon.md` |
 | HTTP server | `server` | `architecture/server.md` |
+| Remote execution | `eggwork` | `architecture/jobs.md`, `architecture/config.md` |
 
 Note that the `skills` block adds two extra roots and a kill switch on top of
 those fixed directories: `skills.paths` adds skills directories, each used
 **directly** rather than as a parent that gets `<vendor>/skills` appended, and
 `skills.enabled = false` disables discovery everywhere. See
 `architecture/skills.md`.
+
+The `eggwork` block names the remote execution nodes. Two of its keys decide
+whether a client may *ask* for a node: `eggwork.allowed_target_nodes` is the
+approved-node allowlist (absent means nothing is targetable), and
+`eggwork.required_isolation_policy` / `eggwork.required_network_policy` are the
+posture ceiling a targetable node must declare. Naming a node also requires the
+caller to hold the project-owner node-target capability, so a contributor cannot
+reach a remote node even on a daemon that allows it.

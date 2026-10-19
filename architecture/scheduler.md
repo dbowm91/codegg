@@ -405,6 +405,30 @@ and `network_policy = "unrestricted" | "disabled"`). Omitted policies keep
 the legacy `none` + `unrestricted` behavior. Relative key paths are rejected;
 key material is resolved at use time and redacted from diagnostics.
 
+#### Host-boundary admission (M001)
+
+A client can now name a node explicitly (`JobSubmitDto.target`, or the
+`target` of a schedule's `JobTemplate`). The scheduler still routes
+target-first and never falls back to local execution, but the request is
+refused *before* it becomes durable.
+
+`validate_remote_job` (`src/scheduler/eggwork.rs`) is the single policy
+for "can this job run remotely". It admits `Build`, `Lint`, `Format`,
+`ManagedProcess`, and `Shell` with a coherent command argv; it defers
+`Test` with a typed error and refuses `AgentTurn`, `Subagent`, `Python`,
+`ToolProgram`, and every unhandled kind. `EggworkExecutor::validate`
+calls the same function, so a job admitted at the host boundary is
+always dispatchable and a job refused there could never have run.
+
+The host boundary (`CoreDaemon::admit_remote_target`,
+`src/core/daemon_jobs.rs`) then applies the administrator gate (the
+`RemoteTargetPolicy` allowlist and posture ceiling built from the
+daemon configuration) and the principal gate (`Capability::NodeTarget`,
+owners only). All three gates fail closed, and a refused submission
+creates no job and a refused schedule creates no schedule. See
+`architecture/jobs.md` ("Explicit target boundary") and
+`architecture/authorization.md` ("Remote node targeting").
+
 Per attempt the executor derives a deterministic Eggwork identity
 (`codegg-{sha256(job, attempt)}`, generation 1) and mints exactly one
 fresh lease id shared verbatim between the live handle and the persisted

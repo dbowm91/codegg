@@ -44,6 +44,7 @@ pub mod project_activation;
 pub mod project_init;
 pub mod provider_connections;
 pub mod provider_qualification;
+pub mod remote_targets;
 pub mod runtime_deps;
 pub mod session_runtime;
 pub mod session_selection;

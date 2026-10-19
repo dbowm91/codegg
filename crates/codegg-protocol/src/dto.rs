@@ -1,6 +1,120 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Wire shape of an explicit execution target.
+///
+/// The canonical forms are `{"kind":"local"}` and
+/// `{"kind":"eggwork_node","node_id":"<table key>"}`. The node id names an
+/// entry of the daemon's `[eggwork.nodes]` table — never an endpoint, TLS
+/// key path, or any other credential-bearing locator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ExecutionTargetDto {
+    /// Run on the local executor. The historical default.
+    Local,
+    /// Run on the named Eggwork node.
+    EggworkNode {
+        /// The `[eggwork.nodes]` table key of the target node.
+        node_id: String,
+    },
+    /// The submitted target could not be decoded as a known target.
+    ///
+    /// This variant exists so that a malformed target produces a typed
+    /// refusal from the daemon instead of failing the decode of the
+    /// enclosing request. Transports drop frames they cannot decode
+    /// (see `src/core/transport/daemon_socket.rs`), so a decode failure
+    /// here would leave the caller waiting forever for a reply.
+    ///
+    /// The daemon never echoes this variant back to a client.
+    Invalid {
+        /// Human-readable reason the target was refused.
+        reason: String,
+    },
+}
+
+impl ExecutionTargetDto {
+    /// Decode a wire value into a typed target without ever failing.
+    ///
+    /// Unknown kinds, a missing or empty node id, and any key beyond the
+    /// documented shape decode to [`ExecutionTargetDto::Invalid`]. The
+    /// caller turns that into a typed refusal.
+    pub fn from_json_value(value: &serde_json::Value) -> Self {
+        let Some(object) = value.as_object() else {
+            return Self::Invalid {
+                reason: "execution target must be an object".to_owned(),
+            };
+        };
+        let Some(kind) = object.get("kind").and_then(serde_json::Value::as_str) else {
+            return Self::Invalid {
+                reason: "execution target is missing a string 'kind'".to_owned(),
+            };
+        };
+        match kind {
+            "local" => {
+                let extra: Vec<&str> = object
+                    .keys()
+                    .filter(|key| key.as_str() != "kind")
+                    .map(String::as_str)
+                    .collect();
+                if extra.is_empty() {
+                    Self::Local
+                } else {
+                    Self::Invalid {
+                        reason: format!(
+                            "execution target 'local' does not accept {}",
+                            extra.join(", ")
+                        ),
+                    }
+                }
+            }
+            "eggwork_node" => {
+                let extra: Vec<&str> = object
+                    .keys()
+                    .filter(|key| key.as_str() != "kind" && key.as_str() != "node_id")
+                    .map(String::as_str)
+                    .collect();
+                if !extra.is_empty() {
+                    return Self::Invalid {
+                        reason: format!(
+                            "execution target 'eggwork_node' does not accept {}",
+                            extra.join(", ")
+                        ),
+                    };
+                }
+                let Some(node_id) = object.get("node_id").and_then(serde_json::Value::as_str)
+                else {
+                    return Self::Invalid {
+                        reason: "execution target 'eggwork_node' requires a string 'node_id'"
+                            .to_owned(),
+                    };
+                };
+                if node_id.trim().is_empty() {
+                    return Self::Invalid {
+                        reason: "execution target 'eggwork_node' requires a non-empty 'node_id'"
+                            .to_owned(),
+                    };
+                }
+                Self::EggworkNode {
+                    node_id: node_id.to_owned(),
+                }
+            }
+            other => Self::Invalid {
+                reason: format!("unknown execution target kind '{other}'"),
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExecutionTargetDto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&value))
+    }
+}
+
 /// Bounds applied to project catalog payloads at the protocol boundary.
 pub const MAX_PROJECT_LIST_ITEMS: usize = 128;
 pub const MAX_PROJECT_WORKSPACES: usize = 64;
@@ -637,6 +751,12 @@ pub struct JobSummaryDto {
     pub updated_at_ms: i64,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    /// Identity of the node this job targets.
+    ///
+    /// `None` for local jobs. This is identity only: no endpoint, key
+    /// path, or other credential-bearing locator is ever exposed.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 /// Full job record for `JobGet`.
@@ -674,6 +794,12 @@ pub struct JobRecordDto {
     pub cancel_reason: Option<String>,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    /// Identity of the node this job targets.
+    ///
+    /// `None` for local jobs. This is identity only: no endpoint, key
+    /// path, or other credential-bearing locator is ever exposed.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 /// Execution attempt record for `JobAttempts`.
@@ -739,6 +865,12 @@ pub struct ScheduleRecordDto {
     pub last_occurrence_at_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Identity of the node this schedule's jobs target.
+    ///
+    /// `None` for local schedules. This is identity only: no endpoint,
+    /// key path, or other credential-bearing locator is ever exposed.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 /// C005 (ADR-0031): durable host grant for one background wait, as
@@ -822,6 +954,15 @@ pub struct JobSubmitDto {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    /// Explicit execution target for this job.
+    ///
+    /// Omitted (or `null`) means the local executor, which is exactly the
+    /// behavior of every client that predates explicit targeting. A remote
+    /// target names a configured Eggwork node; the daemon refuses it
+    /// unless the principal holds the node-target capability and the
+    /// administrator approved that node.
+    #[serde(default)]
+    pub target: Option<ExecutionTargetDto>,
 }
 
 /// Parameters for `ScheduleCreate`.
@@ -945,4 +1086,122 @@ pub enum EditRestoreResultDto {
         checkpoint_id: String,
         reason: String,
     },
+}
+
+#[cfg(test)]
+mod execution_target_tests {
+    use super::*;
+
+    #[test]
+    fn omitted_target_decodes_as_local() {
+        let raw = serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat"
+        });
+        let dto: JobSubmitDto = serde_json::from_value(raw).expect("legacy submit decodes");
+        assert_eq!(dto.target, None);
+    }
+
+    #[test]
+    fn explicit_local_target_decodes() {
+        let dto: JobSubmitDto = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat",
+            "target": {"kind": "local"}
+        }))
+        .expect("local target decodes");
+        assert_eq!(dto.target, Some(ExecutionTargetDto::Local));
+    }
+
+    #[test]
+    fn named_node_target_decodes() {
+        let dto: JobSubmitDto = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat",
+            "target": {"kind": "eggwork_node", "node_id": "builder"}
+        }))
+        .expect("node target decodes");
+        assert_eq!(
+            dto.target,
+            Some(ExecutionTargetDto::EggworkNode {
+                node_id: "builder".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_kind_decodes_to_invalid_instead_of_failing_the_request() {
+        let dto: JobSubmitDto = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat",
+            "target": {"kind": "kubernetes_node", "node_id": "builder"}
+        }))
+        .expect("unknown kind still decodes the request");
+        match dto.target {
+            Some(ExecutionTargetDto::Invalid { reason }) => {
+                assert!(reason.contains("kubernetes_node"), "{reason}");
+            }
+            other => panic!("expected an invalid target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_node_id_decodes_to_invalid() {
+        let target = ExecutionTargetDto::from_json_value(&serde_json::json!({
+            "kind": "eggwork_node",
+            "node_id": "   "
+        }));
+        assert!(matches!(target, ExecutionTargetDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn endpoint_override_is_rejected() {
+        // A target may name a node, never an endpoint or a key path.
+        let target = ExecutionTargetDto::from_json_value(&serde_json::json!({
+            "kind": "eggwork_node",
+            "node_id": "builder",
+            "endpoint": "https://attacker.invalid"
+        }));
+        match target {
+            ExecutionTargetDto::Invalid { reason } => {
+                assert!(reason.contains("endpoint"), "{reason}");
+            }
+            other => panic!("expected an invalid target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_node_id_decodes_to_invalid() {
+        let target =
+            ExecutionTargetDto::from_json_value(&serde_json::json!({"kind": "eggwork_node"}));
+        assert!(matches!(target, ExecutionTargetDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn target_round_trips_through_the_wire_form() {
+        let target = ExecutionTargetDto::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        let json = serde_json::to_value(&target).unwrap();
+        assert_eq!(json["kind"], "eggwork_node");
+        assert_eq!(json["node_id"], "builder");
+        let decoded: ExecutionTargetDto = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, target);
+    }
 }

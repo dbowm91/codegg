@@ -430,10 +430,37 @@ impl Default for ProviderConnectionsConfig {
 /// against this table at execution time. Jobs persist only the node id;
 /// endpoints and key material stay daemon/config-owned and are never written
 /// into job rows, diagnostics, or audit metadata.
+///
+/// Client-driven targeting is a separate, administrator-owned decision:
+/// `allowed_target_nodes` names the nodes a client may target, and the
+/// `required_*_policy` fields are the daemon-wide posture ceiling a
+/// targetable node must declare. Both default to "nothing is
+/// targetable", so a daemon that never opts in refuses every remote
+/// target at the host boundary.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct EggworkConfig {
     pub nodes: Option<HashMap<String, EggworkNodeProfile>>,
+    /// Nodes a client may target by name.
+    ///
+    /// Each entry is a key of the `nodes` table above — the same
+    /// identifier an `ExecutionTarget::EggworkNode { node_id }` carries.
+    /// `None` (the default) means no node may be targeted: remote
+    /// execution stays unreachable from the protocol until an
+    /// administrator names the approved nodes here.
+    pub allowed_target_nodes: Option<Vec<String>>,
+    /// Minimum filesystem isolation posture a targetable node must
+    /// declare in its own profile.
+    ///
+    /// `None` means the node's own declaration governs and no daemon
+    /// ceiling applies.
+    pub required_isolation_policy: Option<EggworkIsolationPolicy>,
+    /// Minimum network posture a targetable node must declare in its
+    /// own profile.
+    ///
+    /// `None` means the node's own declaration governs and no daemon
+    /// ceiling applies.
+    pub required_network_policy: Option<EggworkNetworkPolicy>,
 }
 
 impl EggworkConfig {
@@ -452,6 +479,15 @@ impl EggworkConfig {
                 None => self.nodes = Some(nodes.clone()),
             }
         }
+        if other.allowed_target_nodes.is_some() {
+            self.allowed_target_nodes = other.allowed_target_nodes.clone();
+        }
+        if other.required_isolation_policy.is_some() {
+            self.required_isolation_policy = other.required_isolation_policy;
+        }
+        if other.required_network_policy.is_some() {
+            self.required_network_policy = other.required_network_policy;
+        }
     }
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -460,6 +496,30 @@ impl EggworkConfig {
             validate_bound(&mut errors, "eggwork.nodes", nodes.len(), 0, 64);
             for (name, profile) in nodes {
                 profile.validate(name, &mut errors);
+            }
+        }
+        if let Some(ref allowed) = self.allowed_target_nodes {
+            validate_bound(
+                &mut errors,
+                "eggwork.allowed_target_nodes",
+                allowed.len(),
+                0,
+                64,
+            );
+            for node_id in allowed {
+                if node_id.trim().is_empty() {
+                    errors.push("eggwork.allowed_target_nodes: node id must not be empty".into());
+                    continue;
+                }
+                // A target names a key of the node table. An allowlist
+                // entry that names no configured node can never be
+                // satisfied, so it is a configuration error rather than a
+                // silently ignored line.
+                if self.node(node_id).is_none() {
+                    errors.push(format!(
+                        "eggwork.allowed_target_nodes: '{node_id}' is not a configured [eggwork.nodes] entry"
+                    ));
+                }
             }
         }
         if errors.is_empty() {
@@ -472,6 +532,15 @@ impl EggworkConfig {
     /// Resolve the profile selected by an Eggwork execution target.
     pub fn node(&self, name: &str) -> Option<&EggworkNodeProfile> {
         self.nodes.as_ref().and_then(|nodes| nodes.get(name))
+    }
+
+    /// `true` when `name` is approved for client-driven targeting.
+    ///
+    /// An absent allowlist approves nothing.
+    pub fn allows_targeting(&self, name: &str) -> bool {
+        self.allowed_target_nodes
+            .as_ref()
+            .is_some_and(|allowed| allowed.iter().any(|entry| entry == name))
     }
 }
 
@@ -4647,7 +4716,10 @@ mod tests {
         let mut nodes = std::collections::HashMap::new();
         nodes.insert("bad".to_string(), eggwork_profile("http://node-1:8443"));
         let cfg = Config {
-            eggwork: Some(EggworkConfig { nodes: Some(nodes) }),
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let errs = cfg.validate().unwrap_err();
@@ -4659,7 +4731,10 @@ mod tests {
             eggwork_profile("https://user:pass@node-1:8443/x?y=1#z"),
         );
         let cfg = Config {
-            eggwork: Some(EggworkConfig { nodes: Some(nodes) }),
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let errs = cfg.validate().unwrap_err();
@@ -4694,6 +4769,7 @@ mod tests {
         let mut base = Config {
             eggwork: Some(EggworkConfig {
                 nodes: Some(base_nodes),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -4709,6 +4785,7 @@ mod tests {
         let overlay = Config {
             eggwork: Some(EggworkConfig {
                 nodes: Some(overlay_nodes),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -4739,5 +4816,92 @@ mod tests {
                 .as_deref(),
             Some("https://node-1:8443")
         );
+    }
+
+    /// M001: an absent allowlist approves no node. This is the
+    /// fail-closed default for client-driven remote targeting.
+    #[test]
+    fn eggwork_target_allowlist_is_empty_by_default() {
+        let cfg = EggworkConfig::default();
+        assert!(!cfg.allows_targeting("node-1"));
+        assert!(cfg.allowed_target_nodes.is_none());
+    }
+
+    /// M001: an allowlist entry that names no configured node is a
+    /// configuration error, not a silently ignored line.
+    #[test]
+    fn eggwork_validation_rejects_unknown_allowed_target_node() {
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert("node-1".to_string(), eggwork_profile("https://node-1:8443"));
+        let cfg = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                allowed_target_nodes: Some(vec!["ghost".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("ghost") && e.contains("eggwork.nodes")),
+            "{errs:?}"
+        );
+    }
+
+    /// M001: an allowlist entry that names a configured node validates.
+    #[test]
+    fn eggwork_validation_accepts_known_allowed_target_node() {
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert("node-1".to_string(), eggwork_profile("https://node-1:8443"));
+        let cfg = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                allowed_target_nodes: Some(vec!["node-1".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        cfg.validate().expect("known node validates");
+    }
+
+    /// M001: the targeting keys merge by whole-value replacement, so a
+    /// later layer can narrow the allowlist without touching the node
+    /// table.
+    #[test]
+    fn eggwork_target_keys_merge_by_replacement() {
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert("node-1".to_string(), eggwork_profile("https://node-1:8443"));
+        nodes.insert("node-2".to_string(), eggwork_profile("https://node-2:8443"));
+        let base = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                allowed_target_nodes: Some(vec!["node-1".to_string(), "node-2".to_string()]),
+                required_isolation_policy: Some(EggworkIsolationPolicy::None),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let overlay = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: None,
+                allowed_target_nodes: Some(vec!["node-1".to_string()]),
+                required_isolation_policy: Some(EggworkIsolationPolicy::Required),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = crate::paths::merge_configs(&[base, overlay]);
+        let eggwork = merged.eggwork.clone().unwrap();
+        assert_eq!(
+            eggwork.allowed_target_nodes,
+            Some(vec!["node-1".to_string()]),
+            "the later layer replaces the allowlist"
+        );
+        assert_eq!(
+            eggwork.required_isolation_policy,
+            Some(EggworkIsolationPolicy::Required)
+        );
+        assert!(eggwork.node("node-2").is_some(), "nodes survive");
     }
 }

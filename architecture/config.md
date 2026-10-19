@@ -442,6 +442,23 @@ guidance.
   Eggwork currently has no qualified network-isolation backend, so unrestricted
   networking must be assumed for the supported mode.
 
+  Two more keys govern whether a *client* may name a node at all
+  (M001, "Explicit target boundary" in `architecture/jobs.md`):
+
+  - `allowed_target_nodes: [ "name", ... ]` — the approved-node allowlist.
+    Each entry is a key of the `nodes` table above, which is the identifier an
+    `ExecutionTarget::EggworkNode { node_id }` carries. An absent list approves
+    nothing, so a daemon that never opts in refuses every remote target at the
+    host boundary while local execution keeps working. An entry that names no
+    configured node is a configuration error, not a silently ignored line.
+  - `required_isolation_policy` / `required_network_policy` — the daemon-wide
+    posture ceiling a targetable node must declare in its own profile. Absent
+    means the node's own declaration governs and the executor re-verifies the
+    advertised posture at execution time.
+
+  Both keys merge by whole-value replacement, like the other `Option` fields
+  in the section.
+
 `orchestration.auto_convergence` defaults to `false`. The host clamps
 `default_max_cycles` to 1–4, `max_producers_per_cycle` to 1–3, and
 `max_wall_clock_ms` to at most 24 hours. Explicit convergence calls remain

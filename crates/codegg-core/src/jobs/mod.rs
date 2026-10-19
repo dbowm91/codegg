@@ -513,7 +513,12 @@ pub enum JobKind {
 /// failures are reported back to CodeGG policy. The executor does not
 /// select another node.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "node_id")]
+// Internally tagged, so the JSON form is `{"kind":"local"}` /
+// `{"kind":"eggwork_node","node_id":"builder"}` — the same shape the
+// protocol DTO uses. An adjacently tagged representation would nest the
+// variant's own `node_id` field under a second `node_id` key and
+// disagree with the wire contract.
+#[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ExecutionTarget {
     /// Default. Job runs through the existing local executor kinds.
     #[default]

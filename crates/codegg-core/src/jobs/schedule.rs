@@ -20,7 +20,7 @@ use crate::error::StorageError;
 use crate::jobs::{JobId, JobPayload, JobPriority, JobSource, ResourceRequest, RetryPolicy};
 use crate::workspace::WorkspaceId;
 
-use super::{IdempotencyClass, JobKind};
+use super::{ExecutionTarget, IdempotencyClass, JobKind};
 
 /// Schedule lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -116,6 +116,68 @@ pub struct JobTemplate {
     pub timeout: Option<Duration>,
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    /// Execution target for every job this schedule materializes.
+    ///
+    /// `#[serde(default)]` keeps templates persisted before explicit
+    /// targeting existed readable: they decode as
+    /// [`ExecutionTarget::Local`], which is the behavior they always had.
+    /// The target is carried unchanged into the durable job spec at
+    /// materialization time.
+    #[serde(default)]
+    pub target: ExecutionTarget,
+}
+
+impl JobTemplate {
+    /// Build the durable job spec for one schedule occurrence.
+    ///
+    /// This is the single construction path for a materialized
+    /// occurrence, so the template's execution target is carried into
+    /// the job unchanged. A schedule that targets a remote node
+    /// therefore produces remote jobs, and a schedule that does not
+    /// keeps the historical local behavior.
+    ///
+    /// `not_before` is the scheduled occurrence time: the job becomes
+    /// eligible exactly when the schedule said it should.
+    pub fn new_job_for_occurrence(
+        &self,
+        workspace_id: WorkspaceId,
+        schedule_id: crate::jobs::ScheduleId,
+        session_id: Option<String>,
+        occurrence: DateTime<Utc>,
+    ) -> crate::jobs::NewJob {
+        crate::jobs::NewJob {
+            workspace_id,
+            session_id,
+            turn_id: None,
+            kind: self.kind,
+            source: JobSource::Scheduled {
+                schedule_id: schedule_id.clone(),
+                occurrence,
+            },
+            priority: self.priority,
+            payload: self.payload.clone(),
+            resource_request: self.resource_request.clone(),
+            timeout: self.timeout,
+            retry_policy: self.retry_policy.clone(),
+            idempotency: self.idempotency,
+            not_before: Some(occurrence),
+            deadline: None,
+            schedule_id: Some(schedule_id),
+            depends_on: vec![],
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: self.target.clone(),
+        }
+    }
+
+    /// The node id this template targets, if it targets a remote node.
+    pub fn target_node_id(&self) -> Option<&str> {
+        self.target.eggwork_node_id()
+    }
 }
 
 /// Persisted schedule record.
@@ -330,6 +392,7 @@ impl JobTemplate {
             idempotency: IdempotencyClass::SafeRepeat,
             timeout: None,
             labels: HashMap::new(),
+            target: ExecutionTarget::Local,
         }
     }
 

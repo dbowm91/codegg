@@ -626,6 +626,33 @@ pub fn job_template_from_value(
     serde_json::from_value(v.clone()).map_err(|e| format!("invalid job template: {e}"))
 }
 
+/// DTO → Domain: decode the optional execution target of a job or
+/// schedule template.
+///
+/// An omitted target is the local executor, which is exactly the
+/// behavior of every client that predates explicit targeting. A
+/// malformed target is a typed refusal and never a silent fallback to
+/// local execution: a client that asked for a remote node must not
+/// receive a local job instead.
+pub fn execution_target_from_dto(
+    target: Option<codegg_protocol::dto::ExecutionTargetDto>,
+) -> Result<crate::jobs::ExecutionTarget, String> {
+    use codegg_protocol::dto::ExecutionTargetDto;
+    match target {
+        None | Some(ExecutionTargetDto::Local) => Ok(crate::jobs::ExecutionTarget::Local),
+        Some(ExecutionTargetDto::EggworkNode { node_id }) => {
+            let target = crate::jobs::ExecutionTarget::EggworkNode { node_id };
+            target
+                .validate()
+                .map_err(|reason| format!("invalid execution target: {reason}"))?;
+            Ok(target)
+        }
+        Some(ExecutionTargetDto::Invalid { reason }) => {
+            Err(format!("invalid execution target: {reason}"))
+        }
+    }
+}
+
 /// Domain → DTO: convert a `JobSummary` into the wire DTO.
 pub fn job_summary_to_dto(
     s: &crate::jobs::store::JobSummary,
@@ -647,6 +674,7 @@ pub fn job_summary_to_dto(
         created_at_ms: s.created_at.timestamp_millis(),
         updated_at_ms: s.updated_at.timestamp_millis(),
         labels: std::collections::HashMap::new(), // populated by daemon handler
+        target_node_id: s.target_node_id.clone(),
     }
 }
 
@@ -678,6 +706,7 @@ pub fn job_record_to_dto(r: &crate::jobs::JobRecord) -> codegg_protocol::dto::Jo
         cancel_requested_at: r.cancel_requested_at.map(|d| d.timestamp_millis()),
         cancel_reason: r.cancel_reason.clone(),
         labels: r.labels.clone(),
+        target_node_id: r.target.eggwork_node_id().map(str::to_owned),
     }
 }
 
@@ -737,6 +766,7 @@ pub fn schedule_record_to_dto(
         last_occurrence_at_ms: r.last_occurrence_at.map(|d| d.timestamp_millis()),
         created_at_ms: r.created_at.timestamp_millis(),
         updated_at_ms: r.updated_at.timestamp_millis(),
+        target_node_id: r.job_template.target_node_id().map(str::to_owned),
     }
 }
 
@@ -800,6 +830,7 @@ pub fn job_submit_from_dto(
         .map(crate::jobs::JobId::new_unchecked)
         .collect();
     let resource_request = crate::jobs::ResourceRequest::for_kind(kind);
+    let target = execution_target_from_dto(d.target)?;
 
     Ok(crate::jobs::NewJob {
         workspace_id: crate::workspace::WorkspaceId::new_unchecked(d.workspace_id),
@@ -823,7 +854,7 @@ pub fn job_submit_from_dto(
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
-        target: crate::jobs::ExecutionTarget::default(),
+        target,
     })
 }
 
@@ -833,6 +864,14 @@ pub fn schedule_create_from_dto(
 ) -> Result<crate::jobs::ScheduleTemplate, String> {
     let kind = schedule_kind_from_value(&d.kind)?;
     let job_template = job_template_from_value(&d.job_template)?;
+    // The template's target is decoded by the domain type, so a malformed
+    // node id (empty, oversized, or carrying characters outside the
+    // identifier charset) is a typed refusal here rather than a template
+    // that could never be admitted.
+    job_template
+        .target
+        .validate()
+        .map_err(|reason| format!("invalid execution target: {reason}"))?;
     let overlap_policy = overlap_policy_from_str(&d.overlap_policy)?;
     let missed_run_policy = missed_run_policy_from_value(&d.missed_run_policy)?;
 

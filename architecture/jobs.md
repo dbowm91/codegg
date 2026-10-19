@@ -103,6 +103,101 @@ embedded — use credential references.
 rows read back as `Local`). The job stores only the node id; endpoints
 and key material stay in daemon configuration (`[eggwork.nodes]`).
 
+### Explicit target boundary (M001)
+
+A client may now *ask* for a named node instead of leaving the target
+implicit. The request surface is `JobSubmitDto.target`
+(`Option<ExecutionTargetDto>`) and, for schedules, the `target` field of
+the persisted `JobTemplate`.
+
+Wire shape (`codegg-protocol/src/dto.rs`):
+
+| Form | Meaning |
+|---|---|
+| field absent / `null` | local executor — the pre-M001 behavior, unchanged |
+| `{"kind":"local"}` | local executor, stated explicitly |
+| `{"kind":"eggwork_node","node_id":"<table key>"}` | the named `[eggwork.nodes]` entry |
+| anything else | typed refusal (`invalid_job_submit` / `invalid_schedule_create`) |
+
+The target decodes **totally**: an unknown kind, a missing or empty
+node id, and any extra key (an `endpoint`, a key path — anything beyond
+the documented shape) decode to `ExecutionTargetDto::Invalid` instead of
+failing the enclosing request. Transports drop frames they cannot decode
+(`src/core/transport/daemon_socket.rs`), so a decode failure here would
+leave the caller waiting forever for a reply that can never arrive. A
+malformed target is therefore refused with a typed error, and it is
+never a silent fallback to local execution: a client that asked for a
+remote node must not receive a local job instead.
+
+The node id names a key of the daemon's `[eggwork.nodes]` table — the
+same identifier the executor resolves the target against. It is never an
+endpoint, a certificate path, or a key path.
+
+#### Host-boundary gates
+
+`CoreDaemon::admit_remote_target` (`src/core/daemon_jobs.rs`) applies
+three independent gates to a remote target *before anything is enqueued*,
+so a refused request creates no job — not even a local one — and a
+refused schedule never becomes durable and can never fire a local job
+later.
+
+1. **Shape** — `validate_remote_job` (`src/scheduler/eggwork.rs`) is the
+   single policy for "can this job run remotely". The kinds that can are
+   the ones whose payload is a typed command: `build`, `lint`, `format`,
+   `shell`, `managed_process`. `test` is deferred (remote execution
+   cannot preserve TestRunner durable evidence) and `agent_turn`,
+   `subagent`, `python`, `tool_program` have no remote executor. The
+   command argv must be coherent: non-empty, a non-blank program, no
+   blank entry, and within the remote argv bounds. The executor's own
+   `validate` calls the same function, so a job admitted at the host
+   boundary is always dispatchable, and a job refused at the host
+   boundary could never have run.
+2. **Administrator** — `RemoteTargetPolicy`
+   (`src/core/remote_targets.rs`) is built once from the daemon
+   configuration and answers whether a node may be named at all.
+   `[eggwork.allowed_target_nodes]` is the approved-node allowlist; an
+   absent allowlist approves nothing, which is the fail-closed default.
+   `[eggwork.required_isolation_policy]` and
+   `[eggwork.required_network_policy]` are the daemon-wide posture
+   ceiling a targetable node must declare.
+3. **Principal** — the caller must hold the node-target capability
+   (`Capability::NodeTarget`, wire name `node.target`) in the resolved
+   project scope. That capability is granted to project **owners** only,
+   so a contributor who may submit jobs still cannot name a remote node.
+   The local-owner broad policy owns the daemon and passes without team
+   state.
+
+The administrator gate is checked before the principal gate so an
+unauthorized caller learns nothing about which nodes exist. No gate ever
+names an endpoint, a certificate path, or a key path, and no refusal
+message contains one.
+
+Execution time re-checks the node's live posture against its declared
+policy (the executor's posture agreement). Creation time and execution
+time are deliberately different checks: creation answers "may this
+caller name this node", execution answers "does this node still meet
+its declared posture".
+
+#### Schedule target preservation
+
+`JobTemplate` carries the target (`#[serde(default)]`), so templates
+persisted before explicit targeting existed decode as `Local` — exactly
+the behavior they always had — and no storage migration is required.
+`JobTemplate::new_job_for_occurrence` is the single construction path
+for a materialized occurrence, so the template's target is carried into
+the durable `NewJob` unchanged. `ScheduleCreate` validates and admits the
+target before the schedule becomes durable; `ScheduleGet` returns the
+target identity in `ScheduleRecordDto.target_node_id`.
+
+#### Introspection
+
+`JobSummaryDto`, `JobRecordDto`, and `ScheduleRecordDto` gained an
+optional `target_node_id`. It is identity only — no endpoint, no key
+path — and it is optional on the wire, so clients that predate it keep
+working unchanged. `JobGet`, `JobWait`, `JobStatus`, `JobCancel`, and
+the terminal notice all work against a remote job through the same
+paths as a local one; there is no second remote-job registry.
+
 `RemoteExecutionHandle` (schema version 1) persists the bound remote
 identity on `JobAttempt` (`remote_handle_json`): node id, execution id,
 generation, lease id. The Eggwork executor writes it before any

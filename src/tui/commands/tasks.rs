@@ -825,6 +825,7 @@ pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: S
                 schedule_id: None,
                 depends_on: Vec::new(),
                 labels: std::collections::HashMap::new(),
+                target: None,
             };
             let response = core_client
                 .request(crate::core::new_request(
@@ -975,6 +976,7 @@ mod tests {
             last_occurrence_at_ms: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+            target_node_id: None,
         }
     }
 

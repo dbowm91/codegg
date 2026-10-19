@@ -1324,3 +1324,181 @@ async fn scheduler_end_to_end_remote_only() {
         .map(|j| j.state.is_terminal())
         .unwrap_or(false));
 }
+
+// ── M001: explicit target boundary ─────────────────────────────────────────
+
+/// The host boundary and the executor share one policy: a job the
+/// boundary admits is dispatchable, and a job the boundary refuses could
+/// never have run. A second policy would let a caller learn about the
+/// refusal only after the job became durable.
+#[test]
+fn host_boundary_and_executor_share_one_remote_policy() {
+    use codegg::scheduler::eggwork::validate_remote_job;
+
+    let exec = EggworkExecutor::new(EggworkExecutorConfig::default());
+
+    // Admitted remotely.
+    let build = build_record(eggwork_target());
+    assert!(validate_remote_job(build.kind, &build.payload).is_ok());
+    assert!(exec.validate(&build).is_ok());
+
+    // Deferred: remote Test cannot preserve TestRunner durable evidence.
+    let mut test = build_record(eggwork_target());
+    test.kind = JobKind::Test;
+    test.payload = JobPayload::Test {
+        command: "cargo test".to_string(),
+        argv: vec!["cargo".to_string(), "test".to_string()],
+        cwd: None,
+        scope: None,
+        parent_run_id: None,
+    };
+    assert!(validate_remote_job(test.kind, &test.payload).is_err());
+    assert!(exec.validate(&test).is_err());
+
+    // No remote executor at all.
+    let mut subagent = build_record(eggwork_target());
+    subagent.kind = JobKind::Subagent;
+    subagent.payload = JobPayload::Subagent {
+        prompt: "do it".to_string(),
+        agent: "build".to_string(),
+        model: None,
+        parent_id: None,
+        denied_tools: Vec::new(),
+        allowed_paths: Vec::new(),
+        max_tool_calls: None,
+    };
+    assert!(validate_remote_job(subagent.kind, &subagent.payload).is_err());
+    assert!(exec.validate(&subagent).is_err());
+
+    // An incoherent command is refused on both sides.
+    let mut empty = build_record(eggwork_target());
+    empty.payload = JobPayload::ManagedArgv {
+        argv: Vec::new(),
+        cwd: None,
+    };
+    assert!(validate_remote_job(empty.kind, &empty.payload).is_err());
+    assert!(exec.validate(&empty).is_err());
+}
+
+/// A remote-targeted job that the boundary admits reaches the Eggwork
+/// executor and produces exactly one submitted remote execution. The
+/// target survives the durable store, so the executor that runs it is
+/// the remote one and not a local fallback.
+#[tokio::test(flavor = "current_thread")]
+async fn admitted_remote_target_reaches_the_eggwork_executor_once() {
+    use codegg::scheduler::eggwork::validate_remote_job;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let record = store
+        .create_job(NewJob {
+            workspace_id: WorkspaceId::new_unchecked("ws-egg-admit"),
+            session_id: None,
+            turn_id: None,
+            kind: JobKind::Build,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload: JobPayload::ManagedArgv {
+                argv: vec!["echo".to_string(), "hello".to_string()],
+                cwd: None,
+            },
+            resource_request: ResourceRequest::default(),
+            timeout: None,
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency: IdempotencyClass::SafeRepeat,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: eggwork_target(),
+        })
+        .await
+        .unwrap();
+
+    // The durable record kept the target.
+    let loaded = store.get_job(&record.job_id).await.unwrap().unwrap();
+    assert_eq!(loaded.target, eggwork_target());
+    assert_eq!(
+        executor_kind_for_job(&loaded),
+        Some(ExecutorKind::Eggwork),
+        "a remote target routes to the Eggwork executor, never to a local one"
+    );
+
+    // The host boundary admits the same job.
+    assert!(validate_remote_job(loaded.kind, &loaded.payload).is_ok());
+
+    let attempt = store
+        .begin_attempt(
+            &record.job_id,
+            &DaemonGeneration::new_unchecked("gen-admit"),
+        )
+        .await
+        .unwrap();
+    let client = Arc::new(ScriptedClient::succeeding());
+    let exec = executor_with(&client, Some(store.clone()));
+    let mut job = build_record(eggwork_target());
+    job.job_id = record.job_id.clone();
+    let mut ctx = bound_context(job, dir.path().to_path_buf());
+    ctx.attempt_id = attempt.attempt_id.clone();
+    let completion = exec.execute(ctx).await;
+    assert_eq!(completion.status, ExecutorStatus::Completed);
+    assert_eq!(client.submits.load(Ordering::SeqCst), 1);
+}
+
+/// M001: the named target survives a daemon restart. The store is
+/// reopened against the same database and the target is read back from
+/// the durable `target_kind` / `target_node_id` columns, so a restarted
+/// daemon still routes the job to the remote node instead of silently
+/// running it locally.
+#[tokio::test(flavor = "current_thread")]
+async fn named_target_survives_a_store_restart() {
+    let pool = common::pool::isolated_pool().await;
+    let store = SqliteJobStore::new(pool.clone());
+    let record = store
+        .create_job(NewJob {
+            workspace_id: WorkspaceId::new_unchecked("ws-egg-restart"),
+            session_id: None,
+            turn_id: None,
+            kind: JobKind::Build,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload: JobPayload::ManagedArgv {
+                argv: vec!["echo".to_string()],
+                cwd: None,
+            },
+            resource_request: ResourceRequest::default(),
+            timeout: None,
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency: IdempotencyClass::SafeRepeat,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: eggwork_target(),
+        })
+        .await
+        .unwrap();
+
+    // "Restart": a fresh store handle over the same database.
+    let reopened = SqliteJobStore::new(pool);
+    let loaded = reopened.get_job(&record.job_id).await.unwrap().unwrap();
+    assert_eq!(loaded.target, eggwork_target());
+    assert_eq!(
+        executor_kind_for_job(&loaded),
+        Some(ExecutorKind::Eggwork),
+        "a restarted daemon still routes the job to the remote node"
+    );
+}

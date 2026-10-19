@@ -84,6 +84,23 @@ impl CoreDaemon {
                         message: "tool_program jobs must be submitted through the authorized tool_program invocation boundary".to_string(),
                     });
                 }
+                // M001: remote targets cross a trust boundary, so the
+                // host boundary admits them before anything is enqueued.
+                // A refusal here creates no job at all — not even a
+                // local one.
+                if let Err(response) = self
+                    .admit_remote_target(
+                        &new_job.target,
+                        new_job.kind,
+                        &new_job.payload,
+                        authority.principal(),
+                        authz_decision.project_id.as_ref(),
+                        &authz_decision.decision_id,
+                    )
+                    .await
+                {
+                    return Ok(response);
+                }
                 let Some(submission) = self.deps.submission.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "scheduler_unavailable".to_string(),
@@ -362,6 +379,23 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // M001: a schedule that targets a remote node admits the
+                // same jobs its occurrences would produce. The check runs
+                // before the schedule becomes durable, so a refused
+                // schedule never fires a local job later.
+                if let Err(response) = self
+                    .admit_remote_target(
+                        &template.job_template.target,
+                        template.job_template.kind,
+                        &template.job_template.payload,
+                        authority.principal(),
+                        authz_decision.project_id.as_ref(),
+                        &authz_decision.decision_id,
+                    )
+                    .await
+                {
+                    return Ok(response);
+                }
                 match self.deps.schedule_store.create(template).await {
                     Ok(record) => {
                         let schedule_id = record.schedule_id.as_str().to_string();
@@ -1015,6 +1049,98 @@ impl CoreDaemon {
                     message: "This request type is not yet implemented".to_string(),
                 })
             }
+        }
+    }
+
+    /// M001: host-boundary admission for an explicit remote target.
+    ///
+    /// A remote target moves work off the local machine, so it passes
+    /// three independent gates before anything is enqueued:
+    ///
+    /// 1. *Shape* — the job kind and payload must be remotely runnable.
+    ///    This check happens before the job is created, so a refused
+    ///    request never leaves a local job behind.
+    /// 2. *Administrator* — the daemon must have approved the node for
+    ///    client-driven targeting, and the node's declared posture must
+    ///    meet the daemon ceiling. This gate runs before the principal
+    ///    gate so an unauthorized caller learns nothing about which
+    ///    nodes exist.
+    /// 3. *Principal* — the caller must hold the node-target capability
+    ///    (`node.target`) in the resolved project scope. That capability
+    ///    is granted to project owners only.
+    ///
+    /// All three fail closed. No gate names an endpoint, a certificate
+    /// path, or a key path, and a local target is never affected by any
+    /// of them.
+    async fn admit_remote_target(
+        &self,
+        target: &codegg_core::jobs::ExecutionTarget,
+        kind: codegg_core::jobs::JobKind,
+        payload: &codegg_core::jobs::JobPayload,
+        principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
+        project: Option<&codegg_core::identity::ProjectId>,
+        correlation_id: &str,
+    ) -> Result<(), CoreResponse> {
+        let codegg_core::jobs::ExecutionTarget::EggworkNode { node_id } = target else {
+            // Local execution is unaffected by every remote gate.
+            return Ok(());
+        };
+
+        // Gate 1 — shape. A job that could never run remotely is refused
+        // now rather than after it became durable.
+        if let Err(rejection) = crate::scheduler::eggwork::validate_remote_job(kind, payload) {
+            return Err(CoreResponse::Error {
+                code: rejection.code().to_owned(),
+                message: rejection.message(),
+            });
+        }
+
+        // Gate 2 — administrator. Checked before the principal gate so an
+        // unauthorized caller learns nothing about which nodes exist.
+        let Some(policy) = self.deps.remote_target_policy.as_deref() else {
+            return Err(CoreResponse::Error {
+                code: "remote_target_not_approved".to_owned(),
+                message: "remote execution is not available on this daemon".to_owned(),
+            });
+        };
+        if let Err(rejection) = policy.check(node_id) {
+            return Err(CoreResponse::Error {
+                code: rejection.code().to_owned(),
+                message: rejection.message(),
+            });
+        }
+
+        // Gate 3 — principal. The local-owner broad policy owns the
+        // daemon, so it passes without team state; every other principal
+        // needs an active membership that carries `node.target`.
+        if codegg_core::authorization::is_local_owner_broad(principal) {
+            return Ok(());
+        }
+        let Some(pool) = self.pool.clone() else {
+            return Err(CoreResponse::Error {
+                code: "authorization_denied".to_owned(),
+                message: "not authorized for node.target on job_submit_node_target".to_owned(),
+            });
+        };
+        let service = codegg_core::authorization::AuthorizationService::new(
+            codegg_core::team::TeamStore::new(pool),
+        );
+        let request = codegg_core::authorization::AuthorizationRequest::new(
+            principal.clone(),
+            codegg_core::authorization::OperationDescriptor::new(
+                "job_submit_node_target",
+                codegg_core::authorization::ScopeKind::DirectProject,
+                Some(codegg_core::team::Capability::NodeTarget),
+            ),
+            project.cloned(),
+            correlation_id,
+        );
+        match service.authorize(&request).await {
+            Ok(_) => Ok(()),
+            Err(error) => Err(CoreResponse::Error {
+                code: error.code().to_owned(),
+                message: error.to_string(),
+            }),
         }
     }
 }

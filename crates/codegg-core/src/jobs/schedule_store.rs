@@ -714,6 +714,37 @@ mod tests {
         Stub
     }
 
+    /// A materializer that really creates the job, so a test can assert
+    /// on the durable job spec the template produced.
+    fn creating_materializer(job_store: Arc<dyn JobStore>) -> impl OccurrenceMaterializer {
+        struct Creator {
+            job_store: Arc<dyn JobStore>,
+        }
+        #[async_trait]
+        impl OccurrenceMaterializer for Creator {
+            async fn materialize(
+                &self,
+                schedule_id: &ScheduleId,
+                template: &JobTemplate,
+                at: DateTime<Utc>,
+            ) -> Result<JobId, super::super::schedule::MaterializerError> {
+                let spec = template.new_job_for_occurrence(
+                    template_workspace(),
+                    schedule_id.clone(),
+                    None,
+                    at,
+                );
+                let job = self.job_store.create_job(spec).await?;
+                Ok(job.job_id)
+            }
+        }
+        Creator { job_store }
+    }
+
+    fn template_workspace() -> WorkspaceId {
+        ws()
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn in_memory_create_and_get() {
         let store = InMemoryScheduleStore::new(Arc::new(InMemoryJobStore::new()));
@@ -778,7 +809,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn in_memory_overlap_skip_if_running() {
-        let job_store = Arc::new(InMemoryJobStore::new());
+        let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
         let store = InMemoryScheduleStore::new(job_store.clone());
 
         let rec = store
@@ -918,5 +949,150 @@ mod tests {
             .await
             .unwrap();
         assert!(c2.is_empty());
+    }
+
+    /// M001: a template that targets a remote node materializes a job
+    /// with the same target. The template is the only place the target
+    /// lives, so the materialization path must carry it unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_materialization_preserves_remote_target() {
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let store = InMemoryScheduleStore::new(job_store.clone());
+        let now = Utc::now();
+
+        let mut template = test_template("build");
+        template.target = ExecutionTarget::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        let record = store
+            .create(ScheduleTemplate {
+                workspace_id: ws(),
+                session_id: None,
+                kind: ScheduleKind::OneShot { run_at: now },
+                job_template: template,
+                overlap_policy: OverlapPolicy::Allow,
+                missed_run_policy: MissedRunPolicy::RunOnceNow,
+                next_run_at: Some(now),
+                labels: HashMap::new(),
+            })
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim_due(now, &creating_materializer(job_store.clone()))
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let job_id = claimed[0].job_id.clone();
+        let job = job_store
+            .get_job(&job_id)
+            .await
+            .unwrap()
+            .expect("job exists");
+        assert_eq!(
+            job.target,
+            ExecutionTarget::EggworkNode {
+                node_id: "builder".to_owned()
+            }
+        );
+        assert_eq!(job.schedule_id.as_ref(), Some(&record.schedule_id));
+    }
+
+    /// M001: a template persisted before explicit targeting existed has
+    /// no `target` key and must decode as the local executor.
+    #[test]
+    fn template_without_target_key_decodes_as_local() {
+        // A real persisted template with the `target` key removed is
+        // exactly what a pre-M001 schedule row holds.
+        let mut encoded = serde_json::to_value(test_template("build")).expect("template encodes");
+        let object = encoded.as_object_mut().expect("template is an object");
+        assert!(
+            object.remove("target").is_some(),
+            "the template carries a target"
+        );
+        let template: JobTemplate =
+            serde_json::from_value(encoded).expect("legacy template decodes");
+        assert_eq!(template.target, ExecutionTarget::Local);
+        assert_eq!(template.target_node_id(), None);
+    }
+
+    /// M001: a template that names a remote node round-trips through the
+    /// persisted JSON form, so a restarted daemon keeps the target.
+    #[test]
+    fn template_with_remote_target_round_trips() {
+        let mut template = test_template("build");
+        template.target = ExecutionTarget::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        let encoded = serde_json::to_value(&template).expect("template encodes");
+        let decoded: JobTemplate = serde_json::from_value(encoded).expect("template decodes");
+        assert_eq!(decoded.target, template.target);
+        assert_eq!(decoded.target_node_id(), Some("builder"));
+    }
+
+    /// M001: a one-shot schedule that targets a remote node materializes
+    /// exactly one job, and that job keeps the remote target. The
+    /// occurrence key `(schedule_id, scheduled_for)` is what keeps a
+    /// replay from producing a second job.
+    #[tokio::test(flavor = "current_thread")]
+    async fn sqlite_one_shot_schedule_materializes_one_remote_job() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory db");
+        crate::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+        let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+        let store = SqliteScheduleStore::new(pool, job_store.clone());
+        let now = Utc::now();
+
+        let mut template = test_template("build");
+        template.target = ExecutionTarget::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        store
+            .create(ScheduleTemplate {
+                workspace_id: ws(),
+                session_id: None,
+                kind: ScheduleKind::OneShot { run_at: now },
+                job_template: template,
+                overlap_policy: OverlapPolicy::Allow,
+                missed_run_policy: MissedRunPolicy::RunOnceNow,
+                next_run_at: Some(now),
+                labels: HashMap::new(),
+            })
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim_due(now, &creating_materializer(job_store.clone()))
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].status, OccurrenceStatus::Queued);
+
+        let job = job_store
+            .get_job(&claimed[0].job_id)
+            .await
+            .unwrap()
+            .expect("materialized job exists");
+        assert_eq!(
+            job.target,
+            ExecutionTarget::EggworkNode {
+                node_id: "builder".to_owned()
+            }
+        );
+
+        // A replay of the same tick does not duplicate the occurrence.
+        let replay = store
+            .claim_due(now, &creating_materializer(job_store.clone()))
+            .await
+            .unwrap();
+        assert!(
+            replay.is_empty(),
+            "the one-shot schedule does not fire twice"
+        );
     }
 }

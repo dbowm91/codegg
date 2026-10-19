@@ -196,6 +196,167 @@ impl EggworkExecutorConfig {
 pub type BoxEventStream =
     futures_util::stream::BoxStream<'static, Result<ExecutionEvent, EggworkClientError>>;
 
+/// Maximum number of argv entries accepted for a remote command.
+pub const MAX_REMOTE_ARGV_ENTRIES: usize = 64;
+
+/// Maximum byte length of a single remote argv entry.
+pub const MAX_REMOTE_ARGV_ENTRY_BYTES: usize = 32 * 1024;
+
+/// Why a job cannot run on a remote Eggwork node.
+///
+/// Produced at the host boundary before anything is enqueued, so a
+/// caller learns *why* a remote submission was refused instead of
+/// watching the job fail after it was already durable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteJobRejection {
+    /// The job kind has no remote executor at all.
+    UnsupportedKind {
+        /// Wire name of the rejected kind.
+        kind: &'static str,
+    },
+    /// The kind is recognized, but remote execution of it is deferred.
+    Deferred {
+        /// Wire name of the rejected kind.
+        kind: &'static str,
+        /// Why the kind is deferred.
+        reason: &'static str,
+    },
+    /// The payload does not carry a command the remote node can run.
+    InvalidPayload {
+        /// Wire name of the rejected kind.
+        kind: &'static str,
+        /// What is wrong with the payload.
+        reason: &'static str,
+    },
+}
+
+impl RemoteJobRejection {
+    /// Stable wire code for `CoreResponse::Error`.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnsupportedKind { .. } => "remote_target_unsupported_kind",
+            Self::Deferred { .. } => "remote_target_kind_deferred",
+            Self::InvalidPayload { .. } => "remote_target_invalid_payload",
+        }
+    }
+
+    /// Actionable operator-facing explanation.
+    pub fn message(&self) -> String {
+        match self {
+            Self::UnsupportedKind { kind } => format!(
+                "job kind '{kind}' cannot run on a remote Eggwork node; \
+                 remote execution supports build, lint, format, shell, and managed_process"
+            ),
+            Self::Deferred { kind, reason } => {
+                format!("job kind '{kind}' cannot run on a remote Eggwork node yet: {reason}")
+            }
+            Self::InvalidPayload { kind, reason } => {
+                format!("job kind '{kind}' cannot run on a remote Eggwork node: {reason}")
+            }
+        }
+    }
+}
+
+/// M001: host-boundary admission for a job that targets a remote node.
+///
+/// This is the single policy for "can this job run remotely". The
+/// executor calls it too, so a job that is refused here can never be
+/// dispatched remotely either, and a job admitted here is still
+/// re-checked at execution time against the node's live posture.
+///
+/// The kinds that can run remotely are the ones whose payload is a
+/// typed command: `build`, `lint`, `format`, `shell`, and
+/// `managed_process`. Everything else is refused — `test` is deferred
+/// because remote execution cannot preserve TestRunner durable
+/// evidence, and the agent-facing kinds (`agent_turn`, `subagent`,
+/// `python`, `tool_program`) have no remote executor at all.
+pub fn validate_remote_job(
+    kind: codegg_core::jobs::JobKind,
+    payload: &codegg_core::jobs::JobPayload,
+) -> Result<(), RemoteJobRejection> {
+    use codegg_core::jobs::{JobKind, JobPayload};
+
+    let argv: Option<&Vec<String>> = match (kind, payload) {
+        (
+            JobKind::Build
+            | JobKind::Lint
+            | JobKind::Format
+            | JobKind::ManagedProcess
+            | JobKind::Shell,
+            JobPayload::ManagedArgv { argv, .. },
+        ) => Some(argv),
+        (
+            JobKind::ManagedProcess | JobKind::Shell,
+            JobPayload::Shell {
+                argv: Some(argv), ..
+            },
+        ) => Some(argv),
+        (JobKind::Test, _) => {
+            return Err(RemoteJobRejection::Deferred {
+                kind: "test",
+                reason: "remote Test execution cannot preserve TestRunner durable evidence yet",
+            })
+        }
+        (JobKind::AgentTurn, _) => {
+            return Err(RemoteJobRejection::UnsupportedKind { kind: "agent_turn" })
+        }
+        (JobKind::Subagent, _) => {
+            return Err(RemoteJobRejection::UnsupportedKind { kind: "subagent" })
+        }
+        (JobKind::Python, _) => return Err(RemoteJobRejection::UnsupportedKind { kind: "python" }),
+        (JobKind::ToolProgram, _) => {
+            return Err(RemoteJobRejection::UnsupportedKind {
+                kind: "tool_program",
+            })
+        }
+        _ => {
+            return Err(RemoteJobRejection::UnsupportedKind {
+                kind: kind.as_str(),
+            })
+        }
+    };
+
+    let Some(argv) = argv else {
+        return Err(RemoteJobRejection::InvalidPayload {
+            kind: kind.as_str(),
+            reason: "the payload does not carry a command to run",
+        });
+    };
+    if argv.is_empty() {
+        return Err(RemoteJobRejection::InvalidPayload {
+            kind: kind.as_str(),
+            reason: "the command argv is empty",
+        });
+    }
+    if argv.len() > MAX_REMOTE_ARGV_ENTRIES {
+        return Err(RemoteJobRejection::InvalidPayload {
+            kind: kind.as_str(),
+            reason: "the command argv exceeds the remote entry limit",
+        });
+    }
+    if argv[0].trim().is_empty() {
+        return Err(RemoteJobRejection::InvalidPayload {
+            kind: kind.as_str(),
+            reason: "the command argv has no program to run",
+        });
+    }
+    for entry in argv {
+        if entry.len() > MAX_REMOTE_ARGV_ENTRY_BYTES {
+            return Err(RemoteJobRejection::InvalidPayload {
+                kind: kind.as_str(),
+                reason: "a command argv entry exceeds the remote entry size limit",
+            });
+        }
+        if entry.trim().is_empty() {
+            return Err(RemoteJobRejection::InvalidPayload {
+                kind: kind.as_str(),
+                reason: "the command argv has an empty argument",
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Seam over the Eggwork node API. The production implementation wraps
 /// [`NodeClient`]; tests substitute a scripted fake so no TLS fixture or
 /// live node is required.
@@ -707,24 +868,12 @@ impl JobExecutor for EggworkExecutor {
                 "eggwork target node id is empty".to_string(),
             ));
         }
-        match (&job.kind, &job.payload) {
-            (
-                JobKind::Build | JobKind::Lint | JobKind::Format | JobKind::ManagedProcess | JobKind::Shell,
-                JobPayload::ManagedArgv { argv, .. },
-            ) if !argv.is_empty() => Ok(()),
-            (
-                JobKind::ManagedProcess | JobKind::Shell,
-                JobPayload::Shell {
-                    argv: Some(argv), ..
-                },
-            ) if !argv.is_empty() => Ok(()),
-            (JobKind::Test, _) => Err(ExecutorValidationError::InvalidPayload(
-                "remote Test execution is deferred in M001: TestRunner durable evidence cannot be preserved across the remote adapter yet".to_string(),
-            )),
-            _ => Err(ExecutorValidationError::UnsupportedKind {
-                executor: "eggwork".to_string(),
-                kind: format!("{:?}", job.kind),
-            }),
+        // One policy, two call sites: the host boundary refuses the same
+        // jobs this executor would refuse, so a job that was admitted
+        // remotely is always dispatchable remotely.
+        match validate_remote_job(job.kind, &job.payload) {
+            Ok(()) => Ok(()),
+            Err(rejection) => Err(ExecutorValidationError::InvalidPayload(rejection.message())),
         }
     }
 

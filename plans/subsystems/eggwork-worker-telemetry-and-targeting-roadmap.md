@@ -4,7 +4,7 @@ Status: active planning; M001 ready, M002 blocked on Eggwork telemetry API closu
 Primary class: scheduler / infrastructure
 Authority: `plans/000-long-term-specification.md`, `plans/001-terminology-and-domain-model.md`, `plans/002-long-term-roadmap.md`, `plans/003-planning-process.md`.
 Related existing subsystem: `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` (M001+C001+M002+M002a+M003 **closed**, its M004 whole-AgentRun remains **deferred**).
-Upstream authority: `eggstack/eggwork: plans/adrs/ADR-0006-optional-gregg-host-telemetry.md` and `plans/subsystems/optional-gregg-host-telemetry-roadmap.md`.
+Upstream authority: the Eggwork repository (`eggstack/eggwork`) — its `ADR-0006-optional-gregg-host-telemetry.md` decision record and its `optional-gregg-host-telemetry-roadmap.md` subsystem roadmap. Both are upstream documents, not CodeGG ADRs: CodeGG has no ADR of its own for the Gregg telemetry contract, and the ADR-integrity guard resolves `plans/adrs/...` references against this repository only.
 
 ## Purpose and ownership
 

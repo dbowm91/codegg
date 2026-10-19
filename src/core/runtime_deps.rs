@@ -128,6 +128,16 @@ pub struct CoreRuntimeDeps {
     /// Even when `scheduler` is `None`, the resolved config is held
     /// here so it can be queried for snapshots and settings pages.
     pub scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig,
+    /// M001: daemon-owned admission policy for explicit remote job
+    /// targets.
+    ///
+    /// `None` means "derive the policy from the daemon configuration at
+    /// construction time". `Some` is an explicit policy the caller owns:
+    /// the daemon never overrides it. Either way the resolved policy
+    /// approves no node until an administrator names one, so a daemon
+    /// that never opted in refuses every remote target at the host
+    /// boundary while local execution keeps working unchanged.
+    pub remote_target_policy: Option<Arc<crate::core::remote_targets::RemoteTargetPolicy>>,
     /// Daemon-owned lazy provider-connection runtime manager. `None` keeps
     /// legacy/test constructors source-compatible; production wiring can
     /// install it with [`Self::with_connection_manager`].
@@ -161,11 +171,25 @@ impl Clone for CoreRuntimeDeps {
             ci_watch_driver: self.ci_watch_driver.clone(),
             scheduler_config: self.scheduler_config.clone(),
             connection_manager: self.connection_manager.clone(),
+            remote_target_policy: self.remote_target_policy.clone(),
         }
     }
 }
 
 impl CoreRuntimeDeps {
+    /// M001: install the daemon-owned remote-target admission policy.
+    ///
+    /// The policy is built from the daemon configuration at construction
+    /// time so the host boundary answers "may this client name that
+    /// node?" without re-reading configuration on every request.
+    pub fn with_remote_target_policy(
+        mut self,
+        policy: crate::core::remote_targets::RemoteTargetPolicy,
+    ) -> Self {
+        self.remote_target_policy = Some(Arc::new(policy));
+        self
+    }
+
     /// C001 shared daemon-scoped notifier, creating it once on first use.
     /// The same `Arc` is returned on every call (pointer identity is the
     /// singleton proof); per-turn construction must not replace it.
@@ -273,6 +297,7 @@ impl CoreRuntimeDeps {
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
+            remote_target_policy: None,
         }
     }
 
@@ -322,6 +347,7 @@ impl CoreRuntimeDeps {
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
+            remote_target_policy: None,
         }
     }
 
@@ -390,6 +416,7 @@ impl CoreRuntimeDeps {
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager,
+            remote_target_policy: None,
         }
     }
 

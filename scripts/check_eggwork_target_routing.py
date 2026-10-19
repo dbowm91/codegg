@@ -16,12 +16,29 @@ Enforces the CodeGG-owned target-selection invariants from
   5. The executor persists the remote handle
      (``set_attempt_remote_handle``) so restart reconciles instead of
      resubmitting.
+  6. The frontend and tool layers cannot name a remote node at all: no
+     file under ``src/tool``, ``src/tui``, ``src/agent``, or ``src/command``
+     may mention ``EggworkNode``. A remote-targeted command is only ever
+     spawned on the remote node, so a local surface that cannot name one
+     cannot spawn one either.
+  7. Production code constructs a remote ``ExecutionTarget`` only at the
+     two sanctioned boundaries: the protocol conversion
+     (``crates/codegg-core/src/protocol_conversions.rs``) that turns a
+     client-supplied target into a domain target, and the durable read
+     path (``crates/codegg-core/src/jobs/store.rs``) that restores one from
+     the ``target_kind`` / ``target_node_id`` columns.
+
+The script self-tests. ``--self-test`` feeds synthetic sources through the
+same detectors used against the real tree and fails if a planted violation
+is not reported. A guard that cannot be shown to fail on an injected
+violation is not accepted as evidence.
 
 Run:
 
   python3 scripts/check_eggwork_target_routing.py
+  python3 scripts/check_eggwork_target_routing.py --self-test
 
-Exit code 0 on success, 1 on failure.
+Exit codes: 0 clean, 1 violations found, 2 self-test failure.
 """
 
 from __future__ import annotations
@@ -36,9 +53,94 @@ EGGWORK_RS = ROOT / "src" / "scheduler" / "eggwork.rs"
 
 FAILURES: list[str] = []
 
+# ── Target-construction ownership (rules 6 and 7) ──────────────────────
+#
+# The frontend/tool trees may not name a remote node at all. A remote
+# target is selected by the daemon host boundary and executed by the
+# Eggwork executor; a local surface that cannot express one cannot spawn
+# a remote-targeted command locally.
+FRONTEND_TREES: tuple[str, ...] = (
+    "src/tool",
+    "src/tui",
+    "src/agent",
+    "src/command",
+)
+
+# The only production sites allowed to build a remote domain target.
+SANCTIONED_TARGET_CONSTRUCTION: dict[str, str] = {
+    "crates/codegg-core/src/protocol_conversions.rs": (
+        "the protocol conversion that turns a client-supplied target into a "
+        "domain target"
+    ),
+    "crates/codegg-core/src/jobs/store.rs": (
+        "the durable read path that restores a target from the "
+        "target_kind / target_node_id columns"
+    ),
+}
+
+# A *construction* names the field; a *pattern* binds it. The field-name
+# form is what a caller needs in order to build a target.
+TARGET_CONSTRUCTION_RE = re.compile(
+    r"ExecutionTarget::EggworkNode\s*\{\s*node_id\s*:", re.MULTILINE
+)
+REMOTE_TARGET_TOKEN = "EggworkNode"
+
 
 def fail(message: str) -> None:
     FAILURES.append(message)
+
+
+def _production_source(text: str) -> str:
+    """Drop the inline ``#[cfg(test)]`` module from a source file.
+
+    Test modules legitimately construct remote targets; production code
+    may not (outside the sanctioned boundaries).
+    """
+    marker = text.find("#[cfg(test)]")
+    return text if marker == -1 else text[:marker]
+
+
+def _iter_rust_sources(root: Path) -> list[tuple[str, str]]:
+    """Every Rust source under ``root`` as ``(relative path, text)``."""
+    sources: list[tuple[str, str]] = []
+    for path in sorted(root.rglob("*.rs")):
+        sources.append((str(path.relative_to(root)), path.read_text()))
+    return sources
+
+
+def find_frontend_remote_target(sources: list[tuple[str, str]]) -> list[str]:
+    """Rule 6: the frontend and tool layers may not name a remote node."""
+    findings: list[str] = []
+    for rel, text in sources:
+        if not any(rel.startswith(tree) for tree in FRONTEND_TREES):
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            stripped = line.split("//")[0]
+            if REMOTE_TARGET_TOKEN in stripped:
+                findings.append(
+                    f"{rel}:{i}: {REMOTE_TARGET_TOKEN} in a frontend/tool surface; "
+                    "a remote target is selected by the daemon host boundary only"
+                )
+    return findings
+
+
+def find_unsanctioned_target_construction(sources: list[tuple[str, str]]) -> list[str]:
+    """Rule 7: only the sanctioned boundaries may construct a remote target."""
+    findings: list[str] = []
+    for rel, text in sources:
+        if rel.startswith("tests/"):
+            continue
+        if rel in SANCTIONED_TARGET_CONSTRUCTION:
+            continue
+        production = _production_source(text)
+        for match in TARGET_CONSTRUCTION_RE.finditer(production):
+            line = production.count("\n", 0, match.start()) + 1
+            findings.append(
+                f"{rel}:{line}: remote ExecutionTarget constructed outside the "
+                "sanctioned boundaries "
+                f"({', '.join(sorted(SANCTIONED_TARGET_CONSTRUCTION))})"
+            )
+    return findings
 
 
 def main() -> int:
@@ -114,6 +216,19 @@ def main() -> int:
     if "persist_handle" not in eggwork_src or "persisted_handle" not in eggwork_src:
         fail("src/scheduler/eggwork.rs must reconcile persisted handles on restart")
 
+    # 6 + 7. Target-construction ownership. The crate-scoped sources carry
+    # a "crates/..." prefix and the src-scoped ones "src/...", so the
+    # sanctioned-path lookup matches repository-relative paths.
+    rooted: list[tuple[str, str]] = []
+    for rel, text in _iter_rust_sources(ROOT / "src"):
+        rooted.append((f"src/{rel}", text))
+    for rel, text in _iter_rust_sources(ROOT / "crates"):
+        rooted.append((f"crates/{rel}", text))
+    for finding in find_frontend_remote_target(rooted):
+        fail(finding)
+    for finding in find_unsanctioned_target_construction(rooted):
+        fail(finding)
+
     if FAILURES:
         print("eggwork target-routing guard FAILED:")
         for failure in FAILURES:
@@ -123,5 +238,100 @@ def main() -> int:
     return 0
 
 
+# ── Self-test ───────────────────────────────────────────────────────────
+#
+# The detectors are fed synthetic sources. A detector that cannot be
+# shown to fail on a planted violation is not evidence of anything.
+
+SELF_TEST_CASES: list[tuple[str, list[tuple[str, str]], bool, str]] = [
+    (
+        "frontend naming a remote node is reported",
+        [
+            (
+                "src/tool/bash/process.rs",
+                "fn spawn() { let t = ExecutionTarget::EggworkNode { node_id: x }; }",
+            )
+        ],
+        True,
+        "frontend_remote_target",
+    ),
+    (
+        "a clean frontend surface is not reported",
+        [("src/tool/bash/process.rs", "fn spawn() { run_local(); }")],
+        False,
+        "frontend_remote_target",
+    ),
+    (
+        "a remote target constructed outside the sanctioned boundaries is reported",
+        [
+            (
+                "src/scheduler/other.rs",
+                "let target = ExecutionTarget::EggworkNode { node_id: id };",
+            )
+        ],
+        True,
+        "unsanctioned_construction",
+    ),
+    (
+        "a remote target constructed at a sanctioned boundary is not reported",
+        [
+            (
+                "crates/codegg-core/src/protocol_conversions.rs",
+                "let target = ExecutionTarget::EggworkNode { node_id };",
+            )
+        ],
+        False,
+        "unsanctioned_construction",
+    ),
+    (
+        "a remote target constructed inside a test module is not reported",
+        [
+            (
+                "src/scheduler/other.rs",
+                "fn ok() {}\n#[cfg(test)]\nmod tests {\n"
+                "    fn t() { let target = ExecutionTarget::EggworkNode { node_id: id }; }\n}",
+            )
+        ],
+        False,
+        "unsanctioned_construction",
+    ),
+    (
+        "matching a remote target is not a construction",
+        [
+            (
+                "src/scheduler/other.rs",
+                "match job.target { ExecutionTarget::EggworkNode { node_id } => use_it(node_id) }",
+            )
+        ],
+        False,
+        "unsanctioned_construction",
+    ),
+]
+
+
+def run_self_test() -> int:
+    failures: list[str] = []
+    for name, sources, should_report, detector in SELF_TEST_CASES:
+        if detector == "frontend_remote_target":
+            findings = find_frontend_remote_target(sources)
+        else:
+            findings = find_unsanctioned_target_construction(sources)
+        reported = bool(findings)
+        if reported != should_report:
+            failures.append(
+                f"{name}: expected {'a finding' if should_report else 'no finding'}, "
+                f"got {findings or 'none'}"
+            )
+    if failures:
+        print("self-test FAILED:")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 2
+    print(f"self-test passed: {len(SELF_TEST_CASES)} case(s).")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(run_self_test())
     sys.exit(main())
