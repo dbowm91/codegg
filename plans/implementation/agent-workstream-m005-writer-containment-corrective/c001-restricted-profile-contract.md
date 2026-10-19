@@ -3,7 +3,7 @@
 Milestone: **M005 writer-containment corrective C001**
 Status: **decision/negative-test handoff only — creates no permit and enables no writer**
 Baseline SHA: `e78497d2` (worktree `work/agent-workstream-m005-writer-audit`)
-ADR: `plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md` — **`proposed`, NOT accepted**
+ADR: `plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md` — **`proposed`, NOT accepted** at C001 close. **Accepted 2026-10-19 (option B)** — see the ADR's "Acceptance record" section. Acceptance unblocks C002 and enables nothing.
 
 ## 1. What this document is, and what it is not
 
@@ -17,10 +17,12 @@ It is **not** authority. C001 enables nothing:
 - No writer permit, fence, lease, lock or reservation is created here.
 - `fenced-native` marks a **candidate** for C002/C003 to consider. It does not
   fence anything today, and it must not be read as "now safe".
-- ADR-0042 remains `proposed`. C002–C006 stay blocked until a maintainer
-  records an explicit accept/reject decision. **C001 closes with the decision
-  outcome "still proposed"**, which is an honest outcome, not a blocked one:
-  C001's own scope is the decision package, and it is complete.
+- ADR-0042 remained `proposed` at C001 close, and C002–C006 stayed blocked
+  until a maintainer recorded an explicit accept/reject decision. **C001 closed
+  with the decision outcome "still proposed"**, which is an honest outcome, not
+  a blocked one: C001's own scope is the decision package, and it is complete.
+  *(Subsequently: the maintainers accepted option B on 2026-10-19 — see
+  §10.1. Acceptance unblocked C002 and enabled nothing.)*
 
 The one thing this document *does* do is make an undecided writer visible. A
 new model-facing writer tool, or a new daemon/HTTP module that touches the
@@ -364,9 +366,9 @@ set from silently drifting.
 
 ## 10. Decision request
 
-**ADR-0042 is `proposed` and remains `proposed`.** C001's decision outcome is
-**"still proposed"** — a complete decision package awaiting an independent
-maintainer accept/reject decision.
+**At C001 close, ADR-0042 was `proposed` and remained `proposed`.** C001's
+decision outcome was **"still proposed"** — a complete decision package
+awaiting an independent maintainer accept/reject decision.
 
 - **If accepted:** C002 becomes eligible; C003–C006 follow the chain.
 - **If rejected:** C002–C006 remain blocked, and M005 shared mutation stays
@@ -376,6 +378,25 @@ maintainer accept/reject decision.
 - **Either way:** the existing isolated worktree placement (ADR-0002) remains
   the default for mutating agents, and nothing in this document changes
   runtime behaviour.
+
+### 10.1 Outcome — accepted 2026-10-19 (option B)
+
+The maintainers accepted **option B** after reviewing this package, and the
+decision is recorded in the ADR's own "Acceptance record" section. The
+"if accepted" branch above is the one that was taken:
+
+- **C002 is unblocked** and is the active milestone. C003–C006 remain blocked
+  on their own predecessor closures.
+- **Option A** (universal filesystem exclusion, including unrelated same-user
+  processes) is not selected and stays deferred to a separate OS-isolation
+  project. **Option C** (advisory path claims plus prompt instructions)
+  remains rejected.
+- **Nothing is enabled.** There is still no permit, no fence, no shared-write
+  mode and no user-visible shared-mutation selector. The existing isolated
+  worktree placement (ADR-0002) remains the default for mutating agents.
+- The two-axis policy matrix in §5, the user-visible guarantee and refusal
+  contract in §6, and the lock order in §7 are now the governing contract
+  that C002–C006 implement against — not an aspiration.
 
 Nothing in this document, in `docs/writer-disposition.toml`, or in the guard
 grants, enables, permits or fences any writer.

@@ -6,7 +6,7 @@ Planning baseline: plan/agent-workstream-m005-writer-audit source audit 2026-10-
 Roadmap: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C004
 Original unmet requirement: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md project-root sink inventory, Q3.
 Canonical: plans/000-long-term-specification.md §§9, 16–17, 27–29 and plans/001-terminology-and-domain-model.md §§5, 7–8.
-Decisions: accepted ADR-0002, ADR-0032 and explicit ADR-0042 (currently only proposed).
+Decisions: accepted ADR-0002, ADR-0032 and **accepted ADR-0042 (option B, 2026-10-19)**. The ADR gate is satisfied upstream; C003 strict closure is not.
 
 ## Objective
 

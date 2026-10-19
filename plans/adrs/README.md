@@ -154,12 +154,24 @@ real tool-path confinement and lifecycle recovery evidence.
 
 ## ADR-0042 restricted shared-checkout boundary reservation (2026-10-19)
 
-The M005 writer-containment corrective proposes
-ADR-0042-restricted-agent-shared-checkout-writer-contract.md.
-It is **proposed, not accepted**, and records a narrower CodeGG-mediated
-checkout writer-coordination boundary (external same-user processes are
-not contained). Filing the ADR neither authorizes new checkout sharing
-nor amends accepted ADR-0002 or ADR-0032. Implementation corrective C001
-can establish the contract and decision evidence; C002–C006 must remain
-blocked pending explicit maintainer acceptance and predecessor closures.
+The M005 writer-containment corrective proposed
+ADR-0042-restricted-agent-shared-checkout-writer-contract.md and recorded a
+narrower CodeGG-mediated checkout writer-coordination boundary (external
+same-user processes are not contained). Filing the ADR neither authorized new
+checkout sharing nor amended accepted ADR-0002 or ADR-0032. Implementation
+corrective C001 established the contract and decision evidence: the 48-root
+writer inventory, the disposition manifest `docs/writer-disposition.toml` and
+the static guard `scripts/check_writer_disposition.py`.
+
+**Update — accepted 2026-10-19.** The maintainers accepted **option B**
+(the restricted CodeGG-managed coordination profile) after reviewing that C001
+package. The acceptance is recorded in the ADR's own "Acceptance record"
+section. It unblocks **C002 only** — the durable, generation-fenced checkout
+writer permit and its lifecycle service. C003–C006 remain blocked on their own
+predecessor closures. Acceptance does **not** enable shared-checkout mutation:
+no permit exists, no writer is fenced, and no user-visible shared-mutation
+selector is activated. Option A (universal filesystem exclusion) remains
+deferred to a separate OS-isolation project; option C (advisory path claims)
+remains rejected. Accepted ADR-0002 and ADR-0032 are unmodified and the legacy
+isolated behavior is unchanged.
 Check concurrent branch ADR identity allocation before integration.

@@ -5,8 +5,9 @@ Source plan: `plans/implementation/agent-workstream-m005-writer-containment-corr
 Contract deliverable: `plans/implementation/agent-workstream-m005-writer-containment-corrective/c001-restricted-profile-contract.md`
 Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md`
 Repository baseline reviewed: `e78497d29444e5130c50948cc1b55e914afae04c`
-Decision outcome: **ADR-0042 remains `proposed` — still proposed; not accepted**
-Recommendation: closed; C002 remains blocked on an independent maintainer accept/reject decision on ADR-0042.
+Decision outcome: **ADR-0042 remains `proposed` — still proposed; not accepted** (as at C001 close)
+Subsequent decision (2026-10-19, after this record): **ADR-0042 option B accepted** by the maintainers, recorded in the ADR's "Acceptance record" section. C002 is unblocked. See §8.1.
+Recommendation: closed; at C001 close C002 remained blocked on an independent maintainer accept/reject decision on ADR-0042. That decision was recorded on 2026-10-19 (option B accepted); see §8.1.
 
 ## 1. Finding and disposition
 
@@ -179,6 +180,37 @@ the decision package, and the package is complete.
 No part of this closure, the contract document, the manifest, the guard or the
 new tests changes ADR-0042's status, and none of them mark it accepted in
 code or in the registry.
+
+### 8.1 Subsequent decision — ADR-0042 option B accepted (2026-10-19)
+
+The independent maintainer decision that §8 required was made **after this
+record was written**, and is recorded in the ADR's own "Acceptance record"
+section. This subsection does not rewrite §8: at C001 close the answer really
+was "still proposed", and that is the outcome C001 closed with.
+
+| Gate condition | State at C001 close | State now |
+|---|---|---|
+| C001 closed | Satisfied | Satisfied |
+| ADR-0042 explicitly accepted by an independent maintainer | Not satisfied | **Satisfied 2026-10-19 — option B** |
+| C002 may start | No | **Yes — C002 is active** |
+
+What the acceptance did and did not do:
+
+- **Selected** option B, the restricted CodeGG-managed coordination profile.
+  Option A (universal filesystem exclusion, including unrelated same-user
+  processes) stays deferred to a separate OS-isolation project; option C
+  (advisory path claims plus prompt instructions) stays rejected.
+- **Unblocked C002 only.** C003–C006 remain blocked on their own predecessor
+  closures, exactly as the addendum's dependency graph states.
+- **Enabled nothing.** No permit, no fence, no shared-write mode and no
+  user-visible shared-mutation selector exist as a result of this decision.
+  The isolated worktree remains the default placement for mutating agents,
+  and accepted ADR-0002 and ADR-0032 are unmodified.
+
+The audit and decision package this decision rested on — the 48-root matrix,
+the two-axis policy matrix, the refusal contract, the lock order and the
+inventory guard — is unchanged and remains the contract C002–C006 implement
+against.
 
 ## 9. Provenance
 

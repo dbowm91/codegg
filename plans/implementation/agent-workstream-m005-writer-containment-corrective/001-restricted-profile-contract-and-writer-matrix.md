@@ -5,7 +5,7 @@ Primary class: invariant / cross-subsystem decision contract
 Planning baseline: plan/agent-workstream-m005-writer-audit inspected 2026-10-19; ancestor main 61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C001
 Original incomplete milestone: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md (audit Q0 and Q1–Q5).
-ADRs: accepted ADR-0002/ADR-0032; proposed ADR-0042. Canonical: plans/000-long-term-specification.md §§9, 16–17, 26–29; plans/001-terminology-and-domain-model.md §§5, 7–8; planning governance plans/003-planning-process.md.
+ADRs: accepted ADR-0002/ADR-0032; ADR-0042 was proposed at C001 time and was **accepted (option B) on 2026-10-19**. Canonical: plans/000-long-term-specification.md §§9, 16–17, 26–29; plans/001-terminology-and-domain-model.md §§5, 7–8; planning governance plans/003-planning-process.md.
 
 ## Delivered by
 
@@ -16,7 +16,14 @@ ADRs: accepted ADR-0002/ADR-0032; proposed ADR-0042. Canonical: plans/000-long-t
 - Source audit evidence: `c001-evidence/`.
 - Closure record: `plans/closure/agent-workstream-m005-writer-containment-corrective/001-status.md`.
 
-Decision outcome: **ADR-0042 is still proposed.** C002 remains blocked on an independent maintainer accept/reject decision.
+Decision outcome at C001 close: **ADR-0042 was still proposed.** C002 remained blocked on an independent maintainer accept/reject decision.
+
+**Subsequent decision (2026-10-19, after C001 closed).** The maintainers
+accepted **ADR-0042 option B** (the restricted CodeGG-managed coordination
+profile), recorded in the ADR's own "Acceptance record" section. That
+acceptance is the independent decision C001's gate required, and it unblocks
+C002. It does not retroactively change C001's outcome, and it does not enable
+shared-checkout mutation by itself.
 
 ## Objective and defect
 

@@ -1,6 +1,6 @@
 # ADR-0042: Restricted CodeGG-Managed Shared-Checkout Writer Contract
 
-Status: proposed — NOT accepted; does not authorize shared-checkout mutation
+Status: accepted — option B selected 2026-10-19; does not by itself authorize shared-checkout mutation
 
 Date: 2026-10-19
 
@@ -34,12 +34,12 @@ The M005 audit (2026-10-19) identifies native file and Git operations, scheduled
 Requires separately qualified OS identity/filesystem containment on each platform. Process groups, Job Objects and daemon locks do not satisfy it. Deferred as a different security project.
 
 ### B — Restricted CodeGG-managed coordination, denying all unqualified execution surfaces
-**Proposed selection, pending explicit maintainer acceptance.** Supports opt-in checkout coordination among CodeGG-managed operations only. It is not an external-writer exclusion guarantee or sandbox.
+**Selected and accepted 2026-10-19.** Supports opt-in checkout coordination among CodeGG-managed operations only. It is not an external-writer exclusion guarantee or sandbox.
 
 ### C — Advisory path claims plus prompt instructions
 Rejected; not an enforceable file/index mutation boundary.
 
-## Proposed decision
+## Decision
 
 1. **Boundary:** Coordinate CodeGG-initiated mutations to an explicitly reserved canonical checkout across all agents, jobs, daemon APIs and authenticated human CodeGG operations. Unrelated editors, shells and processes launched outside CodeGG by the same OS user are NOT included. If their exclusion is required, this profile is not usable; a separate OS isolation ADR is required. User-facing labels must not say exclusive, sandboxed, or filesystem isolated.
 2. **Default:** Existing mutating-agent isolated worktree placement continues. An explicit serialized group reservation requires owner/project/principal authorization and the restricted capability profile. No model/client-provided path, WorktreeId, generation or group ID is a bearer credential. Missing or ambiguous scope refuses before an effect.
@@ -50,13 +50,74 @@ Rejected; not an enforceable file/index mutation boundary.
 7. **Authority and surfaces:** Resolve execution identity through daemon records and enforce the profile at the final mutation/launch owner, after pre-approval and after policy narrowing. Unsupported operations, compatibility adapters and non-broker APIs must refuse before mutation. Existing tool/sandbox/Git/network permissions remain independent and cannot be widened by the shared profile.
 8. **Truthful UX:** Expose “CodeGG-mediated serialized checkout” with exact unsupported operations and quarantine/attention state, not “all writers prevented”. No privileged sibling control, hidden reasoning or secrets in projections.
 
+## Acceptance record
+
+Decision: **option B accepted**, 2026-10-19, by the project maintainers
+(David Bowman), on branch `work/agent-workstream-m005-writer-audit`.
+
+Provenance of the decision package:
+
+- The decision was requested by the M005 writer-containment corrective C001,
+  whose closure record is
+  `plans/closure/agent-workstream-m005-writer-containment-corrective/001-status.md`
+  and whose contract deliverable is
+  `plans/implementation/agent-workstream-m005-writer-containment-corrective/c001-restricted-profile-contract.md`.
+- That package enumerated 48 CodeGG writer roots with a declared final effect
+  owner, checkout locator, authority path, lifetime, adversarial bypass example
+  and a restricted-profile disposition, together with the manifest
+  `docs/writer-disposition.toml` and the static inventory guard
+  `scripts/check_writer_disposition.py`.
+- C001 closed with the decision outcome "still proposed". This acceptance is the
+  separate, independent maintainer decision that the C001 gate required; it is
+  not a restatement of C001's own outcome.
+
+What this acceptance does:
+
+1. It selects option B as the restricted CodeGG-managed coordination profile and
+   makes the eight numbered clauses above the governing writer contract for the
+   M005 corrective line.
+2. It unblocks **C002 only** — the durable, generation-fenced checkout writer
+   permit and its lifecycle service. C003–C006 remain blocked on their own
+   predecessor closures, exactly as the corrective's dependency graph states.
+3. It records that option A (universal filesystem exclusion, including
+   unrelated same-user processes) is **not** selected and is deferred to a
+   separate OS-isolation project, and that option C (advisory path claims plus
+   prompt instructions) is rejected as not being an enforceable mutation
+   boundary.
+
+What this acceptance does **not** do:
+
+- It does not enable shared-checkout mutation. No shared-write mode exists, no
+  writer permit exists, and no user-visible shared-mutation selector is
+  activated. Per clause 3, every unqualified execution surface stays denied
+  until the later milestones implement and qualify the denial.
+- It does not amend accepted ADR-0002 (agent-run worktree isolation and
+  control) or accepted ADR-0032 (workstream coordination and shared-checkout
+  ownership). The isolated worktree remains the default placement for mutating
+  agents, and the whole legacy isolated behavior is unchanged.
+- It does not make CodeGG's guarantee a filesystem exclusion, a sandbox, or an
+  exclusion of independent same-UID programs. Clause 1 and the user-facing
+  labels in clause 8 remain binding: the label is "CodeGG-mediated serialized
+  checkout", never "exclusive", "sandboxed" or "filesystem isolated".
+- It does not qualify Q1–Q5. Those remain unrun until C002–C006 land, and M005
+  strict closure still requires C006's evidence.
+
 ## Consequences and tradeoffs
 
 A small safe initial surface is plausible and testable but intentionally excludes arbitrary compilation/test commands inside shared checkout until native containment exists. For full coding-tool breadth retain isolated worktrees and independently prioritize M006/M007. External same-user edits can conflict; the guarantee does not prevent them.
 
 ## Compatibility and migration
 
-Proposed clarification of the qualified operating boundary under accepted ADR-0032; it does not revise accepted ADRs or enable execution on its own. Additive versioned schema/protocol changes, opt-in only, legacy isolated behavior unchanged. If ADR-0042 is rejected, C002–C006 remain blocked and M005 shared mutation stays unavailable.
+Accepted clarification of the qualified operating boundary under accepted ADR-0032; it does not revise accepted ADRs or enable execution on its own. Additive versioned schema/protocol changes, opt-in only, legacy isolated behavior unchanged. If ADR-0042 is rejected, C002–C006 remain blocked and M005 shared mutation stays unavailable.
+
+*Superseded clause (historical).* This section was written while the decision
+was proposed and read "Proposed clarification … If ADR-0042 is rejected, C002–C006
+remain blocked". Option B was accepted on 2026-10-19, so the rejection branch is
+now counterfactual; the "Accepted clarification" and "does not … enable execution
+on its own" clauses are the operative ones. Had it been rejected, C002–C006
+would have remained blocked and M005 shared mutation would have stayed
+unavailable, and a rejection that still wanted independent same-user writer
+exclusion would have required a separate OS-isolation ADR.
 
 ## Security, reliability, qualification and stop
 
@@ -64,4 +125,4 @@ Threat model: stale generations, forged identities, restart/panic, concurrent se
 
 ## Supersession
 
-None. Accepted ADR-0002 isolation and accepted ADR-0032 architecture remain in force. Filing this proposed decision does not itself alter either contract.
+None. Accepted ADR-0002 isolation and accepted ADR-0032 architecture remain in force. Accepting this decision does not itself alter either contract, and it does not enable shared-checkout execution.

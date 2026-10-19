@@ -3,17 +3,18 @@
 # WHAT THIS FILE IS
 #   A contract manifest. It records, for every CodeGG writer root identified
 #   by the C001 source audit, the restricted-profile disposition that the
-#   proposed ADR-0042 contract assigns to it.
+#   ADR-0042 contract assigns to it.
 #
 # WHAT THIS FILE IS NOT
 #   It is not a permission, a permit, a fence, or an enablement. No entry
 #   here authorizes any writer. `fenced-native` names a CANDIDATE for the
 #   successor milestones C002/C003 to consider -- it does not fence anything
-#   today, and C002 remains blocked until ADR-0042 is accepted.
+#   today, and no permit exists.
 #
-#   ADR-0042 is `proposed`. C002-C006 are blocked. This manifest exists so
-#   that a new writer route cannot appear without someone deciding its
-#   disposition explicitly.
+#   ADR-0042 option B was ACCEPTED on 2026-10-19. That acceptance unblocked
+#   C002 only; it enabled no writer, and C003-C006 remain blocked on their
+#   own predecessor closures. This manifest exists so that a new writer route
+#   cannot appear without someone deciding its disposition explicitly.
 #
 # GUARD
 #   scripts/check_writer_disposition.py fails when a model-facing writer tool

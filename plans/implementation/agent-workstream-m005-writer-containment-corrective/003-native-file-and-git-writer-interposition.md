@@ -5,7 +5,7 @@ Primary class: invariant / capability foundation
 Planning baseline: plan/agent-workstream-m005-writer-audit audit 2026-10-19; recheck current source before implementation.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C003
 Original: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md, Q2
-ADRs: ADR-0002, ADR-0032 and accepted ADR-0042 (not yet accepted).
+ADRs: ADR-0002, ADR-0032 and **accepted ADR-0042 (option B, 2026-10-19)**. The ADR gate is satisfied upstream; C002 strict closure is not.
 
 ## Objective
 
