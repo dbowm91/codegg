@@ -683,47 +683,18 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
         .expect("untracked fixture");
 
     async fn contained_read(
+        typed: &TypedGitExecutionService,
         git: &Path,
         repository: &Path,
-        selected_gitdir: &Path,
         operation: &codegg_git::GitOperation,
         label: &str,
     ) -> Result<ManagedProcessResult, codegg::managed_process::ManagedProcessError> {
-        let argv = codegg_git::render_argv(operation);
-        let args = argv.iter().skip(1).cloned().collect::<Vec<_>>();
-        let spec = SandboxConfig::new()
-            .with_enabled(true)
-            .with_mode(SandboxMode::WorkspaceWrite)
-            .with_linux_offline_network(true)
-            .launch_spec(git, &args, Some(repository))
-            .expect("construct contained Git read spec");
-        assert!(
-            spec.protected_readonly_paths
-                .contains(&selected_gitdir.to_path_buf()),
-            "contained {label} launch did not protect selected gitdir {}",
-            selected_gitdir.display()
-        );
-        assert!(
-            spec.path_identities
-                .iter()
-                .any(|identity| identity.path == selected_gitdir),
-            "contained {label} launch did not capture selected gitdir identity"
-        );
-        let argv = std::iter::once(spec.target.as_os_str().to_owned())
-            .chain(spec.args.iter().map(OsString::from))
-            .collect();
-        let mut request = ManagedProcessRequest::new(
-            argv,
-            repository.to_path_buf(),
-            ProcessProvenance::new("linux-trusted-git-c002", label),
-        );
-        request.timeout = Some(Duration::from_secs(15));
-        request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
-            .with_var("GIT_CONFIG_NOSYSTEM", "1")
-            .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
-            .with_var("HOME", "/tmp/codegg-empty-home");
-        request.sandbox = SandboxRequest::Required(spec);
-        ManagedProcessService::run(request).await
+        typed
+            .execute_contained_live_read_test_only(operation, repository, git, label)
+            .await
+            .map_err(|error| {
+                codegg::managed_process::ManagedProcessError::SandboxFailed(error.to_string())
+            })
     }
 
     let typed = TypedGitExecutionService::new();
@@ -774,7 +745,7 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
             .await
             .unwrap_or_else(|error| panic!("typed snapshot {label} failed: {error}"));
         assert!(snapshot.success, "typed snapshot {label} returned nonzero");
-        let live = contained_read(&git, repository, &selected_gitdir, operation, label)
+        let live = contained_read(&typed, &git, repository, operation, label)
             .await
             .unwrap_or_else(|error| panic!("required contained Git read {label} failed: {error}"));
         assert!(
@@ -945,9 +916,9 @@ async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
     let mut race_failure = None;
     for iteration in 0..16 {
         let attempt = contained_read(
+            &typed,
             &git,
             repository,
-            &selected_gitdir,
             &log_operation,
             &format!("concurrent-repack-{iteration}"),
         )

@@ -15,6 +15,13 @@ use tokio::io::AsyncReadExt;
 
 use crate::git_mutations::GitEnvPolicy;
 use crate::git_network_policy::redact_url_credentials_in_text;
+#[cfg(all(feature = "linux-git-test-support", target_os = "linux"))]
+use crate::managed_process::{
+    EnvironmentPolicy, ManagedProcessError, ManagedProcessRequest, ManagedProcessResult,
+    ManagedProcessService, ProcessProvenance, SandboxExecutionOutcome, SandboxRequest,
+};
+#[cfg(all(feature = "linux-git-test-support", target_os = "linux"))]
+use crate::security::sandbox::{SandboxConfig, SandboxMode};
 
 #[cfg(test)]
 fn git_test_policy_diagnostic(root: &Path) -> String {
@@ -326,6 +333,121 @@ impl GitExecutionService {
             // Fallback: raw subprocess execution for mutations and unsupported
             _ => self.execute_raw(operation, repository_root).await,
         }
+    }
+
+    /// Execute one allowlisted read through the contained live-ODB pilot.
+    ///
+    /// This adapter exists only behind `linux-git-test-support` for native
+    /// qualification. It is not used by ordinary Git dispatch and does not
+    /// provide production authorization or admission. The managed-process
+    /// owner must obtain both M004 process/IPC and M005 offline-network
+    /// enforcement; any missing requirement fails closed.
+    #[cfg(all(feature = "linux-git-test-support", target_os = "linux"))]
+    pub async fn execute_contained_live_read_test_only(
+        &self,
+        operation: &GitOperation,
+        repository_root: &Path,
+        git_binary: &Path,
+        provenance_label: &str,
+    ) -> Result<ManagedProcessResult, GitServiceError> {
+        if !matches!(
+            operation,
+            GitOperation::Status { .. }
+                | GitOperation::Diff { .. }
+                | GitOperation::DiffStaged { .. }
+                | GitOperation::Log { .. }
+                | GitOperation::Show { .. }
+                | GitOperation::ChangedFiles { .. }
+                | GitOperation::BranchList { .. }
+                | GitOperation::WorktreeList
+        ) {
+            return Err(GitServiceError::Policy(
+                egggit::GitExecutionPolicyOutcome::InvalidRequest {
+                    reason: "operation is outside the test-only contained-read allowlist".into(),
+                },
+            ));
+        }
+
+        let root = repository_root
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        let gitdir = root
+            .join(".git")
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        let object_dir = gitdir
+            .join("objects")
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        if !gitdir.starts_with(&root)
+            || !object_dir.starts_with(&gitdir)
+            || !gitdir.is_dir()
+            || !object_dir.is_dir()
+        {
+            return Err(GitServiceError::Repository(
+                "test-only live Git view requires an ordinary in-root gitdir and object directory"
+                    .into(),
+            ));
+        }
+        if std::fs::symlink_metadata(object_dir.join("info/alternates")).is_ok() {
+            return Err(GitServiceError::Repository(
+                "test-only live Git view refuses repositories with alternates".into(),
+            ));
+        }
+
+        let git_binary = git_binary
+            .canonicalize()
+            .map_err(|error| GitServiceError::Execution(error.to_string()))?;
+        let argv = render_argv(operation);
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_offline_network(true)
+            .launch_spec(&git_binary, &argv[1..], Some(&root))
+            .map_err(|error| GitServiceError::Execution(error.to_string()))?;
+        if !spec.linux_process_isolation
+            || !spec.linux_offline_network
+            || !spec.protected_readonly_paths.contains(&gitdir)
+            || !spec
+                .protected_readonly_paths
+                .iter()
+                .any(|protected| object_dir.starts_with(protected))
+            || !spec
+                .path_identities
+                .iter()
+                .any(|identity| identity.path == gitdir)
+        {
+            return Err(GitServiceError::Execution(
+                "test-only live Git launch lacks protected metadata, identity, M004, or M005"
+                    .into(),
+            ));
+        }
+
+        let command = std::iter::once(spec.target.as_os_str().to_owned())
+            .chain(spec.args.iter().map(std::ffi::OsString::from))
+            .collect();
+        let mut request = ManagedProcessRequest::new(
+            command,
+            root.clone(),
+            ProcessProvenance::new("linux-trusted-git-c002-test-only", provenance_label),
+        );
+        request.timeout = Some(self.timeout);
+        request.environment_policy = EnvironmentPolicy::sanitized()
+            .with_var("GIT_CONFIG_NOSYSTEM", "1")
+            .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+            .with_var("GIT_TERMINAL_PROMPT", "0")
+            .with_var("HOME", "/tmp/codegg-empty-home")
+            .with_var("LC_ALL", "C");
+        request.sandbox = SandboxRequest::Required(spec);
+        let result = ManagedProcessService::run(request)
+            .await
+            .map_err(|error: ManagedProcessError| GitServiceError::Execution(error.to_string()))?;
+        if !matches!(result.sandbox, SandboxExecutionOutcome::Enforced { .. }) {
+            return Err(GitServiceError::Execution(
+                "test-only live Git launch returned without obtained enforcement".into(),
+            ));
+        }
+        Ok(result)
     }
 
     // ── Read operations via egggit ──────────────────────────────────

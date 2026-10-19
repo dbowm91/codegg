@@ -95,7 +95,7 @@ jobs:
         run: cargo build --locked --bin codegg-sandbox-helper
 
       - name: M004 managed-process host PID and IPC denial probes
-        run: cargo test --locked --test linux_m004_process_ipc -- --nocapture
+        run: cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support -- --nocapture
 
       - name: M004 constrained PTY live-owner qualification
         run: cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture

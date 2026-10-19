@@ -355,6 +355,7 @@ windows-sys = { version = "0.61.2", features = [
 [features]
 default = ["arboard"]
 windows-sandbox-test-support = []
+linux-git-test-support = []
 arboard = ["dep:arboard"]
 plugins = ["wasmtime"]
 debug-logging = []
