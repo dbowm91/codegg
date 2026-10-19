@@ -3,7 +3,7 @@
 Status: **implemented for legacy-baseline fixture/design slice**; full enhanced denial matrix remains blocked on an accepted Linux ADR and real M003/M004/M005 backends
 Class: invariant / native qualification
 Closure target: `plans/closure/linux-execution-isolation/015-status.md`.
-Baseline: after C005 closure @ `73f2ee2` (2026-10-14 UTC). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
+Baseline: after C005 closure @ `73f2ee2` (2026-10-14 UTC). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0042-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
 
 ## 1. Objective
 

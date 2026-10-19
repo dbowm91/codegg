@@ -5,7 +5,7 @@ Repository baseline: `21dceaaa` (main reconciled before this implementation)
 
 Source roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md#6-dependency-graph`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 17, 27–29; `plans/001-terminology-and-domain-model.md` §8
-Applicable ADRs: `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md`, `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`, `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
+Applicable ADRs: `plans/adrs/ADR-0042-command-syntax-and-execution-authority.md`, `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`, `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
 Primary class: capability / invariant
 Closure record: `plans/closure/command-authorization-and-execution-boundaries/008-status.md`
 

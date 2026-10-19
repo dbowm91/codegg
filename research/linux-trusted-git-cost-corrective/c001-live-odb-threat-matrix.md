@@ -3,7 +3,7 @@
 Status: exact-head hosted test-only qualification passed; external metadata and concurrent-writer probes remain open and prohibit production admission.
 
 Reviewed source baseline: rebased branch commit `0b36c71f` (2026-10-18); test implementation commits `db6033f9` and `5c43a7fd`.
-Authority: accepted ADR-0035 permits test-only Linux mechanism probes; proposed ADR-0036 has not been accepted and grants no production selector.
+Authority: accepted ADR-0043 permits test-only Linux mechanism probes; proposed ADR-0044 has not been accepted and grants no production selector.
 
 ## Security property versus consistency property
 
@@ -31,7 +31,7 @@ Authority: accepted ADR-0035 permits test-only Linux mechanism probes; proposed 
 
 ## Decision recommendation before native evidence
 
-Keep live ODB access test-only. A contained worker is a plausible way to prevent host-authority escalation, but it changes the correctness contract from immutable snapshot to potentially inconsistent live reads. Before any production route is considered, close the feature-specific executable matrix, prove external-writer outcomes are detected or explicitly surfaced as possibly inconsistent, obtain M005 offline networking and M004 process/IPC through every Git owner, and obtain independent acceptance of ADR-0036. No clean native read result changes C010's no-admission or C012's closed-negative history.
+Keep live ODB access test-only. A contained worker is a plausible way to prevent host-authority escalation, but it changes the correctness contract from immutable snapshot to potentially inconsistent live reads. Before any production route is considered, close the feature-specific executable matrix, prove external-writer outcomes are detected or explicitly surfaced as possibly inconsistent, obtain M005 offline networking and M004 process/IPC through every Git owner, and obtain independent acceptance of ADR-0044. No clean native read result changes C010's no-admission or C012's closed-negative history.
 
 ## Exact-head hosted qualification
 

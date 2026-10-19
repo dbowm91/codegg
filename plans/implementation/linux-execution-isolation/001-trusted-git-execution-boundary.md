@@ -2,13 +2,8 @@
 
 Status: blocked (historical M001 blocked; C001–C003 now split recovery)
 Primary class: invariant
-<<<<<<< HEAD
-Hard dependencies: none; no ADR-0031 acceptance required for this existing-authority corrective.
-Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0031; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). Historical initial implementation `eb0f18c` and blocked closure `plans/closure/linux-execution-isolation/001-status.md` remain evidence of a partial security pass and Git integration breakage. C001/C002/C003 own corrective remediation.
-=======
-Hard dependencies: none; no ADR-0035 acceptance required for this existing-authority corrective.
-Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0035; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). Historical initial implementation `eb0f18c` and blocked closure `plans/closure/linux-execution-isolation/001-status.md` remain evidence of a partial security pass and Git integration breakage. C001/C002/C003 own corrective remediation.
->>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
+Hard dependencies: none; no ADR-0043 acceptance required for this existing-authority corrective.
+Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0043; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). Historical initial implementation `eb0f18c` and blocked closure `plans/closure/linux-execution-isolation/001-status.md` remain evidence of a partial security pass and Git integration breakage. C001/C002/C003 own corrective remediation.
 
 ## 1. Objective
 
@@ -98,4 +93,4 @@ route or explicitly accepts the compatibility loss and the roadmap is revised.
 
 ## 13. Superseding execution-path clarification (2026-10-13)
 
-Accepted ADR-0032 removes the assumption that Git command-name refusal is a valid security goal. Do not implement additional subcommand blocklists. C001 `009-m001-typed-git-policy-reconciliation.md` fixes typed authorization and fake-executable failures; C002 `010-m001-contained-local-git-recovery.md` restores executable *local* Git only after real namespace/process/offline guarantees; C003 `011-m001-authorized-remote-git-recovery.md` separately handles mediated transport/credentials. M001 strict closure follows these correctives rather than blocking M002 launch-contract work. Historical blocked closure remains unchanged. A high-privilege raw Git fallback is prohibited.
+Accepted ADR-0042 removes the assumption that Git command-name refusal is a valid security goal. Do not implement additional subcommand blocklists. C001 `009-m001-typed-git-policy-reconciliation.md` fixes typed authorization and fake-executable failures; C002 `010-m001-contained-local-git-recovery.md` restores executable *local* Git only after real namespace/process/offline guarantees; C003 `011-m001-authorized-remote-git-recovery.md` separately handles mediated transport/credentials. M001 strict closure follows these correctives rather than blocking M002 launch-contract work. Historical blocked closure remains unchanged. A high-privilege raw Git fallback is prohibited.

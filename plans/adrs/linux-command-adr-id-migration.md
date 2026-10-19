@@ -1,43 +1,28 @@
 # Linux and Command ADR Identity Migration
 
-Date: 2026-10-14
+Date: 2026-10-14; reconciled against current main on 2026-10-19
 
-The C004 identity-only migration maps the proposed Linux execution-isolation ADR
-from ADR-0027 to ADR-0031 and the already-accepted command-syntax authority from
-ADR-0028 to ADR-0032. IDs 0029/0030 are reserved by the concurrent Windows ADR
-identity migration. No decision status, authorization, design choice, or
-security boundary changed.
+The C004 identity-only migration archived the original Linux and command decisions
+under `plans/archive/linux-command-adr-id-aliases/`, preserving source blobs,
+digests, and mapping history in `migration.json`. Current main now allocates ADR-0031
+through ADR-0041 to other accepted or proposed decisions. To retain unique canonical
+identities without changing decision substance or status, command authorization is
+ADR-0042 and Linux execution isolation is ADR-0043. The proposed contained-Git
+live-object and metadata-promotion decision is ADR-0044. The command and Linux
+accepted decisions remain accepted; ADR-0044 remains proposed.
 
-<<<<<<< HEAD
-=======
-Current-main reconciliation on 2026-10-15 revealed that main had independently
-accepted ADR-0031 for authenticated idle continuation. The Linux decision retains
-its accepted status and substance under ADR-0033; idle continuation retains
-ADR-0031 and command syntax retained ADR-0032 at that point.
+Identity history:
 
-Reconciliation with current main on 2026-10-16 found ADR-0032 allocated to the
-accepted agent-workstream coordination decision. The command-syntax decision
-retains its accepted status and substance under ADR-0034. Current canonical
-identities are idle continuation ADR-0031, agent-workstream coordination
-ADR-0032, Linux execution isolation ADR-0033, and command syntax ADR-0034 at
-that reconciliation point. No decision content, status, authority, or security
-boundary changed.
+- Linux execution isolation: ADR-0027 → ADR-0031 → ADR-0033 → ADR-0035 → ADR-0043.
+- Command syntax and execution authority: ADR-0028 → ADR-0032 → ADR-0034 → ADR-0042.
+- Contained Git live-object and metadata authority: proposed ADR-0036 → ADR-0044.
 
-The 2026-10-16 merge of current main added the separately accepted project
-identity decision as ADR-0033, colliding with the Linux decision's then-current
-canonical ID. The Linux decision retains its accepted status and substance
-under ADR-0035 at
-`plans/adrs/ADR-0035-composable-linux-execution-isolation.md`. ADR-0033 now
-belongs to directory-tied project identity; ADR-0031, ADR-0032, and ADR-0034
-retain their meanings above. The filename and cross-references were updated as
-an identity-only correction; the archived ADR and C004 migration evidence are
-preserved unchanged.
+IDs 0029/0030 remain assigned to the Windows decisions. Current main's ADR-0031
+through ADR-0041 retain their meanings and contents. The rename preserves the
+accepted decisions' substance and acceptance dates and does not admit a Linux
+production backend or authorize the proposed Git route.
 
->>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
-Exact pre-migration records and their source Git blob IDs and SHA-256 digests
-are preserved in `plans/archive/linux-command-adr-id-aliases/`. The machine-
-readable mapping is
-`plans/archive/linux-command-adr-id-aliases/migration.json`.
-
-Implementation plan: `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`.
+Exact pre-migration records and their source Git blob IDs and SHA-256 digests remain
+in `plans/archive/linux-command-adr-id-aliases/`. Implementation plan:
+`plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`.
 Closure evidence: `plans/closure/linux-execution-isolation/012-status.md`.

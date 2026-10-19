@@ -1,8 +1,4 @@
-<<<<<<<< HEAD:plans/adrs/ADR-0031-composable-linux-execution-isolation.md
-# ADR-0031: Composable Linux Execution Isolation and Obtained-Capability Authority
-========
-# ADR-0035: Composable Linux Execution Isolation and Obtained-Capability Authority
->>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main):plans/adrs/ADR-0035-composable-linux-execution-isolation.md
+# ADR-0043: Composable Linux Execution Isolation and Obtained-Capability Authority
 
 Status: accepted
 
@@ -21,11 +17,7 @@ Related specification sections:
 Affected subsystem roadmaps:
 - `plans/subsystems/linux-execution-isolation-roadmap.md`
 
-<<<<<<<< HEAD:plans/adrs/ADR-0031-composable-linux-execution-isolation.md
-Related ADRs: ADR-0001 (execution authority), ADR-0002 (worktree isolation), ADR-0004 (sandbox and approvals), ADR-0016 (platform-owned launch). Complements these decisions; does not supersede or silently reinterpret them. The existing Windows ADR-0019, ADR-0020 and ADR-0021 numbers on `work/windows-native-sandbox-foundation` are reserved for that line.
-========
-Related ADRs: ADR-0001 (execution authority), ADR-0002 (worktree isolation), ADR-0004 (sandbox and approvals), ADR-0016 (platform-owned launch). Complements these decisions; does not supersede or silently reinterpret them. The existing Windows ADR-0019, ADR-0020 and ADR-0021 numbers on `work/windows-native-sandbox-foundation` are reserved for that line. Canonical identity ADR-0035 was assigned after current-main reconciliation because ADR-0031 is the accepted idle-continuation decision on main.
->>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main):plans/adrs/ADR-0035-composable-linux-execution-isolation.md
+Related ADRs: ADR-0001 (execution authority), ADR-0002 (worktree isolation), ADR-0004 (sandbox and approvals), ADR-0016 (platform-owned launch). Complements these decisions; does not supersede or silently reinterpret them. The existing Windows ADR-0019, ADR-0020 and ADR-0021 numbers on `work/windows-native-sandbox-foundation` are reserved for that line. Canonical identity ADR-0043 was assigned after current-main reconciliation because ADR-0031 is the accepted idle-continuation decision on main.
 
 ## Context
 
@@ -100,10 +92,10 @@ Native Linux real-child probes on supported kernels and at least one negative/no
 References: https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md ; https://github.com/containers/bubblewrap/blob/main/README.md ; https://docs.kernel.org/userspace-api/landlock.html ; https://git-scm.com/docs/git-config .
 
 
-## Command syntax / policy layering (ADR-0032)
+## Command syntax / policy layering (ADR-0042)
 
-ADR-0032 is accepted and defines the cross-platform authorization semantics above this Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. The Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under accepted ADR-0016/ADR-0032; production adoption of the concrete Linux backend still requires native qualification and the separate rollout gates in the roadmap. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
+ADR-0042 is accepted and defines the cross-platform authorization semantics above this Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. The Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under accepted ADR-0016/ADR-0042; production adoption of the concrete Linux backend still requires native qualification and the separate rollout gates in the roadmap. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
 
 ## Supersession
 
-None. ADR-0032 governs command authorization and representation-independent enforcement semantics; this ADR selects the Linux mechanisms implementing those semantics. Acceptance records the architecture decision; it does not register or enable a production backend, change defaults, or satisfy native qualification and rollout gates.
+None. ADR-0042 governs command authorization and representation-independent enforcement semantics; this ADR selects the Linux mechanisms implementing those semantics. Acceptance records the architecture decision; it does not register or enable a production backend, change defaults, or satisfy native qualification and rollout gates.

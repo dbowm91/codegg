@@ -23,7 +23,7 @@ Implementation commits or pull requests:
 
 C001 establishes a test-only host-authority boundary for a live Git object read on the qualified hosted Linux configuration. A repository-local alias and `diff.external` command ran inside `ManagedProcessService` with actual M004 process/IPC and M005 offline-network guarantees. The commands could not read a host-only credential sentinel or host proc entry, connect to a host loopback listener, or share the host network namespace. A separate no-userns runner proved required M004 launches, constrained PTY, and constrained LSP refuse before target execution.
 
-This does not make the live object view immutable or generation-consistent. It also does not qualify external gitdirs/common-dirs, linked/nested repositories, alternate object stores, replace/graft/promisor state, concurrent object writers, or every Git executable configuration surface. Keep the live-ODB route test-only. C002 may proceed only as an internal test-only pilot for the exact covered root shape; ADR-0036 remains proposed and production promotion remains blocked.
+This does not make the live object view immutable or generation-consistent. It also does not qualify external gitdirs/common-dirs, linked/nested repositories, alternate object stores, replace/graft/promisor state, concurrent object writers, or every Git executable configuration surface. Keep the live-ODB route test-only. C002 may proceed only as an internal test-only pilot for the exact covered root shape; ADR-0044 remains proposed and production promotion remains blocked.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -83,7 +83,7 @@ cargo test -p egggit --locked trusted_git -- --test-threads=1
 - M004/M005 were requested and reported as actually enforced on the child before the probe ran; target output confirmed the separate network namespace.
 - A configured Git command ran only as a child of the contained Git process and did not acquire host home/proc/network access in the tested host configuration.
 - Unsupported namespace setup remains fail-closed; hosted restricted-userns checks demonstrate no-target behavior.
-- No FullHost retry, implicit credentials, production selector, or accepted ADR-0036 authority was introduced.
+- No FullHost retry, implicit credentials, production selector, or accepted ADR-0044 authority was introduced.
 - External host object mutation and metadata expansion remain explicit no-admission conditions.
 
 ## 6. Failure and recovery review
@@ -117,15 +117,15 @@ This only qualifies the Ubuntu 24.04 runner configuration documented above. It d
 | medium | Hooks, fsmonitor, clean/smudge/process filters, merge drivers, textconv, credential helpers and SSH commands were not individually invoked | Version-specific behavior is not independently characterized | C002/C005 must test applicable executable paths under the same obtained authority and keep unsupported actions typed as unavailable. |
 | medium | External gitdir/common-dir, linked/nested repositories, alternates, replace refs, grafts and promisor metadata were not tested | A future adapter could expose paths or alter object resolution outside this fixture | Reject unknown roots/alternates or prove bounded reach before broadening C002's fixture. |
 | medium | No deterministic concurrent repack/loose-write race test | The outcome under source mutation is not characterized | Keep no-consistency language; add explicit detection or typed stale/unavailable behavior before production use. |
-| high | ADR-0036 is still proposed and M005 remains candidate-only for production admission | No new read backend can be enabled by this closure | Require separate ADR acceptance, M005 production-owner qualification, and independent C010/M003 admission. |
+| high | ADR-0044 is still proposed and M005 remains candidate-only for production admission | No new read backend can be enabled by this closure | Require separate ADR acceptance, M005 production-owner qualification, and independent C010/M003 admission. |
 
 ## 11. Roadmap disposition
 
-C001 is conditionally closed for its test-only host-authority question. C002 may proceed with an internal test-only contained-read pilot limited to the ordinary repository root proven here; all production/live-ODB promotion stays blocked by the unresolved findings above. C004 test-only transaction modeling may proceed against the explicit consistency and authority limitations. C005 remains blocked on C002/C004, M005 production admission, ADR-0036, and independent M003/C010 review. C010's no-admission and C012's rejection of the no-writer lease remain unchanged.
+C001 is conditionally closed for its test-only host-authority question. C002 may proceed with an internal test-only contained-read pilot limited to the ordinary repository root proven here; all production/live-ODB promotion stays blocked by the unresolved findings above. C004 test-only transaction modeling may proceed against the explicit consistency and authority limitations. C005 remains blocked on C002/C004, M005 production admission, ADR-0044, and independent M003/C010 review. C010's no-admission and C012's rejection of the no-writer lease remain unchanged.
 
 ## 12. Registry updates
 
 - Mark C001 conditionally closed and link this closure and the archived plan.
 - Make C002 test-only eligible while retaining its production blockers.
 - Keep C004 test-only design eligible; no broker publication or broad `.git` writes are admitted.
-- Keep C005 blocked and ADR-0036 proposed.
+- Keep C005 blocked and ADR-0044 proposed.

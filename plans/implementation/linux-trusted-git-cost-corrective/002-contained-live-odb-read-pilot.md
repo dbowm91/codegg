@@ -1,10 +1,10 @@
 # Linux Trusted Git Cost Corrective C002 — Contained Live-ODB Read Pilot
 
-Status: active — internal test-only typed-payload parity pilot; **production route remains blocked on ADR-0036 acceptance and M005 native/owner admission**
+Status: active — internal test-only typed-payload parity pilot; **production route remains blocked on ADR-0044 acceptance and M005 native/owner admission**
 Primary class: capability
-Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
+Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `1041f41d (rebased review baseline)` (2026-10-18).
 Source roadmap: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`; parent `plans/subsystems/linux-execution-isolation-roadmap.md`.
-Long term: `plans/000-long-term-specification.md` §§4,17,27,29, `plans/001-terminology-and-domain-model.md` §8. Accepted ADR-0004/0016/0034/0035; proposed ADR-0036 is **not** implementation authority for promotion.
+Long term: `plans/000-long-term-specification.md` §§4,17,27,29, `plans/001-terminology-and-domain-model.md` §8. Accepted ADR-0004/0016/0034/0035; proposed ADR-0044 is **not** implementation authority for promotion.
 Historical C010 and C012 negative closures are preserved; M004 closure provides tested process/IPC mechanisms, M005 remains internal.
 Target future closure: `plans/closure/linux-trusted-git-cost-corrective/002-status.md`.
 
@@ -61,7 +61,7 @@ Exact-source cost run [`39204689018`](https://github.com/dbowm91/codegg/actions/
 3. Preserve structured Git payload parity (`status`, `diff`, `log`, `show`, `ChangedFiles`, branches/worktree reads) against a static native Git oracle. Use separate receipt field for live vs immutable consistency; while proposed, keep it internal or test-only. Explicitly protect Git config executables and user/credential env using existing `GitEnvPolicy` hardening.
 4. Run adversarial/race fixtures from C001 on real children and intentionally mutate/repack ODB concurrently. Treat failures as typed stale/unavailable (do not fabricate spawn error or silently retry as FullHost). Carry output provenance/retry counts into existing audit without secret text.
 5. Measure paired end-to-end and child-setup times vs unsandboxed native Git and legacy immutable snapshot. Targets: packed, >=4,000 loose objects/~100 MiB, ext4 and optional CoW; >=100 warm/30 credibly cold per fixture for p50/p95/max and CPU/RSS, bytes copied, retained tmp bytes, lock contention with 1/4/8 agent calls. The opt-in pilot uses GNU `time` inside the contained launch to report the Git target's user/system CPU and peak RSS separately for cold and warm samples; exact-source hosted run `39171846253` passed on `0c0eb49855aa591980a45b54bd13a9558e5d316c`. Native and typed-snapshot child resources remain uninstrumented, page-cache eviction is advisory, setup-only/copy/retention costs remain absent, and fan-out calls do not represent independent agent identities. C010 budgets remain comparison thresholds; any revised admission budget must be approved separately.
-6. Document M004/M005 host acceptance limits and Android/WSL/no-userns or older-Landlock refusal. Provide a ready-to-review production adapter design but **do not register it or change defaults** without accepted ADR-0036, M005 production evidence, C010/M003 new admission and exact-head CI.
+6. Document M004/M005 host acceptance limits and Android/WSL/no-userns or older-Landlock refusal. Provide a ready-to-review production adapter design but **do not register it or change defaults** without accepted ADR-0044, M005 production evidence, C010/M003 new admission and exact-head CI.
 
 ## Change scope / migration
 

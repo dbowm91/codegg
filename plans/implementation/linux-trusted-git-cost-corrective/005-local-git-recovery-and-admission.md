@@ -1,10 +1,10 @@
 # Linux Trusted Git Cost Corrective C005 — Git Workflow Parity, Cost Gate and Independent Admission
 
-Status: blocked on C002/C004 native proof, C003 backend recommendation, accepted ADR-0036, M005 production owner/host qualification; Linux C002 and M003 retain their **own** closure gates
+Status: blocked on C002/C004 native proof, C003 backend recommendation, accepted ADR-0044, M005 production owner/host qualification; Linux C002 and M003 retain their **own** closure gates
 Primary class: capability
-Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `0b36c71f (post-rebase review baseline; the pre-rebase evidence commit was 004d770b8cd23ca33fb724dae95f97de563ba60d)` (2026-10-18).
+Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `1041f41d (rebased review baseline)` (2026-10-18).
 Source: `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`, parent Linux execution isolation roadmap; existing Linux C002 plan `plans/implementation/linux-execution-isolation/010-m001-contained-local-git-recovery.md`, C003 remote `011-m001-authorized-remote-git-recovery.md`, M008 `008-qualification-and-rollout.md`.
-Authority: long-term §§4,17,27–29; accepted ADR-0004/0016/0034/0035; proposed ADR-0036 (**must be accepted separately before any production switch**).
+Authority: long-term §§4,17,27–29; accepted ADR-0004/0016/0034/0035; proposed ADR-0044 (**must be accepted separately before any production switch**).
 Target future closure: `plans/closure/linux-trusted-git-cost-corrective/005-status.md`.
 
 ## Objective

@@ -71,25 +71,28 @@ def self_test() -> list[str]:
             "ADR-0028-windows-broad-read-compatibility-profile.md",
             "ADR-0029-windows-sandbox-capability-successors-renumbered.md",
             "ADR-0030-windows-broad-read-profile-renumbered.md",
-            "ADR-0031-composable-linux-execution-isolation.md",
-            "ADR-0032-command-syntax-and-execution-authority.md",
-<<<<<<< HEAD
-=======
+            "ADR-0031-authenticated-idle-continuation-delegated-turn-admission.md",
+            "ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md",
             "ADR-0033-directory-tied-project-identity-and-client-working-directory.md",
-            "ADR-0034-command-syntax-and-execution-authority.md",
-            "ADR-0035-composable-linux-execution-isolation.md",
->>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
+            "ADR-0034-editor-syntax-tree-dependency.md",
+            "ADR-0035-durable-user-prompt-queue-ownership.md",
+            "ADR-0036-mid-turn-prompt-steering-delivery-contract.md",
+            "ADR-0037-idle-session-queue-mutation-authority.md",
+            "ADR-0038-queue-delivery-execution-authority.md",
+            "ADR-0039-queue-advancement-wakeup-authority.md",
+            "ADR-0040-evidence-based-agent-recovery-termination.md",
+            "ADR-0041-subagent-run-addressing-and-human-interaction-authority.md",
+            "ADR-0042-command-syntax-and-execution-authority.md",
+            "ADR-0043-composable-linux-execution-isolation.md",
+            "ADR-0044-contained-git-live-objects-and-metadata-authority.md",
         ]
         for name in merged_names:
             (adrs / name).write_text(f"# {name}\n", encoding="utf-8")
         (root / "plans/active.md").write_text(
             "See `plans/adrs/ADR-0021-native-editor-completion-read-and-local-edit.md` and "
-<<<<<<< HEAD
-            "`plans/adrs/ADR-0031-composable-linux-execution-isolation.md`.\n",
-=======
             "`plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`, "
-            "and `plans/adrs/ADR-0035-composable-linux-execution-isolation.md`.\n",
->>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
+            "and `plans/adrs/ADR-0043-composable-linux-execution-isolation.md`, "
+            "and `plans/adrs/ADR-0044-contained-git-live-objects-and-metadata-authority.md`.\n",
             encoding="utf-8",
         )
         (root / "plans/archive/windows-adr-id-aliases").mkdir(parents=True)
@@ -105,17 +108,17 @@ def self_test() -> list[str]:
         if check(root):
             failures.append("valid active ADR plus archived alias should pass")
         active, active_errors = active_adrs(root)
-        expected = {"0027", "0028", "0029", "0030", "0031", "0032"}
+        expected = {"0027", "0028", "0029", "0030", "0031", "0032", "0042", "0043", "0044"}
         if active_errors or not expected.issubset(active):
             failures.append("merged Windows/Linux/command ADR fixture should have unique identities")
         (adrs / "ADR-0023-second.md").write_text("# duplicate\n", encoding="utf-8")
         if not any("duplicate active ADR-0023" in error for error in check(root)):
             failures.append("duplicate active ADR number should fail")
         (adrs / "ADR-0023-second.md").unlink()
-        (adrs / "ADR-0032-second.md").write_text("# duplicate command ID\n", encoding="utf-8")
-        if not any("duplicate active ADR-0032" in error for error in check(root)):
+        (adrs / "ADR-0042-second.md").write_text("# duplicate command ID\n", encoding="utf-8")
+        if not any("duplicate active ADR-0042" in error for error in check(root)):
             failures.append("duplicate command ADR identity should fail")
-        (adrs / "ADR-0032-second.md").unlink()
+        (adrs / "ADR-0042-second.md").unlink()
         (root / "plans/active.md").write_text(
             "See `plans/adrs/ADR-0027-missing.md`.\n", encoding="utf-8"
         )

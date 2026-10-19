@@ -115,4 +115,4 @@ C003's backend-selection objective is complete as a negative result: defer gix f
 
 - Mark C003 closed as a negative backend decision and link this closure and the archived plan.
 - Keep the Linux Trusted Git Cost Corrective roadmap active with C001 test-only in progress and C002/C004/C005 blocked.
-- Keep proposed ADR-0036 proposed; no production route or M003 admission changes follow from C003.
+- Keep proposed ADR-0044 proposed; no production route or M003 admission changes follow from C003.

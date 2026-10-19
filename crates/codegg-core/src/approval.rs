@@ -1574,6 +1574,9 @@ mod tests {
         for statement in RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
+        for statement in RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
         // Re-running is idempotent via the caller's duplicate-tolerant
         // helper; here the statements themselves must at least apply once.
         let store = RuntimePreferenceStore::new(pool);

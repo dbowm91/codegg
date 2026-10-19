@@ -61,4 +61,4 @@ Binary/dependency-cost comparison is a standalone harness check, not a CodeGG re
 
 ## C003 recommendation
 
-**Defer gix.** Keep the current immutable snapshot route as the trusted production behavior. Treat contained native Git as a separate test-only candidate requiring C001 threat closure, C002 adapter ownership and native qualification, M005 owner/admission, structured-payload and race handling, and independent ADR-0036 acceptance. The snapshot timing is evidence for a corrective design, not authority to relax immutable consistency or switch defaults. C003's bounded gix decision does not close C001/C002/C004/C005 or C010/M003.
+**Defer gix.** Keep the current immutable snapshot route as the trusted production behavior. Treat contained native Git as a separate test-only candidate requiring C001 threat closure, C002 adapter ownership and native qualification, M005 owner/admission, structured-payload and race handling, and independent ADR-0044 acceptance. The snapshot timing is evidence for a corrective design, not authority to relax immutable consistency or switch defaults. C003's bounded gix decision does not close C001/C002/C004/C005 or C010/M003.

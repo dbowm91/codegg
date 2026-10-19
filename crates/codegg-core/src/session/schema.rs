@@ -3726,7 +3726,7 @@ async fn migrate_v32(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 
 /// Linux execution isolation M005: persist the principal's explicit network
 /// intent. Missing values resolve to the legacy unrestricted behavior.
-async fn migrate_v80(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+async fn migrate_v83(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS {
         add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
     }
