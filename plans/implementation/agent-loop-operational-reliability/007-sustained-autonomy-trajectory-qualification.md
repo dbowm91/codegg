@@ -1,6 +1,6 @@
 # Agent Loop Operational Reliability M007 — Sustained Autonomy Trajectory Qualification
 
-Status: blocked: M001–M006 closure and ADR-0040 disposition
+Status: closed
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (main; verify actual starting head)
 

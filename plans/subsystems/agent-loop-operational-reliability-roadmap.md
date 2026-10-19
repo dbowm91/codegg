@@ -1,6 +1,6 @@
 # Agent Loop Operational Reliability Roadmap
 
-Status: active implementation and closure
+Status: closed
 
 Audit baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (main, 2026-10-18)
 
@@ -80,19 +80,19 @@ M006 provider/tool wire compatibility ────────┤
 ADR-0040 Option B accepted ──> M002 recovery ┘
 ```
 
-M001–M006 are independently active. M007 remains **blocked** until M001–M006 have closure records and M002's evidence-gated behavior has been qualified. M005/M006 may run independently but must share one final subagent scenario for M007. No mandatory external dependency.
+M001–M006 were independently implemented and closed. Their closure records and accepted ADR-0040 Option B unblocked M007, which completed the deterministic qualification. No additional plan in this line became eligible. No mandatory external dependency remains.
 
 ## 7. Milestones
 
 | Milestone | Class | Status | Deliverable / exit condition |
 |---|---|---|---|
-| M001 | capability | **active** | `plans/implementation/agent-loop-operational-reliability/001-tool-aware-projection-and-artifact-paging.md`; recoverable contiguous source and artifact reads, nonrecursive paging, bounded budgets. |
-| M002 | invariant | **active** | `plans/implementation/agent-loop-operational-reliability/002-progress-aware-recovery-and-terminal-stall-policy.md`; ADR-0040 Option B accepted; unknown progress remains nonterminal and the hard run/turn budget remains authoritative. |
-| M003 | polish | **active** | `plans/implementation/agent-loop-operational-reliability/003-workspace-glob-and-tool-discovery.md`; real relative glob hits and authorized natural-language discovery. |
-| M004 | invariant | **active** | `plans/implementation/agent-loop-operational-reliability/004-preflight-and-shell-authorization-semantics.md`; diagnostics and allow/ask/deny agree across entrypoints. |
-| M005 | infrastructure | **active** | `plans/implementation/agent-loop-operational-reliability/005-subagent-admission-and-failure-visibility.md`; bounded busy-snapshot recovery, idempotent spawn, actionable child termination details. |
-| M006 | infrastructure | **active** | `plans/implementation/agent-loop-operational-reliability/006-provider-tool-schema-compatibility.md`; no unsupported deferred-tool wire and bounded safe request downgrade. |
-| M007 | capability | **blocked: M001–M006** | `plans/implementation/agent-loop-operational-reliability/007-sustained-autonomy-trajectory-qualification.md`; deterministic end-to-end replay and optional manual duration run; no permanent new CI lane. |
+| M001 | capability | **closed** | Closure `plans/closure/agent-loop-operational-reliability/001-status.md`; bounded contiguous source/artifact pages and model-visible integration evidence. |
+| M002 | invariant | **closed** | Closure `plans/closure/agent-loop-operational-reliability/002-status.md`; ADR-0040 Option B accepted; unknown progress remains nonterminal and hard budgets remain authoritative. |
+| M003 | polish | **closed** | Closure `plans/closure/agent-loop-operational-reliability/003-status.md`; relative bounded glob and authorized multiword tool discovery. |
+| M004 | invariant | **closed** | Closure `plans/closure/agent-loop-operational-reliability/004-status.md`; caller-policy block is separate from advisory findings. |
+| M005 | infrastructure | **closed** | Closure `plans/closure/agent-loop-operational-reliability/005-status.md`; transaction-safe idempotent admission and bounded parent-visible failure details. |
+| M006 | infrastructure | **closed** | Closure `plans/closure/agent-loop-operational-reliability/006-status.md`; conservative deferred-tool capability and one bounded schema downgrade. |
+| M007 | capability | **closed** | Closure `plans/closure/agent-loop-operational-reliability/007-status.md`; combined deterministic production-path qualification completed; optional manual model run not claimed. |
 
 ## 8. Cross-cutting requirements
 
@@ -119,4 +119,4 @@ Each milestone's implementation plan defines required focused tests, a native in
 
 ## 11. Close condition
 
-Roadmap is closed only when all seven milestones have accepted closure records, M002's decision gate is resolved, deterministic and existing regression suites pass on the claimed head, no critical/high unresolved correctness or security finding remains within this workstream, and M007 establishes observable sustained coding-loop reliability without a false terminal stall. A planning commit is not implementation or closure.
+Roadmap is closed: all seven milestones have closure records, ADR-0040 Option B is accepted, quick/clippy and the 14,614-test default workspace run pass, and no critical/high unresolved correctness or security finding remains within this workstream. The feature-configured full run also exposed one low-severity unchanged TUI test-fixture failure, recorded in M007's closure. M007 provides observable model-facing source, bounded recovery, provider fallback, and durable child failure evidence without a false terminal stall.

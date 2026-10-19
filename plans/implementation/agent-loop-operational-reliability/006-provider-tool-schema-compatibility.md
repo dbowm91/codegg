@@ -1,6 +1,6 @@
 # Agent Loop Operational Reliability M006 — Provider Tool Schema Compatibility
 
-Status: active
+Status: closed
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (main; verify actual starting head)
 

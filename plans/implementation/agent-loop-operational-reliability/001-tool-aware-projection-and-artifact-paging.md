@@ -1,6 +1,6 @@
 # Agent Loop Operational Reliability M001 — Tool-aware Projection and Artifact Paging
 
-Status: active
+Status: closed
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (main; verify at implementation start)
 
