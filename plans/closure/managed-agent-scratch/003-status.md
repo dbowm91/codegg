@@ -177,9 +177,9 @@ unqualified beyond a hosted Linux unit suite are superseded for the
 **delegated scratch grant path** only. The post-closure corrective
 addendum's C001 milestone closed at
 `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`
-with native evidence: implementation `2597ec9e` with the fixture correction
-`ea400ff7`, repository `CI` workflow
-run [39291133332](https://github.com/dbowm91/codegg/actions/runs/39291133332)
+with native evidence: implementation `2597ec9e` with the fixture corrections
+`ea400ff7` and `83fc052f`, repository `CI` workflow
+run [39294747903](https://github.com/dbowm91/codegg/actions/runs/39294747903)
 on `ubuntu-latest`, adding `tests/linux_native_scratch_containment.rs`.
 
 On a native Linux host with Landlock ABI >= 3, an authenticated, admitted
