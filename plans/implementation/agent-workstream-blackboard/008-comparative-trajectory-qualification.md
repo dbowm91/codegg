@@ -555,9 +555,10 @@ for one coordinator turn and allocate `B - C` across delegated workers; unused
 allocation is not transferred, and a coordinator must not continue in a
 second turn. IM-1 uses `B = 700,000`; SI-1 uses `B = 1,400,000`. IM-2, SI-2,
 OA-1, and OA-2 remain unavailable until their frozen evaluators and budgets
-are added to `008-task-matrix-v1.md`. No repeated scored trial has yet run under
-this total-budget protocol. M005 remains separately gated by escaped-descendant
-writer evidence, and no downstream plan is newly unblocked.
+are added to `008-task-matrix-v1.md`. IM-1 S0 repetition 1 is the first scored
+cell and is recorded in the closure evidence. All other repeated cells remain
+outstanding. M005 remains separately gated by escaped-descendant writer
+evidence, and no downstream plan is newly unblocked.
 
 The rebuilt headless binary passed a protocol smoke with a 10,000-token turn
 ceiling. The usage journal reported 10,850 total tokens (10,845 input, 5
@@ -565,3 +566,12 @@ output), confirming that one completed provider response can exceed the cap.
 This is calibration-only evidence from the reused setup session; no scored
 trial or additional stratum was completed. Exact usage and the unknown-cost
 status are in `008-isolated-results.json`.
+
+The first budgeted IM-1/S0 repetition now has a valid integrated candidate:
+Rust and Python each pass 5/5 frozen tests at 373,768 actual input-plus-output
+tokens under the 700,000 ceiling. The provider-usage span was 92.307 seconds;
+the Python tool test was unavailable inside the agent run, so the evaluator
+reran both suites and committed the candidate. This counts as one evaluator
+intervention, not autonomous success. Cost is unknown and full integration
+wall time was not instrumented. Repetitions and all other conditions remain
+outstanding; M008 remains active.

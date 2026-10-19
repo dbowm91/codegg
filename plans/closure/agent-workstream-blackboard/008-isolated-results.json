@@ -1480,5 +1480,56 @@
       "cost_available": false
     },
     "result": "The updated headless CLI submitted the capped turn and returned READY. Actual usage exceeded the requested cap by one in-flight response; this is a protocol smoke on a reused calibration session, not an evaluation result."
-  }
+  },
+  "budgeted_trials_v1": [
+    {
+      "trial_id": "IM-1-S0-R1",
+      "matrix_version": "008-task-matrix-v1",
+      "fixture": "plans/closure/agent-workstream-blackboard/008-fixture",
+      "fixture_baseline_commit": "ff0c4e2dd1ae73dc8feeaf0d28dfd58d46950078",
+      "condition": "S0",
+      "repetition": 1,
+      "session_id": "8cafcd0b-132e-4d4f-9188-863bd4cbbf0b",
+      "turn_id": "turn-84e476d4-8d84-46fc-9d81-1b63d35b8fdc",
+      "provider": "OpenCode Go",
+      "model": "gpt-6-luna",
+      "all_agent_budget_tokens": 700000,
+      "coordinator_budget_tokens": 0,
+      "worker_budget_tokens": 700000,
+      "actual_usage": {
+        "input_tokens": 367877,
+        "output_tokens": 5891,
+        "cached_tokens": 0,
+        "total_tokens": 373768,
+        "overrun_tokens": 0,
+        "usage_rows": 24,
+        "reported_cost_usd": 0.0,
+        "cost_available": false,
+        "provider_usage_span_seconds": 92.307
+      },
+      "agent_reported": {
+        "rust_acceptance": "5 passed",
+        "python_acceptance": "blocked by unavailable codegg-sandbox-helper; tool runner rejected the command",
+        "result_commit": null
+      },
+      "evaluator": {
+        "rust_acceptance": "5 passed",
+        "python_acceptance": "5 passed",
+        "valid_integrated_result": true,
+        "candidate_commit": "6cf85fc",
+        "interventions": 1,
+        "evaluator_command_seconds": 0.54,
+        "integration_command_seconds": 0.47,
+        "integration_wall_seconds": null,
+        "scratch_cleanup": "Removed generated .codegg run scratch, Python bytecode, and Rust target cache; worktree clean after evaluator commit."
+      },
+      "useful_throughput": {
+        "accepted_contract_checks_passed": 10,
+        "checks_per_worker_token": 0.00002676,
+        "checks_per_provider_usage_minute": 6.50
+      },
+      "status": "valid integrated candidate after one evaluator intervention; not an autonomous-success result because the agent could not execute the Python acceptance command or create its commit",
+      "result": "Both frozen suites pass on the committed candidate. Actual agent usage remained below the equal 700,000-token trial ceiling. Cost is unknown. The fixture uses an isolated managed worktree; no shared-write condition was used."
+    }
+  ]
 }

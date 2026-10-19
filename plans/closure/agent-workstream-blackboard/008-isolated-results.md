@@ -517,3 +517,24 @@ the local price table has no matching rate. This used the existing calibration
 session and is excluded from all scored task and condition cells. It confirms
 the CLI-to-daemon cap path and the need to classify actual overrun explicitly;
 it does not qualify an effectiveness trial.
+
+## 18. IM-1, S0, repetition 1 (2026-10-19)
+
+The first scored independent-module trajectory used the frozen retry-policy
+baseline in a fresh managed worktree, a 700,000-token all-agent ceiling, and
+one OpenCode Go `gpt-6-luna` coding session. The agent implemented both
+language modules and reported Rust 5/5 passing, but its Python acceptance
+command was blocked by the isolated tool runner's missing sandbox helper; it
+also did not create a commit. The evaluator independently ran both frozen
+suites from the worktree root (Rust 5/5, Python 5/5), committed only the two
+implementation files as `6cf85fc`, and removed `.codegg/`, Python bytecode,
+and Rust build cache artifacts. The managed worktree was clean after commit.
+
+The usage journal recorded 367,877 input plus 5,891 output tokens, 373,768
+total across 24 rows and a 92.307-second provider-usage span. The trial used
+53.4% of its nominal ceiling; cost is unknown because the price table had no
+matching rate. Ten of ten frozen contract checks passed. This is a valid
+integrated result after one evaluator intervention, not autonomous success.
+Evaluator commands took 0.54 seconds and the commit command took 0.47 seconds;
+full wall time from turn completion through integration was not instrumented.
+No shared-checkout writes were used. Full measurements are in the JSON record.

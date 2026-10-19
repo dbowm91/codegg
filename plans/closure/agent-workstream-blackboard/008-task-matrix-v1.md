@@ -81,5 +81,7 @@ before they can enter provider trials. Until those files exist and their
 baseline fails for the intended reason, mark those task/condition cells
 unavailable rather than treating the contract prose as an evaluated task.
 
-No task in this matrix has yet been run under this equal-total-budget
-protocol. The previous pilots remain separate historical evidence.
+One cell has been run under this equal-total-budget protocol: IM-1, S0,
+repetition 1. Its result is recorded in `008-isolated-results.json` and
+`008-isolated-results.md`. Every other task/condition/repetition cell remains
+unrun; the previous pilots remain separate historical evidence.
