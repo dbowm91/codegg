@@ -586,9 +586,12 @@ launch spec capped at 64 KiB, and a private versioned status pipe
 capped at 16 KiB; target output is never a control channel. On Unix,
 finite executions run in a child session; cancellation and timeout
 send SIGTERM, wait a bounded grace period, then SIGKILL the verified
-process group and reap the direct child. Other platforms retain
-direct-child cleanup only. On Linux, constrained launches also pass through
-the internal composable launch contract owned by this service. Its host
+process group and reap the direct child. On Windows, the target is started
+suspended, assigned to a kill-on-close Job Object before resume, and the job is
+closed for timeout/cancellation cleanup before the direct child is reaped. This
+is descendant lifecycle supervision, not filesystem containment. Other hosts
+retain direct-child cleanup only. On Linux, constrained launches also pass
+through the internal composable launch contract owned by this service. Its host
 feature probe is diagnostic only: the service still selects the existing
 filesystem helper, and namespace, offline-network, seccomp, and cgroup
 dimensions remain unavailable until native enforcement is implemented and

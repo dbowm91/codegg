@@ -1595,6 +1595,45 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn terminate_kills_session_descendant_before_releasing_process_slot() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let ctx = test_context(dir.path()).await;
+        let admission = test_admission(1);
+        let service = InteractiveProcessService::new(admission.clone());
+        let script = "(sleep 1; printf escaped > descendant-marker) & wait";
+        let handle = service
+            .spawn(
+                &ctx,
+                SpawnSpec::new(vec![
+                    OsString::from("sh"),
+                    OsString::from("-c"),
+                    OsString::from(script),
+                ]),
+            )
+            .await
+            .expect("spawn shell with a background descendant");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(admission.used_process_slots(), 1);
+        service
+            .terminate(&handle)
+            .await
+            .expect("terminate process group");
+        assert_eq!(admission.used_process_slots(), 0);
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            !dir.path().join("descendant-marker").exists(),
+            "background writer ran after process-group termination"
+        );
+        service
+            .remove(&handle)
+            .await
+            .expect("remove terminated session");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawn_failure_releases_the_permit() {
         let dir = tempfile::tempdir().expect("workspace");
         let ctx = test_context(dir.path()).await;
