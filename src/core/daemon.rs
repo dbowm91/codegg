@@ -6014,18 +6014,21 @@ mod tests {
     impl PromptSubmitCredentialHome {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("temporary credential home");
-            let config_home = dir.path().join("config");
+            // `tempfile` may return a path below macOS's symlinked `/var`.
+            // Scratch intentionally refuses symlinked roots, so use the real
+            // path as HOME for dirs::cache_dir() and credential storage.
+            let home = dir.path().canonicalize().expect("canonical temporary home");
+            let config_home = home.join("config");
             std::fs::create_dir_all(&config_home).expect("create temporary config home");
-            // macOS resolves dirs::cache_dir() below HOME/Library/Caches;
-            // create that platform directory before session scratch setup.
-            std::fs::create_dir_all(dir.path().join("Library/Caches"))
+            // macOS resolves dirs::cache_dir() below HOME/Library/Caches.
+            std::fs::create_dir_all(home.join("Library/Caches"))
                 .expect("create temporary cache home");
             let names = ["HOME", "XDG_CONFIG_HOME", "APPDATA"];
             let previous = names
                 .into_iter()
                 .map(|name| (name, std::env::var_os(name)))
                 .collect();
-            std::env::set_var("HOME", dir.path());
+            std::env::set_var("HOME", &home);
             std::env::set_var("XDG_CONFIG_HOME", &config_home);
             std::env::set_var("APPDATA", &config_home);
             Self {
