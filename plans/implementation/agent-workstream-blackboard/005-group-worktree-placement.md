@@ -8,6 +8,23 @@ Decision gate: `plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-che
 Canonical: plans/000-long-term-specification.md §§9, 16–17, 27, 29; plans/001-terminology-and-domain-model.md §§5, 7–8.
 Primary class: capability / invariant. No work may enable shared mutation before the decision and safety gates close.
 
+## Corrective handoff registered 2026-10-19
+
+The source audit below remains authoritative evidence, not production
+qualification. Its unresolved product-boundary and writer-lifetime issues now
+have separate corrective handoffs in
+plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md
+(C001–C006), with executable plans under
+plans/implementation/agent-workstream-m005-writer-containment-corrective/.
+ADR-0042 is **proposed, not accepted**; C001 is ready to establish the
+restricted CodeGG-mediated writer profile and denial matrix, while C002–C006
+are blocked. Do **not** enable SerializedShared from this audit or treat
+current global scheduler keys, request-scoped guards, or process-group
+cleanup as the missing checkout writer permit. M005 remains active; parent
+strict closure requires positively qualified Q1–Q5 and the corrective gates.
+M006 isolated session/worktree launch and M007 per-workspace build
+admission remain independent.
+
 ## Objective
 
 Allow explicit, authorized workspace placement for task spawn and spawn_many without equating agent concurrency with filesystem concurrency. Preserve current default per-mutating-child isolated worktree, read-only inherited checkout, and daemon-owned lease safety. Introduce an opt-in serialized shared checkout for a bounded group of mutation-capable children only where every write path can be governed; no concurrent unreserved writes.
