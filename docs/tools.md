@@ -88,12 +88,30 @@ system; see `docs/security-semantics.md`.
 | Git | `git_query` (model-facing), `git_read` (program-only) | Typed read-only repository facts |
 | Git mutation | `git`, `commit` | Mutating operations, routed through the risk-classified mutation executor |
 | Test and verify | `test`, `verify` | Running the project's test suite, and bounded offline `check`/`build`/`lint`/`typecheck`/`format_check` passes |
+
+`verify` defaults to an offline workspace check. Rust lint does not enable every
+workspace feature by default. For a bounded package run, pass `scope: "package"`
+and a workspace `package` name; `features` selects validated Cargo feature names
+for that package. `all_features: true` is an explicit package-only opt-in and
+can enable optional or real-server test dependencies. Unsupported project types and unknown
+workspace packages return a specific error; `verify` does not accept shell text.
 | Code intelligence | LSP-backed tools, `lsp_preview_apply` | Diagnostics, definitions, references, impact, repair |
 | Deterministic | 13 `eggsact`-backed validators | Text, config, and identifier checking |
 | Web and research | `websearch`, `webfetch`, `repo_search`, `repo_fetch`, `repo_map`, `security_search`, `research`, `research_search`, `batch_fetch`, `evidence_bundle` | Evidence-backed external lookups |
 | Higher-level workflows | `review`, `security`, `skill`, `task`, `work_order`, `goal_get`, `goal_update_progress`, `goal_request_completion`, `plan_enter`, `plan_exit`, `todowrite`, `memory_search`, `question`, `tool_search` | Delegation, planning, and discovery |
 
 Run `codegg doctor` for the live state of the subsystems behind these.
+
+For `task`, run control and task retrieval use different identities:
+`status`, `wait`, `message`, `interrupt`, and `cancel` take `run_id`; `get`
+takes `task_id` (durable string ID or legacy numeric ID). Group status/wait/
+cancel operations take `group_id`. A run ID is not accepted as a task ID.
+
+`repo_search` forwards `include_local` to Eggsearch. Local coverage follows the
+Eggsearch sidecar's configured roots; CodeGG does not currently bind those
+roots to the active session workspace. Check that the sidecar roots include
+the intended repository before treating a local miss or hit as workspace
+coverage.
 
 ## Deterministic tools (`eggsact`)
 

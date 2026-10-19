@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability Corrective C004 — Make Todo and Subagent Retrieval Contracts Truthful
 
-Status: ready for handoff
+Status: active
 Repository baseline: `4c86bac2a608dd717be085247838fd2f37d81ab6` (main, 2026-10-19)
 Source roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`; `#28-observability`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`.

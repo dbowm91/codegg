@@ -210,6 +210,10 @@ The daemon-owned workspace service lease supplies the canonical
 native execution, post-capture, and persistence, so independent sessions
 produce a coherent serial checkpoint history without a daemon-global lock.
 
+The regular-tool semaphore is local to one provider response. Its admission
+deadline is separate from each call's execution timeout and does not stand in
+for a scheduler permit or imply cross-agent capacity.
+
 See `architecture/snapshot.md` for the `EditCheckpoint` storage
 contract and `architecture/agent.md` for the `ToolBatchExecutor`
 ownership.

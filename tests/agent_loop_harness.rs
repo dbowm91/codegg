@@ -11,6 +11,8 @@ use codegg::provider::{
     ChatEvent, ChatRequest, EventStream, Message, ModelInfo, Provider, ProviderError, TokenUsage,
     ToolCall,
 };
+use codegg::tool::apply_patch::ApplyPatchTool;
+use codegg::tool::grep::GrepTool;
 use codegg::tool::task::TaskTool;
 use codegg::tool::{Tool, ToolRegistry};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -647,7 +649,36 @@ impl Tool for QuestionTool {
     }
 }
 
-fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistry) -> AgentLoop {
+async fn attach_test_workspace_authority(
+    agent_loop: &mut AgentLoop,
+    workspace_root: &std::path::Path,
+) {
+    let workspace_registry = codegg_core::workspace::WorkspaceRegistry::load(Arc::new(
+        codegg_core::workspace::InMemoryWorkspaceStore::new(),
+    ))
+    .await
+    .expect("test workspace registry");
+    let workspace = workspace_registry
+        .get_or_register(workspace_root)
+        .await
+        .expect("register test workspace");
+    let services = codegg_core::workspace_services::WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(codegg_core::workspace_services::ProductionWorkspaceServicesFactory),
+        codegg_core::workspace_services::WorkspaceServicePolicy::default(),
+    );
+    let lease = services
+        .acquire(&workspace.id)
+        .await
+        .expect("test workspace service lease");
+    agent_loop.set_workspace_id(workspace.id.clone());
+    agent_loop.set_workspace_services_lease(lease);
+}
+
+async fn build_test_agent_loop(
+    provider: Box<dyn Provider>,
+    tool_registry: ToolRegistry,
+) -> AgentLoop {
     let agents = vec![Agent {
         git_read_only: false,
         name: "build".to_string(),
@@ -692,7 +723,11 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
 
     let config = Config::default();
 
-    AgentLoop::new(
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let mut agent_loop = AgentLoop::new(
         agents,
         provider,
         permission_checker,
@@ -701,12 +736,14 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session".to_string(),
-    )
+    );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
+    agent_loop
 }
 
-fn build_test_agent_loop_with_permissions(
+async fn build_test_agent_loop_with_permissions(
     provider: Box<dyn Provider>,
     tool_registry: ToolRegistry,
     permission_checker: PermissionChecker,
@@ -735,7 +772,11 @@ fn build_test_agent_loop_with_permissions(
 
     let config = Config::default();
 
-    AgentLoop::new(
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let mut agent_loop = AgentLoop::new(
         agents,
         provider,
         permission_checker,
@@ -744,13 +785,15 @@ fn build_test_agent_loop_with_permissions(
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session".to_string(),
-    )
+    );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
+    agent_loop
 }
 
 /// Build test AgentLoop with custom config for testing config-dependent behavior.
-fn build_test_agent_loop_with_config(
+async fn build_test_agent_loop_with_config(
     provider: Box<dyn Provider>,
     tool_registry: ToolRegistry,
     permission_checker: PermissionChecker,
@@ -778,7 +821,11 @@ fn build_test_agent_loop_with_config(
         runtime_kind: None,
     }];
 
-    AgentLoop::new(
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let mut agent_loop = AgentLoop::new(
         agents,
         provider,
         permission_checker,
@@ -787,9 +834,11 @@ fn build_test_agent_loop_with_config(
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session".to_string(),
-    )
+    );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
+    agent_loop
 }
 
 fn make_chat_request(prompt: &str) -> ChatRequest {
@@ -1229,7 +1278,7 @@ async fn deferred_schema_400_retries_once_without_changing_authorized_tools() {
         path_rules: vec![],
     });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions).await;
     agent_loop
         .run(make_chat_request("Use the deferred probe"))
         .await
@@ -1251,7 +1300,7 @@ async fn deferred_schema_400_retries_once_without_changing_authorized_tools() {
         .all(|tool| tool.defer_loading.is_none()));
 }
 
-fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider) {
+async fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider) {
     let provider = ScriptedProvider::new(responses);
     // `PermissionChecker::new(None, None)` leaves the default level at Ask, and
     // an unanswered request parks the tool call forever — the turn never
@@ -1267,7 +1316,8 @@ fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider
         Box::new(provider.clone()),
         recovery_registry(),
         permission_checker,
-    );
+    )
+    .await;
     (agent_loop, provider)
 }
 
@@ -1284,6 +1334,71 @@ fn finish_event() -> ChatEvent {
         stop_reason: "stop".to_string().into(),
         usage: TokenUsage::default(),
     }
+}
+
+#[tokio::test]
+async fn first_use_apply_patch_create_then_grep_runs_through_agent_broker() {
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let temp_dir = tempfile::tempdir_in(workspace_root.join("target"))
+        .expect("create isolated first-use workspace fixture");
+    let relative_path = temp_dir
+        .path()
+        .join("nested/new.rs")
+        .strip_prefix(&workspace_root)
+        .expect("fixture belongs to workspace")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let marker = format!("c003-first-use-marker-{}", std::process::id());
+    let absolute_path = temp_dir.path().join("nested/new.rs");
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![
+        vec![
+            tool_call_event(
+                "create-first-use-file",
+                "apply_patch",
+                serde_json::json!({
+                    "path": relative_path,
+                    "mode": "create",
+                    "patch": marker,
+                }),
+            ),
+            finish_event(),
+        ],
+        vec![
+            tool_call_event(
+                "grep-first-use-file",
+                "grep",
+                serde_json::json!({ "pattern": marker, "path": temp_dir.path() }),
+            ),
+            finish_event(),
+        ],
+        vec![finish_event()],
+    ]));
+    let provider_observer = scripted_provider.clone();
+    let mut registry = ToolRegistry::new();
+    registry.register(ApplyPatchTool::new().with_allowed_root(workspace_root.clone()));
+    registry.register(GrepTool::new().with_allowed_root(workspace_root));
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry).await;
+
+    agent_loop
+        .run(make_chat_request(
+            "Create a file, then search for its marker",
+        ))
+        .await
+        .expect("the real agent and broker path should execute both tool calls");
+
+    let contents = std::fs::read_to_string(&absolute_path).expect("created file");
+    assert_eq!(contents, marker);
+    let requests = provider_observer.get_requests().await;
+    assert!(requests.len() >= 3, "expected follow-up after both tools");
+    let second_request_text = format!("{:?}", requests[2].messages);
+    assert!(
+        second_request_text.contains(&marker),
+        "grep result should be returned to the provider: {second_request_text}"
+    );
 }
 
 /// The regression, through the real loop: one provider turn emitting a batch of
@@ -1324,7 +1439,8 @@ async fn a_batch_of_distinct_failing_commands_does_not_stall_the_turn() {
             ChatEvent::TextDelta("gave up".to_string().into()),
             finish_event(),
         ],
-    ]);
+    ])
+    .await;
     agent_loop
         .run(make_chat_request("Get the build green"))
         .await
@@ -1366,7 +1482,7 @@ async fn exploring_with_alternating_reads_and_shell_never_stalls() {
         finish_event(),
     ]);
 
-    let (mut agent_loop, provider) = recovery_loop(responses);
+    let (mut agent_loop, provider) = recovery_loop(responses).await;
     agent_loop
         .run(make_chat_request("Explore the repository"))
         .await
@@ -1402,7 +1518,7 @@ async fn an_identical_repeated_failure_does_not_claim_confirmed_stagnation() {
         finish_event(),
     ]);
 
-    let (mut agent_loop, provider) = recovery_loop(responses);
+    let (mut agent_loop, provider) = recovery_loop(responses).await;
     agent_loop
         .run(make_chat_request("Fix the build"))
         .await
@@ -1429,7 +1545,7 @@ async fn repeated_unknown_outcomes_remain_bounded_by_the_hard_turn_limit() {
             ]
         })
         .collect::<Vec<_>>();
-    let (mut agent_loop, provider) = recovery_loop(responses);
+    let (mut agent_loop, provider) = recovery_loop(responses).await;
     agent_loop.set_max_turns(3);
     agent_loop
         .run(make_chat_request("Repeat a build observation"))
@@ -1470,7 +1586,8 @@ async fn large_source_read_reaches_the_next_model_request_as_a_contiguous_page()
         path_rules: vec![],
     });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(Box::new(provider.clone()), registry, permissions);
+        build_test_agent_loop_with_permissions(Box::new(provider.clone()), registry, permissions)
+            .await;
     agent_loop
         .run(make_chat_request("Inspect the large source file"))
         .await
@@ -1556,7 +1673,7 @@ async fn peer_evidence_arriving_during_provider_stream_fences_returned_tool_batc
         path_rules: vec![],
     });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions).await;
     let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
         Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
     agent_loop.set_run_control(
@@ -1686,7 +1803,7 @@ async fn unrelated_peer_change_does_not_fence_or_notify_member() {
         path_rules: vec![],
     });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions).await;
     let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
         Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
     agent_loop.set_run_control(
@@ -1766,7 +1883,7 @@ async fn test_agent_loop_harness_smoke_test() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     // Set unique session ID to avoid cross-test contamination
     let session_id = "test-smoke-unique-session".to_string();
@@ -1939,7 +2056,7 @@ async fn test_tool_call_turn_does_not_publish_premature_agent_finished() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider, registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry).await;
     let session_id = "test-no-premature-finish-tool-calls".to_string();
     agent_loop.set_session_id(&session_id);
     let mut event_collector = EventCollector::with_session(session_id);
@@ -1990,7 +2107,7 @@ async fn test_tool_call_turn_with_stop_finish_does_not_publish_premature_agent_f
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider, registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry).await;
     let session_id = "test-no-premature-finish-stop-after-tool".to_string();
     agent_loop.set_session_id(&session_id);
     let mut event_collector = EventCollector::with_session(session_id);
@@ -2054,7 +2171,7 @@ async fn test_post_tool_soft_stop_retries_and_continues_for_repo_task() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop
         .run(make_chat_request("Review this codebase layout"))
         .await
@@ -2106,7 +2223,7 @@ async fn test_agent_loop_harness_records_requests() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     let request = ChatRequest {
         messages: vec![codegg::provider::Message::User {
@@ -2217,7 +2334,7 @@ async fn test_agent_loop_harness_fails_without_second_call() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(provider, registry);
+    let mut agent_loop = build_test_agent_loop(provider, registry).await;
 
     let request = ChatRequest {
         messages: vec![codegg::provider::Message::User {
@@ -2280,7 +2397,8 @@ async fn test_denied_tool_produces_error_result() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
 
     let request = make_chat_request("Use denied_tool");
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -2345,7 +2463,7 @@ async fn test_missing_tool_produces_error_result() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     let request = make_chat_request("Use nonexistent_tool");
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -2420,7 +2538,7 @@ async fn test_question_tool_produces_tool_result() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     // Set session ID for QuestionRegistry (Packet 3)
     agent_loop.set_session_id("test-session-123");
@@ -2525,7 +2643,7 @@ async fn test_question_tool_answer_immediately() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("test-session-immediate-q");
 
     let mut rx = GlobalEventBus::subscribe();
@@ -2610,7 +2728,8 @@ async fn test_permission_ask_answer_immediately() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_session_id("test-session-immediate-p");
 
     let perm_id = "call_p1-echo_args".to_string();
@@ -3348,7 +3467,7 @@ async fn test_follow_up_with_tool_call() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_agent_loop_with_error_config(provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(provider.clone(), registry).await;
 
     let follow_up_tx = agent_loop.follow_up_sender();
     let request = make_chat_request("Initial prompt");
@@ -3512,7 +3631,8 @@ async fn test_permission_ask_allow_once() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_session_id("perm-test-ask-allow");
 
     let perm_id = "call_allow_1-echo_args".to_string();
@@ -3613,7 +3733,8 @@ async fn test_permission_ask_deny_once() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_session_id("perm-test-ask-deny");
 
     let perm_id = "call_deny_1-echo_args".to_string();
@@ -3728,7 +3849,8 @@ async fn test_mixed_tool_ordering() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
 
     let request = make_chat_request("Use multiple tools");
     let result = agent_loop.run(request).await;
@@ -3855,7 +3977,8 @@ async fn test_max_parallel_tools_enforcement() {
         registry,
         permission_checker,
         config,
-    );
+    )
+    .await;
     agent_loop.set_session_id("max-parallel-test");
 
     // Run agent loop in background task
@@ -4165,6 +4288,10 @@ async fn test_task_tool_integration_with_subagent() {
             path_rules: vec![],
         });
 
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
     let mut agent_loop = AgentLoop::new(
         agents,
         main_provider.clone(),
@@ -4174,9 +4301,10 @@ async fn test_task_tool_integration_with_subagent() {
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session-123".to_string(),
     );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn a subagent to do work");
@@ -4373,6 +4501,10 @@ async fn test_task_tool_denied_tools_passthrough() {
         });
 
     // Build AgentLoop
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
     let mut agent_loop = AgentLoop::new(
         agents,
         main_provider.clone(),
@@ -4382,9 +4514,10 @@ async fn test_task_tool_denied_tools_passthrough() {
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session-denied".to_string(),
     );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn subagent with denied tools");
@@ -4598,7 +4731,7 @@ async fn test_source_structure_prompt_does_not_synthesize_bootstrap_list() {
     }];
     let scripted_provider = Box::new(ScriptedProvider::new(vec![response1]));
     let registry = ToolRegistry::with_defaults();
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("test-source-structure-bootstrap");
 
     let mut request = make_chat_request("get source code structure for this project");
@@ -4628,7 +4761,7 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
     }];
     let scripted_provider = Box::new(ScriptedProvider::new(vec![response1]));
     let registry = ToolRegistry::with_defaults();
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("test-structured-tool-calls-diagnostic");
 
     let mut rx = GlobalEventBus::subscribe();
@@ -4834,7 +4967,8 @@ async fn test_live_dispatcher_uses_execute_capture() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     let session_id = "test-live-dispatcher-uses-execute-capture".to_string();
     agent_loop.set_session_id(&session_id);
 
@@ -4955,7 +5089,8 @@ async fn test_live_dispatcher_passes_native_backend_in_context() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     let session_id = "test-live-dispatcher-native-backend".to_string();
     agent_loop.set_session_id(&session_id);
 
@@ -5004,7 +5139,7 @@ async fn test_live_dispatcher_model_output_shape_is_plain_string() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     let session_id = "test-live-dispatcher-model-output-shape".to_string();
     agent_loop.set_session_id(&session_id);
 
@@ -5453,7 +5588,7 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
     );
 
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(scripted_provider, registry, checker);
+        build_test_agent_loop_with_permissions(scripted_provider, registry, checker).await;
     agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     agent_loop.set_session_id("shell-escalation-approval-gate");
 
@@ -5586,7 +5721,10 @@ async fn m001_secret_bearing_transport_stays_redacted_and_permanent() {
 /// Build an `Automatic`-mode loop whose reviewer is served by the same
 /// scripted provider stream (the reviewer consumes one stream response as
 /// its bounded verdict) and whose `echo_args` tool requires escalation.
-fn build_automatic_reviewer_loop(provider: Box<dyn Provider>, registry: ToolRegistry) -> AgentLoop {
+async fn build_automatic_reviewer_loop(
+    provider: Box<dyn Provider>,
+    registry: ToolRegistry,
+) -> AgentLoop {
     use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
 
     let permission_checker =
@@ -5608,7 +5746,7 @@ fn build_automatic_reviewer_loop(provider: Box<dyn Provider>, registry: ToolRegi
         ..Default::default()
     });
     let mut agent_loop =
-        build_test_agent_loop_with_config(provider, registry, permission_checker, config);
+        build_test_agent_loop_with_config(provider, registry, permission_checker, config).await;
     agent_loop.set_approval_mode(codegg_core::approval::ApprovalMode::Automatic);
     agent_loop
 }
@@ -5668,7 +5806,7 @@ async fn test_approval_automatic_reviewer_allows_without_human_prompt() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("auto-reviewer-allow");
     let perm_id = "call_auto_allow-echo_args".to_string();
     let mut rx = GlobalEventBus::subscribe();
@@ -5750,7 +5888,7 @@ async fn test_approval_automatic_reviewer_deny_returns_feedback_without_human() 
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("auto-reviewer-deny");
     let perm_id = "call_auto_deny-echo_args".to_string();
     let mut rx = GlobalEventBus::subscribe();
@@ -5796,7 +5934,7 @@ async fn test_approval_automatic_reviewer_deny_returns_feedback_without_human() 
 
 /// Build a loop with an explicit approval mode and sandbox profile whose
 /// `echo_args` tool requires escalation.
-fn build_m007_policy_loop(
+async fn build_m007_policy_loop(
     provider: Box<dyn Provider>,
     registry: ToolRegistry,
     mode: codegg_core::approval::ApprovalMode,
@@ -5815,7 +5953,7 @@ fn build_m007_policy_loop(
             path_rules: vec![],
         });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(provider, registry, permission_checker);
+        build_test_agent_loop_with_permissions(provider, registry, permission_checker).await;
     agent_loop.set_approval_mode(mode);
     agent_loop.set_sandbox_profile(profile);
     agent_loop
@@ -5854,7 +5992,8 @@ async fn test_approval_yolo_workspace_write_skips_prompt_but_stays_sandboxed() {
         registry,
         codegg_core::approval::ApprovalMode::Yolo,
         codegg_core::approval::SandboxProfile::WorkspaceWrite,
-    );
+    )
+    .await;
     agent_loop.set_session_id("yolo-workspace-write");
     assert_eq!(
         agent_loop.sandbox_profile(),
@@ -5931,7 +6070,8 @@ async fn test_approval_yolo_explicit_deny_remains_denied() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_approval_mode(codegg_core::approval::ApprovalMode::Yolo);
     agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     agent_loop.set_session_id("yolo-deny");

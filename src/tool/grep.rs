@@ -228,7 +228,8 @@ impl Tool for GrepTool {
                     output_truncated = true;
                     break;
                 }
-                let rendered = format!("{}: {}", file.path.display(), line);
+                // `render_file_matches` already emits path:line:content.
+                let rendered = line;
                 if rendered_bytes.saturating_add(rendered.len() + 1) > MAX_RENDERED_BYTES {
                     output_truncated = true;
                     break;
@@ -777,7 +778,31 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.find("a.txt").unwrap() < result.find("b.txt").unwrap());
+        assert!(result.find("a.txt:1:needle a").is_some());
+        assert!(result.find("b.txt:1:needle b").is_some());
+        assert!(!result.contains("a.txt: /"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_can_be_created_then_searched_without_a_read_roundtrip() {
+        let directory = tempdir().unwrap();
+        let apply = crate::tool::apply_patch::ApplyPatchTool::new()
+            .with_allowed_root(directory.path().to_path_buf());
+        apply
+            .execute(json!({
+                "path":"nested/new.rs",
+                "mode":"create",
+                "patch":"pub fn first_use_marker() {}\n"
+            }))
+            .await
+            .expect("create fresh file without reading it first");
+        let grep = GrepTool::new().with_allowed_root(directory.path().to_path_buf());
+        let output = grep
+            .execute(json!({"pattern":"first_use_marker", "path":"nested"}))
+            .await
+            .expect("search fresh file");
+        assert!(output.contains("nested/new.rs:1:pub fn first_use_marker() {}"));
+        assert!(!output.contains("nested/new.rs: /"));
     }
 
     #[test]

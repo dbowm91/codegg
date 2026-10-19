@@ -133,6 +133,36 @@ impl WorkspacePathPolicy {
             allowed_write_roots: Arc::from(write.into_boxed_slice()),
         })
     }
+
+    /// Content-addressed identity/revision for this immutable path policy.
+    /// It is derived only from the effective trusted policy roots, never
+    /// from a session, model argument, or caller supplied identifier.
+    pub fn authority_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut roots =
+            Vec::with_capacity(self.allowed_read_roots.len() + self.allowed_write_roots.len() + 1);
+        roots.push(("canonical", self.canonical_root.as_path()));
+        roots.extend(
+            self.allowed_read_roots
+                .iter()
+                .map(|path| ("read", path.as_path())),
+        );
+        roots.extend(
+            self.allowed_write_roots
+                .iter()
+                .map(|path| ("write", path.as_path())),
+        );
+        roots.sort_by(|left, right| left.cmp(right));
+        let mut hasher = Sha256::new();
+        for (kind, path) in roots {
+            hasher.update(kind.as_bytes());
+            hasher.update([0]);
+            hasher.update(path.to_string_lossy().as_bytes());
+            hasher.update([0]);
+        }
+        format!("sha256:{:x}", hasher.finalize())
+    }
 }
 
 /// A versioned, immutable snapshot of a workspace's resolved
@@ -732,6 +762,34 @@ impl WorkspaceServiceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_policy_fingerprint_tracks_effective_read_write_roots() {
+        let root = PathBuf::from("/workspace");
+        let baseline = WorkspacePathPolicy {
+            canonical_root: root.clone(),
+            allowed_read_roots: Arc::from([root.clone()]),
+            allowed_write_roots: Arc::from([root.clone()]),
+        };
+        let same_policy = WorkspacePathPolicy {
+            canonical_root: root.clone(),
+            allowed_read_roots: Arc::from([root.clone()]),
+            allowed_write_roots: Arc::from([root.clone()]),
+        };
+        let widened = WorkspacePathPolicy {
+            canonical_root: root.clone(),
+            allowed_read_roots: Arc::from([root.clone(), PathBuf::from("/shared/read")]),
+            allowed_write_roots: Arc::from([root]),
+        };
+        assert_eq!(
+            baseline.authority_fingerprint(),
+            same_policy.authority_fingerprint()
+        );
+        assert_ne!(
+            baseline.authority_fingerprint(),
+            widened.authority_fingerprint()
+        );
+    }
 
     async fn fresh_registry() -> (
         tempfile::TempDir,

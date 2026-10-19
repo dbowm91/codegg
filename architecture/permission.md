@@ -627,6 +627,13 @@ a constrained snapshot. Typed Git mutation executors also retain the accepted
 context while their own Git policy remains the capability authority. The
 context records authorization inputs; it does not claim every downstream
 effect was observed or contained.
+
+For brokered calls, the immutable workspace path policy is fingerprinted from
+its trusted canonical, read, and write roots and carried with the accepted
+permission decision through each broker attempt. The broker rejects a
+changed policy identity or revision. Missing policy, workspace, decision, or
+permission revision data fails closed; identity strings and audit correlation
+IDs are not used as substitute authority.
 **M003 command outcome observability.** The command execution event correlates
 the permission receipt and decision source with the requested profile, safe
 route label, advisory risk level, and actual obtained filesystem/network

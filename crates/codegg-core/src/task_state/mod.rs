@@ -531,15 +531,56 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_in_progress_rejected() {
+    fn explicit_todo_allows_parallel_in_progress_items_by_default() {
         let mut state = TodoState::new();
         let policy = make_policy();
+        assert!(!policy.require_single_in_progress);
         let items = vec![
             make_item("1", "A", TodoStatus::InProgress),
             make_item("2", "B", TodoStatus::InProgress),
         ];
-        let err = state.replace_from_model(items, &policy).unwrap_err();
+        state.replace_from_model(items, &policy).unwrap();
+        assert_eq!(state.items.len(), 2);
+        assert_eq!(state.revision, 1);
+    }
+
+    #[test]
+    fn explicit_todo_config_can_restore_single_in_progress_rule() {
+        let policy = TaskStatePolicy::explicit_todo().apply_config(
+            &crate::model_profile::types::TaskStatePolicyConfig {
+                require_single_in_progress: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(policy.require_single_in_progress);
+        assert!(TaskStatePolicy::guided_current_task().require_single_in_progress);
+    }
+
+    #[test]
+    fn strict_single_in_progress_rejection_preserves_previous_state() {
+        let mut state = TodoState::new();
+        let policy = make_policy();
+        state
+            .replace_from_model(
+                vec![make_item("old", "Existing", TodoStatus::InProgress)],
+                &policy,
+            )
+            .unwrap();
+        let revision = state.revision;
+        let mut strict = policy;
+        strict.require_single_in_progress = true;
+        let err = state
+            .replace_from_model(
+                vec![
+                    make_item("1", "A", TodoStatus::InProgress),
+                    make_item("2", "B", TodoStatus::InProgress),
+                ],
+                &strict,
+            )
+            .unwrap_err();
         assert!(matches!(err, TodoStateError::MultipleInProgress));
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.items[0].id, "old");
     }
 
     #[test]

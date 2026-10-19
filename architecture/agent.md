@@ -262,6 +262,15 @@ contaminate another turn's checkpoint because durability no longer
 drains the unscoped global event stream. `FileChanged` remains an
 observational UI signal (`src/tui/file_diff.rs`, `projection`).
 
+Regular calls from one provider response also share a batch-local semaphore.
+Admission has a separate 30-second bound and emits `queued`, `admitted`, and
+terminal phase telemetry with batch-local queue depth and effective
+parallelism. Each tool's execution timeout starts only after it receives a
+permit; an admission timeout explicitly says execution never started.
+Cancelling or dropping the owning batch drops pending acquires and their queue
+accounting. This semaphore is not daemon-wide or shared with subagents;
+process and durable work remain governed by their scheduler owners.
+
 Checkpoints reuse `SnapshotOptions` bounds and `is_safe_relative_path`
 validation; oversized/binary/symlink cases or malformed move args mark
 the batch non-restorable rather than storing a partial checkpoint.

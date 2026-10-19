@@ -67,6 +67,15 @@ does not spawn one eggsearch server process per turn). Concurrent tool
 calls share the daemon service's existing synchronization; no extra
 global lookup lock is taken per call.
 
+The runtime context does not carry a session workspace root. In pinned
+Eggsearch v0.4.3, `repo_search.include_local` selects local search against
+the sidecar's configured `[local].roots`; it does not bind those roots to
+the active CodeGG session. CodeGG must not describe such a result as
+attached-workspace coverage unless the configured roots have been verified
+for that workspace. Per-session workspace binding needs an explicit
+upstream request contract or session-scoped sidecar lifecycle; the current
+adapter does not synthesize a root from a model argument.
+
 ### Legacy State (`state.rs`) — deprecated compatibility
 
 Two process-global slots backed by `std::sync::RwLock<Option<...>>`
