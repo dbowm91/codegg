@@ -102,6 +102,7 @@ pub fn compose_turn_submit(input: TurnSubmitInput) -> Result<CoreRequest, Compos
         messages: input.messages,
         reasoning: None,
         human_shell_promotion_ids: Vec::new(),
+        max_model_tokens: None,
     })
 }
 

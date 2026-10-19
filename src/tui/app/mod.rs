@@ -3027,6 +3027,7 @@ impl App {
                 }
             },
             human_shell_promotion_ids: promotion_ids,
+            max_model_tokens: None,
         };
         use sha2::Digest;
         let request_bytes = serde_json::to_vec(&payload).unwrap_or_default();

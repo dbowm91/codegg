@@ -12,18 +12,38 @@ in their respective strata.
   peer board), S2 (same with factual peer observations), and S3 (same with
   observations and atomic task claims), where the condition is available and
   safe. S4 is excluded pending M005.
-- Freeze one delegated-worker ceiling `B` per task before its first trial and
-  use exactly that same `B` for every condition and repetition of that task.
-  `IM-1` uses `B = 24,000`, above the earlier S0 range of 14,784–14,921
-  reported tokens. `SI-1` uses `B = 1,400,000`, above the largest complete
-  prior S0–S3 aggregate of 1,033,105 worker tokens; a two-worker arm receives
-  700,000 per child. The task tool accepts up to 2,000,000 tokens so S0 can
-  receive this same aggregate ceiling. These ceilings are task-specific because the
-  already-observed workloads differ by more than an order of magnitude. New
-  contracts require a separate pilot and frozen ceiling before their
-  comparison begins. S0 receives `max_model_tokens = B`; S1/S2/S3 receive
-  `aggregate_model_tokens = B`. Coordinator and integration usage is
-  additional and must be counted separately and in all-in totals.
+- Freeze one total agent ceiling `B` per task before its first scored trial
+  and use exactly that same `B` for every condition and repetition. S0 runs
+  the single coding agent directly in the durable session with
+  `headless --max-model-tokens B`. S1/S2/S3 reserve `C = 300,000` tokens for
+  the parent coordinator and set the headless turn ceiling to `C`; their
+  delegated workers share `B - C` through `aggregate_model_tokens`. A
+  two-worker arm receives an equal split of `B - C`, with the deterministic
+  remainder assigned to the first request. Do not transfer unused coordinator
+  budget to workers or unused worker budget to the coordinator. The 300,000
+  coordinator reservation is fixed across task strata and was selected above
+  the 249,041 tokens observed in an uncapped setup trajectory; it is a ceiling,
+  not a target. Use one coordinator turn per scored trajectory: if its group
+  remains active when that turn reaches its ceiling, classify the trajectory
+  incomplete instead of submitting another coordinator turn and multiplying
+  the reserved budget.
+- `IM-1` uses `B = 700,000`: S0 receives 700,000; S1/S2/S3 reserve 300,000
+  for the coordinator and 400,000 for workers (200,000 per child).
+  `SI-1` uses `B = 1,400,000`: S0 receives 1,400,000; S1/S2/S3 reserve
+  300,000 for the coordinator and 1,100,000 for workers (550,000 per child).
+  These ceilings are task-specific because the observed workloads differ by
+  more than an order of magnitude. IM-2, SI-2, OA-1, and OA-2 remain unavailable
+  until evaluator files are frozen, their baseline failure is confirmed, and
+  a task-specific `B` is recorded here before provider trials begin.
+- Budgets are provider-reported input plus output tokens. The in-flight
+  provider response completes before each run can observe its usage and stop,
+  so record any per-run overrun and classify a trial whose all-agent total
+  exceeds `B` as over-budget; do not silently treat the requested ceiling as
+  actual consumption. The fixed allocations bound the nominal coordinator plus
+  worker budgets. Record each run's actual usage, cached tokens, and cost
+  availability; coordinator usage is part of the agent-token total. Human
+  integration time, evaluator/tool time, and resource cost remain separately
+  reported and are included in all-in comparisons.
 - Use three repetitions for each task and available condition. Counterbalance
   condition order by rotating S0/S1/S2/S3 left by repetition index (0, 1, 2),
   then omit conditions declared unavailable before trials.

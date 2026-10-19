@@ -763,6 +763,7 @@ fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
                 text: "Answer the question contained in the attached human-shell evidence.".into(),
                 plan_mode: app.agent_state.plan_mode,
                 human_shell_promotion_ids: vec![promotion_id.to_string()],
+                max_model_tokens: None,
             },
         );
         app.task_registry

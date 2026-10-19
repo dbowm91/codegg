@@ -400,6 +400,9 @@ enum Commands {
         /// Maximum time to wait for the turn to finish.
         #[arg(long, default_value_t = 1800)]
         timeout_secs: u64,
+        /// Optional cumulative input-plus-output model-token ceiling for the turn.
+        #[arg(long)]
+        max_model_tokens: Option<u64>,
         /// Emit a JSON result instead of streaming assistant text.
         #[arg(long)]
         json: bool,
@@ -1023,6 +1026,8 @@ mod cli_surface_tests {
             "fix the failing test",
             "--timeout-secs",
             "45",
+            "--max-model-tokens",
+            "12345",
             "--json",
         ])
         .expect("headless prompt parses");
@@ -1032,12 +1037,14 @@ mod cli_surface_tests {
                 prompt,
                 prompt_file,
                 timeout_secs,
+                max_model_tokens,
                 json,
             }) => {
                 assert_eq!(session, "session-123");
                 assert_eq!(prompt.as_deref(), Some("fix the failing test"));
                 assert_eq!(prompt_file, None);
                 assert_eq!(timeout_secs, 45);
+                assert_eq!(max_model_tokens, Some(12_345));
                 assert!(json);
             }
             other => panic!("unexpected command: {other:?}"),
@@ -1541,6 +1548,7 @@ async fn main() -> Result<(), AppError> {
                 prompt,
                 prompt_file,
                 timeout_secs,
+                max_model_tokens,
                 json,
             } => {
                 cmd_headless_run(
@@ -1548,6 +1556,7 @@ async fn main() -> Result<(), AppError> {
                     prompt.as_deref(),
                     prompt_file.as_deref(),
                     *timeout_secs,
+                    *max_model_tokens,
                     *json,
                     cli.core_endpoint.as_deref(),
                 )
@@ -2986,6 +2995,7 @@ async fn cmd_headless_run(
     prompt: Option<&str>,
     prompt_file: Option<&str>,
     timeout_secs: u64,
+    max_model_tokens: Option<u64>,
     json: bool,
     endpoint: Option<&str>,
 ) -> Result<(), AppError> {
@@ -3073,6 +3083,7 @@ async fn cmd_headless_run(
                 text: prompt_text,
                 plan_mode: false,
                 human_shell_promotion_ids: Vec::new(),
+                max_model_tokens,
             },
         ))
         .await?;

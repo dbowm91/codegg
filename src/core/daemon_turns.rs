@@ -100,8 +100,15 @@ impl CoreDaemon {
                 human_shell_promotion_ids,
                 plan_mode,
                 reasoning,
+                max_model_tokens,
                 ..
             } => {
+                if max_model_tokens.is_some_and(|budget| budget == 0 || budget > 2_000_000) {
+                    return Ok(CoreResponse::Error {
+                        code: "turn_model_token_budget_invalid".to_owned(),
+                        message: "max_model_tokens must be between 1 and 2000000".to_owned(),
+                    });
+                }
                 if let Some(store) = self.controller_store() {
                     match store.get_turn_receipt(request_id).await {
                         Ok(Some(receipt)) => {
@@ -730,6 +737,7 @@ impl CoreDaemon {
                     model,
                     messages_dto: messages,
                     plan_mode,
+                    max_model_tokens,
                     reasoning_override: reasoning,
                     config,
                     pool: self.pool.clone(),
@@ -808,6 +816,7 @@ impl CoreDaemon {
                 text,
                 plan_mode,
                 human_shell_promotion_ids,
+                max_model_tokens,
             } => {
                 if let Some(store) = self.controller_store() {
                     match store.get_turn_receipt(request_id).await {
@@ -854,6 +863,7 @@ impl CoreDaemon {
                         messages,
                         reasoning: None,
                         human_shell_promotion_ids,
+                        max_model_tokens,
                     },
                     request_id,
                     Some(submission_digest),
@@ -3037,6 +3047,7 @@ mod tests {
                 current_agent_idx: 0,
                 messages: vec![],
                 reasoning: None,
+                max_model_tokens: None,
             },
         )
     }

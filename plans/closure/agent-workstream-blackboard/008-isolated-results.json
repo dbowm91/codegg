@@ -1418,5 +1418,49 @@
       "/tmp/codegg-m008-trial-20261018-a/heavy-shared-a.log",
       "/tmp/codegg-m008-trial-20261018-a/heavy-shared-b.log"
     ]
+  },
+  "budget_cap_setup_2026_10_19": {
+    "evidence_kind": "uncapped-coordinator calibration trajectory; excluded from scored repeated comparisons",
+    "source_head": "76e263ce7b385715a7f6b56354f67af2c7530ff3",
+    "fixture_baseline_commit": "ff0c4e2dd1ae73dc8feeaf0d28dfd58d46950078",
+    "fixture": "plans/closure/agent-workstream-blackboard/008-fixture",
+    "condition": "S0 single child worker; coordinator was not capped",
+    "provider_model": "other:opencode_go/gpt-6-luna",
+    "child_run_id": "c9577c15-70a4-4c90-b963-41012201c57a",
+    "requested_child_max_model_tokens": 120000,
+    "child_actual_usage": {
+      "input_tokens": 129451,
+      "output_tokens": 2653,
+      "cached_tokens": 0,
+      "total_tokens": 132104,
+      "usage_rows": 10,
+      "overrun_tokens": 12104,
+      "reported_cost_usd": 0.0,
+      "cost_available": false,
+      "elapsed_seconds": 43.476
+    },
+    "coordinator_actual_usage": {
+      "input_tokens": 244452,
+      "output_tokens": 4589,
+      "cached_tokens": 0,
+      "total_tokens": 249041,
+      "usage_rows": 18,
+      "reported_cost_usd": 0.0,
+      "cost_available": false,
+      "elapsed_seconds": 106.057
+    },
+    "all_agent_tokens": 381145,
+    "child_result_commit": null,
+    "evaluator_candidate_commit": "78d0a81",
+    "integrated_candidate_commit": "0874661476b5dc7811ab2a5cc2dad404920dde2b",
+    "child_tests_reported": "none",
+    "evaluator_tests": {
+      "rust": "5 passed",
+      "python": "5 passed",
+      "cross_language_evaluator": "not applicable to this fixture"
+    },
+    "integration": "Evaluator manually committed the two implementation files and merged them into the isolated parent worktree; no conflict.",
+    "integration_wall_seconds": null,
+    "result": "Candidate passes both frozen suites after manual recovery, but the child exceeded its requested budget, produced no result commit, and the coordinator had no cap. Excluded from effectiveness and budget-matched denominators; used only to set the 300,000-token coordinator reservation and demonstrate the need to report actual usage."
   }
 }

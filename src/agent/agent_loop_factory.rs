@@ -9,6 +9,7 @@ use codegg_core::workspace::ExecutionContext;
 /// Input for building an agent loop. Localizes all the concrete types
 /// needed to construct an `AgentLoop` so callers don't need to know them.
 pub struct AgentLoopBuildInput {
+    pub max_model_tokens: Option<u64>,
     pub agents: Vec<crate::agent::Agent>,
     pub provider: Box<dyn crate::provider::Provider>,
     pub provider_registry: Arc<crate::provider::ProviderRegistry>,
@@ -89,6 +90,13 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.session_id,
     );
     agent_loop.set_turn_id(input.turn_id);
+    if let Some(max_model_tokens) = input.max_model_tokens {
+        let max_tokens = usize::try_from(max_model_tokens).unwrap_or(usize::MAX);
+        agent_loop.set_limits(crate::agent::r#loop::ExecutionLimits {
+            max_tokens,
+            ..Default::default()
+        });
+    }
     agent_loop.set_origin_principal(input.origin_principal);
     agent_loop.set_provider_registry(input.provider_registry);
     agent_loop.set_workspace_id(input.execution.workspace_id.clone());

@@ -1614,12 +1614,14 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             messages: Vec::new(),
             reasoning: None,
             human_shell_promotion_ids: Vec::new(),
+            max_model_tokens: None,
         },
         R::SessionPromptSubmit {
             session_id: String::new(),
             text: String::new(),
             plan_mode: false,
             human_shell_promotion_ids: Vec::new(),
+            max_model_tokens: None,
         },
         R::HumanShellPromotionStage {
             session_id: String::new(),

@@ -5913,16 +5913,16 @@ mod tests {
             );
         }
         // The bounded child tool-call cap, shared-scratch grant and richer
-        // spawn_many item schema were added after M003. Restore the frozen
-        // requests shape and description while asserting the live schema, so
-        // the historical receipt stays immutable and schema drift remains
-        // explicit.
+        // model-token budgets, shared-scratch grant and richer spawn_many item
+        // schema were added after M003. Restore the frozen requests shape and
+        // description while asserting the live schema, so the historical
+        // receipt stays immutable and schema drift remains explicit.
         let live_spawn_many_description = task_properties["requests"]["description"]
             .as_str()
             .expect("spawn_many requests description");
         assert_eq!(
             live_spawn_many_description,
-            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, model, allowed_paths, max_tool_calls, and explicitly granted shared_scratch.",
+            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, model, allowed_paths, max_tool_calls, max_model_tokens, and explicitly granted shared_scratch. Use aggregate_model_tokens to divide one total token ceiling across the requests.",
             "unexpected post-M003 spawn_many request description"
         );
         task_properties["requests"]["description"] = serde_json::json!(
@@ -5947,6 +5947,7 @@ mod tests {
             "model",
             "allowed_paths",
             "max_tool_calls",
+            "max_model_tokens",
             "shared_scratch",
         ] {
             assert!(
@@ -5957,6 +5958,14 @@ mod tests {
         assert!(
             task_properties.remove("max_tool_calls").is_some(),
             "expected post-M003 spawn max_tool_calls field"
+        );
+        assert!(
+            task_properties.remove("max_model_tokens").is_some(),
+            "expected post-M003 spawn max_model_tokens field"
+        );
+        assert!(
+            task_properties.remove("aggregate_model_tokens").is_some(),
+            "expected post-M003 spawn_many aggregate_model_tokens field"
         );
         task_properties["requests"]["items"] = serde_json::json!({"type": "object"});
         historical_schemas.insert("task".to_string(), historical_task_schema);

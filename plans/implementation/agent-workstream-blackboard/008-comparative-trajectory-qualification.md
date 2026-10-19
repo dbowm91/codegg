@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006/M007 and M011/M012 are closed. The frozen shared-interface fixture v1 now has a successful provider-backed S0, S1, S2, and S3 round at the same 128-call per-child cap. Both S2/S3 child pairs produced Git commits, passed their language suites, and passed the frozen integrated evaluator. This qualifies the mechanics and enables the next isolated strata; it does not establish an effectiveness advantage because the matched round is one sample per arm, S0 has one child while S1–S3 have two, and provider cost is unavailable. An overlapping Rust API S1 trial produced an expected commit conflict; both child additions integrated on the capable S0 result and passed all 11 Rust tests plus the frozen cross-language evaluator, while each child on the intentionally incomplete starter base could only pass its two new tests. A sequential dependent Rust API child passed all 13 workspace tests and the evaluator. The cold full-workspace Rust compile and serialized shared-target reuse check passed; resource results are recorded in the closure evidence. Continue the remaining strata and resource measurements. M005 remains independent; S4 shared-checkout execution is unavailable until M005 qualifies it. Do not emulate shared writes.
+Status: active — M006/M007 and M011/M012 are closed. Historical frozen shared-interface S0–S3 and overlapping/dependent API runs qualify coordination mechanics, not effectiveness. The repeated M008 matrix is now frozen with equal total agent-token ceilings per condition: S0 spends the ceiling in its coding turn; S1–S3 reserve a bounded coordinator allocation and divide the remainder across children. A headless per-turn token ceiling was added to support this. One calibration attempt produced a passing candidate only after evaluator recovery, exceeded its child cap, and left the coordinator uncapped; it is excluded from scored comparisons. Repeated, budget-matched trials across independent-module, shared-interface, and overlapping-API strata remain outstanding. Provider cost remains unavailable. M005 remains independent; S4 shared-checkout execution is unavailable until M005 qualifies it. Do not emulate shared writes.
 
 The per-run model-token ceiling and provider-usage journal are now implemented
 for the repeated comparison protocol. The existing S0–S3 results above used
@@ -526,3 +526,35 @@ for independent writer-path/native lifecycle qualification; shared-write S4 is
 unavailable. Registry audit: no downstream plan became newly eligible. M008
 remains active for the other task strata, repeated controlled comparisons, and
 broader resource measurements.
+
+### All-agent budget calibration and headless turn ceiling (2026-10-19)
+
+The initial repeated-budget setup exposed that an aggregate child ceiling alone
+does not bound S1/S2/S3 coordinators. A calibrated IM-1 attempt used a
+120,000-token child cap but no parent cap: the child consumed 132,104 tokens,
+the coordinator consumed 249,041, and the combined 381,145-token trajectory
+is excluded. The child changed both modules but did not commit or report test
+results. Evaluator recovery ran the frozen suites (Rust 5/5, Python 5/5), made
+a candidate commit, merged it without conflict, and reran both suites. Cost
+was unavailable, integration time was not measured, and this is not an
+autonomous-success or effectiveness observation. Full details are in
+`plans/closure/agent-workstream-blackboard/008-isolated-results.md` and `.json`.
+
+To cap root coordinator turns, `codegg headless` now accepts
+`--max-model-tokens` (1–2,000,000). The daemon carries the optional limit
+through `SessionPromptSubmit` and `TurnSubmit` into `ExecutionLimits`; absent
+limits remain omitted in serialized requests so existing submission digests
+remain stable. The active provider response completes before its usage can be
+checked, so actual usage can exceed the requested ceiling by an in-flight
+response. The CLI documents this. The protocol backward-compatibility test
+and local root `cargo check` pass; full current-head CI is pending.
+
+The frozen repeated protocol now compares a common all-agent ceiling `B` per
+trial. S0 gives `B` to its direct coding turn. S1/S2/S3 reserve `C = 300,000`
+for one coordinator turn and allocate `B - C` across delegated workers; unused
+allocation is not transferred, and a coordinator must not continue in a
+second turn. IM-1 uses `B = 700,000`; SI-1 uses `B = 1,400,000`. IM-2, SI-2,
+OA-1, and OA-2 remain unavailable until their frozen evaluators and budgets
+are added to `008-task-matrix-v1.md`. No repeated scored trial has yet run under
+this total-budget protocol. M005 remains separately gated by escaped-descendant
+writer evidence, and no downstream plan is newly unblocked.

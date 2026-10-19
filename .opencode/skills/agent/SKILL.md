@@ -198,14 +198,18 @@ absence of `src/agent/team.rs`, the sync registry entry points, and all
 three guard scripts plus all four `cargo test` targets. Claims without a
 traceable source were removed rather than guessed.
 
-For bounded comparative runs, durable children accept
-`max_model_tokens`, a cumulative provider-reported input-plus-output ceiling.
-`spawn_many` can instead take one `aggregate_model_tokens` ceiling; CodeGG
-divides it across the requests and rejects mixed per-child caps. Sum each
-child run's bounded `provider_usage` progress milestones for actual usage and
-record coordinator-session usage separately. Use `cost_available` to
-distinguish an estimated zero from an unknown price. The response that
-crosses a cap is retained as actual usage and classified as over budget.
+For bounded comparative runs, `codegg headless --max-model-tokens` caps the
+root turn's cumulative provider-reported input-plus-output usage. Durable
+children accept the same per-run `max_model_tokens`; `spawn_many` can instead
+take one `aggregate_model_tokens` ceiling, which CodeGG divides across the
+requests and rejects when mixed with per-child caps. To keep total agent
+budgets equal, allocate a fixed portion to the S1/S2/S3 coordinator and pass
+the remainder as the children’s aggregate ceiling; S0 receives the full total
+in its coding turn. Sum the coordinator session and each child run's actual
+usage; do not treat their ceilings as actual consumption. A provider response
+can cross a cap before usage is observed, so report overrun and classify totals
+above the common budget as over budget. Use `cost_available` to distinguish
+an estimated zero from an unknown price.
 
 Second pass (2026-10-06): re-verified the same surface and added the
 `## Orientation Facts` section (per-turn `AgentLoop` lifetime, 6

@@ -566,6 +566,17 @@ pub struct ExecutionLimits {
 }
 ```
 
+Daemon-composed `SessionPromptSubmit` may carry an optional
+`max_model_tokens`; `codegg headless --max-model-tokens` sets it for bounded
+automation and evaluation turns. The daemon applies it to this `AgentLoop`'s
+cumulative provider-reported input plus output tokens. It is per turn and does
+not persist to the session. Usage is known only after the active provider
+response completes, so the final response may take a run over its ceiling.
+Durable children have separate per-run ceilings (`max_model_tokens`) or one
+aggregate `spawn_many` ceiling (`aggregate_model_tokens`); callers comparing a
+coordinator and its children must divide one fixed total across those limits
+and compare recorded usage.
+
 ### ResolvedAgentExecutionProfile (`src/agent/definition.rs` — re-exported via `mod.rs`)
 
 Fully resolved execution profile for subagent tasks. Bundles agent,

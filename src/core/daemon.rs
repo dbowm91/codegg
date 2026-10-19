@@ -6371,6 +6371,7 @@ mod tests {
                 text: "hello".into(),
                 plan_mode: false,
                 human_shell_promotion_ids: vec![],
+                max_model_tokens: None,
                 model: "openai/gpt-4o".into(),
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
@@ -6595,6 +6596,7 @@ mod tests {
                         text,
                         plan_mode: false,
                         human_shell_promotion_ids: vec![],
+                        max_model_tokens: None,
                     },
                 ))
                 .await
@@ -6618,6 +6620,7 @@ mod tests {
                     text: "hello".into(),
                     plan_mode: false,
                     human_shell_promotion_ids: vec![],
+                    max_model_tokens: None,
                 },
             ))
             .await
@@ -6645,6 +6648,7 @@ mod tests {
                     text: "hello".into(),
                     plan_mode: false,
                     human_shell_promotion_ids: vec![],
+                    max_model_tokens: None,
                 },
             ))
             .await
@@ -6686,6 +6690,7 @@ mod tests {
                     text: "hello".into(),
                     plan_mode: false,
                     human_shell_promotion_ids: vec![],
+                    max_model_tokens: None,
                 },
             ))
             .await
@@ -6733,6 +6738,7 @@ mod tests {
                     text: "hello".into(),
                     plan_mode: false,
                     human_shell_promotion_ids: vec![],
+                    max_model_tokens: None,
                 },
             ))
             .await
@@ -6763,6 +6769,7 @@ mod tests {
                     text: "hello from prompt submit".into(),
                     plan_mode: false,
                     human_shell_promotion_ids: vec![],
+                    max_model_tokens: None,
                 },
             ))
             .await
@@ -6825,6 +6832,7 @@ mod tests {
                     text: "duplicate".into(),
                     plan_mode: false,
                     human_shell_promotion_ids: vec![],
+                    max_model_tokens: None,
                 },
             ))
             .await
@@ -7227,6 +7235,7 @@ mod tests {
                 text: "hello".into(),
                 plan_mode: false,
                 human_shell_promotion_ids: vec![promotion_id],
+                max_model_tokens: None,
                 model: "openai/gpt-4o".into(),
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,

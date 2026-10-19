@@ -478,3 +478,31 @@ trajectory. The machine-readable record contains log paths and the full run
 metadata. M005 remains active independently; S4 remains unavailable because
 writer quiescence is not qualified. No downstream plan is unblocked by these
 results.
+
+## 16. Token-cap and coordinator calibration (2026-10-19)
+
+Two setup trajectories were excluded before scoring. The first sent the IM-1
+retry-policy task to a project-summary fixture by mistake; the child made no
+changes. The corrected IM-1 S0 calibration used one isolated child with a
+120,000-token ceiling, but the root coordinator remained uncapped. The child
+used 129,451 input plus 2,653 output tokens (132,104 total, 12,104 over its
+ceiling) and stopped with modified Rust/Python sources but no result commit or
+test report. The coordinator used 244,452 input plus 4,589 output tokens
+(249,041 total). Reported cost was `0.0` for both runs, but no local pricing
+rate was available, so cost is unknown. All 381,145 observed agent tokens are
+preserved in `008-isolated-results.json`; this is calibration evidence, not a
+budget-matched effectiveness result.
+
+The evaluator ran both frozen suites on the child worktree (Rust 5/5, Python
+5/5), committed only the two implementation files, merged that candidate into
+the isolated parent worktree, and reran both suites successfully. The child
+had also created `.codegg/` and Rust `target/` artifacts; they were not
+included in the candidate commit. The agent did not commit or report its test
+results, and integration time was not instrumented, so this trajectory is not
+scored as autonomous success. It exposed the need to cap coordinator usage and
+measure each child's actual overrun. The repeated protocol now fixes an
+all-agent total `B` per condition: S0 spends it in the coding turn, while
+S1/S2/S3 reserve 300,000 tokens for one coordinator turn and allocate the
+remainder across the workers. Additional trials must use the frozen allocation
+in `008-task-matrix-v1.md`; these setup runs do not count toward their
+repetitions.

@@ -255,6 +255,7 @@ For a durable daemon session, use the prompt-only `headless` command:
 
 ```bash
 codegg headless --session <session-id> --prompt "Implement the requested change"
+codegg headless --session <session-id> --max-model-tokens 120000 --json --prompt-file task.txt
 cat task.txt | codegg headless --session <session-id> --json
 ```
 
@@ -266,7 +267,10 @@ completion. `--timeout-secs` bounds how long the client waits; a timeout does
 not cancel or discard the durable turn. This is the supported headless route
 for daemon-backed TaskTool coordination. It differs from `codegg exec`, which
 is a local one-shot loop and does not provide the daemon's durable TaskTool
-runtime.
+runtime. `--max-model-tokens` optionally caps cumulative provider-reported
+input plus output tokens for this turn (1–2,000,000). The active provider
+request completes before the limit is checked, so actual usage can exceed the
+ceiling by that request; compare recorded usage, not just the requested cap.
 
 ## MCP, ACP and plugins
 

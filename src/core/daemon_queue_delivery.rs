@@ -334,6 +334,7 @@ impl CoreDaemon {
                 messages,
                 reasoning: None,
                 human_shell_promotion_ids: Vec::new(),
+                max_model_tokens: None,
             },
             &submission_id,
             Some(digest),

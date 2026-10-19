@@ -2392,6 +2392,12 @@ pub enum CoreRequest {
         /// accepted turn. Empty for ordinary turns.
         #[serde(default)]
         human_shell_promotion_ids: Vec<String>,
+        /// Optional cumulative input-plus-output model-token ceiling for this
+        /// turn. Used by bounded headless evaluations; absent for ordinary
+        /// interactive submissions.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_model_tokens: Option<u64>,
     },
     /// M004 desktop session slice: minimal prompt submission. The
     /// daemon resolves model/agents/messages from durable session
@@ -2408,6 +2414,11 @@ pub enum CoreRequest {
         /// with this session-composed prompt.
         #[serde(default)]
         human_shell_promotion_ids: Vec<String>,
+        /// Optional cumulative input-plus-output model-token ceiling for this
+        /// daemon-composed turn.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_model_tokens: Option<u64>,
     },
     HumanShellPromotionStage {
         session_id: String,
@@ -5241,12 +5252,32 @@ mod tests {
         }"#;
         let request: CoreRequest =
             serde_json::from_str(json).expect("legacy TurnSubmit must decode");
+        let reencoded = serde_json::to_value(&request).expect("legacy request reencodes");
+        assert!(
+            reencoded.get("max_model_tokens").is_none(),
+            "an absent token budget stays absent for receipt digest compatibility"
+        );
         let CoreRequest::TurnSubmit { reasoning, .. } = request else {
             panic!("expected TurnSubmit");
         };
         assert!(
             reasoning.is_none(),
             "an omitted field must decode as inherit"
+        );
+    }
+
+    #[test]
+    fn legacy_session_prompt_submit_keeps_its_receipt_digest_shape() {
+        let json = r#"{
+            "type": "session_prompt_submit",
+            "session_id": "s", "text": "hi", "plan_mode": false
+        }"#;
+        let request: CoreRequest =
+            serde_json::from_str(json).expect("legacy prompt submit must decode");
+        let reencoded = serde_json::to_value(&request).expect("legacy request reencodes");
+        assert!(
+            reencoded.get("max_model_tokens").is_none(),
+            "an absent token budget stays absent for receipt digest compatibility"
         );
     }
 }

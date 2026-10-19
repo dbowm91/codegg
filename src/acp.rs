@@ -178,6 +178,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                             messages: vec![ProviderMessage::User { content: vec![ContentPart::Text { text }] }],
                             reasoning: None,
                             human_shell_promotion_ids: Vec::new(),
+                            max_model_tokens: None,
                         })).await?;
                         match response {
                             CoreResponse::Ack => active = Some(ActivePrompt {

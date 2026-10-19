@@ -97,6 +97,9 @@ pub struct TurnRunInput {
     pub messages_dto: Vec<codegg_protocol::dto::ProviderMessage>,
     /// Whether plan-mode is active for this turn.
     pub plan_mode: bool,
+    /// Optional cumulative model-token ceiling for this turn, including
+    /// provider-reported input and output tokens.
+    pub max_model_tokens: Option<u64>,
     /// Per-turn extended-thinking override chosen in the TUI.
     ///
     /// `None` inherits the agent / model-profile default, which is the
@@ -240,6 +243,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             model,
             messages_dto,
             plan_mode,
+            max_model_tokens,
             reasoning_override,
             config,
             pool,
@@ -878,6 +882,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             }
         }
         let agent_loop_input = AgentLoopBuildInput {
+            max_model_tokens,
             agents,
             provider,
             config,
