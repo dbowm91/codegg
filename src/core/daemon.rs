@@ -5011,12 +5011,13 @@ mod tests {
     #[tokio::test]
     async fn session_create_through_daemon() {
         let daemon = test_daemon().await;
-        let (project_id, workspace_id) =
-            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().to_string_lossy().into_owned();
+        let (project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".into(),
+                directory,
                 title: Some("Test".into()),
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
@@ -5134,12 +5135,13 @@ mod tests {
     #[tokio::test]
     async fn turn_submit_rejects_when_active() {
         let daemon = test_daemon().await;
-        let (project_id, workspace_id) =
-            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().to_string_lossy().into_owned();
+        let (project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".into(),
+                directory,
                 title: None,
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
