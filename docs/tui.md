@@ -313,6 +313,25 @@ That is deliberate: a caret sitting in a box you are not typing in is a lie
 about where your keystrokes go, and the `▸` marker on the panel is the
 honest one.
 
+### Moving the caret in `[NOR]` mode
+
+In `[NOR]` mode the caret is a thing you can move, and Helix's horizontal
+motions are the way to move it:
+
+| Key | What it does |
+|---|---|
+| `h` | Move the caret one character left |
+| `l` | Move the caret one character right |
+| `←` / `→` | The same two moves, for people who prefer the arrows |
+| `Home` / `End` | Jump to the start or the end of the line |
+
+`h` and `l` work in **both** layouts — the default one and the vim one — so
+they are there whichever you use.
+
+The word motions (`w`, `b`, `e`) are the composer's own and arrive with a
+later milestone. Until then they are **spoken for**: pressing `w` in `[NOR]`
+mode does nothing, deliberately, rather than quietly doing something else.
+
 ### Three keys moved to chords
 
 In `[NOR]` mode the composer now owns a set of letters for its own Helix-style

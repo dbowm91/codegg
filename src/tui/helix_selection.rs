@@ -327,266 +327,454 @@ mod tests {
         }
     }
 
-    fn state_at(row: u16, col: u16) -> SelectionState<Cell> {
-        SelectionState::new(Cell(row, col))
-    }
+    /// The composer's own point type.
+    ///
+    /// The rules below are the *shared* rules, so they have to hold for the
+    /// composer's point as well as the terminal's. A second implementation of
+    /// "what a selection covers" in the composer would be exactly the drift
+    /// this module exists to prevent, so the composer is checked against the
+    /// same rules rather than against a copy of them.
+    use crate::tui::composer_text::ComposerPoint;
+
+    /// The width of one line in the composer's test buffer.
+    ///
+    /// The rules ask about columns like 999 and 200, so the buffer has to be
+    /// wide enough for the questions to mean something.
+    const LINE_WIDTH: usize = 1000;
+
+    /// The stride between two lines' starts: the line's bytes and its newline.
+    const LINE_STRIDE: usize = LINE_WIDTH + 1;
 
     fn cell(row: u16, col: u16) -> Cell {
         Cell(row, col)
     }
 
-    #[test]
-    fn line_selection_covers_every_column_of_every_line_it_spans() {
-        let mut state = state_at(3, 7);
-        state.select_line();
-        let selection = state.selection().expect("selected");
-        assert_eq!(selection.line_range(), (3, 3));
-        assert!(selection.contains(cell(3, 0)));
-        assert!(selection.contains(cell(3, 7)));
-        assert!(selection.contains(cell(3, 200)));
-        assert!(!selection.contains(cell(2, 7)));
-        assert!(!selection.contains(cell(4, 7)));
+    /// A viewport cell moved down `rows` rows.
+    fn cell_shift(point: &Cell, rows: i32) -> Cell {
+        Cell((i32::from(point.0) + rows).max(0) as u16, point.1)
     }
 
-    #[test]
-    fn line_selection_ignores_the_cursor_column() {
-        let mut state = state_at(3, 0);
-        state.select_line();
-        let selection = state.selection().expect("selected");
-        // The anchor column is irrelevant in line mode; a reader landing on
-        // column 0 still gets the whole line.
-        assert!(selection.contains(cell(3, 41)));
+    /// A point in the composer's test buffer.
+    fn composer_point(line: u16, column: u16) -> ComposerPoint {
+        ComposerPoint::new(
+            usize::from(line) * LINE_STRIDE + usize::from(column),
+            usize::from(line),
+        )
     }
 
-    #[test]
-    fn repeated_line_select_grows_only_while_nothing_has_moved() {
-        let mut state = state_at(3, 7);
-        state.select_line();
-        assert!(state.line_select_extends());
-
-        state.grow_to(cell(4, 7));
-        assert_eq!(state.line_range(), Some((3, 4)));
-        assert!(state.line_select_extends());
-
-        // Any deliberate movement disarms growth, so the next `x` re-anchors
-        // instead of silently swallowing everything walked past.
-        state.move_to(cell(4, 0));
-        assert!(!state.line_select_extends());
-        assert_eq!(state.line_range(), Some((3, 4)));
+    /// A composer point moved down `rows` rows, keeping its column.
+    ///
+    /// A scroll of a text buffer moves the content, so the byte offset moves
+    /// with the line — which is why the composer's shift is not the same
+    /// arithmetic as the viewport's.
+    fn composer_shift(point: &ComposerPoint, rows: i32) -> ComposerPoint {
+        let line = (point.line as i32 + rows).max(0) as usize;
+        let column = point.offset - point.line * LINE_STRIDE;
+        ComposerPoint::new(line * LINE_STRIDE + column, line)
     }
 
-    #[test]
-    fn movement_does_not_extend_a_line_selection() {
-        let mut state = state_at(1, 0);
-        state.select_line();
-        state.move_to(cell(9, 0));
-        assert_eq!(
-            state.line_range(),
-            Some((1, 1)),
-            "a bare movement must not add lines to a line selection"
-        );
+    /// The rules, written once and checked against every surface that uses
+    /// them.
+    ///
+    /// Each rule takes the surface's two functions: how to build a point at a
+    /// line and column, and how to move a point down some rows. Everything
+    /// else — the points, the state, the modes — is the shared machine's.
+    mod rules {
+        use super::{SelectionMode, SelectionPoint, SelectionState};
+
+        /// The bounds a rule needs from a surface.
+        ///
+        /// The surface's `Line` **is** the point's line: the rules compare a
+        /// selection's line range against literals, so the two have to be the
+        /// same type rather than merely similar ones.
+        pub(super) trait Surface {
+            type Point: SelectionPoint<Line = Self::Line> + std::fmt::Debug + PartialEq;
+            type Line: Copy + Ord + std::fmt::Debug + PartialEq + From<u16>;
+
+            /// A point at `line` and `column`.
+            fn point(line: u16, column: u16) -> Self::Point;
+
+            /// The point moved down `rows` rows.
+            fn shift(point: &Self::Point, rows: i32) -> Self::Point;
+        }
+
+        pub(super) fn line_selection_covers_every_column_of_every_line_it_spans<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(3, 7));
+            state.select_line();
+            let selection = state.selection().expect("selected");
+            assert_eq!(selection.line_range(), (S::Line::from(3), S::Line::from(3)));
+            assert!(selection.contains(S::point(3, 0)));
+            assert!(selection.contains(S::point(3, 7)));
+            assert!(selection.contains(S::point(3, 200)));
+            assert!(!selection.contains(S::point(2, 7)));
+            assert!(!selection.contains(S::point(4, 7)));
+        }
+
+        pub(super) fn line_selection_ignores_the_cursor_column<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(3, 0));
+            state.select_line();
+            let selection = state.selection().expect("selected");
+            // The anchor column is irrelevant in line mode; a reader landing on
+            // column 0 still gets the whole line.
+            assert!(selection.contains(S::point(3, 41)));
+        }
+
+        pub(super) fn repeated_line_select_grows_only_while_nothing_has_moved<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(3, 7));
+            state.select_line();
+            assert!(state.line_select_extends());
+
+            state.grow_to(S::point(4, 7));
+            assert_eq!(
+                state.line_range(),
+                Some((S::Line::from(3), S::Line::from(4)))
+            );
+            assert!(state.line_select_extends());
+
+            // Any deliberate movement disarms growth, so the next `x` re-anchors
+            // instead of silently swallowing everything walked past.
+            state.move_to(S::point(4, 0));
+            assert!(!state.line_select_extends());
+            assert_eq!(
+                state.line_range(),
+                Some((S::Line::from(3), S::Line::from(4)))
+            );
+        }
+
+        pub(super) fn movement_does_not_extend_a_line_selection<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(1, 0));
+            state.select_line();
+            state.move_to(S::point(9, 0));
+            assert_eq!(
+                state.line_range(),
+                Some((S::Line::from(1), S::Line::from(1))),
+                "a bare movement must not add lines to a line selection"
+            );
+        }
+
+        pub(super) fn movement_extends_a_char_selection<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(1, 0));
+            state.select_char();
+            state.move_to(S::point(1, 4));
+            assert_eq!(state.span(), Some((S::point(1, 0), S::point(1, 4))));
+
+            state.move_to(S::point(3, 2));
+            assert_eq!(state.span(), Some((S::point(1, 0), S::point(3, 2))));
+        }
+
+        pub(super) fn char_selection_is_inclusive_at_both_ends<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(2, 3));
+            state.select_char();
+            state.move_to(S::point(2, 6));
+            let selection = state.selection().expect("selected");
+            assert!(selection.contains(S::point(2, 3)));
+            assert!(selection.contains(S::point(2, 6)));
+            assert!(!selection.contains(S::point(2, 2)));
+            assert!(!selection.contains(S::point(2, 7)));
+        }
+
+        pub(super) fn a_multi_line_char_selection_takes_whole_interior_lines<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(1, 4));
+            state.select_char();
+            state.move_to(S::point(3, 1));
+            let selection = state.selection().expect("selected");
+            // Start row keeps its tail, end row keeps its head, the row between is
+            // whole. A diagonal reading here would make a copied command unusable.
+            assert!(selection.contains(S::point(1, 4)));
+            assert!(selection.contains(S::point(1, 999)));
+            assert!(selection.contains(S::point(2, 0)));
+            assert!(selection.contains(S::point(2, 999)));
+            assert!(selection.contains(S::point(3, 0)));
+            assert!(selection.contains(S::point(3, 1)));
+            assert!(!selection.contains(S::point(3, 2)));
+            assert!(!selection.contains(S::point(1, 3)));
+        }
+
+        pub(super) fn a_backwards_char_selection_reads_the_same_as_a_forwards_one<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(4, 9));
+            state.select_char();
+            state.move_to(S::point(2, 1));
+            let selection = state.selection().expect("selected");
+            assert_eq!(selection.bounds(), (S::point(2, 1), S::point(4, 9)));
+            assert!(selection.contains(S::point(2, 1)));
+            assert!(selection.contains(S::point(4, 9)));
+        }
+
+        pub(super) fn v_toggles_character_mode_off<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(2, 2));
+            state.toggle_char();
+            assert_eq!(state.selection().map(|s| s.mode), Some(SelectionMode::Char));
+            state.toggle_char();
+            assert!(!state.is_selected());
+            // And back on, re-anchored at wherever the cursor is now.
+            state.toggle_char();
+            assert!(state
+                .selection()
+                .is_some_and(|s| s.anchor == S::point(2, 2)));
+        }
+
+        pub(super) fn v_after_x_re_anchors_at_the_cursor_in_character_mode<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(1, 0));
+            state.select_line();
+            state.grow_to(S::point(2, 0));
+            assert_eq!(
+                state.line_range(),
+                Some((S::Line::from(1), S::Line::from(2)))
+            );
+
+            state.move_to(S::point(1, 5));
+            state.toggle_char();
+            let selection = state.selection().expect("selected");
+            assert_eq!(selection.mode, SelectionMode::Char);
+            assert_eq!(selection.anchor, S::point(1, 5));
+            assert_eq!(selection.head, S::point(1, 5));
+            // …and movement now extends, which is the whole point of `x` then `v`.
+            state.move_to(S::point(2, 2));
+            assert_eq!(state.span(), Some((S::point(1, 5), S::point(2, 2))));
+        }
+
+        pub(super) fn x_after_v_re_anchors_at_the_cursor_as_a_whole_line<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(1, 2));
+            state.select_char();
+            state.move_to(S::point(2, 7));
+            state.select_line();
+            let selection = state.selection().expect("selected");
+            assert_eq!(selection.mode, SelectionMode::Line);
+            assert_eq!(selection.anchor, S::point(2, 7));
+            assert!(selection.contains(S::point(2, 0)));
+            assert!(selection.contains(S::point(2, 99)));
+            assert!(!selection.contains(S::point(1, 2)));
+        }
+
+        pub(super) fn deactivate_leaves_the_cursor_where_it_was<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(5, 5));
+            state.select_char();
+            state.move_to(S::point(6, 6));
+            state.deactivate();
+            assert!(!state.is_selected());
+            assert_eq!(state.cursor(), S::point(6, 6));
+        }
+
+        pub(super) fn translate_moves_the_cursor_anchor_and_head_together<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(3, 4));
+            state.select_char();
+            state.move_to(S::point(5, 6));
+            // Scrolling toward older output moves content down the viewport.
+            state.translate(|point| S::shift(&point, 2));
+            assert_eq!(state.cursor(), S::point(7, 6));
+            let selection = state.selection().expect("selected");
+            assert_eq!(selection.anchor, S::point(5, 4));
+            assert_eq!(selection.head, S::point(7, 6));
+        }
+
+        pub(super) fn translate_with_nothing_selected_still_moves_the_cursor<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(1, 1));
+            state.translate(|point| S::shift(&point, 3));
+            assert_eq!(state.cursor(), S::point(4, 1));
+            assert!(!state.is_selected());
+        }
+
+        pub(super) fn set_cursor_never_touches_the_selection<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(2, 2));
+            state.select_char();
+            state.move_to(S::point(4, 4));
+            state.set_cursor(S::point(0, 0));
+            assert_eq!(state.cursor(), S::point(0, 0));
+            assert_eq!(state.span(), Some((S::point(2, 2), S::point(4, 4))));
+        }
+
+        pub(super) fn a_line_selection_grows_downward_from_a_mid_screen_cursor<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(6, 3));
+            state.select_line();
+            assert!(state.line_select_extends());
+            state.grow_to(S::point(7, 3));
+            state.grow_to(S::point(8, 3));
+            assert_eq!(
+                state.line_range(),
+                Some((S::Line::from(6), S::Line::from(8)))
+            );
+            assert!(state
+                .selection()
+                .expect("selected")
+                .contains(S::point(8, 0)));
+        }
+
+        pub(super) fn repinning_after_a_scroll_extends_a_char_selection_to_the_new_row<
+            S: Surface,
+        >(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(2, 4));
+            state.select_char();
+            state.move_to(S::point(2, 9));
+            // Scrolling toward newer output moves the content up by one, taking the
+            // anchor and head with it.
+            state.translate(|point| S::shift(&point, -1));
+            assert_eq!(state.cursor(), S::point(1, 9));
+            // Re-pinning to the edge row the reader walked off puts the head there
+            // too, so the line just revealed is inside the selection — which now
+            // runs *upward*, with the head above the anchor.
+            state.repin_cursor(S::point(0, 9));
+            let selection = state.selection().expect("selected");
+            assert_eq!(selection.head, S::point(0, 9));
+            assert_eq!(selection.anchor, S::point(1, 4));
+            assert_eq!(selection.bounds(), (S::point(0, 9), S::point(1, 4)));
+            assert_eq!(selection.line_range(), (S::Line::from(0), S::Line::from(1)));
+            assert!(selection.contains(S::point(0, 9)));
+            assert!(selection.contains(S::point(1, 4)));
+        }
+
+        pub(super) fn repinning_after_a_scroll_does_not_extend_a_line_selection<S: Surface>(
+            _surface: &S,
+        ) {
+            let mut state = SelectionState::new(S::point(1, 0));
+            state.select_line();
+            // `select_line` anchors at the *cursor*; growth only moves the head. So
+            // the anchor is on row 1 and the head has been pushed to row 5.
+            state.grow_to(S::point(5, 0));
+            state.translate(|point| S::shift(&point, -1));
+            assert_eq!(
+                state.line_range(),
+                Some((S::Line::from(0), S::Line::from(4)))
+            );
+            state.repin_cursor(S::point(0, 0));
+            assert_eq!(
+                state.line_range(),
+                Some((S::Line::from(0), S::Line::from(4))),
+                "a line selection's head must not follow a scroll re-pin, or the \
+                 reader would select rows they never walked past"
+            );
+            assert_eq!(state.cursor(), S::point(0, 0));
+        }
+
+        pub(super) fn a_movement_disarms_growth_in_either_mode<S: Surface>(_surface: &S) {
+            let mut state = SelectionState::new(S::point(3, 0));
+            state.select_line();
+            assert!(state.line_select_extends());
+            state.move_to(S::point(3, 2));
+            assert!(!state.line_select_extends());
+
+            state.select_char();
+            state.move_to(S::point(3, 4));
+            let selection = state.selection().expect("selected");
+            assert!(!selection.growing, "growing is a line-mode flag only");
+        }
     }
 
-    #[test]
-    fn movement_extends_a_char_selection() {
-        let mut state = state_at(1, 0);
-        state.select_char();
-        state.move_to(cell(1, 4));
-        assert_eq!(state.span(), Some((cell(1, 0), cell(1, 4))));
+    /// The viewport cell, as a surface.
+    struct CellSurface;
 
-        state.move_to(cell(3, 2));
-        assert_eq!(state.span(), Some((cell(1, 0), cell(3, 2))));
+    impl rules::Surface for CellSurface {
+        type Point = Cell;
+        type Line = u16;
+
+        fn point(line: u16, column: u16) -> Cell {
+            cell(line, column)
+        }
+
+        fn shift(point: &Cell, rows: i32) -> Cell {
+            cell_shift(point, rows)
+        }
     }
 
-    #[test]
-    fn char_selection_is_inclusive_at_both_ends() {
-        let mut state = state_at(2, 3);
-        state.select_char();
-        state.move_to(cell(2, 6));
-        let selection = state.selection().expect("selected");
-        assert!(selection.contains(cell(2, 3)));
-        assert!(selection.contains(cell(2, 6)));
-        assert!(!selection.contains(cell(2, 2)));
-        assert!(!selection.contains(cell(2, 7)));
+    /// The composer's point, as a surface.
+    struct ComposerSurface;
+
+    impl rules::Surface for ComposerSurface {
+        type Point = ComposerPoint;
+        type Line = usize;
+
+        fn point(line: u16, column: u16) -> ComposerPoint {
+            composer_point(line, column)
+        }
+
+        fn shift(point: &ComposerPoint, rows: i32) -> ComposerPoint {
+            composer_shift(point, rows)
+        }
     }
 
-    #[test]
-    fn a_multi_line_char_selection_takes_whole_interior_lines() {
-        let mut state = state_at(1, 4);
-        state.select_char();
-        state.move_to(cell(3, 1));
-        let selection = state.selection().expect("selected");
-        // Start row keeps its tail, end row keeps its head, the row between is
-        // whole. A diagonal reading here would make a copied command unusable.
-        assert!(selection.contains(cell(1, 4)));
-        assert!(selection.contains(cell(1, 999)));
-        assert!(selection.contains(cell(2, 0)));
-        assert!(selection.contains(cell(2, 999)));
-        assert!(selection.contains(cell(3, 0)));
-        assert!(selection.contains(cell(3, 1)));
-        assert!(!selection.contains(cell(3, 2)));
-        assert!(!selection.contains(cell(1, 3)));
+    /// Check every rule against every surface.
+    ///
+    /// The rules are the shared machine's contract. A surface that claims to
+    /// use the machine has to satisfy them, and the cheapest way to prove that
+    /// is to run the same rules against it — not to write a second set of
+    /// tests that says the same thing in different words.
+    macro_rules! shared_rule_tests {
+        ($module:ident, $surface:expr, $($name:ident),* $(,)?) => {
+            mod $module {
+                use super::rules;
+
+                $(
+                    #[test]
+                    fn $name() {
+                        rules::$name(&$surface);
+                    }
+                )*
+            }
+        };
     }
 
-    #[test]
-    fn a_backwards_char_selection_reads_the_same_as_a_forwards_one() {
-        let mut state = state_at(4, 9);
-        state.select_char();
-        state.move_to(cell(2, 1));
-        let selection = state.selection().expect("selected");
-        assert_eq!(selection.bounds(), (cell(2, 1), cell(4, 9)));
-        assert!(selection.contains(cell(2, 1)));
-        assert!(selection.contains(cell(4, 9)));
-    }
+    shared_rule_tests!(
+        cell_surface,
+        super::CellSurface,
+        line_selection_covers_every_column_of_every_line_it_spans,
+        line_selection_ignores_the_cursor_column,
+        repeated_line_select_grows_only_while_nothing_has_moved,
+        movement_does_not_extend_a_line_selection,
+        movement_extends_a_char_selection,
+        char_selection_is_inclusive_at_both_ends,
+        a_multi_line_char_selection_takes_whole_interior_lines,
+        a_backwards_char_selection_reads_the_same_as_a_forwards_one,
+        v_toggles_character_mode_off,
+        v_after_x_re_anchors_at_the_cursor_in_character_mode,
+        x_after_v_re_anchors_at_the_cursor_as_a_whole_line,
+        deactivate_leaves_the_cursor_where_it_was,
+        translate_moves_the_cursor_anchor_and_head_together,
+        translate_with_nothing_selected_still_moves_the_cursor,
+        set_cursor_never_touches_the_selection,
+        a_line_selection_grows_downward_from_a_mid_screen_cursor,
+        repinning_after_a_scroll_extends_a_char_selection_to_the_new_row,
+        repinning_after_a_scroll_does_not_extend_a_line_selection,
+        a_movement_disarms_growth_in_either_mode,
+    );
 
-    #[test]
-    fn v_toggles_character_mode_off() {
-        let mut state = state_at(2, 2);
-        state.toggle_char();
-        assert_eq!(state.selection().map(|s| s.mode), Some(SelectionMode::Char));
-        state.toggle_char();
-        assert!(!state.is_selected());
-        // And back on, re-anchored at wherever the cursor is now.
-        state.toggle_char();
-        assert!(state.selection().is_some_and(|s| s.anchor == cell(2, 2)));
-    }
-
-    #[test]
-    fn v_after_x_re_anchors_at_the_cursor_in_character_mode() {
-        let mut state = state_at(1, 0);
-        state.select_line();
-        state.grow_to(cell(2, 0));
-        assert_eq!(state.line_range(), Some((1, 2)));
-
-        state.move_to(cell(1, 5));
-        state.toggle_char();
-        let selection = state.selection().expect("selected");
-        assert_eq!(selection.mode, SelectionMode::Char);
-        assert_eq!(selection.anchor, cell(1, 5));
-        assert_eq!(selection.head, cell(1, 5));
-        // …and movement now extends, which is the whole point of `x` then `v`.
-        state.move_to(cell(2, 2));
-        assert_eq!(state.span(), Some((cell(1, 5), cell(2, 2))));
-    }
-
-    #[test]
-    fn x_after_v_re_anchors_at_the_cursor_as_a_whole_line() {
-        let mut state = state_at(1, 2);
-        state.select_char();
-        state.move_to(cell(2, 7));
-        state.select_line();
-        let selection = state.selection().expect("selected");
-        assert_eq!(selection.mode, SelectionMode::Line);
-        assert_eq!(selection.anchor, cell(2, 7));
-        assert!(selection.contains(cell(2, 0)));
-        assert!(selection.contains(cell(2, 99)));
-        assert!(!selection.contains(cell(1, 2)));
-    }
-
-    #[test]
-    fn deactivate_leaves_the_cursor_where_it_was() {
-        let mut state = state_at(5, 5);
-        state.select_char();
-        state.move_to(cell(6, 6));
-        state.deactivate();
-        assert!(!state.is_selected());
-        assert_eq!(state.cursor(), cell(6, 6));
-    }
-
-    #[test]
-    fn translate_moves_the_cursor_anchor_and_head_together() {
-        let mut state = state_at(3, 4);
-        state.select_char();
-        state.move_to(cell(5, 6));
-        // Scrolling toward older output moves content down the viewport.
-        state.translate(|Cell(row, col)| Cell(row + 2, col));
-        assert_eq!(state.cursor(), cell(7, 6));
-        let selection = state.selection().expect("selected");
-        assert_eq!(selection.anchor, cell(5, 4));
-        assert_eq!(selection.head, cell(7, 6));
-    }
-
-    #[test]
-    fn translate_with_nothing_selected_still_moves_the_cursor() {
-        let mut state = state_at(1, 1);
-        state.translate(|Cell(row, col)| Cell(row + 3, col));
-        assert_eq!(state.cursor(), cell(4, 1));
-        assert!(!state.is_selected());
-    }
-
-    #[test]
-    fn set_cursor_never_touches_the_selection() {
-        let mut state = state_at(2, 2);
-        state.select_char();
-        state.move_to(cell(4, 4));
-        state.set_cursor(cell(0, 0));
-        assert_eq!(state.cursor(), cell(0, 0));
-        assert_eq!(state.span(), Some((cell(2, 2), cell(4, 4))));
-    }
-
-    #[test]
-    fn a_line_selection_grows_downward_from_a_mid_screen_cursor() {
-        let mut state = state_at(6, 3);
-        state.select_line();
-        assert!(state.line_select_extends());
-        state.grow_to(cell(7, 3));
-        state.grow_to(cell(8, 3));
-        assert_eq!(state.line_range(), Some((6, 8)));
-        assert!(state.selection().expect("selected").contains(cell(8, 0)));
-    }
-
-    #[test]
-    fn repinning_after_a_scroll_extends_a_char_selection_to_the_new_row() {
-        let mut state = state_at(2, 4);
-        state.select_char();
-        state.move_to(cell(2, 9));
-        // Scrolling toward newer output moves the content up by one, taking the
-        // anchor and head with it.
-        state.translate(|Cell(row, col)| Cell(row.saturating_sub(1), col));
-        assert_eq!(state.cursor(), cell(1, 9));
-        // Re-pinning to the edge row the reader walked off puts the head there
-        // too, so the line just revealed is inside the selection — which now
-        // runs *upward*, with the head above the anchor.
-        state.repin_cursor(cell(0, 9));
-        let selection = state.selection().expect("selected");
-        assert_eq!(selection.head, cell(0, 9));
-        assert_eq!(selection.anchor, cell(1, 4));
-        assert_eq!(selection.bounds(), (cell(0, 9), cell(1, 4)));
-        assert_eq!(selection.line_range(), (0, 1));
-        assert!(selection.contains(cell(0, 9)));
-        assert!(selection.contains(cell(1, 4)));
-    }
-
-    #[test]
-    fn repinning_after_a_scroll_does_not_extend_a_line_selection() {
-        let mut state = state_at(1, 0);
-        state.select_line();
-        // `select_line` anchors at the *cursor*; growth only moves the head. So
-        // the anchor is on row 1 and the head has been pushed to row 5.
-        state.grow_to(cell(5, 0));
-        state.translate(|Cell(row, col)| Cell(row.saturating_sub(1), col));
-        assert_eq!(state.line_range(), Some((0, 4)));
-        state.repin_cursor(cell(0, 0));
-        assert_eq!(
-            state.line_range(),
-            Some((0, 4)),
-            "a line selection's head must not follow a scroll re-pin, or the \
-             reader would select rows they never walked past"
-        );
-        assert_eq!(state.cursor(), cell(0, 0));
-    }
-
-    #[test]
-    fn a_movement_disarms_growth_in_either_mode() {
-        let mut state = state_at(3, 0);
-        state.select_line();
-        assert!(state.line_select_extends());
-        state.move_to(cell(3, 2));
-        assert!(!state.line_select_extends());
-
-        state.select_char();
-        state.move_to(cell(3, 4));
-        let selection = state.selection().expect("selected");
-        assert!(!selection.growing, "growing is a line-mode flag only");
-    }
+    shared_rule_tests!(
+        composer_surface,
+        super::ComposerSurface,
+        line_selection_covers_every_column_of_every_line_it_spans,
+        line_selection_ignores_the_cursor_column,
+        repeated_line_select_grows_only_while_nothing_has_moved,
+        movement_does_not_extend_a_line_selection,
+        movement_extends_a_char_selection,
+        char_selection_is_inclusive_at_both_ends,
+        a_multi_line_char_selection_takes_whole_interior_lines,
+        a_backwards_char_selection_reads_the_same_as_a_forwards_one,
+        v_toggles_character_mode_off,
+        v_after_x_re_anchors_at_the_cursor_in_character_mode,
+        x_after_v_re_anchors_at_the_cursor_as_a_whole_line,
+        deactivate_leaves_the_cursor_where_it_was,
+        translate_moves_the_cursor_anchor_and_head_together,
+        translate_with_nothing_selected_still_moves_the_cursor,
+        set_cursor_never_touches_the_selection,
+        a_line_selection_grows_downward_from_a_mid_screen_cursor,
+        repinning_after_a_scroll_extends_a_char_selection_to_the_new_row,
+        repinning_after_a_scroll_does_not_extend_a_line_selection,
+        a_movement_disarms_growth_in_either_mode,
+    );
 }

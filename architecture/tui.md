@@ -1775,6 +1775,15 @@ later milestone claims it, that milestone owns the re-spelling. `h` and `l`
 are not re-spelled: the existing actions already move the composer caret,
 which is exactly Helix `h` and `l`.
 
+That last exclusion rests on a **premise about the binding maps**, and a
+premise is only as good as the check on it. `h` and `l` were bound in the
+vim map and in no other, and `vim_mode` defaults to false — so in the
+default configuration the composer painted a caret that no letter could
+move. Both maps now bind them, and rule **G9** of
+`scripts/check_tui_composer_key_authority.py` fails if the two maps ever
+disagree about a caret motion: a caret motion is a Helix-parity capability,
+not a keymap flavour.
+
 `j` and `k` are the table's one **conditional** pair, and the condition is
 written on the entry rather than inferred. They are claimed only when the
 composer buffer has more than one line; on a single-line buffer they fall
@@ -1858,6 +1867,66 @@ is one module — but they do **not** share key ownership. Each surface owns
 its own keys, and each has its own guard: the editor's
 `check_tui_editor_key_authority.py` and the composer's
 `check_tui_composer_key_authority.py` are siblings, not one guard.
+
+#### The composer has a text model, and the word geometry is shared
+
+`src/tui/composer_text.rs` owns the composer's buffer: the text, the caret, the
+selection state, and a bounded undo history. `PromptWidget` renders it and
+keeps its public API, so the 183 call sites across the app that use the
+widget's accessors did not move. The model exists because the Helix verbs need
+three things the widget did not have: a **point type** that satisfies the
+shared selection contract, a **selection state** held by the shared state
+machine rather than by a second implementation of the growth rule, and a
+**history** to undo.
+
+The caret is the shared machine's cursor, not a copy of it. A surface that kept
+its own cursor next to the machine's would have two answers to "where is the
+caret", and the selection's growth rule would be applied to one of them.
+
+`ComposerPoint` is a byte offset paired with its line — the same shape as the
+editor's `EditorPoint`, and for the same reason: the shared selection contract
+separates the line from the point so whole-line selection can answer "which
+lines does this span" without knowing how wide a line is. The composer is a
+**peer** of the editor, not a subordinate of it, so it does not borrow the
+editor's type.
+
+**Word geometry is computed once, by a rule both surfaces use.**
+`src/tui/text_geometry.rs` owns a `TextSource` trait and the motions over it:
+`word_forward`, `word_backward`, `word_end`, `move_vertical`, and the
+boundary helpers. The editor adapts its `DocumentSnapshot`; the composer
+adapts its own `String`. The two are the same text with the same words
+because they are the same rule, and the module's own test asserts they agree
+byte for byte over every offset of the same text.
+
+The word **policy** is one function, `is_word_byte`: ASCII alphanumerics, `_`,
+and every byte `>= 0x80`. The last part is what makes a byte-at-a-time scan
+safe on multi-byte characters. The editor's private copy of that rule is
+deleted, so there is one.
+
+The interactive terminal panel has a **different** rule on purpose: it selects
+a whitespace-delimited *token* out of a build log, which is not the same thing
+as a word. That rule lives in the same module as `is_whitespace_token_char`,
+beside the word policy, so the tree has one module that owns word
+classification and the two rules are visibly different rather than accidentally
+divergent. The panel's geometry is in viewport columns and lands *on* the last
+character of a token, so migrating it to the shared geometry would change what
+it selects — a decision that is not this milestone's to make.
+
+**The undo history is bounded in depth and in bytes.** A depth bound alone
+still lets one enormous paste sit in the history; a byte bound alone still lets
+a thousand one-character edits sit in it. Eviction removes the oldest entry,
+which is only safe because a new edit clears the redo stack first — so an
+eviction can never strand a redo entry whose undo counterpart was thrown away.
+Replacing the composer's text or submitting it clears the history outright, so
+an undo cannot resurrect text the user has already sent.
+
+**The shared selection rules are checked against every surface that uses them.**
+`helix_selection.rs`'s test module holds the rules once, generic over a point
+type, and runs them against the terminal's viewport cell **and** the
+composer's point. A surface that claims to use the shared machine has to
+satisfy the same rules, and the cheapest way to prove that is to run the same
+rules against it rather than to write a second set of tests that says the same
+thing in different words.
 
 **The VT screen retains a bounded history, and the viewport is a controller
 concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to

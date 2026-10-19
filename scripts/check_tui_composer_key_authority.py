@@ -85,6 +85,26 @@ RESPELLED_ACTIONS = {
     "FocusPrompt": "i",
 }
 
+# The actions that move the composer caret.
+#
+# A caret motion is a **Helix-parity capability, not a keymap flavour**: `h`
+# and `l` are Helix's horizontal motions, and ADR-0042 and the composer plan
+# both record them as "no conflict — the existing action already moves the
+# composer caret, so the composer keeps it". That premise is only true if the
+# binding exists in **every** map the app can be configured with.
+#
+# It was not. The vim map has always bound `h` and `l`; the default map bound
+# neither, and `vim_mode` defaults to false. In the default configuration the
+# composer's Normal-mode caret therefore had no letter that could move it —
+# `h` and `l` were unbound, and `w`, `b` and `e` are claimed by the composer
+# and consumed as pending verbs. The composer showed a caret that no key
+# could move.
+#
+# G9 is the rule that keeps the premise true. It is derived from the maps
+# rather than from a list of letters, so it catches any caret motion that
+# drifts between the two configurations — not only `h` and `l`.
+CARET_MOTION_ACTIONS = {"Left", "Right", "Home", "End"}
+
 # The modifiers a claim can be reached under. A claim is a *bare* letter, so
 # NONE is always one of them; a capital claim adds SHIFT because terminals
 # disagree about whether a shifted key carries the modifier.
@@ -127,11 +147,25 @@ class Binding:
     char: str | None
     action: str
     line_no: int = 0
+    # The non-character key code (`KeyCode::Left`, `KeyCode::Home`, …).
+    #
+    # It used to be dropped, because the guard only reasoned about letters.
+    # Rule G9 reasons about **caret motions**, and the arrow and Home/End
+    # keys are caret motions whose identity the guard has to know: a binding
+    # with no character and no code cannot be told apart from any other
+    # non-character key, so a map that lost `Left` and kept `Home` would
+    # have looked identical to one that kept both.
+    code: str | None = None
 
     @property
     def is_bare_char(self) -> bool:
         """Whether Insert mode skips this binding because it is bare text."""
         return self.modifiers == ("NONE",) and self.char is not None
+
+    @property
+    def key_id(self) -> tuple[tuple[str, ...], str | None, str | None]:
+        """The binding's key identity: modifiers, character, and key code."""
+        return (self.modifiers, self.char, self.code)
 
 
 @dataclass
@@ -424,6 +458,7 @@ def _parse_insert(
                     char=None,
                     action=action or loop.code_items[code],
                     line_no=line_no,
+                    code=code,
                 )
                 for code in sorted(loop.code_items)
             ]
@@ -432,8 +467,17 @@ def _parse_insert(
             return []
         # A non-character key (Enter, Esc, Tab, arrows). The guard only
         # reasons about letters, but it must still know the binding exists so
-        # the `is_normal_only` cross-check is not fooled.
-        return [Binding(modifiers=modifiers, char=None, action=action, line_no=line_no)]
+        # the `is_normal_only` cross-check is not fooled, and G9 needs the key
+        # code itself to tell one caret motion from another.
+        return [
+            Binding(
+                modifiers=modifiers,
+                char=None,
+                action=action,
+                line_no=line_no,
+                code=name,
+            )
+        ]
 
     # A bare identifier as the key: the loop's key variable.
     bare_key = BARE_KEY.search(key_text)
@@ -450,6 +494,7 @@ def _parse_insert(
                 char=None,
                 action=action or loop.code_items[code],
                 line_no=line_no,
+                code=code,
             )
             for code in sorted(loop.code_items)
         ]
@@ -683,6 +728,47 @@ def check(parsed: Parsed) -> list[str]:
                             f"letter must stay ordinary text while composing"
                         )
 
+    # G9 — the two maps must agree on caret motions.
+    #
+    # The check is symmetric: a key bound to a caret motion in one map must
+    # be bound to the **same** action in the other. A caret motion that
+    # exists in only one configuration is a capability the user has or does
+    # not have depending on which keymap they picked, which is the defect
+    # this rule exists to prevent — the composer's `h`/`l` were bound in the
+    # vim map only, and the composer claim table relied on that binding
+    # being in every map.
+    #
+    # The rule is derived from the maps, not from a list of letters, so it
+    # holds for every caret motion and not only for the two this milestone
+    # happened to find.
+    for map_name, bindings in maps.items():
+        other_name = "vim" if map_name == "default" else "default"
+        other_bindings = maps[other_name]
+        for binding in [b for b in bindings if b.action in CARET_MOTION_ACTIONS]:
+            key_text = (
+                repr(binding.char)
+                if binding.char is not None
+                else f"KeyCode::{binding.code}"
+            )
+            matches = [b for b in other_bindings if b.key_id == binding.key_id]
+            if not matches:
+                findings.append(
+                    f"the {map_name} map binds {key_text} under "
+                    f"{'+'.join(binding.modifiers)} to {binding.action} "
+                    f"(input.rs:{binding.line_no}), and the {other_name} map does "
+                    f"not bind that key at all; a caret motion is a Helix-parity "
+                    f"capability, not a keymap flavour, and the composer must not "
+                    f"lose it in one configuration"
+                )
+            elif matches[0].action != binding.action:
+                findings.append(
+                    f"the {map_name} map binds {key_text} under "
+                    f"{'+'.join(binding.modifiers)} to {binding.action} "
+                    f"(input.rs:{binding.line_no}), and the {other_name} map binds "
+                    f"the same key to {matches[0].action}; the two maps must agree "
+                    f"on a caret motion"
+                )
+
     return findings
 
 
@@ -702,8 +788,10 @@ def _claim(key: str, **overrides) -> Claim:
     return Claim(**base)  # type: ignore[arg-type]
 
 
-def _binding(mods: tuple[str, ...], char: str | None, action: str) -> Binding:
-    return Binding(modifiers=mods, char=char, action=action, line_no=1)
+def _binding(
+    mods: tuple[str, ...], char: str | None, action: str, code: str | None = None
+) -> Binding:
+    return Binding(modifiers=mods, char=char, action=action, line_no=1, code=code)
 
 
 def _baseline(**overrides) -> Parsed:
@@ -873,6 +961,70 @@ def self_test() -> int:
         "ordinary text while composing",
     )
 
+    # G9 — a caret motion that exists in only one map. This is the exact
+    # shape of the defect this rule was written for: `h` and `l` moved the
+    # composer caret in the vim map and in no other map.
+    expect(
+        "a caret motion bound in the vim map only",
+        _baseline(
+            default_map=[
+                _binding(("NONE",), "x", "ToggleAgentRun"),
+                _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
+                _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
+            ],
+            vim_map=[
+                _binding(("NONE",), "h", "Left"),
+                _binding(("NONE",), "x", "ToggleAgentRun"),
+                _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
+                _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
+            ],
+        ),
+        "does not bind that key at all",
+    )
+
+    # G9 — the same key bound to a different action in the two maps.
+    expect(
+        "the same caret key bound to a different action in the two maps",
+        _baseline(
+            default_map=[
+                _binding(("NONE",), "h", "Left"),
+                _binding(("NONE",), "x", "ToggleAgentRun"),
+                _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
+                _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
+            ],
+            vim_map=[
+                _binding(("NONE",), "h", "Right"),
+                _binding(("NONE",), "x", "ToggleAgentRun"),
+                _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
+                _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
+            ],
+        ),
+        "the two maps must agree",
+    )
+
+    # G9 — a non-character caret key (the arrow) is compared by its key code,
+    # not by its action alone: a map that kept `Home` and lost `Left` must
+    # not look identical to one that kept both.
+    expect(
+        "an arrow caret motion bound in the vim map only",
+        _baseline(
+            default_map=[
+                _binding(("NONE",), None, "Home", code="Home"),
+                _binding(("NONE",), "x", "ToggleAgentRun"),
+                _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
+                _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
+            ],
+            vim_map=[
+                _binding(("NONE",), None, "Home", code="Home"),
+                _binding(("NONE",), None, "Left", code="Left"),
+                _binding(("NONE",), "x", "ToggleAgentRun"),
+                _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
+                _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
+            ],
+        ),
+        "does not bind that key at all",
+    )
+
     # The real tree must be clean.
     real = parse_tree()
     expect_clean("the delivered tree", real)
@@ -922,7 +1074,8 @@ def main() -> int:
 
     print(
         "Composer key-ownership guard passed — the claim table is closed, "
-        "single-owner, and leaks no key to an app-level action"
+        "single-owner, leaks no key to an app-level action, and every caret "
+        "motion is bound the same way in both maps"
     )
     return 0
 

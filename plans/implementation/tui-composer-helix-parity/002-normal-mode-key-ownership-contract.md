@@ -103,6 +103,12 @@ assigns to this milestone.
 
   `h` and `l` are **not** conflicts: the existing actions already move the composer caret, which
   is exactly Helix `h` and `l`.
+  > **Correction (C001, `plans/subsystems/tui-composer-helix-parity-corrective-addendum.md`).**
+  > The premise behind that sentence was checked against the vim map only. `h` and `l` were
+  > bound in `vim_bindings_internal()` and in no other map, and `vim_mode` defaults to false —
+  > so in the default configuration they were unbound, and the composer drew a caret that no
+  > letter could move. C001 binds both letters in the default map and adds guard rule G9. The
+  > sentence is now true in every map the app can be configured with.
 - **The letters that are free:** `e`, `b`, `v`, `o`, `u`, `U`, `p`, `w`, and the rest of the
   alphabet.
 - The app's key dispatch consults the binding map first, then the default map, and otherwise falls
@@ -155,6 +161,15 @@ assigns to this milestone.
 - **Unclaimed letters behave exactly as before.** A letter the composer does not claim must
   resolve to the same app action it resolves to today, in the same mode, with the same
   preconditions.
+  > **Deviation (C001, recorded).** The default map now binds `h` and `l` to the composer's
+  > caret motions, where they previously resolved to *no* action. Nothing is lost — the
+  > invariant protects an existing app action from being changed or taken, and these two
+  > letters had no action in the default map at all — but the change is real and is recorded
+  > here rather than absorbed. The premise the claim table rests on ("the existing action
+  > already moves the composer caret") was true in the vim map only, and a claim table that
+  > excludes a letter on a premise that does not hold everywhere is a table that leaves the
+  > user with a caret they cannot move. C001 makes the premise true in both maps and adds
+  > guard rule G9 to keep it true.
 - **No authority change.** Nothing here alters turn admission, tool authority, or what the daemon
   accepts.
 - **The single-cadence rule.** No timer, poll interval, or animation is introduced.
@@ -300,6 +315,10 @@ binding map, active only when the composer holds the keyboard and the resolved m
 - `g` is not in the initial claim set, so `GoToTop` keeps `g`. If a later milestone claims `g`,
   `GoToTop` is re-spelled then, and that milestone owns the change.
 - `h` and `l` are not re-spelled: the existing actions already move the composer caret.
+  > **Corrected in C001.** They were re-spelled by *omission*: the default map bound neither
+  > letter, so in the default configuration they reached nothing. C001 binds them in the default
+  > map rather than re-spelling them, because the capability was never meant to move — the
+  > composer's caret was simply unmovable by letter in one configuration.
 
 *Acceptance evidence.*
 

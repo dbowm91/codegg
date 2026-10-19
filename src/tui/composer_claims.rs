@@ -252,6 +252,14 @@ impl ComposerClaim {
 /// actions already move the composer caret, which is exactly Helix `h` and
 /// `l`.
 ///
+/// That last sentence is a **premise about the app's binding maps**, and a
+/// premise is only as good as the check on it. `h` and `l` were bound in the
+/// vim map and in no other, and `vim_mode` defaults to false — so in the
+/// default configuration the composer drew a caret that no letter could
+/// move. The letters are now bound in both maps, and
+/// `scripts/check_tui_composer_key_authority.py` rule G9 fails if the two
+/// maps ever disagree about a caret motion again.
+///
 /// `j` and `k` are the one conditional pair. They are claimed only when the
 /// composer buffer has more than one line; on a single-line buffer they fall
 /// through to transcript scroll, which is why their app-level binding

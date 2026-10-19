@@ -141,6 +141,12 @@ Repository evidence at baseline `61cbe9222`.
 and scroll offsets. It supports multi-line text. It has no selection, no undo history, and no
 yank register. Its public surface is insert, delete, move, and paste.
 
+> **Superseded by M003 (2026-10-19).** The composer has a model now:
+> `src/tui/composer_text.rs` holds the buffer, the caret, the selection state and a bounded
+> undo history, and `src/tui/text_geometry.rs` holds the word and line geometry the editor
+> shares with it. `PromptWidget` keeps its public surface — insert, delete, move and paste —
+> and renders the model. The paragraph above describes the baseline, not the current state.
+
 **The `focused` flag is not wired to anything.** `PromptWidget::blur()` has exactly one caller in
 the tree, and it is a test. No production path clears the flag, so the composer cannot currently
 express "I am not focused". Any milestone that must show no cursor when another surface holds the
@@ -164,6 +170,16 @@ the composer caret (through the app's `Left` / `Right` actions), so those two ar
 But `x` is the turn stop/resume action, `d` is open-diff in the vim map, `space` is help in both
 maps, `j` and `k` are transcript navigation, `g` is go-to-top, and `i` is focus-prompt. `e`, `b`,
 `v`, `o`, `u`, `U`, `p`, and `w` are unclaimed.
+
+> **Correction (C001, `plans/subsystems/tui-composer-helix-parity-corrective-addendum.md`).**
+> The paragraph above was wrong about the *default* map. `h` and `l` were bound in the vim map
+> and in no other, and `vim_mode` defaults to false — so the premise this survey rests on ("the
+> existing action already moves the composer caret") held in one configuration only, and the
+> composer drew a caret that no letter could move in the other. C001 binds both letters in the
+> default map and adds guard rule G9, which fails if the two maps ever disagree about a caret
+> motion. The survey's own text was careful about the keymap difference for `d` — "*in the vim
+> map*" — and simply did not apply that care to `h` and `l`. The corrected fact is now true in
+> both maps; the baseline it describes was not.
 
 `space` is the one that changed its standing. Help keeps `space` — ADR-0042's amendment
 rejected re-spelling it — and the copy gesture became the **second step** of that chord rather
@@ -330,6 +346,12 @@ the one exception recorded below.
   cannot take them back.
 - `h` and `l` still move the composer caret, and `j`/`k` still scroll the transcript while the
   composer buffer is a single line.
+  > **Correction (C001).** This exit condition was **not met** when M002 closed: `h` and `l`
+  > moved the composer caret in the vim map only, and `vim_mode` defaults to false, so the
+  > default configuration had a caret no letter could move. M002's closure matrix had no
+  > acceptance-criterion row for this condition, which is why it closed green. C001 binds both
+  > letters in the default map and makes the two maps' agreement a guarded invariant (rule G9).
+  > The condition now holds in every configuration the app can be configured with.
 - A claimed uppercase letter is reachable in both the shifted and the unshifted encoding.
 - Every letter in the claim set is still typed as text in Insert mode, in both keymaps.
 
@@ -341,6 +363,11 @@ the one exception recorded below.
 that is shared with the editor rather than reimplemented.
 
 **Dependencies.** None hard. Soft on M001.
+
+**Status.** **Closed** 2026-10-19 — `plans/closure/tui-composer-helix-parity/003-status.md`. The
+composer has a model (`src/tui/composer_text.rs`), the word geometry is shared with the editor
+(`src/tui/text_geometry.rs`), and the shared selection rules now run against the composer's
+point type as well as the terminal's.
 
 **Deliverable boundary.** A composer point type satisfying the shared selection trait; the
 composer's selection state; a bounded undo/redo edit log; word and line geometry expressed against
@@ -561,7 +588,7 @@ for clippy and the workspace suite. No `--all-features` sweep: it drags in the r
 |---|---|---|
 | D1 — Does the app's single `InputMode` axis become the composer's navigation mode, or does the composer get its own axis? | Decided in ADR-0042 (Option A), **accepted 2026-10-19** | Maintainers |
 | D2 — Which app-level chords are re-spelled, and to what? | ADR-0042 sets the rule and the conflict list; the implementing milestone owns the exact chords. Help is **not** re-spelled — the amendment keeps `space`. **Settled in M002**: `Ctrl+Alt+X` (stop/resume), `Ctrl+Alt+D` (open-diff), `Ctrl+Alt+E` (focus-prompt), in both maps. `Ctrl+Alt+I` is not deliverable — crossterm reports `ESC` + `0x09` as `Tab`+ALT — and the default map's bare `/` for focus-prompt was removed with the rest. | Maintainers, in M002 |
-| D3 — Is the blinking cursor the terminal's own cursor or an app-driven cadence? | Open. Constrained by I7 and the single-cadence rule. Recommended: the terminal's own cursor. | Maintainers, in M001 |
+| D3 — Is the blinking cursor the terminal's own cursor or an app-driven cadence? | **Settled in M001**, by invariant I7 rather than by a fresh choice: the terminal's own cursor. The M001 plan states the resolution ("The open decision D3 (blink source) is resolved by the constraint, not by the plan"), and the composer positions the terminal's cursor in Insert mode and paints a solid block in Normal mode. **Corrected in C001**, which found this row still open and owned by a milestone that had closed. Not reopened: an app-driven blink would need a second cadence, which I7 forbids, and the app does not redraw while idle, so a painted caret would freeze. | Maintainers, in M001 |
 | D4 — Is the composer's undo scoped to the prompt text, or to the wider composer state including slash commands and staged shell input? | Open. Recommended: prompt text only, matching the composer's existing buffer boundary. | Maintainers, in M003 |
 | D5 — Does the composer introduce a paste verb alone, or do the editor and terminal panel gain it too? | Open. Recommended: composer alone in this workstream, with a recorded follow-up for the other two, because the composer is a different buffer with a different boundary. | Maintainers, in M005 |
 
@@ -624,8 +651,8 @@ This workstream is complete when all of the following hold.
 |---|---|---|---|---|
 | M001 | **closed** | `plans/implementation/tui-composer-helix-parity/001-composer-keyboard-ownership-and-cursor-presence.md` | `plans/closure/tui-composer-helix-parity/001-status.md` | none |
 | M002 | **closed** | `plans/implementation/tui-composer-helix-parity/002-normal-mode-key-ownership-contract.md` | `plans/closure/tui-composer-helix-parity/002-status.md` | none |
-| M003 | **eligible for fresh planning** | — | — | none |
-| M004 | **not started** | — | — | M002, M003 |
+| M003 | **closed** | `plans/implementation/tui-composer-helix-parity/003-composer-text-model.md` | `plans/closure/tui-composer-helix-parity/003-status.md` | none |
+| M004 | **eligible for fresh planning** | — | — | none — M002 and M003 are both closed |
 | M005 | **not started** | — | — | M004, M003 |
 | M006 | **not started** | — | — | M005, M003 |
 | M007 | **not started** | — | — | M004, M005, M006 |

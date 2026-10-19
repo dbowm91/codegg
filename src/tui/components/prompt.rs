@@ -29,8 +29,13 @@ pub enum ComposerCursor {
 }
 
 pub struct PromptWidget {
-    pub text: String,
-    pub cursor: usize,
+    /// The composer's text model: the buffer, the caret, the selection, and
+    /// the bounded undo history.
+    ///
+    /// The model owns the buffer so there is exactly one answer to "what is
+    /// in the composer" and "where is the caret". The widget owns the
+    /// *presentation* around it.
+    buffer: super::super::composer_text::ComposerText,
     /// How the composer draws its caret. Set by the app's render layer from
     /// the derived keyboard-ownership fact, never stored as an independent
     /// "is focused" flag — a stored copy can disagree with the badge, which
@@ -51,8 +56,7 @@ pub struct PromptWidget {
 impl PromptWidget {
     pub fn new(theme: Arc<Theme>) -> Self {
         Self {
-            text: String::new(),
-            cursor: 0,
+            buffer: super::super::composer_text::ComposerText::new(),
             cursor_style: ComposerCursor::None,
             theme,
             prefix: Span::raw("❯ "),
@@ -103,169 +107,115 @@ impl PromptWidget {
     }
 
     pub fn get_text(&self) -> String {
-        self.text.clone()
+        self.buffer.text().to_string()
     }
 
     pub fn set_text(&mut self, text: String) {
-        self.text = text;
-        self.cursor = self.text.len();
+        self.buffer.set_text(text);
         self.horizontal_scroll = 0;
     }
 
     pub fn set_cursor(&mut self, pos: usize) {
-        let pos = pos.min(self.text.len());
-        self.cursor = if self.text.is_char_boundary(pos) {
-            pos
-        } else {
-            self.text
-                .char_indices()
-                .map(|(boundary, _)| boundary)
-                .take_while(|&boundary| boundary < pos)
-                .last()
-                .unwrap_or(0)
-        };
+        self.buffer.set_caret(pos);
     }
 
     /// Place the cursor at a display column on a logical prompt line.
     ///
-    /// Mouse coordinates are cell-based while `cursor` is a UTF-8 byte
+    /// Mouse coordinates are cell-based while the caret is a UTF-8 byte
     /// offset. Converting here keeps wide and multibyte characters from
     /// leaving the cursor inside a code point and also makes multiline mouse
     /// placement behave like keyboard navigation.
     pub fn set_cursor_at_column(&mut self, line_index: usize, column: usize) {
+        let text = self.buffer.text();
         let mut line_start = 0;
-        for (current_line, line) in self.text.split('\n').enumerate() {
+        for (current_line, line) in text.split('\n').enumerate() {
             if current_line == line_index {
                 let mut display_column: usize = 0;
                 for (byte_offset, ch) in line.char_indices() {
                     let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
                     if column < display_column.saturating_add(width) {
-                        self.cursor = line_start + byte_offset;
+                        self.buffer.set_caret(line_start + byte_offset);
                         return;
                     }
                     display_column = display_column.saturating_add(width);
                 }
-                self.cursor = line_start + line.len();
+                self.buffer.set_caret(line_start + line.len());
                 return;
             }
             line_start += line.len() + 1;
         }
-        self.cursor = self.text.len();
+        self.buffer.set_caret(text.len());
     }
 
     pub fn cursor_pos(&self) -> usize {
-        self.cursor
+        self.buffer.caret()
     }
 
     pub fn clear(&mut self) {
-        self.text.clear();
-        self.cursor = 0;
+        self.buffer.clear();
         self.scroll = 0;
         self.horizontal_scroll = 0;
     }
 
     pub fn insert_char(&mut self, c: char) {
-        self.text.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
+        let mut encoded = [0u8; 4];
+        let text = c.encode_utf8(&mut encoded);
+        self.buffer.insert(text);
     }
 
     pub fn insert_newline(&mut self) {
-        self.text.insert(self.cursor, '\n');
-        self.cursor += 1;
+        self.buffer.insert_newline();
     }
 
     pub fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let before = &self.text[..self.cursor];
-        let ch_len = before
-            .chars()
-            .next_back()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        let new_cursor = self.cursor - ch_len;
-        self.text.drain(new_cursor..self.cursor);
-        self.cursor = new_cursor;
+        self.buffer.backspace();
     }
 
     pub fn delete(&mut self) {
-        if self.cursor >= self.text.len() {
-            return;
-        }
-        let ch_len = self.text[self.cursor..]
-            .chars()
-            .next()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        self.text.drain(self.cursor..self.cursor + ch_len);
+        self.buffer.delete_forward();
     }
 
     pub fn cursor_left(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let before = &self.text[..self.cursor];
-        let ch_len = before
-            .chars()
-            .next_back()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        self.cursor -= ch_len;
+        self.buffer.move_left();
     }
 
     pub fn cursor_right(&mut self) {
-        if self.cursor >= self.text.len() {
-            return;
-        }
-        let ch_len = self.text[self.cursor..]
-            .chars()
-            .next()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        self.cursor += ch_len;
+        self.buffer.move_right();
     }
 
     pub fn cursor_home(&mut self) {
-        self.cursor = 0;
+        self.buffer.move_home();
     }
 
     pub fn cursor_end(&mut self) {
-        self.cursor = self.text.len();
+        self.buffer.move_end();
     }
 
     pub fn paste(&mut self, text: String) {
-        self.text.insert_str(self.cursor, &text);
-        self.cursor += text.len();
+        self.buffer.insert(&text);
     }
 
     pub fn num_lines(&self) -> usize {
-        if self.text.is_empty() {
-            1
-        } else {
-            let base_lines = self.text.lines().count();
-            if self.text.ends_with('\n') {
-                base_lines + 1
-            } else {
-                base_lines
-            }
-        }
+        self.buffer.text().split('\n').count()
     }
 
     pub fn cursor_line(&self) -> usize {
-        let before = &self.text[..self.cursor.min(self.text.len())];
-        before.chars().filter(|&c| c == '\n').count()
+        self.buffer.caret_line()
     }
 
     pub fn needed_height(&self, max_height: u16) -> u16 {
         let min_height: u16 = 3;
         let total_lines = self.num_lines() as u16;
-        let char_count_lines = if self.char_count.unwrap_or(self.text.len()) > 500 {
+        let char_count_lines = if self.char_count.unwrap_or(self.buffer.text().len()) > 500 {
             1
         } else {
             0
         };
-        let multiline_indicator = if self.text.contains('\n') { 1 } else { 0 };
+        let multiline_indicator = if self.buffer.text().contains('\n') {
+            1
+        } else {
+            0
+        };
         let total_needed = 1 + total_lines + char_count_lines + multiline_indicator;
         total_needed.clamp(min_height, max_height)
     }
@@ -327,7 +277,7 @@ impl PromptWidget {
             return;
         }
 
-        let before = &self.text[..self.cursor.min(self.text.len())];
+        let before = &self.buffer.text()[..self.buffer.caret().min(self.buffer.text().len())];
         let column = before
             .rsplit('\n')
             .next()
@@ -356,7 +306,7 @@ impl PromptWidget {
         if area.width == 0 || area.height == 0 {
             return None;
         }
-        let before = &self.text[..self.cursor.min(self.text.len())];
+        let before = &self.buffer.text()[..self.buffer.caret().min(self.buffer.text().len())];
         let line_idx = before.chars().filter(|&c| c == '\n').count();
         if line_idx < self.scroll {
             // The caret's line is above the visible window.
@@ -420,10 +370,10 @@ impl Widget for &PromptWidget {
         ));
 
         let text_lines: Vec<Line> = {
-            let text = if self.text.is_empty() {
+            let text = if self.buffer.text().is_empty() {
                 &self.placeholder
             } else {
-                &self.text
+                self.buffer.text()
             };
             text.split('\n')
                 .map(|l| {
@@ -436,7 +386,7 @@ impl Widget for &PromptWidget {
         };
         all_lines.extend(text_lines);
 
-        let char_count_to_show = self.char_count.unwrap_or(self.text.len());
+        let char_count_to_show = self.char_count.unwrap_or(self.buffer.text().len());
         if char_count_to_show > 500 {
             all_lines.push(Line::from(Span::styled(
                 format!("  [{char_count_to_show} chars]"),
@@ -444,7 +394,7 @@ impl Widget for &PromptWidget {
             )));
         }
 
-        if self.text.contains('\n') {
+        if self.buffer.text().contains('\n') {
             all_lines.push(Line::from(Span::styled(
                 "  (multiline)",
                 Style::default().fg(self.theme.muted),

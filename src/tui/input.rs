@@ -842,6 +842,25 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::NONE, KeyCode::Char('k')),
         InputAction::NavigateUp,
     );
+    // `h` and `l` move the composer caret, which is exactly Helix `h` and
+    // `l`. The vim map has always bound them; this map did not, and the
+    // asymmetry had teeth: ADR-0042 and the composer plan both record `h`
+    // and `l` as "no conflict — the existing action already moves the
+    // composer caret", so the composer claim table left them unclaimed on
+    // the strength of a premise that was only true in the vim map. In the
+    // default configuration the composer's Normal-mode caret therefore had
+    // no letter that could move it: `h` and `l` were unbound, and `w`, `b`
+    // and `e` are claimed by the composer and consumed as pending verbs.
+    //
+    // The binding is the same one the arrow keys already use, so `h`/`l`
+    // behave exactly like `Left`/`Right` — including in the surfaces that
+    // own the keyboard before the binding map is consulted. A caret motion
+    // is a Helix-parity capability rather than a keymap flavour, so it
+    // belongs in both maps; `scripts/check_tui_composer_key_authority.py`
+    // rule G9 fails if the two maps ever disagree about a caret motion
+    // again.
+    map.insert((KeyModifiers::NONE, KeyCode::Char('h')), InputAction::Left);
+    map.insert((KeyModifiers::NONE, KeyCode::Char('l')), InputAction::Right);
     map.insert(
         (KeyModifiers::NONE, KeyCode::Tab),
         InputAction::ToggleComposerMode,
