@@ -22,7 +22,10 @@ use codegg_protocol::document::DocumentScope;
 
 use crate::core::CoreClient;
 
-use super::editor::{EditorMode, EditorPoint, EditorPrefix, EditorUndoEntry, FindMotion, FindNote};
+use super::editor::{
+    EditorCommand, EditorMode, EditorPoint, EditorPrefix, EditorUndoEntry, FindMotion, FindNote,
+    ParagraphNote, SelectionMotion,
+};
 use super::helix_selection::Selection;
 
 struct CoreClientTransport(Arc<dyn CoreClient>);
@@ -57,15 +60,71 @@ pub struct TuiDocumentSession {
 pub struct TuiDocumentPresentation {
     /// Cursor position as a UTF-8 byte offset into the local replica.
     pub cursor_byte: usize,
-    /// The held Helix selection, or `None` when nothing is selected.
+    /// The last repeatable **selection** motion, for `Alt-.`.
+    ///
+    /// A second slot beside `last_find`, not a widening of it: `f x` records a
+    /// find with a `char` to scan for, and `C` records "put a cursor on the
+    /// next line". Widening `last_find` would mean a motion that is not a
+    /// find wearing a find's type, and `find_note` — which reports on the
+    /// *attempt* — would have to learn about motions it cannot describe.
+    ///
+    /// One slot, every motion overwrites it, exactly as Helix's single repeat
+    /// slot does. `note_motion` clears it, so `j` between two `C` presses
+    /// disarms the repeat and the gap is predictable rather than surprising.
+    pub last_selection_motion: Option<SelectionMotion>,
+    /// The last repeatable **unimpaired** motion, for `Alt-.`.
+    ///
+    /// Helix's keymap calls `Alt-.` "repeat last motion (`f`, `t`, `m`, `[` or
+    /// `]`)", so the unimpaired paragraph motions belong in the repeat path and
+    /// not only on their own keys.
+    ///
+    /// A third slot for the same reason [`last_selection_motion`](Self) is a
+    /// second one: `FindMotion` carries a `char` to scan for and
+    /// [`SelectionMotion`](Self) names one of M008's verbs, and neither can
+    /// describe "move to the next paragraph" without becoming a union of three
+    /// unrelated things. One slot, every motion overwrites it, exactly as
+    /// Helix's does — `note_motion` clears it, so `j` between two `]p` presses
+    /// disarms the repeat.
+    ///
+    /// The three slots are **mutually exclusive by construction**: whichever
+    /// recorder runs last clears the other two. `Alt-.` may therefore consult
+    /// them in any order without inventing a precedence between two motions
+    /// that were never both the last one.
+    pub last_unimpaired: Option<EditorCommand>,
+    /// Why the last unimpaired paragraph motion did not land, if it did not.
+    ///
+    /// The paragraph analogue of [`find_note`](Self::find_note), and it exists
+    /// for the same reason: `]p` at the last paragraph and `]p` on a buffer
+    /// whose scan hit its byte budget both leave the cursor exactly where it
+    /// was, and only one of them is a true "there is none".
+    ///
+    /// Written by [`editor::apply_motion`](super::editor::apply_motion) next to
+    /// the resolution that produced it, and lifted into the notice by the
+    /// command layer immediately after — so it describes exactly one keystroke
+    /// and cannot survive to be re-read as the answer to the next one.
+    pub paragraph_note: ParagraphNote,
+    /// The held Helix selections, in document order, or empty when nothing is
+    /// selected.
     ///
     /// Points are byte offsets paired with their line — see
     /// [`EditorPoint`](super::editor::EditorPoint). Stored as the shared
     /// [`Selection`] rather than a bare range so `v` stays a mode and `x` an
-    /// action here exactly as they are in `/terminal`; resolving it to a
-    /// range is [`editor::selection_range`](super::editor::selection_range)'s
+    /// action here exactly as they are in `/terminal`; resolving them to
+    /// ranges is [`editor::selection_ranges`](super::editor::selection_ranges)'s
     /// job, and only the effects consume a range.
-    pub selection: Option<Selection<EditorPoint>>,
+    ///
+    /// This is a *set*, not an optional one, because Helix selection is:
+    /// `d` over several selections must delete all of them in one gesture, and
+    /// that is undefined rather than merely unbound while there is room for
+    /// exactly one. [`primary_index`](Self::primary_index) names the member
+    /// every single-selection accessor resolves to.
+    pub selections: Vec<Selection<EditorPoint>>,
+    /// Index into [`selections`](Self::selections) of the distinguished member.
+    ///
+    /// Meaningless while the set is empty; the single-selection accessors on
+    /// the editor resolve the primary, which is why they keep answering for
+    /// "the" selection after this milestone replaced the optional one.
+    pub primary_index: usize,
     /// First visible line, zero-based. The hard-wrap viewport is one
     /// screen row per logical line.
     pub viewport_line: usize,
@@ -79,6 +138,21 @@ pub struct TuiDocumentPresentation {
     /// type for the grammar rule — one pending prefix, one terminal key, and
     /// a disarm whenever the thing it was aimed at changes.
     pub pending_prefix: EditorPrefix,
+    /// Byte column a vertical run is aiming for, or `None` when there is no
+    /// run in progress.
+    ///
+    /// Without it, `j` onto a short line and back up returns to the short
+    /// line's end column instead of where the run started — which is how a
+    /// reader scrolling a ragged file loses their place every time the file
+    /// narrows. It is a **byte** column, matching the editor's byte offsets,
+    /// and is clamped into the target line at use time so a column recorded
+    /// against older text can never place the cursor outside a line or inside
+    /// a multi-byte character.
+    ///
+    /// Not a flag on a grammar, and not a second source of truth: it is
+    /// rewritten by every motion through [`apply_motion`](super::editor::apply_motion)
+    /// in one step, so it cannot disagree with the cursor it describes.
+    pub desired_column: Option<usize>,
     /// The find-char motion `Alt-.` repeats, or `None` when there is none.
     ///
     /// Helix keeps one *motion* slot that every motion overwrites, so this
@@ -156,10 +230,11 @@ impl TuiDocumentPresentation {
     /// input box.
     pub fn reset_for_open(&mut self) {
         self.cursor_byte = 0;
-        self.selection = None;
+        self.clear_selections();
         self.viewport_line = 0;
         self.viewport_column = 0;
         self.mode = EditorMode::Normal;
+        self.desired_column = None;
         self.disarm_prefix();
         super::editor::clear_history(self);
         self.close_command_line();
@@ -181,6 +256,33 @@ impl TuiDocumentPresentation {
     /// the tree pane, and every reconciliation that rewrites the text.
     pub fn disarm_prefix(&mut self) {
         self.pending_prefix = EditorPrefix::Idle;
+    }
+
+    /// Drop every held selection, leaving the cursor where it is.
+    ///
+    /// The reset point for every place the set must not survive: opening a
+    /// document, leaving Insert, and every accepted edit. Kept as one
+    /// operation rather than two field writes because a set that kept its
+    /// members while losing `primary_index` would silently resolve every
+    /// primary-scoped accessor to a different member than the one it resolved
+    /// to a moment earlier.
+    pub fn clear_selections(&mut self) {
+        self.selections.clear();
+        self.primary_index = 0;
+    }
+
+    /// Put back a set recorded before an edit — undo and redo only.
+    ///
+    /// The recorded members address the **pre-edit** bytes, and undo/redo
+    /// restore exactly those bytes, so they need no re-clamping: the offsets
+    /// are correct again by the time this runs. Ordering and the primary are
+    /// re-derived through the shared normalizer so a restored set obeys the
+    /// same "document order, primary names a member" rule a live one does.
+    pub fn restore_selections(&mut self, selections: &[Selection<EditorPoint>]) {
+        let (selections, primary) =
+            super::helix_selection::normalize_set(selections.to_vec(), self.primary_index);
+        self.selections = selections;
+        self.primary_index = primary;
     }
 
     /// Forget the repeatable find and clear its disclosure.
@@ -576,7 +678,38 @@ mod tests {
         assert_eq!(presentation.mode, EditorMode::Normal);
         assert_eq!(presentation.cursor_byte, 0);
         assert_eq!(presentation.viewport_line, 0);
-        assert!(presentation.selection.is_none());
+        assert!(presentation.selections.is_empty());
+        assert_eq!(presentation.primary_index, 0);
+    }
+
+    #[test]
+    fn a_reset_presentation_drops_a_carried_over_selection_set() {
+        use crate::tui::editor::EditorPoint;
+        use crate::tui::helix_selection::{Selection, SelectionMode};
+        let mut presentation = TuiDocumentPresentation {
+            selections: vec![
+                Selection {
+                    anchor: EditorPoint { byte: 0, line: 0 },
+                    head: EditorPoint { byte: 3, line: 0 },
+                    mode: SelectionMode::Char,
+                    growing: false,
+                },
+                Selection {
+                    anchor: EditorPoint { byte: 9, line: 1 },
+                    head: EditorPoint { byte: 12, line: 1 },
+                    mode: SelectionMode::Line,
+                    growing: true,
+                },
+            ],
+            primary_index: 1,
+            ..TuiDocumentPresentation::default()
+        };
+        presentation.reset_for_open();
+        // Not just empty: the primary index must reset with it. A set that
+        // kept `primary_index` pointing past the end would make every
+        // primary-scoped accessor answer about a member that no longer exists.
+        assert!(presentation.selections.is_empty());
+        assert_eq!(presentation.primary_index, 0);
     }
 
     #[test]

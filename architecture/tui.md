@@ -1220,9 +1220,29 @@ would otherwise silently re-point at whatever lands on those cells).
 `src/tui/helix_selection.rs` owns `SelectionState<P>` and nothing else: it does
 not know what a point *is*. The terminal instantiates `P = (u16, u16)` viewport
 cells; the editor would instantiate it with byte offsets, which is why the two
-surfaces can share the rules without sharing coordinates. Three consequences are
-load-bearing, and all three are rules rather than drawing details:
+surfaces can share the rules without sharing coordinates. Four consequences are
+load-bearing, and all four are rules rather than drawing details:
 
+- **The state is a *set* with a distinguished primary.** Helix selection is
+  several cursors, and a verb acts on all of them; `SelectionState` therefore
+  holds `Vec<Selection<P>>` plus a `primary` index rather than
+  `Option<Selection<P>>`. Roughly fifteen verbs (`C`, `;`, `S`, `%`, the regex
+  surface) are not merely unbound without a set — they are *undefined*.
+- **The single-selection API was kept, primary-scoped, rather than replaced.**
+  `selection()`, `is_selected()`, `span()`, and `line_range()` still have their
+  exact signatures and now answer for the primary. This is the load-bearing
+  choice: it is what lets the terminal panel and the editor keep running one
+  implementation of `v`/`x`/motion instead of forking one per surface, and it
+  is why `SelectionState` lost `Copy` (a `Vec` is heap-allocated) without
+  costing any caller. A caller that wants the whole set must say so with
+  `selections()`.
+- **Members are ordered by `bounds()`, and the primary travels with its
+  member.** `normalize_set` is the single place that sorts and re-clamps the
+  primary index, shared by the live rules and by a surface restoring a set from
+  storage or from an undo entry. Sorting by bounds rather than by insertion is
+  what makes "members are in document order" true, and carrying the primary
+  rather than pinning its index is what stops a sort from silently redefining
+  which member is primary.
 - **`v` is a mode, `x` is an action.** Character selection stores a head that
   follows the cursor, so a bare movement extends it. Line selection pins its
   head at arm time, so a bare movement only relocates the cursor and disarms
@@ -1236,6 +1256,42 @@ load-bearing, and all three are rules rather than drawing details:
   and head with the content, then `repin_cursor` puts the cursor back on the
   edge it walked off — following the head only in character mode, or walking
   past the top edge would quietly select rows the reader never crossed.
+
+**Set-wide verbs in the editor, and why they are one transaction.**
+`selection_ranges()` resolves every member to a byte range and then *merges*
+them. Merging is a correctness requirement rather than a tidy-up:
+`codegg_document`'s transaction validator rejects overlapping edits outright
+(`OverlappingEdits`), and `invert` only produces an exact inverse for edits
+that ascend and never overlap — so two cursors on the same word must collapse
+to one range before submission or the controller refuses the whole edit.
+`delete_ranges` returns a `RangeSetEdit` rather than `Option<EditorEdit>` so
+that "nothing to do" and "too many selections for one transaction" stay
+distinguishable: the second must be a visible refusal, because a *truncated*
+multi-cursor delete is exactly the state neither `u` nor redo can describe.
+The cap is `MAX_DOCUMENT_EDITS` (256) and it refuses rather than truncates.
+
+**An accepted edit consumes the selection set; undo restores it.** This is one
+rule, in the `submit_edit` funnel, rather than the previous rule where only
+`r`/`R`/`~`/`` ` ``/`p`/`P` cleared the selection and every other verb left a
+stale highlight over text that had moved. `EditorUndoEntry` carries
+`selections_before` beside `cursor_before` for the same reason it carries the
+cursor. For the same reason `apply_helix_verb` does **not** clear the selection
+when it reports a delete or yank effect: the geometry layer reports, the App
+layer consumes, and that is what lets the undo entry record the members the
+reader actually had.
+
+**Read-only refusal is narrow on purpose.** `apply_helix` gates `v` and `x` —
+the verbs that *ask* for growth — and reports the refusal with the existing
+`EditorNotice`. It deliberately does **not** gate `Moved`: extending a character
+selection is a side effect of navigation, and refusing it would take movement
+away from a reader looking at a file they cannot edit. Before this, `v` and `x`
+armed and grew selections on a read-only buffer in silence.
+
+**Terminal-panel parity is preserved by construction, not by exemption.** The
+panel holds `SelectionState<TerminalPoint>` and never more than one member, so
+`move_to` over a one-member set is identical to `move_to` over an `Option`, and
+its ~25 call sites keep compiling and keep meaning what they meant. The
+evidence is that the panel's selection tests pass unmodified.
 
 **Selection and navigation are claimed by the panel before the global map.**
 `classify_nav_key` answers `j/k/h/l` and arrows, `Ctrl+u`/`Ctrl+d`, `e`/`b`,
@@ -1252,6 +1308,192 @@ matches the global orientation — `Ctrl+u` toward older output, `Ctrl+d` toward
 newer. `space+y` is state, not a chord: legacy xterm encoding delivers `Space`
 and `y` as separate events, so `prefix_pending` remembers the first key and any
 second key other than `y` disarms it and is then handled normally.
+
+#### The selection-manipulation verbs (M008)
+
+Eighteen verbs resolve over a **set**. They split into three groups, and the
+split is what keeps them from growing into one large switch:
+
+| Group | Verbs | Lives in |
+|---|---|---|
+| Set algebra | `;`, `Alt-;`, `Alt-:`, `,`, `Alt-,`, `(`/`)` | `helix_selection` |
+| Ad-hoc construction | `C`, `Alt-C`, `%` | `editor.rs`, needs line geometry |
+| Content mutation | `&`, `Alt-(`/`Alt-)`, `S`, `K`, `Alt-K` | `editor.rs`, needs bytes |
+
+**The split is by what a verb needs to know, not by convenience.** Set algebra
+is pure: it reads points and answers `bool`. That is why those eight methods
+live in `helix_selection` and work unchanged on the terminal panel's
+`(row, col)` points. Everything that needs to resolve "which byte is the next
+line", "how wide is this on screen" or "does this text match" is geometry or
+content, and stays on the surface — which is the same reason the module has no
+opinion about coordinates.
+
+`merge_consecutive` is the interesting case: it is a *set rule* (group adjacent
+members, keep the rest) that needs a *geometry* answer (are these two
+adjacent?). It takes an `adjacent` closure and stays pure. `merge_all` needs no
+such help because every member of the set is adjacent to the span by
+definition.
+
+**Every set verb reports whether it changed anything**, and the answer is
+load-bearing. A verb that changed nothing returns `false` / `NothingToDo` and
+the App layer shows it once; it never submits an edit. That is the M004
+`case_range` rule applied to the set, and it is why `,` on one selection, `;`
+on nothing, and `Alt-:` on an already-forward set are all *reported* rather
+than rewritten. `EditorNotice::Note` exists for this: these are answers, not
+errors, and rendering them in error wording would tell a reader their buffer is
+broken when it is fine.
+
+**Rotate-focus and rotate-contents are the easiest pair in the keymap to
+confuse, so they are separate types rather than one verb with a flag.**
+`RotateSelections { member_delta }` moves `primary` and the cursor, changes no
+text, and pushes no undo entry. `RotateSelectionContents { member_delta }`
+rewrites each member's bytes — one transaction of `n` *replace* edits over the
+original coordinates, so no intermediate text is observable — and goes through
+`submit_edit` like every other edit.
+
+**`merge_all` bridges gaps on purpose.** The plan's wording ("merge every
+member into the primary's range") admits a second reading that would fold the
+others into the primary's own range and silently discard them. Merging the
+*span* is both Helix's behaviour and the only reading that does not lose text.
+`merge_all` also takes the coarser mode if **any** member was a line selection,
+because a merged character selection would leave the rows a line member covered
+unrepresented.
+
+**`&` aligns in display columns, and says so when it cannot.** Width is measured
+through `bounded_display_width`, so a member wider than the 32 KiB per-line
+budget costs the budget rather than the line — and the truncation is disclosed
+through `RangeSetEdit::Edit(_, Option<String>)` rather than papered over, because
+a member padded to a width measured over a prefix of it is genuinely
+misaligned. Padding is appended after each member, which equalises widths and
+lines up what follows; it is a display-column decision and `EditorPoint` ordering
+is by byte, so tabs and CJK align on screen, not in the source.
+
+**Bounded work is a per-verb budget, not a global one.** `regex` gets a
+compile-time `size_limit` (`MAX_REGEX_PROGRAM_BYTES`) because a pathological
+pattern is the documented way to turn one keystroke into a hang, and refusing it
+at compile time is the only point where it can be refused. Each member's match
+window is capped at the line budget, the whole set at `MAX_SET_VERB_READ_BYTES`,
+and rotating contents refuses above that rather than allocating the document.
+
+**The regex verbs reuse the `:` command line rather than building a prompt.**
+`S`, `K` and `Alt-K` open `open_command_line("split-regex ")`. A prompt would
+have needed a new input mode, a new pending field, and a new disarm contract on
+buffer switch, reload and focus change; the `:` line already has all three. The
+consequence that matters is that **M008 added no `TuiDocumentPresentation` field
+whose name contains `prefix`**, so `scripts/check_tui_editor_prefix_state.py`
+still sees exactly the one field it saw before — M002's central claim is
+untouched rather than weakened.
+
+**`HelixVerb` is no longer `Copy`.** Three variants carry a `String` pattern, and
+a verb that owns text is not a unit value. Every call site constructed one and
+passed it straight through, so the boundary moved rather than being papered
+over with a `Copy` impl that only held for the other fifteen variants.
+
+**Terminal-panel parity: recorded exemption on `C`.** M007 preserved parity by
+construction because it added no chords. M008 adds eighteen, and the panel has
+its own Normal-mode table (`classify_nav_key`, consulted *before* Normal-mode
+actions), so this is the first milestone in the roadmap where parity can break
+at all. Checked against that table, **exactly one** of the eighteen chords
+diverges:
+
+- **`C` — recorded, not fixed.** In the panel `C` is `TerminalNavAction::Clear`
+  (clear scrollback and screen); in the editor it adds a cursor on the next
+  line. They are different objects, and the panel has no document to put a
+  cursor in, so the divergence is a consequence of the surfaces having
+  different subjects rather than a choice either surface could make. The panel
+  also claims lowercase `c` (all four spellings), which the editor leaves to the
+  composer.
+- **The other seventeen are unclaimed by the panel and behave safely.**
+  `apply_nav` returns `NavOutcome::Unhandled` for them and `handle_key` maps
+  that to `PanelKey::Consumed`, so they are swallowed rather than forwarded as
+  PTY input or falling through to the composer. That is the right failure: a
+  selection verb pressed with the terminal focused does nothing visibly wrong.
+
+The panel gains none of the eighteen. Its `SelectionState<TerminalPoint>` is
+still single-member, and every new set method is additive — no existing panel
+call site changed, which is why its selection tests pass unmodified.
+
+#### The unimpaired grammar (Helix-parity M006)
+
+Naming note: `M006` here is the **tui-editor-helix-parity** milestone, not the
+TUI's own `M006-A`…`M006-F` durable-agent-run series elsewhere in this document.
+
+Four chords, and the milestone is smaller than it looks because three of the
+things it needed already existed. `[` and `]` had been armed-but-empty since
+M002; M006 gave them `OPEN_BRACKET_LEAVES` and `CLOSE_BRACKET_LEAVES` and
+nothing else about the arming changed.
+
+**`PrefixAction` grew an `Edit` arm, and that is the load-bearing design
+decision.** `]Space` inserts a newline, and `editor_motion` is the one function
+in the dispatch whose contract is that it never touches text. Putting it in the
+`Motion` arm would have been a three-line change and a broken promise; a third
+variant makes the leaf say what kind of thing it is. The arm calls
+`editor_editing_command`, so `]Space` lands in the same read-only gate, the same
+undo entry and the same document transaction as `x`, `d` and `y`. It
+deliberately does **not** call `note_motion` — see the repeat-slot rule below.
+
+**`resolve_pending_prefix` running first is the whole precedence argument.**
+`Space` arms a prefix of its own, so if the bare-key arms were consulted before
+the leaf lookup, `]` then `Space` would leave a `space` armed. It does not,
+because `handle_normal_key` resolves the pending prefix before it matches
+anything else — so `]Space` is a newline by construction rather than by a guard
+added later. The M002 test that a *mismatched* key still reaches the composer
+passes **unmodified**: adding leaves narrows what is bound, not what is
+escaped.
+
+**`AddNewlineBelow`/`AddNewlineAbove` are separate variants from
+`OpenLineBelow`/`OpenLineAbove`, and Helix keeps them apart.** `add_newline_impl`
+inserts a line ending at `line_to_char(end + 1)` and moves no selection;
+`open_below` splits the terminator, puts the cursor on the new line and hands
+the keyboard to the document. Collapsing them would make `]Space` silently
+enter Insert. What they share is the transaction, so they share one
+implementation — `stay_insert` is the only difference and it belongs to the
+caller that changes mode.
+
+**A paragraph motion is resolved in `apply_motion`, not `apply_motion_inner`,
+for the same reason a find is.** `]p` at the last paragraph is a no-op that has
+to be able to say so, and "the cursor did not move" is not an answer. So it is
+intercepted next to the find interception, the scan runs **once**, and
+`ParagraphNote` is written next to the resolution that produced it rather than
+in the dispatch layer that pressed the key. The command layer lifts it into
+`state.notice` and clears it in the same step, so a disclosure can only ever
+describe the keystroke that just happened.
+
+**`ParagraphOutcome` has three variants because a bounded scan has a third
+outcome.** `Bounded` is not `NoParagraph`: reporting "there is none" about a
+document that has one is the worst of the three answers, because it is the one
+a reader has no way to distrust.
+
+**Boundedness is a total budget, not a per-line one.** `bounded_prefix_end`
+bounds a single line at `MAX_RENDER_LINE_BYTES`, and a paragraph walk visits
+lines until it finds a boundary — so on a 200 MB file with no blank line the
+per-line cap alone is still a 200 MB scan behind one keystroke.
+`MAX_PARAGRAPH_SCAN_BYTES` is the whole-walk budget, set to the frame's own
+`MAX_FRAME_SOURCE_BYTES` so the worst case is "one keystroke costs what one
+screenful costs".
+
+**A line it cannot read all of is content, not a separator.** When
+`line_blankness` sees an all-whitespace prefix that runs past the budget, it
+cannot prove blankness — and calling an unprovable line blank would *invent a
+paragraph boundary that is not in the file*. A multi-megabyte indented line is
+almost always content anyway, so this is also the answer that is almost always
+right.
+
+**Deliberate divergence from Helix, recorded rather than matched.** With no
+blank line anywhere, Helix's `move_next_paragraph` skips every remaining line
+and lands on the end of the buffer (`test_behaviour_when_moving_to_next_paragraph_single`
+in `helix-core/src/movement.rs`). CodeGG reports "no next paragraph" instead.
+An end-of-buffer jump looks like the key did something and hides that it found
+nothing, which is the failure the note exists to prevent.
+
+**The repeat slot is one slot with three typed doors.** Helix documents
+`Alt-.` as "repeat last motion (`f`, `t`, `m`, `[` or `]`)", so `]p` is
+repeatable. `last_find`, `last_selection_motion` and `last_unimpaired` are
+three *types* of motion, so they are three fields — each recorder clears the
+other two, exactly as `note_motion` already cleared one. They are mutually
+exclusive by construction, so `Alt-.` may consult them in any order without
+inventing a precedence. `]Space` records nothing: an edit is not a motion, and
+`echo`]Space Alt-.`` inserting two lines would be the bug.
 
 **The box header is compact by default; `D` is the diagnostics dump.**
 `header_lines` leads with one line — command, link state, and whether the
@@ -3058,9 +3300,11 @@ earlier stage claims it. The order is the contract:
    owns *every* key, including the mode-independent chords — a half-typed `:q`
    must not be written to the file by `Ctrl+S`.
 2. **Mode-independent chords.** `Ctrl+S` → `RequestSave`, `Ctrl+R` →
-   `RequestResync`. Both in every mode. `R` → `RequestReload` is Normal-only,
-   because it discards the local draft and in `Insert` those two keystrokes are
-   the letter `R`.
+   `RequestResync`. Both in every mode. Stage 2 used to claim a third, the
+   Normal-only `R` → `RequestReload`; M004 removed it, because Helix gives `R`
+   to `replace_with_yanked` and a Normal-only guard-block `R` would have
+   shadowed the verb while surviving it. Reload is `:e`
+   (`EditorCommandName::Reload`), which reaches `reload_editor` directly.
 3. **Mode dispatch.** `handle_insert_key`, or `handle_normal_key`.
 
 The rule that follows: **every chord has exactly one owner, and that owner is
@@ -3121,17 +3365,53 @@ normal-mode verb. That is why `EditorPrefix::swallows_unmatched` is a property
 of the *prefix* rather than a single machine-wide rule: collapsing the two
 would have changed a gesture while looking like a refactor.
 
-| Prefix | Armed by | Leaf | Unmatched key | Indicator |
+| Prefix | Armed by | Leaves | Unmatched key | Indicator |
 |---|---|---|---|---|
-| `Goto` | `g` | `g` (`gg`) | consumed | `g` |
+| `Goto` | `g` | `g`, `s`, `e`, `h`, `l`, `j`, `k` | consumed | `g` |
 | `Space` | `space` | `y` (`space y`) | retried | `space` |
 | `OpenBracket` | `[` | none until M006 | retried | `[` |
 | `CloseBracket` | `]` | none until M006 | retried | `]` |
+| `FindNext`/`FindPrevious`/`FindTillNext`/`FindTillPrevious` | `f`/`F`/`t`/`T` | none — the next key is data | retried | the key itself |
 
 The unimpaired prefixes retry rather than swallow because their leaves are two
 milestones away: swallowing there would mean a `[` followed by a letter lost
 that letter on its way to the composer, and a prefix that cannot be escaped is
 worse than one that occasionally passes a key through.
+
+**Leaves are a table, not one glyph.** `EditorPrefix::leaves() -> &'static
+[PrefixLeaf]` replaced M002's `leaf() -> Option<char>`. The one-glyph shape was
+correct only while goto mode had exactly one leaf; Helix's has twenty and space
+mode has thirty, and a single `Some` would have meant either a special case per
+prefix or a second mechanism beside the state machine — which is precisely the
+regression M002 deleted. A leaf row pairs a glyph with a `PrefixAction`, which
+is `Motion(EditorCommand)` or `YankSelection`: a motion resolves against the
+document and returns nothing, while a yank must hand a byte range back out to
+the owner of the clipboard, so collapsing the two would have meant inventing a
+command whose resolution is a side effect.
+
+Every goto leaf resolves through the **raw** motion path (`editor::apply_motion`),
+not the Helix selection machine. That is how `gg` has always behaved, and
+routing the newer leaves through the selection machine instead would have made
+`gg` the odd one out. `apply_motion` does not touch `selection` at all, so a leaf
+neither extends a held selection the way `j`/`w` do nor clears one.
+
+**That last point is a known divergence from Helix**, where a goto collapses the
+selection. It is recorded rather than fixed: `apply_motion` is shared with the
+bare `G`, `w` and `b`, so clearing the selection there is a change to existing
+behaviour well beyond this milestone. `every_goto_leaf_leaves_a_held_selection_exactly_as_gg_does`
+pins the contract that *is* owned here — parity with `gg` — so a future change
+to `apply_motion` cannot quietly make the new leaves behave differently from
+the old one.
+
+**Goto leaves that are deliberately unbound.** `gd`/`gy`/`gr`/`gi` are the
+language-server jumps and belong with the LSP read surface. `gf`/`ga`/`gm`/`gn`/
+`gp` and `g|` need alternate buffers or a count entry point. `gt`/`gc`/`gb` —
+top, middle and bottom **of the screen** — are excluded for a reason worth
+stating: motions resolve against `NOMINAL_VISIBLE_LINES`, a fixed guess at the
+viewport height, so "the top of the screen" would be a line that is not the top
+of the screen. Binding them before the real viewport is threaded through would
+ship a key that looks broken; the omission is recorded here rather than left as
+silence.
 
 **Disarm points.** A prefix is retired whenever the thing it was aimed at
 stops being the thing on screen. A prefix that outlives its target is a
@@ -3162,6 +3442,21 @@ The terminal panel (`src/tui/commands/interactive_terminal.rs`) keeps its own
 `prefix_pending`/`YankPrefix` for the same gesture. Converging the two onto
 one shared state machine is desirable and deliberately **not** done here.
 
+**Terminal-panel parity for the M005 surface is an explicit exemption, not an
+omission.** The panel spells the same keys (`e`/`b` by word, `space y` to copy)
+but resolves them through its **own** machinery: `next_word_end`/`prev_word_start`
+scan a `&str` by column index over scrollback, not by byte offset over a
+document, so they are not the editor's `word_end`/`word_backward` and never
+were. It does **not** gain `W`/`B`/`E` or any goto leaf, and does not need to:
+it has no `g` prefix at all, its `j`/`k` scroll a viewport rather than moving
+through document lines, and "first non-whitespace" has no meaning over a cell
+grid. `long_word_*` was deliberately **not** introduced there — a second
+word-end definition for a surface that has no long-word key would create
+exactly the divergence the roadmap forbids. The one consequence to record: M005
+fixed the editor scanners for non-ASCII, which does **not** fix the panel's, so
+the two surfaces now agree on ASCII and may differ on multi-byte scrollback.
+That is a known gap, owned by M008's panel verification, not a claim of parity.
+
 `scripts/check_tui_editor_prefix_state.py` keeps the deletion honest: it fails
 if `pending_command`, `yank_prefix_pending`, `MAX_EDITOR_PENDING_COMMAND`,
 `bounded_pending`, or `push_pending` reappear anywhere under `src/`, and — the
@@ -3170,26 +3465,109 @@ any prefix field other than exactly one `pending_prefix`. It ignores comments,
 because the type's own doc comment is where the history of those two fields
 belongs.
 
-#### The find target is a prefix whose next key is data
+#### Word motions, WORD motions, and the desired column
+
+Three scanners resolve word-shaped motions against the local replica, and the
+difference between the first two is a **classification choice**, not an
+optimisation:
+
+| Helper | Classifier | Helix |
+|---|---|---|
+| `word_forward` / `word_backward` / `word_end` | `is_word_byte`: ASCII alphanumeric, `_`, or `>= 0x80` | `w` / `b` / `e` |
+| `long_word_forward` / `long_word_backward` / `long_word_end` | `is_long_word_byte`: anything that is not ASCII whitespace | `W` / `B` / `E` |
+| `first_non_whitespace` | ASCII whitespace, bounded by `bounded_prefix_end` | `gs` |
+
+`is_word_byte`'s `>= 0x80` clause is deliberate for its own scanner: it lets a
+scan classify a multi-byte character without decoding it. It is **wrong** for a
+WORD, because it would make every non-ASCII byte and every ASCII punctuation
+mark part of the same word as its neighbours — collapsing `W` onto `w` on
+precisely the text where the distinction matters.
+
+**All six scanners classify with `leading_byte`, never a one-byte read.**
+`read_bytes(offset, offset + 1)` needs a character boundary at *both* ends, so
+it is `Err` for every byte of a multi-byte character — its **first** byte as
+much as its interior. Every scanner read that as "not a word byte" and walked
+straight past every non-ASCII character: on `日本語 text`, `w` from byte 0
+landed on the **end of the document** instead of on `text`, and `e` did the
+same. It was invisible because ASCII single-byte characters are the only kind
+that reads back, so the surface had no non-ASCII test at all. This is the
+defect class M003 eliminated in `find_char` (see its closure); the word
+scanners were never given the fix, and a `word_end` doc comment asserted the
+opposite — that walking `offset + 1` "can cross the interior of a multi-byte
+character and still classify it correctly" — which was not true of the code it
+described.
+
+Both `*_end` scanners step **one whole character at a time** for the same
+reason. Probing `cursor + 1` was doubly wrong: the byte is unreadable inside a
+multi-byte character, and `next_char_boundary` returns `None` (not
+`Some(len_bytes())`) when the remaining bytes are one multi-byte character, so
+the `.unwrap_or(cursor)` fallback had nowhere to advance and spun. That was an
+unbounded loop on any document ending in a multi-byte character, found by
+sampling the running test binary's stack rather than by reading the code.
+
+`first_non_whitespace` inherits the C002 discipline of `line_content_end`: it
+scans at most the line's *rendered* prefix (`bounded_prefix_end`, i.e.
+`MAX_RENDER_LINE_BYTES`) and stops there. A line indented past that bound
+resolves to the last visible byte, and such a line is already drawn with
+`TRUNCATED_LINE_SUFFIX`, so the answer is disclosed on screen rather than
+silently wrong. A blank line resolves to its own start, so `gs` round-trips with
+`0` instead of appearing stuck.
+
+**The desired column is kept, not re-derived.** `TuiDocumentPresentation::desired_column`
+is `Option<usize>`, rewritten by every motion in exactly one place
+(`desired_column_after`), with an asymmetry that is the whole feature:
+
+- `MoveLeft` / `MoveRight` **re-seed** it from the column the cursor landed on —
+  that is the column the reader has chosen.
+- `MoveUp` / `MoveDown` **keep** the column they were aiming for. Landing on a
+  short line clamps the cursor to that line's end; re-seeding there would mean
+  `j` past a short line quietly rewrote the target, so `k` would return to the
+  short line's end instead of to where the run started.
+- Everything else clears it. `gg`, `G`, `w`, `e`, `$`, `gs`, a find, a page, a
+  search jump and a LSP jump all say "this is not part of a vertical run", and a
+  column carried across them would aim the next `j` at a column chosen for a line
+  the cursor no longer sits on.
+
+`apply_helix_verb` resolves motions on a **throwaway probe** and writes the real
+presentation once, so the desired column is seeded into the probe and copied back
+unconditionally — unlike the find record, which is written only when the motion
+was a find. The column is also cleared by `reset_for_open` and `clear_history`
+alongside the prefix: after a reconciliation a column measured against the *old*
+text is not an error the user can see, it just aims the next `j` at a column of a
+line that is no longer there. At use time `offset_on_line` clamps it into the
+target line and back onto a character boundary, so a stale value can never place
+the cursor outside a line or mid-codepoint.
+
+#### Capture prefixes: `f`/`t`/`F`/`T` and `r` take their next key as data
 
 `f`, `F`, `t` and `T` are `EditorPrefix` variants, so they arm through the same
-machine and disarm at the same points. They are the one case where the grammar's
+machine and disarm at the same points. They are one case where the grammar's
 "one terminal key" is **data** rather than a leaf glyph: after `f`, the character
-typed is the target. `EditorPrefix::leaf` is `None` for all four, so there is no
-glyph that could complete them, and `find_target_char` in
-`commands/editor` does the capture. It is deliberately a different path from
-`leaf()` — a key that is a target never resolves against the keymap, and a key
-that is a leaf never becomes a character.
+typed is the target. `r` is the second such case — after `r`, the character
+typed is the one to write. `EditorPrefix::leaves` is empty for all five, so there
+is no glyph that could complete them, and `capture_char` in `commands/editor`
+does the capture for both. It is deliberately a different path from the
+leaf lookup — a key that is a capture never resolves against the keymap, and a
+key that is a leaf never becomes a character.
+
+`EditorPrefix::is_capture` is the single classification. Two answers —
+`is_find` plus an `== ReplaceChar` test at each call site — would let a third
+capture grammar be added to the dispatch without also being added to the
+classifier, and it would then reach the leaf lookup and swallow a keystroke.
+`scripts/check_tui_editor_prefix_state.py` asserts both `ReplaceChar` and
+`is_capture` by name for exactly that reason.
 
 Three rules that are easy to get wrong and are each covered by a test:
 
-- **A non-character key is retried, not swallowed.** `f` then `Left` moves left.
-  An armed `f` that ate the arrow would be an arrow the composer never sees, on a
-  route where unclaimed keys are supposed to fall through to it.
+- **A non-character key is retried, not swallowed.** `f` then `Left` moves left,
+  and `r` then `Left` does the same. An armed `f` that ate the arrow would be an
+  arrow the composer never sees, on a route where unclaimed keys are supposed to
+  fall through to it.
 - **`:` and `/` outrank a pending target.** They open their modal lines rather
-  than becoming the character to search for. This is stricter than taking the
-  next key literally; the counter-argument (a colon after `f` *should* mean
-  find-colon) is recorded in the M003 closure record.
+  than becoming the character to search for or write. This is stricter than
+  taking the next key literally; the counter-argument (a colon after `f` *should*
+  mean find-colon) is recorded in the M003 closure record, and `r :` inherits
+  the same trade rather than diverging from its sibling grammar.
 - **Insert mode never captures.** `handle_insert_key` does not consult the
   prefix, so the armed `f` is left intact for Normal mode rather than disarmed.
 
@@ -3343,6 +3721,108 @@ when they are absent. The command performs only a *lexical* path check — no
 filesystem access, no path resolution; containment, `file.read`
 authorization, and symlink policy remain the daemon's decision in
 `DocumentOpen`.
+
+#### The change verbs, and why `p` reads the system clipboard
+
+`r`, `R`, `~`, `` ` ``, `Alt-` `` ` ``, `p`, `P` and bare `y` are M004. Six of
+the eight change the text, and all six reach it through one funnel.
+
+**There is no editor-local register.** `y` and `space y` are the *same* code
+path — `yank_range` reports a byte range, `yank_editor_range` copies it — and
+both write to the OS clipboard through `crate::util::clipboard`, which is
+`arboard` behind a `Result`/`Option`. Nothing in `TuiDocumentPresentation`
+stores yanked text. Two consequences a maintainer should not have to
+rediscover:
+
+- `p` pastes **whatever is on the OS clipboard**, including text copied from
+  another application. That is Helix's own behaviour with system-clipboard
+  integration, and it is the reason Helix's `R` is `replace_with_yanked`
+  rather than a register operation: with no register, the clipboard *is* the
+  yanked text.
+- The clipboard is **not editor state**, so it is read by the App layer. The
+  buffer reports `BufferKey::PasteAfter` / `PasteBefore` / `ReplaceWithClipboard`
+  carrying a `ClipboardVerb`, exactly as it reports `YankRange` carrying a
+  range. A second clipboard abstraction was not invented.
+
+Three outcomes are reported separately, because a `p` that silently does
+nothing is indistinguishable from a keypress that was never delivered: a
+read-only or busy buffer (the same notice every edit verb uses), a **failed**
+read (`None` from the system), and an **empty** clipboard (`Some("")`, a
+successful read of nothing). `apply_clipboard_text` takes the read as a
+parameter rather than calling `read_from_clipboard` itself, which is what makes
+all three reachable in a test without a test writing to — and stealing — the
+developer's real clipboard.
+
+**`r`, `R`, `~`, `` ` `` and `` Alt-` `` share one target rule.** Each acts on
+the held selection when there is one, and on the character under the cursor
+when there is not: Helix names the target as *the selection*, and a bare cursor
+in this editor is an offset rather than a selection. With nothing selected the
+two readings coincide for a single character, which is why `~` flips one letter
+or a whole phrase by the same code. At the end of the buffer there is no
+character, so the range is empty and all five are no-ops — the same answer
+`DeleteChar` gives.
+
+**`~` flips; `` ` `` and `` Alt-` `` set.** One `case_range` with a `CaseMode`
+drives all three, and the modes differ in a way that is observable on the second
+press: `Flip` maps each character to the other case, so `~ ~` returns the
+original, while `Lower`/`Upper` map to a named case, so pressing them again is
+a no-op and is *reported* as one rather than submitted as an edit that pushes an
+undo entry changing nothing.
+
+Unicode case mapping **expands**, and the two families handle that differently.
+`Lower`/`Upper` use the whole expansion (`ß` → `SS`, `İ` → `i` + U+0307),
+because they name the whole thing. `Flip` takes only the first character of an
+expansion, because `ß` has no lowercase form to become and a flip that grew
+would never return to the original — it would stop being a toggle. That is a
+real, stated asymmetry (`Alt-` ` on `ß` gives `SS`; `~` on `ß` gives `S`), not
+an oversight, and both are pinned by tests.
+
+**Those six go through `editor_editing_verb`, not `resolve_edit`.** Same
+read-only gate, same snapshot, same `EditorEdit`, same `submit_edit` funnel; one
+difference, and it is the reason the helper exists at all: they resolved their
+target *from* the selection, so they must clear it. `submit_edit` deliberately
+leaves `presentation.selection` alone — most verbs have no business touching it
+— and a selection left over a replaced range is a highlight painted over text
+that is no longer there. Expressing the clipboard payload in `EditorCommand`
+instead would have meant a data-carrying verb enum that the motion machine and
+the `Alt-.` recorder must also know about, so the verb enum stayed a key
+identity.
+
+**Character safety is inherited, not re-derived.** Every transform reads
+through `clamp_offset` on both ends and never calls
+`read_bytes(offset, offset + 1)`, which refuses inside a multi-byte character —
+the defect M005 found in `w`/`b`/`e`. An edit whose inserted text is longer than
+the range it replaces is safe precisely because `submit_edit` clamps
+`cursor_after` against the **post**-edit snapshot.
+
+One trap is worth naming because it is invisible: `next_char_boundary(0)` on a
+document that is a *single character* returns `None`, which reads correctly at
+the end of a document and wrongly at the start of one. `char_end` resolves it to
+the document length, which is what tells those two cases apart. It is the same
+`None`-versus-`Some(len)` distinction M005 hit in `long_word_end`.
+
+**Cursor placement is the same for every verb here: the last byte written.** In
+Normal mode the cursor sits *on* a character, so leaving it one past the edit
+would put it on whatever followed — and `p p` would step over the character
+between the two pastes instead of appending. It is `insert_text`'s `true` that
+is the exception, because there the cursor is a bar between characters.
+
+None of these is `stay_insert`: they are Normal-mode verbs, and an accepted
+edit must not hand the keyboard to the document.
+
+#### One binding moved: `R`
+
+`R` used to reload from disk and throw the local draft away, as a Normal-only
+**guard-block** chord. Helix gives `R` to `replace_with_yanked`, and a
+guard-block chord is answered *before* mode dispatch — so leaving it would have
+shadowed the new verb while surviving it, which is the one failure this
+dispatch chain is arranged to make impossible. The chord and the
+`BufferKey::RequestReload` variant are gone; reload is `:e`
+(`EditorCommandName::Reload`), which already reached `reload_editor` directly.
+
+The capability survived the rebinding. The *keystroke* did not, which is the
+observable cost, and it is why `scripts/check_tui_editor_key_authority.py`
+now asserts the two remaining guard-block chords by name instead of three.
 
 ### Project-scoped file tree (M006-D)
 

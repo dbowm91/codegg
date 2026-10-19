@@ -15,6 +15,40 @@ therefore had to preserve a per-prefix mismatch policy
 (`EditorPrefix::swallows_unmatched`), and the milestone's acceptance criteria
 require `gg` and `space y` to behave identically to the baseline.
 
+M005 then replaced the single-glyph accessor (`EditorPrefix::leaf() ->
+Option<char>`) with a per-prefix **leaf table** (`EditorPrefix::leaves() ->
+&'static [PrefixLeaf]`). The one-glyph shape only worked because goto mode had
+exactly one leaf; Helix's has twenty, and expressing them as one `Some` per
+prefix would mean either a special case per prefix or a second mechanism
+beside this one. The invariant this guard protects is unchanged by that
+rewrite — a grammar is still a leaf table and never a field — so no assertion
+below was relaxed to accommodate it. The table is what the guard's "a new
+grammar adds a leaf, not a flag" rule now means in practice.
+
+M004 then added a second **capture** prefix, `r`, alongside the four find
+prefixes. A capture takes its next key as data rather than as a leaf glyph,
+which is the same category `f` was and the same reason its row in the leaf
+table is empty. Asserting the variant by name keeps it from being
+"simplified" away: dropping it would not fail any other assertion here, and
+`r` would then resolve through the leaf lookup and swallow a keystroke.
+
+M006 then gave the two unimpaired prefixes, `[` and `]`, their first leaves,
+and added a third `PrefixAction` arm — `Edit` — because `]Space` inserts a
+newline and `editor_motion` is the one function in the dispatch that promises
+never to touch text. Two things about that milestone matter *here*:
+
+* `[`/`]` stopped being the "armed but empty" odd case, so the docstring's old
+  claim that every empty `leaves()` row is a capture became true rather than
+  aspirational. That is a documentation correction, not a relaxed assertion:
+  the guard below never permitted a second prefix field, and M006 added none —
+  the paragraph *disclosure* it did add is `paragraph_note`, which is an answer
+  about one keystroke, not a mode. A field named for a mode would still fail
+  this guard.
+* The three `Alt-.` repeat slots (`last_find`, `last_selection_motion`,
+  `last_unimpaired`) are **not** prefix state. They are cleared by motions, not
+  by arming and disarming, and folding them into `EditorPrefix` would have made
+  "what key is armed" and "what can be repeated" the same question.
+
 ## What counts as a violation
 
 **Violations** (exit code 1):
@@ -40,6 +74,11 @@ Checked by name so it cannot pass against an emptied tree:
   state to disarm into).
 - `pub pending_prefix` on the presentation.
 - `arm_prefix`, `disarm_prefix`, and `resolve_pending_prefix` all present.
+- `pub fn leaves(` — the leaf table itself. A prefix that cannot name the keys
+  it accepts has stopped being a grammar and become a flag with extra steps, so
+  the accessor is asserted by name and not merely implied by the resolver.
+- `fn is_capture(` — the classification that keeps a data-taking prefix
+  (`f`, `t`, `F`, `T`, `r`) off the leaf lookup.
 - `MAX_EDITOR_PENDING_PREFIX` present: the bound the indicator is held to.
 
 ## Non-vacuity
@@ -80,6 +119,10 @@ FORBIDDEN = [
 REQUIRED_MODEL_DECLARATIONS = [
     "pub enum EditorPrefix",
     "Idle",
+    # The second capture grammar, alongside `f`. Asserted by name because
+    # removing it satisfies every other assertion here while leaving `r`
+    # unable to resolve at all.
+    "ReplaceChar",
     "MAX_EDITOR_PENDING_PREFIX",
 ]
 
@@ -88,6 +131,11 @@ REQUIRED_STATE_DECLARATIONS = [
     "fn arm_prefix",
     "fn disarm_prefix",
     "fn resolve_pending_prefix",
+    "pub fn leaves(",
+    # The one place a capture is classified. If it went away, a new capture
+    # grammar could be added to the dispatch without also being added here,
+    # and would reach the leaf lookup instead.
+    "fn is_capture(",
 ]
 
 # A struct field: `pub name: Type,` at any indentation, ignoring doc comments.
@@ -189,6 +237,14 @@ def main() -> int:
     # 2. Exactly one prefix field on the presentation. This is the invariant
     #    a fixed name list cannot express: the next milestone's flags would be
     #    new names.
+    #
+    #    Load-bearing rather than incidental since M007 added the two
+    #    **non-prefix** selection fields (`selections`, `primary_index`): the
+    #    presentation now carries several pieces of state that a name filter
+    #    has to reject, so "exactly one match for `prefix`" is now a real
+    #    discrimination between fields rather than a check that happens to pass
+    #    on a struct with one field in it. A future field named
+    #    `selection_prefix` or `prefix_state` is exactly what it catches.
     try:
         presentation_text = strip_comments(PRESENTATION.read_text())
         body = struct_body(presentation_text, "TuiDocumentPresentation")

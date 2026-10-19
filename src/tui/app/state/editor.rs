@@ -160,6 +160,16 @@ pub enum EditorNotice {
     UnexpectedResponse(String),
     /// The transport failed.
     Transport(String),
+    /// A verb ran and reported what it did or why it did nothing.
+    ///
+    /// Not an error, and deliberately a separate variant rather than a
+    /// `Rejected`: "nothing is selected" and "the pattern matched nothing"
+    /// are answers, not failures, and rendering them in error wording would
+    /// tell the reader their buffer is broken when it is fine.
+    ///
+    /// `Transient` severity because it describes one keystroke's outcome, not
+    /// a condition that will still be true on the next frame.
+    Note(String),
 }
 
 impl EditorNotice {
@@ -194,7 +204,8 @@ impl EditorNotice {
             | EditorNotice::QueueFull
             | EditorNotice::QueueBytes
             | EditorNotice::Transport(_)
-            | EditorNotice::UnexpectedResponse(_) => EditorNoticeSeverity::Transient,
+            | EditorNotice::UnexpectedResponse(_)
+            | EditorNotice::Note(_) => EditorNoticeSeverity::Transient,
             EditorNotice::ReadOnly
             | EditorNotice::NotOpen
             | EditorNotice::AlreadyOpen
@@ -242,6 +253,7 @@ impl EditorNotice {
             EditorNotice::Transport(detail) => {
                 format!("Daemon transport failed: {detail} — your draft is kept")
             }
+            EditorNotice::Note(detail) => detail.clone(),
         }
     }
 }

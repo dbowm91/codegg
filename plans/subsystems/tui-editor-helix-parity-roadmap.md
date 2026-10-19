@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001, M002, M003 closed; M004/M005 eligible for fresh planning; ADR-0034 proposed and gating M009)
+Status: active (M001–M005 closed; M013 ready; M010 blocked on M013; ADR-0034 proposed and gating M009)
 
 Long-term references:
 
@@ -112,9 +112,10 @@ the terminal panel is exempt.
 - No vendored Helix code, configuration, or assets.
 - No relaxation of sandbox, `file.read`, or `file.modify` authorization.
 - No code-action execution, automatic import edits, or LSP write operations.
-  `LspReadOperation` is read-only by construction; `=` format, `space r` rename,
-  and `space a` code action are out of scope until a protocol decision exists
-  (see §10).
+  `LspReadOperation` stays read-only by construction; M013 extends it only with
+  **read** variants plus rename/format **preview**. `=` format, `space r`
+  rename apply, and `space a` code-action apply remain out of scope until an
+  authorization ADR exists (see §10 risk 2).
 
 ## 4. Current state
 
@@ -138,6 +139,13 @@ Insert mode handles printable characters, `Backspace`, `Delete`, arrows,
 The `:` palette exposes exactly nine commands (`EditorCommandName::ALL`): `w`,
 `q`, `wq`, `q!`, `e`, `wa`, `new`, `open`, `complete`. LSP is reachable only
 through function keys F2–F9 and is read-only.
+
+**That F2–F9 surface is not reliably delivering today.** Verified at baseline
+`84440fe7f`: the diagnostics publisher has no production driver, and warm-client
+resolution returns a false `NotReady` whenever more than one server shares a
+workspace root. Both are recorded and owned by M013, and both must be fixed
+before LSP leaves are bound — a key that opens an always-`NotReady` panel is
+harder to diagnose than an absent key.
 
 ### Known defects and structural limits found during the parity survey
 
@@ -203,10 +211,17 @@ M001 dispatch authority + reachability guard
   |        |        +--> M004 core change verbs (p/P, y, r/R, case)
   |        |        |
   |        |        +--> M005 textual motions + goto mode (gs, W/B/E)
+  |        |                 |    [also delivers the leaf-table shape]
+  |        |                 |
+  |        |                 v
+  |        |        M013 LSP read delivery + reachability  <-- corrective, see below
   |        |                 |
   |        |                 +--> M010 space mode + extended goto
   |        |
   |        +--> M006 unimpaired [ ] navigation (non-TS subset)
+  |                 |
+  |                 +--> [unimpaired change nav — NOT planned; no data source]
+  |                 `--> [unimpaired diagnostic nav — folded into M013]
   |        |
   |        +--> M011 insert-mode control chords
   |        |
@@ -225,16 +240,35 @@ M001 dispatch authority + reachability guard
 Classification:
 
 - **Hard:** M002 requires M001. M003–M006, M011, M012 require M002. M004 and
-  M005 require M003. M008 requires M007. M009 requires M008 **and** ADR-0034
-  for its syntax-node slice. All of M002's, M003's, M004's and M005's
-  predecessors are now closed.
+  M005 require M003. **M010 requires M013** (hard). M008 requires M007. M009
+  requires M008 **and** ADR-0034 for its syntax-node slice. All of M002's,
+  M003's, M004's and M005's predecessors are now closed.
+- **Hard, added 2026-10-18:** **M006 owns no LSP edge at all.** Its original
+  boundary claimed `]d`/`[d`/`[D`/`]D`; those bindings are now **M013's**, for
+  the two reasons in M006 amendment A1 — M013's boundary already named them, and
+  the read path they need is broken until M013 repairs it. M013 therefore gains a
+  binding obligation it already carried in prose but which no plan had allocated.
+  The unimpaired **change** quartet (`]g`/`[g`/`]G`/`[G`) has no owner yet and is
+  registered as deferred product work, because no reachable data source exists for
+  it (M006 amendment A1.3). Neither obligation is a new blocker on M006: M006
+  stays `ready` with a **smaller** boundary.
 - **Interface:** M002's prefix contract is an interface dependency for every
   later milestone — changing it after they land is a breaking refactor. M003
-  extended it with prefixes whose next key is *data* rather than a leaf glyph,
-  which is the one shape change later milestones must build against.
+  extended it with prefixes whose next key is *data* rather than a leaf glyph.
+  **M005 replaces the single-glyph `EditorPrefix::leaf` assumption with an
+  explicit per-prefix leaf table**, which M010 and M013 then build on; this is
+  the second shape change later milestones must build against, and the reason
+  M013 is sequenced after M005 rather than in parallel.
+  **A third interface shape is now frozen by M007's plan §5**: the selection-set
+  API (`set_members`, `selectors`, merge/rotate/split primitives) that M008 is
+  written against. It is specified in M007's plan precisely because M008 depends
+  on it and neither milestone is closed.
 - **Soft:** M004–M006, M011, M012 are mutually independent once M002 closes.
+  M013 has no dependency on them beyond M005's leaf table.
 - **Operational:** terminal-panel convergence must be re-verified after M002,
-  M007, and M008, because the panel shares the selection dialect.
+  M007, and M008, because the panel shares the selection dialect. M007's plan
+  predicts parity is preserved **by construction** if the single-selection
+  accessors are kept as primary-scoped rather than replaced — see its §1.1.
 
 M001 is deliberately first and small. Fixing the shadowed-binding defect
 before adding twenty more bindings is the point: otherwise each new arm carries
@@ -322,7 +356,7 @@ impossible today.
 
 Dependencies: M003 closed (hard — shares the motion/verb resolution path).
 
-Deliverable boundary: `p`/`P` paste (after/before) from the editor register;
+Deliverable boundary: `p`/`P` paste (after/before) from the system clipboard;
 bare `y` yank; `r` replace-with-character and `R` replace-with-yanked; `~` case
 switch, backtick lowercase, `Alt-backtick` uppercase, applied to the held
 selection.
@@ -334,6 +368,7 @@ characters rather than corrupting them; case verbs operate on the whole held
 selection; documented interaction with the local `D` extension is unchanged.
 
 Deferred: `c`/`Alt-c` change, noyank variants, `>`/`<` indent, `=` format.
+`space p`/`space P` are left to the milestone that owns `SPACE_LEAVES`.
 
 ### M005 — Textual motions and goto mode
 
@@ -345,18 +380,22 @@ goto-mode leaves that need no new infrastructure.
 
 Dependencies: M003 closed (soft), M002 closed (hard — goto mode is a prefix).
 
-Deliverable boundary: `gs`; `W`/`B`/`E`; `gj`/`gk`; goto leaves `ge`, `gt`, `gc`,
-`gb`, `g.`, and `gf`.
+Deliverable boundary: `gs`; `W`/`B`/`E`; `gj`/`gk` as goto leaves; goto leaves
+`gs`, `ge`, `gh`, `gl` plus the existing `gg`.
 
 User value: removes the single most surprising omission (no smart-home) and
 completes the parts of goto mode that are pure navigation.
 
 Exit conditions: `gs` round-trips with `0` on blank and indented lines; long-word
-motions treat whitespace-separated runs as one unit; goto leaves are reachable
-and documented.
+motions treat whitespace-separated runs as one unit and are observably distinct
+from `w`/`b`/`e`; goto leaves are reachable through two real keystrokes and
+documented; `gg` and `space y` behave exactly as before.
 
-Deferred: LSP-backed goto leaves (M010), `gw` label navigation, buffer/alternate
-file leaves pending multi-document attachment (predecessor non-goal).
+Deferred, each recorded rather than left silent: LSP-backed goto leaves (M010,
+gated on M013); `gt`/`gc`/`gb`, which are **screen**-relative and need the real
+viewport height rather than the fixed `NOMINAL_VISIBLE_LINES` guess; `gw` label
+navigation; `g|` and buffer/alternate-file leaves (`gf`, `ga`, `gm`, `gn`,
+`gp`, `g.`) pending multi-document attachment (predecessor non-goal).
 
 ### M006 — Unimpaired navigation, non-TS subset
 
@@ -367,19 +406,114 @@ tree-sitter nor an LSP write.
 
 Dependencies: M002 closed (hard).
 
-Deliverable boundary: `]d`/`[d` jump to next/previous diagnostic and `]D`/`[D`
-first/last (F2 currently opens a panel rather than navigating); `]p`/`[p`
-paragraph; `]g`/`[g` change and `]G`/`[G` first/last change, reusing the
-existing diff surface; `]Space`/`[Space` add newline below/above.
+Deliverable boundary *(amended — see A1)*: `]p`/`[p` paragraph; `]Space`/`[Space`
+add newline below/above; `Alt-.` widened to repeat the unimpaired motions, which
+this roadmap's M003 entry already composes. The `[`/`]` grammar itself lands here
+— M002 armed both prefixes with an empty leaf table, and this milestone is what
+gives the table rows.
 
-User value: diagnostics become navigable rather than panel-only, and paragraph/
-change jumps cover long-file traversal.
+User value: paragraph and whitespace jumps cover long-file traversal, and the
+`[`/`]` layer becomes a real grammar rather than two inert prefixes.
 
-Exit conditions: every listed binding navigates or edits as documented; `[`/`]`
-as literal characters remain typable in Insert; unimpaired bindings do not
-shadow the existing `:` and `/` lines.
+Exit conditions *(amended)*: every binding in the amended boundary navigates or
+edits as documented; `[`/`]` as literal characters remain typable in Insert —
+**with a test, which did not previously exist**; unimpaired bindings do not
+shadow the existing `:` and `/` lines, and in particular `]` then `Space` resolves
+to the `]Space` leaf rather than arming space mode; the diagnostic and change
+quartets are **asserted unbound** so a later milestone cannot land them by
+accident.
 
 Deferred: `]f`/`[f`, `]t`/`[t`, `]a`/`[a`, `]c`/`[c`, `]T`/`[T` — ADR-0034.
+
+> **Amendment A1 (2026-10-18).** The original boundary above claimed six
+> families: `]d`/`[d`, `]D`/`[D`, `]p`/`[p`, `]g`/`[g`, `]G`/`[G`, and
+> `]Space`/`[Space`. Three independent checks — the live Helix keymap, a
+> call-graph trace of the diagnostics read path, and a search for any reachable
+> change/hunk data — showed two of the six cannot be delivered here and one was
+> described backwards. Full reasoning in
+> `plans/implementation/tui-editor-helix-parity/006-unimpaired-navigation-non-ts-subset.md`
+> §1.1. Summary:
+>
+> 1. **`]D`/`[D` and `]G`/`[G` were inverted.** This roadmap read "`]D`/`[D`
+>    first/last" and "`]G`/`[G` first/last change". The live keymap reads
+>    `]D` = `goto_last_diag`, `[D` = `goto_first_diag`, `]G` = `goto_last_change`,
+>    `[G` = `goto_first_change`. `]` is *forward* throughout this layer (`]d` =
+>    next, `]p` = next, `]g` = next), so `]D` is last and `[D` is first. The same
+>    rule applies when those bindings do land — Helix is normative, and this
+>    prose was not.
+> 2. **The diagnostic quartet moves to M013.** Two reasons, either sufficient.
+>    **This roadmap already claims those bindings twice** — M013's deliverable
+>    boundary names "`]`/`[` diagnostic navigation", so M006's claim was an
+>    overlap, not a division of labour. And the read path is broken: at this
+>    baseline `publish_changed_diagnostics` and `DIAGNOSTICS_POLL_INTERVAL`
+>    (`src/core/daemon_lsp.rs:555`, `:570`) have **zero callers**, so
+>    `daemon.lsp_diagnostics` never receives a production write, and
+>    `find_existing_client_for_root_hint` (`:213-215`, `:334-336`) returns
+>    `NotReady` whenever more than one client shares the root. A `]d` that jumps
+>    nowhere is harder to diagnose than an absent key. This is the same reasoning
+>    already applied to M010 in §7.
+> 3. **The change quartet needs a milestone of its own.** The claim that it works
+>    by "reusing the existing diff surface" is **false**. `crates/egggit/src/diff.rs`
+>    exposes `ChangedFile { path, kind }` and `FileDiff { path, patch }`, neither
+>    of which carries line ranges; the only parsed hunk type, `DiffHunk`
+>    (`src/tui/components/diff.rs:27`), is produced by the **private**
+>    `DiffViewer::compute_diff` (`:66`) inside a widget; and `handle_normal_key`
+>    receives `&mut EditorState`, which has no git handle and no base copy of the
+>    document. Delivering `]g` would mean a new App-level request, a daemon
+>    response type, parsed-hunk presentation state, and a new IPC surface — a
+>    second ownership boundary inside a capability milestone, which §5 sizing
+>    forbids. The three options for that milestone, and the constraint that only
+>    one of them keeps the editor free of filesystem authority, are recorded in
+>    the M006 plan §5. **It needs fresh planning and is registered as deferred
+>    product work, not as an orphan.**
+
+> **Amendment A2 (2026-10-19).** M006 is implemented and closed
+> (`plans/closure/tui-editor-helix-parity/006-status.md`). The boundary above
+> was delivered as written: `]p`/`[p`, `]Space`/`[Space`, and `Alt-.` widened to
+> the unimpaired motions. Five things the planning pass could not have known, and
+> which a successor milestone would otherwise re-derive:
+>
+> 1. **`PrefixAction` needed a third arm, `Edit`.** `]Space` inserts a newline,
+>    and `editor_motion` is the one function in the dispatch whose contract is
+>    that it never touches text. The `Motion` arm was not an option; the leaf has
+>    to say what kind of thing it is. It routes through `editor_editing_command`,
+>    so the read-only gate, the undo entry and the document transaction are the
+>    ones `x`/`d`/`y` already use.
+> 2. **A paragraph scan has *three* answers, not two.** `Landed`, `NoParagraph`,
+>    and `Bounded` for a walk that ran out of byte budget. The plan described the
+>    disclosure but not the type; `Option` cannot carry the third, and collapsing
+>    it into `None` would report "there is none" about a document that has one —
+>    the one answer a reader has no way to distrust. `MAX_PARAGRAPH_SCAN_BYTES` is
+>    the whole-walk budget (the frame's own `MAX_FRAME_SOURCE_BYTES`), because
+>    `bounded_prefix_end`'s per-line cap alone still leaves a 200 MB walk on a
+>    200 MB file with no blank lines.
+> 3. **Deliberate divergence from Helix, on the degenerate case.** With no blank
+>    line anywhere, Helix's `move_next_paragraph` skips every remaining line and
+>    lands on the end of the buffer — evidence in
+>    `test_behaviour_when_moving_to_next_paragraph_single`,
+>    `helix-core/src/movement.rs`. CodeGG reports "no next paragraph" instead: an
+>    end-of-buffer jump looks like the key did something and hides that it found
+>    nothing. Recorded rather than matched.
+> 4. **`Alt-.` had a pre-existing slot defect, found here and fixed.** A find
+>    returned early from `note_motion` without clearing the other repeat slot, so
+>    `]p`, `f x`, `Alt-.` repeated the *older* `]p` backwards instead of `f x`
+>    forwards. Harmless-looking while there were two slots and `Alt-.` checked
+>    one of them first; wrong the moment a third existed. Every recorder now
+>    closes the other two doors, which is the single-slot rule the function's
+>    comment already claimed.
+> 5. **`o`/`O` do not insert a line, and that predates M006.** `enter_insert`
+>    maps `OpenLineBelow`/`OpenLineAbove` to "the cursor", so `resolve_edit`'s
+>    open-line arms are reachable only from their own unit test. `o` enters
+>    Insert mode on the current line rather than opening a new one below it.
+>    **Found, recorded, not fixed** — changing a pre-existing milestone's
+>    behaviour is not this one's to decide. Owner: whoever next touches the
+>    insert-entry chords.
+>
+> The terminal panel is **explicitly exempt**. It has no unimpaired layer, no
+> `helix_selection` import in `src/tui/commands/interactive_terminal.rs`, and no
+> leaf table to extend; `src/tui/interactive_terminal.rs` is **unmodified** by
+> this milestone, which is the evidence for the exemption rather than an
+> assertion of it.
 
 ### M007 — Multi-selection core
 
@@ -390,19 +524,112 @@ distinguished primary, with every existing command applying to all members.
 
 Dependencies: M001 closed (hard). Independent of M002.
 
-Deliverable boundary: `SelectionState` holds a set; motions transform the whole
-set preserving order; `v` extends all members; line-selection growth applies
-per member; the selection-dependent effects (`d`, `space y`, `D`) emit one
-range set; rendering shows every head.
+Deliverable boundary: `SelectionState` holds a set with a distinguished primary;
+motions transform the whole set preserving order; `v` extends all members;
+line-selection growth applies per member; the selection-dependent effects emit
+one range set — `d`, `y`/`space y`, and M004's `r`/`R`/`~`/`` ` ``/`p`/`P`; the
+set lands as **one** transaction; rendering shows every head; undo/redo restores
+the set; read-only buffers refuse selection **growth**.
+
+**`D` is deliberately excluded from that list** (amendment A1 below).
 
 User value: the enabling change for the entire Helix selection vocabulary, and
 the first genuinely multi-cursor editing capability in CodeGG.
 
-Exit conditions: N cursors selectable and deletable in one gesture; undo/redo
-round-trips a multi-selection edit; read-only buffers refuse selection growth;
-terminal-panel parity is re-verified or an exemption is recorded.
+Exit conditions *(amended)*: a programmatically constructed set of N members is
+deleted by one command in one transaction; undo/redo round-trips a multi-selection
+edit; read-only buffers refuse selection growth; terminal-panel parity is
+re-verified or an exemption is recorded.
 
 Deferred: the manipulation verbs themselves (M008).
+
+> **Amendment A1 (2026-10-18).** Two claims in the original entry were checked
+> against the code and corrected. Full reasoning in
+> `plans/implementation/tui-editor-helix-parity/007-multi-selection-core.md`.
+>
+> 1. **"`d`, `space y`, `D` emit one range set" is wrong about `D`.**
+>    `resolve_edit` (`src/tui/editor.rs:2525-2614`) never calls `selection_range`;
+>    `D` resolves to `EditorCommand::DeleteToLineEnd` (`:2569-2576`), which reads
+>    only `cursor_byte` and `line`. `D` is **not** selection-dependent today, so
+>    including it would be a *new user-visible semantic on a deliberately local
+>    extension*, not a refactor — and M004's exit conditions require the
+>    documented interaction with the local `D` extension to stay unchanged.
+>    `D` stays cursor-only. The set-scoped effects are `d`, `y`/`space y`, and
+>    M004's six verbs, which already route through a single funnel.
+> 2. **"N cursors selectable and deletable in one gesture" is not available
+>    here.** No verb that *creates* N cursors exists until M008 (`C` / `Alt-C`).
+>    M007 proves the **model** — a programmatically constructed N-member set is
+>    deleted by one command in one transaction — and M008 delivers the gesture.
+>    Claiming the gesture here would be a user-visible claim with no key behind
+>    it.
+>
+> Two findings from the same pass are worth recording, because both make this
+> milestone cheaper than its title suggests. **N edits already work**:
+> `TextTransaction.edits` is a `Vec<TextEdit>`, `invert()`
+> (`src/tui/editor.rs:1854-1871`) walks every edit with a shift offset, and
+> `apply_local` is transaction-level — so "one transaction, not a partial
+> multi-cursor edit" needs no controller work. And **terminal-panel parity is
+> preserved by construction** if the single-selection accessors are kept as
+> primary-scoped rather than replaced: `SelectionState::is_selected()`,
+> `SelectionState::span()` and `SelectionState::line_range()` have **no
+> production callers at all**, so keeping them reading as the primary is free,
+> and the panel's two production uses of the *inherent* `Selection::line_range()`
+> (`src/tui/interactive_terminal.rs:766`, `:1932`) both reach it through
+> `selection()`. That is the difference
+> between this milestone landing and not, and it is why the M007 plan makes that
+> choice explicitly.
+>
+> One finding is a genuine gap this milestone creates work for:
+> `apply_helix` (`src/tui/commands/editor.rs:3275-3283`) and `helix_motion`
+> (`:3269-3272`) have **no `editable` gate**, so `v`, `x`, and growth arm
+> selections on a read-only buffer today with no notice. The exit condition
+> above is therefore new behaviour, and its correct reading is narrow: **growth**
+> is refused, plain cursor movement is not. A reader must still be able to move
+> around a read-only file.
+>
+> M003's closure records that `t`/`T` are "a selection property and belongs with
+> M007". That reasoning does not hold against the keymap: Helix's `t`/`f`
+> difference is whether the cursor lands **on** the target or **past** it, which
+> is a cursor property needing no set. The M007 plan makes this a stop condition
+> rather than silently adopting or silently overriding M003's assignment.
+
+> **Amendment A2, 2026-10-18 — M007 closed; M008 unblocked.** Closure record:
+> `plans/closure/tui-editor-helix-parity/007-status.md`. Three things the
+> roadmap's entry did not anticipate, recorded here rather than only in the
+> closure because they are roadmap-level facts:
+>
+> 1. **A pre-existing correctness defect was found and fixed on the delete
+>    path.** `selection_range` resolved a character selection's end with
+>    `next_char_boundary(..).unwrap_or(last.byte)`; at the end of a document
+>    `next_char_boundary` is `None`, so the fallback set `end == last.byte` and
+>    **dropped the head character**. `v` on the final character of a file
+>    resolved to an empty range, so `d` on it deleted nothing. Fixed to use
+>    `char_end`. This is why the M007 boundary included rewriting
+>    `selection_range` at all.
+> 2. **The primary's head is not painted with cursor styling when it differs
+>    from the cursor.** A head that is not the cursor draws with the accent. On
+>    every Helix path `cursor_byte` *is* the primary's head, so this only
+>    changes the state a goto leaves behind — but painting a second
+>    reverse-video block would read as "the keyboard is here".
+> 3. **Selection consumption moved from five verbs to one funnel.** `submit_edit`
+>    now records the set into the undo entry and clears it for *every* accepted
+>    edit, because that is what lets `u` restore the set. This is a visible
+>    behaviour change for edit verbs that previously kept the selection —
+>    `D` is the one reachable from Normal mode — and
+>    `apply_helix_verb` correspondingly no longer clears it when reporting a
+>    delete or yank effect. The geometry layer reports; the App layer consumes.
+>
+> **M007's §5 set API contract shipped as specified**, so M008 needs no
+> corrective pass: `SelectionState::{restore_set, selections, primary,
+> primary_index, into_parts, clear, grow_all_to}`,
+> `TuiDocumentPresentation::{selections, primary_index, clear_selections,
+> restore_selections}`, `HelixVerbOutcome::{DeleteRanges, YankRanges}`,
+> `RangeSetEdit`, `BufferKey::{DeleteRanges, YankRanges}`, and
+> `editor::{selection_ranges, merge_ranges, delete_ranges}`. One addition
+> beyond the plan, which M008 must know: `RangeSetEdit` distinguishes `Empty`
+> from `TooMany` precisely so a refusal can be *shown* — the 256-edit cap
+> (`MAX_DOCUMENT_EDITS`) refuses rather than truncates, because a truncated
+> multi-cursor edit is a state neither `u` nor redo can describe.
 
 ### M008 — Multi-selection command surface
 
@@ -427,6 +654,83 @@ no-match set without corrupting the buffer; every verb is documented.
 Deferred: `v`-as-extend-mode unification (fold into M008 if it proves bounded,
 otherwise a corrective addendum).
 
+> **Amendment A1 (2026-10-18).** The plan is written and registered
+> **`blocked` on M007**, not `ready`: M007's hard dependency is unmet, and
+> `plans/003-planning-process.md` §4 makes `ready` conditional on that. It is
+> written early for one reason — **M008's verbs are undefined until the set API
+> they operate on exists**, so §5 of the M008 plan pins the exact contract M007
+> must expose. Two plans written months apart against an imagined interface is
+> how `EditorPrefix::leaf()` → `leaves()` had to be corrected once already.
+>
+> **Amendment A3 (2026-10-19) — M008 closed.** All eighteen verbs are
+> bound; the key-authority guard moved from 48 to **66 Normal-mode chords**, the
+> count this milestone's plan pinned. Three roadmap-level facts did not survive
+> contact with the implementation:
+>
+> 1. **Terminal-panel parity is broken on exactly one chord, and it is
+>    recorded rather than fixed.** §12 warned that eighteen new chords were the
+>    first thing in this roadmap able to break it, and the prediction was right:
+>    the panel's own Normal-mode table claims `C`/`c` for
+>    `TerminalNavAction::Clear`, while the editor uses `C` to add a cursor. The
+>    other seventeen are unclaimed by the panel and are swallowed by it. The
+>    divergence follows from the two surfaces having different subjects — the
+>    panel has no document to place a cursor in — so neither surface could have
+>    chosen differently. Closure finding 1.
+> 2. **The plan's preferred prompt design held, and its §6 claim is now
+>    verified rather than argued.** Reusing the `:` command line meant **no new
+>    prefix field and no new input mode**: `check_tui_editor_prefix_state.py`
+>    emits byte-identical output before and after this milestone. The plan's own
+>    concern — that a dedicated prompt is easy to add and hard to disarm — turned
+>    out to be the right concern.
+> 3. **Two additions beyond the plan's §5 contract.** `RangeSetEdit::Edit`
+>    carries an optional note, because `&` must disclose a member it could only
+>    measure in part; and `HelixVerb` lost `Copy`, because the three regex verbs
+>    carry a `String` and a verb that owns text is not a unit value. Neither
+>    changes what M009 consumes — M009's input is the set API.
+>
+> **Unblock audit.** M009 was blocked on this milestone **and** on ADR-0034
+> acceptance. This milestone is discharged; ADR-0034 is still `proposed` and is
+> **not** discharged here, so M009 stays blocked on the ADR alone and its row is
+> annotated accordingly rather than flipped to `ready`. A closure must not
+> quietly discharge a blocker it did not touch.
+>
+> **Deferred, unchanged.** `v`-as-extend-mode unification was **not** folded in:
+> it did not prove bounded. Unimpaired change navigation (`]g`/`[g`/`]G`/`[G`)
+> remains deferred, unregistered product work with no assigned milestone.
+>
+> **Amendment A2 (2026-10-18) — M007 closed, so this milestone is `ready`.**
+> M007's hard dependency is satisfied and its §5 set API contract shipped
+> **exactly as pinned** (see the M007 entry's A2). The early write-out paid
+> off: no interface drift, and no corrective pass is needed. M008's remaining
+> blocker list is unchanged otherwise — M009 still waits on this milestone
+> *and* on ADR-0034 acceptance.
+>
+> Two findings from the verification pass change the sizing estimate. **No chord
+> collides**: at this baseline the guard block
+> (`src/tui/commands/editor.rs:2795`) claims exactly two chords and
+> `handle_normal_key` claims 48, and none of these eighteen — bare `c`, `s`, `C`,
+> `S`, `K`, `;`, `,`, `%`, `&`, `(`, `)` nor any `ALT` variant — is claimed. This
+> is the second-cleanest keymap addition in the roadmap after M004's, and no
+> existing binding moves. **And `S`/`K`/`Alt-K` need no new dependency**:
+> `regex = "1"` is already in the root package (`Cargo.toml:213`) and already
+> used under `src/tui/` (`src/tui/components/messages.rs:26-29`,
+> `src/tui/command.rs:1317`). What remains expensive in that third of the
+> milestone is the **argument prompt** and boundedness, not the matching — which
+> is why the plan recommends reusing the `:` command line rather than building a
+> new input mode.
+>
+> All eighteen bindings were quoted from the live keymap's Normal mode →
+> Selection manipulation table rather than from this entry, in the same spirit as
+> M004's `R` correction. Two Helix labels are easy to invert and are called out in
+> the plan: `)`/`(` rotate the **primary selection**, while `Alt-)`/`Alt-(` rotate
+> the **selection contents** — one moves the cursor, the other moves bytes.
+>
+> Seven real Helix selection verbs sit outside this entry's boundary: `s`
+> (select all regex matches), `Alt-s` (split on newlines — *cheaper* than `S`),
+> `_` (trim), `X`/`Alt-x` (extend/shrink to line bounds), `J`/`Alt-J` (join),
+> and `Ctrl-c` (comment). They are enumerated with reasons in the M008 plan §7.
+> `Alt-s` in particular is the natural next slice once `S` ships.
+
 ### M009 — Match mode and text objects
 
 Class: capability
@@ -446,6 +750,52 @@ Exit conditions: bracket matching survives unbalanced and multi-byte input;
 surround replace preserves nesting; objects resolve against a bounded window
 and never scan the whole buffer per keystroke.
 
+### M013 — LSP read delivery and editor reachability
+
+Class: invariant (delivery) + enabling capability (reach)
+
+Objective: make the LSP read surface the editor already calls actually deliver,
+then extend it to the read-only capabilities `egglsp` implements but the editor
+cannot invoke.
+
+This milestone is a **corrective insertion**, not a successor. A survey at
+baseline `84440fe7f` verified two defects that make the F2–F9 path return
+`NotReady` in ordinary configurations:
+
+1. **Diagnostics are never driven.** `publish_changed_diagnostics` and
+   `DIAGNOSTICS_POLL_INTERVAL` (`src/core/daemon_lsp.rs`) have zero callers.
+   The single production write to `daemon.lsp_diagnostics` lives inside that
+   uncalled function, so the store stays empty and every diagnostics read is
+   permanently `NotReady`. `NotReady` is explicitly not an empty clean set, so
+   the UI cannot tell "not ready" from "broken".
+2. **Warm-client resolution is ambiguous on polyglot roots.** The read path
+   calls `find_existing_client_for_root_hint(Some(&root), None)`; the resolver
+   returns `Err` when **more than one** client shares the root, and that `Err`
+   is mapped flatly to `NotReady`. Any workspace with two language servers
+   attached has F3–F9 silently dead while the same project with one server
+   works.
+
+Dependencies: M005 closed (hard, for the leaf table), M002 closed (hard).
+
+Deliverable boundary: a daemon-owned diagnostics publisher cadence; an optional
+`server_id` on the read request with explicit → extension-matched → unique →
+**typed ambiguity** resolution; new read-only `LspReadOperation` variants for
+implementation, declaration, document highlight, signature help, and
+formatting/rename **preview**; Helix bindings (`space k`/`s`/`S`/`d`/`h`/`f`,
+`gd`/`gy`/`gi`/`gr`, `]`/`[` diagnostic navigation) mapped onto them.
+
+User value: the LSP features already documented as reachable become reachable in
+practice, and the `NotReady` state stops being the permanent answer.
+
+Exit conditions: a warm server returns `Ready` with contents; a two-server root
+resolves or reports a distinct ambiguity; a cold root still returns `NotReady`
+and starts no process; every LSP leaf degrades visibly; F2–F9 unchanged.
+
+Non-goal: LSP **write** authorization. Rename/code-action apply and `=` format
+need an accepted ADR; only preview is delivered here (see §10 risk 2).
+
+Plan: `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md`
+
 ### M010 — Space mode and extended goto mode
 
 Class: capability
@@ -453,7 +803,7 @@ Class: capability
 Objective: replace the single `space y` leaf with the picker and LSP surface
 already present, and complete LSP-backed goto leaves.
 
-Dependencies: M005 closed (soft), M002 closed (hard).
+Dependencies: **M013 closed (hard)**, M005 closed (hard), M002 closed (hard).
 
 Deliverable boundary: space-mode leaves for file/buffer/jumplist/changed-file
 pickers, symbol and diagnostic pickers, global search, last-picker recall, and
@@ -580,9 +930,12 @@ binding-reachability guard run in `verify.sh quick`.
    a narrower alternative, gates the `TS`-marked slice of M006 and most of
    M009. Roughly twenty Helix bindings are unreachable without it. This is a
    durable dependency decision and requires an ADR, not a milestone choice.
-2. **LSP write operations.** `=` format, `space r` rename, and `space a` code
-   action need a protocol extension beyond the read-only `LspReadOperation`.
-   Deferred product work, not an omission.
+2. **LSP write operations.** `=` format, `space r` rename apply, and `space a`
+   code-action apply need an authorization contract beyond the read-only
+   `LspReadOperation`. M013 delivers rename and format **preview** only
+   (`egglsp`'s `preview_workspace_edit` / `preview_text_edits_for_file` already
+   exist), so the binding can ship without a mutation path. The apply decision
+   remains deferred product work, not an omission.
 3. **`Ctrl+s` / `Ctrl+r` in Insert.** M011 cannot adopt Helix's insert-mode
    meanings for these two chords while the app owns them mode-independently.
    Needs an explicit decision recorded in the M011 plan.
@@ -625,34 +978,109 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M001 | **closed** | `plans/implementation/tui-editor-helix-parity/001-key-dispatch-authority-and-reachability.md` | `plans/closure/tui-editor-helix-parity/001-status.md` | — |
 | M002 | **closed** | `plans/implementation/tui-editor-helix-parity/002-unified-prefix-state-machine.md` | `plans/closure/tui-editor-helix-parity/002-status.md` | — |
 | M003 | **closed** | `plans/implementation/tui-editor-helix-parity/003-character-finding-motions.md` | `plans/closure/tui-editor-helix-parity/003-status.md` | — |
-| M004 | eligible for fresh planning | — | — | — |
-| M005 | eligible for fresh planning | — | — | — |
-| M006 | eligible for fresh planning (M002 edge discharged) | — | — | — |
-| M007 | eligible for fresh planning | — | — | M001 |
-| M008 | eligible for fresh planning | — | — | M007 |
-| M009 | blocked | — | — | M008, ADR-0034 acceptance |
-| M010 | eligible for fresh planning | — | — | M005 |
+| M004 | **closed** | `plans/implementation/tui-editor-helix-parity/004-core-change-verbs.md` | `plans/closure/tui-editor-helix-parity/004-status.md` | — |
+| M005 | **closed** | `plans/implementation/tui-editor-helix-parity/005-textual-motions-and-goto-mode.md` | `plans/closure/tui-editor-helix-parity/005-status.md` | — |
+| M006 | **closed** | `plans/implementation/tui-editor-helix-parity/006-unimpaired-navigation-non-ts-subset.md` | `plans/closure/tui-editor-helix-parity/006-status.md` | — |
+| M007 | **closed** | `plans/implementation/tui-editor-helix-parity/007-multi-selection-core.md` | `plans/closure/tui-editor-helix-parity/007-status.md` | — |
+| M008 | **closed** | `plans/implementation/tui-editor-helix-parity/008-multi-selection-command-surface.md` | `plans/closure/tui-editor-helix-parity/008-status.md` | — |
+| M009 | ready | — | — | ADR-0034 acceptance only; the M008 blocker is discharged |
+| M010 | **blocked** | — | — | M013 |
 | M011 | eligible for fresh planning (M002 edge discharged) | — | — | — |
 | M012 | eligible for fresh planning (M002 edge discharged) | — | — | — |
+| M013 | **ready** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | — | — |
 
 **M003 is closed** (`plans/closure/tui-editor-helix-parity/003-status.md`). It
 discharged exactly one dependency edge: **M004**, whose hard dependency was the
-shared motion/verb resolution path. **M005** is now dependency-clean as well —
-its edges were M002 (closed) and M003 (now closed). M010 is unchanged and still
-waits on M005, which the roadmap's own graph records as its predecessor; the
-plan's §15 prediction that M004–M005 and M010 would all become ready together
-did not match the graph, and the closure records the audit rather than the
-prediction.
+shared motion/verb resolution path.
 
-M006, M011 and M012 were already "M002 edge discharged" and are unaffected.
-M007 remains independently available, M008 waits on M007, and M009 waits on M008
-plus ADR-0034 acceptance. M004–M012 need a fresh implementation plan at their
-turn; see `plans/registry.md` § "Milestones eligible for fresh planning".
+**M004 is closed** (`plans/closure/tui-editor-helix-parity/004-status.md`). The
+basic edit loop exists: `y` then `p` moves text, which was impossible before.
+It delivered `p`/`P`, bare `y`, `r`, `R`, `~`, and `` ` ``/`` Alt-` `` — the last
+two because *this* roadmap's deliverable boundary named them and Helix binds
+them, where the implementation plan's §5 had not. `r` is the second **capture**
+grammar after M003's find family, and the dispatch now resolves every capture
+through one branch classified by `EditorPrefix::is_capture`.
+
+One correction was made against the live Helix keymap: the implementation plan
+had `R` as vi's "replace to end of line", entering Insert mode with a retained
+tail. Helix binds it to `replace_with_yanked` — no argument, no Insert mode, no
+retention — and **this** roadmap's deliverable boundary already said so. The
+plan's entire retained-tail design was dropped (amendment A1).
+
+**A user-visible binding moved as a result.** `R` was already reload, as a
+Normal-only guard-block chord — the exact arrangement
+`check_tui_editor_key_authority.py` rejects as shadowing a Normal-mode verb while
+surviving into Insert. The chord is gone; reload survives as `:e`. There is also
+**no local register**: `y`/`space y` both write the OS clipboard, so `p` pastes
+whatever is on it, and that is precisely why Helix's `R` is
+`replace_with_yanked`. M004 discharges no dependency edge of its own.
+
+**M005 is closed** (`plans/closure/tui-editor-helix-parity/005-status.md`). It
+delivered `gs`, `W`/`B`/`E` and `gj`/`gk`, and discharged its own edges — M002
+and M003. It also supplied the per-prefix **leaf table** that M010 and M013
+build on, replacing M002's single-glyph `EditorPrefix::leaf`, so **M010's M005
+edge is now discharged**. Two corrections were made against the live Helix
+keymap during implementation and recorded in the closure: `gl` is
+`goto_line_end` (not "last goto"), and `gt`/`gc`/`gb` are **screen**-relative
+and are therefore deliberately unbound, because motions resolve against a fixed
+`NOMINAL_VISIBLE_LINES` guess rather than the real viewport.
+
+**M010 remains blocked**, now on **M013 alone**. A survey at baseline `84440fe7f`
+found that the LSP read surface the F2–F9 keys already call cannot deliver: the
+diagnostics publisher has no production driver, and a workspace with two warm
+servers resolves to a false `NotReady`. Those defects are owned by **M013**,
+which is **ready**. Binding Helix LSP leaves before M013 lands would ship keys
+that open always-`NotReady` panels.
+
+M013 is numbered as a corrective insertion rather than continuing the sequence,
+so it sorts after the closed 001–003 without implying a dependency on the
+un-planned M004–M012. It depended on M005 only for the leaf table M005 W1
+introduces, and **that edge is now discharged**; M013's remaining work is
+independent of M005.
+
+M006, M007 and M008 now have implementation plans, written 2026-10-18 at
+baseline `84440fe7f`. **All three are now `closed`** — M007 and M008 on
+2026-10-19, and M006 on 2026-10-19 after Amendment A2. (M008 was registered
+**blocked on M007**, because a milestone is dependency-ready only when every hard
+dependency is closed; that edge was discharged by M007's closure.) The three
+plans displaced three rows of this roadmap's status table and produced **nine
+corrections against this roadmap's own prose**, each recorded as an amendment on
+the milestone entry rather than absorbed.
+
+The three corrections worth carrying forward:
+
+- **M006's boundary was claiming bindings twice and described two of them
+  backwards.** `]D`/`[D` and `]G`/`[G` are inverted here — `]` is *forward*
+  throughout the layer, so `]D` is **last** and `[D` is **first**. The
+  diagnostic quartet belongs to **M013**, which already names "`]`/`[` diagnostic
+  navigation" in its own boundary *and* owns the pipeline repair that
+  `]d`-would-need. The change quartet has **no reachable data source** — the
+  claim that it reuses "the existing diff surface" is false, because
+  `egggit`'s diff types carry no line ranges and the only parsed hunk type lives
+  behind a private widget method. It needs a milestone of its own.
+- **M007's entry named `D` as selection-dependent.** It is not: `resolve_edit`
+  never calls `selection_range`, and `D` resolves against `cursor_byte` and
+  `line` only. Making it selection-aware would be a new semantic on a
+  deliberately local extension. M007 also cannot claim "N cursors deletable in one
+  gesture" — no verb *creates* N cursors until M008.
+- **M008's eighteen chords are all unclaimed and its regex verbs need no new
+  dependency.** `regex = "1"` is already in the root package and already used
+  under `src/tui/`. The real cost there is the argument prompt, not the matching.
+
+M011 and M012 remain "M002 edge discharged" and are unaffected. M009 waits on
+ADR-0034 acceptance alone — its M008 edge was discharged by M008's closure.
+**M013 is the only milestone left that is `ready` with a plan**; M009 and M010
+need their dependency, and M011/M012 need plans of their own. See
+`plans/registry.md` § "Milestones eligible for fresh planning".
 
 One composition note for M006: the roadmap's M003 entry lists `Alt`-`.` as
-repeating "the last `f`/`t`/`m`/`[`/`]` motion". The `m` and `[`/`]` leaves do
-not exist until M006, so the repeatable set is the find family only today and
-M006 widens it. That is the intended composition.
+repeating "the last `f`/`t`/`m`/`[`/`]` motion". **M006 discharged this.** The
+`m` and `[`/`]` leaves now exist, so the repeatable set is the find family, the
+selection verbs and the unimpaired **motions** — and specifically *not*
+`]Space`/`[Space`, because `Alt-.` repeats motions and an edit is not one. That
+is the intended composition, and the asymmetry is now stated rather than left to
+be discovered. Recording the `Alt-.` slot defect A2.4 describes is what proved
+the three slots are mutually exclusive rather than merely consulted in order.
 
 M001's closure is discharged — its chosen resolution was shape (b), redo on `U`
 (Helix's own chord), with `Ctrl+r` keeping exactly one owner as resync in both

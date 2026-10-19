@@ -393,7 +393,7 @@ impl EditorWidget<'_> {
         // Resolved once per frame, not per row: `selection_range` clamps and
         // resolves lines, and doing that per row would re-walk the selection
         // for every visible line.
-        let selection = editor::selection_range(self.presentation, self.snapshot);
+        let selection = editor::selection_ranges(self.presentation, self.snapshot);
         let gutter_style = Style::default().fg(theme.muted);
         let current_gutter = Style::default()
             .fg(theme.primary)
@@ -471,7 +471,7 @@ impl EditorWidget<'_> {
                 ));
             } else {
                 frame_remaining = frame_remaining.saturating_sub(row_bytes);
-                spans.extend(self.line_spans(line_index, viewport, text_style, selection.as_ref()));
+                spans.extend(self.line_spans(line_index, viewport, text_style, &selection));
             }
             lines.push(Line::from(spans));
         }
@@ -820,7 +820,7 @@ impl EditorWidget<'_> {
         line_index: usize,
         viewport: EditorViewport,
         base: Style,
-        selection: Option<&std::ops::Range<usize>>,
+        selection: &[std::ops::Range<usize>],
     ) -> Vec<Span<'static>> {
         use crate::tui::editor_lsp::utf16_column_to_byte;
         let Some(start) = editor::line_start(self.snapshot, line_index) else {
@@ -836,8 +836,9 @@ impl EditorWidget<'_> {
             // so a partial range would need per-byte slicing to be exact. The
             // row is a 32 KiB marker either way; highlighting all of it says
             // "selected" honestly and costs nothing.
-            let whole_line_selected =
-                selection.is_some_and(|range| range.start <= start && range.end > start);
+            let whole_line_selected = selection
+                .iter()
+                .any(|range| range.start <= start && range.end > start);
             let base = if whole_line_selected {
                 base.patch(Style::default().bg(self.theme.selection))
             } else {
@@ -968,15 +969,17 @@ impl EditorWidget<'_> {
             boundaries.push(range.start);
             boundaries.push(range.end);
         }
-        // The cursor cell. It has to exist even when it sits past the last
-        // character — otherwise "the cursor is at the end of the line" is
-        // the one position a reader cannot see.
-        let cursor_cell = self.cursor_cell(start, &line, line_index, visible_start, visible_end);
-        if let Some((from, to)) = cursor_cell {
-            boundaries.push(from);
-            boundaries.push(to);
+        // Every selection head on this row, primary and extras alike. They
+        // have to exist even when a head sits past the last character —
+        // otherwise "the cursor is at the end of the line" is the one
+        // position a reader cannot see.
+        let head_cells = self.head_cells(start, &line, line_index, visible_start, visible_end);
+        for (from, to, _) in &head_cells {
+            boundaries.push(*from);
+            boundaries.push(*to);
         }
         let cursor_style = self.cursor_style();
+        let extra_head_style = self.extra_head_style();
         boundaries.sort_unstable();
         boundaries.dedup();
         boundaries
@@ -986,12 +989,12 @@ impl EditorWidget<'_> {
                 if range.start == range.end {
                     return None;
                 }
-                // The only byte range that legitimately misses the line is the
-                // cursor's virtual cell past its end; it renders as one space
+                // The only byte range that legitimately misses the line is a
+                // head's virtual cell past its end; it renders as one space
                 // rather than disappearing.
                 let text = match line.get(range.clone()) {
                     Some(text) => text.to_string(),
-                    None if cursor_cell.is_some_and(|(from, _)| from == range.start) => {
+                    None if head_cells.iter().any(|(from, _, _)| *from == range.start) => {
                         " ".to_string()
                     }
                     None => return None,
@@ -1002,12 +1005,14 @@ impl EditorWidget<'_> {
                         token_range.start <= range.start && token_range.end >= range.end
                     })
                     .map_or(base, |(_, token_style)| base.patch(*token_style));
-                let at_cursor = cursor_cell.is_some_and(|(from, _)| from == range.start);
                 // Absolute offsets back to line-relative, then clipped to the
                 // segment so a selection boundary can only colour part of it.
-                let selected = selection.is_some_and(|selected| {
-                    let from = selected.start.saturating_sub(start);
-                    let to = selected.end.saturating_sub(start);
+                // Membership is over the whole **set**: a byte inside any
+                // member is selected, which is what makes two separate
+                // highlighted regions read as two selections.
+                let selected = selection.iter().any(|member| {
+                    let from = member.start.saturating_sub(start);
+                    let to = member.end.saturating_sub(start);
                     from < range.end && to > range.start
                 });
                 let searched = search_ranges
@@ -1031,17 +1036,29 @@ impl EditorWidget<'_> {
                 } else {
                     style
                 };
-                // The cursor is painted last so nothing can bury it: a
-                // selection or a search hit that happened to cover the
+                // Heads are painted last so nothing can bury them: a
+                // selection or a search hit that happened to cover a
                 // cursor's own cell must not make the position unreadable.
                 //
-                // It *patches* rather than replaces. Replacing dropped the
+                // Each *patches* rather than replaces. Replacing dropped the
                 // base outright, and since the Insert caret only carries a
                 // foreground and a modifier, that punched an untinted
                 // one-cell hole in the current line — the caret cell was the
                 // one cell on the row that did not belong to the row.
-                let style = if at_cursor {
+                //
+                // The primary wins over an extra head sharing its cell: it is
+                // the one the keyboard is on, so it is the one that must stay
+                // readable.
+                let at_primary = head_cells
+                    .iter()
+                    .any(|(from, _, is_primary)| *is_primary && *from == range.start);
+                let at_extra = head_cells
+                    .iter()
+                    .any(|(from, _, is_primary)| !*is_primary && *from == range.start);
+                let style = if at_primary {
                     style.patch(cursor_style)
+                } else if at_extra {
+                    style.patch(extra_head_style)
                 } else {
                     style
                 };
@@ -1050,31 +1067,28 @@ impl EditorWidget<'_> {
             .collect()
     }
 
-    /// The cell the cursor occupies on this row, as a line-relative byte
-    /// range, or `None` when the cursor is on another line or scrolled out
-    /// of the horizontal window.
+    /// The cell a byte offset occupies on this row, as a line-relative byte
+    /// range, or `None` when the offset is scrolled out of the horizontal
+    /// window.
     ///
-    /// A cursor sitting past the last character still owns a cell: it is
-    /// rendered as a single space one column past the end of the text. That
-    /// is the position a reader reaches most often — the end of a line they
-    /// are about to append to — so it is the one that must never be
-    /// invisible.
-    fn cursor_cell(
+    /// A position past the last character on an otherwise fully visible row
+    /// still owns a cell: it is rendered as a single space one column past the
+    /// end of the text. That is the position a reader reaches most often — the
+    /// end of a line they are about to append to — so it is the one that must
+    /// never be invisible.
+    fn cell_for_offset(
         &self,
+        byte: usize,
         line_start: usize,
         line: &str,
-        line_index: usize,
         visible_start: usize,
         visible_end: usize,
     ) -> Option<(usize, usize)> {
-        if line_index != editor::cursor_line(self.snapshot, self.cursor_byte) {
-            return None;
-        }
-        let at = self.cursor_byte.saturating_sub(line_start).min(line.len());
+        let at = byte.saturating_sub(line_start).min(line.len());
         // Past the last character on an otherwise fully visible row: the
-        // virtual cell. Anywhere else it means the cursor is simply scrolled
+        // virtual cell. Anywhere else it means the position is simply scrolled
         // out of the window, and inventing a cell there would paint a ghost
-        // cursor somewhere the viewport has already decided not to show.
+        // marker somewhere the viewport has already decided not to show.
         if at == visible_end && visible_end < line.len() {
             return None;
         }
@@ -1086,6 +1100,96 @@ impl EditorWidget<'_> {
             .next()
             .map_or(at + 1, |ch| at + ch.len_utf8());
         Some((at, end.max(at + 1)))
+    }
+
+    /// Every selection head that lands on this row, as line-relative byte
+    /// ranges paired with whether that head **is the cursor**.
+    ///
+    /// The flag means "the keyboard is here", not "this member is primary".
+    /// Those coincide on every Helix path — `cursor_byte` *is* the primary's
+    /// head — and they come apart only when a motion moved the cursor without
+    /// consulting the selection machine, such as a goto. Painting a member
+    /// head with the cursor's reverse video in that state would put a second
+    /// block exactly where the reader reads "the keyboard is here", which is
+    /// the one thing a cursor must never do. So every head that is not the
+    /// cursor is drawn as an extra, and the cursor alone carries cursor styling.
+    fn head_cells(
+        &self,
+        line_start: usize,
+        line: &str,
+        line_index: usize,
+        visible_start: usize,
+        visible_end: usize,
+    ) -> Vec<(usize, usize, bool)> {
+        let mut cells: Vec<(usize, usize, bool)> = self
+            .presentation
+            .selections
+            .iter()
+            .filter(|selection| {
+                editor::cursor_line(self.snapshot, selection.head.byte) == line_index
+                    // The cursor's own cell joins this partition below, so a
+                    // head that coincides with it must not be drawn twice.
+                    && selection.head.byte != self.cursor_byte
+            })
+            .filter_map(|selection| {
+                self.cell_for_offset(
+                    selection.head.byte,
+                    line_start,
+                    line,
+                    visible_start,
+                    visible_end,
+                )
+                .map(|(from, to)| (from, to, false))
+            })
+            .collect();
+        // The cursor's own cell joins the same partition as the heads, so it
+        // is folded in here rather than handled by a separate code path — two
+        // code paths for "which cell is marked" is how they drift apart.
+        if let Some((from, to)) =
+            self.cursor_cell(line_start, line, line_index, visible_start, visible_end)
+        {
+            cells.push((from, to, true));
+        }
+        cells
+    }
+
+    /// The cell the cursor occupies on this row, as a line-relative byte
+    /// range, or `None` when the cursor is on another line or scrolled out of
+    /// the horizontal window.
+    fn cursor_cell(
+        &self,
+        line_start: usize,
+        line: &str,
+        line_index: usize,
+        visible_start: usize,
+        visible_end: usize,
+    ) -> Option<(usize, usize)> {
+        if line_index != editor::cursor_line(self.snapshot, self.cursor_byte) {
+            return None;
+        }
+        self.cell_for_offset(
+            self.cursor_byte,
+            line_start,
+            line,
+            visible_start,
+            visible_end,
+        )
+    }
+
+    /// How an **extra** selection head paints itself.
+    ///
+    /// Distinct from both neighbours by construction. The primary cursor swaps
+    /// the theme's own foreground and background; a selected cell wears
+    /// `theme.selection` as its background. An extra head therefore takes the
+    /// accent colour as its background, which is already the "you are here"
+    /// signal the current-line gutter uses — a reader who cannot tell an extra
+    /// cursor from a highlight has no way to know how many selections they are
+    /// about to destroy with `d`.
+    fn extra_head_style(&self) -> Style {
+        Style::default()
+            .fg(self.theme.background)
+            .bg(self.theme.primary)
+            .add_modifier(Modifier::BOLD)
     }
 
     /// How the cursor paints itself.
@@ -1185,9 +1289,9 @@ mod tests {
         search_line: &'a str,
         search_count: usize,
         search_partial: bool,
-        /// A held selection, for tests that need the renderer's third
-        /// background layer to actually be painted.
-        selection: Option<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
+        /// The held selection **set**, for tests that need the renderer's
+        /// third background layer — or its extra head markers — painted.
+        selections: Vec<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
         /// Retained `/` match offsets, for the search highlight layer.
         search_matches: Vec<usize>,
         writable: bool,
@@ -1210,7 +1314,7 @@ mod tests {
             search_line: "",
             search_count: 0,
             search_partial: false,
-            selection: None,
+            selections: Vec::new(),
             search_matches: Vec::new(),
             writable: true,
             busy: false,
@@ -1229,7 +1333,7 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
-            selection: options.selection,
+            selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
@@ -1299,7 +1403,7 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
-            selection: options.selection,
+            selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
@@ -1430,6 +1534,81 @@ mod tests {
             mode: crate::tui::helix_selection::SelectionMode::Char,
             growing: false,
         }
+    }
+
+    #[test]
+    fn every_members_highlight_is_painted_not_just_the_primarys() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta gamma").snapshot();
+        // Two disjoint members, with the cursor parked on the *primary*'s
+        // head — the case where a renderer that still resolved one range would
+        // tint exactly one of the two.
+        let buffer = render_buffer(
+            "alpha beta gamma",
+            30,
+            8,
+            // Parked on the space at byte 5: a cursor is painted last, so
+            // parking it on byte 0 would have asserted the cursor's own style
+            // and passed for the wrong reason.
+            5,
+            Options {
+                buffer_focused: false,
+                selections: vec![
+                    selection_over(&snapshot, 0..1),
+                    selection_over(&snapshot, 6..10),
+                ],
+                ..defaults()
+            },
+        );
+        // Text byte N is body column N; the gutter is not counted.
+        assert_eq!(
+            body_style(&buffer, 0, 0).bg,
+            theme.selection,
+            "the primary's member paints"
+        );
+        assert_eq!(
+            body_style(&buffer, 0, 6).bg,
+            theme.selection,
+            "an extra member paints too, or the reader cannot see how many \
+             selections `d` is about to destroy"
+        );
+        assert_ne!(
+            body_style(&buffer, 0, 3).bg,
+            theme.selection,
+            "a byte outside every member stays untinted"
+        );
+    }
+
+    #[test]
+    fn an_extra_head_is_marked_differently_from_the_cursor() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta gamma").snapshot();
+        let mut extra = selection_over(&snapshot, 6..10);
+        extra.head = editor::EditorPoint { byte: 10, line: 0 };
+        let buffer = render_buffer(
+            "alpha beta gamma",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                selections: vec![selection_over(&snapshot, 0..1), extra],
+                ..defaults()
+            },
+        );
+        let cursor = body_style(&buffer, 0, 0);
+        // Byte 10 is the space after "beta" — the extra member's head.
+        let head = body_style(&buffer, 0, 10);
+        assert_eq!(cursor.bg, theme.foreground, "the cursor is reverse video");
+        assert_eq!(
+            head.bg, theme.primary,
+            "an extra head carries the accent background"
+        );
+        assert_ne!(
+            cursor.bg, head.bg,
+            "a reader who cannot tell a cursor from an extra has no way to \
+             know where the keyboard is"
+        );
     }
 
     #[test]
@@ -2070,7 +2249,7 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
-            selection: options.selection,
+            selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
@@ -2213,7 +2392,7 @@ mod tests {
             search_line: "",
             search_count: 0,
             search_partial: false,
-            selection: None,
+            selections: Vec::new(),
             search_matches: Vec::new(),
             scope: codegg_protocol::document::DocumentScope::Workspace,
             writable: true,
@@ -2528,7 +2707,7 @@ mod tests {
             presentation: &mut presentation,
             theme,
         };
-        let spans = widget.line_spans(0, viewport, Style::default(), None);
+        let spans = widget.line_spans(0, viewport, Style::default(), &[]);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("let"), "{joined}");
         assert!(joined.contains("value"), "{joined}");
@@ -2777,7 +2956,7 @@ mod tests {
             4,
             Options {
                 buffer_focused: true,
-                selection: Some(selection_over(&snapshot, 1..4)),
+                selections: vec![selection_over(&snapshot, 1..4)],
                 ..defaults()
             },
         );
@@ -2840,7 +3019,7 @@ mod tests {
             0,
             Options {
                 buffer_focused: false,
-                selection: Some(selection_over(&snapshot, 0..3)),
+                selections: vec![selection_over(&snapshot, 0..3)],
                 search_line: "aaa",
                 search_count: 1,
                 search_matches: vec![0],

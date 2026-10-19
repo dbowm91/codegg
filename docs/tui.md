@@ -717,30 +717,138 @@ security signal pipeline that can escalate them, are described in
 Opening a file puts you in `NOR`, not `INS`. It is a surface you read before
 you type into, and `i` is one keystroke away. `NOR` gives the keyboard to the
 Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
-`v` selects by character, `x` selects the whole line (press again for one
-more), `d` deletes the selection, and `space y` copies it — the same keys
-`/terminal` uses in its viewing mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`,
-where typing goes into the file and `Esc` returns. `u`/`U` undo and redo, the
-Helix pair. In `NOR` anything the buffer does not claim types into the input
-box at the bottom, so you can talk to the agent without leaving the file. `Esc`
-never closes the editor; `:q` does.
+`W`/`B`/`E` jump by WORD, `v` selects by character, `x` selects the whole line
+(press again for one more), `d` deletes the selection, `y` and `space y` copy
+it, and `p`/`P` paste it back — the same keys `/terminal` uses in its viewing
+mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`, where typing goes into the file and
+`Esc` returns. `u`/`U` undo and redo, the Helix pair. In `NOR` anything the
+buffer does not claim types into the input box at the bottom, so you can talk
+to the agent without leaving the file. `Esc` never closes the editor; `:q` does.
 
-Three chords work in either mode, because they are round trips rather than
-verbs: `Ctrl+S` saves, `Ctrl+R` resyncs the replica after a transport failure,
-and `R` — `NOR` only — reloads from disk and throws the local draft away. Each
-chord has exactly one owner. In particular `U` is redo and `Ctrl+R` is resync;
-they are not two spellings of the same thing.
+Two chords work in either mode, because they are round trips rather than
+verbs: `Ctrl+S` saves and `Ctrl+R` resyncs the replica after a transport
+failure. Each chord has exactly one owner. In particular `U` is redo and
+`Ctrl+R` is resync; they are not two spellings of the same thing.
+
+To reload from disk and throw the local draft away, use `:e`. It used to be `R`,
+which now means something else — see [Change verbs](#change-verbs).
 
 The cursor is a block in `NOR` and a thin bar in `INS`, so you can always see
 where you are. `Ctrl+d` pages down and continues to the end of the file when a
 half-page would land past it.
+
+### Change verbs
+
+| Key | What it does |
+|---|---|
+| `p` / `P` | paste after / before the cursor or selection |
+| `y` | copy the selection |
+| `r` + char | replace the selection, or the character under the cursor |
+| `R` | replace the selection, or the character under the cursor, with the clipboard |
+| `~` | flip the case of the selection, or of the character under the cursor |
+| `` ` `` / `` Alt-` `` | set that text to lower / upper case |
+
+`y` and `p` together are a complete move-text loop: select, `y`, move, `p`.
+`y` behaves exactly like `space y`, including the toast — it is the same code
+path, not a second implementation.
+
+`r`, `R` and the three case keys all act on *the selection* when one is held
+and on *the character under the cursor* when none is. On a single character
+the two are the same thing, which is why `~` flips one letter when nothing is
+selected and a whole phrase when something is.
+
+Every one of these verbs acts on **all** held selections at once, and does it
+as a single undoable change. See [Selecting more than one region](#selecting-more-than-one-region)
+for how you get more than one in the first place.
+
+`y` over several selections copies them in reading order into the clipboard as
+one piece of text, so the order you see on screen is the order you get.
+
+A buffer you cannot write refuses to **grow** a selection: `v` and `x` report
+that they were refused instead of arming a highlight you cannot do anything
+with. It also refuses the verbs that would rewrite text — `&`, `Alt-(`, `Alt-)`.
+Moving the cursor still works, as do `v`, `x`, `C` and the merge keys: you can
+always read and select in a read-only file, you just cannot change it.
+
+`~` flips per character, so `~` on `abC` gives `Abc` and a second `~` gives
+back `abC`. `` ` `` and `` Alt-` `` **set** rather than flip: `` ` `` on `Abc`
+gives `abc` and pressing it again does nothing, which is what tells the two
+apart. Characters with no case — digits, punctuation, CJK — are left alone by
+all three, and text that is already the case you asked for reports nothing
+rather than pushing an undo step for no change.
+
+`r` shows its indicator while waiting, like `f` does, because the character it
+wants is the next keystroke. A key that cannot be that character — an arrow,
+`Esc`, `:` — is passed through and does its normal job instead of being eaten.
+
+**Paste reads the system clipboard**, and CodeGG keeps no editor-local register.
+`y` and `space y` are the same write. That means `p` pastes whatever is on the
+OS clipboard, including text you copied from another application — which is
+Helix's own behaviour, and is why `R` is "replace with the clipboard" here
+rather than "replace with a register". A clipboard the system refuses, and a
+clipboard holding nothing, are reported differently: with nothing on the
+clipboard, `p` says so rather than doing nothing in silence.
+
+### Selecting more than one region
+
+Once you can build a set, every verb above applies to all of it at once. These
+are the keys that build and reshape the set.
+
+| Key | What it does |
+|---|---|
+| `C` / `Alt-C` | add a cursor on the next / previous line |
+| `%` | select the whole file |
+| `S` | split each selection into one selection per regex match |
+| `K` / `Alt-K` | keep / drop the selections whose text matches a regex |
+| `;` | collapse to a single cursor at the main selection's head |
+| `,` / `Alt-,` | keep only / remove the main selection |
+| `(` / `)` | move which selection is the main one |
+| `Alt-(` / `Alt-)` | rotate the selections' **contents** around the set |
+| `Alt-minus` | merge every selection into one |
+| `Alt-_` | merge only selections that touch; gaps stay |
+| `&` | pad every selection out to the widest one's width |
+| `Alt-;` | flip each selection's start and end |
+| `Alt-:` | make every selection run forwards |
+
+`(`/`)` move the main selection and change no text. `Alt-(`/`Alt-)` move the
+text and leave every selection where it is. They are the easiest pair in this
+list to confuse, and they are the only two pairs here where a mistake corrupts
+the buffer rather than just surprising you.
+
+`Alt-minus` and `Alt-_` differ the same way: `Alt-minus` bridges the gaps
+between your selections, `Alt-_` only merges selections that are already
+touching.
+
+`C` adds a cursor rather than moving one, so one press gives you two, two give
+you four, and the cursor stays on the main selection — pressing it near the end
+of a file adds only the cursors that had a line to move to, and says so.
+
+`&` measures in **display columns**, not bytes, so a tab and a CJK character
+count for what they occupy on screen. It pads after each selection, which
+equalises their widths and lines up whatever comes next. A selection wider than
+the 32 KiB measurement budget is measured over a prefix, so its padding is
+approximate — and `&` tells you that when it happens rather than leaving you to
+guess why one line looks wrong.
+
+### The regex keys
+
+`S`, `K` and `Alt-K` need a pattern, so they open the `:` command line already
+filled in with `split-regex `, `keep-regex ` or `remove-regex `. Type the
+pattern, press `Enter`, and `Esc` abandons it with nothing changed.
+
+They are commands rather than a private prompt because the `:` line already
+knows how to take text, how to show you what you are typing, and how to abort.
+The line you get is the line you could have typed by hand, and the pattern is
+listed in the palette. A pattern that will not compile, and one that matches
+nothing, are both reported and both leave your buffer alone.
 
 ### Multi-key gestures
 
 `gg` (buffer start) and `space y` (copy the selection) each take two keys. While
 the first one is held, the status row shows which one: `g` or `space`. The
 indicator is there because a prefix that shows nothing is a prefix you cannot
-predict.
+predict. `r` is a gesture too, for the same reason: it shows `r` while it waits
+for the character to write.
 
 The two gestures finish differently, on purpose. After `g`, any key belongs to
 the chord — `g j` does nothing, because `g j` is not a gesture. After `space`,
@@ -749,6 +857,102 @@ are Helix's unimpaired prefixes; they show their indicator too, and any key
 after them still does what it normally does. A prefix never survives leaving
 the editor, opening a different file, reloading, or moving focus to the file
 tree.
+
+### Goto mode
+
+`g` is a mode, not one chord. Its status row reads `g` while it is armed:
+
+| Key | What it does |
+|---|---|
+| `gg` | start of the file |
+| `gs` | first non-whitespace on the line |
+| `ge` | end of the file |
+| `gh` | start of the line |
+| `gl` | end of the line |
+| `gj` / `gk` | down / up one line |
+
+`gs` is the one worth learning: `0` is the only key that reaches a line start, so
+in an indented file every placement went through column zero.
+
+`gj`/`gk` are Helix's *textual* line motions, against `j`/`k`'s *visual* ones.
+CodeGG wraps no lines — one screen row is one buffer line — so the two are the
+same move, and `gj`/`gk` exist for the muscle memory rather than for a
+difference this surface can show.
+
+Not bound, on purpose rather than by omission:
+
+- `gd`, `gy`, `gr`, `gi` — the language-server jumps. They arrive with the LSP
+  read surface; until then `g` followed by one of them is an unbound key.
+- `gf`, `ga`, `gm`, `gn`, `gp` — files and alternate buffers. One document is
+  open at a time.
+- `gt`, `gc`, `gb` — top, middle and bottom **of the screen**. These need the
+  real viewport height, and motions currently resolve against a fixed guess at
+  it, so binding them today would land on a line that is not the top of your
+  screen.
+
+### Unimpaired navigation
+
+`[` and `]` are modes with the same arm-and-resolve behaviour as `g`. While one
+is held, the status row reads `[` or `]`.
+
+| Key | What it does |
+|---|---|
+| `]p` | first non-whitespace byte of the next paragraph |
+| `[p` | first non-whitespace byte of the previous paragraph |
+| `]Space` | insert a line below the cursor's line |
+| `[Space` | insert a line above the cursor's line |
+
+A *paragraph* is a run of non-blank lines; a *blank* line is one holding nothing
+but spaces and tabs. So `]p` crosses the blank run and lands on the next
+paragraph's first non-blitespace byte, skipping indentation. Runs of several
+blank lines are one separator, not several.
+
+Both motions either move or say why they did not — `]p` at the last paragraph
+reports that rather than standing still, because a key that quietly does nothing
+is indistinguishable from a dropped keypress.
+
+`Alt-.` repeats them. Helix documents `Alt-.` as "repeat last motion (`f`, `t`,
+`m`, `[` or `]`)", so `]p` is repeatable and `]Space` deliberately is **not**:
+an edit is not a motion, and `]Space` followed by `Alt-.` inserts one line, not
+two. The useful pairing is `]Space` then `]p`, which splits the paragraph you
+are standing in.
+
+`]` `Space` is Helix's `add_newline_below`, not `o`. The difference is visible:
+`o` opens the line *and* hands you the keyboard, while `]Space` inserts the line
+and leaves the cursor exactly where it was, so you keep reading from the same
+place. On a read-only buffer the two `Space` keys are refused — they are the
+only unimpaired keys here that write — while `]p` and `[p` still work.
+
+Not bound, because nothing in this codebase can answer them yet:
+
+- `[q`, `[Q`, `[F`, `[f`, `[n`, `[%`, `[i`, `[c`, `[s`, `[t`, `[d`, `[b` —
+  unimpaired's find family: definitions, type definitions, workspace search,
+  occurrences, todos, files, configuration, diagnostics.
+- `[a`, `[v`, `[w`, `[e` — quotes and words. A half-built `[w` would be worse
+  than none, since it would look like `[W` was simply broken.
+- `[d`, `[D`, `[g`, `[G`, `]g`, `]G` — diagnostics and change navigation. Change
+  navigation in particular has no reachable data source: the VCS layer reports
+  which files changed, not which lines.
+
+### Long words
+
+| Key | What it does |
+|---|---|
+| `W` / `B` / `E` | next / previous WORD start, next WORD end |
+| `w` / `b` / `e` | next / previous word start, next word end |
+
+A *word* is alphanumerics, `_`, or any non-ASCII character. A *WORD* is
+everything up to whitespace, punctuation included. On `foo.bar` the two differ:
+`w` stops at `bar`, `W` skips to the next space. Use `W`/`B`/`E` to cross code
+without stopping at every dot and bracket.
+
+### Holding your column
+
+`j` and `k` remember the column you started from. Move down onto a short line
+and back up and you land where you began, rather than at that short line's end.
+Any horizontal move re-seeds the column; anything that places the cursor
+somewhere else — `G`, `gg`, `w`, `e`, `$`, `gs`, a find, a page, a search jump —
+ends the run, and the next `j` starts a new one from where the cursor is.
 
 ### Finding a character
 

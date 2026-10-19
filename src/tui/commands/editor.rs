@@ -37,7 +37,7 @@ use codegg_protocol::lsp::{
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::{spawn_registered_tui_task, spawn_scoped_registered_tui_task};
-use crate::tui::document_session::TuiDocumentSession;
+use crate::tui::document_session::{TuiDocumentPresentation, TuiDocumentSession};
 use crate::tui::editor::{self, EditorCommand, EditorCommandName, EditorMode, EditorPrefix};
 use crate::tui::task_lifecycle::TuiTaskKind;
 
@@ -1502,6 +1502,15 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
     // text happens to sit there now — a search that quietly points at the
     // wrong words is worse than one that is gone. Drop it here, at the single
     // funnel every mutation passes through, rather than at each edit verb.
+    //
+    // The selection set is captured *before* the controller is asked, for the
+    // same reason the cursor is: `u` has to restore the members the reader
+    // had, and it can only know them while they are still there.
+    let selections_before = state
+        .session
+        .as_ref()
+        .map(|session| session.presentation().selections.clone())
+        .unwrap_or_default();
     if let Some(session) = state.session.as_mut() {
         session.presentation_mut().cancel_search();
     }
@@ -1530,6 +1539,17 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 }
                 None => presentation.cursor_byte = cursor_after,
             }
+            // An accepted edit invalidates every held selection: the members are
+            // byte offsets into text that no longer exists, so leaving them
+            // painted would highlight whatever now sits at those offsets.
+            // Undo restores them from `selections_before`, which is why
+            // clearing here is not losing them.
+            presentation.clear_selections();
+            // The text moved under the cursor, so any vertical run the reader
+            // was in was measured against text that no longer exists. A
+            // remembered column would aim the next `j` at an unrelated place
+            // with nothing on screen to explain it.
+            presentation.desired_column = None;
             if stay_insert {
                 // Safe by construction, not by convention: `stay_insert` is
                 // only ever true for an edit resolved while the model was
@@ -1538,7 +1558,14 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 // `App::ui_state.input_mode` instead of racing it.
                 presentation.mode = EditorMode::Insert;
             }
-            editor::push_undo(presentation, forward, inverse, bytes, cursor_before);
+            editor::push_undo(
+                presentation,
+                forward,
+                inverse,
+                bytes,
+                cursor_before,
+                selections_before,
+            );
             // Spans are bound to a revision this edit has moved past, so
             // they cannot paint any more. Re-asking is deferred to the pump's
             // quiet period instead of happening per keystroke.
@@ -1583,6 +1610,40 @@ pub(crate) fn editor_motion(state: &mut EditorState, command: EditorCommand, vis
             visible_lines,
         );
     }
+    // Read out and cleared in the same step, so the disclosure can only ever
+    // describe the keystroke that just happened. Left in the presentation it
+    // would be overwritten by the next `j` while the notice kept describing a
+    // `]p` the reader never sent.
+    lift_paragraph_note(state);
+}
+
+/// Move a paragraph motion's disclosure from the presentation into the notice.
+///
+/// One function for both motion entry points, because a paragraph motion
+/// reaches the presentation by either of two routes — [`editor_motion`] for a
+/// bare `j`/`k`/`h`/`l` and a leaf, [`helix_motion`] for `Alt-.` and the
+/// page keys — and a clear that only happened on one of them let a refusal
+/// outlive its keystroke: `]p` at the last paragraph, then `h`, left "no next
+/// paragraph" on screen beside a cursor that had since moved left.
+///
+/// Set **or** clear, so a motion with nothing to say takes the previous
+/// motion's words down. That is safe because no motion path sets a notice
+/// except this one; the read-only refusals belong to the *edit* funnels, which
+/// never come through here.
+fn lift_paragraph_note(state: &mut EditorState) {
+    let note = state
+        .session
+        .as_mut()
+        .map(|session| {
+            let note = session.presentation().paragraph_note;
+            session.presentation_mut().paragraph_note = editor::ParagraphNote::None;
+            note
+        })
+        .unwrap_or_default();
+    match note.label() {
+        Some(label) => state.set_notice(EditorNotice::Note(label)),
+        None => state.clear_notice(),
+    }
 }
 
 /// Apply one normal-mode editing command.
@@ -1601,6 +1662,127 @@ pub(crate) fn editor_editing_command(state: &mut EditorState, command: EditorCom
         return;
     };
     submit_edit(state, edit);
+}
+
+/// Apply one verb that acts **on the held selection**.
+///
+/// Same gate, same snapshot, same funnel as [`editor_editing_command`] — and
+/// one difference that is the whole reason this exists: a verb that resolved
+/// its target *from* the selection invalidates it. The selection is dropped
+/// by [`submit_edit`] once the edit lands, for **every** verb rather than for
+/// these five, because a stale selection is a highlight painted over text that
+/// is no longer there — and `u` puts the set back, so dropping it is not
+/// losing it.
+///
+/// Keeping that rule in the funnel rather than in each verb is what stops `r`,
+/// `R`, `~`, `p`, and `P` from drifting into "some of them clear it".
+fn editor_editing_verb(
+    state: &mut EditorState,
+    build: impl FnOnce(
+        &codegg_document::DocumentSnapshot,
+        &TuiDocumentPresentation,
+    ) -> Option<editor::EditorEdit>,
+) {
+    if !editable(state) {
+        state.set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
+        return;
+    }
+    let edit = {
+        let Some(session) = state.session.as_mut() else {
+            return;
+        };
+        let Some(snapshot) = session.try_snapshot() else {
+            return;
+        };
+        build(&snapshot, session.presentation())
+    };
+    let Some(edit) = edit else {
+        return;
+    };
+    submit_edit(state, edit);
+}
+
+/// One verb whose payload is the system clipboard's contents.
+///
+/// The clipboard is not editor state, so these three are reported to the App
+/// layer and performed there, in the same division of labour as
+/// [`yank_editor_range`]: the buffer resolves the *target*, the App layer
+/// owns the *bytes*. There is no local register — `space y` writes to the
+/// OS clipboard and nothing else, so what `p` pastes is whatever the
+/// clipboard holds, including text from another application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardVerb {
+    /// `p` — paste after the selection, or after the character under the
+    /// cursor.
+    PasteAfter,
+    /// `P` — paste before the selection, or before the character under the
+    /// cursor.
+    PasteBefore,
+    /// `R` — replace the selection, or the character under the cursor, with
+    /// the clipboard's contents.
+    Replace,
+}
+
+impl ClipboardVerb {
+    /// Build this verb's edit against `snapshot` with the clipboard's `text`.
+    fn build(
+        self,
+        snapshot: &codegg_document::DocumentSnapshot,
+        presentation: &TuiDocumentPresentation,
+        text: &str,
+    ) -> Option<editor::EditorEdit> {
+        match self {
+            Self::PasteAfter => editor::paste_after(snapshot, presentation, text),
+            Self::PasteBefore => editor::paste_before(snapshot, presentation, text),
+            Self::Replace => editor::replace_with_text(snapshot, presentation, text),
+        }
+    }
+}
+
+/// Read the clipboard and run one clipboard-backed verb.
+fn run_clipboard_verb(app: &mut App, verb: ClipboardVerb) {
+    apply_clipboard_text(app, verb, crate::util::clipboard::read_from_clipboard());
+}
+
+/// The core of a clipboard verb, with the read already performed.
+///
+/// `read` is `None` when the system refused. Taking it as a parameter is what
+/// makes all three outcomes reachable in a test: `crate::util::clipboard` has
+/// no seam, so the only way to exercise "the clipboard refused" without a
+/// test writing to — and stealing — the developer's real clipboard is to not
+/// call it.
+///
+/// Three failures are possible here and each is reported separately, because
+/// a `p` that silently does nothing is indistinguishable from a keypress that
+/// was never delivered:
+///
+/// - a **read-only or busy buffer** — refused before the clipboard is even
+///   consulted, with the same notice every other edit verb reports;
+/// - a **clipboard read failure** (`None`) — the system refused, which is not
+///   the same as an empty clipboard;
+/// - an **empty clipboard** (`Some("")`) — a successful read of nothing.
+///
+/// The last one is the case that matters most: without its own toast, "you
+/// copied nothing" and "the verb did not work" look identical.
+fn apply_clipboard_text(app: &mut App, verb: ClipboardVerb, read: Option<String>) {
+    if !editable(&app.editor_state) {
+        app.editor_state
+            .set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
+        return;
+    }
+    let Some(text) = read else {
+        app.messages_state
+            .toasts
+            .warning("Clipboard unavailable — nothing to paste");
+        return;
+    };
+    if text.is_empty() {
+        app.messages_state.toasts.warning("Clipboard is empty");
+        return;
+    }
+    editor_editing_verb(&mut app.editor_state, |snapshot, presentation| {
+        verb.build(snapshot, presentation, &text)
+    });
 }
 
 /// Undo the newest local edit by submitting its inverse transaction.
@@ -1632,14 +1814,19 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     match &after {
         Some(snapshot) => {
             presentation.cursor_byte = editor::clamp_offset(snapshot, entry.cursor_before);
-            presentation.selection = None;
+            presentation.restore_selections(&entry.selections_before);
             presentation.viewport_line = presentation
                 .viewport_line
                 .min(snapshot.len_lines().saturating_sub(1));
         }
-        None => presentation.cursor_byte = entry.cursor_before,
+        None => {
+            presentation.cursor_byte = entry.cursor_before;
+            presentation.restore_selections(&entry.selections_before);
+        }
     }
     presentation.mode = EditorMode::Normal;
+    // Text changed under the cursor; see `submit_edit`.
+    presentation.desired_column = None;
     // The redo entry keeps the forward transaction and is rebased onto the
     // position the user is leaving, so redoing returns to where the edit
     // left the cursor rather than to the undo point.
@@ -1679,14 +1866,19 @@ pub(crate) fn editor_redo(state: &mut EditorState) {
     match &after {
         Some(snapshot) => {
             presentation.cursor_byte = editor::clamp_offset(snapshot, entry.cursor_before);
-            presentation.selection = None;
+            presentation.restore_selections(&entry.selections_before);
             presentation.viewport_line = presentation
                 .viewport_line
                 .min(snapshot.len_lines().saturating_sub(1));
         }
-        None => presentation.cursor_byte = entry.cursor_before,
+        None => {
+            presentation.cursor_byte = entry.cursor_before;
+            presentation.restore_selections(&entry.selections_before);
+        }
     }
     editor::restore_undo(presentation, entry.rebased(cursor_leaving));
+    // Text changed under the cursor; see `submit_edit`.
+    presentation.desired_column = None;
     state.lsp.clear_semantic();
     state.completion.clear();
     if !state.lsp.diagnostics.is_empty() {
@@ -1750,7 +1942,7 @@ pub(crate) fn enter_editor_normal(app: &mut App) {
     if let Some(session) = app.editor_state.session.as_mut() {
         let presentation = session.presentation_mut();
         presentation.mode = EditorMode::Normal;
-        presentation.selection = None;
+        presentation.clear_selections();
     }
 }
 
@@ -1984,24 +2176,39 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             resync_editor(app);
             true
         }
-        BufferKey::RequestReload => {
-            reload_editor(app);
-            true
-        }
-        BufferKey::DeleteRange(range) => {
+        BufferKey::DeleteRanges(ranges) => {
             let Some(session) = app.editor_state.session.as_ref() else {
                 return true;
             };
             let Some(snapshot) = session.try_snapshot() else {
                 return true;
             };
-            if let Some(edit) = editor::delete_range(&snapshot, range) {
-                submit_edit(&mut app.editor_state, edit);
+            match editor::delete_ranges(&snapshot, ranges) {
+                editor::RangeSetEdit::Edit(edit, _) => submit_edit(&mut app.editor_state, edit),
+                editor::RangeSetEdit::Empty => {}
+                // Refused, not truncated. A partial multi-cursor delete is
+                // exactly the state neither `u` nor redo can describe, so the
+                // notice names the limit the reader hit.
+                editor::RangeSetEdit::TooMany(count) => {
+                    app.editor_state.set_notice(EditorNotice::Rejected(format!(
+                        "too many selections to delete at once: {count} (limit {max})",
+                        max = codegg_protocol::document::MAX_DOCUMENT_EDITS
+                    )))
+                }
             }
             true
         }
-        BufferKey::YankRange(range) => {
-            yank_editor_range(app, range);
+        BufferKey::YankRanges(ranges) => {
+            yank_editor_ranges(app, ranges);
+            true
+        }
+        // The clipboard is the App layer's, so these three arrive here rather
+        // than carrying their payload: the buffer resolved the target and the
+        // bytes are read now, once, at the point that owns them.
+        BufferKey::PasteAfter(verb)
+        | BufferKey::PasteBefore(verb)
+        | BufferKey::ReplaceWithClipboard(verb) => {
+            run_clipboard_verb(app, verb);
             true
         }
         // The document took the keyboard: adopt Insert mode so the badge, the
@@ -2067,7 +2274,41 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
         }
         // `:complete` takes no argument; the parser already refuses one.
         EditorCommandName::Complete => start_editor_completion(app),
+        // The three regex selection verbs. They are **commands** rather than a
+        // prompt because a prompt would need its own input mode, its own
+        // pending state, and its own disarm contract on buffer switch, reload
+        // and focus change. A `:` line already has all three.
+        //
+        // `S`, `K` and `Alt-K` open this command's line already filled in, so
+        // the chord is a shortcut rather than a second spelling: the line the
+        // reader sees is the same one they could have typed.
+        EditorCommandName::SplitRegex
+        | EditorCommandName::KeepRegex
+        | EditorCommandName::RemoveRegex => {
+            let Some(pattern) = argument.filter(|value| !value.trim().is_empty()) else {
+                let message = format!("`:{}` needs a regex pattern", command.spec());
+                app.messages_state.toasts.warning(&message);
+                return;
+            };
+            run_selection_regex(&mut app.editor_state, command, pattern);
+        }
     }
+}
+
+/// Run one of the three regex selection commands against the open document.
+///
+/// Split out from [`run_editor_command`] so the whole `S` path — chord, modal
+/// command line, parse, verb — is drivable from a test without standing up an
+/// `App`. The App layer stays the caller; only the effect lives here.
+fn run_selection_regex(state: &mut EditorState, command: EditorCommandName, pattern: String) {
+    let verb = match command {
+        EditorCommandName::KeepRegex => editor::HelixVerb::KeepSelections { pattern },
+        EditorCommandName::RemoveRegex => editor::HelixVerb::RemoveSelections { pattern },
+        _ => editor::HelixVerb::SplitSelection { pattern },
+    };
+    // Every outcome is reported by `apply_helix` itself, including the
+    // "matched nothing" case the milestone calls out by name.
+    apply_helix_edit(state, verb);
 }
 
 /// Warn before a plain `:q` discards an unflushed local draft.
@@ -2168,8 +2409,11 @@ fn jump_to_selected_diagnostic(state: &mut EditorState) {
         return;
     };
     if let Some(session) = state.session.as_mut() {
-        session.presentation_mut().cursor_byte = start + column;
-        session.presentation_mut().viewport_line = diagnostic.range.start_line as usize;
+        let presentation = session.presentation_mut();
+        presentation.cursor_byte = start + column;
+        presentation.viewport_line = diagnostic.range.start_line as usize;
+        // A jump, not a step: see `move_cursor_to`.
+        presentation.desired_column = None;
     }
     state.lsp.close_panel();
 }
@@ -2250,14 +2494,22 @@ enum BufferKey {
     RequestSave,
     /// The user asked to resync; the App layer issues the round trip.
     RequestResync,
-    /// The user asked to reload from disk, discarding the local draft.
-    RequestReload,
-    /// `d` asked for this range to be deleted. The App layer submits the
+    /// `d` asked for these ranges to be deleted. The App layer submits the
     /// edit, because only it reaches the controller.
-    DeleteRange(std::ops::Range<usize>),
-    /// `space y` asked for this range to reach the system clipboard. The App
+    ///
+    /// A **set**, already merged and ascending. One transaction covers the
+    /// whole list: a partially applied multi-cursor delete would leave members
+    /// pointing at text that is already gone.
+    DeleteRanges(Vec<std::ops::Range<usize>>),
+    /// `space y` asked for these ranges to reach the system clipboard. The App
     /// layer performs the copy, because the clipboard is not editor state.
-    YankRange(std::ops::Range<usize>),
+    YankRanges(Vec<std::ops::Range<usize>>),
+    /// `p` — paste the clipboard after the target.
+    PasteAfter(ClipboardVerb),
+    /// `P` — paste the clipboard before the target.
+    PasteBefore(ClipboardVerb),
+    /// `R` — replace the target with the clipboard's contents.
+    ReplaceWithClipboard(ClipboardVerb),
     /// An insertion entry (`i`/`a`/`I`/`A`/`o`/`O`) took the keyboard. The App
     /// layer adopts Insert mode from this, because the route owns the mode
     /// and the document owns the cursor.
@@ -2500,12 +2752,14 @@ enum PrefixResolution {
     Swallowed,
 }
 
-/// The character a pending find target should use, if `key` carries one.
+/// The character a pending capture should use, if `key` carries one.
 ///
-/// A find prefix takes its next key as **data**, not as a command, so this is
-/// the mirror image of [`EditorPrefix::leaf`] and deliberately does not share
-/// its path: a key that is a target never resolves against the keymap, and a
-/// key that is a leaf never becomes a character.
+/// A capture prefix — `f`/`t`/`F`/`T` and `r` — takes its next key as
+/// **data**, not as a command, so this is the mirror image of
+/// [`EditorPrefix::leaves`] and deliberately does not share its path: a key
+/// that is a capture never resolves against the keymap, and a key that is a
+/// leaf never becomes a character. Both grammars share this one function so
+/// `r` and `f` cannot disagree about which keystrokes are capture-able.
 ///
 /// `:` and `/` are refused with no modifier. On this route they open modal
 /// lines that own the keyboard outright, and M003 requires them to keep
@@ -2513,13 +2767,15 @@ enum PrefixResolution {
 /// command line rather than searching for a colon. With `SHIFT` they are
 /// ordinary characters: the `:` arm does not accept `SHIFT`, so there is no
 /// line for them to open, and refusing them there would only throw away a
-/// usable target.
+/// usable target. The cost of that rule is that `r :` cannot replace a
+/// character with a colon on this route; it is the same trade the find
+/// grammar already made, and diverging here would make the two disagree.
 ///
 /// Every other non-character key is refused too, and the prefix then *retries*
 /// it rather than eating it. That is the whole hazard of this milestone: an
 /// armed `f` that swallowed the arrow that follows it would be an arrow that
 /// never reaches the composer.
-fn find_target_char(key: KeyEvent) -> Option<char> {
+fn capture_char(key: KeyEvent) -> Option<char> {
     if key.modifiers == KeyModifiers::NONE
         && matches!(key.code, KeyCode::Char(':') | KeyCode::Char('/'))
     {
@@ -2558,43 +2814,90 @@ fn resolve_pending_prefix(
     }
     session.presentation_mut().disarm_prefix();
 
-    // Find prefixes are resolved *before* the leaf table because their next
-    // key is data, not a leaf: `EditorPrefix::leaf` is `None` for all four,
-    // so reaching the leaf match would send a perfectly good target down the
-    // mismatch path and out to the composer.
-    if let Some(kind) = pending.find_kind() {
-        let Some(target) = find_target_char(key) else {
+    // Capture prefixes are resolved *before* the leaf table because their next
+    // key is data, not a leaf: `EditorPrefix::leaves` is empty for all of
+    // them, so reaching the leaf lookup would send a perfectly good target
+    // down the mismatch path and out to the composer.
+    //
+    // One branch, not two. `is_capture` is the classifier, `capture_char` is
+    // the single rule for what a target can be, and the retry is written
+    // once — so a third capture grammar added later cannot arrive with its
+    // own copy of any of the three.
+    if pending.is_capture() {
+        let Some(target) = capture_char(key) else {
             // Not a target: hand the key back rather than swallow it.
             return PrefixResolution::Retry;
         };
-        helix_motion(
-            state,
-            editor::FindMotion { kind, target }.command(),
-            visible_lines,
-        );
+        if pending.is_replace_char() {
+            editor_editing_verb(state, |snapshot, presentation| {
+                editor::replace_char(snapshot, presentation, target)
+            });
+        } else {
+            let Some(kind) = pending.find_kind() else {
+                // `is_capture` is `is_find() || is_replace_char()`, so this is
+                // unreachable; returning rather than unwrapping keeps a
+                // future variant from panicking the key handler if the
+                // classifier ever grows a third arm without a verb for it.
+                return PrefixResolution::Retry;
+            };
+            helix_motion(
+                state,
+                editor::FindMotion { kind, target }.command(),
+                visible_lines,
+            );
+        }
         return PrefixResolution::Handled(BufferKey::Consumed);
     }
 
-    let leaf = pending
-        .leaf()
-        .is_some_and(|leaf| key.modifiers == KeyModifiers::NONE && key.code == KeyCode::Char(leaf));
-    if leaf {
-        return match pending {
-            EditorPrefix::Goto => {
-                note_motion(state, EditorCommand::BufferStart);
-                editor_motion(state, EditorCommand::BufferStart, visible_lines);
+    // One lookup, N leaves. A prefix that has no row for this glyph takes the
+    // mismatch path below, which is what `swallows_unmatched` then decides —
+    // so adding a leaf never invents a new mismatch policy.
+    let matched = if key.modifiers == KeyModifiers::NONE {
+        pending
+            .leaves()
+            .iter()
+            .find(|leaf| key.code == KeyCode::Char(leaf.glyph))
+            .copied()
+    } else {
+        None
+    };
+    if let Some(leaf) = matched {
+        return match leaf.action {
+            // The **raw** motion path, deliberately, not `helix_motion`. This is
+            // how `gg` has always resolved: a goto collapses the selection and
+            // moves the cursor, rather than extending a held character
+            // selection the way a bare `j` or `w` does. Routing leaves through
+            // the selection machine instead would have silently changed `gg`'s
+            // behaviour, which the milestone requires to stay exactly as it
+            // was — and it would have made goto mode inconsistent with Helix,
+            // where every goto leaf drops the selection.
+            editor::PrefixAction::Motion(command) => {
+                note_motion(state, command);
+                editor_motion(state, command, visible_lines);
                 PrefixResolution::Handled(BufferKey::Consumed)
             }
-            EditorPrefix::Space => PrefixResolution::Handled(match yank_range(session) {
-                Some(range) => BufferKey::YankRange(range),
-                None => BufferKey::Consumed,
-            }),
-            // Unreachable today: only `Goto` and `Space` have a leaf, and this
-            // branch is only reached when `leaf()` returned `Some`. It exists
-            // so that adding a leaf to the type without adding its verb here
-            // resolves the key normally — a swallowed key that does nothing is
-            // the exact failure mode M001 was about.
-            _ => PrefixResolution::Retry,
+            editor::PrefixAction::YankSelection => {
+                let ranges = yank_ranges(session);
+                PrefixResolution::Handled(if ranges.is_empty() {
+                    BufferKey::Consumed
+                } else {
+                    BufferKey::YankRanges(ranges)
+                })
+            }
+            // The shared edit funnel, not a new insertion path: `]Space` must
+            // land in the same read-only gate, the same undo entry and the same
+            // document-write transaction as `x`, `d` and `y`. A leaf that
+            // edited on its own would have been the only verb in the editor
+            // with its own idea of what an edit costs.
+            //
+            // Deliberately *not* followed by `note_motion`: an edit is not a
+            // motion, and Helix's `Alt-.` repeats a motion. Recording one here
+            // would make `]Space` then `Alt-.` insert a second newline, which
+            // is the exact behaviour the milestone forbids.
+            editor::PrefixAction::Edit(command) => {
+                editor_editing_command(state, command);
+                PrefixResolution::Handled(BufferKey::Consumed)
+            }
         };
     }
 
@@ -2669,15 +2972,11 @@ fn editor_buffer_key(
     if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
         return BufferKey::RequestResync;
     }
-    // `R` reloads from disk, discarding the local draft. It is
-    // destructive, so it is only reachable in normal mode; the App layer
-    // decides whether to issue the round trip.
-    if key.code == KeyCode::Char('R')
-        && key.modifiers == KeyModifiers::NONE
-        && mode == crate::tui::input::InputMode::Normal
-    {
-        return BufferKey::RequestReload;
-    }
+    // `R` no longer reloads. It is Helix's `replace_with_yanked`, and
+    // reload is still one `:e` away — so the capability survived the
+    // rebinding even though the keystroke did not. A `R` here would shadow
+    // the Normal-mode verb *and* survive it, which is the one failure this
+    // dispatch chain is arranged to make impossible.
     let visible_lines = visible_line_estimate();
     if mode == crate::tui::input::InputMode::Insert {
         return if handle_insert_key(state, key, visible_lines) {
@@ -2797,6 +3096,27 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             helix_motion(state, EditorCommand::WordEnd, visible_lines);
             BufferKey::Consumed
         }
+        // Helix's long-word motions. They exist because `w`/`b`/`e` classify
+        // by byte — alphanumeric, `_`, or anything non-ASCII — which stops
+        // being a distinction worth having once a line contains punctuation or
+        // CJK. `W`/`B`/`E` classify by whitespace instead, so `foo.bar` is one
+        // WORD for them and two words for `w`.
+        //
+        // Each accepts `NONE` and `SHIFT` because terminals disagree about how
+        // a capital is encoded — the same rule `G`, `U`, `D`, `I` and the
+        // insert entries already follow.
+        (m, KeyCode::Char('W')) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::LongWordForward, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('B')) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::LongWordBackward, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('E')) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::LongWordEnd, visible_lines);
+            BufferKey::Consumed
+        }
         // Character-finding motions. Each arms a prefix whose next key is a
         // *target character* rather than a leaf, resolved by
         // `resolve_pending_prefix`. They arm rather than move because there
@@ -2831,10 +3151,23 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             BufferKey::Consumed
         }
         // Helix `Alt-.` — repeat the last motion. Claimed only while there is
-        // a find to repeat: an unconditional binding would swallow a
+        // a motion to repeat: an unconditional binding would swallow a
         // composer keystroke and do nothing, which is the same reason `n` is
         // gated on an existing search.
         (m, KeyCode::Char('.')) if m == alt => {
+            // The three slots are mutually exclusive by construction — every
+            // recorder clears the other two, per `note_motion`'s single-slot
+            // rule — so the order of these three is not a precedence between
+            // motions. It is written newest-kind-first only so a future second
+            // recorder has to make that true rather than inherit it.
+            if let Some(repeat) = selection_repeat(state) {
+                apply_helix(state, repeat.verb());
+                return BufferKey::Consumed;
+            }
+            if let Some(repeat) = unimpaired_repeat(state) {
+                helix_motion(state, repeat, visible_lines);
+                return BufferKey::Consumed;
+            }
             let Some(repeat) = last_find(state) else {
                 return BufferKey::Unhandled;
             };
@@ -2851,14 +3184,223 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             apply_helix(state, editor::HelixVerb::SelectLine);
             BufferKey::Consumed
         }
+        // ── Selection manipulation (M008) ───────────────────────────────────
+        //
+        // Every chord below resolves a **set** of selections rather than one.
+        // The pure set algebra is in `helix_selection` and the byte geometry
+        // in `editor`; these arms are the binding table and nothing else, so
+        // the keymap, the rules, and the geometry stay three separable things.
+        //
+        // Punctuation arms accept `NONE` **and** `SHIFT` where a shifted glyph
+        // can arrive either way, and that is not decoration: a terminal that
+        // sends `Char('&')` with `SHIFT` and one that sends it with `NONE`
+        // both have to work, or `&` is dead on half the keyboards in use.
+        // Letters follow the same rule for `C`, `S` and `K`.
+
+        // Helix `;` — collapse the set to a single cursor at the primary's
+        // head. Claimed with nothing held: an unclaimed `;` would escape to
+        // the composer and start a word, which reads as nothing happening.
+        (m, KeyCode::Char(';')) if m == none => {
+            apply_helix(state, editor::HelixVerb::CollapseSelection);
+            BufferKey::Consumed
+        }
+        // Helix `Alt-;` — flip every member's direction.
+        (m, KeyCode::Char(';')) if m == alt => {
+            apply_helix(state, editor::HelixVerb::FlipSelections);
+            BufferKey::Consumed
+        }
+        // Helix `Alt-:` — ensure every member is forward. Distinct from the
+        // bare `:` below by modifier, not by spelling: the bare colon opens
+        // the command line and must keep doing so.
+        (m, KeyCode::Char(':')) if m == alt => {
+            apply_helix(state, editor::HelixVerb::EnsureSelectionsForward);
+            BufferKey::Consumed
+        }
+        // Helix `%` — select the entire file.
+        (m, KeyCode::Char('%')) if m == none || m == shift => {
+            note_selection_motion(state, editor::SelectionMotion::SelectAll);
+            apply_helix(state, editor::HelixVerb::SelectAll);
+            BufferKey::Consumed
+        }
+        // Helix `,` — keep only the primary. `Alt-,` removes it instead.
+        (m, KeyCode::Char(',')) if m == none => {
+            apply_helix(state, editor::HelixVerb::KeepPrimarySelection);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char(',')) if m == alt => {
+            apply_helix(state, editor::HelixVerb::RemovePrimarySelection);
+            BufferKey::Consumed
+        }
+        // Helix `C` / `Alt-C` — add a cursor on the next / previous line.
+        // Recorded as repeatable motions: they move the cursor, so `Alt-.`
+        // repeats them the way it repeats a find.
+        (m, KeyCode::Char('C')) if m == none || m == shift => {
+            note_selection_motion(state, editor::SelectionMotion::CopyOntoNextLine);
+            apply_helix(
+                state,
+                editor::HelixVerb::CopySelectionOnLine { line_delta: 1 },
+            );
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('C')) if m == alt => {
+            note_selection_motion(state, editor::SelectionMotion::CopyOntoPreviousLine);
+            apply_helix(
+                state,
+                editor::HelixVerb::CopySelectionOnLine { line_delta: -1 },
+            );
+            BufferKey::Consumed
+        }
+        // Helix `(` / `)` move which member is the primary — no byte changes.
+        // `Alt-(` / `Alt-)` rotate the members' **contents**, which does. The
+        // two pairs are kept in one block and in one order so the difference
+        // is visible at the call site rather than being a memory test.
+        (m, KeyCode::Char('(')) if m == none || m == shift => {
+            apply_helix(
+                state,
+                editor::HelixVerb::RotateSelections { member_delta: -1 },
+            );
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char(')')) if m == none || m == shift => {
+            apply_helix(
+                state,
+                editor::HelixVerb::RotateSelections { member_delta: 1 },
+            );
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('(')) if m == alt => {
+            apply_helix_edit(
+                state,
+                editor::HelixVerb::RotateSelectionContents { member_delta: -1 },
+            );
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char(')')) if m == alt => {
+            apply_helix_edit(
+                state,
+                editor::HelixVerb::RotateSelectionContents { member_delta: 1 },
+            );
+            BufferKey::Consumed
+        }
+        // Helix `&` — pad every selection out to the widest one's display
+        // width. An **edit**, so it goes through `apply_helix_edit` and lands
+        // as one undoable transaction.
+        (m, KeyCode::Char('&')) if m == none || m == shift => {
+            apply_helix_edit(state, editor::HelixVerb::AlignSelections);
+            BufferKey::Consumed
+        }
+        // Helix `Alt-minus` merges every selection into one; `Alt-_` merges
+        // only adjacent ones and leaves gaps alone. Written as two arms
+        // because the glyphs are two and the meanings are two.
+        (m, KeyCode::Char('-')) if m == alt => {
+            apply_helix(state, editor::HelixVerb::MergeSelections);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('_')) if m == alt => {
+            apply_helix(state, editor::HelixVerb::MergeConsecutiveSelections);
+            BufferKey::Consumed
+        }
+        // Helix `S` / `K` / `Alt-K` take a regex, and there is no regex prompt
+        // in this editor. Rather than build one — a new input mode, a new
+        // pending field, and a new disarm contract on reload and buffer
+        // switch — they open the `:` command line **already filled in**. The
+        // line the reader sees is the one they could have typed by hand, the
+        // pattern has somewhere to live, and `:` already knows how to abort.
+        //
+        // The pattern is therefore typed and submitted through the existing
+        // command surface, which is why the verb itself carries no prompt
+        // state and why `scripts/check_tui_editor_prefix_state.py` still sees
+        // exactly the one prefix field it saw before this milestone.
+        (m, KeyCode::Char('S')) if m == none || m == shift => {
+            session.presentation_mut().open_command_line(&format!(
+                "{} ",
+                editor::EditorCommandName::SplitRegex.spec()
+            ));
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('K')) if m == none || m == shift => {
+            session
+                .presentation_mut()
+                .open_command_line(&format!("{} ", editor::EditorCommandName::KeepRegex.spec()));
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('K')) if m == alt => {
+            session.presentation_mut().open_command_line(&format!(
+                "{} ",
+                editor::EditorCommandName::RemoveRegex.spec()
+            ));
+            BufferKey::Consumed
+        }
         // Claimed even with nothing selected: an unclaimed `d` escapes to the
         // global `OpenDiff` binding, so the reader never gets "delete this".
         (m, KeyCode::Char('d')) if m == none => {
             match apply_helix(state, editor::HelixVerb::DeleteSelection) {
-                editor::HelixVerbOutcome::DeleteRange(range) => BufferKey::DeleteRange(range),
-                editor::HelixVerbOutcome::Handled => BufferKey::Consumed,
+                editor::HelixVerbOutcome::DeleteRanges(ranges) => BufferKey::DeleteRanges(ranges),
                 _ => BufferKey::Consumed,
             }
+        }
+        // Helix `y` — yank the held selection. Deliberately the *same* path
+        // as `space y`: one clipboard helper, one toast, one selection rule.
+        // Helix keeps the selection after a yank; this editor drops it, and
+        // that was already true of `space y`, which M004 is required to
+        // preserve byte for byte. Two spellings of one verb that behaved
+        // differently would be a worse surprise than either behaviour alone,
+        // so bare `y` matches its sibling rather than Helix.
+        //
+        // Claimed even with nothing selected, for the same reason `d` is: an
+        // unclaimed `y` reads as a dead key.
+        (m, KeyCode::Char('y')) if m == none => {
+            let ranges = yank_ranges(session);
+            if ranges.is_empty() {
+                BufferKey::Consumed
+            } else {
+                BufferKey::YankRanges(ranges)
+            }
+        }
+        // Helix's clipboard round trip. `p` pastes after, `P` before, and
+        // `R` replaces — all three read the system clipboard, which is the
+        // App layer's, so they report the verb and let it read the bytes.
+        // They are claimed even when that read fails, because a `p` that fell
+        // through to the composer would type a `p` into a session name.
+        (m, KeyCode::Char('p')) if m == none => BufferKey::PasteAfter(ClipboardVerb::PasteAfter),
+        (m, KeyCode::Char('P')) if m == none || m == shift => {
+            BufferKey::PasteBefore(ClipboardVerb::PasteBefore)
+        }
+        // Helix `R` is `replace_with_yanked`. This editor has no register, so
+        // the yanked text *is* the clipboard — which is what `R` replaces the
+        // target with here.
+        //
+        // `R` used to reload from disk. It does not any more: Helix gives `R`
+        // this meaning, and reload is still one `:e` away, so the capability
+        // survives the rebinding even though the keystroke does not.
+        (m, KeyCode::Char('R')) if m == none || m == shift => {
+            BufferKey::ReplaceWithClipboard(ClipboardVerb::Replace)
+        }
+        // Helix `~` — switch case. Accepts `NONE` and `SHIFT` because
+        // terminals disagree about how a shifted backquote is encoded.
+        (m, KeyCode::Char('~')) if m == none || m == shift => {
+            editor_editing_verb(state, editor::switch_case);
+            BufferKey::Consumed
+        }
+        // Helix `` ` `` / `` Alt-` `` — the same target, set rather than
+        // flipped. `NONE` and `SHIFT` again, for the same reason.
+        (m, KeyCode::Char('`')) if m == none || m == shift => {
+            editor_editing_verb(state, editor::switch_to_lower);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('`')) if m == alt => {
+            editor_editing_verb(state, editor::switch_to_upper);
+            BufferKey::Consumed
+        }
+        // Helix `r` — replace the selection, or the character under the
+        // cursor, with the character typed next. There is no single-key
+        // spelling, so it arms a prefix whose next key is a *target
+        // character*, resolved by `resolve_pending_prefix` exactly as `f` is.
+        (m, KeyCode::Char('r')) if m == none => {
+            session
+                .presentation_mut()
+                .arm_prefix(EditorPrefix::ReplaceChar);
+            BufferKey::Consumed
         }
         // Terminals disagree on the encoding: some send `Char('D')` with
         // SHIFT, others `Char('D')` with NONE. Accept both, the same
@@ -2878,11 +3420,15 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             session.presentation_mut().arm_prefix(EditorPrefix::Space);
             BufferKey::Consumed
         }
-        // Helix's unimpaired prefixes. Armed with no leaves yet — those arrive
-        // in M006 — so their only current effect is the pending indicator plus
-        // an escape: any second key disarms and is resolved against the
+        // Helix's unimpaired prefixes. M006 gave them the non-ts leaves in
+        // `editor::{OPEN,CLOSE}_BRACKET_LEAVES`, so this arm's whole job is to
+        // arm; the leaves resolve through `resolve_pending_prefix`, which runs
+        // ahead of every bare-key arm below — that ordering is what lets `]`
+        // then `Space` be a newline rather than a second armed prefix.
+        //
+        // An unbound second key still disarms and is resolved against the
         // keymap, which is what keeps `[` followed by a letter reaching the
-        // composer instead of being eaten by a prefix with nothing to do.
+        // composer instead of being eaten.
         (m, KeyCode::Char('[')) if m == none => {
             session
                 .presentation_mut()
@@ -2994,6 +3540,39 @@ fn last_find(state: &EditorState) -> Option<editor::FindMotion> {
         .and_then(|session| session.presentation().last_find)
 }
 
+/// The repeatable selection motion, if one is held.
+fn selection_repeat(state: &EditorState) -> Option<editor::SelectionMotion> {
+    state
+        .session
+        .as_ref()
+        .and_then(|session| session.presentation().last_selection_motion)
+}
+
+/// The repeatable unimpaired motion, if one is held.
+fn unimpaired_repeat(state: &EditorState) -> Option<EditorCommand> {
+    state
+        .session
+        .as_ref()
+        .and_then(|session| session.presentation().last_unimpaired)
+}
+
+/// Record a repeatable selection motion, clearing the find slot.
+///
+/// Clearing the find slot is the point: Helix keeps **one** repeat slot, so a
+/// `C` pressed between a find and its `Alt-.` is exactly what makes the repeat
+/// disarmed. Two slots with different lifetimes would quietly let `Alt-.`
+/// repeat across a motion the reader expected to have cleared it.
+fn note_selection_motion(state: &mut EditorState, motion: editor::SelectionMotion) {
+    if let Some(session) = state.session.as_mut() {
+        let presentation = session.presentation_mut();
+        presentation.forget_find();
+        // One repeat slot, every motion overwrites it: claiming the selection
+        // verbs must disarm the unimpaired ones for the same reason.
+        presentation.last_unimpaired = None;
+        presentation.last_selection_motion = Some(motion);
+    }
+}
+
 /// Forget the repeatable motion unless `command` is itself a find.
 ///
 /// Helix's `Alt-.` is *repeat last motion*, backed by a single slot that
@@ -3005,12 +3584,44 @@ fn last_find(state: &EditorState) -> Option<editor::FindMotion> {
 /// Deliberately **not** folded into `editor_motion`: that is also Insert
 /// mode's cursor nudge, and an arrow inside a sentence is not a gesture
 /// `Alt-.` should forget — the user is not repeating a find from there.
+///
+/// A paragraph motion claims the slot rather than clearing it, for the same
+/// reason a find does: Helix's own description of `Alt-.` names `]` and `[`
+/// as repeatable motions, and a key that works only on its own chord would be
+/// narrower than the surface it belongs to. Which slot it claims, and the two
+/// it clears, is the same single-slot rule the rest of this function states.
 fn note_motion(state: &mut EditorState, command: EditorCommand) {
     if command.is_find_motion() {
+        // A find claims the slot too. It used to return here without touching
+        // anything else, which was correct while the find was the only other
+        // slot and wrong the moment a second appeared: `]p`, `f x`, `Alt-.`
+        // repeated `]p` backwards instead of `f x` forwards. `apply_motion`
+        // writes `last_find` next to the resolution that produced it, so all
+        // this owes the other two doors is to close them.
+        if let Some(session) = state.session.as_mut() {
+            let presentation = session.presentation_mut();
+            presentation.last_selection_motion = None;
+            presentation.last_unimpaired = None;
+        }
+        return;
+    }
+    if command.is_paragraph_motion() {
+        if let Some(session) = state.session.as_mut() {
+            let presentation = session.presentation_mut();
+            presentation.forget_find();
+            presentation.last_selection_motion = None;
+            presentation.last_unimpaired = Some(command);
+        }
         return;
     }
     if let Some(session) = state.session.as_mut() {
-        session.presentation_mut().forget_find();
+        let presentation = session.presentation_mut();
+        presentation.forget_find();
+        // One repeat slot, so a plain motion disarms the selection verbs and
+        // the unimpaired ones too.
+        presentation.last_selection_motion = None;
+        presentation.last_unimpaired = None;
+        presentation.paragraph_note = editor::ParagraphNote::None;
     }
 }
 
@@ -3018,50 +3629,148 @@ fn note_motion(state: &mut EditorState, command: EditorCommand) {
 fn helix_motion(state: &mut EditorState, command: EditorCommand, _visible_lines: usize) {
     note_motion(state, command);
     apply_helix(state, editor::HelixVerb::Moved(command));
+    // The second route a paragraph motion takes. `]p` itself and the bare
+    // `j`/`k`/`h`/`l` arrive via `editor_motion`; `Alt-.` and the page keys
+    // arrive here. Without this a refusal disclosed through the repeat would
+    // be resolved on the probe and then discarded with it.
+    lift_paragraph_note(state);
 }
 
 /// Apply a Helix verb, returning a delete/yank effect when one is requested.
+///
+/// Read-only handling is **narrow on purpose**: [`editor::HelixVerb::Moved`]
+/// is never gated, because a reader must be able to walk around a buffer they
+/// cannot write. Only the verbs that *grow* a selection are refused, and they
+/// report it with the same notice every other edit verb uses. Before this,
+/// `v` and `x` armed and grew selections on a read-only buffer in silence —
+/// the reader saw a highlight they could not do anything with.
 fn apply_helix(state: &mut EditorState, verb: editor::HelixVerb) -> editor::HelixVerbOutcome {
+    if (grows_selection(&verb) || mutates_buffer(&verb)) && !editable(state) {
+        state.set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
+        return editor::HelixVerbOutcome::Handled;
+    }
     let Some(session) = state.session.as_mut() else {
         return editor::HelixVerbOutcome::Handled;
     };
     let Some(snapshot) = session.try_snapshot() else {
         return editor::HelixVerbOutcome::Handled;
     };
-    editor::apply_helix_verb(&snapshot, session.presentation_mut(), verb)
+    let outcome = editor::apply_helix_verb(&snapshot, session.presentation_mut(), verb);
+    if let editor::HelixVerbOutcome::NothingToDo(reason) = &outcome {
+        // Reported once, here, where the outcome is read — so every caller
+        // gets it and no caller can forget. A verb that reports nothing and
+        // changes nothing is indistinguishable from a key that was never
+        // delivered, which is exactly the failure §8 of the milestone forbids.
+        state.set_notice(EditorNotice::Note(reason.clone()));
+    }
+    outcome
 }
 
-/// Resolve the held selection to a yankable range, without performing the
+/// Apply a verb that edits the buffer, submitting its transaction.
+///
+/// The single place an M008 verb's text reaches the document. Going through
+/// [`submit_edit`] rather than the controller directly is what makes undo, the
+/// retained-bytes bound, LSP staleness, and the selection-clearing rule apply
+/// to `&`, `Alt-(` and `Alt-)` for free rather than by a second
+/// implementation that could disagree about any of them.
+fn apply_helix_edit(state: &mut EditorState, verb: editor::HelixVerb) -> editor::HelixVerbOutcome {
+    let outcome = apply_helix(state, verb);
+    if let editor::HelixVerbOutcome::Edit(edit, note) = outcome {
+        submit_edit(state, edit);
+        // **After** the submission: `submit_edit` clears the notice on
+        // success, so a disclosure set before it would be erased by the very
+        // edit it describes. `&` uses this to say a selection was too wide to
+        // measure exactly.
+        if let Some(note) = note {
+            state.set_notice(EditorNotice::Note(note));
+        }
+        editor::HelixVerbOutcome::Handled
+    } else {
+        outcome
+    }
+}
+
+/// Whether this verb can enlarge a held selection.
+///
+/// `Moved` can — extending a character selection *is* a motion — but it is
+/// deliberately excluded, because refusing it would take away navigation from
+/// a reader looking at a file they cannot edit. That asymmetry is the whole
+/// narrow reading: growth the reader asked for is refused, growth that is a
+/// side effect of moving the cursor is not.
+fn grows_selection(verb: &editor::HelixVerb) -> bool {
+    matches!(
+        verb,
+        editor::HelixVerb::SelectChar | editor::HelixVerb::SelectLine
+    )
+}
+
+/// Whether this verb writes to the buffer.
+///
+/// Gated on read-only alongside [`grows_selection`], and for the same reason:
+/// a reader on a document they cannot write may still walk it, flip
+/// selections, merge them and add cursors — none of which changes a byte — but
+/// a verb that would rewrite text has to say so rather than appear to work.
+fn mutates_buffer(verb: &editor::HelixVerb) -> bool {
+    matches!(
+        verb,
+        editor::HelixVerb::AlignSelections | editor::HelixVerb::RotateSelectionContents { .. }
+    )
+}
+
+/// Resolve the held selection set to yankable ranges, without performing the
 /// copy. The App layer owns the clipboard, so the buffer only reports the
-/// range — the same division of labour as the delete effect.
-fn yank_range(session: &mut TuiDocumentSession) -> Option<std::ops::Range<usize>> {
-    let snapshot = session.try_snapshot()?;
-    let range = editor::selection_range(session.presentation(), &snapshot)?;
-    session.presentation_mut().selection = None;
-    Some(range)
+/// ranges — the same division of labour as the delete effect.
+fn yank_ranges(session: &mut TuiDocumentSession) -> Vec<std::ops::Range<usize>> {
+    let Some(snapshot) = session.try_snapshot() else {
+        return Vec::new();
+    };
+    let ranges = editor::selection_ranges(session.presentation(), &snapshot);
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    session.presentation_mut().clear_selections();
+    ranges
 }
 
-/// Copy one byte range to the system clipboard.
+/// Copy every range to the system clipboard in one write.
+///
+/// Members are concatenated in document order, which is what makes the result
+/// read the way the screen does: two selections on lines 3 and 9 arrive
+/// top-down, not in the order the cursors happened to be created.
 ///
 /// A failed copy is reported rather than swallowed: the selection has already
 /// been dropped by the time this runs, so a silent failure would look exactly
 /// like `space y` doing nothing at all.
-fn yank_editor_range(app: &mut App, range: std::ops::Range<usize>) {
+fn yank_editor_ranges(app: &mut App, ranges: Vec<std::ops::Range<usize>>) {
     let Some(session) = app.editor_state.session.as_ref() else {
         return;
     };
     let Some(snapshot) = session.try_snapshot() else {
         return;
     };
-    let Ok(text) = snapshot.read_bytes(range.start, range.end) else {
+    let mut text = String::new();
+    let mut copied = 0usize;
+    for range in &ranges {
+        match snapshot.read_bytes(range.start, range.end) {
+            Ok(part) => {
+                copied += part.len();
+                text.push_str(&part);
+            }
+            // One unreadable member loses that member, not the whole verb: the
+            // alternative is a yank that produces nothing for a selection the
+            // reader can plainly see highlighted.
+            Err(_) => continue,
+        }
+    }
+    if text.is_empty() {
         app.messages_state.toasts.warning("Nothing to yank");
         return;
-    };
+    }
     match crate::util::clipboard::copy_to_clipboard(&text) {
         Ok(()) => app
             .messages_state
             .toasts
-            .info(&format!("Copied {} bytes", range.end - range.start)),
+            .info(&format!("Copied {copied} bytes")),
         Err(error) => app
             .messages_state
             .toasts
@@ -3106,6 +3815,10 @@ fn enter_insert(state: &mut EditorState, command: EditorCommand) -> BufferKey {
         _ => cursor,
     };
     presentation.cursor_byte = editor::clamp_offset(&snapshot, next);
+    // Insert mode re-places the cursor and then walks it forward with
+    // everything typed, so a column remembered from before `i` describes
+    // nothing by the time Normal mode comes back.
+    presentation.desired_column = None;
     presentation.mode = EditorMode::Insert;
     BufferKey::EnterInsert
 }
@@ -3115,6 +3828,9 @@ mod tests {
     use super::*;
     use crate::protocol::core::{CoreRequest, CoreResponse};
     use crate::tui::app::state::EditorNoticeSeverity;
+    use crate::tui::editor::EditorPoint;
+    use crate::tui::helix_selection::Selection;
+
     use crate::tui::app::state::EditorState;
     use crate::tui::input::InputMode;
     use async_trait::async_trait;
@@ -3458,14 +4174,41 @@ mod tests {
     }
 
     /// Whether the buffer is holding a selection.
-    fn has_selection(state: &EditorState) -> bool {
+    fn selection_of(state: &EditorState) -> Option<Selection<EditorPoint>> {
         state
             .session
             .as_ref()
             .expect("open")
             .presentation()
-            .selection
-            .is_some()
+            .selections
+            .get(presentation_primary_index(state))
+            .copied()
+    }
+
+    /// Index of the distinguished member, or 0 when nothing is held.
+    fn presentation_primary_index(state: &EditorState) -> usize {
+        state
+            .session
+            .as_ref()
+            .map(|session| session.presentation().primary_index)
+            .unwrap_or(0)
+    }
+
+    fn has_selection(state: &EditorState) -> bool {
+        selection_of(state).is_some()
+    }
+
+    /// Drop the held selection set, the way `submit_edit` does once an edit
+    /// lands.
+    ///
+    /// A verb that reports its effect (`d`) deliberately leaves the set for the
+    /// App layer, because that is what lets the undo entry record it. Tests
+    /// that drive the buffer half of that handoff on its own call this to
+    /// finish the transaction the way the dispatcher would.
+    fn consume_selection(state: &mut EditorState) {
+        if let Some(session) = state.session.as_mut() {
+            session.presentation_mut().clear_selections();
+        }
     }
 
     /// Byte length of the held selection, or 0 when nothing is selected.
@@ -4026,6 +4769,260 @@ mod tests {
         editor_buffer_key(state, InputMode::Normal, event)
     }
 
+    /// The cursor's byte offset, and the desired column beside it, as one read
+    /// so a test can assert a *pair* of facts about one keystroke without two
+    /// lookups that could disagree if one of them is re-derived.
+    fn cursor_and_column(state: &EditorState) -> (usize, Option<usize>) {
+        let presentation = state.session.as_ref().expect("open").presentation();
+        (presentation.cursor_byte, presentation.desired_column)
+    }
+
+    // ── M005: goto leaves and long-word motions ───────────────────────
+
+    /// Every goto leaf, driven as two real keystrokes through the dispatch
+    /// path. The leaf table is what resolves them, so a leaf present in the
+    /// table but unreachable from the keyboard would pass every unit test of
+    /// the table and fail this one.
+    #[tokio::test]
+    async fn every_goto_leaf_is_reachable_through_two_dispatch_keystrokes() {
+        // `    let x = 1;` is 0..14 with `\n` at 14, `second` is 15..21 with
+        // `\n` at 21, `third line` is 22..32 with `\n` at 32. The trailing
+        // newline opens a final empty line, so the buffer ends at 33.
+        let text = "    let x = 1;\nsecond\nthird line\n";
+
+        // `gs` — the leaf this milestone exists for. `0` is the only other way
+        // to reach a line start, so indentation was previously unavoidable.
+        let (mut state, _daemon) = opened_writer(text).await;
+        assert_eq!(normal(&mut state, KeyCode::Char('g')), BufferKey::Consumed);
+        assert_eq!(pending(&state), "g", "the armed prefix is visible");
+        assert_eq!(normal(&mut state, KeyCode::Char('s')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 4, "`gs` reached the first non-whitespace");
+        assert_eq!(pending(&state), "", "and disarmed");
+
+        // `ge` — end of file, which is also where bare `G` lands.
+        let (mut state, _daemon) = opened_writer(text).await;
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(normal(&mut state, KeyCode::Char('e')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 33, "`ge` reached the end of the last line");
+
+        // `gh` / `gl` — line start and line end, on the second line so the two
+        // are visibly different keys rather than two spellings of byte 0.
+        let (mut state, _daemon) = opened_writer(text).await;
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(cursor(&state), 15, "on the second line");
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('l'));
+        assert_eq!(cursor(&state), 21, "`gl` reached the end of that line");
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('h'));
+        assert_eq!(cursor(&state), 15, "`gh` reached the start of that line");
+
+        // `gj` / `gk` — Helix's *textual* line motions. This editor renders one
+        // screen row per logical line, so they are the same move as `j`/`k`.
+        let (mut state, _daemon) = opened_writer(text).await;
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(cursor(&state), 15, "`gj` moved down one line");
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('k'));
+        assert_eq!(cursor(&state), 0, "`gk` moved back up");
+
+        // `gg` is unchanged by the leaf table: it still lands on byte 0.
+        let (mut state, _daemon) = opened_writer(text).await;
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(cursor(&state), 0, "`gg` still lands on the buffer start");
+    }
+
+    /// Every goto leaf resolves through the raw motion path, which is how `gg`
+    /// has always behaved — and `apply_motion` never touches `selection`. So a
+    /// leaf neither extends a held selection the way `j`/`w` do, nor clears
+    /// one.
+    ///
+    /// This pins **parity with `gg`**, which is what M005 promised, rather than
+    /// asserting an absolute. Clearing the selection would be the
+    /// Helix-faithful choice — a goto in Helix drops it — but `apply_motion`
+    /// does not clear it for `gg` either, and making the new leaves clear it
+    /// would change `gg`'s behaviour, which this milestone may not do. Recorded
+    /// as a known divergence from Helix rather than absorbed silently.
+    #[tokio::test]
+    async fn every_goto_leaf_leaves_a_held_selection_exactly_as_gg_does() {
+        // Establish the `gg` baseline first.
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        normal(&mut state, KeyCode::Char('v'));
+        assert!(has_selection(&state), "the selection was established");
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(normal(&mut state, KeyCode::Char('g')), BufferKey::Consumed);
+        let baseline = selection_of(&state);
+        assert!(
+            baseline.is_some(),
+            "`gg` leaves the selection alone — the behaviour the leaves match"
+        );
+
+        for glyph in ['s', 'e', 'h', 'l', 'j', 'k'] {
+            let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+            normal(&mut state, KeyCode::Char('v'));
+            normal(&mut state, KeyCode::Char('g'));
+            assert_eq!(
+                normal(&mut state, KeyCode::Char(glyph)),
+                BufferKey::Consumed,
+                "`g{glyph}` is consumed by the chord"
+            );
+            assert_eq!(
+                selection_of(&state),
+                baseline,
+                "`g{glyph}` must leave the selection exactly as `gg` does"
+            );
+        }
+    }
+
+    /// An unbound second key still takes goto's swallow-and-consume path. The
+    /// cursor assertion is what makes this meaningful: a *disarmed* prefix that
+    /// did not move the cursor would pass a test that only checked the
+    /// indicator.
+    #[tokio::test]
+    async fn an_unbound_goto_second_key_still_swallows_and_resolves_normally() {
+        // `gp` is Helix's "previous buffer", which this editor has no leaf for.
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(normal(&mut state, KeyCode::Char('p')), BufferKey::Consumed);
+        assert_eq!(pending(&state), "", "the prefix disarmed");
+        assert_eq!(
+            cursor(&state),
+            0,
+            "and the swallowed key did not also resolve against the keymap"
+        );
+
+        // `gd`/`gy`/`gr`/`gi` are the LSP leaves M010/M013 own. Until then they
+        // are unbound, and an unbound leaf must not look like a working key.
+        for glyph in ['d', 'y', 'r', 'i'] {
+            let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+            normal(&mut state, KeyCode::Char('g'));
+            assert_eq!(
+                normal(&mut state, KeyCode::Char(glyph)),
+                BufferKey::Consumed,
+                "`g{glyph}` is consumed by the chord"
+            );
+            assert_eq!(pending(&state), "");
+            assert_eq!(cursor(&state), 0, "`g{glyph}` moved nothing");
+        }
+    }
+
+    /// `W`/`B`/`E` are reachable, and observably different from `w`/`b`/`e` on
+    /// punctuation — the only reason to have two sets of word motions.
+    #[tokio::test]
+    async fn long_word_motions_are_reachable_and_differ_from_the_word_motions() {
+        let (mut state, _daemon) = opened_writer("foo.bar baz").await;
+
+        assert_eq!(normal(&mut state, KeyCode::Char('W')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 8, "`W` skipped the whole of `foo.bar`");
+
+        let (mut state, _daemon) = opened_writer("foo.bar baz").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('w')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 4, "`w` stopped at `bar`");
+
+        let (mut state, _daemon) = opened_writer("foo.bar baz").await;
+        normal(&mut state, KeyCode::Char('W'));
+        normal(&mut state, KeyCode::Char('W'));
+        assert_eq!(cursor(&state), 11, "`W` to the end of the document");
+        assert_eq!(normal(&mut state, KeyCode::Char('B')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 8, "`B` one WORD back");
+        assert_eq!(normal(&mut state, KeyCode::Char('E')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 10, "`E` to the last char of `baz`");
+
+        let (mut state, _daemon) = opened_writer("foo.bar baz").await;
+        normal(&mut state, KeyCode::Char('W'));
+        assert_eq!(normal(&mut state, KeyCode::Char('e')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 10, "`e` still stops at the end of `baz`");
+
+        // Terminals disagree about how a capital is encoded, so both spellings
+        // have to work — the same rule `G`, `D` and `U` already follow.
+        let (mut state, _daemon) = opened_writer("foo.bar baz").await;
+        let shift = KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT);
+        assert_eq!(normal_event(&mut state, shift), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 8, "`W`+SHIFT is the same motion");
+    }
+
+    /// The remembered column has to survive the real dispatch path, not just
+    /// the unit-level motion call, or the feature is unreachable in practice.
+    #[tokio::test]
+    async fn a_vertical_run_through_dispatch_keeps_its_column_across_a_short_line() {
+        let (mut state, _daemon) = opened_writer("aaaaaaaaaa\nbb\ncccccccccc\n").await;
+
+        // Column 9, down onto a two-character line, down again, then back up.
+        for _ in 0..9 {
+            normal(&mut state, KeyCode::Char('l'));
+        }
+        assert_eq!(cursor_and_column(&state), (9, Some(9)), "seeded by `l`");
+
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(
+            cursor_and_column(&state),
+            (13, Some(9)),
+            "`j` clamped the cursor but kept the column"
+        );
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(cursor_and_column(&state), (23, Some(9)), "and restored it");
+
+        normal(&mut state, KeyCode::Char('k'));
+        normal(&mut state, KeyCode::Char('k'));
+        assert_eq!(cursor(&state), 9, "back where the run started");
+
+        // `gj` is the same motion, so it shares the column rather than
+        // starting a second, disagreeing run.
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(
+            cursor_and_column(&state),
+            (13, Some(9)),
+            "`gj` continues the run `j` began"
+        );
+    }
+
+    /// A run is a run: `w` and `G` end it, so the next `j` re-establishes a
+    /// column from where the cursor actually is rather than from a line the
+    /// cursor has left.
+    #[tokio::test]
+    async fn a_non_column_motion_ends_the_vertical_run() {
+        let (mut state, _daemon) = opened_writer("aaaaaaaaaa\nbb\ncccccccccc\n").await;
+        for _ in 0..9 {
+            normal(&mut state, KeyCode::Char('l'));
+        }
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(cursor_and_column(&state), (13, Some(9)));
+
+        normal(&mut state, KeyCode::Char('G'));
+        assert_eq!(cursor_and_column(&state).1, None, "`G` ended the run");
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(
+            cursor_and_column(&state).1,
+            Some(0),
+            "so `j` re-seeded from where the cursor is"
+        );
+    }
+
+    /// Insert mode owns every printable character, so the whole M005 surface
+    /// must be literal text there. `W`, `B` and `E` are the risky ones: they
+    /// are capitals, and Insert already claims shifted letters as text.
+    #[tokio::test]
+    async fn none_of_the_m005_keys_are_captured_in_insert_mode() {
+        for glyph in ['g', 'G', 'W', 'B', 'E', 's', 'j', 'k'] {
+            let (mut state, _daemon) = opened_writer("x").await;
+            assert_eq!(
+                insert(&mut state, KeyCode::Char(glyph)),
+                BufferKey::Consumed,
+                "`{glyph}` is claimed — as text"
+            );
+            assert_eq!(
+                editor_text(&state),
+                format!("{glyph}x"),
+                "`{glyph}` typed into the document rather than moving the cursor"
+            );
+            assert_eq!(cursor(&state), 1, "and the cursor moved with the text");
+        }
+    }
+
     /// 60 fixed-width lines, so every cursor assertion below is arithmetic
     /// rather than a guess: line `i` starts at byte `7 * i` and each line's
     /// content ends at `7 * i + 6`.
@@ -4152,24 +5149,39 @@ mod tests {
 
         // `d` deletes the held selection — an effect the App layer performs,
         // so the buffer reports the range rather than applying it.
-        let BufferKey::DeleteRange(range) = normal(&mut state, KeyCode::Char('d')) else {
+        let BufferKey::DeleteRanges(ranges) = normal(&mut state, KeyCode::Char('d')) else {
             panic!("d must report a delete range");
         };
-        assert_eq!(range, 0..14, "d reports the range the selection covers");
+        assert_eq!(
+            ranges,
+            editor::one_range(0..14),
+            "d reports the range the selection covers"
+        );
         assert_eq!(
             editor_text(&state),
             numbered_lines(4),
             "the buffer reports the effect; it does not apply it"
         );
+        // Consuming the selection is the **App layer's** half of that handoff:
+        // `apply_helix_verb` leaves the set in place so the undo entry can
+        // record the members the reader actually had, and `submit_edit` drops
+        // them once the edit lands. This test drives the buffer half only, so
+        // it performs that step explicitly rather than leaving a stale
+        // selection for the next `x` to extend.
+        consume_selection(&mut state);
 
         // `space y` is two events through the same remembered-prefix path a
         // legacy terminal forces, so it needs the same dispatch proof.
         assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
         assert_eq!(normal(&mut state, KeyCode::Char(' ')), BufferKey::Consumed);
-        let BufferKey::YankRange(yank) = normal(&mut state, KeyCode::Char('y')) else {
+        let BufferKey::YankRanges(yanked) = normal(&mut state, KeyCode::Char('y')) else {
             panic!("space y must report a yank range");
         };
-        assert_eq!(yank, 0..7, "space y reports the selected line");
+        assert_eq!(
+            yanked,
+            editor::one_range(0..7),
+            "space y reports the selected line"
+        );
 
         // `D` deletes to end of line. Both terminal encodings of the capital
         // letter have to work, so both are dispatched. The cursor has to move
@@ -4353,13 +5365,15 @@ mod tests {
         // Nothing below claims these, so they must stay composer keystrokes.
         //
         // `f`, `t`, `F` and `T` were on this list until M003 claimed them as
-        // the character-finding gestures. That is the one edit this test has
-        // ever needed, and it is the intended shape of the failure: the list
-        // asserts which keys the buffer has *not* taken, so claiming a key is
-        // supposed to require removing it here rather than quietly widening
-        // the buffer. `y` stays, because it is a leaf of `space` rather than
-        // a Normal-mode binding of its own.
-        for letter in ['q', 'z', 'y', 'c', 'm', 's', 'p', '~'] {
+        // the character-finding gestures, and `y`, `p` and `~` left it in
+        // M004, when they became Normal-mode verbs of their own rather than
+        // only a leaf of `space`. `%` left it in M008, with the rest of the
+        // selection-manipulation surface. That is the intended shape of the
+        // failure: the list asserts which keys the buffer has *not* taken, so
+        // claiming a key is supposed to require removing it here rather than
+        // quietly widening the buffer. It is a to-do list for whoever claims
+        // the next one, not a permanent record.
+        for letter in ['q', 'z', 'c', 'm', 's', 'J', '?'] {
             assert_eq!(
                 normal(&mut state, KeyCode::Char(letter)),
                 BufferKey::Unhandled,
@@ -4426,8 +5440,14 @@ mod tests {
         // be ordinary text in Insert or a URL could never be typed. `?` is here
         // for the same reason from the other side — it is a live global binding
         // (Help) that must not leak into the document while typing.
+        //
+        // `[` and `]` joined them in M006. They are the sharpest case on the
+        // list because each is *both* a Normal-mode prefix that arms a mode
+        // and a character people type constantly — markdown links, JSON keys,
+        // index expressions. A prefix arm that leaked into Insert would make
+        // those lines untypable, and nothing else on this list would catch it.
         for ch in [
-            '/', ':', ' ', '\n', '\t', '.', ',', '$', '0', '~', '_', '*', '?',
+            '/', ':', ' ', '\n', '\t', '.', ',', '$', '0', '~', '_', '*', '?', '[', ']',
         ] {
             let (mut state, _daemon) = opened_writer("").await;
             let expected: String = match ch {
@@ -4450,9 +5470,11 @@ mod tests {
 
         // Non-vacuity: a sweep that inspected nothing would pass trivially, so
         // assert it actually walked the alphabet it claims to cover. The count
-        // is 26 letters * 3 encodings + 13 punctuation.
+        // is 26 letters * 3 encodings + 15 punctuation — `[` and `]` joined
+        // the punctuation set in M006, which is also why this number moves
+        // whenever a claim is added rather than when a letter is.
         assert_eq!(
-            inspected, 91,
+            inspected, 93,
             "the sweep must inspect every letter in every encoding plus the punctuation set"
         );
     }
@@ -4530,7 +5552,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_and_resync_are_requested_in_both_modes_and_reload_only_in_normal() {
+    async fn save_and_resync_are_requested_in_both_modes_and_reload_moved_to_the_colon_line() {
         let (mut state, _daemon) = opened_writer("base").await;
         let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
         let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
@@ -4546,15 +5568,17 @@ mod tests {
             );
         }
 
-        // `R` throws the local draft away, so it is normal-mode only — in
-        // Insert those two keystrokes are a capital `R`.
+        // `R` no longer reloads. Helix gives it `replace_with_yanked`, and a
+        // guard-block chord would have shadowed the Normal-mode verb *and*
+        // survived it — the exact failure this dispatch chain exists to make
+        // impossible. Reload is one `:e` away instead.
         assert_eq!(
             normal(&mut state, KeyCode::Char('R')),
-            BufferKey::RequestReload
+            BufferKey::ReplaceWithClipboard(ClipboardVerb::Replace)
         );
         // In Insert those two keystrokes are the letter `R`, so the text
         // grows by exactly one — which is the property that makes normal-only
-        // reachability safe.
+        // reachability safe, and that keeps `R` out of Insert mode's keyspace.
         assert_eq!(insert(&mut state, KeyCode::Char('R')), BufferKey::Consumed);
         assert_eq!(editor_text(&state), "Rbase");
 
@@ -4571,7 +5595,7 @@ mod tests {
         assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
         assert_eq!(
             normal(&mut state, KeyCode::Char('d')),
-            BufferKey::DeleteRange(0..4)
+            BufferKey::DeleteRanges(editor::one_range(0..4))
         );
         let edit = editor::delete_range(&snapshot_of(&state), 0..4).unwrap();
         submit_edit(&mut state, edit);
@@ -4583,7 +5607,7 @@ mod tests {
         // Lines 0..=1 of "two\nthree\n" — 0..10, both terminators included.
         assert_eq!(
             normal(&mut state, KeyCode::Char('d')),
-            BufferKey::DeleteRange(0..10)
+            BufferKey::DeleteRanges(editor::one_range(0..10))
         );
     }
 
@@ -4608,7 +5632,7 @@ mod tests {
         // matching `/terminal`.
         assert_eq!(
             normal(&mut state, KeyCode::Char('d')),
-            BufferKey::DeleteRange(0..3)
+            BufferKey::DeleteRanges(editor::one_range(0..3))
         );
     }
 
@@ -4619,7 +5643,7 @@ mod tests {
         assert_eq!(normal(&mut state, KeyCode::Char(' ')), BufferKey::Consumed);
         assert_eq!(
             normal(&mut state, KeyCode::Char('y')),
-            BufferKey::YankRange(0..7),
+            BufferKey::YankRanges(editor::one_range(0..7)),
             "`space y` is two events, so it is prefix state rather than a chord"
         );
 
@@ -4723,7 +5747,7 @@ mod tests {
                 "{label} re-arms"
             );
             assert_eq!(
-                normal(&mut state, KeyCode::Char('~')),
+                normal(&mut state, KeyCode::Char('z')),
                 BufferKey::Unhandled,
                 "{label} then an unbound key reaches the composer"
             );
@@ -5673,5 +6697,1738 @@ mod tests {
             app.file_tree_state.at_workspace_root(),
             "a file is not a directory the pane can be rooted at"
         );
+    }
+
+    // ── M004 change verbs through the dispatch path ─────────────────────
+
+    /// Park the cursor, so a verb that acts on "the character under the
+    /// cursor" acts on a known one.
+    fn park(state: &mut EditorState, offset: usize) {
+        state
+            .session
+            .as_mut()
+            .expect("open")
+            .presentation_mut()
+            .cursor_byte = offset;
+    }
+
+    #[tokio::test]
+    async fn r_arms_a_capture_and_the_next_key_replaces_one_character() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        park(&mut state, 1);
+
+        assert_eq!(normal(&mut state, KeyCode::Char('r')), BufferKey::Consumed);
+        assert_eq!(
+            pending(&state),
+            "r",
+            "an armed `r` that draws nothing is indistinguishable from a dropped key"
+        );
+
+        assert_eq!(normal(&mut state, KeyCode::Char('X')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "aXc", "exactly one character, no more");
+        assert_eq!(undo_depth(&state), 1, "and it is one undo step");
+    }
+
+    #[tokio::test]
+    async fn r_then_a_non_character_key_moves_the_cursor_instead_of_eating_it() {
+        // The hazard a capture prefix exists to avoid: `r` then `Left` must
+        // be an arrow, not a swallowed keystroke on its way to the composer.
+        let (mut state, _daemon) = opened_writer("abc").await;
+        park(&mut state, 1);
+        assert_eq!(normal(&mut state, KeyCode::Char('r')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Left), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0);
+        assert_eq!(editor_text(&state), "abc", "nothing was replaced");
+    }
+
+    #[tokio::test]
+    async fn r_replaces_a_multi_byte_character_whole() {
+        let (mut state, _daemon) = opened_writer("a日b").await;
+        park(&mut state, 1);
+        assert_eq!(normal(&mut state, KeyCode::Char('r')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char('本')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "a本b");
+    }
+
+    #[tokio::test]
+    async fn r_on_a_read_only_attachment_refuses_visibly() {
+        let (mut state, _daemon) = opened_reader("abc").await;
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('r')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char('X')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "abc");
+        assert!(state.notice.is_some(), "the refusal must be visible");
+    }
+
+    #[tokio::test]
+    async fn tilde_switches_case_and_drops_the_selection_it_consumed() {
+        let (mut state, _daemon) = opened_writer("aBc").await;
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('~')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "ABc");
+        assert_eq!(cursor(&state), 0, "left on the character it flipped");
+
+        // With a selection held, `~` flips the whole selection and must not
+        // leave a highlight over text that has changed underneath it.
+        let (mut state, _daemon) = opened_writer("ab cd").await;
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        assert!(has_selection(&state));
+        normal(&mut state, KeyCode::Char('~'));
+        assert_eq!(editor_text(&state), "AB CD");
+        assert!(
+            !has_selection(&state),
+            "a selection over replaced text is a highlight on the wrong words"
+        );
+    }
+
+    #[tokio::test]
+    async fn tilde_on_a_read_only_attachment_refuses_visibly() {
+        let (mut state, _daemon) = opened_reader("aBc").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('~')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "aBc");
+        assert!(state.notice.is_some());
+    }
+
+    // ── M007: the selection set ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_read_only_buffer_refuses_selection_growth_but_still_moves() {
+        let (mut state, _daemon) = opened_reader("one\ntwo\nthree\n").await;
+        state.clear_notice();
+
+        assert_eq!(normal(&mut state, KeyCode::Char('v')), BufferKey::Consumed);
+        assert!(
+            !has_selection(&state),
+            "`v` must not arm a selection the reader cannot act on"
+        );
+        assert!(
+            state.notice.is_some(),
+            "a silent refusal looks exactly like a keypress that never arrived"
+        );
+
+        state.clear_notice();
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        assert!(!has_selection(&state), "`x` must not arm either");
+        assert!(state.notice.is_some());
+
+        // The narrow half of the rule: navigation is not growth. A reader must
+        // still be able to walk a buffer they cannot write.
+        state.clear_notice();
+        assert_eq!(normal(&mut state, KeyCode::Char('j')), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 4, "`j` still moves on a read-only buffer");
+        assert!(state.notice.is_none(), "movement is not a refused edit");
+    }
+
+    #[tokio::test]
+    async fn a_multi_selection_edit_is_undone_and_redone_as_one_step() {
+        let (mut state, _daemon) = opened_writer("ab cd ef").await;
+        // No key creates a set until M008, so the model is exercised the way
+        // the gesture will drive it: a set handed to the funnel directly.
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 3);
+
+        let edit = editor::switch_case(&snapshot, state.session.as_ref().unwrap().presentation())
+            .expect("a case flip over two members");
+        submit_edit(&mut state, edit);
+        assert_eq!(editor_text(&state), "Ab Cd ef");
+        assert!(
+            !has_selection(&state),
+            "an accepted edit consumes the set; undo puts it back"
+        );
+
+        editor_undo(&mut state);
+        assert_eq!(
+            editor_text(&state),
+            "ab cd ef",
+            "one step restored both members"
+        );
+        assert_eq!(
+            selection_count(&state),
+            2,
+            "undo restores the selection set, not just the text"
+        );
+
+        editor_redo(&mut state);
+        assert_eq!(editor_text(&state), "Ab Cd ef");
+        assert_eq!(selection_count(&state), 2, "redo restores it as well");
+    }
+
+    #[tokio::test]
+    async fn an_edit_after_undo_truncates_the_redo_tail_and_drops_the_set() {
+        let (mut state, _daemon) = opened_writer("ab cd").await;
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 3);
+        let edit = editor::switch_case(&snapshot, state.session.as_ref().unwrap().presentation())
+            .expect("a case flip");
+        submit_edit(&mut state, edit);
+        editor_undo(&mut state);
+
+        // A fresh edit invalidates the redo entry *and* the set it recorded.
+        let after = snapshot_of(&state);
+        let edit =
+            editor::replace_char(&after, state.session.as_ref().unwrap().presentation(), 'Z')
+                .expect("replacement");
+        submit_edit(&mut state, edit);
+        assert_eq!(
+            state.session.as_ref().unwrap().presentation().redo.len(),
+            0,
+            "a new edit must not leave a redoable entry pointing at older text"
+        );
+        assert_eq!(selection_count(&state), 0);
+    }
+
+    /// Hold two single-character members at `start` and `other`, primary first.
+    ///
+    /// Single characters, because a Helix character selection is inclusive of
+    /// both endpoints: `start..start+1` would cover two characters and the
+    /// assertions below would be about the wrong spans.
+    fn hold_two_members(
+        state: &mut EditorState,
+        snapshot: &codegg_document::DocumentSnapshot,
+        start: usize,
+        other: usize,
+    ) {
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(snapshot, byte),
+        };
+        let member = |anchor: usize, head: usize| Selection {
+            anchor: point(anchor),
+            head: point(head),
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        };
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![member(start, start), member(other, other)];
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .primary_index = 0;
+    }
+
+    fn selection_count(state: &EditorState) -> usize {
+        state
+            .session
+            .as_ref()
+            .map(|session| session.presentation().selections.len())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn the_case_setters_are_claimed_and_change_the_document() {
+        // On `B`, so the verb has a case to change: `` ` `` on an already
+        // lower-case character is correctly a no-op.
+        let (mut state, _daemon) = opened_writer("aBc").await;
+        park(&mut state, 1);
+        assert_eq!(normal(&mut state, KeyCode::Char('`')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "abc", "` sets lower case");
+
+        let (mut state, _daemon) = opened_writer("aBc").await;
+        // On `a`: upper-casing the `B` would correctly be a no-op.
+        park(&mut state, 0);
+        assert_eq!(
+            normal_event(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('`'), KeyModifiers::ALT)
+            ),
+            BufferKey::Consumed,
+            "` with Alt sets upper case"
+        );
+        assert_eq!(editor_text(&state), "ABc");
+    }
+
+    #[tokio::test]
+    async fn the_clipboard_verbs_are_claimed_and_reported_rather_than_performed() {
+        // The buffer resolves the *target*; the App layer owns the bytes.
+        // An unclaimed `p` would type a `p` into the composer instead.
+        let (mut state, _daemon) = opened_writer("abc").await;
+        park(&mut state, 0);
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('p')),
+            BufferKey::PasteAfter(ClipboardVerb::PasteAfter)
+        );
+        assert_eq!(
+            normal_event(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)
+            ),
+            BufferKey::PasteBefore(ClipboardVerb::PasteBefore),
+            "terminals disagree on how a capital is encoded; both must work"
+        );
+        assert_eq!(
+            normal_event(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE)
+            ),
+            BufferKey::PasteBefore(ClipboardVerb::PasteBefore)
+        );
+        assert_eq!(
+            editor_text(&state),
+            "abc",
+            "the buffer did not read the clipboard"
+        );
+    }
+
+    #[tokio::test]
+    async fn paste_after_reports_the_clipboard_contents_it_was_given() {
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_with_the_editor_attached(state).await;
+        park_on_app(&mut app, 0);
+        apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, Some("XY".to_string()));
+        assert_eq!(text_on_app(&app), "aXYbc");
+        assert_eq!(
+            cursor_on_app(&app),
+            2,
+            "on the last pasted byte, not past it"
+        );
+    }
+
+    #[tokio::test]
+    async fn paste_before_reports_the_clipboard_contents_it_was_given() {
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_with_the_editor_attached(state).await;
+        park_on_app(&mut app, 0);
+        apply_clipboard_text(&mut app, ClipboardVerb::PasteBefore, Some("X".to_string()));
+        assert_eq!(text_on_app(&app), "Xabc");
+    }
+
+    #[tokio::test]
+    async fn r_the_replace_verb_replaces_with_the_clipboard_contents() {
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_with_the_editor_attached(state).await;
+        park_on_app(&mut app, 0);
+        apply_clipboard_text(&mut app, ClipboardVerb::Replace, Some("Z".to_string()));
+        assert_eq!(text_on_app(&app), "Zbc");
+    }
+
+    #[tokio::test]
+    async fn an_empty_clipboard_and_a_failed_read_are_different_answers() {
+        let (state, _daemon) = opened_writer("abc").await;
+
+        let mut app = app_with_the_editor_attached(state).await;
+        park_on_app(&mut app, 0);
+        apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, None);
+        assert_eq!(text_on_app(&app), "abc");
+        assert_eq!(
+            app.messages_state.toasts.len(),
+            1,
+            "a clipboard the system refused must still say so"
+        );
+
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_with_the_editor_attached(state).await;
+        park_on_app(&mut app, 0);
+        apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, Some(String::new()));
+        assert_eq!(text_on_app(&app), "abc");
+        assert_eq!(
+            app.messages_state.toasts.len(),
+            1,
+            "a clipboard holding nothing is not the same failure, and says so too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clipboard_verb_on_a_read_only_attachment_refuses_visibly() {
+        let (state, _daemon) = opened_reader("abc").await;
+        let mut app = app_with_the_editor_attached(state).await;
+        park_on_app(&mut app, 0);
+        apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, Some("X".to_string()));
+        assert_eq!(text_on_app(&app), "abc");
+        assert!(app.editor_state.notice.is_some());
+    }
+
+    #[tokio::test]
+    async fn bare_y_reports_the_held_selection_for_the_clipboard() {
+        let (mut state, _daemon) = opened_writer("alpha beta").await;
+        park(&mut state, 0);
+        // `v` selects one character; each `l` adds another, so this holds
+        // three.
+        assert_eq!(normal(&mut state, KeyCode::Char('v')), BufferKey::Consumed);
+        normal(&mut state, KeyCode::Char('l'));
+        normal(&mut state, KeyCode::Char('l'));
+
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('y')),
+            BufferKey::YankRanges(editor::one_range(0..3)),
+            "bare `y` must resolve exactly as `space y` does"
+        );
+        assert_eq!(editor_text(&state), "alpha beta", "a yank changes no text");
+    }
+
+    #[tokio::test]
+    async fn bare_y_with_nothing_selected_is_still_claimed() {
+        let (mut state, _daemon) = opened_writer("abc").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('y')), BufferKey::Consumed);
+    }
+
+    #[tokio::test]
+    async fn none_of_the_new_verbs_are_captured_in_insert_mode() {
+        // The invariant that has already been broken once in production:
+        // `Shift+W` opened a picker and ate the character.
+        for ch in ['p', 'P', 'y', 'r', '~', 'R', '`'] {
+            let (mut state, _daemon) = opened_writer("").await;
+            assert_eq!(
+                normal(&mut state, KeyCode::Char('i')),
+                BufferKey::EnterInsert
+            );
+            assert_eq!(insert(&mut state, KeyCode::Char(ch)), BufferKey::Consumed);
+            assert_eq!(
+                editor_text(&state),
+                ch.to_string(),
+                "{ch:?} must insert literally in Insert mode"
+            );
+        }
+    }
+
+    fn park_on_app(app: &mut App, offset: usize) {
+        app.editor_state
+            .session
+            .as_mut()
+            .expect("open")
+            .presentation_mut()
+            .cursor_byte = offset;
+    }
+
+    fn text_on_app(app: &App) -> String {
+        editor_text(&app.editor_state)
+    }
+
+    fn cursor_on_app(app: &App) -> usize {
+        cursor(&app.editor_state)
+    }
+
+    // ── M008 selection manipulation, through the dispatch path ─────────
+    //
+    // Every test here presses a **key**. Calling a helper directly would pass
+    // whether or not the chord is reachable, which is the discipline that let
+    // the `Ctrl+r` shadow survive M001: three tests "covered" redo and the
+    // key was claimed by an earlier stage.
+
+    /// Press `code` with `modifiers`, in Normal mode.
+    fn press(state: &mut EditorState, code: KeyCode, modifiers: KeyModifiers) -> BufferKey {
+        normal_event(state, KeyEvent::new(code, modifiers))
+    }
+
+    /// Every held member's byte range, in document order.
+    fn held_ranges(state: &EditorState) -> Vec<std::ops::Range<usize>> {
+        let presentation = state.session.as_ref().expect("open").presentation();
+        editor::selection_ranges(presentation, &snapshot_of(state))
+    }
+
+    /// The notice the last verb left, if any.
+    fn notice_of(state: &EditorState) -> Option<String> {
+        state.notice.as_ref().map(|notice| notice.message())
+    }
+
+    #[tokio::test]
+    async fn semicolon_collapses_the_set_to_one_cursor_and_reports_when_empty() {
+        let (mut state, _daemon) = opened_writer("ab\ncd\n").await;
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 4);
+        park(&mut state, 0);
+
+        assert_eq!(
+            normal(&mut state, KeyCode::Char(';')),
+            BufferKey::Consumed,
+            "claimed even with a set held, or `;` would start a composer word"
+        );
+        assert_eq!(selection_count(&state), 0);
+        assert_eq!(cursor(&state), 0, "the cursor stays where the primary was");
+
+        let (mut empty, _d) = opened_writer("ab\n").await;
+        assert_eq!(normal(&mut empty, KeyCode::Char(';')), BufferKey::Consumed);
+        assert!(
+            notice_of(&empty).is_some_and(|note| note.contains("nothing selected")),
+            "a verb that did nothing says so: {:?}",
+            notice_of(&empty)
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_semicolon_flips_every_member_and_alt_colon_puts_them_back() {
+        let (mut state, _daemon) = opened_writer("abcdef\nghijkl\n").await;
+        // One backwards member and one forwards one, so the two verbs differ.
+        let snapshot = snapshot_of(&state);
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(&snapshot, byte),
+        };
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![Selection {
+            anchor: point(5),
+            head: point(1),
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        }];
+        park(&mut state, 5);
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char(';'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        let member = selection_of(&state).expect("held");
+        assert_eq!(
+            (member.anchor.byte, member.head.byte),
+            (1, 5),
+            "the anchor and head swapped"
+        );
+
+        // Flipping again restores the backwards direction, which is what
+        // `Alt-:` then exists to fix.
+        press(&mut state, KeyCode::Char(';'), KeyModifiers::ALT);
+        let member = selection_of(&state).expect("held");
+        assert!((member.anchor.byte, member.head.byte) == (5, 1));
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char(':'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        let member = selection_of(&state).expect("held");
+        assert!((member.anchor.byte, member.head.byte) == (1, 5));
+
+        // A second `Alt-:` has nothing to fix and says so, rather than
+        // pretending to have worked.
+        press(&mut state, KeyCode::Char(':'), KeyModifiers::ALT);
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("already forward")),
+            "{:?}",
+            notice_of(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_colon_makes_a_backwards_member_forward_without_moving_the_cursor() {
+        let (mut state, _daemon) = opened_writer("abcdef\n").await;
+        let snapshot = snapshot_of(&state);
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(&snapshot, byte),
+        };
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![Selection {
+            anchor: point(5),
+            head: point(1),
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        }];
+        park(&mut state, 5);
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char(':'), KeyModifiers::ALT),
+            BufferKey::Consumed,
+            "the bare colon opens the command line; only the modified one flips"
+        );
+        assert!(
+            !state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active,
+            "`Alt-:` must not open the command line"
+        );
+        let member = selection_of(&state).expect("held");
+        assert!(member.anchor.byte <= member.head.byte);
+        assert_eq!(cursor(&state), 5, "a direction is not a reason to move");
+    }
+
+    #[tokio::test]
+    async fn percent_selects_the_whole_file_through_the_key() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char('%')), BufferKey::Consumed);
+        assert_eq!(held_ranges(&state), vec![0..8]);
+        assert_eq!(cursor(&state), 0, "selecting all does not move the reader");
+    }
+
+    #[tokio::test]
+    async fn comma_keeps_the_primary_and_alt_comma_removes_it() {
+        let (mut keep, _d) = opened_writer("abcdefghij\n").await;
+        let snapshot = snapshot_of(&keep);
+        hold_two_members(&mut keep, &snapshot, 0, 6);
+        park(&mut keep, 0);
+        assert_eq!(normal(&mut keep, KeyCode::Char(',')), BufferKey::Consumed);
+        assert_eq!(selection_count(&keep), 1);
+        assert_eq!(held_ranges(&keep), vec![0..1]);
+        assert!(
+            notice_of(&keep).is_none(),
+            "`;` and `,` were different keys; only `,` was pressed"
+        );
+
+        let (mut drop, _d) = opened_writer("abcdefghij\n").await;
+        let snapshot = snapshot_of(&drop);
+        hold_two_members(&mut drop, &snapshot, 0, 6);
+        park(&mut drop, 0);
+        assert_eq!(
+            press(&mut drop, KeyCode::Char(','), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(selection_count(&drop), 1);
+        assert_eq!(held_ranges(&drop), vec![6..7], "the primary was removed");
+    }
+
+    #[tokio::test]
+    async fn comma_on_one_selection_is_reported_rather_than_rewriting_the_set() {
+        let (mut state, _daemon) = opened_writer("abc\n").await;
+        park(&mut state, 0);
+        normal(&mut state, KeyCode::Char('v'));
+        assert_eq!(selection_count(&state), 1);
+        assert_eq!(normal(&mut state, KeyCode::Char(',')), BufferKey::Consumed);
+        assert!(notice_of(&state).is_some_and(|note| note.contains("one selection")));
+        assert_eq!(selection_count(&state), 1);
+    }
+
+    #[tokio::test]
+    async fn capital_c_adds_a_cursor_below_and_alt_c_above() {
+        let (mut below, _d) = opened_writer("ab\ncd\n").await;
+        park(&mut below, 0);
+        normal(&mut below, KeyCode::Char('v'));
+        assert_eq!(normal(&mut below, KeyCode::Char('C')), BufferKey::Consumed);
+        assert_eq!(held_ranges(&below), vec![0..1, 3..4]);
+
+        let (mut above, _d) = opened_writer("ab\ncd\n").await;
+        park(&mut above, 3);
+        normal(&mut above, KeyCode::Char('v'));
+        assert_eq!(
+            press(&mut above, KeyCode::Char('C'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(held_ranges(&above), vec![0..1, 3..4]);
+    }
+
+    #[tokio::test]
+    async fn capital_c_is_recorded_as_a_repeatable_motion_for_alt_dot() {
+        let (mut state, _daemon) = opened_writer("a\nb\nc\nd\n").await;
+        park(&mut state, 0);
+        normal(&mut state, KeyCode::Char('v'));
+        normal(&mut state, KeyCode::Char('C'));
+        assert_eq!(selection_count(&state), 2);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('.'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            selection_count(&state),
+            4,
+            "`Alt-.` repeated `C` rather than doing nothing"
+        );
+        assert_eq!(
+            held_ranges(&state),
+            vec![0..1, 2..3, 4..5],
+            "one repeated cursor lands on a line that already has one, and \
+             identical members merge into one range — two members and three \
+             distinct regions is the honest reading of the same bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plain_motion_disarms_the_selection_repeat_slot() {
+        let (mut state, _daemon) = opened_writer("a\nb\nc\n").await;
+        park(&mut state, 0);
+        normal(&mut state, KeyCode::Char('v'));
+        normal(&mut state, KeyCode::Char('C'));
+        normal(&mut state, KeyCode::Char('j'));
+        assert_eq!(
+            press(&mut state, KeyCode::Char('.'), KeyModifiers::ALT),
+            BufferKey::Unhandled,
+            "one repeat slot, and every motion overwrites it"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_moves_focus_and_alt_rotate_moves_bytes() {
+        let (mut focus, _d) = opened_writer("aa\nbb\ncc\n").await;
+        let member = |line: usize| {
+            let base = line * 3;
+            Selection {
+                anchor: EditorPoint { byte: base, line },
+                head: EditorPoint {
+                    byte: base + 1,
+                    line,
+                },
+                mode: crate::tui::helix_selection::SelectionMode::Char,
+                growing: false,
+            }
+        };
+        focus
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![member(0), member(1), member(2)];
+        park(&mut focus, 4);
+
+        assert_eq!(
+            normal(&mut focus, KeyCode::Char(')')),
+            BufferKey::Consumed,
+            "`)` rotates the main selection forward"
+        );
+        assert_eq!(presentation_primary_index(&focus), 1);
+        assert_eq!(
+            editor_text(&focus),
+            "aa\nbb\ncc\n",
+            "rotating focus moves no bytes"
+        );
+        assert_eq!(cursor(&focus), 4, "the cursor follows the primary");
+
+        assert_eq!(
+            press(&mut focus, KeyCode::Char(')'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            editor_text(&focus),
+            "bb\ncc\naa\n",
+            "`Alt-)` rotated the contents instead"
+        );
+    }
+
+    #[tokio::test]
+    async fn alt_minus_bridges_a_gap_and_alt_underscore_does_not() {
+        let (mut merge, _d) = opened_writer("aa bb cc\n").await;
+        let member = |start: usize, end: usize| Selection {
+            anchor: EditorPoint {
+                byte: start,
+                line: 0,
+            },
+            head: EditorPoint { byte: end, line: 0 },
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        };
+        merge
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![member(0, 1), member(3, 4)];
+        park(&mut merge, 0);
+        assert_eq!(
+            press(&mut merge, KeyCode::Char('-'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(held_ranges(&merge), vec![0..5]);
+
+        let (mut keep, _d) = opened_writer("aa bb cc\n").await;
+        keep.session.as_mut().unwrap().presentation_mut().selections =
+            vec![member(0, 1), member(3, 4)];
+        park(&mut keep, 0);
+        assert_eq!(
+            press(&mut keep, KeyCode::Char('_'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            held_ranges(&keep),
+            vec![0..2, 3..5],
+            "a gap between them is the whole difference from `Alt-minus`"
+        );
+    }
+
+    #[tokio::test]
+    async fn ampersand_aligns_in_display_columns_and_is_undoable_as_one_step() {
+        let (mut state, _daemon) = opened_writer("ab\ncdef\n").await;
+        let member = |line: usize, start: usize, end: usize| {
+            let base = line * 3;
+            Selection {
+                anchor: EditorPoint {
+                    byte: base + start,
+                    line,
+                },
+                head: EditorPoint {
+                    byte: base + end,
+                    line,
+                },
+                mode: crate::tui::helix_selection::SelectionMode::Char,
+                growing: false,
+            }
+        };
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![member(0, 0, 1), member(1, 0, 3)];
+        park(&mut state, 0);
+
+        assert_eq!(normal(&mut state, KeyCode::Char('&')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "ab  \ncdef\n");
+        editor_undo(&mut state);
+        assert_eq!(
+            editor_text(&state),
+            "ab\ncdef\n",
+            "two paddings landed as one undoable transaction"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_regex_chords_open_the_command_line_prefilled_and_run_from_it() {
+        for (code, modifiers, spec) in [
+            (KeyCode::Char('S'), KeyModifiers::NONE, "split-regex"),
+            (KeyCode::Char('K'), KeyModifiers::NONE, "keep-regex"),
+            (KeyCode::Char('K'), KeyModifiers::ALT, "remove-regex"),
+        ] {
+            let (mut state, _daemon) = opened_writer("aa bb\naa cc\n").await;
+            let member = |line: usize, start: usize, end: usize| {
+                let base = line * 6;
+                Selection {
+                    anchor: EditorPoint {
+                        byte: base + start,
+                        line,
+                    },
+                    head: EditorPoint {
+                        byte: base + end,
+                        line,
+                    },
+                    mode: crate::tui::helix_selection::SelectionMode::Char,
+                    growing: false,
+                }
+            };
+            state
+                .session
+                .as_mut()
+                .unwrap()
+                .presentation_mut()
+                .selections = vec![member(0, 0, 1), member(1, 0, 1)];
+            park(&mut state, 0);
+
+            assert_eq!(press(&mut state, code, modifiers), BufferKey::Consumed);
+            let presentation = state.session.as_ref().unwrap().presentation();
+            assert!(presentation.command_active, "{spec}: the `:` line opened");
+            assert_eq!(
+                presentation.command_line,
+                format!("{spec} "),
+                "{spec}: pre-filled, so the pattern has somewhere to be typed"
+            );
+
+            for ch in "aa".chars() {
+                editor_buffer_key(
+                    &mut state,
+                    InputMode::Normal,
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                );
+            }
+            let BufferKey::RunCommand(command, argument) = editor_buffer_key(
+                &mut state,
+                InputMode::Normal,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ) else {
+                panic!("{spec}: Enter must submit the command line");
+            };
+            run_selection_regex(&mut state, command, argument.expect("the pattern"));
+
+            let held = held_ranges(&state);
+            match spec {
+                "split-regex" => assert_eq!(held, vec![0..2, 6..8], "two matches"),
+                "keep-regex" => assert_eq!(held, vec![0..2, 6..8], "both contain `aa`"),
+                _ => assert!(held.is_empty(), "neither line matches anything else"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_regex_that_matches_nothing_reports_and_leaves_the_buffer_alone() {
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\n").await;
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 6);
+        park(&mut state, 0);
+
+        normal(&mut state, KeyCode::Char('S'));
+        for ch in "zzz".chars() {
+            editor_buffer_key(
+                &mut state,
+                InputMode::Normal,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
+        }
+        let BufferKey::RunCommand(command, argument) = editor_buffer_key(
+            &mut state,
+            InputMode::Normal,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ) else {
+            panic!("Enter must submit");
+        };
+        run_selection_regex(&mut state, command, argument.unwrap());
+
+        assert_eq!(selection_count(&state), 2, "the set is unchanged");
+        assert_eq!(editor_text(&state), "alpha\nbeta\n");
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("zzz")),
+            "a no-match set is reported, not silently swallowed: {:?}",
+            notice_of(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn escape_abandons_a_pending_regex_without_touching_the_set() {
+        let (mut state, _daemon) = opened_writer("alpha\n").await;
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 3);
+        park(&mut state, 0);
+
+        normal(&mut state, KeyCode::Char('K'));
+        assert!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active
+        );
+        editor_buffer_key(
+            &mut state,
+            InputMode::Normal,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert!(
+            !state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active
+        );
+        assert_eq!(selection_count(&state), 2, "the set survived the abort");
+        assert_eq!(
+            state.session.as_ref().unwrap().presentation().undo.len(),
+            0,
+            "an aborted prompt pushes no undo entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_mutating_set_verbs_are_refused_on_a_read_only_document() {
+        // `&` and `Alt-)` write text, so they must report rather than appear
+        // to work — the same gate `v` and `x` already pass through.
+        let (mut state, _daemon) = opened_reader("ab\ncd\n").await;
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 3);
+        park(&mut state, 0);
+
+        assert_eq!(normal(&mut state, KeyCode::Char('&')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "ab\ncd\n", "nothing was written");
+        assert!(
+            notice_of(&state).is_some_and(|note| note.contains("Read-only")),
+            "{:?}",
+            notice_of(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_non_mutating_set_verbs_still_work_on_a_read_only_document() {
+        // A reader on a file they cannot write must still be able to move
+        // around it and select in it. Refusing those would take away
+        // navigation, which is the asymmetry M007 established for `v`/`x`.
+        let (mut state, _daemon) = opened_reader("ab\ncd\nef\n").await;
+        // `v` is refused here — that is M008's inherited rule, and it is why
+        // this test builds its set directly rather than with `v`. A read-only
+        // reader still needs to be able to *have* a set; they just cannot grow
+        // one by selecting.
+        park(&mut state, 0);
+        assert_eq!(normal(&mut state, KeyCode::Char('v')), BufferKey::Consumed);
+        assert_eq!(selection_count(&state), 0, "growing a selection is refused");
+        let snapshot = snapshot_of(&state);
+        hold_two_members(&mut state, &snapshot, 0, 3);
+        park(&mut state, 0);
+
+        assert_eq!(normal(&mut state, KeyCode::Char('C')), BufferKey::Consumed);
+        assert_eq!(
+            selection_count(&state),
+            4,
+            "`C` adds a cursor per member on a read-only buffer; one lands on a \
+             line that already had one, and identical members are kept rather \
+             than silently folded"
+        );
+
+        assert_eq!(normal(&mut state, KeyCode::Char(';')), BufferKey::Consumed);
+        assert_eq!(selection_count(&state), 0, "`;` is pure selection state");
+        assert_eq!(normal(&mut state, KeyCode::Char('%')), BufferKey::Consumed);
+        assert_eq!(selection_count(&state), 1, "so is `%`");
+    }
+
+    #[tokio::test]
+    async fn none_of_the_eighteen_new_chords_are_captured_in_insert_mode() {
+        // Every glyph M008 claims, in both the `NONE` and `SHIFT` spellings a
+        // terminal might use, must remain ordinary text.
+        let glyphs = [';', ',', '%', 'C', 'S', 'K', '(', ')', '&', '-', '_', ':'];
+        for ch in glyphs {
+            for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+                let (mut state, _daemon) = opened_writer("").await;
+                assert_eq!(
+                    normal(&mut state, KeyCode::Char('i')),
+                    BufferKey::EnterInsert
+                );
+                assert_eq!(
+                    insert_event(&mut state, KeyEvent::new(KeyCode::Char(ch), modifiers)),
+                    BufferKey::Consumed,
+                    "{ch:?} with {modifiers:?} must insert literally"
+                );
+                assert_eq!(editor_text(&state), ch.to_string());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_eight_alt_chords_are_inert_in_insert_mode() {
+        // `handle_insert_key`'s catch-all covers `NONE` and `SHIFT` only, so
+        // every `ALT` chord M008 adds falls outside it. Helix's Insert mode
+        // binds no `Alt-` punctuation, so inert is the faithful answer — and
+        // it has to be asserted, not assumed.
+        for code in [
+            KeyCode::Char(';'),
+            KeyCode::Char(':'),
+            KeyCode::Char(','),
+            KeyCode::Char('C'),
+            KeyCode::Char('K'),
+            KeyCode::Char('('),
+            KeyCode::Char(')'),
+            KeyCode::Char('-'),
+            KeyCode::Char('_'),
+        ] {
+            let (mut state, _daemon) = opened_writer("").await;
+            assert_eq!(
+                normal(&mut state, KeyCode::Char('i')),
+                BufferKey::EnterInsert
+            );
+            assert_eq!(
+                insert_event(&mut state, KeyEvent::new(code, KeyModifiers::ALT)),
+                BufferKey::Unhandled,
+                "Alt-{:?} must reach the composer rather than vanish",
+                code
+            );
+            assert_eq!(editor_text(&state), "");
+        }
+    }
+
+    #[tokio::test]
+    async fn all_eighteen_chords_are_claimed_in_normal_mode() {
+        // The companion to the guard: this drives the keys, so a chord the
+        // guard can count but nothing can reach still fails here.
+        let claimed: Vec<(KeyCode, KeyModifiers)> = vec![
+            (KeyCode::Char(';'), KeyModifiers::NONE),
+            (KeyCode::Char(';'), KeyModifiers::ALT),
+            (KeyCode::Char(':'), KeyModifiers::ALT),
+            (KeyCode::Char('%'), KeyModifiers::NONE),
+            (KeyCode::Char('%'), KeyModifiers::SHIFT),
+            (KeyCode::Char(','), KeyModifiers::NONE),
+            (KeyCode::Char(','), KeyModifiers::ALT),
+            (KeyCode::Char('C'), KeyModifiers::NONE),
+            (KeyCode::Char('C'), KeyModifiers::SHIFT),
+            (KeyCode::Char('C'), KeyModifiers::ALT),
+            (KeyCode::Char('S'), KeyModifiers::NONE),
+            (KeyCode::Char('S'), KeyModifiers::SHIFT),
+            (KeyCode::Char('K'), KeyModifiers::NONE),
+            (KeyCode::Char('K'), KeyModifiers::ALT),
+            (KeyCode::Char('('), KeyModifiers::NONE),
+            (KeyCode::Char(')'), KeyModifiers::NONE),
+            (KeyCode::Char('('), KeyModifiers::ALT),
+            (KeyCode::Char(')'), KeyModifiers::ALT),
+            (KeyCode::Char('&'), KeyModifiers::NONE),
+            (KeyCode::Char('&'), KeyModifiers::SHIFT),
+            (KeyCode::Char('-'), KeyModifiers::ALT),
+            (KeyCode::Char('_'), KeyModifiers::ALT),
+        ];
+        assert_eq!(
+            claimed.len(),
+            22,
+            "eighteen verbs across the spellings the terminals disagree about"
+        );
+        for (code, modifiers) in claimed {
+            let (mut state, _daemon) = opened_writer("ab\ncd\nef\n").await;
+            park(&mut state, 0);
+            normal(&mut state, KeyCode::Char('v'));
+            assert_eq!(
+                press(&mut state, code, modifiers),
+                BufferKey::Consumed,
+                "{code:?} with {modifiers:?} must be claimed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_heterogeneous_set_does_not_make_any_verb_assume_uniformity() {
+        // Mixed modes, mixed emptiness, different lines — the shape a verb
+        // written for "the selection" silently gets wrong.
+        let (mut state, _daemon) = opened_writer("alpha\nbeta\ngamma\n").await;
+        let snapshot = snapshot_of(&state);
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(&snapshot, byte),
+        };
+        let line_member = Selection {
+            anchor: point(6),
+            head: point(6),
+            mode: crate::tui::helix_selection::SelectionMode::Line,
+            growing: false,
+        };
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![
+            // A whole-line member...
+            line_member,
+            // ...a character member on another line...
+            Selection {
+                anchor: point(11),
+                head: point(12),
+                mode: crate::tui::helix_selection::SelectionMode::Char,
+                growing: false,
+            },
+            // ...and a backwards one.
+            Selection {
+                anchor: point(18),
+                head: point(16),
+                mode: crate::tui::helix_selection::SelectionMode::Char,
+                growing: false,
+            },
+        ];
+        park(&mut state, 6);
+
+        // Every verb in the set has to survive the mixed set rather than
+        // panicking, silently dropping a member, or assuming one mode.
+        for code in [
+            KeyCode::Char(','),
+            KeyCode::Char(')'),
+            KeyCode::Char('('),
+            KeyCode::Char(';'),
+        ] {
+            assert_eq!(
+                normal(&mut state, code),
+                BufferKey::Consumed,
+                "{code:?} on a mixed set"
+            );
+        }
+
+        // `;` emptied the set, so re-establish a mixed one before merging:
+        // the merge is where a mode-uniformity assumption would show up.
+        let mixed = |line: usize, mode: crate::tui::helix_selection::SelectionMode| {
+            let base = line * 6;
+            Selection {
+                anchor: EditorPoint { byte: base, line },
+                head: EditorPoint {
+                    byte: base + 4,
+                    line,
+                },
+                mode,
+                growing: false,
+            }
+        };
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .selections = vec![
+            mixed(1, crate::tui::helix_selection::SelectionMode::Line),
+            mixed(2, crate::tui::helix_selection::SelectionMode::Char),
+        ];
+        assert_eq!(
+            press(&mut state, KeyCode::Char('-'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        // Merging a Line member with a Char one must take the Line mode, or
+        // the merged selection would silently stop covering a whole row.
+        let merged = selection_of(&state).expect("one merged member");
+        assert_eq!(
+            merged.mode,
+            crate::tui::helix_selection::SelectionMode::Line
+        );
+    }
+
+    // ── M006 unimpaired navigation, through the dispatch path ──────────────
+    //
+    // Four chords, two of them edits. Every test presses keys rather than
+    // calling a resolver, because the interesting failures here are all
+    // *routing* failures: a leaf that resolves in the model but is shadowed by
+    // a bare-key arm, an edit that lands in the motion path, or a motion whose
+    // disclosure never reaches the notice.
+
+    /// A document with three blank-line-separated paragraphs of known offsets.
+    ///
+    /// ```text
+    /// "alpha\n\n  beta\n\ngamma\n"
+    ///  012345 6 7890123 4 5678901 2
+    /// ```
+    ///
+    /// Offsets are asserted numerically rather than found with the scanner
+    /// under test — a test that computed its own expectation could not fail.
+    fn three_paragraphs() -> String {
+        "alpha\n\n  beta\n\ngamma\n".to_string()
+    }
+
+    /// Press `]p`.
+    fn next_paragraph(state: &mut EditorState) -> BufferKey {
+        let armed = press(state, KeyCode::Char(']'), KeyModifiers::NONE);
+        assert_eq!(armed, BufferKey::Consumed, "`]` arms");
+        assert_eq!(pending(state), "]", "`]` shows its pending indicator");
+        press(state, KeyCode::Char('p'), KeyModifiers::NONE)
+    }
+
+    /// Press `[p`.
+    fn prev_paragraph(state: &mut EditorState) -> BufferKey {
+        press(state, KeyCode::Char('['), KeyModifiers::NONE);
+        press(state, KeyCode::Char('p'), KeyModifiers::NONE)
+    }
+
+    /// Press `]Space` / `[Space`.
+    fn add_newline(state: &mut EditorState, arming: char) -> BufferKey {
+        press(state, KeyCode::Char(arming), KeyModifiers::NONE);
+        press(state, KeyCode::Char(' '), KeyModifiers::NONE)
+    }
+
+    #[tokio::test]
+    async fn unimpaired_close_p_lands_on_each_next_paragraph() {
+        let (mut state, _daemon) = opened_writer(&three_paragraphs()).await;
+        assert_eq!(cursor(&state), 0);
+
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 9, "beta's first non-whitespace byte");
+
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 15, "gamma's first byte");
+
+        // A third press has nowhere to go and says so rather than standing
+        // still in silence.
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 15, "and moved nothing");
+        assert_eq!(
+            notice_of(&state).as_deref(),
+            Some("no next paragraph — ]p reached the end"),
+            "a refused paragraph motion is reported, not silent"
+        );
+    }
+
+    #[tokio::test]
+    async fn unimpaired_open_p_lands_on_each_previous_paragraph() {
+        let (mut state, _daemon) = opened_writer(&three_paragraphs()).await;
+        // Start in the last paragraph.
+        press(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        let end = cursor(&state);
+
+        assert_eq!(prev_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 9, "beta");
+
+        assert_eq!(prev_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0, "alpha");
+
+        assert_eq!(prev_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0, "and moved nothing");
+        assert!(
+            cursor(&state) < end,
+            "the cursor really did move before the refusal"
+        );
+        assert_eq!(
+            notice_of(&state).as_deref(),
+            Some("no previous paragraph — [p reached the start"),
+            "a refused paragraph motion is reported, not silent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_paragraph_motion_never_stands_still() {
+        // The rule that makes `]p` usable for walking a document: from *any*
+        // position it either moves or says it could not. Standing still is the
+        // one outcome a navigation key must never produce silently, because it
+        // is indistinguishable from a dropped keypress.
+        let text = three_paragraphs();
+        for start in 0..text.len() {
+            if !text.is_char_boundary(start) {
+                continue;
+            }
+            let (mut state, _daemon) = opened_writer(&text).await;
+            state
+                .session
+                .as_mut()
+                .unwrap()
+                .presentation_mut()
+                .cursor_byte = start;
+            for command in [EditorCommand::NextParagraph, EditorCommand::PrevParagraph] {
+                let before = cursor(&state);
+                editor_motion(&mut state, command, NOMINAL_VISIBLE_LINES);
+                let after = cursor(&state);
+                if after == before {
+                    assert!(
+                        notice_of(&state).is_some(),
+                        "{command:?} at {start} stood still with nothing to say"
+                    );
+                } else {
+                    assert_eq!(
+                        notice_of(&state),
+                        None,
+                        "{command:?} at {start} moved and still left a note"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_document_with_no_blank_lines_reports_no_next_paragraph() {
+        // Helix's own `move_next_paragraph` degenerates here: with no blank
+        // line anywhere it skips every remaining line and lands on the end of
+        // the buffer (see `test_behaviour_when_moving_to_next_paragraph_single`
+        // in `helix-core/src/movement.rs`). This editor says "there is none"
+        // instead, which is a deliberate difference — an end-of-buffer jump
+        // looks like the key did something and hides that it found nothing.
+        let (mut state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0);
+        assert_eq!(
+            notice_of(&state).as_deref(),
+            Some("no next paragraph — ]p reached the end")
+        );
+    }
+
+    #[tokio::test]
+    async fn consecutive_blank_lines_are_one_separator() {
+        // "head\n\n\n\ntail\n": one separator, so `]p` skips the whole run and
+        // lands on `tail` rather than stopping inside it.
+        let (mut state, _daemon) = opened_writer("head\n\n\n\ntail\n").await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 8);
+    }
+
+    #[tokio::test]
+    async fn a_whitespace_only_line_is_blank() {
+        let (mut state, _daemon) = opened_writer("head\n \t \ntail\n").await;
+        assert_eq!(
+            next_paragraph(&mut state),
+            BufferKey::Consumed,
+            "a line of spaces and a tab is a separator, not a paragraph"
+        );
+        // "head\n \t \ntail\n" — the blank line is 5..=7 and its terminator is
+        // byte 8, so `tail` begins at 9.
+        assert_eq!(cursor(&state), 9);
+    }
+
+    #[tokio::test]
+    async fn unimpaired_close_p_from_a_blank_line_still_moves_forward() {
+        let (mut state, _daemon) = opened_writer("head\n\n\ntail\n").await;
+        // Put the cursor on the blank line at offset 5.
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .cursor_byte = 5;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 7, "and forward, not back to `head`");
+    }
+
+    #[tokio::test]
+    async fn unimpaired_open_p_from_a_blank_line_lands_above_the_separator() {
+        let (mut state, _daemon) = opened_writer("head\n\n\ntail\n").await;
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .cursor_byte = 6;
+        assert_eq!(prev_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0);
+    }
+
+    #[tokio::test]
+    async fn a_huge_indented_line_is_paragraph_content_not_a_separator() {
+        // The bounded scan cannot see past `MAX_RENDER_LINE_BYTES`, so it cannot
+        // prove such a line is blank. Calling it blank would invent a paragraph
+        // boundary that is not in the file; calling it content cannot.
+        let huge = " ".repeat(crate::tui::editor::MAX_RENDER_LINE_BYTES * 2);
+        let text = format!("head\n\n{huge}\n");
+        let (mut state, _daemon) = opened_writer(&text).await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert!(
+            cursor(&state) > 5,
+            "landed on the oversized line at {}, not back on `head`",
+            cursor(&state)
+        );
+        assert_eq!(
+            notice_of(&state),
+            None,
+            "the scan answered from what it could see"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_paragraph_scan_over_its_budget_says_the_answer_is_unknown() {
+        // A file with no blank line at all is the only shape that makes `]p`
+        // walk every line, so it is also the only shape that can exhaust the
+        // budget. The disclosure must say *unknown* — reporting "no next
+        // paragraph" here would be a claim the scan never got to test.
+        let wide = format!("{}\n", "x".repeat(4096));
+        let text = wide.repeat(128);
+        assert!(
+            text.len() > editor::MAX_PARAGRAPH_SCAN_BYTES,
+            "the fixture must exceed the budget to test the bound"
+        );
+        let (mut state, _daemon) = opened_writer(&text).await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        let notice = notice_of(&state).expect("the bound is disclosed");
+        assert!(
+            notice.contains("not known"),
+            "expected an explicit unknown, got {notice:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unimpaired_close_space_adds_a_line_below_and_leaves_the_cursor_alone() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        let before = cursor(&state);
+        assert_eq!(add_newline(&mut state, ']'), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "one\n\ntwo\n");
+        assert_eq!(
+            cursor(&state),
+            before,
+            "Helix's add_newline moves no selection, and neither does this"
+        );
+        assert_ne!(
+            state.mode(),
+            EditorMode::Insert,
+            "`]Space` is add_newline, not `o` — it must not take the keyboard"
+        );
+    }
+
+    #[tokio::test]
+    async fn unimpaired_open_space_adds_a_line_above_and_keeps_the_cursor_on_its_byte() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        press(&mut state, KeyCode::Char('j'), KeyModifiers::NONE);
+        press(&mut state, KeyCode::Char('l'), KeyModifiers::NONE);
+        let before = cursor(&state);
+        assert_eq!(add_newline(&mut state, '['), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "one\n\ntwo\n");
+        assert_eq!(
+            cursor(&state),
+            before + 1,
+            "the cursor keeps pointing at its own byte, which moved down one"
+        );
+        assert_ne!(state.mode(), EditorMode::Insert);
+    }
+
+    #[tokio::test]
+    async fn o_and_close_space_stay_different_verbs() {
+        // The whole reason `AddNewlineBelow` is not `OpenLineBelow`: the same
+        // insertion, and the difference is whether the keyboard is taken.
+        //
+        // Only the *mode* is asserted here. `o` does not insert its line
+        // through the key — `enter_insert` maps `OpenLineBelow` to the cursor,
+        // so `resolve_edit`'s open-line arms are reached only by their own unit
+        // test. That gap predates M006 and is recorded as a closure finding
+        // rather than fixed here, because changing `o` is not this milestone's
+        // to decide.
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('o')),
+            BufferKey::EnterInsert,
+            "`o` reports the mode it is handing over"
+        );
+        assert_eq!(
+            state.mode(),
+            EditorMode::Insert,
+            "`o` hands the keyboard to the document"
+        );
+
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        assert_eq!(add_newline(&mut state, ']'), BufferKey::Consumed);
+        assert_ne!(
+            state.mode(),
+            EditorMode::Insert,
+            "`]Space` inserts the line and leaves the keyboard alone"
+        );
+        assert_eq!(editor_text(&state), "one\n\ntwo\n");
+    }
+
+    #[tokio::test]
+    async fn a_newline_below_the_last_line_appends_rather_than_refusing() {
+        // Helix's `add_newline_impl` computes `end + 1`, which on the last line
+        // is one past this editor's last line — and that resolves to the end of
+        // the buffer, which is the right place to append.
+        let (mut state, _daemon) = opened_writer("only").await;
+        assert_eq!(add_newline(&mut state, ']'), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "only\n");
+
+        let (mut state, _daemon) = opened_writer("only\n").await;
+        assert_eq!(add_newline(&mut state, ']'), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "only\n\n");
+    }
+
+    #[tokio::test]
+    async fn a_newline_above_the_first_line_prepends() {
+        let (mut state, _daemon) = opened_writer("only").await;
+        assert_eq!(add_newline(&mut state, '['), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "\nonly");
+    }
+
+    #[tokio::test]
+    async fn the_newline_keys_are_refused_on_a_read_only_buffer() {
+        let daemon = FakeDaemon::new("one\ntwo\n", false);
+        let mut state = open_state(&daemon, false).await;
+        assert_eq!(add_newline(&mut state, ']'), BufferKey::Consumed);
+        assert_eq!(
+            editor_text(&state),
+            "one\ntwo\n",
+            "a read-only buffer must be byte-identical after `]Space`"
+        );
+        assert!(notice_of(&state).is_some(), "and must say why");
+    }
+
+    #[tokio::test]
+    async fn the_paragraph_keys_still_work_on_a_read_only_buffer() {
+        // A reader must be able to walk around a buffer they cannot write, so
+        // only the two edits are gated. Pinning this is what stops a future
+        // "just route all of `[`/`]` through the edit gate" from shipping.
+        let daemon = FakeDaemon::new(&three_paragraphs(), false);
+        let mut state = open_state(&daemon, false).await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 9);
+        assert_eq!(prev_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 0);
+    }
+
+    #[tokio::test]
+    async fn a_bracket_then_space_is_a_newline_and_not_a_second_armed_prefix() {
+        // The precedence rule: `Space` arms a prefix of its own, so if the leaf
+        // lookup did not run first, `]Space` would leave a pending `space`.
+        for (arming, expected) in [('[', "\nonly\nrest\n"), (']', "only\n\nrest\n")] {
+            let (mut state, _daemon) = opened_writer("only\nrest\n").await;
+            assert_eq!(add_newline(&mut state, arming), BufferKey::Consumed);
+            assert_eq!(
+                pending(&state),
+                "",
+                "`{arming}Space` must not leave a prefix armed"
+            );
+            assert_eq!(editor_text(&state), expected, "`{arming}Space` text");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unbound_bracket_leaf_still_reaches_the_composer() {
+        // Adding leaves must not have narrowed the escape hatch M002 pinned.
+        for arming in ['[', ']'] {
+            let (mut state, _daemon) = opened_writer("hello").await;
+            press(&mut state, KeyCode::Char(arming), KeyModifiers::NONE);
+            assert_eq!(
+                press(&mut state, KeyCode::Char('z'), KeyModifiers::NONE),
+                BufferKey::Unhandled,
+                "`{arming}z` still reaches the composer"
+            );
+            assert_eq!(pending(&state), "", "`{arming}` disarmed");
+        }
+    }
+
+    /// The four deferred slices, asserted **unbound** rather than merely
+    /// absent.
+    ///
+    /// A missing binding is invisible; an assertion about it is a tripwire. If
+    /// a later milestone lands `]d` (M013's diagnostics navigation) or `]G`
+    /// (change navigation), this test fails and the reviewer has to say
+    /// whether the new binding is actually reachable — which is the question
+    /// amendment A1.2 and A1.3 answered by *not* landing them here.
+    #[tokio::test]
+    async fn the_deferred_diagnostic_and_change_quartets_are_asserted_unbound() {
+        // `]D`/`[D` are diagnostics and `]G`/`[G` are change navigation in
+        // Helix — the two slices A1 moved out of this milestone. `d` and `g`
+        // are also the leaf glyphs of no unimpaired row here.
+        for glyph in ['d', 'D', 'g', 'G'] {
+            for leaves in [editor::OPEN_BRACKET_LEAVES, editor::CLOSE_BRACKET_LEAVES] {
+                assert!(
+                    !leaves.iter().any(|leaf| leaf.glyph == glyph),
+                    "`{glyph}` must not be bound as an unimpaired leaf"
+                );
+            }
+        }
+
+        // And at the dispatch: the key disarms and then resolves **normally**,
+        // which is the plan's wording. `d` with nothing selected is the delete
+        // operator over an empty range — a consumed no-op — and `g` arms goto.
+        // Neither is a diagnostic or change jump, and neither leaves the
+        // bracket armed. `D` and `G` are deliberately absent from this half:
+        // their own bare meanings legitimately change the buffer and the
+        // cursor, so "nothing happened" is not a claim those two can make.
+        for arming in ['[', ']'] {
+            let (mut state, _daemon) = opened_writer("hello").await;
+            press(&mut state, KeyCode::Char(arming), KeyModifiers::NONE);
+            assert_eq!(
+                press(&mut state, KeyCode::Char('d'), KeyModifiers::NONE),
+                BufferKey::Consumed,
+                "`{arming}d` resolves `d` normally, as an unbound second key must"
+            );
+            assert_eq!(pending(&state), "", "`{arming}` disarmed");
+            assert_eq!(editor_text(&state), "hello", "and deleted nothing");
+            assert_eq!(cursor(&state), 0, "and jumped to no diagnostic");
+
+            let (mut state, _daemon) = opened_writer("hello").await;
+            press(&mut state, KeyCode::Char(arming), KeyModifiers::NONE);
+            assert_eq!(
+                press(&mut state, KeyCode::Char('g'), KeyModifiers::NONE),
+                BufferKey::Consumed
+            );
+            assert_eq!(
+                pending(&state),
+                "g",
+                "`{arming}g` resolved `g` as goto mode, not as change navigation"
+            );
+            assert_eq!(cursor(&state), 0, "and jumped to no change");
+        }
+    }
+
+    /// `Space` on its own is still space mode. Half of the precedence rule:
+    /// `]Space` is a newline *because* `]Space` resolves first, not because
+    /// space mode stopped working.
+    #[tokio::test]
+    async fn space_alone_still_arms_space_mode() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        assert_eq!(normal(&mut state, KeyCode::Char(' ')), BufferKey::Consumed);
+        assert_eq!(pending(&state), "space", "a bare space arms");
+        assert_eq!(editor_text(&state), "one\ntwo\n", "and inserts nothing yet");
+    }
+
+    #[tokio::test]
+    async fn alt_dot_repeats_the_paragraph_motion_and_an_edit_is_not_one() {
+        // Helix's keymap calls `Alt-.` "repeat last motion (`f`, `t`, `m`, `[`
+        // or `]`)" — so `]p` has to be repeatable, and `]Space` must not be,
+        // or the repeat would silently insert a second newline.
+        let (mut state, _daemon) = opened_writer(&three_paragraphs()).await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 9, "beta");
+
+        // An edit between the motion and the repeat does not disarm it. The
+        // cursor is on beta's line, so `]Space` inserts below *that* line and
+        // leaves the cursor on it.
+        assert_eq!(add_newline(&mut state, ']'), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "alpha\n\n  beta\n\n\ngamma\n");
+        assert_eq!(cursor(&state), 9, "and did not move");
+
+        // ...and the repeat is the *motion*, so exactly one newline exists.
+        assert_eq!(
+            press(&mut state, KeyCode::Char('.'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            editor_text(&state),
+            "alpha\n\n  beta\n\n\ngamma\n",
+            "`Alt-.` repeated the paragraph motion and inserted no newline"
+        );
+        assert_eq!(
+            cursor(&state),
+            16,
+            "gamma, across both blank lines — the original separator and the new one"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_repeat_slot_is_one_slot_every_motion_overwrites() {
+        let (mut state, _daemon) = opened_writer(&three_paragraphs()).await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 9);
+        // `j` is an ordinary motion and must disarm the repeat.
+        press(&mut state, KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('.'), KeyModifiers::ALT),
+            BufferKey::Unhandled,
+            "`]p`, `j`, `Alt-.` repeats nothing — the Helix single-slot rule"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_motion_after_a_paragraph_motion_clears_its_disclosure() {
+        let (mut state, _daemon) = opened_writer(&three_paragraphs()).await;
+        press(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert!(notice_of(&state).is_some(), "`]p` at the end reported");
+        press(&mut state, KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(
+            notice_of(&state),
+            None,
+            "the note described one keystroke and may not outlive it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reconciliation_forgets_the_unimpaired_repeat() {
+        // Same reason `last_find` is cleared: the paragraph the cursor was
+        // pointed at does not survive a rewrite of the document.
+        let (mut state, _daemon) = opened_writer(&three_paragraphs()).await;
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        editor::clear_history(state.session.as_mut().unwrap().presentation_mut());
+        assert_eq!(
+            press(&mut state, KeyCode::Char('.'), KeyModifiers::ALT),
+            BufferKey::Unhandled
+        );
+        assert_eq!(notice_of(&state), None, "and the disclosure went with it");
+    }
+
+    #[tokio::test]
+    async fn a_find_and_a_paragraph_motion_do_not_both_hold_the_repeat_slot() {
+        // Whichever ran last is the only repeatable motion. Asserting both
+        // orders pins the mutual exclusion from both sides, so adding a fourth
+        // slot later has to decide which of these two assertions it breaks.
+        let (mut state, _daemon) = opened_writer("alpha\n\nxalpha\n").await;
+
+        // Paragraph first, then a find.
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(cursor(&state), 7);
+        press(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
+        press(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(cursor(&state), 8, "the find ran");
+        assert_eq!(
+            press(&mut state, KeyCode::Char('.'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            cursor(&state),
+            12,
+            "so `Alt-.` repeated the find forward from 8, not `]p` backward"
+        );
+
+        // Find first, then a paragraph motion.
+        let (mut state, _daemon) = opened_writer("alpha\n\nxalpha\n").await;
+        press(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
+        press(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(next_paragraph(&mut state), BufferKey::Consumed);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('.'), KeyModifiers::ALT),
+            BufferKey::Consumed
+        );
+        assert_eq!(cursor(&state), 7, "so `Alt-.` repeated `]p`, not the find");
+    }
+
+    #[tokio::test]
+    async fn the_bracket_keys_stay_document_text_in_insert_mode() {
+        // Both encodings, because terminals disagree: a `[` arrives as
+        // `Char('[')` with NONE or with SHIFT depending on the terminal, and a
+        // sweep that only checked one would pass against a binding that
+        // claimed the other.
+        for (glyph, modifiers, label) in [
+            ('[', KeyModifiers::NONE, "lower, unshifted"),
+            ('[', KeyModifiers::SHIFT, "lower, shifted"),
+            (']', KeyModifiers::NONE, "lower, unshifted"),
+            (']', KeyModifiers::SHIFT, "lower, shifted"),
+            (' ', KeyModifiers::NONE, "space"),
+        ] {
+            let (mut state, _daemon) = opened_writer("").await;
+            assert_eq!(
+                insert_event(&mut state, KeyEvent::new(KeyCode::Char(glyph), modifiers)),
+                BufferKey::Consumed,
+                "{glyph:?} ({label}) must be text in Insert"
+            );
+            assert_eq!(
+                editor_text(&state),
+                glyph.to_string(),
+                "{glyph:?} ({label}) must reach the document verbatim"
+            );
+        }
     }
 }

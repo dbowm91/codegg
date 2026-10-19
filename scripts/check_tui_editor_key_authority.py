@@ -25,10 +25,17 @@ and to any test that calls a helper directly.
 Chords are attributed to three owners, in the order the route evaluates them:
 
 1. `editor_buffer_key`'s guard block — the mode-independent chords
-   (`Ctrl+s` -> save, `Ctrl+r` -> resync) and the Normal-only `R` -> reload.
-   These run **before** any mode dispatch.
+   (`Ctrl+s` -> save, `Ctrl+r` -> resync). These run **before** any mode
+   dispatch.
 2. `handle_normal_key` — the Normal-mode verbs.
 3. `handle_insert_key` — the Insert-mode verbs.
+
+The guard block used to claim a third chord, the Normal-only `R` -> reload.
+M004 removed it, and this list moved with it: Helix gives `R` to
+`replace_with_yanked`, and a Normal-only guard-block `R` would have shadowed
+the verb while surviving it — dead in the one sense that mattered. Reload is
+`:e`. The guard asserts the two remaining chords by name so this block cannot
+pass by being emptied.
 
 ## What counts as a violation
 
@@ -54,9 +61,9 @@ Chords are attributed to three owners, in the order the route evaluates them:
 - Non-`Char` key codes (`Down`, `PageDown`, `Backspace`, `Esc`, ...). The guard
   block only ever claims `Char` chords, so no collision is possible, and
   widening the scope would only add parsing surface to keep honest.
-- A guard whose mode predicate excludes the table's mode. `R` -> reload is
-  Normal-only, so it constrains `handle_normal_key` and not
-  `handle_insert_key`.
+- A guard whose mode predicate excludes the table's mode. `R` -> reload was
+  Normal-only, so it constrained `handle_normal_key` and not
+  `handle_insert_key`; M004 deleted that chord rather than moving it.
 - The App layer's Normal-only pane gestures (`handle_editor_key`), which are a
   separate stage above this file's dispatch chain and are already documented at
   their call site.
@@ -105,7 +112,6 @@ REQUIRED_SUBSTRINGS = [
     "fn handle_insert_key(",
     "BufferKey::RequestSave",
     "BufferKey::RequestResync",
-    "BufferKey::RequestReload",
 ]
 
 # `KeyCode::Char('s')`, capturing just the glyph.
@@ -121,8 +127,18 @@ NORMAL_ONLY_RE = re.compile(r"mode\s*==\s*[^\n]*InputMode::Normal")
 GUARD_PREDICATE_RE = re.compile(
     r"\b(?:m|key\.modifiers)\s*==\s*((?:KeyModifiers::)?[A-Za-z_]\w*)"
 )
+# `(modifiers, code)` alternative, one per spelling in an arm's pattern.
+#
+# The glyph inside `KeyCode::Char(...)` is matched as a **quoted literal**
+# rather than as `[^()]*`, because `Char('(')` and `Char(')')` are real Helix
+# bindings — M008 claims both — and an alternation that cannot spell them
+# makes this guard refuse to parse the arms that claim them. A guard that stops
+# parsing stops checking, and stopping on exactly the chords it exists to police
+# is the failure mode this whole script is arranged against. The glyph group is
+# non-capturing so `findall` still yields exactly `(modifier, code)` pairs.
 ALT_RE = re.compile(
-    r"\(\s*((?:KeyModifiers::)?[A-Za-z_]\w*)\s*,\s*(KeyCode::\w+(?:\(\s*[^()]*\s*\))?)\s*\)"
+    r"\(\s*((?:KeyModifiers::)?[A-Za-z_]\w*)\s*,\s*"
+    r"(KeyCode::\w+(?:\(\s*'(?:\\.|[^'\\]){1}'\s*\))?)\s*\)"
 )
 ANY_KEYCODE_RE = re.compile(r"KeyCode::\w+")
 # `KeyCode::Char(ch)` where the char is a binding rather than a literal.
