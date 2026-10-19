@@ -103,6 +103,8 @@ pub struct BrokerInvocationContext {
     pub principal_ref: Option<String>,
     /// M013-C-06: Workspace path policy ID for scope verification.
     pub workspace_path_policy_id: Option<String>,
+    /// Immutable workspace path-policy revision captured at admission.
+    pub workspace_path_policy_revision: Option<String>,
     /// M013-C-06: Allowed tools manifest for scope verification.
     pub allowed_tools: Option<Vec<String>>,
     /// M013-C-05: Current system policy revision for stale-revision detection.
@@ -188,8 +190,9 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             authority: BrokerAuthority::Unverified,
             cancellation: None,
             deadline: ctx.deadline,
-            principal_ref: None,
-            workspace_path_policy_id: None,
+            principal_ref: ctx.principal_identity,
+            workspace_path_policy_id: ctx.workspace_path_policy_id,
+            workspace_path_policy_revision: ctx.workspace_path_policy_revision,
             allowed_tools: None,
             current_policy_revision: None,
             execution_audit: ctx.execution_audit,
@@ -1263,6 +1266,8 @@ fn execution_context_for_attempt(
     ctx: &BrokerInvocationContext,
     effective_timeout: u64,
 ) -> ToolExecutionContext {
+    let grant = ctx.authority.grant();
+    let authorization = ctx.execution_authorization.as_ref();
     let mut exec_ctx = ToolExecutionContext {
         backend: super::backend::ToolBackendKind::Native,
         session_id: ctx.session_id.clone(),
@@ -1278,20 +1283,34 @@ fn execution_context_for_attempt(
         backend_policy: None,
         cancellation: ctx.cancellation.clone(),
         deadline: ctx.deadline,
-        decision_id: None,
-        decision_outcome: None,
-        workspace_path_policy_id: None,
-        workspace_path_policy_revision: None,
-        permission_policy_revision: None,
-        principal_identity: None,
+        decision_id: authorization
+            .map(|accepted| accepted.receipt.decision_id.clone())
+            .or_else(|| grant.map(|grant| grant.grant_id.clone())),
+        decision_outcome: authorization
+            .map(|accepted| accepted.receipt.outcome.as_str().to_owned())
+            .or_else(|| grant.map(|_| "allowed".to_owned())),
+        workspace_path_policy_id: ctx
+            .workspace_path_policy_id
+            .clone()
+            .or_else(|| grant.map(|grant| grant.workspace_path_policy_id.clone())),
+        workspace_path_policy_revision: ctx.workspace_path_policy_revision.clone(),
+        permission_policy_revision: authorization
+            .and_then(|accepted| accepted.receipt.policy_revision.clone())
+            .or_else(|| grant.map(|grant| grant.policy_revision.clone())),
+        principal_identity: ctx
+            .principal_ref
+            .clone()
+            .or_else(|| grant.map(|grant| grant.principal_ref.clone())),
         origin_principal: None,
         origin_auth_method: None,
         origin_decision_id: None,
-        caller_class: None,
-        max_effect_class: None,
-        decision_issued_at: None,
-        decision_expires_at: None,
-        decision_revoked_at: None,
+        caller_class: grant.map(|grant| grant.allowed_caller_class.clone()),
+        max_effect_class: grant.map(|grant| grant.allowed_effect_class.clone()),
+        decision_issued_at: authorization
+            .map(|accepted| accepted.receipt.issued_at)
+            .or_else(|| grant.map(|grant| grant.issued_at)),
+        decision_expires_at: grant.and_then(|grant| grant.expires_at),
+        decision_revoked_at: grant.and_then(|grant| grant.revoked_at),
         program_contract_snapshot: None,
         sandbox_profile: None,
         execution_authorization: ctx.execution_authorization.clone(),
@@ -1453,7 +1472,8 @@ mod tests {
             cancellation: None,
             deadline: None,
             principal_ref: None,
-            workspace_path_policy_id: None,
+            workspace_path_policy_id: Some("workspace:ws-test".into()),
+            workspace_path_policy_revision: Some("path-policy-r1".into()),
             allowed_tools: None,
             current_policy_revision: None,
             execution_audit: None,
@@ -1491,6 +1511,14 @@ mod tests {
         let retry = execution_context_for_attempt(&invocation, 5_000);
         assert_eq!(first.execution_authorization, retry.execution_authorization);
         assert_eq!(
+            first.workspace_path_policy_id.as_deref(),
+            Some("workspace:ws-test")
+        );
+        assert_eq!(
+            first.workspace_path_policy_revision,
+            retry.workspace_path_policy_revision
+        );
+        assert_eq!(
             first
                 .execution_authorization
                 .as_ref()
@@ -1512,6 +1540,17 @@ mod tests {
             .unwrap();
         assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
         assert_eq!(result.value.display, "result");
+    }
+
+    #[tokio::test]
+    async fn broker_preserves_captured_path_policy_revision_on_each_attempt() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::new(&registry);
+        let context = make_ctx();
+        let result = broker
+            .execute(&registry, "read", serde_json::json!({}), context)
+            .await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

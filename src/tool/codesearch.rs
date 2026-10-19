@@ -145,3 +145,28 @@ impl Tool for CodeSearchTool {
         Ok(search_backend::into_tool_result(result, provenance))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn compatibility_alias_advertises_only_the_controls_it_forwards() {
+        let schema = CodeSearchTool::default().parameters();
+        let properties = schema["properties"].as_object().expect("properties");
+        assert!(properties.contains_key("query"));
+        assert!(properties.contains_key("tokens_num"));
+        assert!(!properties.contains_key("include_local"));
+        assert!(!properties.contains_key("repo"));
+
+        let request = CodeSearchTool::request_input(json!({
+            "query":"a query",
+            "tokens_num":5000
+        }))
+        .expect("valid alias input");
+        assert_eq!(request["profile"], "coding");
+        assert_eq!(request["max_results"], 10);
+        assert!(request.get("include_local").is_none());
+    }
+}

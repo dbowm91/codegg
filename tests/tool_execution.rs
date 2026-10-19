@@ -16,14 +16,6 @@ use std::fs;
 use std::time::Duration;
 use tempfile::TempDir;
 
-fn rooted_bash_tool() -> BashTool {
-    let workspace_root = std::env::current_dir()
-        .expect("test workspace root")
-        .canonicalize()
-        .expect("canonical test workspace root");
-    BashTool::new().with_workspace_root(workspace_root)
-}
-
 fn setup_dir() -> TempDir {
     let dir = tempfile::Builder::new()
         .prefix("codegg-tool-exec-")
@@ -48,9 +40,15 @@ fn setup_dir() -> TempDir {
     dir
 }
 
+fn rooted_bash_tool() -> (TempDir, BashTool) {
+    let root = tempfile::tempdir().expect("BashTool workspace root");
+    let tool = BashTool::new().with_workspace_root(root.path().to_path_buf());
+    (root, tool)
+}
+
 #[tokio::test]
 async fn test_bash_tool_simple_command() {
-    let tool = rooted_bash_tool();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({
         "command": "echo hello"
     });
@@ -76,7 +74,7 @@ async fn test_terminal_tool_simple_command() {
 
 #[tokio::test]
 async fn test_bash_tool_command_with_stderr() {
-    let tool = rooted_bash_tool();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({
         "command": "ls /nonexistent 2>&1"
     });
@@ -86,7 +84,7 @@ async fn test_bash_tool_command_with_stderr() {
 
 #[tokio::test]
 async fn test_bash_tool_command_failure() {
-    let tool = rooted_bash_tool();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({
         "command": "false"
     });
@@ -96,7 +94,7 @@ async fn test_bash_tool_command_failure() {
 
 #[tokio::test]
 async fn test_bash_tool_missing_command() {
-    let tool = rooted_bash_tool();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({});
     let result = tool.execute(input).await;
     assert!(result.is_err());
@@ -177,7 +175,9 @@ async fn test_bash_tool_configured_blocked_commands_deny_without_dispatch() {
     assert!(!marker.exists());
     let command = format!("printf blocked-sentinel > '{}'", marker.display());
 
-    let tool = rooted_bash_tool().with_blocked_commands(vec!["printf"]);
+    let (_root, tool) = rooted_bash_tool();
+
+    let tool = tool.with_blocked_commands(vec!["printf"]);
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -205,7 +205,9 @@ async fn test_bash_tool_configured_deny_survives_permissive_allowlist() {
     let marker = dir.path().join("allowlist-deny-marker.txt");
     let command = format!("printf blocked-sentinel > '{}'", marker.display());
 
-    let tool = rooted_bash_tool()
+    let (_root, tool) = rooted_bash_tool();
+
+    let tool = tool
         .with_blocked_commands(vec!["printf"])
         .with_allowlist(vec!["printf", "echo"]);
     let result = tool
@@ -230,7 +232,7 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     let dir = tempfile::tempdir().expect("benign positive marker root");
     let marker = dir.path().join("benign-positive-marker.txt");
     let command = format!("printf ok-sentinel > '{}'", marker.display());
-    let tool = rooted_bash_tool();
+    let tool = BashTool::new().with_workspace_root(dir.path().to_path_buf());
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -248,7 +250,8 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     let dir = tempfile::tempdir().expect("benign allowlist marker root");
     let marker = dir.path().join("benign-allowlist-marker.txt");
     let command = format!("printf ok-sentinel > '{}'", marker.display());
-    let tool = rooted_bash_tool().with_allowlist(vec!["echo"]);
+    let (_root2, tool) = rooted_bash_tool();
+    let tool = tool.with_allowlist(vec!["echo"]);
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -262,7 +265,8 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     );
 
     // `deny_all` control denies even a trivial `echo`.
-    let tool = rooted_bash_tool().with_deny_all();
+    let (_root3, tool) = rooted_bash_tool();
+    let tool = tool.with_deny_all();
     let result = tool
         .execute(serde_json::json!({ "command": "echo hello" }))
         .await;
@@ -421,7 +425,7 @@ async fn test_bash_escalation_signals_do_not_block_the_tool() {
     // tool. The tool now admits them and defers to the permission layer, so
     // assert the *policy disposition* — not a permission rejection — rather
     // than the command's own exit status.
-    let tool = rooted_bash_tool();
+    let (_root, tool) = rooted_bash_tool();
     for cmd in [
         "echo $(whoami)",
         "eval echo hello",
@@ -476,7 +480,8 @@ async fn test_bash_ordinary_commands_trip_no_escalation_signal() {
 
 #[tokio::test]
 async fn test_bash_tool_deny_all() {
-    let tool = rooted_bash_tool().with_deny_all();
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_deny_all();
     let input = serde_json::json!({ "command": "echo hello" });
     let result = tool.execute(input).await;
     assert!(result.is_err());
@@ -485,7 +490,8 @@ async fn test_bash_tool_deny_all() {
 
 #[tokio::test]
 async fn test_bash_tool_allowed_paths() {
-    let tool = rooted_bash_tool().with_allowed_paths(vec!["/tmp".to_string()]);
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_allowed_paths(vec!["/tmp".to_string()]);
     let input = serde_json::json!({
         "command": "echo hello",
         "workdir": "/tmp"
@@ -496,7 +502,8 @@ async fn test_bash_tool_allowed_paths() {
 
 #[tokio::test]
 async fn test_bash_tool_allowed_paths_violation() {
-    let tool = rooted_bash_tool().with_allowed_paths(vec!["/tmp".to_string()]);
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_allowed_paths(vec!["/tmp".to_string()]);
     let input = serde_json::json!({
         "command": "echo hello",
         "workdir": "/home"
@@ -508,7 +515,8 @@ async fn test_bash_tool_allowed_paths_violation() {
 
 #[tokio::test]
 async fn test_bash_tool_allowed_paths_missing() {
-    let tool = rooted_bash_tool().with_allowed_paths(vec!["/tmp".to_string()]);
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_allowed_paths(vec!["/tmp".to_string()]);
     let input = serde_json::json!({ "command": "echo hello" });
     let result = tool.execute(input).await;
     assert!(result.is_err());
@@ -516,7 +524,8 @@ async fn test_bash_tool_allowed_paths_missing() {
 
 #[tokio::test]
 async fn test_bash_tool_custom_timeout() {
-    let tool = rooted_bash_tool().with_timeout(Duration::from_secs(1));
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_timeout(Duration::from_secs(1));
     let input = serde_json::json!({
         "command": "echo quick",
         "timeout": 1
@@ -527,7 +536,8 @@ async fn test_bash_tool_custom_timeout() {
 
 #[tokio::test]
 async fn test_bash_tool_input_timeout_overrides_tool_default() {
-    let tool = rooted_bash_tool().with_timeout(Duration::from_secs(5));
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_timeout(Duration::from_secs(5));
     let result = tool
         .execute(serde_json::json!({
             "command": "sleep 2",
@@ -539,7 +549,7 @@ async fn test_bash_tool_input_timeout_overrides_tool_default() {
 
 #[tokio::test]
 async fn test_bash_tool_parameters() {
-    let tool = rooted_bash_tool();
+    let (_root, tool) = rooted_bash_tool();
     let params = tool.parameters();
     assert!(params["properties"]["command"].is_object());
     assert!(params["properties"]["timeout"].is_object());
@@ -846,7 +856,8 @@ async fn test_tool_registry_register_and_list() {
     use codegg::tool::ToolRegistry;
 
     let mut registry = ToolRegistry::new();
-    registry.register(rooted_bash_tool());
+    let (_root, tool) = rooted_bash_tool();
+    registry.register(tool);
     registry.register(ReadTool::new());
     registry.register(WriteTool::default());
     registry.register(EditTool::default());
@@ -870,7 +881,8 @@ async fn test_tool_registry_definitions() {
     use codegg::tool::ToolRegistry;
 
     let mut registry = ToolRegistry::new();
-    registry.register(rooted_bash_tool());
+    let (_root, tool) = rooted_bash_tool();
+    registry.register(tool);
 
     let defs = registry.definitions();
     assert_eq!(defs.len(), 1);
