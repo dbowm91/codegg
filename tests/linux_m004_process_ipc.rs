@@ -45,6 +45,33 @@ async fn test_only_contained_git_adapter_refuses_mutations_before_path_access() 
     ));
 }
 
+#[cfg(feature = "linux-git-test-support")]
+#[tokio::test]
+async fn test_only_private_git_staging_adapter_refuses_untyped_mutation_before_path_access() {
+    let operation = codegg_git::GitOperation::Reset {
+        mode: codegg_git::operation::ResetMode::Mixed,
+        paths: None,
+        rev: None,
+    };
+    let error = TypedGitExecutionService::new()
+        .execute_private_git_add_staging_test_only(
+            &operation,
+            Path::new("/does/not/exist"),
+            Path::new("/also/not/exist"),
+            Path::new("/not/private/gitdir"),
+            Path::new("/not/git"),
+            "reject-non-add",
+        )
+        .await
+        .expect_err("C004 test-only staging must accept only typed Add");
+    assert!(matches!(
+        error,
+        codegg::git_service::GitServiceError::Policy(
+            egggit::GitExecutionPolicyOutcome::InvalidRequest { .. }
+        )
+    ));
+}
+
 #[test]
 fn process_view_compiles_pid_ipc_and_proc_in_safe_mount_order() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -1052,8 +1079,6 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
     std::fs::create_dir(&repository).expect("create repository root");
     let operation_scratch = tempfile::tempdir().expect("operation-owned Git scratch");
     let private_gitdir = operation_scratch.path().join("private.gitdir");
-    let empty_hooks = operation_scratch.path().join("empty-hooks");
-    std::fs::create_dir(&empty_hooks).expect("create empty hook directory");
 
     let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
         .map(|directory| directory.join("git"))
@@ -1354,52 +1379,24 @@ async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir(
         "test oracle unexpectedly invoked the source filter before sandbox launch"
     );
 
-    let args = vec![
-        format!("--git-dir={}", private_gitdir.display()),
-        format!("--work-tree={}", repository.display()),
-        "-c".into(),
-        format!("core.hooksPath={}", empty_hooks.display()),
-        "-c".into(),
-        "core.fsmonitor=false".into(),
-        "add".into(),
-        "--".into(),
-        "tracked.txt".into(),
-    ];
-    let spec = SandboxConfig::new()
-        .with_enabled(true)
-        .with_mode(SandboxMode::WorkspaceWrite)
-        .with_allowed_paths(vec![
-            repository.to_string_lossy().into_owned(),
-            operation_scratch.path().to_string_lossy().into_owned(),
-        ])
-        .with_linux_offline_network(true)
-        .launch_spec(&git, &args, Some(&repository))
-        .expect("construct scoped M004/M005 Git staging launch spec");
-    assert!(
-        spec.protected_readonly_paths.contains(&source_gitdir),
-        "contained staging launch did not protect the source gitdir"
-    );
-    assert!(
-        spec.path_identities
-            .iter()
-            .any(|identity| identity.path == source_gitdir),
-        "contained staging launch did not capture the source gitdir identity"
-    );
-    let argv = std::iter::once(spec.target.as_os_str().to_owned())
-        .chain(spec.args.iter().map(OsString::from))
-        .collect();
-    let mut request = ManagedProcessRequest::new(
-        argv,
-        repository.clone(),
-        ProcessProvenance::new("linux-trusted-git-c004", "private-add-staging"),
-    );
-    request.timeout = Some(Duration::from_secs(15));
-    request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
-        .with_var("GIT_CONFIG_NOSYSTEM", "1")
-        .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
-        .with_var("HOME", "/tmp/codegg-empty-home");
-    request.sandbox = SandboxRequest::Required(spec);
-    let result = ManagedProcessService::run(request)
+    let operation_root =
+        codegg_git::path::RepoRoot::new(&repository).expect("construct typed repository root");
+    let operation = codegg_git::GitOperation::Add {
+        paths: vec![
+            codegg_git::path::RepoPath::new(&operation_root, "tracked.txt")
+                .expect("construct typed staging path"),
+        ],
+    };
+    let result = TypedGitExecutionService::new()
+        .with_timeout(Duration::from_secs(15))
+        .execute_private_git_add_staging_test_only(
+            &operation,
+            &repository,
+            operation_scratch.path(),
+            &private_gitdir,
+            &git,
+            "private-add-staging",
+        )
         .await
         .expect("required contained staging must run or fail closed");
     assert!(

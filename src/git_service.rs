@@ -466,6 +466,143 @@ impl GitExecutionService {
         Ok(result)
     }
 
+    /// Run one private-index `git add` through the managed-process owner for
+    /// the C004 native prototype. This deliberately has no production caller:
+    /// publication, authorization and durable recovery remain test-only.
+    #[cfg(all(feature = "linux-git-test-support", target_os = "linux"))]
+    pub async fn execute_private_git_add_staging_test_only(
+        &self,
+        operation: &GitOperation,
+        repository_root: &Path,
+        operation_scratch: &Path,
+        private_gitdir: &Path,
+        git_binary: &Path,
+        provenance_label: &str,
+    ) -> Result<ManagedProcessResult, GitServiceError> {
+        let GitOperation::Add { paths } = operation else {
+            return Err(GitServiceError::Policy(
+                egggit::GitExecutionPolicyOutcome::InvalidRequest {
+                    reason: "C004 test-only staging accepts only typed Git Add operations".into(),
+                },
+            ));
+        };
+        if paths.is_empty()
+            || paths.iter().any(|path| {
+                let path = Path::new(path.as_str());
+                path.is_absolute()
+                    || path.components().any(|component| {
+                        matches!(
+                            component,
+                            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                        )
+                    })
+            })
+        {
+            return Err(GitServiceError::Policy(
+                egggit::GitExecutionPolicyOutcome::InvalidRequest {
+                    reason: "C004 staging requires non-empty workspace-relative paths".into(),
+                },
+            ));
+        }
+
+        let root = repository_root
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        let scratch = operation_scratch
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        let private_gitdir = private_gitdir
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        let source_gitdir = root
+            .join(".git")
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        let source_odb = source_gitdir
+            .join("objects")
+            .canonicalize()
+            .map_err(|error| GitServiceError::Repository(error.to_string()))?;
+        if !private_gitdir.starts_with(&scratch)
+            || !private_gitdir.is_dir()
+            || !source_gitdir.starts_with(&root)
+            || !source_odb.starts_with(&source_gitdir)
+            || !source_odb.is_dir()
+        {
+            return Err(GitServiceError::Repository(
+                "C004 staging requires private scratch metadata and an ordinary in-root source ODB"
+                    .into(),
+            ));
+        }
+
+        let git_binary = git_binary
+            .canonicalize()
+            .map_err(|error| GitServiceError::Execution(error.to_string()))?;
+        let mut args = vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            format!("--work-tree={}", root.display()),
+            "-c".into(),
+            "core.hooksPath=/dev/null".into(),
+            "-c".into(),
+            "core.fsmonitor=false".into(),
+            "add".into(),
+            "--".into(),
+        ];
+        args.extend(paths.iter().map(|path| path.as_str().to_owned()));
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![
+                root.to_string_lossy().into_owned(),
+                scratch.to_string_lossy().into_owned(),
+            ])
+            .with_linux_offline_network(true)
+            .launch_spec(&git_binary, &args, Some(&root))
+            .map_err(|error| GitServiceError::Execution(error.to_string()))?;
+        if !spec.linux_process_isolation
+            || !spec.linux_offline_network
+            || !spec.protected_readonly_paths.contains(&source_gitdir)
+            || !spec
+                .protected_readonly_paths
+                .iter()
+                .any(|protected| source_odb.starts_with(protected))
+            || !spec
+                .path_identities
+                .iter()
+                .any(|identity| identity.path == source_gitdir)
+        {
+            return Err(GitServiceError::Execution(
+                "C004 staging lacks protected source metadata, captured identity, M004, or M005"
+                    .into(),
+            ));
+        }
+
+        let command = std::iter::once(spec.target.as_os_str().to_owned())
+            .chain(spec.args.iter().map(std::ffi::OsString::from))
+            .collect();
+        let mut request = ManagedProcessRequest::new(
+            command,
+            root,
+            ProcessProvenance::new("linux-trusted-git-c004-test-only", provenance_label),
+        );
+        request.timeout = Some(self.timeout);
+        request.environment_policy = EnvironmentPolicy::sanitized()
+            .with_var("GIT_CONFIG_NOSYSTEM", "1")
+            .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+            .with_var("GIT_TERMINAL_PROMPT", "0")
+            .with_var("HOME", "/tmp/codegg-empty-home")
+            .with_var("LC_ALL", "C");
+        request.sandbox = SandboxRequest::Required(spec);
+        let result = ManagedProcessService::run(request)
+            .await
+            .map_err(|error: ManagedProcessError| GitServiceError::Execution(error.to_string()))?;
+        if !matches!(result.sandbox, SandboxExecutionOutcome::Enforced { .. }) {
+            return Err(GitServiceError::Execution(
+                "C004 staging returned without obtained M004/M005 enforcement".into(),
+            ));
+        }
+        Ok(result)
+    }
+
     // ── Read operations via egggit ──────────────────────────────────
 
     async fn execute_status(
