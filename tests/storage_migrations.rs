@@ -393,7 +393,10 @@ async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
         codegg::storage::STORAGE_LAYOUT_VERSION as i64,
         "latest migration must land exactly at the declared storage layout version"
     );
-    assert_eq!(final_version, 83, "the network-intent migration follows v82");
+    assert_eq!(
+        final_version, 83,
+        "the network-intent migration follows v82"
+    );
 
     let network_intent: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('runtime_preferences') WHERE name = 'network_intent'",

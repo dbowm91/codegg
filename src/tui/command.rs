@@ -1451,6 +1451,7 @@ mod tests {
             B::Policy,
             B::Approval,
             B::Sandbox,
+            B::Network,
             B::Context,
             B::Cost,
             B::Usage,
