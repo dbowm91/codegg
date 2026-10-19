@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability Corrective C008 — Shared Eggsearch with Host-Scoped Local Retrieval
 
-Status: active implementation (2026-10-19)
+Status: implemented — strict closure `plans/closure/agent-tool-use-operability-post-audit-corrective/008-status.md` (2026-10-19)
 Repository baseline: CodeGG `d44da50a66f9774e0c9c794b388deae05cb8ac48` on `plans/agent-tool-use-operability-20261019` (2026-10-19); re-check both repositories before editing. Eggsearch source inspected at pinned v0.4.3 `5e7b853e7eebf29c58f84959805c8774279d7ea4`.
 Source roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`.
 Predecessor: C002 `plans/implementation/agent-tool-use-operability-post-audit-corrective/002-live-workspace-repository-search.md` and immutable blocker evidence `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md`; downstream C007 `007-real-agent-tool-trajectory-qualification.md` remains blocked.
