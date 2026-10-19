@@ -117,3 +117,13 @@ M002 is strictly closed at implementation head `2e0aa549233dff1ef0caeb7596907381
 - Implementation plan M002 now points to this closure record.
 - The managed-agent-scratch roadmap records M002 closed and M003 active.
 - `plans/registry.md` records the accepted M002 implementation and M003 unblock disposition.
+
+### Post-rebase schema numbering correction (2026-10-19)
+
+The original branch closure recorded the scratch tables as migration v80 and
+`STORAGE_LAYOUT_VERSION` 80. Current `main` had since assigned migrations
+v80–v82 to durable prompt-queue storage. During PR #128 reconciliation, the
+scratch migration was moved additively to v83 and `STORAGE_LAYOUT_VERSION` is
+now 83. The migration contents and private/shared scratch behavior are
+unchanged; this correction preserves both histories without reusing a schema
+version.
