@@ -141,6 +141,25 @@ has yet demonstrated an authenticated `OfflineRequired` launch. Full CI on the
 same code head failed one `ChangedFiles` payload test on its first attempt; a
 same-SHA full-CI rerun remains in progress.
 
+### Exact-source M004 owner-matrix follow-up — 2026-10-19
+
+Hosted run [`39200873597`](https://github.com/dbowm91/codegg/actions/runs/39200873597)
+on `0fa4e1e5102e4900ba18326a8ef5a27a49ed2b63` passed the current 15-test
+process/IPC/offline candidate suite. The M005 fixture uses host-positive
+controls for IPv4/IPv6 loopback TCP and UDP, outbound DNS/TCP to GitHub, the
+configured resolver, and two different answers from the same loopback DNS
+query. The contained candidate then proved that the child could not reach
+host TCP/UDP listeners, the configured resolver or loopback rebinding fixture,
+resolve through the host resolver, reach the reserved external endpoint, or
+reuse an inherited connected host socket. The same exact-source workflow
+passed constrained PTY live-owner and routing, constrained LSP duplex/procfs,
+protected-mount/Git (20/20), and all restricted-userns refusal checks. This
+closes the prior DNS-rebinding-fixture and M004-owner-matrix evidence gaps for
+the private candidate. It does not add an authenticated `OfflineRequired`
+launch field, production launch-owner wiring, persisted policy, supported-host
+admission, or a public `NetworkEnforcement::Enforced` claim. M005 remains
+internal-only and active.
+
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.
 
