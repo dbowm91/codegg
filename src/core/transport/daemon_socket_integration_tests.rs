@@ -612,6 +612,7 @@ async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_j
     };
 
     let daemon = projection_daemon().await;
+    daemon.start_event_bridge();
     let root = tempfile::tempdir().expect("workspace root");
     let workspace = daemon
         .workspaces
@@ -829,25 +830,18 @@ async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_j
         .any(|job| job.job_id == live_submitted.job_id.as_str()));
 
     let child_instance_id = "child-socket-live-1".to_string();
-    daemon
-        .event_log
-        .publish(
-            Some(session.id.clone()),
-            Some("turn-socket-live-work".into()),
-            CoreEvent::SubagentStarted {
-                session_id: session.id.clone(),
-                child_instance_id: child_instance_id.clone(),
-                originating_turn_id: Some("turn-socket-live-work".into()),
-                task_id: 7,
-                agent: "worker".into(),
-                description: "socket-published child for live-work view".into(),
-                display_name: Some("Mira".into()),
-                profile: None,
-                usefulness: None,
-                run_id: None,
-            },
-        )
-        .await;
+    crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::SubagentStarted {
+        session_id: session.id.clone(),
+        child_instance_id: child_instance_id.clone(),
+        originating_turn_id: Some("turn-socket-live-work".into()),
+        task_id: 7,
+        agent: "worker".into(),
+        description: "socket-published child for live-work view".into(),
+        display_name: Some("Mira".into()),
+        profile: None,
+        usefulness: None,
+        run_id: None,
+    });
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(event) = app
@@ -889,25 +883,18 @@ async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_j
     .await
     .expect("session-owned child projection event from the socket");
     let second_child_instance_id = "child-socket-live-2".to_string();
-    daemon
-        .event_log
-        .publish(
-            Some(session.id.clone()),
-            Some("turn-socket-live-work".into()),
-            CoreEvent::SubagentStarted {
-                session_id: session.id.clone(),
-                child_instance_id: second_child_instance_id.clone(),
-                originating_turn_id: Some("turn-socket-live-work".into()),
-                task_id: 8,
-                agent: "worker".into(),
-                description: "second socket-published child".into(),
-                display_name: Some("Sally".into()),
-                profile: None,
-                usefulness: None,
-                run_id: None,
-            },
-        )
-        .await;
+    crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::SubagentStarted {
+        session_id: session.id.clone(),
+        child_instance_id: second_child_instance_id.clone(),
+        originating_turn_id: Some("turn-socket-live-work".into()),
+        task_id: 8,
+        agent: "worker".into(),
+        description: "second socket-published child".into(),
+        display_name: Some("Sally".into()),
+        profile: None,
+        usefulness: None,
+        run_id: None,
+    });
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(event) = app
@@ -999,6 +986,112 @@ async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_j
         painted_text.contains("Subagents"),
         "painted session sections: {painted_text}"
     );
+
+    // M006 B: attaching an ordinary TUI after work has already been
+    // published must recover current rows from its authorized snapshot. A
+    // second session on this project must not inherit those rows.
+    let late_client: Arc<dyn CoreClient> = Arc::new(
+        SocketCoreClient::connect(&format!("unix://{socket_path}"))
+            .await
+            .expect("connect late-attach TUI client"),
+    );
+    let (late_command_tx, mut late_command_rx) = tokio::sync::mpsc::channel(64);
+    let mut late_app =
+        crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    late_app.tui_cmd_tx = Some(late_command_tx);
+    late_app.attach_core_client(Arc::clone(&late_client));
+    late_app.set_session(
+        crate::protocol_conversions::dto_to_session(session.clone())
+            .expect("late-attach session conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = late_command_rx
+                .recv()
+                .await
+                .expect("late-attach TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut late_app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("late TUI attaches to existing session projection");
+    let (_, late_snapshot) = late_app
+        .projection_client
+        .active_snapshot()
+        .expect("late TUI installed initial projection snapshot");
+    assert_eq!(late_snapshot.primary_session.session_id, session.id);
+    assert_eq!(late_snapshot.subagents.len(), 2);
+    assert_eq!(late_snapshot.jobs.len(), 2);
+    assert!(late_snapshot
+        .subagents
+        .iter()
+        .any(|row| row.child_instance_id == child_instance_id));
+    assert!(late_snapshot
+        .subagents
+        .iter()
+        .any(|row| row.child_instance_id == second_child_instance_id));
+
+    let other_session = match late_client
+        .request(crate::core::new_request(
+            "other-tui-session".into(),
+            crate::protocol::core::CoreRequest::SessionCreate {
+                directory: root.path().to_string_lossy().into_owned(),
+                title: Some("other projection session".into()),
+                project_id: Some(project.project_id.as_str().into()),
+                workspace_id: Some(workspace.id.as_str().into()),
+            },
+        ))
+        .await
+        .expect("create second session through socket")
+    {
+        crate::protocol::core::CoreResponse::Session { session } => session,
+        other => panic!("second session creation failed: {other:?}"),
+    };
+    let (other_command_tx, mut other_command_rx) = tokio::sync::mpsc::channel(64);
+    let mut other_app =
+        crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    other_app.tui_cmd_tx = Some(other_command_tx);
+    other_app.attach_core_client(late_client);
+    other_app.set_session(
+        crate::protocol_conversions::dto_to_session(other_session.clone())
+            .expect("second session conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = other_command_rx
+                .recv()
+                .await
+                .expect("second-session TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(
+                    &mut other_app,
+                    command,
+                )
+                .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("second session projection subscription completes");
+    let (_, other_snapshot) = other_app
+        .projection_client
+        .active_snapshot()
+        .expect("second session has authoritative projection snapshot");
+    assert_eq!(other_snapshot.primary_session.session_id, other_session.id);
+    assert!(other_snapshot.subagents.is_empty());
+    assert!(other_snapshot.jobs.is_empty());
+
     app.close_dialog();
     app.tasks_expanded = false;
     app.ui_state.input_mode = crate::tui::input::InputMode::Normal;

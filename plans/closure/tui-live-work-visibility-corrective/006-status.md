@@ -30,8 +30,8 @@ not full release acceptance.
 
 | Scenario | Result | Evidence / residual |
 |---|---|---|
-| A. Same attached session shows two children and separate jobs in both surfaces; inspect and supported cancel | **Partial pass** | `default_tui_socket_path_installs_authorized_session_snapshot_and_live_job`: real socket job submissions plus daemon-published child lifecycle events; exact IDs are applied and painted. Job inspection/cancel goes through TUI requests and the daemon store. Child events are deterministic CoreEvent inputs, not worker executions. |
-| B. Late attach, simultaneous clients, and cross-session child isolation | **Not qualified in the combined TUI path** | Existing transport and snapshot tests cover owner scope and late snapshots separately; no held-work second ordinary TUI attach was driven here. |
+| A. Same attached session shows two children and separate jobs in both surfaces; inspect and supported cancel | **Partial pass** | `default_tui_socket_path_installs_authorized_session_snapshot_and_live_job`: real socket job submissions plus deterministic `AppEvent::SubagentStarted` publications through the global bus and daemon event bridge; exact IDs are applied and painted. Job inspection/cancel goes through TUI requests and the daemon store. Child starts do not come from real worker executions. |
+| B. Late attach, simultaneous clients, and cross-session child isolation | **Partial pass** | The same socket/TUI test now attaches a second ordinary TUI after the two child events and jobs are published, verifies all four identities in its initial authorized snapshot, then binds another TUI to a second session in the same project and verifies its child/job snapshot is empty. This covers late snapshot reconstruction and session isolation for deterministic child events. Both TUI clients are not held concurrently through live worker transitions, and no worker latch is involved. |
 | C. Parent completion/timeout, queued cancellation, new-turn reuse, eventual worker terminal | **Not qualified end-to-end** | M003 reducer/worker tests establish stable generation semantics, but this test does not execute two real child workers across those races. |
 | D. Disconnect gap, daemon restart, ephemeral child reconciliation, duplicate terminal | **Partial component evidence** | Fresh snapshot/reconnect and cold runtime registry behavior have focused tests; no combined real-worker restart trace or cursor-gap TUI test was run. |
 | E. Modal refresh, exact job activation, cancel, observer control | **Partial pass** | Row removal/generation races and observer-disabled cancel are tested. Socket test verifies owner cancel reaches `JobStore`; the full foreign-project/observer daemon denial matrix remains policy-test evidence. |
@@ -43,6 +43,7 @@ not full release acceptance.
 | Command | Result |
 |---|---|
 | `rtk cargo test -p codegg --lib default_tui_socket_path_installs_authorized_session_snapshot_and_live_job --locked` | pass (1) |
+| `CARGO_BUILD_JOBS=2 rtk cargo clippy -p codegg --lib --tests --locked -- -D warnings` | pass |
 | `rtk cargo test -p codegg-protocol --lib projection --locked` | pass (98) |
 | `rtk cargo test -p codegg --lib subagent --locked` | pass (120) |
 | focused `/sessions`, task-overlay, side-panel, detail, and session-work suites | pass; exact results recorded in M003–M005 closure records |
@@ -50,18 +51,22 @@ not full release acceptance.
 | `rtk python3 scripts/check_projection_transport_lifecycle.py` | pass |
 | `rtk python3 scripts/check_tui_transport_authority.py` | pass |
 | `rtk git diff --check` | pass |
-| `rtk bash scripts/verify.sh quick` | pass (exact implementation tree) |
+| `rtk bash scripts/verify.sh quick` | pass (exact implementation tree including the late-attach/session-isolation regression) |
 | `CARGO_BUILD_JOBS=2 rtk cargo clippy --workspace --all-targets --locked -- -D warnings` | pass |
 | `rtk git diff --check` | pass |
 
 ## Required re-entry evidence
 
-Before claiming full M006 acceptance or release readiness, add/run the named
-real-daemon-to-TUI scenario from the implementation plan with a deterministic
-worker/provider latch, two real concurrent children, late client attach,
-cross-session denial, parent-turn transition, reconnect/restart reconciliation,
-observer cancellation denial, and the manual development-terminal receipt.
-Do not infer these results from the present socket projection test.
+Before claiming full M006 acceptance or release readiness, add the named
+real-daemon-to-TUI integration target required by the implementation plan (or
+record why an equivalent target satisfies it) and exercise a deterministic
+worker/provider latch, two real concurrent children, late attachment while
+those workers are held, cross-session and unauthorized-subscribe denial,
+parent-turn transition, reconnect/restart reconciliation, and observer
+cancellation denial. The current library test proves late initial-snapshot
+reconstruction and isolation for deterministic child events; do not infer real
+worker lifecycle or concurrent client convergence from that result. The
+manual development-terminal receipt also remains required.
 
 ## Unblock audit
 
