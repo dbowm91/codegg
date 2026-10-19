@@ -156,9 +156,10 @@ Later changes supersede this record's statements that cleanup is disabled on
 non-Unix platforms. `f97db619` added Windows shared-scratch reclamation using
 stable reparse-point inspection, and `3051ffb9` added a native reparse-point
 fixture. Windows scratch lifecycle tests are run by the Windows process
-launcher workflow. The exact-head Windows managed-scratch lifecycle step passed in run
-[39201781430](https://github.com/dbowm91/codegg/actions/runs/39201781430),
-recorded in M004's closure record. This qualifies the cleanup implementation only; Windows
+launcher workflow. The Windows managed-scratch lifecycle step passed in run
+[39227777443](https://github.com/dbowm91/codegg/actions/runs/39227777443),
+with 11/11 lifecycle tests and 8/8 process-launcher tests. The integrated-head
+qualification is tracked by M004's closure record. This qualifies the cleanup implementation only; Windows
 Required-sandbox containment remains unqualified, as does Linux native
 containment beyond the hosted Linux unit suite.
 
