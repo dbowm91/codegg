@@ -54,6 +54,17 @@ No model-controlled path grants local authority. The local-only fixture shows no
 
 Severity: high capability-integrity/privacy qualification gap. The pinned sidecar's static roots are not evidence of active-workspace binding. This requires an upstream request field/sidecar lifecycle contract or a separately accepted CodeGG session-scoped service design; neither is available in this repository change.
 
-## 9. Unblock audit
+## 9. Research required to resume
 
-C007 remains blocked on C002. Nothing downstream became eligible. C002 can resume when Eggsearch exposes a trusted session-root binding contract or an approved design provides a session-scoped child with lifecycle, isolation, and explicit local-only failure semantics.
+CodeGG's `src/search_backend/context.rs::SearchRuntimeContext` currently carries immutable search configuration and a shared `McpService` handle, but no session or workspace identity. `src/search_backend/eggsearch.rs::call_repo_search_structured` forwards `include_local`; it does not add trusted workspace scope. Eggsearch's `src/mcp/tools/repo_search.rs` selects local roots from the service's startup `[local].roots` configuration. Its `architecture/local-workspace.md` describes configured roots, not request-scoped CodeGG workspace identity. Therefore more tests against static roots can only qualify that configured-root behavior and cannot satisfy this plan's active-workspace requirement.
+
+Resume this as a separate architecture/integration decision with Eggsearch. Evaluate two viable boundaries:
+
+1. CodeGG manages workspace-scoped Eggsearch child instances and derives each child's local roots from the daemon-authorized resolved workspace. Define process lifecycle, switching, caching/index isolation, and failure behavior.
+2. Eggsearch adds a trusted host binding, such as a registered opaque workspace handle. The host registers the authorized root; tool requests reference only the opaque binding. Never accept a model-selected raw path, and isolate caches/results by binding.
+
+The decision must cover main-session and subagent inheritance, workspace switching and stale-handle rejection, disabled/missing index reporting, local-only/unavailable behavior without false remote fallback, bounded results, and offline end-to-end qualification. Coordinate with the Eggsearch M002/M004 owners and add an ADR or accepted interface contract before resuming implementation. No Eggsearch protocol or source change was made as part of this research.
+
+## 10. Unblock audit
+
+C007 remains blocked solely on C002; C001, C003, C004, C005, and C006 are strictly closed. C002 remains blocked until the separate CodeGG/Eggsearch architecture decision establishes a trustworthy mapping from daemon workspace identity to local retrieval scope, followed by integration implementation and qualification. No downstream plan became eligible from the research itself.

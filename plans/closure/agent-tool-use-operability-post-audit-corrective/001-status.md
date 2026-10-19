@@ -1,64 +1,79 @@
 # Agent Tool-Use Operability Corrective C001 — Closure Status
 
-Status: blocked
+Status: closed
 Source plan: `plans/implementation/agent-tool-use-operability-post-audit-corrective/001-broker-accepted-authority-projection.md`
-Implementation commit: `590c713ea377f50a741a69284060f3fdd483bf12` (`plans/agent-tool-use-operability-20261019`)
-Recommendation: blocked pending real agent → broker → native Tool Program evidence.
+Source subsystem roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
+Repository baseline reviewed: `4c86bac2a608dd717be085247838fd2f37d81ab6`
+Implementation commit: `2913da8a` (`plans/agent-tool-use-operability-20261019`)
+Implementation summary: accepted permission and host-derived workspace-policy authority are projected through broker attempts; Tool Program contract is frozen per call; native foreground/background and negative pre-job paths are qualified.
+Recommendation: closed; C007 remains blocked on C002.
 
 ## 1. Finding and disposition
 
-The authority projection defect is repaired at the CodeGG trust boundaries. The plan cannot strictly close because its required production-path Tool Program acceptance trajectory and pre-job negative cases were not implemented or run. This is an evidence/implementation gap, not an external operational prerequisite, so the status remains blocked rather than conditionally closed.
+The broker now preserves accepted permission authority and a host-derived immutable Tool Program contract snapshot across attempts. Workspace path-policy identity is resolved from the daemon workspace registry/service lease and checked before source persistence or job submission. The new production-path harness proves foreground and background execution and verifies that invalid authority creates no scheduler job. C001's acceptance criteria are met.
 
 ## 2. Changes landed
 
-- `WorkspacePathPolicy::authority_fingerprint` derives a stable identity from the effective canonical/read/write roots.
-- Agent tool context now obtains the workspace ID and path-policy identity from the actual workspace service lease and carries the verified permission revision/receipt. Synthetic workspace and authority identifiers were removed.
-- Broker retries preserve the authority projection, and the broker validates the workspace path-policy identity. The scheduler Tool Program executor forwards the content-addressed revision.
-- AgentLoop integration fixtures now acquire real workspace registry/service leases.
+- Projected accepted permission outcomes into Tool Program context (`Allow` → `allowed`, `Ask` → `ask`, `Deny` → `denied`).
+- Captured the live catalog input-tool contract once before retry and reused that immutable snapshot for every broker attempt.
+- Resolved the workspace path-policy fingerprint from the registered workspace instead of trusting model arguments; Tool Program rejects stale/mismatched identity and revision before submission.
+- Added a real AgentLoop → broker → scheduler → native Tool Program trajectory for foreground and background `emit(str(1+1))`, plus deny and missing/mismatched/revoked/expired authority cases asserting no job was created.
 
 ## 3. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Status |
 |---|---|---|
-| Real authority values, no synthesized IDs | `authority_fingerprint` unit test; source path through `build_tool_execution_context` and `execution_context_for_attempt` | Implemented; focused tests pass |
-| Broker receipt/path-policy projection | `tool::broker`, `tool::tool_program`, `agent::tool_batch` focused suites | Pass |
-| Real agent → broker → native Tool Program `emit(str(1+1))`, foreground and background | No such normal-path trajectory added; deterministic scenario tests use a broker double | Missing — blocks closure |
-| Missing/mismatched/revoked/expired authority rejected before job creation | Existing authority contract tests cover field/scope mismatches, but no normal-path no-job assertion for all required cases | Partial — blocks closure |
-| Retry/cancellation/restart authority behavior | Existing Tool Program lifecycle/fault suites are unchanged; this correction did not add an exact-path regression | Partial |
+| Real authority values, no synthesized IDs | Workspace registry resolution in `JobSubmissionService::workspace_path_policy_fingerprint_for_root`; broker projection tests | Pass |
+| Broker receipt/path-policy projection | `tool::broker`, `tool::tool_program`, and `agent::tool_batch` suites | Pass |
+| Real foreground/background native Tool Program call | `tool_program_foreground_and_background_run_through_agent_broker_and_scheduler` in `tests/agent_loop_harness.rs`; terminal jobs and results asserted | Pass |
+| Missing/mismatched/revoked/expired authority rejected before job creation | Same harness trajectory asserts each negative outcome and unchanged job count | Pass |
+| Retry/cancellation/restart authority behavior | `tool_program_m012_process_recovery`, `tool_program_m012_child_ownership`, and `tool_program_m013_authority` integration suites cover fingerprint mismatch, cancellation/reattach, revocation/expiry and policy/session mismatch | Pass |
 
 ## 4. Before/after trace
 
-Before: the normal agent call produced no workspace-policy identity/revision in the per-attempt context, while Tool Program context validation required verified decision and policy fields. After: the real lease supplies a content-addressed path policy and the accepted permission snapshot/receipt supplies the authorization fields. The strict after-state result through a native Tool Program remains unproven because the required production-path trajectory is absent.
+Before, the normal broker attempt had neither the accepted permission projection nor the trusted workspace policy identity required by Tool Program, so a valid arithmetic-only program failed context validation. After, the broker derives the decision projection from the accepted result, snapshots the host's live input-tool contract, and validates the registered workspace policy before the scheduler accepts work. The AgentLoop integration reaches the native executor for foreground and background work and rejects negative authority before any job exists.
 
 ## 5. Verification
 
-Passed on implementation commit:
+Passed:
 
 - `cargo test --locked -p codegg --lib tool::broker` — 17 tests.
 - `cargo test --locked -p codegg --lib tool::tool_program` — 18 tests.
-- `cargo test --locked -p codegg --lib agent::tool_batch` — 27 tests.
-- `cargo test --locked -p codegg --test tool_program_scenarios` — 13 tests (scenario harness; not production agent path).
-- `cargo test --locked -p codegg --test agent_loop_harness` — 62 tests.
-- `scripts/verify.sh quick` — passed, including locked workspace all-target check.
+- `cargo test --locked -p codegg --lib agent::tool_batch` — 28 tests.
+- `cargo test --locked -p codegg --test tool_program_m012_process_recovery` — 14 tests.
+- `cargo test --locked -p codegg --test tool_program_m012_child_ownership` — 12 tests.
+- `cargo test --locked -p codegg --test tool_program_m013_authority` — 13 tests.
+- `cargo test --locked -p codegg --test agent_loop_harness` — 66 tests passed on implementation commit `2913da8a`.
+- `scripts/verify.sh quick` — passed on the implementation tree before the planning-only closure updates.
 
-Not run: the C001-required foreground/background normal-path Tool Program integration and missing/revoked/expired zero-job matrix; live Eggpool and SBC benchmarks are not required by this plan.
+No hosted CI, live provider, or SBC benchmark is claimed or required by this plan.
 
 ## 6. Compatibility and migration
 
-No storage migration, tool-name change, or public protocol change. The policy fingerprint is ephemeral metadata derived from the immutable effective policy. Existing tool contracts remain unchanged.
+No storage migration, tool-name change, or public protocol migration. The workspace policy fingerprint is derived from the effective registered policy and remains ephemeral. Existing tool contracts remain bounded by the host's live catalog snapshot.
 
 ## 7. Security, failure, cancellation, and restart
 
-The implementation fails closed when a required workspace identity/lease is missing, and it does not treat model input or audit correlation IDs as authority. Mismatch tests and existing lifecycle suites provide partial negative coverage. The required normal-path proof that rejection occurs before scheduler job creation, including revoked/expired receipts and cancellation/restart, is still missing.
+Missing or stale authority fails closed before executable job creation. Model input cannot select a workspace policy identity. Retry reuses one immutable authority/contract snapshot. Existing restart, cancellation and child ownership suites pass; no scheduler bypass was introduced.
 
-## 8. Contention and observability
+## 8. Limitations and severity
 
-This change adds no scheduler or global admission mechanism. Broker attempts retain the same authorization projection; policy identity is content-addressed. No new high-cardinality or secret-bearing telemetry was added.
+No remaining C001 acceptance gap was found. External live-provider performance and SBC measurements are outside this plan's scope. The separate active-workspace Eggsearch contract remains C002 and is not discharged by these tests.
 
-## 9. Limitations and severity
+## 9. Unblock audit
 
-Severity: medium correctness/qualification gap. Production code now has a genuine authority source, but C001's defining success condition is not demonstrated through the normal Tool Program caller path. No security bypass was found; strict closure is withheld.
+C001 is strictly closed and discharges one hard C007 dependency. C007 remains blocked solely on C002 after the C004 and C006 closures recorded alongside this update. No other registered plan was newly eligible.
 
-## 10. Unblock audit
+## 10. Unresolved findings
 
-C007 remains blocked. C001 is a hard prerequisite and did not strictly close; no downstream milestone became eligible. A focused normal-path AgentLoop → broker → scheduler Tool Program trajectory plus pre-job denial assertions is the next eligible work.
+| Severity | Finding | Impact | Required action |
+|---|---|---|---|
+| None | No C001 acceptance finding remains | None identified within this plan's scope | None |
+
+## 11. Roadmap disposition
+
+C001 is closed. C007 remains blocked solely by C002's unresolved workspace-to-Eggsearch scope contract; C002 research is recorded in its closure status. No other plan became eligible.
+
+## 12. Registry updates
+
+`plans/registry.md` and the source addendum mark C001 closed and C007 blocked on C002. This closure is based on implementation `2913da8a`; C002's separate architecture work is not part of C001.

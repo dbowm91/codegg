@@ -48,4 +48,4 @@ No known high-severity residual. The real AgentLoop trajectory covers nested cre
 
 ## 8. Unblock audit
 
-C003 is strictly closed. It discharges one C007 dependency, but C007 remains blocked by C001, C002, C004, and C006. No other registered plan became eligible.
+C003 is strictly closed. It discharges one C007 dependency. After the later C001/C004/C006 closures, C007 remains blocked solely by C002's trusted workspace-to-Eggsearch scope contract. No other registered plan became eligible.
