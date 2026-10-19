@@ -1,6 +1,6 @@
 # Developer Harness Lab M001 — Concurrent Daemon Subject Lanes
 
-Status: active
+Status: implemented
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (`main`, reviewed 2026-10-18). Implementation must refresh against current branch head.
 
@@ -99,7 +99,7 @@ python3 -m dev.harness_lab smoke --subjects 2
 cargo test -p codegg --test acp_stdio
 cargo test -p codegg --lib acp
 cargo fmt --all -- --check
-./verify.sh quick
+scripts/verify.sh quick
 ```
 
 If the developer CLI differs, document the actual executed equivalents. Do not claim smoke or CI passing merely because the plan was written.

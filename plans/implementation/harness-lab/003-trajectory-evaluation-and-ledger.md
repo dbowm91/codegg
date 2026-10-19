@@ -1,6 +1,6 @@
 # Developer Harness Lab M003 — ACP Trajectory Evaluation and Experiment Ledger
 
-Status: blocked — hard dependencies on Harness Lab M001 and M002 closure; planning handoff prepared
+Status: implemented
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (`main`, reviewed 2026-10-18). Reinspect against actual M001/M002 closure.
 
@@ -96,7 +96,7 @@ python3 -m dev.harness_lab evaluate --suite dev/harness_lab/fixtures/smoke.jsonl
 python3 -m dev.harness_lab report --latest
 cargo test -p codegg --test acp_stdio
 cargo fmt --all -- --check
-./verify.sh quick
+scripts/verify.sh quick
 ```
 
 A provider-backed benchmark run is manual/opt-in and must record provider/model/cost/version; no green CI claim based on an unavailable paid provider.

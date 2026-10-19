@@ -1,6 +1,6 @@
 # Developer Harness Lab Roadmap
 
-Status: active — M001 and M002 in implementation; M003/M004 staged behind dependent evidence
+Status: conditionally closed — M001–M003 closed; M004 implemented with operational evidence outstanding
 
 Long-term references:
 
@@ -81,19 +81,19 @@ M001 and M002 have **independent hard dependencies** on existing code and can be
 
 ### M001 — Concurrent subject-lane supervisor
 
-Class: infrastructure/capability. Plan: `plans/implementation/harness-lab/001-concurrent-daemon-subject-lanes.md`. **Ready.** Produce a developer-only Python supervisor able to start, attach to and stop >=2 independently verified live candidate daemons concurrently, with separate state roots and ACP clients; no provider/model spend in required tests. No production-wide multi-daemon semantics.
+Class: infrastructure/capability. Plan: `plans/implementation/harness-lab/001-concurrent-daemon-subject-lanes.md`. **Closed** (`plans/closure/harness-lab/001-status.md`). Two live private daemon lanes passed identity, separation, cleanup and no-default-daemon-mutation checks.
 
 ### M002 — ACP unattended policy and truthful terminal semantics
 
-Class: invariant/capability. Plan: `plans/implementation/harness-lab/002-acp-unattended-execution-contract.md`. **Ready.** Reuse canonical policy authority to support explicit no-prompt full-host/workspace-write ACP runs, report effective limits, and distinguish completion, failure, cancellation and protocol errors without fabricating success. Exercise native daemon paths with real tool calls.
+Class: invariant/capability. Plan: `plans/implementation/harness-lab/002-acp-unattended-execution-contract.md`. **Closed** (`plans/closure/harness-lab/002-status.md`). Local native ACP trials proved explicit workspace-write/full-host operation, retained Bash denial and truthful terminal reporting.
 
 ### M003 — Baseline assessment, telemetry and reproducibility
 
-Class: infrastructure/capability. Plan: `plans/implementation/harness-lab/003-trajectory-evaluation-and-ledger.md`. **Blocked on M001/M002 closure.** Establish bounded fixture/task schema, independent verifiers, typed traces and experiment ledger; run paired baseline/candidate comparisons and focused agent-friction cases. No automatic editing.
+Class: infrastructure/capability. Plan: `plans/implementation/harness-lab/003-trajectory-evaluation-and-ledger.md`. **Closed** (`plans/closure/harness-lab/003-status.md`). The 12-case native ACP suite, verifier receipts, append-only ledger, replay and paired comparison are implemented; no performance improvement is claimed.
 
 ### M004 — Optional OpenCode proposer and bounded improvement cycle
 
-Class: capability. Plan: `plans/implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md`. **Blocked on M003 closure.** Add optional OpenCode `run` (default) or compatible ACP/API adapter, candidate-only edits, build/qualify/retest, retry budgets, changelog and deterministic acceptance/rollback. No automatic merge/push.
+Class: capability. Plan: `plans/implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md`. **Conditionally closed** (`plans/closure/harness-lab/004-status.md`). Candidate-only proposer, qualification gates, and bounded compile-correction retries are implemented. A live OpenCode/correction pilot, accepted correctness-fix trace and full trial interruption/resume proof remain outstanding; no automatic merge/push.
 
 ## 8. Cross-cutting requirements
 
@@ -137,7 +137,7 @@ Two independent CodeGG versions can run headlessly and concurrently via ACP on t
 
 | Milestone | Status | Implementation plan | Closure | Blocker |
 |---|---|---|---|---|
-| M001 | active | `implementation/harness-lab/001-concurrent-daemon-subject-lanes.md` | — | none |
-| M002 | active | `implementation/harness-lab/002-acp-unattended-execution-contract.md` | — | none |
-| M003 | blocked | `implementation/harness-lab/003-trajectory-evaluation-and-ledger.md` | — | hard: M001/M002 |
-| M004 | blocked | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | — | hard: M003 |
+| M001 | closed | `implementation/harness-lab/001-concurrent-daemon-subject-lanes.md` | `closure/harness-lab/001-status.md` | — |
+| M002 | closed | `implementation/harness-lab/002-acp-unattended-execution-contract.md` | `closure/harness-lab/002-status.md` | — |
+| M003 | closed | `implementation/harness-lab/003-trajectory-evaluation-and-ledger.md` | `closure/harness-lab/003-status.md` | — |
+| M004 | conditionally closed | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | `closure/harness-lab/004-status.md` | accepted trace, retry/resume qualification, optional live pilot |
