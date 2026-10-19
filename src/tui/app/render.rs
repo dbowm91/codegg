@@ -2064,7 +2064,36 @@ impl App {
         self.prompt_state
             .prompt
             .ensure_cursor_visible_with_width(visible_lines, area.width as usize);
+
+        // The cursor rules and the badge read the same two facts: the resolved
+        // mode and the derived keyboard ownership. A caret that disagrees with
+        // the `[INS]`/`[NOR]` badge teaches the wrong keymap, so both are
+        // computed here, once, from the same derivation.
+        //
+        // Normal mode paints a solid block. Insert mode positions the
+        // terminal's own cursor, which blinks at the terminal's rate — the app
+        // runs one animation cadence, and a second one for a blinking caret is
+        // not allowed. The fake block and the real terminal cursor are mutually
+        // exclusive by construction: exactly one of the two branches below runs.
+        let holds_keyboard = self.composer_holds_keyboard();
+        let block_cursor = holds_keyboard && input_mode == InputMode::Normal;
+        self.prompt_state.prompt.set_cursor_style(if block_cursor {
+            crate::tui::components::prompt::ComposerCursor::Block
+        } else {
+            crate::tui::components::prompt::ComposerCursor::None
+        });
+
         frame.render_widget(&self.prompt_state.prompt, area);
+
+        // Ratatui hides the terminal cursor whenever a frame did not position
+        // it, so "position nothing" is how the composer shows no cursor at
+        // all — when another surface holds the keyboard, and in Normal mode,
+        // where the painted block is the caret instead.
+        if holds_keyboard && input_mode == InputMode::Insert {
+            if let Some((x, y)) = self.prompt_state.prompt.caret_cell(area) {
+                frame.set_cursor_position(Position::new(x, y));
+            }
+        }
 
         // Command mode deliberately does NOT draw `dialog_state.command_palette`
         // over the prompt any more. That widget is a second, independent

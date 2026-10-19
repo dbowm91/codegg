@@ -292,8 +292,8 @@ after reconciling the search-backend retirement with current `main`.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 266 | `tests/*.rs` |
-| CI guard scripts | 53 | `scripts/check_*` |
+| Integration test files | 268 | `tests/*.rs` |
+| CI guard scripts | 58 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -558,7 +558,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (266 files)
+├── tests/                      # Integration tests (268 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -585,11 +585,15 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (52 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (58 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
 The full count audit on **2026-10-13** remeasured each row directly against its listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, event/request/response variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, database tables, storage-layout version, Git operation/risk counts, workspace members, integration test files, and guard scripts). After merging current `main` on **2026-10-15**, tool source files (78), integration test files (244), and guard scripts (49) were rechecked and updated.
+
+The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **266** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is two test files (`tests/tui_composer_cursor.rs` from M001, `tests/tui_composer_claims.rs` from M002) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
+
+The integration-test-file row was **remeasured again on 2026-10-19** when the managed-agent-scratch workstream was reconciled with `main`: the count is now **268** (`ls tests/*.rs`), because the scratch workstream contributes two further test files (`tests/managed_scratch_job_admission.rs` and `tests/linux_native_scratch_containment.rs`) on top of the 266 measured above. The CI guard script row is unchanged at **58** (`ls scripts/check_*`); the scratch workstream adds no new guard, and the `main`-side value supersedes the 53 that the scratch branch carried.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 

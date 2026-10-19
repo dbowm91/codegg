@@ -281,7 +281,6 @@ pub enum TuiMsg {
     SearchNext,
     SearchPrev,
     ClearSearch,
-    FocusPrompt,
     StashPrompt,
     RestorePrompt,
     CopyMessage,

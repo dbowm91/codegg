@@ -90,7 +90,7 @@ use crate::util::fuzzy::fuzzy_score;
 use crate::util::truncate::{truncate_prefix, truncate_suffix};
 use crossterm::event::KeyEvent;
 use egglsp::{render_workflow_display, LspWorkflowInvocation, LspWorkflowRecipe};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -3931,10 +3931,7 @@ impl App {
         // docks it, Insert has to mean "type into the PTY". Without the
         // opt-in the keystrokes went to a composer the user was not looking
         // at, and the terminal appeared to be frozen.
-        let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
-            && self.panel_host.is_focused()
-            && (self.ui_state.input_mode == InputMode::Normal
-                || crate::tui::commands::panels::panel_claims_insert_keys(self));
+        let panel_active = self.panel_owns_keyboard();
         // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
         // ahead of the focused panel, and ahead of the binding map. It has to
         // be ahead of the panel because `h/j/k/l` are the panel's own cursor
@@ -4005,6 +4002,42 @@ impl App {
         ) && crate::tui::commands::editor::handle_editor_key(self, key)
         {
             return;
+        }
+        // M002: the composer's Normal-mode claim table. Consulted **before**
+        // the global binding map, because a claimed letter belongs to the
+        // composer and must never reach an app-level action — not even when
+        // the composer's own verb is not implemented yet. That is the
+        // fallthrough rule, and it is the whole point of the table: a
+        // reserved claim is consumed, so `d` cannot silently become
+        // `OpenDiff` while delete-selection is still pending.
+        //
+        // The step sits here, after the modal, panel, Workspace and editor
+        // branches, so a higher-priority surface still wins: with a dialog
+        // open, a claimed letter reaches the dialog, not the composer.
+        //
+        // The gate is the *resolved* mode and the derived ownership, never
+        // the raw `UiState::input_mode` field, which is forced to Normal
+        // whenever a side panel takes focus. The Workspace view is excluded
+        // for the same reason it owns its own Normal-mode keys: its
+        // dashboard filter is a different surface with a different composer,
+        // and a claimed letter there would stop the filter accepting it.
+        if !workspace_active
+            && self.composer_holds_keyboard()
+            && self.composer_input_mode() == InputMode::Normal
+        {
+            let line_count = self.prompt_state.prompt.num_lines();
+            if let Some(claim) = crate::tui::composer_claims::claim_for(key.modifiers, key.code) {
+                if claim.condition.holds(line_count) {
+                    // The claim is consumed here. A reserved verb does
+                    // nothing, and that is the point: the letter is the
+                    // composer's, so the app's action for it is not
+                    // reachable from the main buffer any more — not even
+                    // while the verb is pending. The one live verb runs
+                    // before the key is dropped.
+                    self.run_composer_claim(claim);
+                    return;
+                }
+            }
         }
         let action = handle_event_with_bindings_moded(
             crossterm::event::Event::Key(key),
@@ -4157,13 +4190,16 @@ impl App {
             Some(InputAction::CloseSession) => self.process_msg(TuiMsg::CloseSession),
             Some(InputAction::Help) => self.process_msg(TuiMsg::OpenHelpDialog),
             Some(InputAction::FocusPrompt) => {
+                // The composer's keyboard ownership is derived, not stored, so
+                // there is no "focus the prompt" flag to set. The only effect
+                // of this action is the command palette it opens at the start
+                // of the buffer.
                 if self.prompt_state.prompt.cursor_pos() == 0 {
                     self.ui_state.command_mode = true;
                     self.prompt_state.prompt.insert_char('/');
                     self.prompt_state.prompt.set_cursor(1);
                     self.dialog_state.command_palette.set_query("/");
                 }
-                self.process_msg(TuiMsg::FocusPrompt);
             }
             Some(InputAction::StashPrompt) => self.process_msg(TuiMsg::StashPrompt),
             Some(InputAction::RestorePrompt) => self.process_msg(TuiMsg::RestorePrompt),
@@ -4289,8 +4325,15 @@ impl App {
                 self.dialog_state.command_palette.set_query(":");
             }
             None => {
-                // In Normal mode, only 'i' switches to Insert mode
-                // All other keys pass through to their bindings (j/k for navigate, etc.)
+                // In Normal mode, only 'i' switches to Insert mode.
+                //
+                // In the main buffer this arm is no longer the route: the
+                // composer claims `i` and runs the transition itself (see
+                // `run_composer_claim`), so the gesture is reached only on
+                // the surfaces the composer does not own — the editor route
+                // with its buffer unfocused, a focused panel, the Workspace
+                // view's chat pane. All other keys pass through to their
+                // bindings (j/k for navigate, etc.).
                 if self.ui_state.input_mode == InputMode::Normal {
                     if let crossterm::event::KeyCode::Char('i') = key.code {
                         if key.modifiers == crossterm::event::KeyModifiers::NONE {
@@ -9109,7 +9152,6 @@ impl App {
                     let line = rel_y.saturating_sub(1) + self.prompt_state.prompt.scroll;
                     let column = rel_x as usize + self.prompt_state.prompt.horizontal_scroll;
                     self.prompt_state.prompt.set_cursor_at_column(line, column);
-                    self.prompt_state.prompt.focus();
                 }
             }
             ClickTarget::Sidebar => {
@@ -12680,6 +12722,134 @@ impl App {
             return InputMode::Insert;
         }
         self.ui_state.input_mode
+    }
+
+    /// Whether the focused side panel owns the keyboard right now.
+    ///
+    /// This is the exact condition `App::on_key` uses to decide whether the
+    /// panel is consulted before the composer. It lives here so the key chain
+    /// and the composer's cursor rules read one derivation instead of two
+    /// copies of the same panel rule — a second copy is where a drift would
+    /// start.
+    pub(crate) fn panel_owns_keyboard(&mut self) -> bool {
+        self.panel_host.is_visible_at(self.panel_host.placement())
+            && self.panel_host.is_focused()
+            && (self.ui_state.input_mode == InputMode::Normal
+                || crate::tui::commands::panels::panel_claims_insert_keys(self))
+    }
+
+    /// Whether the composer currently holds the keyboard.
+    ///
+    /// A derived fact, in the same shape as [`Self::composer_input_mode`] and
+    /// read from the same seams. It is a function of app state, never a stored
+    /// flag: the composer's old `focused` flag was dead in production
+    /// (`PromptWidget::blur()`'s only caller was a test), and a stored copy of
+    /// this fact is exactly the drift class the mode resolution was written to
+    /// kill.
+    ///
+    /// The order mirrors `App::on_key`'s priority chain — the first surface
+    /// that would consume a key is the surface that owns the keyboard:
+    ///
+    /// 1. **A mounted modal.** `on_key` short-circuits to `handle_dialog_key`
+    ///    while the focus manager is non-empty, so a dialog owns the keyboard
+    ///    outright.
+    /// 2. **A focused side panel.** `on_key` consults the panel before the
+    ///    composer, so a selected panel owns it. This is the "another panel is
+    ///    selected" case, and it is the one the user named: the composer must
+    ///    show no cursor at all while a panel has the keyboard.
+    /// 3. **The timeline overlay.** `on_key` returns to the timeline before it
+    ///    reaches the composer, so the keystrokes are going to the
+    ///    jump-to-message picker and not to the composer.
+    /// 4. **The editor's buffer**, when it is explicitly focused — the editor
+    ///    route keeps the composer editable otherwise, and the composer owns
+    ///    the keyboard in that case.
+    /// 5. **Otherwise the composer owns it.**
+    ///
+    /// The terminal box needs no arm of its own: it is a modal, so arm 1
+    /// already covers it. The overlays that claim only *some* keys — the tasks
+    /// list, the completion popup, the change review — are deliberately not
+    /// here: they let everything they do not claim fall through to the
+    /// composer, so the composer is still where the text goes.
+    pub fn composer_holds_keyboard(&mut self) -> bool {
+        if !self.focus_manager.is_empty() {
+            return false;
+        }
+        if self.panel_owns_keyboard() {
+            return false;
+        }
+        if self.ui_state.timeline_visible {
+            return false;
+        }
+        if self.editor_buffer_owns_keyboard() {
+            return false;
+        }
+        true
+    }
+
+    /// Run a composer claim that the key chain has already matched.
+    ///
+    /// The caller has established that the composer holds the keyboard, that
+    /// the resolved mode is Normal, and that this key belongs to the claim
+    /// table. This method decides what the claim *does*.
+    ///
+    /// A **reserved** verb does nothing, and the key is still consumed. That
+    /// is the fallthrough rule: a claimed letter belongs to the composer, so
+    /// it must not become an unrelated app action while its verb is pending.
+    /// The consumption is the behaviour.
+    ///
+    /// The one live verb is `i` (Helix insert-before-caret), and it is the
+    /// app's **existing** transition — the gesture that used to live in the
+    /// `None` arm of the key chain — moved into the table so that the table
+    /// is the one place that says who owns the key. It has to be live rather
+    /// than reserved: `i` is the app's only route back to Insert mode, so a
+    /// reserved `i` would strand the user in Normal mode with no way to type.
+    /// See `crate::tui::composer_claims` for the full argument.
+    fn run_composer_claim(&mut self, claim: &crate::tui::composer_claims::ComposerClaim) {
+        use crate::tui::composer_claims::{ClaimStatus, ComposerVerb};
+        match claim.status {
+            ClaimStatus::Live => {
+                if let ComposerVerb::InsertBefore = claim.verb {
+                    // Helix `i`: insert before the caret. The caret does not
+                    // move — the next character is typed at it — which is
+                    // exactly what the old gesture did.
+                    self.ui_state.input_mode = InputMode::Insert;
+                    debug_log!("composer claim: insert before the caret");
+                    return;
+                }
+                // A live verb with no behaviour is a table/runner
+                // disagreement, and it is a programming error rather than a
+                // user error. The key is consumed, and a consumed key with
+                // no behaviour is a dead key — the defect this table exists
+                // to prevent. Say so loudly rather than swallow it.
+                tracing::warn!(
+                    verb = ?claim.verb,
+                    "a live composer verb has no behaviour; the claim table and the runner disagree"
+                );
+            }
+            ClaimStatus::Reserved => {
+                // The key is consumed and nothing happens. That is the
+                // fallthrough rule: the letter is the composer's, so it
+                // must not become an unrelated app action while its verb
+                // is pending. The consumption is the behaviour.
+                debug_log!(
+                    "composer claim consumed with no live verb: {:?} ({:?})",
+                    claim.key,
+                    claim.verb
+                );
+            }
+        }
+    }
+
+    /// Whether the open editor buffer holds the keyboard.
+    ///
+    /// The editor route keeps the ordinary composer editable unless the user
+    /// explicitly focused the document, so "the editor is open" is not enough
+    /// — the buffer has to be the focused one.
+    fn editor_buffer_owns_keyboard(&self) -> bool {
+        matches!(
+            self.ui_state.routes.current(),
+            crate::tui::route::Route::Editor
+        ) && self.editor_state.buffer_focused(self.ui_state.input_mode)
     }
 
     /// The side panel that can hold the currently open box, if any.

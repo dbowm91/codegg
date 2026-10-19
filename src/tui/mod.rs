@@ -108,6 +108,7 @@ pub mod chat_browser;
 pub mod command;
 pub mod commands;
 pub mod components;
+pub mod composer_claims;
 pub mod file_diff;
 pub mod file_icons;
 pub mod helix_selection;

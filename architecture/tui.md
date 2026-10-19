@@ -1653,6 +1653,212 @@ must never be able to move the keyboard by describing it — a badge that forced
 `input_mode` to match what it displayed would make the state it reported into
 the state it caused.
 
+**The composer's caret is derived from the same two facts, and there is no
+`focused` flag.** `App::composer_holds_keyboard` answers "does the composer
+hold the keyboard", and `PromptWidget` has no focus flag to disagree with it:
+the widget's old `focused` field was **dead in production** — `PromptWidget::blur()`'s
+only caller in the tree was a test — so "show no cursor while another surface
+has the keyboard" was unimplementable as written, and a flag wired to a stored
+value would have reintroduced exactly the drift the mode resolution exists to
+kill.
+
+Ownership is a **function of app state**, derived in the same shape as
+`composer_input_mode` and read from the same seams. Its order mirrors
+`App::on_key`'s priority chain — the first surface that would consume a key is
+the surface that owns the keyboard:
+
+| Order | Holder | Seam | Answers |
+|---|---|---|---|
+| 1 | **mounted modal** | `App::focus_manager` | a modal owns the keyboard outright; `on_key` short-circuits to `handle_dialog_key` |
+| 2 | **focused side panel** | `App::panel_owns_keyboard` | the same condition `on_key` uses to consult the panel before the composer |
+| 3 | **the timeline overlay** | `App::ui_state.timeline_visible` | the jump-to-message picker claims the keys before the composer sees them |
+| 4 | **the editor's buffer** | `App::editor_buffer_owns_keyboard` | the editor route keeps the composer editable unless the document was explicitly focused |
+| 5 | **otherwise** | — | the composer owns the keyboard |
+
+`App::panel_owns_keyboard` is the extracted form of the `panel_active`
+condition that used to be inline in `on_key`. Extracting it is what lets the
+key chain and the caret rules read **one** derivation: a second copy of the
+panel rule is where a drift would start. The terminal box needs no arm of its
+own — it is a modal, so arm 1 already covers it. The overlays that claim only
+*some* keys — the tasks list, the completion popup, the change review — are
+deliberately absent: they let everything they do not claim fall through to the
+composer, so the composer is still where the text goes.
+
+The caret itself has exactly two shapes, and they are mutually exclusive by
+construction:
+
+| Mode | Caret | Source |
+|---|---|---|
+| **Insert** | blinking | the **terminal's own cursor**, positioned with `Frame::set_cursor_position` |
+| **Normal** | solid block | painted by `PromptWidget` at the caret cell |
+
+The blink is the terminal's, not the app's. The app runs **one** animation
+cadence (the 100 ms working-strip spinner, one `ActivityPhase` enum), and a
+second timer for a blinking caret is not allowed; ratatui hides the terminal
+cursor whenever a frame did not position it, so "position nothing" is both the
+correct and the sufficient way to show no terminal cursor. A terminal
+configured not to blink therefore shows a steady Insert cursor — the
+Insert/Normal distinction is enforced by **shape**, not by blink.
+
+`PromptWidget::caret_cell` is the single computation of "where is the caret on
+screen", used by both the painted block and the terminal-cursor positioning,
+so the two cannot disagree about the caret's position. It returns `None` when
+the caret is not on screen (its line scrolled off the top, or the area is too
+small), and a `None` caret cell means "no terminal cursor", not a panic.
+
+The rule the badge and the caret share, stated once: **when the composer holds
+the keyboard, the badge says `[INS]` exactly when the terminal cursor is
+positioned and `[NOR]` exactly when the block is painted; when the composer
+does not hold the keyboard, neither caret is present at all.** The badge
+reports the mode, and the caret reports the mode *and* the ownership, and both
+read the same derivation.
+
+**The composer owns a closed set of Normal-mode letters, and a claimed letter
+never falls through.** `src/tui/composer_claims.rs` is the single, enumerable
+statement of what the composer owns. The app's global binding map
+(`src/tui/input.rs`) is consulted only for letters the composer does **not**
+claim.
+
+The rule that makes the table worth having is the **fallthrough rule**:
+
+> A claimed letter is consumed by the composer even when the composer's verb
+> is currently a no-op. It must not silently become an unrelated app action.
+
+The interactive terminal panel already solved the same problem on a
+non-document surface, and its dispatch comment records the failure mode
+verbatim — *"a focused panel is consulted before Normal-mode actions, so an
+unclaimed `d` would silently become `OpenDiff` and never delete anything."*
+The panel's answer is to claim `d` unconditionally, even with an empty
+selection. The composer takes the same answer, and takes it **before any verb
+exists**.
+
+Every verb in the table is **reserved** today, with one exception. M004
+(motion), M005 (selection and clipboard) and M006 (undo, redo, insert
+transitions) land the behaviour. A reserved claim is still consumed, so a
+claimed letter cannot leak to an app-level action while its verb is pending.
+That is why the table is established *before* the verbs: the leak is cheapest
+to prevent now and most expensive to discover later.
+
+**`i` is the exception, and it is live.** `i` is the app's **only** route back
+to Insert mode: the transition is not a binding at all, it is the `None` arm
+of the key chain, reached when a key resolves to no action. Claiming `i` and
+leaving the verb reserved would consume the key, do nothing, and strand the
+user in Normal mode with no way to type. The verb is therefore live, and it
+is the app's **existing** gesture moved into the table — Helix `i` is
+"insert before the caret", the caret stays where it is, and the next character
+is typed at it, which is exactly what the gesture did. The table is the one
+place that says who owns the key; the `None` arm keeps the gesture for the
+surfaces the composer does not own (the editor route with its buffer
+unfocused, a focused panel, the Workspace view's chat pane).
+
+| Letter | Verb | Condition | Lands with |
+|---|---|---|---|
+| `b` | word back | always | M004 |
+| `d` | delete selection | always | M005 |
+| `e` | word end | always | M004 |
+| `i` | insert before the caret | always | **live** — the app's existing transition |
+| `j` | line down | **composer buffer has more than one line** | M004 |
+| `k` | line up | **composer buffer has more than one line** | M004 |
+| `o` | open line below | always | M006 |
+| `p` | paste | always | M005 |
+| `u` | undo | always | M006 |
+| `U` | redo | always (both encodings) | M006 |
+| `v` | select characters | always | M005 |
+| `w` | word forward | always | M004 |
+| `x` | select line | always | M005 |
+
+Three letters are **not** in the table, and each absence is deliberate.
+`space` keeps opening the help menu — ADR-0042's amendment puts the Helix
+copy gesture in the box that chord opens, so the composer claims neither
+`space` nor `y`, and one gesture has one owner. `g` keeps `GoToTop`; if a
+later milestone claims it, that milestone owns the re-spelling. `h` and `l`
+are not re-spelled: the existing actions already move the composer caret,
+which is exactly Helix `h` and `l`.
+
+`j` and `k` are the table's one **conditional** pair, and the condition is
+written on the entry rather than inferred. They are claimed only when the
+composer buffer has more than one line; on a single-line buffer they fall
+through to transcript scroll unchanged, which is why their app-level binding
+survives. A condition that is not written down is how a leak reappears: a
+claim that quietly stops applying looks exactly like a claim that was never
+made.
+
+The claim step is consulted **before** the global binding map, in the
+composer branch of the key chain, so it inherits the chain's priority: a
+mounted modal, a focused side panel, the Workspace view and the editor route
+are all consulted first. With a dialog open, a claimed letter reaches the
+dialog. The Workspace view is excluded for the same reason it owns its own
+Normal-mode keys: its dashboard filter is a different surface with a
+different composer, and a claimed letter there would stop the filter
+accepting it. The gate is the **resolved** mode and the derived ownership
+(`composer_holds_keyboard`, `composer_input_mode`) — never the raw
+`UiState::input_mode` field.
+
+A claimed **capital** letter answers to both encodings. Terminals disagree
+about whether a shifted key carries the `SHIFT` modifier, and the app already
+binds some capitals twice for that reason (`insert_panel_direction_bindings`).
+`U` follows the same convention, or the redo verb would work on one terminal
+and silently do nothing on another. A lowercase claim is the bare key only:
+the shifted spelling of a lowercase letter is a *different* character, and it
+is not the composer's.
+
+**Three app-level chords moved, and the capabilities did not.** The composer
+claimed the letters `x`, `d` and `i`, so the actions that owned them moved to
+chords that are not letters:
+
+| Action | Was | Is |
+|---|---|---|
+| stop / resume the turn | `x` | `Ctrl+Alt+X` |
+| open diff | `d` (vim map) | `Ctrl+Alt+D` |
+| focus prompt | `i` (vim map) | `Ctrl+Alt+E` |
+
+`Ctrl+Alt+<letter>` is the app's legacy-safe chord family: the terminal
+delivers `ESC` + the control byte, which crossterm reports as the letter with
+CONTROL|ALT, the same shape as the six chords that already exist. `Ctrl+Alt+I`
+is **not** a usable spelling — the terminal delivers it as `ESC` + `0x09`,
+which crossterm reports as `Tab` with ALT, so the verb would be unreachable on
+every terminal; `Ctrl+Alt+E` is the deliverable alternative. Each chord is in
+**both** maps, so the capability does not depend on which map is active, and
+each chord's `(modifiers, key)` pair is not one the table claims, so the
+composer cannot take it back.
+
+**The default map's bare `/` stays.** The composer does not claim `/`, so that
+spelling has no conflict with the claim table — ADR-0042's conflict table names
+the *vim* map's `i` as the focus-prompt conflict, and the re-spelling exists
+because the composer claims that letter. The plan's invariant is explicit: *a
+letter the composer does not claim must resolve to the same app action it
+resolves to today*, so `/` must keep resolving to `FocusPrompt`. It is also
+load-bearing beyond the action: `/` is the gesture that **enters command
+mode**, and command mode is what makes the rest of a typed slash command land
+as text. Removing it took away "type `/panels` from Normal mode and press
+Enter" — the only way back into the panel manager from a focused panel, which
+owns every key by contract (`tests/tui_side_panels.rs`).
+
+Two consequences of the move are recorded rather than hidden. `ToggleAgentRun`
+left `is_normal_only`, because its only spelling is now a chord, and a chord
+cannot be composed as text; the entry used to exist for the bare `x`. And the
+guard's rule for a re-spelled action is "not a **claimed** key" rather than "not
+a bare character": the three old letters — `x`, `d` and `i` — are all claimed,
+so the claim rule already forbids their bare spellings, while a bare spelling
+of a letter the composer does not claim is exactly what the invariant above
+requires to keep working.
+
+`scripts/check_tui_composer_key_authority.py` polices the table. It reads the
+claim table and the two binding maps, and fails when a letter is claimed
+twice, when a claimed letter can still reach an app-level action, when a
+re-spelled chord is missing from a map, when a re-spelled action has no chord
+to reach it by or still answers to a claimed key, when a capital claim misses
+an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only`
+entry. It carries a `--self-test` that injects each
+violation class, and it is wired into `scripts/verify.sh quick` and CI.
+
+The composer, the editor and the terminal panel now have three separate key
+tables. They **share** selection semantics and geometry — `helix_selection.rs`
+is one module — but they do **not** share key ownership. Each surface owns
+its own keys, and each has its own guard: the editor's
+`check_tui_editor_key_authority.py` and the composer's
+`check_tui_composer_key_authority.py` are siblings, not one guard.
+
 **The VT screen retains a bounded history, and the viewport is a controller
 concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to
 `vt100::Parser::new`. A zero-length history is not a tuning choice: it destroys

@@ -164,7 +164,20 @@ pub enum McpClientType {
 
 pub struct McpService {
     servers: HashMap<String, McpServer>,
+    host_scope_tokens: HashMap<String, String>,
     oauth: OAuthManager,
+}
+
+fn supports_host_scoped_eggsearch(version: Option<&str>) -> bool {
+    version
+        .and_then(|version| {
+            semver::Version::parse(version.trim_start_matches(['v', 'V']).trim()).ok()
+        })
+        .is_some_and(|version| {
+            semver::VersionReq::parse(">=0.4.4, <0.5.0")
+                .expect("static Eggsearch host-scope compatibility range")
+                .matches(&version)
+        })
 }
 
 /// Per-server policy for how raw MCP tools should be exposed to the
@@ -230,6 +243,7 @@ impl McpService {
     pub fn new() -> Self {
         Self {
             servers: HashMap::new(),
+            host_scope_tokens: HashMap::new(),
             oauth: OAuthManager::new(),
         }
     }
@@ -261,6 +275,7 @@ impl McpService {
             .collect();
         Self {
             servers,
+            host_scope_tokens: self.host_scope_tokens.clone(),
             oauth: OAuthManager::new(),
         }
     }
@@ -299,6 +314,24 @@ impl McpService {
             client: McpClientType::Local(Arc::new(RwLock::new(client))),
         };
         self.servers.insert(key, server);
+        Ok(())
+    }
+
+    /// Start a private CodeGG-managed Eggsearch child with a per-process
+    /// secret used to authenticate host-local-scope request metadata.
+    pub async fn connect_stdio_host_scoped(
+        &mut self,
+        name: &str,
+        command: &str,
+        args: &[String],
+        mut env: HashMap<String, String>,
+        timeout: u64,
+    ) -> Result<(), McpError> {
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        env.insert("CODEGG_EGGSEARCH_HOST_SCOPE_TOKEN".into(), token.clone());
+        self.connect_stdio(name, command, args, env, timeout)
+            .await?;
+        self.host_scope_tokens.insert(name.to_string(), token);
         Ok(())
     }
 
@@ -363,6 +396,7 @@ impl McpService {
         }
         server.status = McpServerStatus::Disconnected;
         server.tools.clear();
+        self.host_scope_tokens.remove(name);
         Ok(())
     }
 
@@ -478,20 +512,81 @@ impl McpService {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolCallResult, McpError> {
+        self.call_tool_structured_inner(server, tool, arguments, None, false)
+            .await
+    }
+
+    /// Call a tool with authenticated, host-injected local retrieval scope.
+    /// This is intentionally available only for a child started by
+    /// `connect_stdio_host_scoped`; remote and ordinary MCP clients cannot
+    /// mint filesystem scope.
+    pub async fn call_tool_structured_host_scoped(
+        &self,
+        server: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+        root: Option<&std::path::Path>,
+    ) -> Result<McpToolCallResult, McpError> {
+        self.call_tool_structured_inner(server, tool, arguments, root, true)
+            .await
+    }
+
+    async fn call_tool_structured_inner(
+        &self,
+        server: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+        root: Option<&std::path::Path>,
+        host_scoped: bool,
+    ) -> Result<McpToolCallResult, McpError> {
+        let local_capable_tool = matches!(tool, "repo_search" | "repo_fetch" | "repo_map");
+        // Even raw MCP calls must not inherit the managed child's configured
+        // roots. Only native CodeGG wrappers use the explicit host-scoped
+        // method with an authorized root; every other caller receives the
+        // authenticated disabled scope.
+        let host_scoped =
+            host_scoped || (local_capable_tool && self.host_scope_tokens.contains_key(server));
         let srv = self
             .servers
             .get(server)
             .ok_or_else(|| McpError::Server(format!("server {server} not found")))?;
 
+        if host_scoped
+            && (root.is_some() || self.host_scope_tokens.contains_key(server))
+            && !supports_host_scoped_eggsearch(srv.server_version.as_deref())
+        {
+            return Err(McpError::Server(
+                "Eggsearch does not advertise the supported host-scoped retrieval protocol (0.4.4 through 0.4.x)".into(),
+            ));
+        }
+
         match &srv.client {
             McpClientType::Local(client) => {
+                let meta = if host_scoped {
+                    let token = self.host_scope_tokens.get(server).ok_or_else(|| {
+                        McpError::Server(format!(
+                            "server {server} is not a host-scoped local child"
+                        ))
+                    })?;
+                    Some(serde_json::json!({"codegg/host-local-scope": {
+                        "root": root,
+                        "token": token
+                    }}))
+                } else {
+                    None
+                };
                 client
                     .write()
                     .await
-                    .call_tool_structured(tool, arguments)
+                    .call_tool_structured_with_meta(tool, arguments, meta)
                     .await
             }
             McpClientType::Remote(client) => {
+                if host_scoped && root.is_some() {
+                    return Err(McpError::Server(
+                        "host-scoped local retrieval requires a managed stdio child".into(),
+                    ));
+                }
                 client
                     .write()
                     .await
@@ -499,6 +594,11 @@ impl McpService {
                     .await
             }
             McpClientType::Mock(handler) => {
+                if host_scoped && root.is_some() {
+                    return Err(McpError::Server(
+                        "host-scoped local retrieval is unavailable for mock MCP clients".into(),
+                    ));
+                }
                 let text = (handler
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()))(
@@ -975,6 +1075,16 @@ impl Default for McpService {
 mod tests {
     use super::*;
     use crate::error::McpError;
+
+    #[test]
+    fn host_scoped_eggsearch_protocol_is_version_gated() {
+        assert!(!supports_host_scoped_eggsearch(Some("0.4.3")));
+        assert!(!supports_host_scoped_eggsearch(Some("v0.4.3")));
+        assert!(supports_host_scoped_eggsearch(Some("0.4.4")));
+        assert!(supports_host_scoped_eggsearch(Some("0.4.99")));
+        assert!(!supports_host_scoped_eggsearch(Some("0.5.0")));
+        assert!(!supports_host_scoped_eggsearch(None));
+    }
 
     fn mock_handler(_tool: &str, _args: serde_json::Value) -> Result<String, McpError> {
         Ok("ok".to_string())

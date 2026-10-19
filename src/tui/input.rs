@@ -541,7 +541,7 @@ impl ActionKey {
             Self::SelectModel => "Select model",
             Self::ClearSession => "Clear session",
             Self::NewSession => "New session",
-            Self::ToggleAgentRun => "Stop / resume agent (x)",
+            Self::ToggleAgentRun => "Stop / resume agent (Ctrl+Alt+X)",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
             Self::OpenPanelManager => "Open panel manager (Shift+S)",
@@ -552,7 +552,7 @@ impl ActionKey {
             Self::ToggleSection => "Toggle section",
             Self::CloseSession => "Close session",
             Self::Help => "Show help",
-            Self::FocusPrompt => "Focus prompt",
+            Self::FocusPrompt => "Focus prompt (Ctrl+Alt+E)",
             Self::StashPrompt => "Stash prompt",
             Self::RestorePrompt => "Restore prompt",
             Self::CopyMessage => "Copy message",
@@ -579,7 +579,7 @@ impl ActionKey {
             Self::StopTts => "Stop TTS",
             Self::ToggleFullscreen => "Toggle fullscreen",
             Self::TogglePermissionMode => "Toggle permission mode",
-            Self::OpenDiff => "Open diff",
+            Self::OpenDiff => "Open diff (Ctrl+Alt+D)",
             Self::GoToTop => "Go to top",
             Self::GoToBottom => "Go to bottom",
             Self::OpenProjectPicker => "Open project picker (Shift+F)",
@@ -664,11 +664,14 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // above prevent.
             | InputAction::NextSubagentTab
             | InputAction::PreviousSubagentTab
-            | InputAction::CloseSubagentTab
-            // Already covered by the bare-char rule, but stated here because
-            // it is load-bearing: `x` must never be claimed while composing,
-            // or typing a word containing it would stop the agent.
-            | InputAction::ToggleAgentRun
+            | InputAction::CloseSubagentTab // `ToggleAgentRun` used to be listed here because its only
+                                            // spelling was the bare letter `x`, and a bare letter is skipped
+                                            // in Insert mode by the `is_bare_char` rule above — the listing
+                                            // was belt-and-braces for a key the user types constantly. The
+                                            // composer now claims `x` (ADR-0042) and the action's only
+                                            // spelling is the `Ctrl+Alt+X` chord, so the entry is gone rather
+                                            // than the bug being documented: a chord cannot be composed as
+                                            // text, so it is already unambiguous in Insert mode.
     )
 }
 
@@ -782,11 +785,49 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // `q` quits from Normal mode. Insert mode skips bare-char bindings, so
     // this costs nothing while typing.
     map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
-    // `x` stops a running turn and resumes a stopped one. Bare char, so it is
-    // Normal-mode only and can never shadow an `x` typed into the composer.
+    // `x` stops a running turn and resumes a stopped one. It used to be a
+    // bare `x`, which the composer now claims for Helix line-select
+    // (ADR-0042), so the action moved to a chord that is not a letter.
+    //
+    // `Ctrl+Alt+X` is the legacy-safe chord shape: the terminal delivers
+    // `ESC` + `0x18`, which crossterm reports as `Char('x')` with
+    // CONTROL|ALT — the same family as `Ctrl+Alt+B` and `Ctrl+Alt+N`. A
+    // bare `Ctrl+X` would be a single byte and `Ctrl+Alt+X` degrades to
+    // nothing rather than to a different action, so a stray press cannot
+    // stop a turn the user did not mean to stop.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('x')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('x'),
+        ),
         InputAction::ToggleAgentRun,
+    );
+    // `d` opens the diff view. The composer claims `d` for Helix
+    // delete-selection (ADR-0042), so the action moved to a chord that is
+    // not a letter. `Ctrl+Alt+D` keeps the letter, so the gesture stays
+    // recognisable, and the bare `Ctrl+D` twin keeps its own meaning
+    // (page down) rather than aliasing this one.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('d'),
+        ),
+        InputAction::OpenDiff,
+    );
+    // `i` focuses the prompt. The composer claims `i` for Helix
+    // insert-before-caret (ADR-0042), so the action moved to a chord that is
+    // not a letter. `Ctrl+Alt+I` is **not** that chord: the terminal
+    // delivers `ESC` + `0x09`, which crossterm reports as `Tab` with ALT,
+    // so the verb would be unreachable on every terminal. The chord that
+    // works is `Ctrl+Alt+E` — a legacy-safe letter whose `ESC` + `0x05`
+    // arrives as `Char('e')` with CONTROL|ALT — and it is bound in the vim
+    // map too, so the action is reachable whichever map is active.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('e'),
+        ),
+        InputAction::FocusPrompt,
     );
     map.insert((KeyModifiers::NONE, KeyCode::Up), InputAction::NavigateUp);
     map.insert(
@@ -898,6 +939,26 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('a')),
         InputAction::SwitchAgent,
     );
+    // `/` opens the command palette from Normal mode, and it **stays**.
+    //
+    // The composer does not claim `/`, so this spelling has no conflict with
+    // the claim table: ADR-0042's conflict table names the *vim* map's `i` as
+    // the focus-prompt conflict, and the re-spelling exists because the
+    // composer claims that letter. `/` is not a claimed key, and the plan's
+    // invariant — "a letter the composer does not claim must resolve to the
+    // same app action it resolves to today" — requires it to keep resolving
+    // to `FocusPrompt`.
+    //
+    // It is also load-bearing beyond the action: `/` is the gesture that
+    // enters command mode, and command mode is what makes the rest of a
+    // typed slash command land as text. Removing it took away "type
+    // `/panels` from Normal mode and press Enter" — the only way back into
+    // the panel manager from a focused panel, which owns every key by
+    // contract (`tests/tui_side_panels.rs`).
+    //
+    // The focus-prompt **capability** moved to `Ctrl+Alt+E` in both maps, and
+    // the vim map's `i` spelling is gone, which is the spelling the ADR
+    // actually named.
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('/')),
         InputAction::FocusPrompt,
@@ -1084,10 +1145,35 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::NONE, KeyCode::Char('k')),
         InputAction::NavigateUp,
     );
+    // Stop / resume the running turn. The default map's bare `x` is gone:
+    // the composer claims `x` for Helix line-select (ADR-0042), so the
+    // action moved to a chord that is not a letter. The chord is in **both**
+    // maps, so the capability does not depend on which map is active.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('x'),
+        ),
+        InputAction::ToggleAgentRun,
+    );
     map.insert((KeyModifiers::NONE, KeyCode::Char('h')), InputAction::Left);
     map.insert((KeyModifiers::NONE, KeyCode::Char('l')), InputAction::Right);
+    // The vim map's bare `i` (focus prompt) and bare `d` (open diff) are
+    // gone: the composer claims both letters for Helix insert-before-caret
+    // and delete-selection (ADR-0042). The actions moved to chords that are
+    // not letters, and the chords are bound in **both** maps so the
+    // capability is reachable whichever map is active.
+    //
+    // `Ctrl+Alt+I` would be the mnemonic spelling, but the terminal delivers
+    // it as `ESC` + `0x09`, which crossterm reports as `Tab` with ALT — the
+    // verb would be unreachable on every terminal. `Ctrl+Alt+E` is the
+    // deliverable alternative (`ESC` + `0x05` arrives as `Char('e')` with
+    // CONTROL|ALT), and "E" reads as "e\nter" the command palette.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('i')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('e'),
+        ),
         InputAction::FocusPrompt,
     );
     // Vim normal mode equivalent of the documented "Space a" concept.
@@ -1206,8 +1292,14 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         InputAction::ToggleFullscreen,
     );
 
+    // The vim map's bare `d` (open diff) is gone: the composer claims `d`
+    // for Helix delete-selection (ADR-0042). The action moved to a chord
+    // that is not a letter, and the chord is bound in both maps.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('d')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('d'),
+        ),
         InputAction::OpenDiff,
     );
 
@@ -1505,7 +1597,10 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "j/k",
             action: "Navigate up/down",
-            condition: None,
+            // The composer claims `j` and `k` when its buffer has more than
+            // one line (ADR-0042), so transcript scroll is what is left of
+            // the pair on a single-line buffer.
+            condition: Some("single-line composer buffer"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1562,9 +1657,9 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "i",
+            key: "Ctrl+Alt+E",
             action: "Focus prompt (insert mode)",
-            condition: Some("vim mode"),
+            condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1586,9 +1681,15 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "d",
+            key: "Ctrl+Alt+D",
             action: "Open diff",
-            condition: Some("vim mode"),
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+Alt+X",
+            action: "Stop / resume agent (toggle the running turn)",
+            condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,

@@ -18,6 +18,7 @@ use crate::permission::{PermissionDecisionReceipt, PermissionResult};
 use crate::provider::ToolCall;
 use crate::tool::question::{format_question_answers, parse_question_questions};
 use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,14 +47,86 @@ pub(super) const MAX_MODEL_TOOL_TIMEOUT: Duration = Duration::from_secs(3600);
 /// finishes tearing down.
 pub(super) const TOOL_TIMEOUT_GRACE: Duration = Duration::from_secs(5);
 
-/// Head start the broker's watchdog gets over the tool's own deadline.
-///
-/// The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
-/// around the tool invocation, so it must expire strictly after the tool's
-/// internal deadline or it preempts the tool before it can return the output it
-/// collected while being killed. Expressed in milliseconds because that is the
-/// unit `BrokerContext::timeout_ms` uses.
-const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
+/// Batch-local queue wait is independently bounded from a tool's execution
+/// deadline. A long-running first call must not consume the next call's run
+/// budget while it is still waiting for a permit.
+const TOOL_BATCH_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct QueuedCallGuard {
+    depth: Arc<AtomicUsize>,
+    tool_id: String,
+    terminal: bool,
+}
+
+impl Drop for QueuedCallGuard {
+    fn drop(&mut self) {
+        self.depth.fetch_sub(1, Ordering::AcqRel);
+        if !self.terminal {
+            tracing::debug!(tool = %self.tool_id, phase = "cancelled", "queued tool admission cancelled");
+        }
+    }
+}
+
+async fn acquire_batch_permit(
+    semaphore: Arc<tokio::sync::Semaphore>,
+    queue_depth: Arc<AtomicUsize>,
+    tool_id: String,
+    admission_timeout: Duration,
+    effective_parallelism: usize,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ToolError> {
+    let queued_at = Instant::now();
+    let depth = queue_depth.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut queue_guard = QueuedCallGuard {
+        depth: queue_depth.clone(),
+        tool_id: tool_id.clone(),
+        terminal: false,
+    };
+    tracing::debug!(
+        tool = %tool_id,
+        phase = "queued",
+        queue_depth = depth,
+        effective_parallelism,
+        admission_timeout_ms = admission_timeout.as_millis() as u64,
+        "tool batch admission"
+    );
+    let permit = match tokio::time::timeout(admission_timeout, semaphore.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            queue_guard.terminal = true;
+            drop(queue_guard);
+            return Err(ToolError::Execution(
+                "semaphore closed during tool execution".into(),
+            ));
+        }
+        Err(_) => {
+            queue_guard.terminal = true;
+            let waited_ms = queued_at.elapsed().as_millis() as u64;
+            tracing::warn!(
+                tool = %tool_id,
+                phase = "admission_timed_out",
+                waited_ms,
+                admission_timeout_ms = admission_timeout.as_millis() as u64,
+                effective_parallelism,
+                queue_depth = queue_depth.load(Ordering::Acquire),
+                "tool batch admission deadline expired"
+            );
+            return Err(ToolError::Timeout(format!(
+                "tool '{tool_id}' timed out waiting in the tool batch queue after {waited_ms}ms (admission limit {}ms; effective parallelism {effective_parallelism}); it did not start executing",
+                admission_timeout.as_millis()
+            )));
+        }
+    };
+    queue_guard.terminal = true;
+    drop(queue_guard);
+    tracing::debug!(
+        tool = %tool_id,
+        phase = "admitted",
+        admission_wait_ms = queued_at.elapsed().as_millis() as u64,
+        effective_parallelism,
+        "tool batch admission"
+    );
+    Ok(permit)
+}
 
 /// Deadline handed to the broker watchdog for a tool whose own deadline is
 /// `tool_timeout_ms`.
@@ -66,10 +139,6 @@ const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
 ///
 /// Returning `None` for a `None` input leaves the broker on its own configured
 /// `default_timeout_ms`, which is an independent value.
-fn broker_watchdog_timeout_ms(tool_timeout_ms: Option<u64>) -> Option<u64> {
-    tool_timeout_ms.map(|ms| ms.saturating_add(BROKER_WATCHDOG_GRACE_MS))
-}
-
 /// Resolved timeout for one tool call plus how it was arrived at.
 ///
 /// [`clamped`](Self::clamped) lets the timeout message tell the model its
@@ -351,6 +420,10 @@ impl AgentLoop {
             tc.id.as_str(),
             accepted_call_ordinal,
         );
+        let path_policy_fingerprint = self
+            .workspace_service_lease
+            .as_ref()
+            .map(|lease| lease.path_policy().authority_fingerprint());
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
@@ -385,10 +458,27 @@ impl AgentLoop {
             // These are the actual permission/path-policy decision
             // values, not synthesized from identity strings.
             decision_id: Some(receipt.decision_id.clone()),
-            decision_outcome: Some(receipt.outcome.as_str().into()),
-            workspace_path_policy_id: None,
-            workspace_path_policy_revision: None,
-            permission_policy_revision: receipt.policy_revision.clone(),
+            // Tool Program's durable authority contract distinguishes an
+            // accepted decision as `allowed`; PermissionLevel's display
+            // vocabulary is `allow`. Normalize the trusted receipt here so
+            // the native Tool Program path consumes the same accepted
+            // decision without weakening its fail-closed validation.
+            decision_outcome: Some(
+                match &receipt.outcome {
+                    crate::permission::PermissionLevel::Allow => "allowed",
+                    crate::permission::PermissionLevel::Deny => "denied",
+                    crate::permission::PermissionLevel::Ask => "pending",
+                }
+                .into(),
+            ),
+            workspace_path_policy_id: path_policy_fingerprint.clone(),
+            workspace_path_policy_revision: path_policy_fingerprint,
+            permission_policy_revision: receipt
+                .policy_revision
+                .clone()
+                .or_else(|| snapshot.policy_revision().map(str::to_owned)),
+            // The resolved agent identity is host-owned turn state. It is
+            // never copied from tool arguments or provider output.
             principal_identity: Some(agent_id),
             // M003 origin: stamped by the agent loop via `apply_origin`
             // once turn attribution is threaded through (M005).
@@ -1402,7 +1492,6 @@ impl AgentLoop {
             tracing::debug!("drained {} stale file-change events", drained.len());
         }
 
-        let tool_timeout_secs = self.tool_timeout();
         let max_parallel = self.max_parallel_tools();
         const MAX_PARALLEL_DEFAULT: usize = 100;
         let mut effective_max = if max_parallel == usize::MAX {
@@ -1429,7 +1518,7 @@ impl AgentLoop {
             );
             effective_max = 1;
         }
-        let permit_timeout = Duration::from_secs(tool_timeout_secs);
+        let admission_timeout = TOOL_BATCH_ADMISSION_TIMEOUT;
         let regular_tool_count = allowed_tools.len();
         let registry = &self.services.tool_registry;
 
@@ -1545,26 +1634,13 @@ impl AgentLoop {
 
         let mut results = Vec::with_capacity(regular_tool_count);
         let sem = Arc::new(tokio::sync::Semaphore::new(effective_max));
+        let batch_queue_depth = Arc::new(AtomicUsize::new(0));
         let mut futures = Vec::with_capacity(regular_tool_count);
         let hook_registry = self.services.hook_registry.as_ref().map(Arc::clone);
         let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
         let event_store = self.services.event_store.clone();
         let tool_broker = Arc::clone(&self.services.tool_broker);
-        let authority_ref = {
-            // M012-F01: Derive authority from the agent's real identity.
-            // The agent_id is the current agent's name (e.g. "code", "plan"),
-            // replacing the legacy synthetic session-based format.
-            let agent_id = &self.state.current_agent;
-            format!("agent:{}", agent_id)
-        };
-        // M012-F01: Derive workspace identity from the workspace root path.
-        let agent_workspace_id = {
-            use sha2::Digest;
-            format!(
-                "ws:{:x}",
-                sha2::Sha256::digest(self.workspace_root.to_string_lossy().as_bytes())
-            )
-        };
+        let agent_workspace_id = self.workspace_id.as_ref().map(ToString::to_string);
         let agent_id = self.state.current_agent.clone();
         let batch_snapshot_for_ctx = batch_snapshot.clone();
         for (orig_idx, tc, receipt, command_preflight) in regular_tools {
@@ -1593,47 +1669,32 @@ impl AgentLoop {
             );
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
+            let batch_queue_depth = Arc::clone(&batch_queue_depth);
             let id = tc_arc.id.clone();
             let tool_name = tc_arc.name.clone();
             let hook_registry = hook_registry.clone();
             let plugin_service = plugin_service.clone();
             let session_id = self.session_id.clone();
-            let authority_ref = authority_ref.clone();
             let agent_workspace_id = agent_workspace_id.clone();
             let agent_id = agent_id.clone();
             let idx_for_results = orig_idx;
             let event_store = event_store.clone();
             let tool_broker = Arc::clone(&tool_broker);
             futures.push(async move {
-                // Bound the permit wait. This await sits outside the
-                // per-tool `timeout` (which wraps `exec_fut`, constructed
-                // only after a permit is held), so an unbounded acquire
-                // turns permit starvation into a permanent, silent stall of
-                // the whole batch — `join_all` below then never returns.
-                // Surface it as a typed timeout instead.
-                let permit = match tokio::time::timeout(permit_timeout, sem.acquire()).await {
-                    Ok(Ok(p)) => p,
-                    Ok(Err(_)) => {
-                        return (
-                            idx_for_results,
-                            id,
-                            Err(ToolError::Execution(
-                                "semaphore closed during tool execution".into(),
-                            )),
-                        );
-                    }
-                    Err(_) => {
-                        let waited = permit_timeout.as_secs();
-                        tracing::warn!(
-                            tool = %id,
-                            timeout_secs = waited,
-                            "tool permit wait exceeded the tool timeout; treating as stalled"
-                        );
-                        let message = format!(
-                            "tool '{id}' did not acquire an execution permit within {waited}s"
-                        );
-                        return (idx_for_results, id, Err(ToolError::Timeout(message)));
-                    }
+                // Admission and execution have separate clocks. Cancellation
+                // of the owning batch drops this future and the guard, so a
+                // queued call cannot acquire a later permit after cancellation.
+                let permit = match acquire_batch_permit(
+                    Arc::clone(&sem),
+                    Arc::clone(&batch_queue_depth),
+                    id.to_string(),
+                    admission_timeout,
+                    effective_max,
+                )
+                .await
+                {
+                    Ok(permit) => permit,
+                    Err(error) => return (idx_for_results, id, Err(error)),
                 };
 
                 let pre_ctx = crate::hooks::HookContext {
@@ -1742,6 +1803,7 @@ impl AgentLoop {
                 }
 
                 let tool_start = Instant::now();
+                tracing::debug!(tool = %id, phase = "executing", "tool batch execution");
                 let risk = classify_tool_risk(&tool_name, &effective_args);
                 {
                     let meta = crate::session::events::EventMeta::new(&session_id);
@@ -1767,12 +1829,18 @@ impl AgentLoop {
 
                 let result = {
                     let tc_inner = Arc::clone(&tc_arc);
-                    if registry.get(&tc_inner.name).is_none() {
-                        Err(ToolError::NotFound(tc_inner.name.to_string()))
-                    } else {
+                    if let Some(tool) = registry.get(&tc_inner.name) {
+                        let contract = tool.contract(
+                            tc_inner.name.as_str(),
+                            tool.parameters(),
+                        );
+                        let outer_retry_allowed = contract.idempotency
+                            == crate::tool::contract::IdempotencyClass::Idempotent
+                            && contract.retry_policy.max_retries > 0;
+                        let outer_attempts = if outer_retry_allowed { 2 } else { 1 };
                         let mut last_result: Result<String, ToolError> =
                             Err(ToolError::NotFound("no attempts made".into()));
-                        for attempt in 0..2 {
+                        for attempt in 0..outer_attempts {
                             if attempt > 0 {
                                 tokio::time::sleep(Duration::from_millis(500)).await;
                                 tracing::info!(
@@ -1785,7 +1853,6 @@ impl AgentLoop {
                             let exec_args = effective_args.clone();
                             let tool_name_clone = tc_inner.name.clone();
                             let broker_for_exec = Arc::clone(&tool_broker);
-                            let authority_ref = authority_ref.clone();
                             let agent_workspace_id = agent_workspace_id.clone();
                             let agent_id = agent_id.clone();
                             let exec_fut = async move {
@@ -1802,35 +1869,43 @@ impl AgentLoop {
                                 // M014-A2: Use the real decision fields from the
                                 // execution context rather than synthesizing
                                 // authority from identity strings.
-                                let now = chrono::Utc::now().timestamp_millis();
                                 let principal_ref = exec_ctx
                                     .principal_identity
                                     .clone()
-                                    .unwrap_or_else(|| authority_ref.clone());
+                                    .ok_or_else(|| ToolError::Permission(
+                                        "verified tool authority is missing principal identity".into(),
+                                    ))?;
                                 let workspace_path_policy_id = exec_ctx
                                     .workspace_path_policy_id
                                     .clone()
-                                    .unwrap_or_else(|| format!("workspace:{}", agent_workspace_id));
+                                    .ok_or_else(|| ToolError::Permission(
+                                        "verified tool authority is missing workspace path policy".into(),
+                                    ))?;
+                                let _workspace_path_policy_revision = exec_ctx
+                                    .workspace_path_policy_revision
+                                    .clone()
+                                    .ok_or_else(|| ToolError::Permission(
+                                        "verified tool authority is missing workspace path policy revision".into(),
+                                    ))?;
                                 let policy_revision = exec_ctx
                                     .permission_policy_revision
                                     .clone()
-                                    .or_else(|| exec_ctx.workspace_path_policy_revision.clone())
-                                    .unwrap_or_else(|| {
-                                        format!(
-                                            "agent:{}:{}",
-                                            agent_id,
-                                            exec_ctx.session_id.as_deref().unwrap_or("anon")
-                                        )
-                                    });
+                                    .ok_or_else(|| ToolError::Permission(
+                                        "verified tool authority is missing permission policy revision".into(),
+                                    ))?;
                                 let policy_revision_for_ctx = policy_revision.clone();
-                                let ws_id = agent_workspace_id.clone();
-                                let ws_id_for_ctx = agent_workspace_id.clone();
+                                let ws_id = agent_workspace_id.clone().ok_or_else(|| ToolError::Permission(
+                                    "verified tool authority is missing workspace identity".into(),
+                                ))?;
+                                let ws_id_for_ctx = ws_id.clone();
                                 let grant = codegg_core::jobs::ToolAuthorityGrant {
                                     schema_version: 1,
                                     grant_id: exec_ctx
                                         .decision_id
                                         .clone()
-                                        .unwrap_or_else(|| authority_ref.clone()),
+                                        .ok_or_else(|| ToolError::Permission(
+                                            "verified tool authority is missing accepted decision".into(),
+                                        ))?,
                                     principal_ref: principal_ref.clone(),
                                     workspace_id: ws_id,
                                     workspace_path_policy_id: workspace_path_policy_id.clone(),
@@ -1852,7 +1927,9 @@ impl AgentLoop {
                                     ir_digest: String::new(),
                                     contract_digest: String::new(),
                                     contract_snapshot_json: String::new(),
-                                    issued_at: exec_ctx.decision_issued_at.unwrap_or(now),
+                                    issued_at: exec_ctx.decision_issued_at.ok_or_else(|| ToolError::Permission(
+                                        "verified tool authority is missing decision issue time".into(),
+                                    ))?,
                                     expires_at: exec_ctx.decision_expires_at,
                                     revoked_at: exec_ctx.decision_revoked_at,
                                     decision_digest: String::new(),
@@ -1891,7 +1968,7 @@ impl AgentLoop {
                                     // so it acts as the backstop it was meant to
                                     // be: the tool still times out first and its
                                     // collected output survives.
-                                    timeout_ms: broker_watchdog_timeout_ms(exec_ctx.timeout_ms),
+                                    timeout_ms: exec_ctx.timeout_ms,
                                     // Preserve the accepted model tool-call
                                     // identity through the broker into
                                     // structured tools such as TaskTool.
@@ -1905,10 +1982,10 @@ impl AgentLoop {
                                     // principal used to issue the grant. The
                                     // decision identity is not a principal.
                                     principal_ref: Some(principal_ref.clone()),
-                                    workspace_path_policy_id: Some(format!(
-                                        "workspace:{}",
-                                        ws_id_for_ctx
-                                    )),
+                                    workspace_path_policy_id: Some(workspace_path_policy_id),
+                                    workspace_path_policy_revision: Some(
+                                        _workspace_path_policy_revision,
+                                    ),
                                     allowed_tools: None,
                                     current_policy_revision: Some(policy_revision_for_ctx),
                                     // M001: preserve daemon-threaded trusted
@@ -1975,19 +2052,16 @@ impl AgentLoop {
                             };
                             // The tool enforces its own deadline and returns a result carrying the
                             // output it collected before being killed, so this wrapper must
-                            // not fire first and discard it. Two grace layers sit above the
-                            // tool's deadline and must stay strictly ordered:
+                            // not fire first and discard it. Broker and wrapper watchdog grace
+                            // layers sit above the tool's deadline and must stay strictly ordered:
                             //
                             //   T        tool's own timeout -> detailed `ToolError::Timeout`
                             //   T + 5s   broker watchdog   -> "broker invocation timed out"
                             //   T + 10s  this wrapper      -> last-resort backstop
                             //
-                            // The broker watchdog was previously armed at exactly T (see
-                            // `BROKER_WATCHDOG_GRACE_MS`), so it always preempted the tool
-                            // and every timeout surfaced as a bare generic error with no
-                            // partial output. This wrapper therefore has to clear the broker
-                            // layer too, or it would reintroduce the same inversion one
-                            // level out.
+                            // The broker now adds its own grace internally while the tool
+                            // keeps the original execution budget. This outer timeout remains
+                            // the final bounded backstop.
                             match tokio::time::timeout(
                                 timeout + TOOL_TIMEOUT_GRACE + TOOL_TIMEOUT_GRACE,
                                 exec_fut,
@@ -2034,6 +2108,8 @@ impl AgentLoop {
                             }
                         }
                         last_result
+                    } else {
+                        Err(ToolError::NotFound(tc_inner.name.to_string()))
                     }
                 };
 
@@ -2092,6 +2168,12 @@ impl AgentLoop {
                 }
 
                 let duration_ms = tool_start.elapsed().as_millis() as u64;
+                tracing::debug!(
+                    tool = %id,
+                    phase = if result.is_ok() { "completed" } else { "failed" },
+                    execution_ms = duration_ms,
+                    "tool batch execution"
+                );
                 let success = result.is_ok();
                 let output_preview = result.as_ref().ok().map(|o| {
                     summarize_tool_output(&tool_name, o, success).unwrap_or_else(|| {
@@ -2647,8 +2729,7 @@ mod broker_watchdog_ordering_tests {
             600_000,
             MAX_MODEL_TOOL_TIMEOUT.as_millis() as u64,
         ] {
-            let broker = broker_watchdog_timeout_ms(Some(tool_ms))
-                .expect("a tool deadline must produce a broker deadline");
+            let broker = tool_ms.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS);
             assert!(
                 broker > tool_ms,
                 "broker watchdog ({broker}ms) must expire after the tool's own \
@@ -2657,7 +2738,7 @@ mod broker_watchdog_ordering_tests {
             );
             assert_eq!(
                 broker - tool_ms,
-                BROKER_WATCHDOG_GRACE_MS,
+                crate::tool::broker::BROKER_WATCHDOG_GRACE_MS,
                 "the broker must get exactly the grace window, not an unrelated value"
             );
         }
@@ -2667,15 +2748,20 @@ mod broker_watchdog_ordering_tests {
     fn broker_watchdog_does_not_wrap_at_the_top() {
         let tool_ms = u64::MAX;
         assert_eq!(
-            broker_watchdog_timeout_ms(Some(tool_ms)),
-            Some(u64::MAX),
+            tool_ms.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS),
+            u64::MAX,
             "a saturated tool deadline must not wrap into a deadline that fires immediately"
         );
     }
 
     #[test]
     fn absent_tool_deadline_defers_to_the_broker_default() {
-        assert_eq!(broker_watchdog_timeout_ms(None), None);
+        // An absent tool timeout leaves the broker's configured default
+        // intact, and that default still receives the same watchdog grace.
+        let configured_default = 120_000u64;
+        let broker =
+            configured_default.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS);
+        assert!(broker > configured_default);
     }
 
     #[test]
@@ -2683,7 +2769,7 @@ mod broker_watchdog_ordering_tests {
         // Ordering must be tool < broker < wrapper, or the wrapper reintroduces
         // the same inversion one level out.
         let tool_ms = 120_000u64;
-        let broker = broker_watchdog_timeout_ms(Some(tool_ms)).unwrap();
+        let broker = tool_ms.saturating_add(crate::tool::broker::BROKER_WATCHDOG_GRACE_MS);
         let wrapper_ms = tool_ms + 2 * TOOL_TIMEOUT_GRACE.as_millis() as u64;
         assert!(
             broker < wrapper_ms,
@@ -2737,5 +2823,117 @@ mod orphan_guard_tests {
     fn unbounded_wait_uses_a_long_but_finite_guard() {
         let guard = AgentLoop::orphan_guard_ttl(None).expect("armed");
         assert_eq!(guard, Duration::from_secs(24 * 60 * 60));
+    }
+}
+
+#[cfg(test)]
+mod batch_admission_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_succeeds_after_release_at_one_two_and_four_permits() {
+        for width in [1usize, 2, 4] {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(width));
+            let held = Arc::clone(&semaphore)
+                .acquire_many_owned(width as u32)
+                .await
+                .expect("hold every permit");
+            let queue_depth = Arc::new(AtomicUsize::new(0));
+            let mut waiters = Vec::new();
+            for index in 0..(width * 2) {
+                waiters.push(tokio::spawn(acquire_batch_permit(
+                    Arc::clone(&semaphore),
+                    Arc::clone(&queue_depth),
+                    format!("tool-{index}"),
+                    Duration::from_secs(1),
+                    width,
+                )));
+            }
+            while queue_depth.load(Ordering::Acquire) < width * 2 {
+                tokio::task::yield_now().await;
+            }
+            drop(held);
+            for waiter in waiters {
+                let permit = waiter.await.expect("waiter task").expect("admitted");
+                drop(permit);
+            }
+            assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_timeout_is_separate_and_says_execution_did_not_start() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = semaphore.acquire().await.expect("hold permit");
+        let queue_depth = Arc::new(AtomicUsize::new(0));
+        let result = acquire_batch_permit(
+            Arc::clone(&semaphore),
+            Arc::clone(&queue_depth),
+            "queued-tool".into(),
+            Duration::from_millis(10),
+            1,
+        )
+        .await;
+        assert!(matches!(result, Err(ToolError::Timeout(_))));
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("did not start executing"));
+        assert!(error.contains("effective parallelism 1"));
+        assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+        drop(held);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_queued_acquire_releases_queue_accounting() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = semaphore.acquire().await.expect("hold permit");
+        let queue_depth = Arc::new(AtomicUsize::new(0));
+        let task = tokio::spawn(acquire_batch_permit(
+            Arc::clone(&semaphore),
+            Arc::clone(&queue_depth),
+            "cancelled-tool".into(),
+            Duration::from_secs(1),
+            1,
+        ));
+        while queue_depth.load(Ordering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        let _ = task.await;
+        assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+        drop(held);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_deadline_edge_returns_one_terminal_outcome_and_cleans_queue() {
+        for (release_after, should_admit) in [
+            (Duration::from_millis(80), true),
+            (Duration::from_millis(120), false),
+        ] {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+            let held = Arc::clone(&semaphore)
+                .acquire_owned()
+                .await
+                .expect("hold permit");
+            let queue_depth = Arc::new(AtomicUsize::new(0));
+            let release = tokio::spawn(async move {
+                tokio::time::sleep(release_after).await;
+                drop(held);
+            });
+            let result = acquire_batch_permit(
+                Arc::clone(&semaphore),
+                Arc::clone(&queue_depth),
+                "deadline-edge-tool".into(),
+                Duration::from_millis(100),
+                1,
+            )
+            .await;
+            if should_admit {
+                drop(result.expect("permit released before deadline"));
+            } else {
+                assert!(matches!(result, Err(ToolError::Timeout(_))));
+            }
+            release.await.expect("release task");
+            assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+        }
     }
 }

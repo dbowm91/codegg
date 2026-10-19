@@ -44,7 +44,7 @@ Supported targets:
   $CODEGG_SUPPORTED_TARGETS
   (required for release completeness: $CODEGG_REQUIRED_TARGETS)
 
-Pinned eggsearch sidecar: $CODEGG_EGGSEARCH_PINNED_VERSION ($CODEGG_EGGSEARCH_SOURCE tag $CODEGG_EGGSEARCH_UPSTREAM_TAG)
+Pinned eggsearch sidecar: $CODEGG_EGGSEARCH_PINNED_VERSION ($CODEGG_EGGSEARCH_SOURCE revision $CODEGG_EGGSEARCH_UPSTREAM_COMMIT)
 
 Options:
   --target             Rust target triple (must be in the supported allowlist)

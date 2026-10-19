@@ -19,8 +19,12 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
         }
 
         saw_hunk = true;
-        let old_start =
-            parse_hunk_old_start(line).ok_or_else(|| format!("invalid hunk header: {}", line))?;
+        let old_start = parse_hunk_old_start(line).ok_or_else(|| {
+            format!(
+                "invalid hunk header at patch line {}: expected @@ -<line>[,<count>] +<line>[,<count>] @@",
+                patch_idx + 1
+            )
+        })?;
 
         let target_idx = old_start.saturating_sub(1);
         if target_idx < orig_idx {
@@ -95,14 +99,30 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
 }
 
 fn parse_hunk_old_start(header: &str) -> Option<usize> {
-    let mut parts = header.split_whitespace();
-    let _at1 = parts.next()?;
-    let old_part = parts.next()?;
-    if !old_part.starts_with('-') {
+    let body = header.strip_prefix("@@ ")?;
+    let (ranges, suffix) = body.split_once(" @@")?;
+    if !suffix.is_empty() && !suffix.starts_with(' ') {
         return None;
     }
-    let old_nums = &old_part[1..];
-    let old_start = old_nums.split(',').next()?.parse::<usize>().ok()?;
+    let mut parts = ranges.split_whitespace();
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let parse_range = |range: &str| -> Option<usize> {
+        let mut values = range.split(',');
+        let start = values.next()?.parse::<usize>().ok()?;
+        if let Some(count) = values.next() {
+            count.parse::<usize>().ok()?;
+        }
+        if values.next().is_some() {
+            return None;
+        }
+        Some(start)
+    };
+    let old_start = parse_range(old)?;
+    parse_range(new)?;
     Some(old_start)
 }
 
@@ -165,5 +185,19 @@ mod tests {
 
         let err = apply_unified_diff(original, patch).expect_err("must fail");
         assert!(err.contains("delete mismatch"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn malformed_hunk_reports_location_and_expected_grammar() {
+        let err = apply_unified_diff("a", "@@\n-a\n+b").expect_err("bare header rejected");
+        assert!(err.contains("patch line 1"));
+        assert!(err.contains("@@ -<line>[,<count>] +<line>[,<count>] @@"));
+    }
+
+    #[test]
+    fn malformed_range_is_not_accepted() {
+        let err =
+            apply_unified_diff("a", "@@ -x +1 @@\n-a\n+b").expect_err("malformed range rejected");
+        assert!(err.contains("patch line 1"));
     }
 }

@@ -96,6 +96,11 @@ run_quick() {
     echo "==> python3 scripts/check_tui_subagent_name_pool_isolation.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_subagent_name_pool_isolation.py)
 
+    echo "==> python3 scripts/check_tui_composer_key_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py --self-test)
+    echo "==> python3 scripts/check_tui_composer_key_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py)
+
     echo "==> python3 scripts/check_daemon_listing_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)
 

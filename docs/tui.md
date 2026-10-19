@@ -293,6 +293,53 @@ Registry metadata — domain, scope, and source exist for palette and help
 presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
 
+### The cursor in the composer
+
+The composer shows a caret, and what that caret tells you is where the
+keyboard is:
+
+| Where you are | What you see |
+|---|---|
+| Typing in the composer, `[INS]` mode | A **blinking** cursor at the caret |
+| The composer is in `[NOR]` mode | A **solid block** at the caret |
+| Another panel has the keyboard | **No cursor at all** in the composer |
+
+The blinking cursor is your terminal's own cursor, so it blinks at whatever
+rate your terminal is configured for — some terminals show it steady, and the
+`[INS]`/`[NOR]` badge is what tells the two modes apart.
+
+When you select a side panel, the composer stops showing a caret entirely.
+That is deliberate: a caret sitting in a box you are not typing in is a lie
+about where your keystrokes go, and the `▸` marker on the panel is the
+honest one.
+
+### Three keys moved to chords
+
+In `[NOR]` mode the composer now owns a set of letters for its own Helix-style
+editing, and three app-level actions that used to live on a letter moved to a
+chord. The capabilities are unchanged — only the spelling moved:
+
+| What it does | Was | Is now |
+|---|---|---|
+| Stop or resume the running turn | `x` | `Ctrl+Alt+X` |
+| Open the diff view | `d` (vim layout) | `Ctrl+Alt+D` |
+| Open the command palette from Normal mode | `i` (vim layout) | `Ctrl+Alt+E` |
+
+All three chords work in both layouts, so you do not have to know which one is
+active. The keys `x`, `d` and `i` still type normally in `[INS]` mode — they
+are only spoken for in `[NOR]` mode.
+
+`i` still takes you from `[NOR]` back to typing. That was already true in the
+default layout; in the vim layout it is now the same gesture instead of the
+command palette, which moved to `Ctrl+Alt+E`. The rest of the Helix editing
+verbs — motions, selection, undo — arrive with the next milestones.
+
+The slash command is unaffected: typing `/` at the start of the composer still
+opens the command palette, exactly as before, in both layouts.
+
+Help is unaffected too: `Space` still opens the help menu, and `?` still does
+as well.
+
 ### Typing while the agent is already working
 
 You can keep typing during a turn, and pressing Enter does not throw the text

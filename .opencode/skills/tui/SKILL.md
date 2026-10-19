@@ -1136,6 +1136,76 @@ model to the wrong connection.
   can answer the other — a box is not a side panel, and a panel is not a dialog.
   It is a **pure read**: a badge that forced `input_mode` to match what it
   displays turns the state it reports into the state it causes.
+- **The composer's caret is derived, and `PromptWidget` has no `focused` flag.**
+  `App::composer_holds_keyboard` answers "does the composer hold the keyboard",
+  in the same shape as `composer_input_mode` and over the same seams. Its order
+  mirrors `App::on_key`'s priority chain: a mounted modal owns the keyboard, then
+  a focused side panel (`App::panel_owns_keyboard` — the extracted `panel_active`
+  condition, so the key chain and the caret rules read **one** derivation), then
+  the editor's buffer when it is explicitly focused; otherwise the composer owns
+  it. The old `focused` field was **dead in production** (`PromptWidget::blur()`'s
+  only caller was a test), so "no cursor while another surface has the keyboard"
+  was unimplementable as written. Do not reintroduce a stored flag: a copy of
+  this fact can drift from the badge, which is the defect class the mode
+  resolution exists to kill.
+- **Two carets, mutually exclusive, and the blink is the terminal's.**
+  Insert mode positions the **terminal's own cursor** at the caret with
+  `Frame::set_cursor_position` (never the deprecated `Frame::set_cursor`); Normal
+  mode paints a solid block instead. Both read
+  `PromptWidget::caret_cell`, the single computation of where the caret is on
+  screen, so the two cannot disagree. The app runs **one** animation cadence
+  (the 100 ms working strip), so a blinking caret must come from the terminal —
+  ratatui hides the terminal cursor whenever a frame did not position it, so
+  "position nothing" is how the composer shows no cursor at all. The rule the
+  badge and the caret share: **when the composer holds the keyboard, `[INS]`
+  means the terminal cursor is positioned and `[NOR]` means the block is
+  painted; when it does not, neither caret is present.**
+- **The composer owns a closed set of Normal-mode letters, and a claimed
+  letter never falls through.** `src/tui/composer_claims.rs` is the single
+  table; the app's binding map is consulted only for letters the composer does
+  not claim. A claimed letter is consumed **even when its verb is not
+  implemented yet** — that is the fallthrough rule, and it is the whole point
+  of the table: a reserved claim that leaks becomes an unrelated app action
+  (the terminal panel records the failure verbatim: an unclaimed `d` silently
+  became `OpenDiff`). The claim step runs **before** the binding map, inside
+  the composer branch of the key chain, so a modal, a focused panel, the
+  Workspace view and the editor route are all consulted first. The gate is
+  the *resolved* mode plus `App::composer_holds_keyboard`, never the raw
+  `UiState::input_mode`. A condition on a claim must be written on the entry
+  (`j`/`k` are the one conditional pair): an implicit conditional is how a
+  leak reappears. A claimed **capital** answers to both encodings
+  (`Char('U')` with `SHIFT` and with `NONE`), like the app's
+  `insert_panel_direction_bindings`; a lowercase claim is the bare key only.
+- **A consumed claim that does nothing is a dead key — never claim a letter
+  the app needs to keep working.** `i` is the app's **only** route back to
+  Insert mode (it is the `None` arm of the key chain, not a binding), so its
+  verb is **live**: it runs the transition the app already had, and the table
+  is where that ownership now lives. A reserved `i` would swallow the key,
+  do nothing, and leave the user in Normal mode with no way to type. When a
+  verb is promoted from reserved to live, the runner in
+  `App::run_composer_claim` is where the behaviour goes — not the binding
+  map — and the `None` arm keeps the gesture only for the surfaces the
+  composer does not own.
+- **A letter the composer claims is not available to the app.** The three
+  app-level actions that owned `x`, `d` and `i` moved to `Ctrl+Alt+X`,
+  `Ctrl+Alt+D` and `Ctrl+Alt+E`, in **both** maps. `Ctrl+Alt+<letter>` is the
+  legacy-safe family: the terminal delivers `ESC` + the control byte, which
+  crossterm reports as the letter with CONTROL|ALT. `Ctrl+Alt+I` is **not**
+  usable — `ESC` + `0x09` arrives as `Tab` with ALT. A chord's `(modifiers,
+  key)` pair must not be one the table **claims**: a claim is matched on the
+  exact modifier set, so `Ctrl+Alt+X` is not the claim for the bare `x` and the
+  composer does not take the chord back — but a chord spelled with a modifier
+  set the table claims would be swallowed. When an action's only spelling
+  becomes a chord, it must leave `is_normal_only`: a chord cannot be composed
+  as text, so gating it out of Insert mode would take the action out of the
+  mode the app boots in. **A bare spelling of a letter the composer does *not*
+  claim is not a re-spelling violation.** The default map's `/` for
+  focus-prompt is the live example: `/` is not claimed, so the plan's
+  invariant — *a letter the composer does not claim must resolve to the same
+  app action it resolves to today* — requires it to keep working, and it is
+  the gesture that enters command mode, which is what makes the rest of a
+  typed slash command land. Removing it broke the only route back into the
+  panel manager from a focused panel.
 - **Never make one key answer two questions.** `Esc` used to be both "leave
   insert" and "pass an escape byte through", disambiguated by a hidden
   `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's
@@ -1256,6 +1326,7 @@ adding TUI code - they are the executable form of the invariants above.
 |---|---|
 | `python3 scripts/check_tui_project_authority.py` | Scans `tui/app/state/**`, `tui/app/mod.rs`, `tui/commands/**`, `tui/runtime/**`, `tui/command.rs`, and `tui/components/dialogs/command.rs`; rejects `session_state.project_dir` and `std::env::current_dir()` as project authority. Only clearly marked bootstrap boundaries and test fixtures are exempt. |
 | `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
+| `python3 scripts/check_tui_composer_key_authority.py` | Reads the composer's claim table (`src/tui/composer_claims.rs`) and the two binding maps, and fails when a letter is claimed twice, when a claimed letter can still reach an app-level action, when a re-spelled chord is missing from a map, when a re-spelled action has no chord to reach it by or still answers to a claimed key, when a capital claim misses an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only` entry. Carries a `--self-test` that injects each violation class. |
 
 ## Testing
 

@@ -71,6 +71,7 @@ fn ctx_for(effect: &str, submission_key: Option<String>) -> BrokerInvocationCont
         deadline: None,
         principal_ref: None,
         workspace_path_policy_id: None,
+        workspace_path_policy_revision: None,
         allowed_tools: None,
         current_policy_revision: None,
         execution_audit: None,

@@ -11,7 +11,7 @@ use codegg::tui::components::dialogs::help::HelpDialog;
 use codegg::tui::components::dialogs::question::{QuestionDialog, QuestionSpec};
 use codegg::tui::components::dialogs::theme::ThemePickerDialog;
 use codegg::tui::components::messages::{highlight_code, MessageRole, MessagesWidget, MsgPart};
-use codegg::tui::components::prompt::PromptWidget;
+use codegg::tui::components::prompt::{ComposerCursor, PromptWidget};
 use codegg::tui::layout::{LayoutConfig, TuiLayout};
 use codegg::tui::panels::PanelPlacement;
 use codegg::tui::theme::{all_themes, find_theme, theme_names, Theme};
@@ -364,7 +364,9 @@ fn test_prompt_widget_new() {
     let widget = PromptWidget::new(Arc::new(Theme::dark()));
     assert!(widget.get_text().is_empty());
     assert_eq!(widget.cursor_pos(), 0);
-    assert!(widget.is_focused());
+    // The widget paints no caret until the app says which caret it wants:
+    // focus is derived by the app, not stored here.
+    assert_eq!(widget.cursor_style, ComposerCursor::None);
 }
 
 #[test]
@@ -436,15 +438,17 @@ fn test_prompt_widget_paste() {
 }
 
 #[test]
-fn test_prompt_widget_focus_blur() {
+fn test_prompt_widget_cursor_style() {
+    // The composer's focus is derived by the app, not stored on the widget:
+    // a stored flag can disagree with the `[INS]`/`[NOR]` badge, which is the
+    // drift class the mode resolution exists to prevent. The widget therefore
+    // carries only how it draws its caret.
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
-    assert!(widget.is_focused());
+    assert_eq!(widget.cursor_style, ComposerCursor::None);
+    assert!(!widget.paints_block_cursor());
 
-    widget.blur();
-    assert!(!widget.is_focused());
-
-    widget.focus();
-    assert!(widget.is_focused());
+    widget.set_cursor_style(ComposerCursor::Block);
+    assert!(widget.paints_block_cursor());
 }
 
 #[test]
@@ -656,6 +660,9 @@ fn test_prompt_widget_horizontal_cursor_visibility() {
 fn test_prompt_widget_cursor_on_empty_line() {
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
     widget.set_text("a\n".to_string());
+    // The block is opt-in: the app decides which caret the composer draws
+    // from the derived keyboard-ownership fact, and it tells the widget.
+    widget.set_cursor_style(ComposerCursor::Block);
 
     let backend = TestBackend::new(12, 4);
     let mut terminal = Terminal::new(backend).unwrap();

@@ -24,7 +24,7 @@
 #
 # Upstream eggsearch provenance (M001 pin):
 #   source  https://github.com/eggstack/eggsearch (stable MCP/CLI contract)
-#   tag     v0.4.3 / version 0.4.3 / commit 5e7b853e7eebf29c58f84959805c8774279d7ea4
+#   revision 0.4.4 / commit 32f48bb57a43274d763c7f9ba919eab84d125edc
 #   license MIT (as published upstream; redistributed under upstream terms)
 # The sidecar is installed under the CodeGG-owned name `codegg-eggsearch`
 # so a managed install never resolves an unrelated PATH `eggsearch`.
@@ -55,9 +55,9 @@ CODEGG_ARCHIVE_MEMBER="codegg"
 # Adopted immutable release for CodeGG M001 paired development compatibility.
 # Upstream documents MCP/CLI as the stable application contract; CodeGG
 # must not compile against eggsearch internal modules to ease packaging.
-CODEGG_EGGSEARCH_PINNED_VERSION="0.4.3"
-CODEGG_EGGSEARCH_UPSTREAM_TAG="v0.4.3"
-CODEGG_EGGSEARCH_UPSTREAM_COMMIT="5e7b853e7eebf29c58f84959805c8774279d7ea4"
+CODEGG_EGGSEARCH_PINNED_VERSION="0.4.4"
+CODEGG_EGGSEARCH_UPSTREAM_TAG="commit:32f48bb57a43274d763c7f9ba919eab84d125edc"
+CODEGG_EGGSEARCH_UPSTREAM_COMMIT="32f48bb57a43274d763c7f9ba919eab84d125edc"
 CODEGG_EGGSEARCH_SOURCE="https://github.com/eggstack/eggsearch"
 CODEGG_EGGSEARCH_LICENSE="MIT"
 

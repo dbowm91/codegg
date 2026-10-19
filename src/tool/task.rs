@@ -1274,7 +1274,7 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims",
+                    "description": "Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID). Group actions use group_id.",
                     "enum": ["scratch_create", "scratch_revoke", "spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group", "board", "claim", "release_claim", "request_handoff"]
                 },
                 "scratch_alias": { "type": "string", "maxLength": 32, "description": "Bounded env-safe name for a parent-owned shared scratch resource (action=scratch_create)" },
@@ -1326,11 +1326,15 @@ impl Tool for TaskTool {
                     "description": "List of directories the subagent is allowed to access (action=spawn). Mutating durable runs are narrowed to their managed worktree."
                 },
                 "task_id": {
-                    "description": "Durable AgentTaskId or legacy numeric task ID"
+                    "anyOf": [
+                        {"type": "string", "minLength": 1},
+                        {"type": "integer", "minimum": 0}
+                    ],
+                    "description": "Required for action=get: durable AgentTaskId string or legacy numeric task ID. Do not use for run status/control."
                 },
                 "run_id": {
                     "type": "string",
-                    "description": "Durable AgentRunId for control/status/wait"
+                    "description": "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. Do not use task_id here."
                 },
                 "message": {
                     "type": "string",
@@ -1358,7 +1362,7 @@ impl Tool for TaskTool {
                 },
                 "group_id": {
                     "type": "string",
-                    "description": "Durable AgentRunGroupId for group actions"
+                    "description": "Required by status_group, wait_group, and cancel_group; durable AgentRunGroupId."
                 },
                 "join_policy": {
                     "type": "string",
@@ -2444,6 +2448,27 @@ mod tests {
             assert!(actions.contains(&action));
         }
         assert!(!actions.contains(&"handoff"));
+    }
+
+    #[test]
+    fn task_schema_distinguishes_task_run_and_group_identifiers() {
+        let schema = TaskTool::default().parameters();
+        let task_id = &schema["properties"]["task_id"];
+        assert_eq!(task_id["anyOf"][0]["type"], "string");
+        assert_eq!(task_id["anyOf"][1]["type"], "integer");
+        assert!(task_id["description"]
+            .as_str()
+            .unwrap()
+            .contains("action=get"));
+        assert!(schema["properties"]["run_id"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("AgentRunId"));
+        assert!(schema["properties"]["group_id"].is_object());
+        assert!(!schema["properties"]["action"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("status (get alias)"));
     }
 
     #[test]

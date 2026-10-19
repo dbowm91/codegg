@@ -465,6 +465,19 @@ impl ToolValue {
         }
     }
 
+    /// Build a timed-out value that preserves bounded tool diagnostics such
+    /// as the partial output collected while terminating a child process.
+    pub fn timed_out_with_details(details: String) -> Self {
+        Self {
+            display: details,
+            value: None,
+            artifacts: Vec::new(),
+            provenance: None,
+            terminal_status: ToolTerminalStatus::TimedOut,
+            truncated: false,
+        }
+    }
+
     /// Build an infrastructure error value.
     pub fn infrastructure_error(reason: String) -> Self {
         Self {
