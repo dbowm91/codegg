@@ -2,7 +2,7 @@
 
 **Milestone:** C007 of `plans/subsystems/tui-subagent-and-job-visibility-convergence-corrective-addendum.md`
 **Plan:** `plans/implementation/tui-subagent-and-job-visibility-convergence/005-send-to-subagent.md`
-**ADR:** `plans/adrs/ADR-0040-subagent-run-addressing-and-human-interaction-authority.md` — accepted 2026-10-18, **Option A**
+**ADR:** `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md` — accepted 2026-10-18, **Option A**
 **Closed:** 2026-10-19
 **Working tree:** uncommitted, on `feat/auto-20261018-2b07c50d` at `e8a6b5ca2`
 
@@ -10,7 +10,7 @@
 
 ## 1. What was delivered
 
-ADR-0040 Option A, as planned: a `/subagent-send` command arms the composer to address
+ADR-0041 Option A, as planned: a `/subagent-send` command arms the composer to address
 one **running** subagent, and the next submission issues exactly one
 `CoreRequest::TurnSteer` for the **controlling parent turn**, carrying the subagent's
 display name as an explicit addressee inside the parent's context.
@@ -54,7 +54,7 @@ Three of these are findings, not preferences. Each would have shipped a defect.
 ### 3.1 The parent model has no name pool — `Sally` alone is unresolvable
 
 The plan assumed `TurnSteer` "carries the subagent's `display_name` as an explicit
-addressee". Carrying the name satisfies ADR-0040's letter and fails its purpose: the
+addressee". Carrying the name satisfies ADR-0041's letter and fails its purpose: the
 controlling agent receives the text as a steer, and **the pool that mints display names
 lives in `src/agent/subagent_names/`, which the TUI deliberately does not have and the
 parent model never sees**. Nothing resolves `Sally` back to a run on the model side.
@@ -249,7 +249,7 @@ only the organisation is duplicated, and it is this registry's existing pattern 
 other subsystems too (the Helix `M001` row does the same). C007 was moved to *Recently
 closed* rather than left in place, which is the cleaner of the two conventions.
 
-`ADR-0040` was **not** edited — accepted ADRs are immutable. Its line *"A subagent tab
+`ADR-0041` was **not** edited — accepted ADRs are immutable. Its line *"A subagent tab
 remains read-only until a C007 implementation of Option A lands"* was a **precondition**,
 and C007 satisfying it is the expected outcome rather than a contradiction. Nothing in
 the implementation contradicts any ADR clause.

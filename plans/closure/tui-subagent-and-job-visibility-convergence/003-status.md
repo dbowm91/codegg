@@ -287,8 +287,8 @@ is recorded as load-dependent flakiness present on both trees, **not** as
 - `plans/registry.md` — the subsystem row's status cell and its dependency-ready
   row now read **closed** for C005 with this record linked; a **Recently closed**
   row was added. The row also contained a **self-contradiction** fixed here: its
-  head read "C005 ready … C007 unblocked, ADR-0040 accepted" while its trailing
-  sentences still read "C005 is not started … ADR-0040 is drafted (`proposed`)".
+  head read "C005 ready … C007 unblocked, ADR-0041 accepted" while its trailing
+  sentences still read "C005 is not started … ADR-0041 is drafted (`proposed`)".
 - `plans/subsystems/tui-subagent-and-job-visibility-convergence-corrective-addendum.md`
   — the C005 section reads **implemented and closed** with this record linked.
 - `plans/implementation/tui-subagent-and-job-visibility-convergence/003-agent-descriptors.md`
@@ -303,7 +303,7 @@ the plan directed rather than assumed: both count event **variants**
 
 C003, C004, and C006 remain **implemented and unclosed** in the same working
 tree — unchanged by this milestone. C007 is **eligible for fresh planning** and
-**not started**: ADR-0040's acceptance authorized the design and did not build
+**not started**: ADR-0041's acceptance authorized the design and did not build
 the feature. `TurnSteer` still has zero TUI callers, `InputTarget` still has only
 `Build` and `Chat`, no key is bound, a subagent tab is still **read-only**, and
 closing one still cancels nothing (I5). C005 makes a subagent's name and

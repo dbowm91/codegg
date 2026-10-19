@@ -187,7 +187,7 @@ here rather than by rewriting history:
   *implemented and unclosed* — the dependency is satisfied in substance (the
   additive-field contract is stable and pinned by four named tests), not in
   process.
-- **C007 is no longer blocked.** ADR-0040 was **accepted 2026-10-18** (Option A:
+- **C007 is no longer blocked.** ADR-0041 was **accepted 2026-10-18** (Option A:
   route an addressed reply through the controlling parent turn's existing
   controller predicate). C007 is therefore *eligible for fresh planning* and is
   recorded as such. It remains **not implemented**: no plan exists, `TurnSteer`
@@ -204,5 +204,5 @@ This record covers **C001 only**. C003, C004, and C006 are implemented in the
 same working tree and have **no closure record yet** — the registry still lists
 them as `proposed`, which is the honest state until each has its own record.
 C002 and C005 are **not implemented**. C007 remains blocked; its ADR is drafted
-at `plans/adrs/ADR-0040-subagent-run-addressing-and-human-interaction-authority.md`
+at `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md`
 (status `proposed`) and no capability implying interaction was added.

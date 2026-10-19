@@ -849,7 +849,7 @@ open a tab, because a tab with nothing to render is not a tab.
 ### Addressing a reply to a running subagent
 
 `/subagent-send` arms the composer to address one running subagent
-(`state/subagent_addressee.rs`, `commands/subagent_steer.rs`). This is ADR-0040
+(`state/subagent_addressee.rs`, `commands/subagent_steer.rs`). This is ADR-0041
 **Option A**, and three properties are load-bearing:
 
 - **The addressee is composer data, not a focus mode.** `InputTarget` stays
@@ -862,7 +862,7 @@ open a tab, because a tab with nothing to render is not a tab.
   `task_id`. `TurnSteer` is keyed on a *session turn*; naming a subagent's
   daemon-local `u64` would resolve to `turn_id_mismatch` every time. The
   subagent is named inside the payload as an addressee, and the parent decides
-  whether to relay (ADR-0040, *Indirect*).
+  whether to relay (ADR-0041, *Indirect*).
 - **An armed composer cannot fall through to `TurnSubmit`.** The branch sits
   after the observer return and before `pending_send`, so an addressed reply
   that is refused reports in the steering vocabulary instead of silently

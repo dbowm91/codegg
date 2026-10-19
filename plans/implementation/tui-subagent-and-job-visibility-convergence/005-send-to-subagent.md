@@ -20,7 +20,7 @@ Long-term requirements:
 
 Applicable ADRs:
 
-- `plans/adrs/ADR-0040-subagent-run-addressing-and-human-interaction-authority.md`
+- `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md`
   (**accepted 2026-10-18, Option A**) — decides *whom* a human may address.
 - `plans/adrs/ADR-0036-mid-turn-prompt-steering-delivery-contract.md` (**accepted**) —
   fixes what `TurnSteer` means and guarantees. **Not relaxed here.**
@@ -46,14 +46,14 @@ delivered to the **controlling parent turn** as an already-authorized `TurnSteer
 whose text names the subagent as the addressee — with the UI stating plainly that
 it was routed to the controlling agent, not delivered to the subagent.
 
-This is ADR-0040 Option A and nothing more. It does not make a subagent's own
+This is ADR-0041 Option A and nothing more. It does not make a subagent's own
 run steerable.
 
 ## 2. Why this milestone is ready
 
 Closed hard dependencies:
 
-- **ADR-0040 — accepted 2026-10-18, Option A.** The decision blocker is gone.
+- **ADR-0041 — accepted 2026-10-18, Option A.** The decision blocker is gone.
   Acceptance authorized the *design*; this plan is the implementation work it
   left behind.
 - **C005 — closed** (`plans/closure/.../003-status.md`). Its hard dependency was
@@ -121,7 +121,7 @@ Option<String>` is maintained by the turn lifecycle in `src/tui/app/mod.rs`.
   failure mode, no new retry.
 - **No new authority.** The reply is delivered under the parent turn's existing
   controller predicate. Nothing previously refused becomes reachable.
-- **`InputTarget` does not grow a variant** (ADR-0040, *Neutral or deferred*).
+- **`InputTarget` does not grow a variant** (ADR-0041, *Neutral or deferred*).
   The addressee is **data on the composer**, not a focus mode.
 - **`check_execution_ownership.py` and `check_scheduler_bypass.py` stay green and
   `docs/execution-ownership.toml` is unchanged** — a reply is not a new execution
@@ -145,7 +145,7 @@ Option<String>` is maintained by the turn lifecycle in `src/tui/app/mod.rs`.
 ### Out of scope
 
 - **Option B.** No `CoreRequest::SubagentSteer`, no per-run steering channel, no
-  new `OperationDescriptor`, no third `InputTarget`. Deferred behind ADR-0040's
+  new `OperationDescriptor`, no third `InputTarget`. Deferred behind ADR-0041's
   four recorded conditions, not rejected.
 - **Reaching a subagent whose parent turn has ended.** Accepted Option A cost.
   It must be *reported*, not worked around.
@@ -174,7 +174,7 @@ Option<String>` is maintained by the turn lifecycle in `src/tui/app/mod.rs`.
   `[NOR]`/`[INS]`/`BUILD` badges, and the accepted outcome must say the reply was
   handed to the controlling agent.
 - **No daemon change.** `TurnSteer` is complete. If implementation reveals the
-  daemon cannot express something ADR-0040 assumed, that is a **stop condition**,
+  daemon cannot express something ADR-0041 assumed, that is a **stop condition**,
   not an invitation to extend the daemon surface.
 
 ## 7. Ordered work packages
@@ -217,7 +217,7 @@ reports `turn_id_mismatch`.
 
 Reuse the `send_now_outcome_message` vocabulary; do not write a second, thinner
 one. Every code gets a sentence, and the **accepted** sentence must say the reply
-was handed to the controlling agent — never "sent to Sally". ADR-0040's
+was handed to the controlling agent — never "sent to Sally". ADR-0041's
 *Failure modes* require this explicitly: the UI must not present the reply as
 delivered to the subagent.
 
@@ -254,7 +254,7 @@ decision explicitly — see §5.
   reconnect. It must not be silently re-armed against a name that may have been
   re-leased.
 - **Name re-lease** — a curated name is released when the subagent finishes and
-  can be drawn again by another run. ADR-0040 lists this as an Option A failure
+  can be drawn again by another run. ADR-0041 lists this as an Option A failure
   mode. The UI must show the name it captured, and the plan's acceptance records
   it as an accepted limitation, not a defect to fix here.
 
@@ -306,13 +306,13 @@ cd apps/desktop && node scripts/check-bindings.mjs
   routing, and the honest-reporting rule.
 - `docs/tui.md` — user-facing: how to address a subagent and what the outcome
   sentence means.
-- **ADR-0040 is accepted and immutable.** Do not edit it. If implementation
+- **ADR-0041 is accepted and immutable.** Do not edit it. If implementation
   contradicts it, that is a stop condition and a supersession question, not an
   edit.
 
 ## 13. Acceptance criteria
 
-Externally observable, mirroring ADR-0040 §Verification:
+Externally observable, mirroring ADR-0041 §Verification:
 
 1. A composed reply addressed to a named subagent reaches `TurnHandle::steer_tx`
    for the **controlling turn**.
@@ -327,12 +327,12 @@ Externally observable, mirroring ADR-0040 §Verification:
 
 Report rather than improvise if any of these is reached:
 
-- The daemon cannot express something ADR-0040 assumed. **No daemon surface
+- The daemon cannot express something ADR-0041 assumed. **No daemon surface
   extension in this milestone.**
 - A durable identity is required to address a run unambiguously (this is parent
   D5 and needs an ADR).
 - A new `InputTarget` variant, a new `OperationDescriptor`, or a new capability
-  appears to be necessary. ADR-0040 settled that these are not needed.
+  appears to be necessary. ADR-0041 settled that these are not needed.
 - Anyone proposes Option B, or un-defers it.
 - A chord must be invented to reach this feature.
 - The pool-isolation guard would have to be weakened for the addressee to work.
@@ -344,7 +344,7 @@ described), one refusal per ADR-0036 mode, proof the controller predicate is
 unchanged, proof I5 held, the I1/pool-isolation guard green, `docs/execution-ownership.toml`
 unchanged, and an honest statement of what was **not** observed at runtime —
 which for this milestone includes the parent actually relaying the message, since
-no milestone can guarantee that and ADR-0040 says so.
+no milestone can guarantee that and ADR-0041 says so.
 
 ## 16. Handoff notes
 

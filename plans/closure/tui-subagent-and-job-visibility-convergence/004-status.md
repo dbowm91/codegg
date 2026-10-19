@@ -263,7 +263,7 @@ Required, and applied with this record:
 **Unblock audit.** C004 is a hard dependency of **C005** (closed) and **C006**
 (implemented, unclosed, no plan). C007 depends on C005, not on C004. So this
 closure **unblocks nothing new**: C006 was never gated on a C004 *closure*, and
-C007 was already unblocked by ADR-0040's acceptance. Recording that explicitly
+C007 was already unblocked by ADR-0041's acceptance. Recording that explicitly
 rather than leaving the audit implicit.
 
 ## 13. What was **not** verified

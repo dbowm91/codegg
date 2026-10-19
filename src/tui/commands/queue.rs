@@ -112,7 +112,7 @@ pub fn send_now_refusal_message(
 /// ignores it lies in one direction or the other: telling an author whose
 /// composer still holds their text that it "stays queued" promises a resend
 /// nothing is going to perform, and telling them a reply "was delivered" names
-/// as recipient a party that ADR-0040 explicitly does not deliver to.
+/// as recipient a party that ADR-0041 explicitly does not deliver to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SteerConsequence {
     /// The running turn takes it as its next instruction, and the session's
@@ -145,7 +145,7 @@ impl SteerConsequence {
     /// subagent to name. The two cannot share a sentence: "marked delivered to
     /// it" describes a queue write that never happens for a bare steer, and a
     /// steer that claimed delivery to the *subagent* would be the exact
-    /// misrepresentation ADR-0040's failure modes forbid.
+    /// misrepresentation ADR-0041's failure modes forbid.
     pub fn accepted(self, addressee: Option<&str>) -> String {
         match (self, addressee) {
             (SteerConsequence::DurableQueue, _) => {

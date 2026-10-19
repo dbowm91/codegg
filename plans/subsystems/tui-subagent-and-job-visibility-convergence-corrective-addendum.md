@@ -11,7 +11,7 @@ Related ADRs:
 - None required for C001–C006.
 - **C007 required a new ADR** — it changes how a frontend addresses a delegated
   run, which meets the threshold in `plans/adrs/README.md`. That ADR is written
-  and **accepted**: `plans/adrs/ADR-0040-subagent-run-addressing-and-human-interaction-authority.md`
+  and **accepted**: `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md`
   (accepted 2026-10-18, Option A — route the reply through the controlling parent
   turn). Acceptance discharges C007's ADR blocker and nothing else; C007 has no
   implementation plan and no subagent tab became writable.
@@ -349,7 +349,7 @@ two days behind a green suite.
   unchanged and were the reason it needed one: there is no send path at all —
   `CoreRequest::TurnSteer` has **zero** callers under `src/tui/`, and it is keyed
   on a *session turn*, not a subagent run — and `InputTarget` has only `Build`
-  and `Chat`, so the composer cannot even express an addressee. ADR-0040 resolves
+  and `Chat`, so the composer cannot even express an addressee. ADR-0041 resolves
   them by routing an addressed reply through the controlling parent turn's
   existing controller predicate rather than by minting a second steering
   contract. What remains is implementation work, not a decision.
@@ -379,7 +379,7 @@ two days behind a green suite.
                   |
                   v
            C007 send-to-subagent
-    [ADR-0040 ACCEPTED; C005 CLOSED; plan 005 written
+    [ADR-0041 ACCEPTED; C005 CLOSED; plan 005 written
      (ready for handoff) — nothing implemented yet]
 ```
 
@@ -394,7 +394,7 @@ two days behind a green suite.
   observable, and C006 changes whether that row survives its own event.
 - **C005 → C007**: hard. **Satisfied in process as well as substance** — C005 is
   closed, so a name worth addressing now reaches a surface a user can act on.
-- **C007**: its ADR dependency was **discharged** — ADR-0040 is accepted
+- **C007**: its ADR dependency was **discharged** — ADR-0041 is accepted
   (2026-10-18, Option A) — and C005 is closed. Its implementation plan is
   `plans/implementation/tui-subagent-and-job-visibility-convergence/005-send-to-subagent.md`
   and its closure record is
@@ -572,7 +572,7 @@ two days behind a green suite.
   documents by sequence — `001` is C001, `002` is C002, `003` is C005, and
   there is no plan `004` because C004 never had one).
 - **Closure:** `plans/closure/tui-subagent-and-job-visibility-convergence/005-status.md`.
-- **Decided by:** `plans/adrs/ADR-0040-subagent-run-addressing-and-human-interaction-authority.md`,
+- **Decided by:** `plans/adrs/ADR-0041-subagent-run-addressing-and-human-interaction-authority.md`,
   **accepted 2026-10-18**, Option A — an addressed reply is delivered to the
   **controlling parent turn** as an already-authorized `TurnSteer` carrying the
   subagent's name as the addressee. Option B (first-class `SubagentSteer`) is
@@ -622,9 +622,9 @@ that adds any, and it adds two.**
 **Security.** No new authority. Viewing a subagent discloses projected state the
 user can already see. Tabs cancel nothing. C007 was written up as the first
 milestone here that *could* change authorization, which is why it needed an ADR;
-ADR-0040's accepted Option A resolves it **without** doing so — a reply rides the
+ADR-0041's accepted Option A resolves it **without** doing so — a reply rides the
 parent turn's existing controller predicate, so nothing refused before becomes
-reachable. Option B, if it is ever un-deferred behind ADR-0040's four recorded
+reachable. Option B, if it is ever un-deferred behind ADR-0041's four recorded
 conditions, is where the authority question would actually bite.
 
 **Concurrency.** Name release must remain exactly-once including cancel and
@@ -667,4 +667,4 @@ Interaction with a subagent (C007) is **not** part of this definition.
 | C004 projection-to-row coverage | closed | — (none; see §7 — D-8 governance gap) | `plans/closure/tui-subagent-and-job-visibility-convergence/004-status.md` | C001 (closed) |
 | C005 agent descriptors | closed | `plans/implementation/tui-subagent-and-job-visibility-convergence/003-agent-descriptors.md` | `plans/closure/tui-subagent-and-job-visibility-convergence/003-status.md` | C004 (closed) — conditional re-review discharged: closure found no defect in the additive-field chain |
 | C006 node lifetime | closed (answered + escalated) | — (none; see §7 — D-8 governance gap) | `plans/closure/tui-subagent-and-job-visibility-convergence/007-status.md` | C002 (closed), C004 (closed). **Residual unresolved:** a subagent *can* start with no active parent turn, and the reducer's drop is therefore a real defect. Retaining the node needs a projection home outside `active_turn.agent_tree` — the stop condition, escalated to parent **D5** / an ADR |
-| C007 send-to-subagent | closed | `plans/implementation/tui-subagent-and-job-visibility-convergence/005-send-to-subagent.md` | `plans/closure/tui-subagent-and-job-visibility-convergence/005-status.md` | none — ADR-0040 accepted 2026-10-18 (Option A), C005 closed |
+| C007 send-to-subagent | closed | `plans/implementation/tui-subagent-and-job-visibility-convergence/005-send-to-subagent.md` | `plans/closure/tui-subagent-and-job-visibility-convergence/005-status.md` | none — ADR-0041 accepted 2026-10-18 (Option A), C005 closed |

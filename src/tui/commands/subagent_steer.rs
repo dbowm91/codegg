@@ -9,7 +9,7 @@
 //! sent), so naming a subagent's daemon-local `u64` `task_id` here would be a
 //! type-shaped lie that only ever resolves to `turn_id_mismatch`.
 //!
-//! The subagent is not the recipient. ADR-0040 *Indirect*: the frontend steers
+//! The subagent is not the recipient. ADR-0041 *Indirect*: the frontend steers
 //! the controlling parent turn, and the parent decides whether to relay. Every
 //! sentence this module produces names that parent, never the subagent.
 //!
@@ -92,7 +92,7 @@ pub fn arm_addressee_from_focused_tab(app: &mut App) -> bool {
 ///
 /// One place, because the sentence is the contract: it names the **parent** as
 /// the recipient, and a second copy would be a second thing to keep honest when
-/// ADR-0040's failure modes are exactly the ones this wording exists to avoid.
+/// ADR-0041's failure modes are exactly the ones this wording exists to avoid.
 fn adopt(app: &mut App, addressee: SubagentAddressee) {
     let name = addressee.label().to_string();
     app.prompt_state.subagent_addressee = Some(addressee);
@@ -402,7 +402,7 @@ mod tests {
         TURN_ID_MISMATCH_CODE,
     };
 
-    /// ADR-0040's *Failure modes*, checked as literal properties: the accepted
+    /// ADR-0041's *Failure modes*, checked as literal properties: the accepted
     /// sentence names the **parent** as recipient and never claims delivery to
     /// the subagent.
     #[test]

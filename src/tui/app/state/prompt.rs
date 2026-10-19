@@ -78,7 +78,7 @@ pub struct PromptState {
     ///
     /// Deliberately **not** an `InputTarget` variant. Arming records what the
     /// text means; it does not move the keyboard, so the composer still owns
-    /// Enter and `input_target()` is unchanged (ADR-0040, *Neutral or
+    /// Enter and `input_target()` is unchanged (ADR-0041, *Neutral or
     /// deferred*). Setting it routes the next submit to `TurnSteer` for the
     /// controlling parent turn; clearing it restores the ordinary
     /// `TurnSubmit` path exactly.

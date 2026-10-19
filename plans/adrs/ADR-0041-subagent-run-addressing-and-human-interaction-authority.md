@@ -1,10 +1,19 @@
-# ADR-0040: Subagent Run Addressing and Human Interaction Authority
+# ADR-0041: Subagent Run Addressing and Human Interaction Authority
 
 Status: **accepted**
 
 Date: 2026-10-18
 
 Accepted: 2026-10-18
+
+Renumbered: **2026-10-19**, from ADR-0040. Concurrent work landed
+`ADR-0040-evidence-based-agent-recovery-termination.md` on `main` while this
+work was unmerged, so two accepted ADRs claimed 0040.
+`scripts/check_adr_integrity.py` keys active ADRs by number and refuses the
+duplicate. This ADR had never reached `main`, so it is the one that moves.
+**Only the identifier changed** — the decision, Option A, its consequences, the
+Option B deferral conditions and the acceptance record below are untouched.
+Every reference in the repository was updated with it.
 
 Decision owners: project maintainers
 

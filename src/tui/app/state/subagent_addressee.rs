@@ -1,7 +1,7 @@
-//! C007 / ADR-0040 Option A: who the composer's next submission is for.
+//! C007 / ADR-0041 Option A: who the composer's next submission is for.
 //!
 //! An armed addressee is **composer data, not a focus mode**. `InputTarget`
-//! stays `{Build, Chat}` (ADR-0040, *Neutral or deferred*) because this state
+//! stays `{Build, Chat}` (ADR-0041, *Neutral or deferred*) because this state
 //! does not change where keystrokes go; it changes what the *same* keystroke
 //! means on submit. Arming therefore never moves the keyboard off the prompt
 //! and never makes a side panel the destination.
@@ -33,7 +33,7 @@ pub const MAX_ADDRESSED_DESCRIPTION_CHARS: usize = 160;
 /// from. The `task_id` is load-bearing and is **not** the daemon's turn
 /// identity: it is the join key for invalidation only. The steer itself is
 /// addressed to the *controlling parent turn* — see
-/// [`addressed_text`](Self::addressed_text) and ADR-0040's *Addressing*.
+/// [`addressed_text`](Self::addressed_text) and ADR-0041's *Addressing*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentAddressee {
     /// The name shown on the surface the user armed from, e.g. `Sally`.
@@ -109,7 +109,7 @@ impl SubagentAddressee {
 
     /// The payload handed to the controlling parent turn.
     ///
-    /// The parent agent is the recipient, always — ADR-0040 *Indirect*: the
+    /// The parent agent is the recipient, always — ADR-0041 *Indirect*: the
     /// frontend steers the turn that owns the subagent, and the parent decides
     /// whether to relay. So this names the subagent as an **addressee inside
     /// the parent's context** and never presents the subagent as the party the
