@@ -1142,7 +1142,7 @@ fn contract_snapshot_admits_programmatic_only_and_hash_covers_policy() {
 #[test]
 fn adapters_are_hidden_and_ordinary_definitions_unchanged() {
     use codegg::tool::disclosure;
-    let registry = ToolRegistry::with_defaults();
+    let (_workspace, registry) = workspace_registry();
     assert!(registry.contains("git_read"));
     assert!(registry.contains("lsp_read"));
 
