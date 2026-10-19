@@ -2,6 +2,8 @@
 
 Status: conditionally closed — M004 session/agent-private reclamation is closed. M003 remains conditionally closed pending Linux and Windows native sandbox qualification.
 
+Post-closure qualification successor: `plans/subsystems/managed-agent-scratch-native-qualification-corrective-addendum.md` (C001 Linux native Required ready; C002 Windows native Required blocked). This addendum does not reopen M001/M002/M004, Windows shared cleanup, or already-green PR #128 CI.
+
 Planning baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (main inspected 2026-10-16).
 
 Long-term references:
