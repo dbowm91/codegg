@@ -36,6 +36,18 @@ fn project_initial_tool_palette(
         .collect()
 }
 
+fn strip_unsupported_defer_flags(
+    definitions: Vec<crate::provider::ToolDefinition>,
+) -> Vec<crate::provider::ToolDefinition> {
+    definitions
+        .into_iter()
+        .map(|mut definition| {
+            definition.defer_loading = None;
+            definition
+        })
+        .collect()
+}
+
 fn contextual_tool_names(
     context_read_available: bool,
     active_goal: bool,
@@ -1343,7 +1355,11 @@ impl AgentLoop {
             // with provider_ids not matching "openai" or "anthropic", so they get default capabilities
             // (supports_defer_loading: false). All tools are sent in the single `tools` array.
             self.services.deferred_tool_definitions.clear();
-            (all_definitions, Vec::new())
+            // Palette projection marks omitted tools with a provider
+            // extension. If this endpoint cannot honor deferral (or it is
+            // disabled), all authorized tools are sent directly and the
+            // unsupported marker must not survive into the final request.
+            (strip_unsupported_defer_flags(all_definitions), Vec::new())
         };
 
         // Update tool_search with available tool names so search results
@@ -1520,6 +1536,20 @@ mod tests {
         assert_eq!(projected.len(), 2);
         assert_eq!(projected[0].defer_loading, None);
         assert_eq!(projected[1].defer_loading, Some(true));
+    }
+
+    #[test]
+    fn unsupported_endpoint_receives_no_defer_loading_fields() {
+        let definitions = vec![crate::provider::ToolDefinition {
+            name: "tool_search".into(),
+            description: "discover tools".into(),
+            parameters: serde_json::json!({"type":"object"}),
+            defer_loading: Some(true),
+        }];
+        let sanitized = strip_unsupported_defer_flags(definitions);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].name, "tool_search");
+        assert_eq!(sanitized[0].defer_loading, None);
     }
 
     #[test]

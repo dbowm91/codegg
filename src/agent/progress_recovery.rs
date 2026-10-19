@@ -42,7 +42,9 @@ pub enum ResultSizeClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgressSignal {
-    None,
+    /// The observation path could not determine whether the underlying work
+    /// changed. Lack of an observed write is not evidence of no progress.
+    Unknown,
     NewEvidence,
     StateChanged,
 }
@@ -163,6 +165,8 @@ impl Default for AutonomyState {
 
 impl AutonomyState {
     pub const MAX_TRANSITIONS: u8 = 4;
+    /// A post-tool `stop`/`end_turn` is treated as a soft finish at most once;
+    /// `tool_calls` and hard limits retain their own handling in the loop.
     pub const MAX_POST_TOOL_CONTINUATIONS: u8 = 1;
 
     pub fn phase(&self) -> AutonomyPhase {
@@ -199,17 +203,6 @@ impl AutonomyState {
             RecoveryDecision::Recover { .. } => {
                 self.transitions = self.transitions.saturating_add(1);
                 self.phase = AutonomyPhase::ContinueOrReplan;
-                if self.transitions > Self::MAX_TRANSITIONS {
-                    self.phase = AutonomyPhase::Stall;
-                    return RecoveryDecision::Stalled(StalledReport {
-                        last_progress: ProgressSignal::None,
-                        incident: IncidentKind::NoProgress,
-                        attempted_recoveries: self.transitions,
-                        evidence: "autonomy transition bound exceeded".into(),
-                        suggested_user_action: "Inspect the last observable tool result and provide a narrower next step.".into(),
-                        execution_status: None,
-                    });
-                }
             }
             RecoveryDecision::Stalled(_) => self.phase = AutonomyPhase::Stall,
             RecoveryDecision::Continue => {}
@@ -423,13 +416,16 @@ impl RecoveryController {
         } else if successful && (novel_read || novel_read_result) {
             ProgressSignal::NewEvidence
         } else {
-            ProgressSignal::None
+            ProgressSignal::Unknown
         };
 
         let execution_status = observation.execution_status;
         let incident = self.detect(&observation);
         self.push(observation);
-        if progress != ProgressSignal::None {
+        if matches!(
+            progress,
+            ProgressSignal::NewEvidence | ProgressSignal::StateChanged
+        ) {
             self.incident = None;
             self.incident_key = None;
             self.recoveries = 0;
@@ -458,13 +454,7 @@ impl RecoveryController {
             1 => RecoveryAction::Correct,
             2 => RecoveryAction::RestoreBasePalette,
             3 => RecoveryAction::Replan,
-            _ => {
-                tracing::warn!(
-                    recoveries = self.recoveries,
-                    "unmapped recovery count; defaulting to Stall"
-                );
-                RecoveryAction::Stall
-            }
+            _ => RecoveryAction::Replan,
         };
         let evidence = bounded_evidence(kind, &self.history);
         let current = RecoveryIncident {
@@ -475,18 +465,7 @@ impl RecoveryController {
             execution_status,
         };
         self.incident = Some(current.clone());
-        if action == RecoveryAction::Stall || self.recoveries >= self.max_recoveries {
-            return RecoveryDecision::Stalled(StalledReport {
-                last_progress: ProgressSignal::None,
-                incident: kind,
-                attempted_recoveries: self.recoveries,
-                evidence,
-                suggested_user_action:
-                    "Inspect the last observable tool error or provide a narrower next step.".into(),
-                execution_status: current.execution_status,
-            });
-        }
-        self.recoveries = self.recoveries.saturating_add(1);
+        self.recoveries = self.recoveries.saturating_add(1).min(self.max_recoveries);
         RecoveryDecision::Recover {
             action,
             incident: current,
@@ -652,7 +631,7 @@ mod tests {
         )
     }
     #[test]
-    fn first_repeat_nudges_and_eventually_stalls() {
+    fn repeated_unknown_work_gets_bounded_replanning_without_terminal_stall() {
         let mut c = RecoveryController::new(8, 4);
         assert_eq!(
             c.observe(obs("read", "a", "same")),
@@ -665,13 +644,13 @@ mod tests {
                 ..
             }
         ));
-        for _ in 0..3 {
-            let _ = c.observe(obs("read", "a", "same"));
+        for _ in 0..32 {
+            assert!(matches!(
+                c.observe(obs("read", "a", "same")),
+                RecoveryDecision::Recover { .. }
+            ));
         }
-        assert!(matches!(
-            c.observe(obs("read", "a", "same")),
-            RecoveryDecision::Stalled(_)
-        ));
+        assert_eq!(c.recovery_count(), 4);
     }
     #[test]
     fn changed_result_is_progress() {
@@ -907,58 +886,49 @@ mod tests {
         assert_eq!(c.recovery_count(), 0);
     }
 
-    /// W7: the ladder still terminates a genuinely repeating turn, through the
-    /// same bounded rungs and no further. Widening what counts as progress must
-    /// never make a real loop survivable.
+    /// W7: repeated identity is diagnostic evidence for bounded guidance, not
+    /// proof that the same work revision remains incomplete.
     #[test]
-    fn the_ladder_still_terminates_a_genuinely_repeating_turn() {
+    fn the_ladder_saturates_at_replanning_without_terminal_authority() {
         let mut c = RecoveryController::default();
         let mut rungs = Vec::new();
-        let mut stalled = false;
         for _ in 0..12 {
-            match c.observe(read_obs("read", "same-path", "same-bytes")) {
-                RecoveryDecision::Recover { action, .. } => rungs.push(action),
-                RecoveryDecision::Stalled(_) => {
-                    stalled = true;
-                    break;
-                }
-                _ => {}
+            if let RecoveryDecision::Recover { action, .. } =
+                c.observe(read_obs("read", "same-path", "same-bytes"))
+            {
+                rungs.push(action);
             }
         }
-        assert!(stalled, "an identical repeat must still terminate the turn");
         assert_eq!(
-            rungs,
+            &rungs[..4],
             vec![
                 RecoveryAction::Nudge,
                 RecoveryAction::Correct,
                 RecoveryAction::RestoreBasePalette,
                 RecoveryAction::Replan,
             ],
-            "the bounded ladder must not grow or reorder"
+            "the bounded guidance ladder must not grow or reorder"
         );
+        assert!(rungs[4..]
+            .iter()
+            .all(|action| *action == RecoveryAction::Replan));
+        assert_eq!(c.recovery_count(), DEFAULT_MAX_RECOVERIES);
     }
 
-    /// W7: the same guarantee through `AutonomyState`, which owns the turn-level
-    /// transition bound. A stalled turn still breaks, and the transition budget
-    /// remains the backstop for a loop that never classifies an incident.
+    /// Repeats without revision/completeness evidence cannot cross into a
+    /// terminal stall through the turn-level autonomy owner either.
     #[test]
-    fn autonomy_state_still_bounds_and_breaks_a_repeating_turn() {
+    fn autonomy_state_keeps_repeated_unknown_outcomes_recoverable() {
         let mut state = AutonomyState::default();
-        let mut recoveries_before_stall = None;
+        let mut last = RecoveryDecision::Continue;
         for _ in 0..12 {
-            if let RecoveryDecision::Stalled(report) = state.observe_tool_result(
+            last = state.observe_tool_result(
                 &ToolExecutionOutcome::success("same-bytes"),
                 obs("read", "same-path", "same-bytes"),
-            ) {
-                recoveries_before_stall = Some(report.attempted_recoveries);
-                break;
-            }
+            );
         }
-        assert!(
-            recoveries_before_stall.is_some(),
-            "the transition bound must still break the turn"
-        );
-        assert_eq!(state.phase(), AutonomyPhase::Stall);
+        assert!(matches!(last, RecoveryDecision::Recover { .. }));
+        assert_eq!(state.phase(), AutonomyPhase::ContinueOrReplan);
     }
 
     /// W1 evidence (a): distinct failing commands are distinct work.

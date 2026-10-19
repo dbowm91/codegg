@@ -443,21 +443,37 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
             }
         ),
         ControlOutcome::Terminal(status) => format!("Run is terminal: {}", status.as_str()),
-        ControlOutcome::Status(run) => format!(
-            "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
-            run.run_id,
-            run.status.as_str(),
-            run.task_id,
-            run.result_ref.unwrap_or_default()
+        ControlOutcome::Status(run) => append_run_failure(
+            format!(
+                "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
+                run.run_id,
+                run.status.as_str(),
+                run.task_id,
+                run.result_ref.clone().unwrap_or_default()
+            ),
+            &run,
         ),
-        ControlOutcome::Wait { run, timed_out } => format!(
-            "Run: {}\nStatus: {}\nTimed out: {}\nResult: {}",
-            run.run_id,
-            run.status.as_str(),
-            timed_out,
-            run.result_ref.unwrap_or_default()
+        ControlOutcome::Wait { run, timed_out } => append_run_failure(
+            format!(
+                "Run: {}\nStatus: {}\nTimed out: {}\nResult: {}",
+                run.run_id,
+                run.status.as_str(),
+                timed_out,
+                run.result_ref.clone().unwrap_or_default()
+            ),
+            &run,
         ),
     }
+}
+
+fn append_run_failure(mut output: String, run: &codegg_core::agent_run::AgentRunRecord) -> String {
+    if let Some(class) = run.failure_class.as_deref() {
+        output.push_str(&format!("\nFailure stage/class: {class}"));
+    }
+    if let Some(message) = run.failure_message.as_deref() {
+        output.push_str(&format!("\nFailure detail: {message}"));
+    }
+    output
 }
 
 impl TaskTool {
@@ -1694,12 +1710,15 @@ impl TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 return Ok(match run {
-                    Some(run) => format!(
-                        "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
-                        task.task_id,
-                        run.run_id,
-                        run.status.as_str(),
-                        run.result_ref.unwrap_or_default()
+                    Some(run) => append_run_failure(
+                        format!(
+                            "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
+                            task.task_id,
+                            run.run_id,
+                            run.status.as_str(),
+                            run.result_ref.clone().unwrap_or_default()
+                        ),
+                        &run,
                     ),
                     None => format!("Task: {}\nStatus: {}", task.task_id, task.status.as_str()),
                 });

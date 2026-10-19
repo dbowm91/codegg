@@ -130,6 +130,12 @@ Thirteen tools are registered, split by whether the model sees them up front:
 
 `tool_search` is how the model finds the deferred half.
 
+Search accepts ordinary multiword task phrases and ranks matching names and
+descriptions deterministically. Use `query: ""` with `offset` and `limit` to
+browse compact descriptors for tools allowed in the current session. Pages
+default to 10 and cap at 50; schemas remain omitted until one exact tool name
+is requested with `detail: "schema"`.
+
 `command_preflight` and `config_preflight` are also driven from the harness
 side by the eggsact preflight service, which checks shell commands, patches,
 and config writes before they take effect. Command-risk findings are advisory,

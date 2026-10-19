@@ -354,6 +354,16 @@ fn bound(value: impl AsRef<str>, max: usize) -> String {
     value[..end].to_owned()
 }
 
+fn bounded_redacted_failure_message(message: &str) -> String {
+    use crate::projection_replay::redactor::{FieldName, ProjectionFieldRedactor, RedactionResult};
+    match ProjectionFieldRedactor::new().redact_text(FieldName::Text, message) {
+        RedactionResult::Unchanged => bound(message, MAX_FAILURE_BYTES),
+        RedactionResult::Redacted { text, .. } => bound(text, MAX_FAILURE_BYTES),
+        RedactionResult::Downgraded { marker, .. } => marker,
+        RedactionResult::Failed { .. } => "[REDACTED:diagnostic-unavailable]".to_string(),
+    }
+}
+
 fn task_transition_allowed(from: AgentTaskStatus, to: AgentTaskStatus) -> bool {
     matches!(
         (from, to),
@@ -905,7 +915,8 @@ impl AgentRunStore for InMemoryAgentRunStore {
         run.terminal = Some(outcome.terminal());
         run.result_ref = result_ref.map(|v| bound(v, MAX_RUN_RESULT_BYTES));
         run.failure_class = failure_class.map(|v| bound(v, 128));
-        run.failure_message = failure_message.map(|v| bound(v, MAX_FAILURE_BYTES));
+        run.failure_message =
+            failure_message.map(|message| bounded_redacted_failure_message(&message));
         run.finished_at = Some(now);
         run.updated_at = now;
         let task_id = run.task_id.clone();
@@ -1095,7 +1106,15 @@ impl AgentRunStore for SqliteAgentRunStore {
         task: NewAgentTask,
         run: NewAgentRun,
     ) -> Result<AgentRunSubmission, AgentRunStoreError> {
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        // Read-then-write admission must take the SQLite writer reservation
+        // before inspecting the delegation key or parent rows. A deferred
+        // read transaction can otherwise fail its write-lock upgrade with
+        // SQLITE_BUSY_SNAPSHOT under concurrent spawn traffic.
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
         if let Some(row) = sqlx::query("SELECT task_id FROM agent_task WHERE delegation_key = ?")
             .bind(&task.delegation_key)
             .fetch_optional(&mut *tx)
@@ -1398,7 +1417,8 @@ impl AgentRunStore for SqliteAgentRunStore {
         run.terminal = Some(outcome.terminal());
         run.result_ref = result_ref.map(|v| bound(v, MAX_RUN_RESULT_BYTES));
         run.failure_class = failure_class.map(|v| bound(v, 128));
-        run.failure_message = failure_message.map(|v| bound(v, MAX_FAILURE_BYTES));
+        run.failure_message =
+            failure_message.map(|message| bounded_redacted_failure_message(&message));
         run.finished_at = Some(now);
         run.updated_at = now;
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
@@ -1553,6 +1573,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_failure_diagnostic_is_redacted_and_bounded() {
+        let store = InMemoryAgentRunStore::new();
+        let submission = store
+            .create_or_get(task("redacted-failure", None), run(None))
+            .await
+            .unwrap();
+        store
+            .finish(
+                &submission.run.run_id,
+                AgentRunTerminalOutcome::Failed,
+                None,
+                Some("provider".into()),
+                Some("request failed api_key=supersecretvalue123".into()),
+            )
+            .await
+            .unwrap();
+        let stored = store
+            .get_run(&submission.run.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let message = stored.failure_message.expect("failure detail");
+        assert!(!message.contains("supersecretvalue123"));
+        assert!(message.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
     async fn forged_parent_is_rejected() {
         let store = InMemoryAgentRunStore::new();
         let err = store
@@ -1699,6 +1746,59 @@ mod tests {
             store.get_result(&first.run.run_id).await.unwrap(),
             Some(structured)
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_concurrent_duplicate_admission_converges_to_one_run() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let directory = tempfile::tempdir().expect("database directory");
+        let path = directory.path().join("agent-runs.sqlite");
+        let options =
+            SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", path.display()))
+                .expect("sqlite options")
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(std::time::Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(8)
+            .connect_with(options)
+            .await
+            .expect("pool");
+        crate::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+        let mut joins = Vec::new();
+        for _ in 0..8 {
+            let pool = pool.clone();
+            let barrier = barrier.clone();
+            joins.push(tokio::spawn(async move {
+                barrier.wait().await;
+                SqliteAgentRunStore::new(pool)
+                    .create_or_get(task("same-concurrent-key", None), run(None))
+                    .await
+                    .expect("concurrent admission")
+            }));
+        }
+        let mut submissions = Vec::new();
+        for join in joins {
+            submissions.push(join.await.expect("join"));
+        }
+        assert_eq!(
+            submissions
+                .iter()
+                .filter(|submission| submission.created)
+                .count(),
+            1
+        );
+        let run_ids: std::collections::HashSet<_> = submissions
+            .iter()
+            .map(|submission| submission.run.run_id.clone())
+            .collect();
+        assert_eq!(run_ids.len(), 1);
+        pool.close().await;
     }
 
     #[tokio::test]

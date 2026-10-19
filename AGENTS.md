@@ -8,7 +8,8 @@ Rust 1.89+, edition 2021.
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/desktop
                           # boundaries, sandbox, execution-ownership, TUI authority,
                           # http-route-disposition, audit-coverage,
-                          # queue-delivery-callsites, scheduler-bypass,
+                          # queue-delivery-callsites, queue-write-transaction-shape,
+                          # scheduler-bypass,
                           # config-merge-coverage, no-hardcoded-models, provider
                           # wire/catalog/resilience +
                           # OpenAI endpoint, Eggwork target routing, cargo check workspace
@@ -87,7 +88,8 @@ cargo nextest run --workspace --locked --profile ci  # capped full suite (needs 
 
 `verify.sh quick` runs the routine subset. CI (`.github/workflows/ci.yml`) is one bounded
 `verify` job: agent schema, core-boundary, sandbox, execution-ownership, tui-authority,
-http-route-disposition, audit-coverage, scheduler-bypass, config-merge-coverage, fmt,
+http-route-disposition, audit-coverage, queue-delivery-callsites,
+queue-write-transaction-shape, scheduler-bypass, config-merge-coverage, fmt,
 clippy, workspace tests.
 CI is a strict **subset** of `quick` — it omits the client/desktop boundaries and the
 provider wire/catalog/resilience, OpenAI endpoint, and Eggwork routing guards, so a
@@ -96,12 +98,23 @@ change-triggered (`ls scripts/check_*` for the full list):
 
 - `codegg-core` or workspace deps → `bash scripts/check-core-boundary.sh`
 - Daemon-internal admission surfaces → `python3 scripts/check_queue_delivery_callsites.py`
-  (M003 queue delivery, ADR-0038 — exactly two permitted callers: the post-terminal
-  wake and the bounded restart twin; the guard also **fails when neither caller is
-  wired**, and `--self-test` injects a third caller to prove it is not vacuous).
+  (M003 queue delivery, ADR-0038 — **three** permitted callers: the post-terminal
+  wake, the bounded restart twin, and M007's bounded advance tick, which ADR-0039
+  accepted; the guard also **fails when none is wired**, and `--self-test` injects a
+  **fourth** caller to prove it is not vacuous).
   Its sibling `check_idle_continuation_callsites.py` covers ADR-0031's delegated
   entry. Both live in `scripts/verify.sh quick` and in CI. Widening either guard's
-  caller set is a recorded decision, never a quiet third call site.
+  caller set is a recorded decision, never a quiet extra call site.
+- Queue **store** transaction shape → `python3 scripts/check_queue_write_transaction_shape.py`
+  (C002). A queue write path that reads before it writes must open its transaction
+  with `begin_immediate` (`BEGIN IMMEDIATE`), not `pool.begin()`. A deferred
+  transaction takes no lock, so the first `SELECT` holds a shared read lock and the
+  first `UPDATE` has to upgrade it — and SQLite refuses that upgrade **without
+  waiting**, so two such callers can both fail with `SQLITE_BUSY` instead of one
+  winning and the other waiting out `busy_timeout`. Measured at 204 of 256
+  concurrent claim rounds before C002. `--self-test` injects a deferred
+  read-then-write path and a closing rollback to prove the guard rejects both. In
+  `scripts/verify.sh quick` and CI.
 - Process spawning / execution surfaces → `python3 scripts/check_execution_ownership.py`
   and keep `docs/execution-ownership.toml` in sync; scheduler changes also need
   `check_scheduler_bypass.py`; daemon path handling needs `check_daemon_cwd_usage.py`

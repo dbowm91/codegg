@@ -203,18 +203,20 @@ to `SandboxProfile` plus Landlock.
 
 ### Command preflight is advisory
 
-`PreflightService` runs on every `bash` call and reports findings. It carries
-authority over the command **only when it actually found something**
-(`preflight_requires_escalation`): the escalation arm must test for a finding,
-not for the preflight having run. The service is wired by default, so
-`CommandPreflightResult` is always present — testing presence escalated every
-`bash` call including clean ones.
+`PreflightService` runs on every `bash` call and reports findings. Findings
+remain advisory and may add a reason to a request already requiring approval;
+they never create an escalation solely because the service ran. The resolved
+`block_on_definite` mode is a separate caller policy: its typed `blocked` result
+is enforced consistently at the agent boundary and in direct `bash` calls.
+Other modes carry only the bounded advisory summary. The service is wired by
+default, so `CommandPreflightResult` may be present for a clean command too.
 
 That arm is also reached from `PermissionResult::Allow`, not only `Ask`, so a
-presence test silently discarded a stored `AlwaysAllow` grant: the operator's
-prior approval was outranked by an advisory scan with nothing to say. An
-advisory may add a reason to a request that is already escalating; it may never
-create one on its own, and it may never override a stored operator decision.
+presence test silently discarded a stored `AlwaysAllow` grant. An advisory may
+add a reason to a request that is already escalating; it may never create one
+on its own or override a stored operator decision. Explicit permission Deny,
+security Deny, and the separately configured `block_on_definite` policy remain
+authoritative.
 
 ## Key Types & APIs
 

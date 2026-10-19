@@ -40,6 +40,14 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
     ))
     .await
     .expect("workspace registry");
+    let workspace_root = std::env::current_dir()
+        .expect("test working directory")
+        .canonicalize()
+        .expect("canonical test workspace");
+    workspace_registry
+        .get_or_register(&workspace_root)
+        .await
+        .expect("register test workspace");
     let services = codegg_core::workspace_services::WorkspaceServiceRegistry::new(
         workspace_registry,
         Arc::new(codegg_core::workspace_services::ProductionWorkspaceServicesFactory),
@@ -77,6 +85,7 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
         generation,
     );
     let mut tool = BashTool::new()
+        .with_workspace_root(workspace_root)
         .with_run_store(store)
         .with_submission(submission);
     let _scheduler_task = scheduler.spawn_run();

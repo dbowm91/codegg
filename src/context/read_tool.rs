@@ -3,6 +3,9 @@ use serde_json::Value;
 
 use super::handle::{clamp_to_char_boundary, ContextHandle};
 
+const DEFAULT_PAGE_BYTES: usize = 20_000;
+const MAX_PAGE_BYTES: usize = 64_000;
+
 pub struct ContextReadTool {
     store: std::sync::Arc<dyn crate::context::ContextArtifactStore>,
     session_id: String,
@@ -50,6 +53,7 @@ impl crate::tool::Tool for ContextReadTool {
                 "max_bytes": {
                     "type": "integer",
                     "default": 20000,
+                    "maximum": 64000,
                     "description": "Maximum bytes to return"
                 }
             },
@@ -67,12 +71,29 @@ impl crate::tool::Tool for ContextReadTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| crate::error::ToolError::Format("missing 'handle' parameter".into()))?;
 
-        let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let offset = match input.get("offset") {
+            None => 0,
+            Some(value) => value
+                .as_u64()
+                .and_then(|offset| usize::try_from(offset).ok())
+                .unwrap_or(usize::MAX),
+        };
 
-        let max_bytes = input
+        let requested_max_bytes = input
             .get("max_bytes")
             .and_then(|v| v.as_u64())
-            .unwrap_or(20000) as usize;
+            .unwrap_or(DEFAULT_PAGE_BYTES as u64);
+        if requested_max_bytes > MAX_PAGE_BYTES as u64 {
+            return Err(crate::error::ToolError::Format(format!(
+                "max_bytes exceeds the {MAX_PAGE_BYTES}-byte page limit"
+            )));
+        }
+        if requested_max_bytes == 0 {
+            return Err(crate::error::ToolError::Format(
+                "max_bytes must be greater than zero".into(),
+            ));
+        }
+        let max_bytes = requested_max_bytes as usize;
 
         // Parse the handle with the typed parser
         let parsed = ContextHandle::parse(handle_str)
@@ -159,7 +180,7 @@ mod tests {
             tool_name: Some("bash".into()),
             kind: ArtifactKind::ToolResult,
             created_at_ms: 1000,
-            content_hash: "abc".into(),
+            content_hash: crate::context::compute_content_hash(content),
             redacted_content: content.into(),
             raw_bytes_len: content.len(),
             estimated_tokens: 10,
@@ -224,6 +245,22 @@ mod tests {
         let result = tool.execute(input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cross-session"));
+    }
+
+    #[tokio::test]
+    async fn context_read_rejects_zero_or_oversized_pages() {
+        let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", "content");
+        let tool = ContextReadTool::new(store, "s1".into());
+        for max_bytes in [0, (MAX_PAGE_BYTES as u64) + 1] {
+            let error = tool
+                .execute(serde_json::json!({
+                    "handle": "ctx://tool/s1/0/c1",
+                    "max_bytes": max_bytes
+                }))
+                .await
+                .expect_err("invalid page limit");
+            assert!(error.to_string().contains("max_bytes"));
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -15,8 +15,9 @@
 //! guard, because a store test cannot observe them.
 
 use codegg_core::session::user_prompt_queue::{
-    UserPromptQueueDeliveryResolution, UserPromptQueueError, UserPromptQueueStatus,
-    UserPromptQueueStore, USER_PROMPT_QUEUE_MAX_PENDING, USER_PROMPT_QUEUE_TTL_MS,
+    UserPromptQueueDeliveryClaim, UserPromptQueueDeliveryResolution, UserPromptQueueError,
+    UserPromptQueueStatus, UserPromptQueueStore, USER_PROMPT_QUEUE_MAX_PENDING,
+    USER_PROMPT_QUEUE_TTL_MS,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -102,27 +103,24 @@ async fn status_of(store: &UserPromptQueueStore, entry_id: &str) -> UserPromptQu
 /// `rows_affected == 1`, and because the UPDATE is guarded on the row still being
 /// `pending`, at most one can win.
 ///
-/// **This test is flaky, and the assertion is left exactly as M003 wrote it.**
-/// Found by M006 while repeating the suite, which is the only reason it surfaced.
+/// **This test used to be flaky**, and its assertion is left exactly as M003 wrote
+/// it. M006 found the cause while repeating the suite — reproduced 4 times in 12
+/// runs — and the maintainer landed M007 without fixing it, filing a corrective
+/// instead. C002 fixed it; see
+/// `user_prompt_queue_concurrent_claims_never_deadlock_on_lock_upgrade` below for
+/// the repeated form that measures the rate rather than betting on one round.
 ///
-/// The failure is `Storage(Database("error returned from database: (code: 6)
-/// database is deadlocked"))` on **both** futures — reproduced 4 times in 12 runs.
-/// `claim_next_for_delivery` does `begin()` (deferred) → `SELECT` → `UPDATE`, and
-/// SQLite refuses to upgrade a shared read lock to a write lock while another
-/// connection holds a read lock. It does not wait, because waiting could deadlock,
-/// and `busy_timeout` does not retry it: this is an upgrade deadlock, not
-/// contention.
+/// The failure was `Storage(Database("error returned from database: (code: 6)
+/// database is deadlocked"))` on **both** futures. `claim_next_for_delivery` did
+/// `begin()` (deferred) → `SELECT` → `UPDATE`, and SQLite refuses to upgrade a
+/// shared read lock to a write lock while another connection holds a read lock. It
+/// does not wait, because waiting could deadlock, and `busy_timeout` does not retry
+/// it: this was an upgrade deadlock, not contention.
 ///
-/// Two `expect` calls make that fatal here, while the at-most-once property itself
-/// holds — neither caller wrote anything, so nothing is double-delivered. The
-/// honest assertion would be "at most one wins", the way M006's
-/// `a_steer_settlement_is_at_most_once` states it.
-///
-/// **Not fixed here.** This is closed M003 work, and the fix is a store-wide
-/// transaction-shape decision (`BEGIN IMMEDIATE` on every write path, or a
-/// single-statement fence) that belongs to a corrective milestone, not to a
-/// feature. Reported in `plans/closure/user-prompt-queue/006-status.md` §7 and in
-/// the roadmap's §10.
+/// Two `expect` calls made that fatal here, while the at-most-once property itself
+/// held — neither caller wrote anything, so nothing was double-delivered. The
+/// assertion below is still `winners == 1`, which is what the store actually
+/// guarantees once the write lock is taken at `BEGIN`.
 #[tokio::test]
 async fn user_prompt_queue_concurrent_claims_admit_exactly_one_entry() {
     let pool = isolated_pool().await;
@@ -136,6 +134,120 @@ async fn user_prompt_queue_concurrent_claims_admit_exactly_one_entry() {
     let claims = [first.expect("claim a"), second.expect("claim b")];
     let winners = claims.iter().filter(|claim| claim.is_some()).count();
     assert_eq!(winners, 1, "exactly one claimant must win the entry");
+}
+
+/// The same race as above, run often enough that its rate is a measurement rather
+/// than an anecdote.
+///
+/// A single round cannot prove the lock-upgrade deadlock is gone: before C002 this
+/// shape failed a minority of rounds, which is exactly why it read as an
+/// unexplained flake for three milestones. Asserting over one round would let the
+/// old code pass whenever the two connections happened not to interleave, and a
+/// guard that passes on luck is not a guard. So this test states the **whole**
+/// contract across every round: no round may fail to acquire the write lock, and
+/// every round must produce exactly one winner.
+///
+/// Each round adds its own entry and settles the winner, so rounds are independent
+/// and the session never approaches the backlog bound.
+///
+/// **There is deliberately no hand-written "two deferred readers" reproduction
+/// here.** One was written and removed: sqlx's SQLite driver resolves lock waits
+/// through an *unlock-notify* VFS, so a connection parked on a lock its peer will
+/// never release waits indefinitely rather than returning `SQLITE_BUSY`. Holding
+/// one deferred reader open while a second tries to upgrade hangs the test binary
+/// instead of failing it, which is a worse failure than the one it would prove.
+/// The store's own two-caller race terminates because both callers finish, which
+/// is why the measurement lives here and the *shape* is pinned statically by
+/// `scripts/check_queue_write_transaction_shape.py`.
+#[tokio::test]
+async fn user_prompt_queue_concurrent_claims_never_deadlock_on_lock_upgrade() {
+    const ROUNDS: usize = 64;
+
+    let pool = isolated_pool().await;
+    let store = UserPromptQueueStore::new(pool.clone());
+    ensure_session(&pool, SESSION_ID).await;
+
+    let mut storage_failures: Vec<String> = Vec::new();
+    let mut fence_failures: Vec<String> = Vec::new();
+    // Compact on purpose: dumping the whole claim record made a 51-round failure
+    // unreadable, which is how a real failure gets skimmed past.
+    let claimed = |claim: &Option<UserPromptQueueDeliveryClaim>| {
+        claim
+            .as_ref()
+            .map(|claim| claim.entry.id.clone())
+            .unwrap_or_else(|| "no entry".to_owned())
+    };
+
+    for round in 0..ROUNDS {
+        let entry_id = format!("entry-race-{round}");
+        store
+            .add(
+                OWNER,
+                SESSION_ID,
+                &entry_id,
+                &format!("prompt {round}"),
+                None,
+                T0,
+            )
+            .await
+            .expect("seed add");
+
+        let (first, second) = tokio::join!(
+            store.claim_next_for_delivery(SESSION_ID, T0 + 1),
+            store.claim_next_for_delivery(SESSION_ID, T0 + 2),
+        );
+        let (first, second) = match (first, second) {
+            (Ok(first), Ok(second)) => (first, second),
+            (first, second) => {
+                // Recorded rather than panicked, so one run reports how *many*
+                // rounds were affected instead of stopping at the first.
+                let side =
+                    |result: Result<Option<UserPromptQueueDeliveryClaim>, UserPromptQueueError>| {
+                        match result {
+                            Ok(Some(claim)) => format!("claimed {}", claim.entry.id),
+                            Ok(None) => "no entry".to_owned(),
+                            Err(error) => format!("error {error}"),
+                        }
+                    };
+                storage_failures.push(format!("round {round}: {} / {}", side(first), side(second)));
+                continue;
+            }
+        };
+
+        let winners = [first.as_ref(), second.as_ref()]
+            .into_iter()
+            .filter(|claim| claim.is_some())
+            .count();
+        if winners != 1 {
+            fence_failures.push(format!(
+                "round {round}: {winners} winners ({} / {})",
+                claimed(&first),
+                claimed(&second)
+            ));
+            continue;
+        }
+
+        let claim = first.or(second).expect("one winner exists");
+        store
+            .mark_delivered(&claim.entry.id, &format!("turn-race-{round}"), T0 + 3)
+            .await
+            .expect("settle the round");
+    }
+
+    assert!(
+        storage_failures.is_empty(),
+        "{} of {ROUNDS} concurrent claim rounds failed to reach the store instead of \
+         serializing on the write lock. Both callers must be able to run; a deferred \
+         `begin()` upgrading a shared read lock is what made them fail: {}",
+        storage_failures.len(),
+        storage_failures.join("; "),
+    );
+    assert!(
+        fence_failures.is_empty(),
+        "{} of {ROUNDS} rounds did not admit exactly one entry: {}",
+        fence_failures.len(),
+        fence_failures.join("; "),
+    );
 }
 
 /// Delivery is ordered by daemon-owned ordinal, not by claim time. A queue is a

@@ -109,6 +109,11 @@ async fn stream_with_retry_inner(
     let provider_name = loop_.services.provider.name().to_string();
     let model_name = request.model.clone();
     let mut last_err: Option<AppError> = None;
+    // A schema compatibility downgrade is request-only and may happen once
+    // only after a typed pre-response rejection. It never changes the
+    // provider, model, messages, or tool authority surface.
+    let mut attempt_request = request.clone();
+    let mut deferred_schema_downgraded = false;
 
     // M002: bind to the caller chain when present; otherwise fall back to
     // the provider-local ceiling. The effective bound is always the
@@ -143,7 +148,7 @@ async fn stream_with_retry_inner(
             attempt_index,
         });
 
-        match stream_once(loop_, request, &attempt_id).await {
+        match stream_once(loop_, &attempt_request, &attempt_id).await {
             Ok((events, _visible)) => {
                 tracing::debug!(
                     session_id = %session_id,
@@ -161,6 +166,58 @@ async fn stream_with_retry_inner(
                 let disposition = provider_disposition(&error);
                 let error_class = provider_error_class(&error);
                 let retryable = matches!(disposition, RetryDisposition::Transient);
+
+                if !visible_output
+                    && !deferred_schema_downgraded
+                    && has_deferred_tools(&attempt_request)
+                    && is_deferred_schema_rejection(&error)
+                {
+                    if is_cancelled(loop_) {
+                        publish_attempt_failed(
+                            &session_id,
+                            &attempt_id,
+                            attempt_index,
+                            &error_class,
+                            false,
+                            false,
+                        );
+                        return Err(cancelled_error());
+                    }
+                    chain.consume_one();
+                    if chain.is_expired()
+                        || attempt_index + 1 >= effective_max
+                        || chain.attempts_remaining() == 0
+                    {
+                        publish_attempt_failed(
+                            &session_id,
+                            &attempt_id,
+                            attempt_index,
+                            &error_class,
+                            false,
+                            false,
+                        );
+                        return Err(error);
+                    }
+                    strip_deferred_tool_flags(&mut attempt_request);
+                    deferred_schema_downgraded = true;
+                    publish_attempt_failed(
+                        &session_id,
+                        &attempt_id,
+                        attempt_index,
+                        &error_class,
+                        false,
+                        true,
+                    );
+                    tracing::info!(
+                        session_id = %session_id,
+                        provider = %provider_name,
+                        model = %model_name,
+                        attempt_id = %attempt_id,
+                        attempt_index,
+                        "provider rejected deferred tool schema before output; retrying once without deferral"
+                    );
+                    continue;
+                }
 
                 if is_cancelled(loop_) {
                     publish_attempt_failed(
@@ -348,6 +405,41 @@ fn provider_retry_after(error: &AppError) -> Option<Duration> {
         AppError::Provider(p) => p.retry_after(),
         _ => None,
     }
+}
+
+fn has_deferred_tools(request: &ChatRequest) -> bool {
+    request
+        .tools
+        .as_ref()
+        .is_some_and(|tools| tools.iter().any(|tool| tool.defer_loading.is_some()))
+}
+
+fn strip_deferred_tool_flags(request: &mut ChatRequest) {
+    if let Some(tools) = request.tools.as_mut() {
+        for tool in tools {
+            tool.defer_loading = None;
+        }
+    }
+}
+
+fn is_deferred_schema_rejection(error: &AppError) -> bool {
+    let AppError::Provider(ProviderError::Api { code, message, .. }) = error else {
+        return false;
+    };
+    if code.parse::<u16>().ok() != Some(400) {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("defer_loading")
+        && [
+            "unsupported",
+            "unknown",
+            "unrecognized",
+            "not allowed",
+            "invalid",
+        ]
+        .iter()
+        .any(|marker| message.contains(marker))
 }
 
 fn publish_attempt_failed(
@@ -603,5 +695,63 @@ mod tests {
         assert_eq!(provider_disposition(&err), RetryDisposition::Permanent);
         assert_eq!(provider_error_class(&err), "non_provider");
         assert!(provider_retry_after(&err).is_none());
+    }
+
+    #[test]
+    fn deferred_schema_retry_requires_typed_pre_response_400_evidence() {
+        assert!(is_deferred_schema_rejection(&AppError::Provider(
+            ProviderError::api("400", "unsupported field defer_loading")
+        )));
+        for error in [
+            AppError::Provider(ProviderError::api("401", "unsupported defer_loading")),
+            AppError::Provider(ProviderError::api("400", "invalid tool schema")),
+            AppError::Provider(ProviderError::Transport { kind: "io".into() }),
+            AppError::Other(anyhow::anyhow!("HTTP 400 unsupported defer_loading")),
+        ] {
+            assert!(!is_deferred_schema_rejection(&error));
+        }
+    }
+
+    #[test]
+    fn deferred_schema_downgrade_strips_only_wire_markers() {
+        let mut request = ChatRequest {
+            messages: vec![],
+            model: "same-model".into(),
+            tools: Some(vec![
+                crate::provider::ToolDefinition {
+                    name: "read".into(),
+                    description: "read source".into(),
+                    parameters: serde_json::json!({"type":"object"}),
+                    defer_loading: Some(true),
+                },
+                crate::provider::ToolDefinition {
+                    name: "write".into(),
+                    description: "write source".into(),
+                    parameters: serde_json::json!({"type":"object"}),
+                    defer_loading: Some(false),
+                },
+            ]),
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        };
+        strip_deferred_tool_flags(&mut request);
+        assert_eq!(request.model, "same-model");
+        let tools = request
+            .tools
+            .expect("the authorized surface remains present");
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["read", "write"]
+        );
+        assert!(tools.iter().all(|tool| tool.defer_loading.is_none()));
     }
 }

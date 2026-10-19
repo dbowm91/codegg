@@ -248,6 +248,34 @@ A client therefore sends a permutation of the **operable** ids only, and the
 daemon owns where anything else lands. See **Queue renumbering (C001)** below for
 what "anywhere else" means.
 
+**Queue write transactions (C002 — no migration):**
+every queue path that **reads before it writes** opens its transaction with
+`begin_immediate`, which issues `BEGIN IMMEDIATE`. `SqlitePool::begin()` issues a
+**deferred** `BEGIN`, which takes no lock: the first `SELECT` then holds a shared
+read lock and the first `UPDATE` has to *upgrade* it, and SQLite refuses that
+upgrade with `SQLITE_BUSY` — code 6, `database is deadlocked` — **without calling
+the busy handler**, because waiting could deadlock. `busy_timeout` therefore never
+applies, and two callers that each read before either wrote could *both* fail
+rather than one winning and the other waiting its turn. Measured at 204 of 256
+concurrent claim rounds before C002; zero in 192 after.
+
+`BEGIN IMMEDIATE` takes the write lock before any read, and that acquisition *does*
+honour `busy_timeout`. It goes through `sqlx`'s `TransactionManager` rather than
+raw SQL, so sqlx's own transaction-depth counter stays correct — a raw `BEGIN`
+leaves it at zero, which silently turns the queued rollback into a no-op.
+
+Two paths keep a deferred transaction on purpose. `ownership` writes nothing, so
+there is no read lock to upgrade. `list_live` does write (the lazy expiry sweep),
+but its **first** statement is that sweep, so it already takes the write lock at
+that statement; taking it earlier would serialize every queue read in the daemon.
+`scripts/check_queue_write_transaction_shape.py` enforces both the shape and the
+allowlist, and fails if a deferred site stops matching its stated reason.
+
+An uncommitted `ImmediateWrite` queues a `ROLLBACK` on its connection when it
+drops, exactly as `sqlx::Transaction` does. It deliberately does **not** close the
+connection to force the rollback: that is destructive for a shared-cache
+in-memory database, where dropping the last connection destroys the database.
+
 Delivery transitions are `pending` → `delivering` on claim, then exactly one of
 `delivered` (a turn was admitted), `failed` (a refusal, terminal, with a reason
 code), or back to `pending` (never reached admission — **not** a failure, and

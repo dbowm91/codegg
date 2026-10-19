@@ -533,6 +533,13 @@ Daemon-owned `task spawn` calls create an `AgentTaskRecord` and an
 identities; the scheduler's `JobId`/`AttemptId` remain the queue and attempt
 authority, and the numeric `TaskStore` ID is only a compatibility alias.
 
+SQLite `create_or_get` starts its read-then-write admission transaction with
+`BEGIN IMMEDIATE`, so concurrent idempotent submissions do not fail while
+upgrading a stale deferred snapshot. Terminal failure detail is bounded and
+field-redacted before persistence; authorized `task status`, `wait`, and
+durable `get` responses include the failure stage/class and safe detail while
+preserving the existing session/project access checks.
+
 The run store persists bounded provenance (session/turn, project/repository/
 workspace, agent/model, authority digest, budget, lineage, job/attempt links)
 and validates lifecycle transitions. Duplicate call-derived delegation keys
@@ -769,10 +776,14 @@ rows stay notify-only (see `architecture/jobs.md` and
 ### Progress recovery keys on the whole call, never the tool name
 
 `RecoveryController::detect` (`src/agent/progress_recovery.rs`) classifies a
-tool observation into an `IncidentKind` and climbs a bounded ladder
-(`Nudge` → `Correct` → `RestoreBasePalette` → `Replan` → `Stall`). `Stall`
-**breaks the turn** and reports "agent stalled". Four rules keep that from
-firing on a model that is simply working:
+tool observation into an `IncidentKind` and provides bounded guidance
+(`Nudge` → `Correct` → `RestoreBasePalette` → `Replan`). Repetition alone does
+not terminate a turn: observations without a correlated state revision and
+complete-work signal are `Unknown`, not confirmed stagnation. The existing
+`ExecutionLimits::max_turns`, goal limits, cancellation and policy outcomes
+remain terminal authorities. No production observation path currently emits
+affirmative `ConfirmedStagnation`; adding one requires trustworthy state and
+completeness evidence.
 
 - **Every incident is keyed on `action_key()`** — canonical tool *plus*
   normalized-argument fingerprint. There is deliberately no tool-name-only
@@ -802,6 +813,8 @@ firing on a model that is simply working:
   inheriting a count the model has already climbed. Without this, unrelated
   failures accumulated into a terminal stall, and a model that fixed its
   problem mid-sequence was terminated for the failures that preceded the fix.
+  Recovery counts saturate for bounded diagnostic guidance; they do not become
+  terminal authority without affirmative stagnation evidence.
 
 Error *wording* is deliberately not part of any key: the argument fingerprint
 already says which work a call is, and letting phrasing into the key would make

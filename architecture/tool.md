@@ -6,8 +6,11 @@
 schema-free descriptors so selecting among large tools does not inflate the
 context window. An exact selected name can request `detail: "schema"`; the
 response is resolved from the live catalog after the current policy and
-hidden-tool checks. The expanded schema is descriptive only; calls still
-enter through `ToolBroker`.
+hidden-tool checks. Multiword queries are token-ranked with stable name
+tie-breaks. An empty query lists only policy-allowed descriptors in bounded
+`offset`/`limit` pages (default 10, maximum 50); no schemas are included until
+one exact name is selected. The expanded schema is descriptive only; calls
+still enter through `ToolBroker`.
 
 `git_query` is the model-facing deferred read facade for bounded status, diff,
 log, and branch inspection. It delegates to `GitReadTool`, while `git` retains
@@ -316,7 +319,7 @@ Four questions have four different owners; do not conflate them.
 |---|---|---|
 | Registered? | `ToolRegistry::with_options` | Full capability set; includes deferred + hidden stubs. The live `ToolCatalog` shares this lifecycle. |
 | Advertised now? | Resolved surface + provider deferral | Immediate definitions for this turn; deferred flagged via `defer_loading`. See `src/tool/disclosure.rs`. |
-| Discoverable? | `ToolCatalog` + `tool_search` | Deferred but policy-allowed tools with canonical name, category, risk, disclosure metadata. The catalog is live for late registration, results are deterministic, capped at 10, and empty queries return none. |
+| Discoverable? | `ToolCatalog` + `tool_search` | Policy-allowed tools with canonical name, category, risk, disclosure metadata. The catalog is live for late registration, results are deterministic, searches return at most 10 by default, and empty-query browsing is paged at up to 50. |
 | Callable? | `ToolBroker` + permission + contracts | Disclosure never widens authority; denied/hidden tools stay non-callable. |
 
 Operator views (`/tool-backends`, diagnostics) report registered
@@ -347,7 +350,7 @@ advertised):
 | **read** | Core | `read.rs` | Read file contents with line numbers. Images/PDFs as base64. |
 | **write** | Core | `write.rs` | Create or overwrite files with auto-formatting. |
 | **edit** | Core | `edit.rs` | Surgical search-and-replace with 8 matching strategies. |
-| **glob** | Core | `glob.rs` | Find files matching glob patterns (gitignore-compliant). |
+| **glob** | Core | `glob.rs` | Find files matching patterns relative to the validated search directory (gitignore-compliant); results are canonical paths. |
 | **grep** | Core | `grep.rs` | Regex content search with bounded workers and path-ordered output. |
 | **list** | Core | `list.rs` | Directory tree listing, limited to 300 files. |
 | **task** | Core | `task.rs` | Spawn subagents. Supports spawn/get actions. |
@@ -380,7 +383,7 @@ advertised):
 | **plan_enter** | Core | `plan.rs` | Enter plan mode (reduced toolset). |
 | **plan_exit** | Core | `plan.rs` | Exit plan mode. |
 | **invalid** | Hidden | `invalid.rs` | Catch-all for malformed tool calls. Registered but never in definitions/discovery. |
-| **tool_search** | Core | `tool_search.rs` | On-demand tool discovery via catalog search. Returns canonical name, category, risk, disclosure; capped at 10; empty queries return none. |
+| **tool_search** | Core | `tool_search.rs` | On-demand discovery via multiword catalog ranking. Returns compact authorized descriptors, capped at 10 by default; empty queries browse authorized results in bounded pages. Exact names can request one schema. |
 
 ### Conditional: Eggsearch Wrappers (7 tools)
 

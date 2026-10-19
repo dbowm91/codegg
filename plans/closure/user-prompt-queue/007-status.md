@@ -244,6 +244,13 @@ transaction-shape change. Its roadmap §10 row stands as written by M006:
 not retry it, and the at-most-once fence is unaffected. M007 added no
 concurrency test of its own, so it does not change the measured flake rate.
 
+*(Annotated after closure: **C002 closed it on 2026-10-18**, as the filed
+corrective. `BEGIN IMMEDIATE` on every read-then-write queue path; measured 204
+of 256 concurrent claim rounds failing before, 0 of 192 after. See
+`plans/closure/user-prompt-queue/C002-status.md`. The paragraph above is left
+as written, because it was accurate when M007 closed — the decision to defer
+was M007's to record, not C002's to erase.)*
+
 Two further open items are unchanged by this milestone: `retry_failed`'s revive
 position and the second-displacement collision (both C001 §10).
 
@@ -259,6 +266,11 @@ position and the second-displacement collision (both C001 §10).
   durable `updated_at_ms` — which every claim and release rewrites. This is
   stated at the top of those tests rather than left implicit.
 - **ADR-0039 acceptance.** Still a maintainer action.
+  *(Annotated after closure: ADR-0039 was **accepted 2026-10-18**, after this record
+  was written. M007 did not deliver the acceptance and never claimed to — it
+  implemented the decision. The statement above is left as written because it was
+  true at closure; the roadmap's dated 2026-10-18 "ADR-0039 accepted" entry records
+  what changed.)*
 
 ## 12. Verification
 

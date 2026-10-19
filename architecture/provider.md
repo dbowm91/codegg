@@ -740,8 +740,11 @@ pub struct ProviderRegistry {
 ### ProviderCapabilities::for_provider (`provider_core.rs:168`)
 
 Returns provider-specific capabilities. Anthropic: `supports_defer_loading`,
-`supports_tool_references`, `max_tools_per_request: None`. OpenAI: defer
-loading + tool references, `max_tools_per_request: Some(128)`,
+`supports_tool_references`, `max_tools_per_request: None`. The direct OpenAI
+Chat Completions adapter does not advertise deferral; it sends all authorized
+definitions without `defer_loading`. OpenAI still has hosted Responses
+capabilities, which are separate from this chat tool-palette capability.
+OpenAI also has `max_tools_per_request: Some(128)`,
 `supports_responses_api`, `supports_hosted_programs`,
 `supports_client_owned_nested_calls`, `supports_hosted_continuation`,
 `hosted_languages: ["python"]`, `max_response_items: Some(100)`,
@@ -1296,8 +1299,10 @@ application-level deadlines remain the correctness bound for provider streams.
 - **ExternalCommand disabled**: Both `AuthResolver::resolve` and
   `ExternalCommandProvider::fetch` return `AuthError::Unsupported`.
 - **ContentPart::Reasoning is skip-serialized**: Never appears on the wire.
-- **ToolDefinition.defer_loading**: Annotated on each tool definition;
-  providers that support it (anthropic, openai) honor it; others ignore it.
+- **ToolDefinition.defer_loading**: Annotated only when the selected provider
+  surface supports it (currently direct Anthropic Messages); the direct
+  OpenAI Chat Completions adapter and unknown gateways receive no marker and
+  get the complete policy-authorized definitions.
 - **FallbackProvider creates one CircuitBreaker per provider** at
   construction time, not lazily.
 

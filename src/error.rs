@@ -89,6 +89,7 @@ impl IntoResponse for AxumAppError {
             AppError::Agent(AgentError::Invalid(_)) => StatusCode::BAD_REQUEST,
 
             AppError::Tool(ToolError::NotFound(_)) => StatusCode::NOT_FOUND,
+            AppError::Tool(ToolError::MissingWorkspaceRoot { .. }) => StatusCode::BAD_REQUEST,
             AppError::Tool(ToolError::Permission(_))
             | AppError::Permission(PermissionError::Denied { .. }) => StatusCode::FORBIDDEN,
             AppError::Tool(ToolError::Timeout(_)) => StatusCode::GATEWAY_TIMEOUT,

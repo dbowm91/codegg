@@ -4,10 +4,9 @@ Status: **closed** — implemented 2026-10-18. Closure record:
 `plans/closure/user-prompt-queue/007-status.md`.
 
 The §2 decision was **taken: Option A**, a bounded queue-scoped advance tick,
-recorded in `plans/adrs/ADR-0039-queue-advancement-wakeup-authority.md` (**proposed**
-— acceptance is a maintainer action). §14's stop conditions no longer apply;
-where the implementation departed from the plan, the closure record names the
-departure and its reason.
+recorded in `plans/adrs/ADR-0039-queue-advancement-wakeup-authority.md` (**accepted
+2026-10-18**). §14's stop conditions no longer apply; where the implementation
+departed from the plan, the closure record names the departure and its reason.
 
 Repository baseline: `18c3dca92099fe2de09f875731530348fb76b68f` plus the
 uncommitted M001–M006 tree. §3 records measured facts at this baseline only; they
@@ -32,8 +31,8 @@ Applicable ADRs:
   discharges the "send now" copy boundary.
 - `plans/adrs/ADR-0038-queue-delivery-execution-authority.md` (accepted) — owns *as
   whom* a due entry is submitted; M007 changes only *when* it becomes due.
-- `plans/adrs/ADR-0039-queue-advancement-wakeup-authority.md` (**proposed**) — owns
-  *when* a due entry becomes eligible. Written by M007.
+- `plans/adrs/ADR-0039-queue-advancement-wakeup-authority.md` (accepted) — owns
+  *when* a due entry becomes eligible. Written by M007; accepted 2026-10-18.
 
 Primary class: **capability**.
 

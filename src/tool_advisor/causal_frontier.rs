@@ -5947,6 +5947,23 @@ mod tests {
         );
         historical_schemas.insert("test".to_string(), historical_test_schema);
 
+        // Agent-loop reliability M001 added a hard page maximum to
+        // `context_read.max_bytes`. Reconstruct the pre-M003 schema for this
+        // immutable receipt without changing its stored fingerprint.
+        let mut historical_context_read_schema = registry
+            .get("context_read")
+            .expect("context_read tool remains registered")
+            .parameters();
+        let context_max_bytes = historical_context_read_schema["properties"]["max_bytes"]
+            .as_object_mut()
+            .expect("context_read max_bytes schema property");
+        assert_eq!(
+            context_max_bytes.remove("maximum"),
+            Some(serde_json::json!(64000)),
+            "unexpected post-M003 context_read.max_bytes maximum"
+        );
+        historical_schemas.insert("context_read".to_string(), historical_context_read_schema);
+
         // Search-backend retirement intentionally narrowed explicit provider
         // selectors and added an explicit remote-provider list to repo_search.
         // Reconstruct only those v0.4.3-era schema deltas when validating the

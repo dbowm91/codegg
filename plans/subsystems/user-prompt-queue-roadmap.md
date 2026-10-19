@@ -275,6 +275,12 @@ cannot invert timer precedence.
 > is what that condition should have said: the wakeup **parks with no timer armed** when
 > no session has a scheduled entry, and the tick's only work is to nominate sessions
 > holding a due entry. Delivery authority is unchanged (ADR-0038).
+>
+> **Accepted 2026-10-18.** ADR-0039 is accepted, so the wakeup owner this section
+> left as an open decision is settled and this section describes the delivered
+> design rather than a decision still pending. The deviation from the original
+> exit condition above stands as recorded: one new wakeup source is required, and
+> it parks with no timer armed.
 
 **Frontend.** A `/queue` dialog that lists entries, supports keyboard selection and
 scrolling, and performs delete, edit-in-place, add (with optional timer), reorder,
@@ -769,8 +775,8 @@ Objective: Allow an entry to be scheduled for a future time, such as one hour ou
 
 Status: **implemented and closed** 2026-10-18 — `plans/closure/user-prompt-queue/007-status.md`.
 The §2 decision was taken as **Option A** (bounded queue-scoped advance tick) and is
-recorded in `plans/adrs/ADR-0039-queue-advancement-wakeup-authority.md`, which is
-**proposed, not accepted** — acceptance is a maintainer action.
+recorded in `plans/adrs/ADR-0039-queue-advancement-wakeup-authority.md`, **accepted**
+2026-10-18.
 
 Plan: `plans/implementation/user-prompt-queue/007-delayed-queue-delivery.md`
 
@@ -964,10 +970,10 @@ the queue is not mistaken for a second control authority.
 | A reordered `delivering` entry silently jumps to the end of the queue when its delivery is released | **Closed 2026-10-18 by C001.** M005 measured the render symptom; planning C001 measured the delivery symptom — `claim_next_for_delivery` orders by `ordinal`, so the entry is delivered last too — and found **three** affected return paths, not one. This contradicted ADR-0035's stated intent, so it was a defect against accepted architecture. Fixed with **no migration**: `merge_operable_into_live` folds the client's pending order with each non-pending live row held at **the rank it already had**, and `renumber_dense` writes that merged live set. `release_delivery` and `resolve_stranded_delivery(Retry)` are now order-neutral. Closure record `plans/closure/user-prompt-queue/C001-status.md` |
 | `retry_failed` revives a row that was **terminal** during the reorder, so it is absent from the merge's live set and returns above the band | **Found and reported 2026-10-18 by C001, not fixed.** C001's §6 claims all three return paths are covered with no change to those functions; that claim holds for `release_delivery` and `resolve_stranded_delivery(Retry)` and **falsifies here**. The entry is not lost — it is delivered last. `retry_failed` has **no production caller** (the daemon's non-terminal path is `release_delivery`), and a `failed` entry is absent from the client projection, so no user ever watched it move. Where a revived `failed` entry *should* land — stale ordinal, head, or tail — is an **open maintainer decision**. Pinned by `user_prompt_queue_a_retried_failure_is_not_reached_by_the_c001_merge` |
 | A uniform displacement is only collision-free while no row already sits at or above the band, so a **second** renumber after a displaced terminal row violates `UNIQUE (session_id, ordinal)` | **Found and reported 2026-10-18 by C001, not fixed.** Pre-existing and independent of the merge: the displacement `UPDATE` is byte-identical before and after C001 and collides inside itself. Minimal reproduction, reachable from the queue box alone — queue three prompts, reorder, let one fail, reorder, **reorder again**: the third is refused with a storage error. C001 §14 stops the milestone on exactly this ("a second displacement appears to be needed to keep `UNIQUE`; stop"), and a correct fix (a monotonic band generation, or compacting terminal rows) is a design decision, not an implementation detail. Pinned by the exhaustive enumeration, which counts **4** of 1 554 steps and asserts the first triggering row state exactly |
-| M007's advancement has no wakeup: the "existing periodic observation point" it was scoped against does not exist | **Falsified 2026-10-18.** The daemon's only periodic loops are projection retention (300 s, conditionally spawned), opt-in provider refresh, and opt-in TTS; M003's delivery entry has exactly two permitted callers, neither of which fires for an idle session holding a scheduled entry. Due-ness in the store query alone delivers late or never. M007 was registered `blocked` on one named decision — the wakeup owner — and **resolved 2026-10-18 as Option A** (bounded queue-scoped advance tick), recorded in ADR-0039 (**proposed**; acceptance is a maintainer action). `PERMITTED_CALLERS` in `scripts/check_queue_delivery_callsites.py` went from two to three with the rationale on the constant, and `--self-test` now injects a **fourth** caller and proves it is still rejected |
+| M007's advancement has no wakeup: the "existing periodic observation point" it was scoped against does not exist | **Falsified 2026-10-18.** The daemon's only periodic loops are projection retention (300 s, conditionally spawned), opt-in provider refresh, and opt-in TTS; M003's delivery entry has exactly two permitted callers, neither of which fires for an idle session holding a scheduled entry. Due-ness in the store query alone delivers late or never. M007 was registered `blocked` on one named decision — the wakeup owner — and **resolved 2026-10-18 as Option A** (bounded queue-scoped advance tick), recorded in ADR-0039 (**accepted 2026-10-18**). `PERMITTED_CALLERS` in `scripts/check_queue_delivery_callsites.py` went from two to three with the rationale on the constant, and `--self-test` now injects a **fourth** caller and proves it is still rejected |
 | A bare or misspelled duration is silently guessed ("5" meaning five seconds, "1 hr" not parsing) | M007 reuses the repository's existing `parse_duration` grammar (`30s`, `5min`, `10m`, `2h`, `1d`) and refuses anything it does not accept. The roadmap's own `1 hr` example does not parse and must not appear in copy |
 | A queued entry becomes due at or after its own expiry and could never run | M007 refuses that combination at add and edit as a typed refusal, never a silent clamp |
-| Two concurrent queue write transactions can **both** fail with `SQLITE_BUSY` (code 6, `database is deadlocked`) instead of one winning | **Found by M006 while repeating a suite, not fixed.** Every queue write path is `begin()` (deferred) → `SELECT` → `UPDATE`, and SQLite refuses to upgrade a shared read lock to a write lock while another connection holds a read lock — without waiting, because waiting could deadlock, so `busy_timeout` does not retry it. M003's `user_prompt_queue_concurrent_claims_admit_exactly_one_entry` fails this way on **both** futures, reproduced **4 times in 12 runs**; it surfaced only because M006 does not trust a single green run. The **at-most-once fence is unaffected** — neither caller wrote, so nothing is double-delivered — and production exposure is bounded by ADR-0038's two permitted callers and M002b's single owner. The fix is a **store-wide** transaction-shape decision (`BEGIN IMMEDIATE` on write paths, or a single-statement fence) and belongs to a corrective milestone, not to a feature. M006's own concurrency test was hardened to assert *at most one* wins rather than *exactly one*, which is the contract the store actually has. Pinned by `user_prompt_queue_a_steer_settlement_is_at_most_once`; the M003 test is annotated, its assertion untouched |
+| Two concurrent queue write transactions can **both** fail with `SQLITE_BUSY` (code 6, `database is deadlocked`) instead of one winning | **Closed 2026-10-18 by C002.** Every read-then-write queue path now opens with `BEGIN IMMEDIATE`, which takes the write lock before any read and therefore *does* honour `busy_timeout`. C002 measured the rate before the change: **204 of 256** concurrent claim rounds returned the error to at least one caller. After: **0 of 192**. `scripts/check_queue_write_transaction_shape.py` holds the shape, with a self-test that injects both a deferred read-then-write path and a closing rollback. **Found by M006 while repeating a suite, not fixed** (as originally recorded): Every queue write path is `begin()` (deferred) → `SELECT` → `UPDATE`, and SQLite refuses to upgrade a shared read lock to a write lock while another connection holds a read lock — without waiting, because waiting could deadlock, so `busy_timeout` does not retry it. M003's `user_prompt_queue_concurrent_claims_admit_exactly_one_entry` fails this way on **both** futures, reproduced **4 times in 12 runs**; it surfaced only because M006 does not trust a single green run. The **at-most-once fence is unaffected** — neither caller wrote, so nothing is double-delivered — and production exposure is bounded by ADR-0038's two permitted callers and M002b's single owner. The fix was a **store-wide** transaction-shape decision and belonged to a corrective milestone, not to a feature — which is what C002 is. Closure record `plans/closure/user-prompt-queue/C002-status.md`. M006's own concurrency test was hardened to assert *at most one* wins rather than *exactly one*, which is the contract the store actually has. Pinned by `user_prompt_queue_a_steer_settlement_is_at_most_once`; the M003 test is annotated, its assertion untouched |
 | A steered entry left `pending` runs twice — once steered, then again as a fresh turn | **Closed 2026-10-18 by M006.** `mark_steer_delivered` moves `pending` → `delivered` and stamps `delivered_turn_id` with the turn that accepted it, so the queue cannot hand the same prompt out again. Guarded on `status = 'pending'`, so a row M003 already claimed is refused rather than settled twice. **No new `status` value and no migration**; `delivered_turn_id` already existed |
 | The turn accepts a prompt but the queue cannot record the settlement, so the row stays `pending` and may run **again** | **Found by M006 and given its own outcome rather than folded into a refusal.** `AcceptedNotSettled` reports exactly this: the turn holds the text and the queue row did not move. Reporting it as an error would invite the user to resend a prompt that already ran — the duplication ADR-0036 forbids — so the TUI copy tells the user to treat it as sent and check before repeating. Audited as `accepted_unsettled`, which is the only record of a prompt the audit chain can show was delivered without a matching `turn_admission_receipt` |
 | Host chord interception makes advertised keys dead, as happened to an existing docked panel's reorder keys | Modal dialog avoids the docked host; a non-vacuous test must prove every advertised key reaches its action |
@@ -1017,10 +1023,9 @@ This roadmap may be closed only when all of the following are true:
   proposed. **All four are accepted (2026-10-18). ADR-0036's acceptance
   discharges the M006 and M007 copy gates; both plans are now written, and **M006
   is `closed`**. **M007 is also `closed`** — its §2 decision was taken as Option A
-  and recorded in ADR-0039, which is **proposed, not accepted**. Acceptance is a
-  maintainer action and is the one thing still outstanding across this workstream;
-  it does not block M007's closure, because the implementation was authorized by
-  the decision itself.**
+  and recorded in ADR-0039, which is **accepted (2026-10-18)**. Nothing across this
+  workstream is outstanding on the acceptance of an ADR; the open items are the
+  recorded findings in §10, which are not gates.**
 - An entry interrupted mid-delivery resumes **at its own position**, so a transient
   error or a concurrent reorder cannot demote a prompt to the back of the user's own
   queue (C001). Met for `release_delivery` and for startup reconciliation. The
@@ -1040,9 +1045,10 @@ Roadmap closure does **not** require the deferred items in §3 to be built.
 | 4 | **closed** | `plans/implementation/user-prompt-queue/004-queue-box-list-select-delete-and-indicator.md` | `plans/closure/user-prompt-queue/004-status.md` | M003 closure **discharged**; interface dep **corrected and discharged** — the named `panel-convergence M004` does not exist and M004 duplicates the established chrome |
 | 5 | **closed** | `plans/implementation/user-prompt-queue/005-queue-box-add-edit-and-reorder.md` | `plans/closure/user-prompt-queue/005-status.md` | M004 closure **discharged**; §3(b) **measured and recorded** — and **superseded by C001**, which fixes the measured behaviour rather than documenting it |
 | 6 | **closed** | `plans/implementation/user-prompt-queue/006-send-now-steering-from-the-queue.md` | `plans/closure/user-prompt-queue/006-status.md` | None — none outstanding. M004 **and** M005 closure **discharged**; ADR-0036 acceptance **discharged** (it names this plan path). **No migration**; `STORAGE_LAYOUT_VERSION` unchanged at 81. `s` ships with a second `delivered` path (`mark_steer_delivered`) and a three-outcome result enum |
-| 7 | **closed** | `plans/implementation/user-prompt-queue/007-delayed-queue-delivery.md` | `plans/closure/user-prompt-queue/007-status.md` | M004 **and** M005 closure **discharged**; ADR-0036 copy boundary **discharged**; the §2 wakeup-owner decision **taken as Option A** and recorded in ADR-0039 (**proposed**, awaiting maintainer acceptance). **Takes migration v82** — `STORAGE_LAYOUT_VERSION` is now 82 |
+| 7 | **closed** | `plans/implementation/user-prompt-queue/007-delayed-queue-delivery.md` | `plans/closure/user-prompt-queue/007-status.md` | M004 **and** M005 closure **discharged**; ADR-0036 copy boundary **discharged**; the §2 wakeup-owner decision **taken as Option A** and recorded in ADR-0039, **accepted 2026-10-18**. **Takes migration v82** — `STORAGE_LAYOUT_VERSION` is now 82 |
 | 8 | proposed | — | — | M004 + M005 closures (interface) — both discharged, so M008 is eligible and remains explicitly deferrable |
 | C001 | **closed** | `plans/implementation/user-prompt-queue/C001-released-delivery-order-displacement-corrective.md` | `plans/closure/user-prompt-queue/C001-status.md` | None — none outstanding. Class **invariant**; no migration, no protocol change. Two defects were **found and reported, not fixed**, per C001 §14: `retry_failed`'s revive, and the pre-existing second-displacement collision (both §10) |
+| C002 | **closed** | `plans/implementation/user-prompt-queue/C002-queue-write-transaction-shape-corrective.md` | `plans/closure/user-prompt-queue/C002-status.md` | None — none outstanding. Class **invariant**; no migration, no protocol change. Closes §10's deferred-transaction row: `BEGIN IMMEDIATE` on all eight read-then-write queue paths. Measured **204 of 256** concurrent claim rounds failing before, **0 of 192** after |
 
 M002 was split into M002a and M002b on 2026-10-18 after accepting ADR-0035. The
 numbers are not reused: M002a and M002b keep `002` as their plan prefix because
@@ -1578,3 +1584,73 @@ armed** when nothing is scheduled.
 maintainer decided to land it and file a corrective rather than widen M007 into a
 store-wide transaction-shape change. Its §10 row stands, annotated, as written by
 M006.
+
+### 2026-10-18 — ADR-0039 accepted (queue advancement wakeup authority)
+
+**Milestone:** 7. **Class:** decision record. **Migration:** none.
+
+**ADR-0039 is accepted**, as a maintainer action. Option A — the bounded,
+queue-scoped advance tick — is the authorized wakeup owner, and M007's
+implementation is the implementation of that decision rather than a separate one.
+
+**What changed in the roadmap's own text**, all of it current-state; the 2026-10-18
+"M007 closed" entry above is left as written, because it was accurate when made:
+
+- §5 gains an acceptance note, so the section describes a settled decision rather
+  than one still pending. The recorded deviation stands: one new wakeup source is
+  required, and it **parks with no timer armed**.
+- §7's Milestone 7 status, §10's wakeup row, §11's ADR gate, and §12's row 7 now
+  read **accepted** instead of **proposed**.
+- `plans/registry.md`'s M007 blocked-work row is marked **Closed** in place, keeping
+  the blocker it records. The registry's convention is to annotate a blocked row
+  rather than delete it.
+
+Acceptance does not reopen ADR-0038: the caller-set widening from two to three is
+authorized here, the authority decision stands, and a fourth caller remains a
+defect that `check_queue_delivery_callsites.py --self-test` must still reject.
+
+### 2026-10-18 — C002 closed (queue write-transaction shape corrective)
+
+**Milestone:** corrective C002. **Class:** invariant. **Migration:** none —
+`STORAGE_LAYOUT_VERSION` stays **82**; v80, v81, and v82 are untouched.
+
+**The M003 lock-upgrade deadlock is closed.** Every queue path that read before it
+wrote opened a **deferred** `BEGIN`, which takes no lock; the first `SELECT` then
+held a shared read lock and the first `UPDATE` had to upgrade it, and SQLite
+refuses that upgrade with `SQLITE_BUSY` — code 6 — **without calling the busy
+handler**, because waiting could deadlock. `busy_timeout` therefore never applied,
+and two callers that each read before either wrote could **both** fail.
+
+**Measured, not assumed.** The corrective added a repeated-race harness rather
+than re-running the one-shot test: **204 of 256** concurrent claim rounds returned
+the error to at least one caller before the change. After: **0 of 192**, with
+every round still admitting exactly one entry. The at-most-once fence was never at
+risk — neither caller wrote — so this fixes a failure the daemon could not act on,
+never a double delivery.
+
+**What changed.** `begin_immediate` (`BEGIN IMMEDIATE`) on all eight read-then-write
+paths, through sqlx's `TransactionManager` so its transaction-depth counter stays
+correct. `ownership` (writes nothing) and `list_live` (its first statement is
+already the expiry sweep, so it already takes the write lock there) keep a deferred
+transaction **on purpose**, and that is an allowlist with reasons rather than an
+accident.
+
+**What the milestone changed in its own text:**
+
+- §10's "two concurrent queue write transactions can both fail" row is marked
+  **Closed**, with the before and after rates, and keeps its original "found by
+  M006, not fixed" wording as the historical record.
+- `architecture/session.md` states the contract; `AGENTS.md` lists the new guard as
+  change-triggered; §12 gains the C002 row below.
+
+**A deterministic reproduction was written and then deliberately removed.** sqlx's
+SQLite driver resolves lock waits through an *unlock-notify* VFS, so a connection
+parked on a lock its peer will never release waits indefinitely instead of
+returning `SQLITE_BUSY` — the hand-written test hung the binary rather than failing
+it. The store's own two-caller race terminates because both callers finish, so the
+*measurement* lives in a test and the *shape* is pinned statically by
+`scripts/check_queue_write_transaction_shape.py`, whose `--self-test` injects both
+a deferred read-then-write path and a closing rollback.
+
+M003's and M006's closure records are **not** rewritten; the M003 test keeps its
+original assertion and is annotated with what changed.

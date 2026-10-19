@@ -186,7 +186,11 @@ impl ProviderCapabilities {
                 ..Default::default()
             },
             "openai" => Self {
-                supports_defer_loading: true,
+                // The direct OpenAI adapter emits Chat Completions requests,
+                // whose function schema does not accept CodeGG's
+                // `defer_loading` extension. Responses-hosted tool routing
+                // has a separate capability path.
+                supports_defer_loading: false,
                 supports_tool_references: true,
                 max_tools_per_request: Some(128),
                 supports_responses_api: true,
@@ -2718,6 +2722,14 @@ mod tests {
             credential_capability_for("future_provider_xyz"),
             crate::auth_types::CredentialCapability::ApiKeyOnly
         );
+    }
+
+    #[test]
+    fn deferred_tool_support_is_conservative_for_openai_compatible_chat() {
+        assert!(ProviderCapabilities::for_provider("anthropic").supports_defer_loading);
+        assert!(!ProviderCapabilities::for_provider("openai").supports_defer_loading);
+        assert!(!ProviderCapabilities::for_provider("openrouter").supports_defer_loading);
+        assert!(!ProviderCapabilities::for_provider("future_gateway").supports_defer_loading);
     }
 
     fn m010_temp_store_with(
