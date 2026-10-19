@@ -412,6 +412,9 @@ pub struct App {
     /// `task_rows()`, so the cursor can never point at a row that truncation
     /// removed — which would make `Enter` open a subagent the user cannot see.
     pub tasks_selected: Option<usize>,
+    /// Identity paired with the rendered index so live row removal cannot
+    /// retarget Enter onto a different job or child.
+    pub tasks_selected_key: Option<String>,
     /// Input mode to restore when the overlay closes, when opening it moved
     /// the app into [`InputMode::Normal`].
     ///
@@ -1090,6 +1093,8 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                job_detail_request: crate::tui::app::state::async_request::AsyncUiRequestState::new(
+                ),
                 project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
@@ -1202,6 +1207,7 @@ impl App {
             todo_revision: 0,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_selected_key: None,
             tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
@@ -1676,6 +1682,8 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                job_detail_request: crate::tui::app::state::async_request::AsyncUiRequestState::new(
+                ),
                 project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
@@ -1788,6 +1796,7 @@ impl App {
             todo_revision: 0,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_selected_key: None,
             tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
@@ -3958,6 +3967,11 @@ impl App {
                 Some(InputAction::NavigateDown) => self.move_tasks_selection(1),
                 Some(InputAction::Send) => self.open_selected_task(),
                 _ => false,
+            };
+            let consumed = if key.code == KeyCode::Char('i') {
+                self.inspect_selected_task()
+            } else {
+                consumed
             };
             if consumed {
                 return;
@@ -9262,6 +9276,9 @@ impl App {
                     ) => {
                         self.process_msg(TuiMsg::OpenSubagentTab { task_id });
                     }
+                    crate::tui::components::sidebar::SidebarActivation::InspectJob(job_id) => {
+                        self.process_msg(TuiMsg::OpenJobDetail { job_id });
+                    }
                     crate::tui::components::sidebar::SidebarActivation::None => {}
                 }
             }
@@ -9271,7 +9288,7 @@ impl App {
                     let Some(row) = self.ui_state.subagents.rows.get(index).cloned() else {
                         return;
                     };
-                    let was_open = self.ui_state.subagents.has_tab(&row.task_id);
+                    let was_open = self.ui_state.subagents.has_tab(row.identity_key());
                     if self.ui_state.subagents.open(row.clone()) {
                         let label = row.label().to_string();
                         // Reopening an existing tab is a focus change, not a
@@ -9928,6 +9945,9 @@ impl App {
                 }
             }
             self.dialog_state.theme_picker = None;
+        }
+        if closing_dialog == Dialog::JobDetail {
+            self.dialog_state.job_detail_request.cancel();
         }
 
         // Cancel background tasks and async request state scoped to
@@ -14877,6 +14897,7 @@ impl App {
         // whatever happens to sit there now — or nothing at all — the next
         // time the overlay opens. Reopening starts at the top.
         self.tasks_selected = None;
+        self.tasks_selected_key = None;
         if self.tasks_expanded {
             // Opening from Insert takes Normal mode with it, because the
             // overlay's own keys are Normal-mode gestures. Without this the
@@ -14920,10 +14941,18 @@ impl App {
         let selectable = selectable_indices(&self.bounded_task_rows());
         if selectable.is_empty() {
             self.tasks_selected = None;
+            self.tasks_selected_key = None;
             return false;
         }
+        let rows = self.bounded_task_rows();
         let current = self
-            .tasks_selected
+            .tasks_selected_key
+            .as_ref()
+            .and_then(|key| {
+                rows.iter()
+                    .position(|row| row.identity_key().as_ref() == Some(key))
+            })
+            .or(self.tasks_selected)
             .and_then(|index| selectable.iter().position(|row| *row == index));
         let next = match current {
             Some(position) => {
@@ -14939,7 +14968,20 @@ impl App {
             return false;
         }
         self.tasks_selected = Some(selectable[next]);
+        self.tasks_selected_key = rows[selectable[next]].identity_key();
         true
+    }
+
+    pub(crate) fn selected_task_row_index(
+        &self,
+        rows: &[crate::tui::app::state::tasks::TaskRow],
+    ) -> Option<usize> {
+        if let Some(key) = self.tasks_selected_key.as_ref() {
+            return rows
+                .iter()
+                .position(|row| row.identity_key().as_ref() == Some(key));
+        }
+        self.tasks_selected.filter(|index| *index < rows.len())
     }
 
     /// Open whatever the overlay's cursor is resting on.
@@ -14949,27 +14991,79 @@ impl App {
     /// does nothing: inventing a detail view for either would be a surface
     /// the projection does not actually back.
     pub fn open_selected_task(&mut self) -> bool {
-        use crate::tui::app::state::tasks::activatable_target;
+        use crate::tui::app::state::tasks::TaskRow;
         if !self.tasks_expanded {
             return false;
         }
         let rows = self.bounded_task_rows();
-        let Some(target) = self
-            .tasks_selected
+        let Some(selected) = self
+            .selected_task_row_index(&rows)
             .and_then(|index| rows.get(index))
-            .and_then(activatable_target)
-            .map(str::to_string)
         else {
             return false;
         };
-        if self.open_subagent_tab(&target) {
-            // Opening closes the overlay: the thing the user asked to look at
-            // now owns the main buffer, and leaving a selection cursor behind
-            // it would be a control they are no longer looking at. Closed
-            // through the toggle so the borrowed input mode is handed back.
-            self.toggle_tasks_list();
+        match selected {
+            TaskRow::Subagent {
+                task_id,
+                child_instance_id,
+                ..
+            } => {
+                let target = child_instance_id.as_deref().unwrap_or(task_id);
+                if self.open_subagent_tab(target) {
+                    self.toggle_tasks_list();
+                    true
+                } else {
+                    false
+                }
+            }
+            TaskRow::Job { job_id, .. } => {
+                self.process_msg(TuiMsg::OpenJobDetail {
+                    job_id: job_id.clone(),
+                });
+                true
+            }
+            TaskRow::Header { .. } | TaskRow::Todo { .. } => false,
         }
-        true
+    }
+
+    /// Open daemon-backed detail for the selected job or durable child
+    /// association while keeping Enter on a child dedicated to its transcript.
+    pub fn inspect_selected_task(&mut self) -> bool {
+        use crate::tui::app::state::tasks::TaskRow;
+        if !self.tasks_expanded {
+            return false;
+        }
+        let rows = self.bounded_task_rows();
+        let Some(selected) = self
+            .selected_task_row_index(&rows)
+            .and_then(|index| rows.get(index))
+        else {
+            return false;
+        };
+        let message = match selected {
+            TaskRow::Job { job_id, .. } => Some(TuiMsg::OpenJobDetail {
+                job_id: job_id.clone(),
+            }),
+            TaskRow::Subagent {
+                job_id: Some(job_id),
+                ..
+            } => Some(TuiMsg::OpenJobDetail {
+                job_id: job_id.clone(),
+            }),
+            TaskRow::Subagent {
+                run_id: Some(run_id),
+                ..
+            } => Some(TuiMsg::OpenRunDetail {
+                run_id: run_id.clone(),
+            }),
+            TaskRow::Header { .. } | TaskRow::Todo { .. } | TaskRow::Subagent { .. } => None,
+        };
+        if let Some(message) = message {
+            self.process_msg(message);
+            true
+        } else {
+            false
+        }
     }
 
     /// Completed todo count. `TodoStatus::Completed` is the only status that
@@ -15032,7 +15126,7 @@ impl App {
                 .subagents
                 .rows
                 .iter()
-                .any(|row| row.task_id == task_id)
+                .any(|row| row.identity_key() == task_id || row.task_id == task_id)
                 && self.ui_state.subagents.tabs.is_at_capacity()
             {
                 self.messages_state
@@ -15123,12 +15217,9 @@ impl App {
         self.bounded_task_rows().len().max(1) as u16
     }
 
-    /// Build the tasks overlay rows from the three projection-backed sources.
-    ///
-    /// Subagents come from the already-projected `SubagentState.rows` rather
-    /// than being re-read from the snapshot, and jobs come from
-    /// `snapshot.jobs`. Nothing here synthesizes a row or mints a name; this
-    /// only selects and formats what the projection already vouches for.
+    /// Build the tasks overlay rows from the canonical session-work selector.
+    /// Nothing here synthesizes a row or mints a name; this only selects and
+    /// formats what the authorized projection already vouches for.
     pub fn task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
         let todos: Vec<crate::tui::app::state::tasks::TodoLike> = self
             .todos
@@ -15138,24 +15229,48 @@ impl App {
                 content: todo.content.clone(),
             })
             .collect();
-        let jobs: Vec<crate::tui::app::state::tasks::JobLike> = self
+        let session_work = self
             .projection_client
             .active_snapshot()
             .map(|(_, snapshot)| {
-                snapshot
-                    .jobs
-                    .iter()
-                    .map(|job| crate::tui::app::state::tasks::JobLike {
-                        job_id: job.job_id.clone(),
-                        kind: job.kind.clone(),
-                        summary: job.summary.clone(),
-                        state: job.state.clone(),
-                        error_class: job.error_class.clone(),
-                    })
-                    .collect()
+                crate::tui::app::state::session_work::select_session_work(snapshot)
             })
             .unwrap_or_default();
-        crate::tui::app::state::tasks::build_task_rows(&todos, &self.ui_state.subagents.rows, &jobs)
+        let jobs: Vec<crate::tui::app::state::tasks::JobLike> = session_work
+            .iter()
+            .filter(|work| work.is_live())
+            .filter_map(|work| work.job.clone())
+            .collect();
+        let subagents: Vec<crate::tui::app::state::subagents::SubagentRow> = session_work
+            .iter()
+            .filter_map(|work| work.subagent.clone())
+            .collect();
+        let mut rows = crate::tui::app::state::tasks::build_task_rows(&todos, &subagents, &jobs);
+        for row in &mut rows {
+            if let crate::tui::app::state::tasks::TaskRow::Subagent {
+                child_instance_id,
+                task_id,
+                run_id,
+                job_id,
+                ..
+            } = row
+            {
+                *job_id = session_work
+                    .iter()
+                    .find(|work| {
+                        if let Some(child_id) = child_instance_id.as_deref() {
+                            work.child_instance_id.as_deref() == Some(child_id)
+                        } else {
+                            work.run_id.as_deref() == run_id.as_deref()
+                                || (run_id.is_none()
+                                    && work.child_instance_id.is_none()
+                                    && work.key == format!("task:{task_id}"))
+                        }
+                    })
+                    .and_then(|work| work.job_id.clone());
+            }
+        }
+        rows
     }
 
     /// The live subagents and jobs shown under the `/sessions` session list.
@@ -15165,7 +15280,8 @@ impl App {
     /// cannot disagree about which subagents or jobs exist. Headers and todos
     /// are dropped here because the dialog builds its own section headings and
     /// has no todo section; every other row is carried across whole, keeping
-    /// the identity (`task_id` / `job_id`) the row was created with.
+    /// both the child generation key and its task transcript address (or the
+    /// stable job identity) from the projected entity.
     ///
     /// The overlay's [`crate::tui::app::state::tasks::bounded`] cap is
     /// deliberately *not* applied. That cap exists because the overlay is
@@ -15181,12 +15297,31 @@ impl App {
         use crate::tui::app::state::tasks::TaskRow;
         use crate::tui::components::dialogs::session::{JobListRow, SubagentListRow};
 
+        let active_session_id = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| snapshot.primary_session_id.as_str())
+            .or_else(|| self.projection_client.primary_session_id());
+        if self
+            .dialog_state
+            .session_dialog
+            .selected_session()
+            .is_some_and(|selected| Some(selected.id.as_str()) != active_session_id)
+        {
+            // The available full projection belongs to the active session
+            // only. Never leave those rows under a different selected session.
+            return (Vec::new(), Vec::new());
+        }
+
         let mut subagents = Vec::new();
         let mut jobs = Vec::new();
         for row in self.task_rows() {
             match row {
                 TaskRow::Subagent {
                     task_id,
+                    child_instance_id,
+                    run_id,
+                    job_id,
                     label,
                     agent,
                     description,
@@ -15194,6 +15329,9 @@ impl App {
                     status,
                 } => subagents.push(SubagentListRow {
                     task_id,
+                    child_instance_id,
+                    run_id,
+                    job_id,
                     label,
                     agent,
                     description,
@@ -15219,6 +15357,46 @@ impl App {
         (subagents, jobs)
     }
 
+    /// Availability follows the session selected in `/sessions`. The active
+    /// subscription authorizes only its bound session; an empty row set for a
+    /// different selected session must read as unavailable, never as empty.
+    pub(crate) fn session_dialog_projection_status(
+        &self,
+    ) -> Option<crate::tui::app::state::projection_client::PrimaryProjectionStatus> {
+        let active_session_id = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| snapshot.primary_session_id.as_str())
+            .or_else(|| self.projection_client.primary_session_id());
+        let selected_session_id = self
+            .dialog_state
+            .session_dialog
+            .selected_session()
+            .map(|session| session.id.as_str());
+        if selected_session_id.is_some_and(|selected| Some(selected) != active_session_id) {
+            return Some(
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(
+                    "live work for the selected session is not loaded".into(),
+                ),
+            );
+        }
+        self.projection_client.primary_status().cloned().or_else(|| {
+            if self.projection_client.active_snapshot().is_some() {
+                Some(
+                    crate::tui::app::state::projection_client::PrimaryProjectionStatus::Authoritative,
+                )
+            } else if selected_session_id.is_some() {
+                Some(
+                    crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(
+                        "session work projection is unavailable".into(),
+                    ),
+                )
+            } else {
+                None
+            }
+        })
+    }
+
     /// Push the current live rows into the open `/sessions` dialog.
     ///
     /// A no-op unless the dialog is mounted. Like the session list itself, the
@@ -15232,7 +15410,7 @@ impl App {
             return;
         }
         let (subagents, jobs) = self.session_dialog_pending_rows();
-        let projection_status = self.projection_client.primary_status().cloned();
+        let projection_status = self.session_dialog_projection_status();
         let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
             dialog.set_pending_rows(subagents.clone(), jobs.clone());
             dialog.set_projection_status(projection_status.clone());

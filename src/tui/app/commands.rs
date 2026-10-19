@@ -362,6 +362,14 @@ pub enum TuiCommand {
     OpenRunDetailError {
         error: String,
     },
+    OpenJobDetailLoaded {
+        request_id: u64,
+        job_id: String,
+        job: Option<crate::protocol::dto::JobRecordDto>,
+        attempts: Vec<crate::protocol::dto::JobAttemptDto>,
+        error: Option<String>,
+        notice: Option<String>,
+    },
     /// Completion for a daemon-owned historical run rerun request.
     RunRerunFinished {
         parent_run_id: String,

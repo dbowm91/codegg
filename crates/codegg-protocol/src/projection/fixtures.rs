@@ -70,6 +70,7 @@ pub fn idle_snapshot() -> SessionProjectionSnapshot {
             health: WorkspaceHealthProjection::default(),
         },
         active_turn: None,
+        subagents: Vec::new().into(),
         recent_turns: Vec::new().into(),
         runs: Vec::new().into(),
         jobs: Vec::new().into(),
@@ -406,6 +407,8 @@ pub fn subagent_event_script() -> Vec<ReducerEventInput> {
         Some("turn-1".into()),
         ProjectionEvent::SubagentStarted {
             node: AgentTreeNodeProjection {
+                child_instance_id: "child-fixture-7".into(),
+                originating_turn_id: Some("turn-1".into()),
                 task_id: 7,
                 agent: "explorer".into(),
                 description: "exploring the tree".into(),
@@ -427,6 +430,7 @@ pub fn subagent_event_script() -> Vec<ReducerEventInput> {
         FIXTURE_SESSION_ID,
         Some("turn-1".into()),
         ProjectionEvent::SubagentCompleted {
+            child_instance_id: "child-fixture-7".into(),
             task_id: 7,
             result_summary: "found 3 nodes".into(),
             completed_at: 5,

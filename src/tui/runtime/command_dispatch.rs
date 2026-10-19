@@ -813,6 +813,32 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::OpenRunDetailError { error } => {
             app.messages_state.toasts.error(&error);
         }
+        TuiCommand::OpenJobDetailLoaded {
+            request_id,
+            job_id,
+            job,
+            attempts,
+            error,
+            notice,
+        } => {
+            if !app.dialog_state.job_detail_request.finish(request_id)
+                || app.ui_state.dialog != crate::tui::Dialog::JobDetail
+            {
+                return;
+            }
+            if app.ui_state.dialog == crate::tui::Dialog::JobDetail {
+                app.close_dialog();
+            }
+            if let Some(notice) = notice {
+                app.messages_state.toasts.info(&notice);
+            }
+            let mut dialog = crate::tui::components::dialogs::job_detail::JobDetailDialog::loaded(
+                job_id, job, attempts,
+            );
+            dialog.can_cancel = !app.is_observing();
+            dialog.error = error;
+            app.push_dialog(crate::tui::Dialog::JobDetail, Box::new(dialog));
+        }
         TuiCommand::RunRerunFinished {
             parent_run_id,
             child_job_id,

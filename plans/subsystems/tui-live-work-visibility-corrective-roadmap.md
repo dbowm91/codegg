@@ -1,6 +1,6 @@
 # TUI Live Work Visibility — Runtime Integration Corrective Roadmap
 
-Status: active (2026-10-19; new successor corrective track, not a claim that the feature works)
+Status: conditionally closed (2026-10-19; M001–M005 closed, M006 conditionally closed pending full runtime/operator qualification)
 
 Repository review baseline: `61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649` on `main`. Originating user reproduction: real sessions with waiting jobs and subagents show neither in `/sessions` nor `Ctrl+T` after commit `8fab1ba7d48d794b397ce4a0a207d5ae547ff976`.
 
@@ -55,7 +55,7 @@ ADR-0042 accepted -> M003 child identity & lifetime ───┤
                                                         +--> M006 real transport and TUI acceptance
 ```
 
-M001 and M002 are individually executable; both are now **active**. M002 has a soft integration dependency on M001 for user-facing confirmation. M003 is **blocked** on ADR-0042 acceptance, though test-first reproduction may run independently. M004 has hard dependencies on M001–M003. M005 has hard dependency on M004 and must preserve ADR-0041. M006 depends on M001–M005; fixture/scenario specification may begin earlier, but no closure until the end-to-end gates pass.
+M001 and M002 are closed. ADR-0042 Option A was accepted and M003 is closed. M004 and M005 are closed in dependency order. M006 is conditionally closed under its explicit stop rule: the socket-to-painted-TUI slice passes, while real-worker concurrency, late-attach/restart recovery, the full denial matrix, and the manual terminal receipt remain unqualified. These are re-entry conditions for full capability acceptance, not blockers on another registered plan in this line.
 
 ## 6. Milestones
 
@@ -63,10 +63,10 @@ M001 and M002 are individually executable; both are now **active**. M002 has a s
 |---|---|---|---|
 | M001 | infrastructure | **closed** | Default `/core` TUI subscribes for its bound session, handles connection errors honestly, and installs/drains real projection envelopes; reconnect takes a fresh authoritative snapshot. Closure: `plans/closure/tui-live-work-visibility-corrective/001-status.md`. |
 | M002 | invariant | **closed** | Scheduler admission and lifecycle updates produce session-scoped projected jobs; late snapshots contain bounded outstanding jobs. Closure: `plans/closure/tui-live-work-visibility-corrective/002-status.md`. |
-| M003 | invariant | **blocked: ADR-0042** | Subagent identity/liveness survives parent turn transition, cancellation, timeout, reconnect and bounded replay without orphan loss. |
-| M004 | capability | **blocked: M001–M003** | A session-scoped, deduplicated live-work view feeds `/sessions`, `Ctrl+T`, and relevant sidebar rows; no false-empty state. |
-| M005 | capability | **blocked: M004** | Identity-keyed inspection and authorized actions for jobs/durable runs, honest direct-vs-parent steering semantics. |
-| M006 | capability | **blocked: M001–M005** | Production socket daemon + TUI key/dialog acceptance and reconnect/late-attach tests; manual real terminal receipt. |
+| M003 | invariant | **closed** | Session-owned bounded child lifecycle and generation-safe identity; ADR-0042 Option A accepted. Closure: `plans/closure/tui-live-work-visibility-corrective/003-status.md`. |
+| M004 | capability | **closed** | One ID-based session-work selector feeds `/sessions`, `Ctrl+T`, and sidebar; socket/event publication reaches both painted work surfaces. Closure: `plans/closure/tui-live-work-visibility-corrective/004-status.md`. |
+| M005 | capability | **closed** | Identity-keyed job detail and daemon-authorized cancel; observer cancel disabled; parent-mediated child interaction preserved. Closure: `plans/closure/tui-live-work-visibility-corrective/005-status.md`. |
+| M006 | capability | **conditionally closed** | Socket-to-painted-TUI and job cancel slice passes. Real worker concurrency, late attach/restart, complete denial matrix, and manual terminal receipt remain required for full acceptance. Closure: `plans/closure/tui-live-work-visibility-corrective/006-status.md`. |
 
 Plans: `plans/implementation/tui-live-work-visibility-corrective/001-...` through `006-...`. Each milestone has a self-contained implementation plan; open only one primary milestone per agent.
 
@@ -94,9 +94,9 @@ The subsystem closes only after the **same real work** is visible and actionable
 |---|---|---|---|
 | M001 | **closed** | `plans/implementation/tui-live-work-visibility-corrective/001-default-tui-session-projection-lifecycle.md` | `plans/closure/tui-live-work-visibility-corrective/001-status.md` |
 | M002 | **closed** | `plans/implementation/tui-live-work-visibility-corrective/002-scheduler-job-publication-and-snapshot-recovery.md` | `plans/closure/tui-live-work-visibility-corrective/002-status.md` |
-| M003 | **blocked — proposed ADR-0042** | `plans/implementation/tui-live-work-visibility-corrective/003-session-owned-subagent-lifecycle.md` | — |
-| M004 | **blocked — M001–M003** | `plans/implementation/tui-live-work-visibility-corrective/004-unified-session-work-model-and-visibility.md` | — |
-| M005 | **blocked — M004** | `plans/implementation/tui-live-work-visibility-corrective/005-job-and-subagent-inspection-controls.md` | — |
-| M006 | **blocked — M001–M005** | `plans/implementation/tui-live-work-visibility-corrective/006-real-daemon-to-tui-acceptance-and-recovery.md` | — |
+| M003 | **closed** | `plans/implementation/tui-live-work-visibility-corrective/003-session-owned-subagent-lifecycle.md` | `plans/closure/tui-live-work-visibility-corrective/003-status.md` |
+| M004 | **closed** | `plans/implementation/tui-live-work-visibility-corrective/004-unified-session-work-model-and-visibility.md` | `plans/closure/tui-live-work-visibility-corrective/004-status.md` |
+| M005 | **closed** | `plans/implementation/tui-live-work-visibility-corrective/005-job-and-subagent-inspection-controls.md` | `plans/closure/tui-live-work-visibility-corrective/005-status.md` |
+| M006 | **conditionally closed** | `plans/implementation/tui-live-work-visibility-corrective/006-real-daemon-to-tui-acceptance-and-recovery.md` | `plans/closure/tui-live-work-visibility-corrective/006-status.md` |
 
 Historical convergence closures remain under `plans/closure/tui-subagent-and-job-visibility-convergence/`; do not overwrite them. Add successor closure records only after the corresponding real integration evidence is available.

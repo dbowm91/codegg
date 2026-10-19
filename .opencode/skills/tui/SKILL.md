@@ -1018,8 +1018,9 @@ model to the wrong connection.
   into the next pick. A panel row that a user selects must do something:
   `AgentsPanel` had no `Enter` arm at all and consumed the key silently.
 - **Subagent rows are projection-derived and last-known-good.**
-  `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
-  A snapshot that arrives replaces the rows; a *missing* snapshot does not,
+  `session_work::select_session_work` reads session-owned child instances first,
+  falling back to a turn tree only for legacy snapshots, and folds related
+  AgentRun/Job/tool-program records by explicit ids. A snapshot that arrives replaces the rows; a *missing* snapshot does not,
   because absence is not evidence that no subagents exist and clearing on it
   blanks the strip mid-turn. Never synthesize a row the projection did not
   vouch for, and never synthesize progress text: the projection adapter

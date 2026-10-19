@@ -714,20 +714,30 @@ it; shell staging, clipboard, and `/theme` errors are transient command feedback
 and would otherwise report a turn failure that never happened. The full text
 stays in the toast, and `/logs` retains 50 of them via `ToastManager::history`.
 
-Rows come from `sync_subagents_from_snapshot`, which reads the same
-`active_turn` (falling back to the newest `recent_turns`) agent tree the
-sidebar renders. Every field on a row — including `run_id`, `display_name`,
-`profile`, and `usefulness` — is copied **verbatim off the projected node**;
-nothing is joined, looked up, or synthesized here. An earlier revision
-described this as being "joined to durable runs by exact canonical task id only
-to attach a `run_id`", and that join never worked: the node's `task_id` is a
-daemon-local `u64` rendered in decimal while `AgentRunSummary::task_id` is a UUID
-string, so the two could never match and `run_id` was permanently `None`. The
-durable id now arrives inside `CoreEvent::SubagentStarted` and is carried through
-the projection as a field.
+Rows come from `session_work::select_session_work` for the active authorized
+session snapshot. The selector reads session-owned child instances first and
+falls back to a turn-local tree only for legacy snapshots; it folds durable
+AgentRun, Job, and tool-program records by explicit `run_id`/`job_id` links.
+Child fields — including `child_instance_id`, `run_id`, `display_name`,
+`profile`, and `usefulness` — are copied from the projected node. Related
+durable records are associated only by explicit `run_id` and `job_id`; the
+numeric worker `task_id` is never compared with the UUID AgentRun task id. The
+worker id and optional captured origin turn travel in `CoreEvent::SubagentStarted`.
+Tabs use `child_instance_id` when present and retain the task id only for old
+snapshots without a generation-safe key.
 A snapshot that *arrives* replaces the rows; **a missing snapshot does not**,
 because absence is not evidence that no subagents exist and clearing on it
 would blank the strip mid-turn.
+
+`Ctrl+T` uses the same selector for its child/run and job rows. When its
+fixed-height allocation omits rows, the affected group heading reports the
+omitted count. `/sessions` selects the active session after loading its list;
+if the user selects another session without an authorized projection loaded,
+the dialog clears the previous rows and says live work is unavailable rather
+than implying that the other session is empty.
+Session-dialog selection keys use `child_instance_id` when available, while
+`Enter` still carries the worker task id required to open that child's
+transcript; the two identities are kept in separate fields.
 
 **Descriptors are carried, never resolved.** `SubagentRow::profile` and
 `usefulness` are the curated pool entry's one-line character description and

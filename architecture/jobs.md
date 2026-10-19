@@ -578,6 +578,16 @@ durable schedule IDs. The retained legacy `Task*` requests are an
 explicit rejection boundary for old external clients; they do not start
 or reach an independent background scheduler.
 
+The TUI's live-work selector associates a job with an AgentRun by explicit
+`job_id` and omits the duplicate job row. Tool programs enrich their matching
+job row through the same ID. `JobGet` and `JobAttempts` back the job detail
+dialog; `JobCancel` is issued only from its explicit cancel key, and the UI
+reloads the record before presenting the resulting state. The daemon remains
+the authority for owner/project scope and cancellation outcome. Read-only
+observers can inspect but do not receive an enabled cancel affordance; other
+request refusals remain daemon-authoritative and are reported without claiming
+that cancellation succeeded.
+
 `JobSubmissionService` validates payload size and kind, resolves the
 canonical workspace, applies the central resource profile and
 exclusivity rules, then creates and enqueues the durable job as one

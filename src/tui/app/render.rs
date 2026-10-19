@@ -1333,9 +1333,9 @@ impl App {
         }
 
         let theme = self.ui_state.theme.clone();
-        let selected = self.tasks_selected;
         let all_rows = self.task_rows();
         let rows = bounded_task_rows(all_rows.clone());
+        let selected = self.selected_task_row_index(&rows);
 
         let mut lines: Vec<Line> = Vec::new();
         if rows.is_empty() {
@@ -1374,10 +1374,30 @@ impl App {
                 let line = match row {
                     // Headers are never selectable, so they render plainly
                     // even if a stale cursor index happens to land here.
-                    TaskRow::Header { group } => Line::from(Span::styled(
-                        format!(" ── {} ──", group.title()),
-                        Style::default().fg(theme.muted),
-                    )),
+                    TaskRow::Header { group } => {
+                        let total = all_rows
+                            .iter()
+                            .filter(|candidate| {
+                                !matches!(candidate, TaskRow::Header { .. })
+                                    && candidate.group() == *group
+                            })
+                            .count();
+                        let visible = rows
+                            .iter()
+                            .filter(|candidate| candidate.group() == *group)
+                            .count()
+                            .saturating_sub(1);
+                        let omitted = total.saturating_sub(visible);
+                        let more = if omitted > 0 {
+                            format!(" · {omitted} more")
+                        } else {
+                            String::new()
+                        };
+                        Line::from(Span::styled(
+                            format!(" ── {}{more} ──", group.title()),
+                            Style::default().fg(theme.muted),
+                        ))
+                    }
                     TaskRow::Todo { bubble, content } => {
                         // The bubble is rendered as the lead rather than
                         // folded into the text so the completed/pending
@@ -1459,7 +1479,7 @@ impl App {
             }
             lines.push(Line::from(Span::styled(
                 if selected.is_some() {
-                    " Shift+N/P open · ↵ select · Esc close "
+                    " Shift+N/P open · ↵ select · i inspect · Esc close "
                 } else {
                     " Ctrl+T close "
                 }
@@ -2643,6 +2663,7 @@ impl App {
                 rows.iter()
                     .map(|row| crate::tui::components::sidebar::SidebarSubagent {
                         task_id: row.task_id.clone(),
+                        child_instance_id: row.child_instance_id.clone(),
                         name: row.label().to_string(),
                         agent: row.agent.clone(),
                         status: row.status.clone(),
@@ -2695,53 +2716,10 @@ impl App {
     fn sync_subagents_from_snapshot(
         snapshot: &crate::protocol::projection::SessionProjectionSnapshot,
     ) -> Option<Vec<SubagentRow>> {
-        use crate::protocol::projection::dto::AgentTreeStatus;
-
-        let tree = snapshot
-            .active_turn
-            .as_ref()
-            .or_else(|| snapshot.recent_turns.front());
-
-        let Some(tree) = tree else {
-            // The snapshot arrived and carries no agent tree at all: that is
-            // authoritative, so it clears rather than keeps the last set.
-            return Some(Vec::new());
-        };
-
         Some(
-            tree.agent_tree
-                .iter()
-                .map(|node| {
-                    let task_id = node.task_id.to_string();
-                    SubagentRow {
-                        // The durable run id now arrives **in the event**
-                        // (`CoreEvent::SubagentStarted::run_id`) and is copied
-                        // onto the node verbatim. It used to be recovered by
-                        // joining this node's `task_id` against
-                        // `AgentRunSummary::task_id`, which could never match:
-                        // the node's is a daemon-local `u64` rendered in
-                        // decimal, the summary's is a UUID string. The field
-                        // was therefore permanently `None`.
-                        run_id: node.run_id.clone(),
-                        task_id,
-                        display_name: node.display_name.clone(),
-                        // Descriptors are carried on the event and copied here
-                        // under the same contract as the name: this is the one
-                        // projection→row derivation, and it reads only what
-                        // the projection said. There is deliberately no pool
-                        // lookup anywhere in the TUI.
-                        profile: node.profile.clone(),
-                        usefulness: node.usefulness.clone(),
-                        agent: node.agent.clone(),
-                        description: node.description.clone(),
-                        status: match node.status {
-                            AgentTreeStatus::Running => "running",
-                            AgentTreeStatus::Completed => "completed",
-                            AgentTreeStatus::Failed => "failed",
-                        }
-                        .to_string(),
-                    }
-                })
+            crate::tui::app::state::session_work::select_session_work(snapshot)
+                .into_iter()
+                .filter_map(|work| work.subagent)
                 .collect(),
         )
     }
@@ -3031,6 +3009,8 @@ mod subagent_row_chain_tests {
     #[test]
     fn a_named_subagent_reaches_the_rendered_row() {
         let node = |name: Option<&str>| AgentTreeNodeProjection {
+            child_instance_id: "child-7".into(),
+            originating_turn_id: Some("turn-1".into()),
             task_id: 7,
             agent: "explore".into(),
             description: "walking the tree".into(),
@@ -3099,6 +3079,8 @@ mod subagent_row_chain_tests {
                 Some("turn-1".into()),
                 ProjectionEvent::SubagentStarted {
                     node: AgentTreeNodeProjection {
+                        child_instance_id: "child-9".into(),
+                        originating_turn_id: Some("turn-1".into()),
                         task_id: 9,
                         agent: "review".into(),
                         description: "reading".into(),
@@ -3149,6 +3131,8 @@ mod subagent_row_chain_tests {
                 Some("turn-1".into()),
                 ProjectionEvent::SubagentStarted {
                     node: AgentTreeNodeProjection {
+                        child_instance_id: "child-11".into(),
+                        originating_turn_id: Some("turn-1".into()),
                         task_id: 11,
                         agent: "explore".into(),
                         description: "walking".into(),

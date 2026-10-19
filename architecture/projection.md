@@ -80,6 +80,7 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_TOOL_PROGRAM_CALLS` | 128 |
 | `MAX_PROJECTION_NOTIFICATION_BOUND` | 16 |
 | `MAX_PROJECTION_SUBAGENTS` | 16 |
+| `MAX_PROJECTION_SESSION_SUBAGENTS` | 32 |
 | `MAX_PROJECTION_AGENT_RUNS` | 64 |
 | `MAX_PROJECTION_WORKTREES` | 32 |
 | `MAX_PROJECTION_RUN_GROUPS` | 32 |
@@ -169,6 +170,16 @@ implementations MUST go through these helpers.
 | Tool Program | `ToolProgramSubmitted`, `ToolProgramTerminal`, `ToolProgramAdmitted`, `ToolProgramStarted`, `ToolProgramProgress`, `ToolProgramWaitingForCall`, `ToolProgramWaitingForJob`, `ToolProgramRetryBackoff` |
 | Selection | `TokenUsageUpdated`, `ModelSelected`, `AgentSelected` |
 | Meta | `Diagnostic`, `ResyncRequired`, `Unknown` |
+
+Subagent events carry a generation-safe `child_instance_id` minted at worker
+dispatch and an optional immutable `originating_turn_id`. The session snapshot
+keeps a separately bounded `subagents` collection (32 entries); the bounded
+per-turn `agent_tree` remains a conversational compatibility view. Durable
+`run_id` and `job_id` associations are explicit and never inferred from the
+numeric worker task id. A daemon-local active-child registry supplies late
+session snapshots for ephemeral workers; it starts empty after restart, while
+AgentRunStore and JobStore rebuild durable work. Capacity is live-first and
+reports an omission diagnostic when all retained child slots are live.
 
 ### Adapter Layer
 

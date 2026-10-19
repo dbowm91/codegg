@@ -828,6 +828,299 @@ async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_j
         .iter()
         .any(|job| job.job_id == live_submitted.job_id.as_str()));
 
+    let child_instance_id = "child-socket-live-1".to_string();
+    daemon
+        .event_log
+        .publish(
+            Some(session.id.clone()),
+            Some("turn-socket-live-work".into()),
+            CoreEvent::SubagentStarted {
+                session_id: session.id.clone(),
+                child_instance_id: child_instance_id.clone(),
+                originating_turn_id: Some("turn-socket-live-work".into()),
+                task_id: 7,
+                agent: "worker".into(),
+                description: "socket-published child for live-work view".into(),
+                display_name: Some("Mira".into()),
+                profile: None,
+                usefulness: None,
+                run_id: None,
+            },
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(event) = app
+                .core_event_rx
+                .as_mut()
+                .expect("attached event receiver")
+                .recv()
+                .await
+            {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id,
+                    stream_id,
+                    envelope,
+                } = &event.payload
+                {
+                    if subscription_id == &expected_subscription && stream_id == &expected_stream {
+                        assert!(app.apply_core_event(CoreEvent::ProjectionStreamEvent {
+                            subscription_id: subscription_id.clone(),
+                            stream_id: stream_id.clone(),
+                            envelope: envelope.clone(),
+                        }));
+                        if app
+                            .projection_client
+                            .active_snapshot()
+                            .is_some_and(|(_, snapshot)| {
+                                snapshot
+                                    .subagents
+                                    .iter()
+                                    .any(|row| row.child_instance_id == child_instance_id)
+                            })
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("session-owned child projection event from the socket");
+    let second_child_instance_id = "child-socket-live-2".to_string();
+    daemon
+        .event_log
+        .publish(
+            Some(session.id.clone()),
+            Some("turn-socket-live-work".into()),
+            CoreEvent::SubagentStarted {
+                session_id: session.id.clone(),
+                child_instance_id: second_child_instance_id.clone(),
+                originating_turn_id: Some("turn-socket-live-work".into()),
+                task_id: 8,
+                agent: "worker".into(),
+                description: "second socket-published child".into(),
+                display_name: Some("Sally".into()),
+                profile: None,
+                usefulness: None,
+                run_id: None,
+            },
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(event) = app
+                .core_event_rx
+                .as_mut()
+                .expect("attached event receiver")
+                .recv()
+                .await
+            {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id,
+                    stream_id,
+                    envelope,
+                } = &event.payload
+                {
+                    if subscription_id == &expected_subscription && stream_id == &expected_stream {
+                        assert!(app.apply_core_event(CoreEvent::ProjectionStreamEvent {
+                            subscription_id: subscription_id.clone(),
+                            stream_id: stream_id.clone(),
+                            envelope: envelope.clone(),
+                        }));
+                        if app
+                            .projection_client
+                            .active_snapshot()
+                            .is_some_and(|(_, snapshot)| {
+                                snapshot
+                                    .subagents
+                                    .iter()
+                                    .any(|row| row.child_instance_id == second_child_instance_id)
+                            })
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("second session-owned child projection event from the socket");
+    assert!(app.task_rows().iter().any(|row| matches!(
+        row,
+        crate::tui::app::state::tasks::TaskRow::Subagent { child_instance_id: Some(id), .. }
+            if id == &child_instance_id
+    )));
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Subagent { .. }))
+            .count(),
+        2
+    );
+    app.open_dialog(crate::tui::Dialog::Session);
+    let painted_session_dialog = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            |dialog| dialog.clone(),
+        )
+        .expect("painted sessions dialog with live child");
+    assert!(painted_session_dialog.subagent_rows().iter().any(|row| row
+        .child_instance_id
+        .as_deref()
+        == Some(child_instance_id.as_str())
+        && row.task_id == "7"));
+    assert_eq!(painted_session_dialog.subagent_rows().len(), 2);
+    assert_eq!(painted_session_dialog.job_rows().len(), 2);
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).expect("test terminal");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("paint sessions dialog");
+    let painted_text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(
+        painted_text.contains("Mira"),
+        "painted session rows: {painted_text}"
+    );
+    assert!(
+        painted_text.contains("Sally"),
+        "painted session rows: {painted_text}"
+    );
+    assert!(
+        painted_text.contains("Subagents"),
+        "painted session sections: {painted_text}"
+    );
+    app.close_dialog();
+    app.tasks_expanded = false;
+    app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('t'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+    assert!(app.task_rows().iter().any(|row| matches!(
+        row,
+        crate::tui::app::state::tasks::TaskRow::Subagent { child_instance_id: Some(id), .. }
+            if id == &child_instance_id
+    )));
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("paint tasks overlay");
+    let painted_text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(
+        painted_text.contains("Mira"),
+        "painted task overlay: {painted_text}"
+    );
+    assert!(
+        painted_text.contains("Sally"),
+        "painted task overlay: {painted_text}"
+    );
+
+    // M005: drive a job row through /sessions, inspect it, request cancel,
+    // and verify the daemon's durable state after the UI refresh.
+    app.tasks_expanded = false;
+    app.open_dialog(crate::tui::Dialog::Session);
+    for _ in 0..8 {
+        let selected_is_job = app
+            .focus_manager
+            .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+                crate::tui::components::component::DialogType::Session,
+                |dialog| {
+                    matches!(
+                        dialog.selected_row(),
+                        Some(crate::tui::components::dialogs::session::SessionDialogRow::Job(_))
+                    )
+                },
+            )
+            .unwrap_or(false);
+        if selected_is_job {
+            break;
+        }
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI job detail completion");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::OpenJobDetailLoaded { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("job Enter opened details through the TUI command path");
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('x'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI job cancel completion");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::OpenJobDetailLoaded {
+                    notice: Some(_),
+                    ..
+                }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("job cancel reconciled through the TUI command path");
+    let cancelled_job_id = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::job_detail::JobDetailDialog, _>(
+            crate::tui::components::component::DialogType::JobDetail,
+            |dialog| {
+                assert_eq!(
+                    dialog.job.as_ref().map(|job| job.state.as_str()),
+                    Some("cancelled")
+                );
+                dialog.job_id.clone()
+            },
+        )
+        .expect("job detail remained on the requested entity");
+    assert_eq!(
+        daemon
+            .deps
+            .job_store
+            .get_job(&codegg_core::jobs::JobId::new_unchecked(&cancelled_job_id))
+            .await
+            .expect("read cancelled job")
+            .expect("cancelled job record")
+            .state,
+        codegg_core::jobs::JobState::Cancelled
+    );
+
     shutdown_server(server, shutdown).await;
 }
 

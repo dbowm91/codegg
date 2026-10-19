@@ -1,6 +1,6 @@
 # TUI Live Work Visibility M003 — Session-Owned Subagent Identity and Lifetime
 
-Status: **blocked — ADR-0042 must be accepted**
+Status: **closed** — closure: `plans/closure/tui-live-work-visibility-corrective/003-status.md`
 Primary class: invariant
 Repository review baseline: `61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649` (`main`, 2026-10-19; re-pin)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M003.

@@ -11,6 +11,7 @@ pub mod goto;
 pub mod help;
 pub mod import;
 pub mod info;
+pub mod job_detail;
 pub mod keybind;
 pub mod mcp;
 pub mod model;

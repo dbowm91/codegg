@@ -69,6 +69,7 @@ pub enum SidebarActivation {
     /// "what happened to this run" and "show me its transcript" — so they get
     /// different answers on different rows.
     InspectSubagent(String),
+    InspectJob(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +150,7 @@ pub struct SidebarConvergence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidebarSubagent {
     pub task_id: String,
+    pub child_instance_id: Option<String>,
     pub name: String,
     pub agent: String,
     pub status: String,
@@ -158,6 +160,15 @@ pub struct SidebarSubagent {
     /// unchanged when it is `None` — a descriptor that did not arrive must not
     /// leave a gap or an ellipsis where nothing used to be.
     pub profile: Option<String>,
+}
+
+impl SidebarSubagent {
+    fn identity_key(&self) -> &str {
+        self.child_instance_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&self.task_id)
+    }
 }
 
 /// One in-flight job advertised by the `Jobs` section.
@@ -534,7 +545,8 @@ impl SidebarWidget {
             }
             SidebarActivation::None
             | SidebarActivation::InspectRun(_)
-            | SidebarActivation::InspectSubagent(_) => {}
+            | SidebarActivation::InspectSubagent(_)
+            | SidebarActivation::InspectJob(_) => {}
         }
         self.reconcile_focus();
     }
@@ -624,11 +636,8 @@ impl SidebarWidget {
             Some(SidebarFocusTarget::Subagent(task_id)) => {
                 SidebarActivation::InspectSubagent(task_id)
             }
-            // A job row is a read-only status line. There is no transcript to
-            // open and no dialog to inspect, so activating it is a no-op
-            // rather than a fabricated destination.
-            Some(SidebarFocusTarget::Job(_))
-            | Some(SidebarFocusTarget::Todo(_))
+            Some(SidebarFocusTarget::Job(job_id)) => SidebarActivation::InspectJob(job_id),
+            Some(SidebarFocusTarget::Todo(_))
             | Some(SidebarFocusTarget::McpServer(_))
             | Some(SidebarFocusTarget::FileChange(_))
             | Some(SidebarFocusTarget::ToolProgram(_))
@@ -670,7 +679,7 @@ impl SidebarWidget {
                 targets.extend(
                     self.subagents
                         .iter()
-                        .map(|row| SidebarFocusTarget::Subagent(row.task_id.clone())),
+                        .map(|row| SidebarFocusTarget::Subagent(row.identity_key().to_string())),
                 );
             }
         }
@@ -1082,7 +1091,7 @@ impl SidebarWidget {
             targets.push(HoveredElement::Section(SidebarSection::Subagents));
             if !self.subagents_collapsed {
                 for row in &self.subagents {
-                    targets.push(HoveredElement::Subagent(row.task_id.clone()));
+                    targets.push(HoveredElement::Subagent(row.identity_key().to_string()));
                 }
                 if self.truncated_subagents() > 0 {
                     targets.push(HoveredElement::None);
@@ -1386,7 +1395,7 @@ impl SidebarWidget {
             if !self.subagents_collapsed {
                 for row in &self.subagents {
                     let (icon, style) = self.subagent_glyph(&row.status);
-                    let target = SidebarFocusTarget::Subagent(row.task_id.clone());
+                    let target = SidebarFocusTarget::Subagent(row.identity_key().to_string());
                     let agent = clean_inline_text(&row.agent, 16);
                     let status = clean_inline_text(&row.status, 12);
                     let name = clean_inline_text(&row.name, 24);
@@ -2145,6 +2154,8 @@ mod tests {
         status: AgentTreeStatus,
     ) -> AgentTreeNodeProjection {
         AgentTreeNodeProjection {
+            child_instance_id: format!("child-{task_id}"),
+            originating_turn_id: None,
             task_id,
             agent: format!("agent-{task_id}"),
             description: format!("description-{task_id}"),
@@ -2512,7 +2523,10 @@ mod tests {
             sidebar.focused_target(),
             Some(&SidebarFocusTarget::Job("j2".to_string()))
         );
-        assert_eq!(sidebar.activate_focused(), SidebarActivation::None);
+        assert_eq!(
+            sidebar.activate_focused(),
+            SidebarActivation::InspectJob("j2".into())
+        );
     }
 
     #[test]
@@ -2574,6 +2588,7 @@ mod tests {
     fn subagent(task_id: &str, name: &str, agent: &str, status: &str) -> SidebarSubagent {
         SidebarSubagent {
             task_id: task_id.to_string(),
+            child_instance_id: Some(task_id.to_string()),
             name: name.to_string(),
             agent: agent.to_string(),
             status: status.to_string(),

@@ -286,7 +286,7 @@ after reconciling the search-backend retirement with current `main`.
 | Built-in slash commands | 166 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
-| TUI state modules | 32 (33 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
+| TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
 | Database tables (`CREATE TABLE`) | 92 | `crates/codegg-core/src/session/schema.rs` |
 | Storage layout version | 83 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |

@@ -16,8 +16,8 @@ use crate::projection::dto::{
 };
 use crate::projection::limits::{
     MAX_PROJECTION_AGENT_RUNS, MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS,
-    MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_TOOL_PROGRAMS,
-    MAX_PROJECTION_WORKTREES,
+    MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_SESSION_SUBAGENTS,
+    MAX_PROJECTION_TOOL_PROGRAMS, MAX_PROJECTION_WORKTREES,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -49,6 +49,10 @@ pub struct SessionProjectionSnapshot {
     pub workspace: WorkspaceSummaryProjection,
     /// Active turn projection. `None` when no turn is in flight.
     pub active_turn: Option<crate::projection::dto::TurnProjection>,
+    /// Session-owned child instances. Unlike the conversational agent tree,
+    /// these survive parent-turn replacement and are the liveness authority.
+    #[serde(default)]
+    pub subagents: VecDeque<crate::projection::dto::AgentTreeNodeProjection>,
     /// Most recent completed turns (newest first). Bounded by
     /// [`crate::projection::limits::MAX_PROJECTION_RECENT_TOOLS`] of
     /// turn slots — older turns collapse into
@@ -121,6 +125,7 @@ impl SessionProjectionSnapshot {
                 health: Default::default(),
             },
             active_turn: None,
+            subagents: VecDeque::new(),
             recent_turns: VecDeque::new(),
             runs: VecDeque::new(),
             jobs: VecDeque::new(),
@@ -131,6 +136,55 @@ impl SessionProjectionSnapshot {
             convergences: VecDeque::new(),
             diagnostics: VecDeque::new(),
         }
+    }
+
+    /// Upsert one session-owned child instance, evicting the oldest terminal
+    /// instance first when the independent session cap is reached.
+    pub fn upsert_subagent(
+        &mut self,
+        node: crate::projection::dto::AgentTreeNodeProjection,
+    ) -> bool {
+        if let Some(slot) = self
+            .subagents
+            .iter_mut()
+            .find(|item| item.child_instance_id == node.child_instance_id)
+        {
+            if matches!(
+                slot.status,
+                crate::projection::dto::AgentTreeStatus::Running
+            ) {
+                let mut node = node;
+                // These fields describe the admitted generation, not mutable
+                // activity. Duplicate starts cannot rebind its lineage.
+                node.originating_turn_id
+                    .clone_from(&slot.originating_turn_id);
+                node.task_id = slot.task_id;
+                node.created_at = slot.created_at;
+                *slot = node;
+            } else if !matches!(
+                node.status,
+                crate::projection::dto::AgentTreeStatus::Running
+            ) && node.completed_at.unwrap_or_default()
+                >= slot.completed_at.unwrap_or_default()
+            {
+                *slot = node;
+            }
+            return true;
+        }
+        if self.subagents.len() >= MAX_PROJECTION_SESSION_SUBAGENTS {
+            if let Some(index) = self.subagents.iter().position(|item| {
+                !matches!(
+                    item.status,
+                    crate::projection::dto::AgentTreeStatus::Running
+                )
+            }) {
+                self.subagents.remove(index);
+            } else {
+                return false;
+            }
+        }
+        self.subagents.push_back(node);
+        true
     }
 
     /// Push a diagnostic, dropping the oldest if the cap is reached.

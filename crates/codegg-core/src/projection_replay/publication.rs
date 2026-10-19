@@ -183,6 +183,8 @@ pub fn projection_events_from_core(
         }
         CoreEvent::SubagentStarted {
             session_id,
+            child_instance_id,
+            originating_turn_id,
             task_id,
             agent,
             description,
@@ -193,6 +195,8 @@ pub fn projection_events_from_core(
         } => {
             let event = ProjectionEvent::SubagentStarted {
                 node: codegg_protocol::projection::dto::AgentTreeNodeProjection {
+                    child_instance_id: child_instance_id.clone(),
+                    originating_turn_id: originating_turn_id.clone(),
                     task_id: *task_id,
                     agent: agent.clone(),
                     description: description.clone(),
@@ -216,11 +220,13 @@ pub fn projection_events_from_core(
         }
         CoreEvent::SubagentCompleted {
             session_id,
+            child_instance_id,
             task_id,
             result_summary,
             ..
         } => {
             let event = ProjectionEvent::SubagentCompleted {
+                child_instance_id: child_instance_id.clone(),
                 task_id: *task_id,
                 result_summary: result_summary.clone(),
                 completed_at: envelope.timestamp_ms,
@@ -229,11 +235,13 @@ pub fn projection_events_from_core(
         }
         CoreEvent::SubagentFailed {
             session_id,
+            child_instance_id,
             task_id,
             error,
             ..
         } => {
             let event = ProjectionEvent::SubagentFailed {
+                child_instance_id: child_instance_id.clone(),
                 task_id: *task_id,
                 error: error.clone(),
                 failed_at: envelope.timestamp_ms,
@@ -820,6 +828,8 @@ mod tests {
             turn_id: None,
             payload: CoreEvent::SubagentStarted {
                 session_id: "s1".into(),
+                child_instance_id: String::new(),
+                originating_turn_id: None,
                 task_id: 42,
                 agent: "explore".into(),
                 description: "map the auth flow".into(),

@@ -165,6 +165,8 @@ async fn run_research_child(
         .await;
     let request = SubAgentRequest {
         task_id,
+        child_instance_id: String::new(),
+        originating_turn_id: None,
         run_id: None,
         prompt: child_prompt(task),
         agent: "general".into(),

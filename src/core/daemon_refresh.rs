@@ -53,6 +53,46 @@ impl CoreDaemon {
             project_id,
             workspace_id,
         );
+        if let Some(runtime) = self.sessions.get(session_id) {
+            let mut nodes = runtime
+                .subagents
+                .read()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            nodes.sort_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.child_instance_id.cmp(&right.child_instance_id))
+            });
+            for node in nodes {
+                snapshot.upsert_subagent(node);
+            }
+            snapshot.primary_session.active_subagents = snapshot
+                .subagents
+                .iter()
+                .filter(|node| {
+                    matches!(
+                        node.status,
+                        codegg_protocol::projection::dto::AgentTreeStatus::Running
+                    )
+                })
+                .count();
+            if runtime
+                .subagent_overflow
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+            {
+                snapshot.push_diagnostic(codegg_protocol::projection::snapshot::ProjectionDiagnostic {
+                    code: "session_subagent_capacity".into(),
+                    message: "additional live child instances were omitted by the session projection bound".into(),
+                    at_ms: Utc::now().timestamp_millis(),
+                    session_id: Some(session_id.to_string()),
+                    turn_id: None,
+                });
+            }
+        }
         let runs = self
             .deps
             .agent_run_store
@@ -1128,6 +1168,83 @@ mod tests {
         assert_eq!(projected.session_id.as_deref(), Some("session-owner"));
         assert_eq!(projected.turn_id.as_deref(), Some("turn-owner"));
         assert_eq!(projected.state, "queued");
+    }
+
+    #[tokio::test]
+    async fn session_projection_snapshot_includes_in_process_live_child_instances() {
+        let daemon = CoreDaemon::new(None, None, None);
+        let workspace = daemon
+            .workspaces
+            .get_or_register(std::path::Path::new("/tmp"))
+            .await
+            .expect("register workspace");
+        let runtime = daemon.bind_runtime(
+            "session-child-owner",
+            workspace.clone(),
+            "project-child".into(),
+            workspace.canonical_root.clone(),
+        );
+        let cold_start = daemon
+            .projection_snapshot_for_session(
+                "session-child-owner",
+                "project-child",
+                workspace.id.as_str(),
+            )
+            .await;
+        assert!(
+            cold_start.subagents.is_empty(),
+            "a new daemon runtime must not reconstruct an ephemeral worker as live"
+        );
+        runtime.subagents.write().await.insert(
+            "child-live-1".into(),
+            codegg_protocol::projection::dto::AgentTreeNodeProjection {
+                child_instance_id: "child-live-1".into(),
+                originating_turn_id: Some("parent-turn-old".into()),
+                task_id: 7,
+                agent: "explore".into(),
+                description: "still running after parent completion".into(),
+                status: codegg_protocol::projection::dto::AgentTreeStatus::Running,
+                parent_task_id: None,
+                created_at: 1,
+                completed_at: None,
+                result_summary: None,
+                display_name: Some("Sally".into()),
+                profile: None,
+                usefulness: None,
+                run_id: None,
+            },
+        );
+        let snapshot = daemon
+            .projection_snapshot_for_session(
+                "session-child-owner",
+                "project-child",
+                workspace.id.as_str(),
+            )
+            .await;
+        assert_eq!(snapshot.subagents.len(), 1);
+        assert_eq!(
+            snapshot.subagents[0].originating_turn_id.as_deref(),
+            Some("parent-turn-old")
+        );
+        assert_eq!(snapshot.primary_session.active_subagents, 1);
+        let other_runtime = daemon.bind_runtime(
+            "session-child-other",
+            workspace.clone(),
+            "project-child".into(),
+            workspace.canonical_root.clone(),
+        );
+        assert!(other_runtime.subagents.read().await.is_empty());
+        let other_snapshot = daemon
+            .projection_snapshot_for_session(
+                "session-child-other",
+                "project-child",
+                workspace.id.as_str(),
+            )
+            .await;
+        assert!(
+            other_snapshot.subagents.is_empty(),
+            "another session must not inherit this runtime's ephemeral child"
+        );
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 # ADR-0042: Session-Owned Subagent Lifecycle Projection
 
-Status: **proposed** (decision gate, not approval to change the schema)
+Status: **accepted** — Option A (explicitly accepted by the user on 2026-10-19)
 
 Date: 2026-10-19
 Decision owners: project maintainers
@@ -28,9 +28,9 @@ Deterministic replay; explicit originating-session and originating-turn lineage;
 
 **Option C: extend `recent_turns` or hold the last `agent_tree` in the TUI.** Low code cost, but loses descendants on subsequent turns, snapshots/restart, and old-turn eviction; muddles completed-versus-running and leaks user-facing ghosts. Reject.
 
-## Proposed decision (requires explicit acceptance)
+## Decision
 
-Select **Option A**, conditional on implementation review confirming the admission-origin identity can be carried on **every** producer path without breaking transport or adding an unbounded store. The canonical correlation key must not be the text label or the prior broken decimal-vs-UUID `task_id` join. Define an explicit union/association model: `child_instance_id` unique per dispatch, `run_id`/ `job_id` optional when durable, `session_id` mandatory, `originating_turn_id` optional but immutable once known. Do not equate a UUID run id to an ephemeral numeric id. If a producer lacks a durable id, mint one once **at dispatch**, record it on all lifecycle events, and never regenerate on replay. Exact wire field naming and retention cap may be settled in M003 after acceptance; the authority and identity semantics may not.
+Select **Option A**, accepted explicitly on 2026-10-19. M003 must confirm the admission-origin identity can be carried on every producer path without breaking transport or adding an unbounded store. The canonical correlation key must not be the text label or the prior broken decimal-vs-UUID `task_id` join. Define an explicit union/association model: `child_instance_id` unique per dispatch, `run_id`/`job_id` optional when durable, `session_id` mandatory, `originating_turn_id` optional but immutable once known. Do not equate a UUID run id to an ephemeral numeric id. If a producer lacks a durable id, mint one once **at dispatch**, record it on all lifecycle events, and never regenerate on replay. Exact wire field naming and retention cap may be settled in M003; the authority and identity semantics may not.
 
 ## Consequences and migration
 
