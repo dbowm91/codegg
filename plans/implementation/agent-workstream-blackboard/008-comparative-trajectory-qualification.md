@@ -1,6 +1,16 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: blocked — M006 and M007 closure required for the broad cross-capability comparison; shared-checkout experiment arms additionally require M005
+Status: eligible for its isolated arms (S0–S3) — M006 and M007 both closed on 2026-10-19, which discharged the broad cross-capability gate. The shared-checkout arm (S4) remains blocked on M005 closure and stays unavailable until then.
+
+Gate status 2026-10-19: the gate this milestone waited on was M006 (isolated
+session/worktree launch UX) and M007 (per-workspace build admission). Both
+closed on 2026-10-19, so the configurations that need only isolated
+checkouts — S0, S1, S2, S3 — may proceed. S4 (two children in an explicitly
+serialized shared worktree) additionally requires M005 closure, and M005's
+shared mutation is still unavailable behind its corrective sub-line
+(C001–C002 closed, C003 ready, C004–C006 blocked). If a configuration lacks
+supported OS shared-write containment, mark it unrun rather than substituting
+an unsafe emulation.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
