@@ -5,7 +5,7 @@ Date: 2026-10-19
 Class: **capability**
 Source implementation plan: `plans/implementation/tui-live-work-visibility-corrective/004-unified-session-work-model-and-visibility.md`
 Source subsystem roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md#7-milestones`
-Implementation commit: recorded in the registry after implementation commit
+Implementation commit: `a735ffed21fce498a26b1f50aa7085456760ce9d`
 
 ## Finding
 
