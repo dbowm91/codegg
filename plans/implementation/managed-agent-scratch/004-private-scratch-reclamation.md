@@ -1,6 +1,6 @@
 # Managed Agent Scratch M004 — Session and Agent-Private Scratch Reclamation
 
-Status: implemented — closure recorded at `plans/closure/managed-agent-scratch/004-status.md`
+Status: closed — see `plans/closure/managed-agent-scratch/004-status.md`
 Repository baseline: `plan/managed-scratch-spaces` after M003 implementation `d83dfda1a6cf3676e6d221b10dd1fe080eb84794`.
 
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`.
