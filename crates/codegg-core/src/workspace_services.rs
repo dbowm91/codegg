@@ -153,7 +153,7 @@ impl WorkspacePathPolicy {
                 .iter()
                 .map(|path| ("write", path.as_path())),
         );
-        roots.sort_by(|left, right| left.cmp(right));
+        roots.sort();
         let mut hasher = Sha256::new();
         for (kind, path) in roots {
             hasher.update(kind.as_bytes());
