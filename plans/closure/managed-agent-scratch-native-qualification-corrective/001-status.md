@@ -56,7 +56,7 @@ still absent and is recorded as blocked in the sibling C002 closure.
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| WP A: a native Linux host with available Landlock ABI 3+ | `tests/linux_native_scratch_containment.rs::native_linux_host_can_enforce_landlock`; CI run `39294747903` on `ubuntu-latest` | pass | The fixture asserts the backend is Landlock and that a host without it **fails** rather than skips. All ten fixture cases passed in that run. |
+| WP A: a native Linux host with available Landlock ABI 3+ | `tests/linux_native_scratch_containment.rs::native_linux_host_can_enforce_landlock`; CI run `39298041771` on `ubuntu-latest` | pass | The fixture asserts the backend is Landlock and that a host without it **fails** rather than skips. All ten fixture cases passed in that run. |
 | WP B: host fixture — direct child writes under its private root and under a granted shared root | `required_launch_confines_scratch_to_the_granted_roots`; `model_owned_bash_tool_confines_scratch_to_the_granted_roots` | pass | `PRIVATE_WRITE=allowed`, `GRANTED_SHARED_WRITE=allowed`; the host-side view agrees (`private.txt`, `granted.txt` exist). |
 | WP B: host fixture — cannot modify sibling scratch, scratch parent, unrelated host temp, credential roots, explicitly denied paths | same two tests | pass | `UNGRANTED_SIBLING_WRITE`, `FOREIGN_SESSION_WRITE`, `SCRATCH_PARENT_WRITE`, `HOST_TEMP_WRITE`, `CREDENTIAL_WRITE`, `HOST_TEMP_TRUNCATE`, `HARDLINK_OUT`, `RENAME_OUT`, `SYMLINK_ESCAPE` are all `denied`. |
 | WP B: helper status `Enforced`, Landlock ABI >= 3, `no_new_privs` | `required_launch_confines_scratch_to_the_granted_roots` | pass | Asserted on `SandboxExecutionOutcome::Enforced { backend, abi, guarantees }` returned by the same launch. |
@@ -69,17 +69,17 @@ still absent and is recorded as blocked in the sibling C002 closure.
 | Cancellation / no orphaned side effect | `a_cancelled_attempt_never_executes_the_target` | pass | A pre-cancelled attempt returns `CancelledBeforeSpawn` and creates no marker. |
 | Non-vacuity: a test that would fail if a sibling write incorrectly succeeded | `an_over_broad_grant_is_observable_by_the_same_probe` | pass | An artificially broadened grant makes the *same* ungranted sibling writable, so the denials above are discriminating. |
 | Frozen effective grant snapshot is immutable | `admitted_run_freezes_only_the_granted_scratch` | pass | A retry of the accepted invocation returns the same run and snapshot and creates no second run; widening the grant set on the same accepted invocation is refused. |
-| §11 focused: `cargo fmt --all -- --check` | CI run `39294747903` step "Formatting" | pass | Also verified locally. |
+| §11 focused: `cargo fmt --all -- --check` | CI run `39298041771` step "Formatting" | pass | Also verified locally. |
 | §11 focused: `cargo test -p codegg --test managed_scratch_job_admission --locked` | CI "Workspace tests" + local macOS run | pass | Local: 1 passed, 0 failed. |
 | §11 focused: `cargo test -p codegg --lib scratch::tests --locked` | CI "Workspace tests" + local macOS run | pass | Local: 12 passed, 0 failed. |
 | §11 focused: `cargo test -p codegg --test sandbox_containment --locked` | CI "Workspace tests" | pass | Existing macOS/Linux Landlock fixture suite remains green. |
-| §11 focused: `cargo clippy --workspace --all-targets --locked -- -D warnings` | CI run `39294747903` step "Workspace Clippy" | pass | Also verified locally against the fixture. |
+| §11 focused: `cargo clippy --workspace --all-targets --locked -- -D warnings` | CI run `39298041771` step "Workspace Clippy" | pass | Also verified locally against the fixture. |
 | §11 focused: `python3 scripts/check_sandbox_policy_wiring.py` | local | pass | "sandbox-policy-wiring guard passed" |
 | §11 focused: `python3 scripts/check_execution_ownership.py` | local + CI step | pass | "execution-ownership guard ok" |
 | §11 focused: `python3 scripts/check_scheduler_bypass.py` | local + CI step | pass | "scheduler-bypass guard ok" |
 | §11 focused: `bash scripts/check-core-boundary.sh` | local + CI step | pass | "codegg-core boundary check passed" |
 | §11 focused: `scripts/verify.sh quick` | local macOS | pass | Exit 0 on the source commit, including the workspace `cargo check --workspace --all-targets`. The M004 closure's pre-existing macOS failures are in the `server,plugins,lsp-test-support` feature tier, which `verify.sh quick` does not exercise, and they are unrelated to this milestone. |
-| §11: "Reuse existing CI only" | CI run `39294747903` (the repository's own `CI` workflow, `workflow_dispatch` on `plan/managed-scratch-spaces`) | pass | No new workflow, benchmark, or hosted research infrastructure was added. |
+| §11: "Reuse existing CI only" | CI run `39298041771` (the repository's own `CI` workflow, `workflow_dispatch` on `plan/managed-scratch-spaces`) | pass | No new workflow, benchmark, or hosted research infrastructure was added. |
 
 ## 3. Production implementation evidence
 
@@ -126,10 +126,10 @@ injection control would show the difference.
 
 ### Commands run
 
-Native Linux evidence — CI run `39294747903`
-(`https://github.com/dbowm91/codegg/actions/runs/39294747903`), the
+Native Linux evidence — CI run `39298041771`
+(`https://github.com/dbowm91/codegg/actions/runs/39298041771`), the
 repository's existing `CI` workflow dispatched on `plan/managed-scratch-spaces`
-at `83fc052f`, runner `ubuntu-latest`:
+at `2407eb66`, runner `ubuntu-latest`:
 
 ```bash
 cargo fmt --check --all
@@ -161,7 +161,7 @@ scripts/verify.sh quick
 |---|---|---|
 | `cargo fmt --check --all` | pass | CI (native Linux) |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | pass | CI (native Linux) |
-| `cargo nextest run --workspace --locked --profile ci` | **C001 fixture: 10/10 passed** on the Linux runner. The lane as a whole went **red later**, on an unrelated pre-existing flake in `codegg-core` (`goal::checkpoint::tests::test_read_checkpoint_tail_returns_latest_updates`), after the fixture had already run and passed. See the disclosure below. | CI (native Linux, `ubuntu-latest`) |
+| `cargo nextest run --workspace --locked --profile ci` | **pass — 14,813/14,813 tests, 6 skipped, 0 failed**, including **10/10** of the new `linux_native_scratch_containment` cases on the Linux runner | CI (native Linux, `ubuntu-latest`) |
 | Sandbox helper build for integration tests | pass | CI (native Linux) |
 | `cargo test -p codegg --test managed_scratch_job_admission --locked` | 1 passed, 0 failed | local macOS |
 | `cargo test -p codegg --lib scratch::tests --locked` | 12 passed, 0 failed | local macOS |
@@ -177,20 +177,23 @@ target was skipped on the Linux runner: a Linux host that cannot obtain
 Landlock fails the fixture by design rather than skipping it, so the
 "unavailable" case cannot be reported as a pass.
 
-**Superseded native attempts, disclosed.** Two earlier dispatched runs did
-not qualify: `39289232898` at `2597ec9e` was cancelled, and `39291133332` at
-`ea400ff7` **failed** on a defect in the fixture itself. Neither is cited as
-evidence, and both defects are described in the disclosure below.
+**Superseded native attempts, disclosed.** Three earlier dispatched runs did
+not qualify: `39289232898` at `2597ec9e` was cancelled, `39291133332` at
+`ea400ff7` **failed** on a defect in the fixture itself, and `39294747903` at
+`83fc052f` **failed** on an unrelated pre-existing flake in `codegg-core`
+*after* the C001 fixture had already run 10/10 green. None of them is cited as
+the qualifying evidence, and each is described below.
 
-**What the qualifying run proves.** Run `39294747903` executed the whole
+**What the qualifying run proves.** Run `39298041771` executed the whole
 `linux_native_scratch_containment` target on the Linux runner and **all ten
-cases passed**: the host Landlock gate, the frozen grant snapshot, the
-unknown/foreign/path-like grant refusals, the managed-process containment
-case, the model-owned `BashTool` containment case, the over-broad-grant
-control, the attempt-lease lifecycle, the sandbox setup failure that leaves
-the target unexecuted, the refusal of a containment-free launch under a
-constrained policy, and the cancelled attempt that never executes its
-target.
+cases passed**, inside a workspace suite that finished **14,813/14,813
+passed, 6 skipped, 0 failed**: the host Landlock gate, the frozen grant
+snapshot, the unknown/foreign/path-like grant refusals, the managed-process
+containment case, the model-owned `BashTool` containment case, the
+over-broad-grant control, the attempt-lease lifecycle, the sandbox setup
+failure that leaves the target unexecuted, the refusal of a containment-free
+launch under a constrained policy, and the cancelled attempt that never
+executes its target.
 
 **The native Linux run was dispatched, not pulled.** The `pull_request`
 workflow did not start for the source commit during this session, so the
@@ -228,29 +231,29 @@ local pass was a type-check and a Clippy pass with the platform gate lifted,
 plus a shell-level smoke run of the observation script. A type-check cannot
 see a mismatch between a string a script prints and a string a test asserts,
 and only a native run can execute the fixture. Both defects were in the
-test, both were fixed, and the qualifying run is `39294747903` at
-`83fc052f`. The two superseded runs are recorded here as **failed or
+test, both were fixed, and the qualifying run is `39298041771` at
+`2407eb66`. The three superseded runs are recorded here as **failed or
 cancelled qualification attempts**, not as evidence for anything.
 
-**The qualifying lane went red on an unrelated pre-existing flake.** The
-C001 fixture passed 10/10 in run `39294747903`. The lane then failed at
-11720/14813 on
+**One superseded lane went red on an unrelated pre-existing flake.** The
+third dispatched run (`39294747903`, at `83fc052f`) passed the C001 fixture
+10/10 and then failed at 11720/14813 on
 `codegg-core goal::checkpoint::tests::test_read_checkpoint_tail_returns_latest_updates`
 (`crates/codegg-core/src/goal/checkpoint.rs:323`, `assertion failed: tail.contains("Phase 3 newest")`).
 That test is **not** related to this milestone: this change adds one new
 integration test file and touches no `codegg-core` code, and the failure is in
 a checkpoint-file tail read that never sees the scratch path. The same test
 passes 3/3 locally on the development host, so it is a CI-only flake under
-runner load, and it is recorded here rather than presented as a green lane.
-The C001 evidence is the fixture's own 10/10 result in that run; the lane's
-overall red status is a separate, pre-existing condition.
+runner load. It **did not recur** in the qualifying run, which finished
+14,813/14,813 green. The flake is recorded here rather than hidden, because
+the run that exposed it is part of the history of this qualification.
 
 **Unrelated pre-existing failure on `main`, recorded not concealed.** The
 repository's `main` branch push run `39282749528` is red for a reason
 unrelated to this milestone:
 `crates/codegg-core/src/workspace_services.rs:156` trips
 `clippy::unnecessary_sort_by` on the CI toolchain's newer clippy. That code
-is not on this branch, and the Clippy step of run `39294747903` passed. The
+is not on this branch, and the Clippy step of run `39298041771` passed. The
 finding is owned by the `main` line, not by C001.
 
 **Toolchain drift.** The local toolchain is rustc 1.89.0; the CI runner
@@ -401,10 +404,10 @@ Linux-specific code path was therefore never executed on a non-Linux host.
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | low | The `pull_request` workflow did not start for the source commit during this session, so the native evidence came from an explicitly dispatched run of the same existing `CI` workflow on the same branch ref. | The evidence is from a dispatch rather than a pull-request event. The dispatched run is the stricter placement: it checked out the exact reviewed tree instead of a synthetic merge commit, and it ran the same guards, formatting, Clippy and workspace test steps. | None for the correctness of this milestone. If the pull-request event does not fire for the next push to this branch, investigate the trigger separately rather than re-running this qualification. |
-| low | The repository's `main` push run `39282749528` is red on `clippy::unnecessary_sort_by` at `crates/codegg-core/src/workspace_services.rs:156` under the CI toolchain's newer clippy. | Unrelated to C001; the code is not on this branch, and the Clippy step of run `39294747903` passed. | Owned by the `main` line. A future merge of `main` into this branch would carry the lint into the pull-request lane and needs the same one-line fix applied there. |
+| low | The repository's `main` push run `39282749528` is red on `clippy::unnecessary_sort_by` at `crates/codegg-core/src/workspace_services.rs:156` under the CI toolchain's newer clippy. | Unrelated to C001; the code is not on this branch, and the Clippy step of run `39298041771` passed. | Owned by the `main` line. A future merge of `main` into this branch would carry the lint into the pull-request lane and needs the same one-line fix applied there. |
 | low | The qualification covers the filesystem dimension only, and the read policy deliberately exposes curated toolchain roots (`/usr`, `/etc`, and similar). | Scratch grants are not a read-confidentiality boundary, and this record does not claim one. | None. The read limitation is already stated in `docs/tools.md` and is not changed by this milestone. |
-| low | Two native qualification attempts were superseded before the qualifying run, each because of a defect in the fixture itself (a value-vocabulary mismatch, then a missing execute bit on the observation script). | Neither defect was a product defect, and neither superseded run is cited as evidence. The practical cost was two extra CI runs. | None outstanding — both are fixed in `ea400ff7` and `83fc052f`. The general lesson is recorded in §4: this fixture can only be validated by running it natively, so the native lane is part of producing the evidence, not a formality after it. |
-| low | The qualifying lane went red on `codegg-core goal::checkpoint::tests::test_read_checkpoint_tail_returns_latest_updates`, a pre-existing CI-only flake unrelated to this milestone (3/3 green locally; the change adds one test file and touches no `codegg-core` code). | The C001 fixture's own result is unaffected — 10/10 passed in the same run before the flake — but the lane is not green end to end, so the record does not claim a green workspace suite. | Owned outside this milestone. If a fully green lane is wanted for this qualification, re-run the same workflow on the same SHA; do not weaken the flaky test to make it green. |
+| low | Three native qualification attempts were superseded before the qualifying run: two because of a defect in the fixture itself (a value-vocabulary mismatch, then a missing execute bit on the observation script) and one because of an unrelated pre-existing flake. | Neither fixture defect was a product defect, and none of the superseded runs is cited as evidence. The practical cost was three extra CI runs. | None outstanding — the fixture defects are fixed in `ea400ff7` and `83fc052f`. The general lesson is recorded in §4: this fixture can only be validated by running it natively, so the native lane is part of producing the evidence, not a formality after it. |
+| low | One superseded lane went red on `codegg-core goal::checkpoint::tests::test_read_checkpoint_tail_returns_latest_updates`, a pre-existing CI-only flake unrelated to this milestone (3/3 green locally; the change adds one test file and touches no `codegg-core` code). | No effect on the qualification: the C001 fixture passed 10/10 in that same run before the flake, and the flake did not recur in the qualifying run, which finished 14,813/14,813 green. | Owned outside this milestone. Do not weaken the flaky test to make a lane green; report it in its own line if it recurs. |
 
 No high or medium finding is introduced by this milestone, and no
 pre-existing high or medium finding on the delegated-grant path is left
@@ -429,7 +432,7 @@ Windows half of the M003 gap is unchanged and still blocked.
     **closed**, pointing at
     `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`,
     with the source commits `2597ec9e` / `ea400ff7` / `83fc052f` and the
-    native Linux CI run `39294747903`.
+    native Linux CI run `39298041771`.
   - C002 stays in the *Dependency-ready implementation plans* table as
     **blocked** — its blocker is unchanged — and gains a pointer to
     `plans/closure/managed-agent-scratch-native-qualification-corrective/002-status.md`.

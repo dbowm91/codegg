@@ -179,7 +179,7 @@ addendum's C001 milestone closed at
 `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`
 with native evidence: implementation `2597ec9e` with the fixture corrections
 `ea400ff7` and `83fc052f`, repository `CI` workflow
-run [39294747903](https://github.com/dbowm91/codegg/actions/runs/39294747903)
+run [39298041771](https://github.com/dbowm91/codegg/actions/runs/39298041771)
 on `ubuntu-latest`, adding `tests/linux_native_scratch_containment.rs`.
 
 On a native Linux host with Landlock ABI >= 3, an authenticated, admitted

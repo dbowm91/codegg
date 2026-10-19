@@ -111,7 +111,7 @@ Exit: two child runs get distinct private roots, a parent can create/grant one s
 Class: polish / invariant hardening. Status: **conditionally closed**.
 Plan: `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md`.
 Exit: structured path denial / approval-needed results suggest authorized scratch but never rewrite a required path, explicit operator Deny remains authoritative, garbage collection is demonstrably safe under crash/race/symlink cases, Linux/macOS/Windows support claims are evidence-qualified.
-Closure: `plans/closure/managed-agent-scratch/003-status.md`. The Linux native sandbox qualification is closed by the post-closure corrective addendum's C001 (`plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`, native Landlock evidence, CI run `39291133332`); the **Windows** native sandbox qualification remains outstanding and keeps M003 conditional.
+Closure: `plans/closure/managed-agent-scratch/003-status.md`. The Linux native sandbox qualification is closed by the post-closure corrective addendum's C001 (`plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`, native Landlock evidence, CI run `39298041771`, 14,813/14,813 green); the **Windows** native sandbox qualification remains outstanding and keeps M003 conditional.
 
 ### M004 — Session and agent-private scratch reclamation
 
