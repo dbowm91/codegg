@@ -334,10 +334,14 @@ inspection, not by proof, and are not upgraded here. M009 inherits this wall.
 defect.** Proven: failed in-suite, passed in isolation, in a module this
 milestone does not modify.
 
-**Finding 5 — nothing is committed. Severity: informational.** The working tree
-also carries uncommitted M004, M005, M006 and M007 work, so this closure rests
-on a tree that is not a single milestone. The user was not asked to commit and
-was not asked to.
+**Finding 5 — the five milestones share one commit. Severity: informational.
+Resolved by `278737d4e`.** When this record was written nothing was committed and
+the working tree also carried uncommitted M004, M005, M006 and M007 work, so this
+closure rested on a tree that was not a single milestone. M004–M008 were
+subsequently committed together as `278737d4e` on the user's request. The
+consequence stands: this closure describes one commit containing five milestones,
+not a commit that contains only M008. Nothing here was re-verified against the
+commit; the tree it contains is the tree the evidence below was gathered from.
 
 **Finding 6 — `C` can add a cursor onto an existing one. Severity: low.
 Accepted.** Pressing `C` twice can resolve a target onto a line that already

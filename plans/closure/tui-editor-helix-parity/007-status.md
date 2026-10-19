@@ -5,10 +5,13 @@ Status: closed
 Source implementation plan: `plans/implementation/tui-editor-helix-parity/007-multi-selection-core.md`
 Source subsystem roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7 (M007)
 Repository baseline reviewed: `84440fe7f` (`fix(tui): terminal surface ergonomics — C003/C004 closure (#129)`)
-Implementation commits: **none.** The change is uncommitted in the working tree of
-`feat/auto-20261018-12255c45`, alongside the M004 and M005 work that was already
-uncommitted there. No commit was made because none was requested. The evidence
-below is therefore "working tree at baseline + this change", not "commit X".
+Implementation commit: `278737d4e` (`feat(tui): Helix-parity editor milestones
+M004-M008`). When this record was first written the change was uncommitted —
+no commit had been requested — and the evidence below was "working tree at
+baseline + this change". That is the same tree: `278737d4e` commits M004–M008
+together, so this milestone's code and its siblings landed in one commit rather
+than five. The evidence below was gathered before the commit was made and was
+not re-run against it; it describes the tree that commit now contains.
 
 ---
 
