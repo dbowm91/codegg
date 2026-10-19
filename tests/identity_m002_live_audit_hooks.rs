@@ -493,7 +493,9 @@ async fn bash_retry_with_same_invocation_key_does_not_duplicate() {
 #[tokio::test(flavor = "current_thread")]
 async fn terminal_direct_native_process_path_emits_once() {
     let pool = test_pool().await;
-    let tool = codegg::tool::terminal::TerminalTool::new();
+    let tool = codegg::tool::terminal::TerminalTool::new().with_workdir(
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+    );
     let ctx = tool_ctx(&pool, "corr-terminal", "inv-terminal");
     let out = tool
         .execute_structured(
