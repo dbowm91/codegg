@@ -76,7 +76,7 @@ still absent and is recorded as blocked in the sibling C002 closure.
 | §11 focused: `python3 scripts/check_execution_ownership.py` | local + CI step | pass | "execution-ownership guard ok" |
 | §11 focused: `python3 scripts/check_scheduler_bypass.py` | local + CI step | pass | "scheduler-bypass guard ok" |
 | §11 focused: `bash scripts/check-core-boundary.sh` | local + CI step | pass | "codegg-core boundary check passed" |
-| §11 focused: `scripts/verify.sh quick` | local macOS | pass | See §4 for the exact scope and the one pre-existing unrelated failure recorded in the M004 closure. |
+| §11 focused: `scripts/verify.sh quick` | local macOS | pass | Exit 0 on the source commit, including the workspace `cargo check --workspace --all-targets`. The M004 closure's pre-existing macOS failures are in the `server,plugins,lsp-test-support` feature tier, which `verify.sh quick` does not exercise, and they are unrelated to this milestone. |
 | §11: "Reuse existing CI only" | CI run `39291133332` (the repository's own `CI` workflow, `workflow_dispatch` on `plan/managed-scratch-spaces`) | pass | No new workflow, benchmark, or hosted research infrastructure was added. |
 
 ## 3. Production implementation evidence

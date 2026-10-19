@@ -454,9 +454,17 @@ fn workspace_write_config(workspace: &Path) -> SandboxConfig {
 }
 
 /// Build the observation script inside the workspace and return its path.
+///
+/// The script is made executable: the managed-process case hands it to `sh`
+/// as an argument, but the model-owned `BashTool` case runs it as a program,
+/// and a non-executable file would fail to start and yield no observations.
 fn write_observation_script(workspace: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
     let script = workspace.join("observe-scratch.sh");
     std::fs::write(&script, OBSERVATION_SCRIPT).expect("write observation script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("make the observation script executable");
     script
 }
 
@@ -796,7 +804,12 @@ async fn required_launch_confines_scratch_to_the_granted_roots() {
         "the host must be able to enforce containment"
     );
 
-    let observations = parse_observations(&result.stdout.to_string_lossy());
+    let raw = result.stdout.to_string_lossy();
+    assert!(
+        raw.contains("PRIVATE_WRITE="),
+        "the contained child did not report its observations: {raw:?}"
+    );
+    let observations = parse_observations(&raw);
     assert_allowed(&observations, "PRIVATE_WRITE");
     assert_allowed(&observations, "GRANTED_SHARED_WRITE");
     assert_correct(&observations, "PRIVATE_TEMP_VARS");
@@ -861,6 +874,11 @@ async fn model_owned_bash_tool_confines_scratch_to_the_granted_roots() {
         .await
         .expect("the contained shell call must succeed");
 
+    assert!(
+        output.output.contains("PRIVATE_WRITE="),
+        "the contained shell call did not report its observations: {:?}",
+        output.output
+    );
     let observations = parse_observations(&output.output);
     assert_allowed(&observations, "PRIVATE_WRITE");
     assert_allowed(&observations, "GRANTED_SHARED_WRITE");
@@ -934,7 +952,12 @@ async fn an_over_broad_grant_is_observable_by_the_same_probe() {
     let result = ManagedProcessService::run(request)
         .await
         .expect("the contained launch must succeed");
-    let observations = parse_observations(&result.stdout.to_string_lossy());
+    let raw = result.stdout.to_string_lossy();
+    assert!(
+        raw.contains("PRIVATE_WRITE="),
+        "the contained child did not report its observations: {raw:?}"
+    );
+    let observations = parse_observations(&raw);
     assert_allowed(&observations, "UNGRANTED_SIBLING_WRITE");
 }
 
