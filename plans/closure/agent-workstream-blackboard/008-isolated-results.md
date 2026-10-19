@@ -1,8 +1,10 @@
 # Agent Workstream Blackboard M008 — Partial Results
 
 Evidence status: exploratory partial result; M008 remains active and is not
-strictly closed. The budget-matched set now includes IM-1/S0, IM-1/S1, and SI-1/S0 at
-repetition 1. It does not establish a repeatable effectiveness advantage.
+strictly closed. The budget-matched set includes IM-1/S0, IM-1/S1, and SI-1/S0 at repetition
+1. An OA-1/S0 repetition-1 attempt exceeded its all-agent ceiling and returned
+no candidate. These results do not establish a repeatable effectiveness
+advantage.
 
 Source plan: `plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md`
 CodeGG source: `a0d7acef8e428d55971514addf685741a25ce047`
@@ -581,3 +583,24 @@ unknown. Candidate creation was one evaluator intervention after the agent's
 Git staging failed; implementation and all tests passed without source
 intervention. There is not yet an SI-1/S1 comparison or a repeated sample.
 Exact measurements are in `008-isolated-results.json`.
+
+
+## 21. OA-1, S0, repetition 1 (2026-10-19)
+
+The frozen OA-1 actor-v2 fixture used a 700,000-token all-agent ceiling. The
+provider usage journal recorded 730,011 input plus 4,225 output tokens
+(734,236 total) across 23 rows over a 69.368-second usage span. Actual use
+exceeded the ceiling by 34,236 tokens. The turn ended without a final report
+while a tool call was pending, and only an incomplete Rust source edit existed.
+No acceptance suite ran and no candidate commit was produced. The partial edit
+was discarded from the managed worktree; the frozen evaluator and main branch
+remain unchanged. Cost is unknown. This is an incomplete over-budget attempt,
+not a valid result; it was not silently retried.
+
+The OA-1 baseline was frozen before the trial at Git tree
+`17fe5b0dbe7a233d25ac842bea5011f1e9e36c20` (content digest
+`2b47e6b8edff74e2c50578f65ecc2461111f425352c3038fbb3fe7420e24780d`). Its
+new evaluator cases fail for missing actor-v2 support. OA-2's independent
+revision-validation fixture is also frozen and its baseline failure confirmed;
+no provider trial has started for OA-2. Full per-row measurements remain in the
+JSON record.

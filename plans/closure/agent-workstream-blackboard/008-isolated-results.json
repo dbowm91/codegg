@@ -1,5 +1,5 @@
 {
-  "evidence_kind": "partial exploratory measurement; one repetition each for IM-1/S0, IM-1/S1, and SI-1/S0; not M008 closure",
+  "evidence_kind": "partial exploratory measurement; one repetition each for IM-1/S0, IM-1/S1, and SI-1/S0, plus an incomplete over-budget OA-1/S0 attempt; not M008 closure",
   "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
   "fixture_baseline": "f5e27d388255726b0b85226a144fdcce2e91b73a",
   "binary": {
@@ -1685,6 +1685,59 @@
       },
       "status": "valid integrated candidate after evaluator commit; implementation and all acceptance suites passed without source intervention",
       "result": "SI-1/S0 used 874524 of its equal 1400000 all-agent ceiling, with no observed overrun. The two language modules were implemented in one direct session and passed the frozen cross-language golden evaluator. Cost is unavailable. One evaluator intervention created the candidate commit; no source correction was needed."
+    },
+    {
+      "trial_id": "OA-1-S0-R1",
+      "matrix_version": "008-task-matrix-v1",
+      "fixture": "plans/closure/agent-workstream-blackboard/008-overlapping-api-fixtures/oa1",
+      "fixture_baseline_source_commit": "9260fda525284b821beda2782de23f6888d37b56",
+      "fixture_baseline_tree": "17fe5b0dbe7a233d25ac842bea5011f1e9e36c20",
+      "fixture_content_digest": "2b47e6b8edff74e2c50578f65ecc2461111f425352c3038fbb3fe7420e24780d",
+      "condition": "S0",
+      "repetition": 1,
+      "session_id": "a5e11c57-5e1d-421d-96e8-347d99975afa",
+      "turn_id": "turn-b9cca679-c5c5-4f92-8689-451818f033d5",
+      "provider": "OpenCode Go",
+      "model": "gpt-6-luna",
+      "all_agent_budget_tokens": 700000,
+      "coordinator_budget_tokens": 0,
+      "worker_budget_tokens": 700000,
+      "actual_usage": {
+        "input_tokens": 730011,
+        "output_tokens": 4225,
+        "cached_tokens": 0,
+        "total_tokens": 734236,
+        "overrun_tokens": 34236,
+        "usage_rows": 23,
+        "provider_usage_span_seconds": 69.368,
+        "reported_cost_usd": 0.0,
+        "cost_available": false
+      },
+      "agent_reported": {
+        "turn_status": "completed without a final response; the model budget ended while a tool call was pending",
+        "changed_paths_before_discard": [
+          "plans/closure/agent-workstream-blackboard/008-overlapping-api-fixtures/oa1/rust/src/lib.rs"
+        ],
+        "rust_acceptance": "not run",
+        "python_acceptance": "not run",
+        "golden_acceptance": "not run",
+        "candidate_commit": null
+      },
+      "evaluator": {
+        "valid_integrated_result": false,
+        "accepted_contract_checks_passed": 0,
+        "interventions": 0,
+        "worktree_disposition": "Discarded the partial uncommitted source edit after recording it; the frozen fixture and main branch were unchanged.",
+        "integration_wall_seconds": null
+      },
+      "useful_throughput": {
+        "accepted_contract_checks_passed": 0,
+        "checks_per_worker_token": 0.0,
+        "checks_per_total_agent_token": 0.0,
+        "checks_per_provider_usage_minute": 0.0
+      },
+      "status": "incomplete and over-budget; no candidate or evaluator result",
+      "result": "The turn used 734236 tokens against B=700000. The final in-flight response exceeded the requested ceiling by 34236 tokens and ended with a pending tool call and no final report. This attempt is retained as an over-budget outcome; it was not retried or counted as a successful trajectory."
     }
   ]
 }

@@ -1,0 +1,4 @@
+{"id":"e2","occurred_at":"2026-10-16T12:00:00+02:00","kind":"file_changed","path":"src/a|b.rs","insertions":4,"deletions":1}
+{"id":"e1","occurred_at":"2026-10-16T09:00:00Z","kind":"file_changed","path":"docs/README.md","insertions":2,"deletions":0}
+{"id":"e3","occurred_at":"2026-10-16T10:30:00Z","kind":"test_failed"}
+{"id":"e2","occurred_at":"2026-10-16T10:00:00Z","kind":"file_changed","path":"src/a|b.rs","insertions":4,"deletions":1}
