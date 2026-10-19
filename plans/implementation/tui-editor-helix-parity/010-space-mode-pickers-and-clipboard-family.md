@@ -1,8 +1,10 @@
 # TUI editor Helix parity Milestone 010 — Space mode: pickers and the clipboard family
 
-Status: active
+Status: implemented - closed 2026-10-19
 Repository baseline: `a8778e87c` (`feat/auto-20261018-12255c45`); W1 was
 implemented against the same baseline (uncommitted at the time of writing)
+Closure: `plans/closure/tui-editor-helix-parity/010-status.md`
+Implementation decisions and recorded deviations: §17 below
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7 M010
 Long-term requirements: `plans/000-long-term-specification.md` (IDE-grade
@@ -653,3 +655,203 @@ Stop and report rather than continue if any of these holds.
   milestone has outgrown its boundary.
 - **The space layer is a kludge in Helix too.** The goal is not a beautiful
   menu; it is that every chord a reader tries has an answer.
+
+## 17. Implementation decisions and recorded deviations (2026-10-19)
+
+Everything below was decided while implementing, against the code as it stood.
+Each is a place where the plan was wrong, incomplete, or silent, and where the
+implementation had to answer the question rather than guess. They are recorded
+here because **a plan that disagrees with the code is a defect**, and because
+the next reader of this milestone deserves to know which decisions were open
+and how they were settled.
+
+### 17.1 The picker browses the **tab's** workspace, not the document's
+
+§6.2 said the dialog must be "seeded from the **session's** workspace root".
+The document attachment cannot supply one: `DocumentScope` carries
+`workspace_id` and a relative path, and **no root path at all**. The path
+lives in the App's tab binding — `ProjectExecutionContext::workspace_root` —
+and the daemon resolves the listing from that binding (ADR-0022, C005); the
+local root is only fencing state.
+
+So the picker browses **the workspace the active tab is bound to**, which is
+the only root that exists to browse, and the editor's part is to check that
+the binding is there *before* opening anything.
+
+### 17.2 The seeding decision moved into `App::open_file_picker`
+
+§6.2 said to call `app.open_dialog(Dialog::Files)`. That call seeds the box
+from the shared tree state and rebuilds **only when the tree is empty** — so
+a tree belonging to a *different* workspace would be shown under this one's
+name. The seeding decision moved into a new `App::open_file_picker`, and
+`Dialog::Files` now delegates to it, so `/files` and `space f` cannot disagree
+about what the box shows.
+
+**This changes `/files` too**: it now rebuilds when the shared tree belongs to
+another workspace, not only when it is empty. It is a fix rather than a
+regression, and it is recorded here because it is a change to a surface this
+milestone did not name.
+
+### 17.3 "No workspace root" is **two** refusals, not one
+
+A root alone is not enough: without the canonical project/workspace ids the
+daemon cannot answer a directory request either, and the TUI must not walk the
+filesystem to compensate. So the editor refuses in two cases — no resolved
+root, and a root with no canonical binding — and states each in its own
+words. The check is before the box opens, because `rebuild`'s own report
+arrives from *inside* the dialog.
+
+### 17.4 `space Y` clears the selection only when something was copied
+
+§6.4 said `space Y` "must **clear the selection** exactly as `space y` does".
+`space y` clears it **only when the ranges are non-empty** (`yank_ranges`
+returns early otherwise). So `space Y` clears it only when the primary member
+resolved. With nothing selected it says "Nothing to yank" and leaves the
+selection alone — a yank that dropped the selection and copied nothing would
+leave the reader with neither the text nor the highlight.
+
+### 17.5 `space Y`'s *resolution* is split from its *copy*
+
+The copy belongs to the system clipboard, and a test that wrote to it would
+take the reader's real clipboard with it. `primary_yank_range` resolves the
+member; `yank_primary_selection` performs the copy. The test proves the
+**choice of member**; the write itself is not tested — and neither is
+`space y`'s, which is the same writer.
+
+### 17.6 The M013 leaf test lost exactly one row
+
+§10 and §13.11 require the fourteen M013 leaf tests to pass **unmodified**,
+and §6.2 reclaims `space f` from the document-symbol read. As written the two
+conflict: the `f` row of `every_helix_lsp_leaf_asks_for_its_own_operation`
+asserted the old binding.
+
+The row was **removed**, not retyped — `space f` is no longer an LSP read at
+all, so there is nothing to assert against — and the remaining rows and the
+other thirteen tests are unmodified. M010's own test asserts the reclaim in
+its place. The generalization evidence the plan asks for is therefore "the
+thirteen M013 leaf tests that do not name `space f` pass unmodified", and the
+closure record says so in those words rather than claiming fourteen.
+
+### 17.7 The leaf-table guard is a **new script**, and it reads the other guard
+
+§6.6 allowed either a new `scripts/check_tui_editor_leaf_authority.py` or an
+extension of the key-authority guard. It is a new script: the key-authority
+guard scopes itself to `editor_buffer_key`, `handle_normal_key` and
+`handle_insert_key`, and widening it to the leaf tables would change what
+its counts mean (they are cited in closed milestone records).
+
+It does **not** re-parse the dispatch chain to find the guard block. It
+imports `check_tui_editor_key_authority` and takes the guard-block chords
+from that module's analysis, because two parsers for one dispatch shape is two
+models of it, and the day they disagree one of them is wrong.
+
+### 17.8 The guard has a **fifth** rule
+
+§6.6 listed four. A fifth was added: a leaf table that **no prefix binds** is
+a violation. A grammar that was written and never wired is how a leaf ends up
+"documented" and absent, and the check costs one line.
+
+### 17.9 Rule 3 is the prefix's **union**, not a second within-table check
+
+§6.6's rule 3 reads "every glyph is unique across the tables of the same
+prefix" and then adds a parenthetical that contradicts it ("a table's rows
+are its own namespace, so this is about the *same* table"). The heading is
+the right question, so the implementation checks the **union** of a prefix's
+tables: it is rule 1 today (every prefix has exactly one table) and it is
+already the right question the day a prefix grows a second. A duplicate
+*within* one table is rule 1's finding and is not reported twice.
+
+### 17.10 Rule 4 is about the **chord**, not the glyph
+
+§6.6's rule 4 said "no leaf glyph is a guard-block chord's glyph". Taken
+literally that is wrong twice over: the guard block's chords are `Ctrl+s` and
+`Ctrl+r`, so their *glyphs* are `s` and `r` — and `space s` is a live leaf
+today, while `space r` becomes one in M015. A rule that forbade `space s`
+would have forbidden a working key.
+
+The rule is implemented as the **chord the leaf can resolve to**: a leaf is
+reachable as `(NONE, glyph)` and, for a capital, as `(SHIFT, lower-case
+glyph)`; the guard fails only when one of those chords is a guard-block
+chord. On the shipped tree no leaf is behind one — and cannot be, because the
+key-authority guard's own rule 1 already makes a `NONE`- or `SHIFT`-modifier
+guard chord illegal (the Insert table's catch-all claims every printable
+character). The rule is kept as a **cross-check** between two independent
+models, and the self-test proves it fires when a `NONE` guard chord is
+injected.
+
+### 17.11 The `?` glyph and the terminal's spelling
+
+`leaf_lookup_char` upper-cases under `SHIFT`, and `'?'.to_ascii_uppercase()`
+is `'?'`, so `space ?` is reachable both as `Char('?')` with no modifier and
+as `Char('?')` with `SHIFT` — the two spellings a terminal actually sends
+for shift+/. A terminal that reported shift+/ as `Char('/')` with `SHIFT`
+would not reach it, and nothing in this tree reconciles that spelling: the
+repository's own global `?` binding is `(NONE, Char('?'))` and has the same
+limitation. No mechanism was added for it, because that would be a change to
+the dispatch's capital handling, which is M009's settled rule.
+
+### 17.12 The seven reasons carry the plan's **substance**, not its wording
+
+§6.5 gave the *substance* of each reason in a table. The strings are the
+plan's, and they are the strings `docs/tui.md` and `architecture/tui.md`
+carry. The `space F` reason was corrected from "multi-document attachment" to
+"one workspace root, and `space f` opens it", as §6.5 required — the old
+reason was not why.
+
+### 17.13 The palette is the `:` command line, opened empty
+
+`space ?` opens the editor's own `:` command line with an empty argument, so
+the palette starts unfiltered and `command_matches()` narrows it as the user
+types. It is deliberately **not** the global help dialog: bare `?` still
+opens the help, and the two answer different questions.
+
+### 17.14 `FilesDialog::title` became `pub(crate)`
+
+"the browser **shows which root it is browsing**" is only testable if the
+title can be read, and `title()` was private to its module. The visibility
+widened to `pub(crate)`; nothing else changed.
+
+### 17.15 The insert-mode sweep is unchanged at 93
+
+No character was added to the sweep, and the sweep's `inspected == 93`
+assertion stands.
+
+### 17.16 `space Y` duplicates Normal mode's `y` the way `space p` duplicates `p`
+
+§6.4 noted that `space p` and `space P` duplicate Normal mode's `p` and `P`,
+and called that parity rather than a new capability. The same is true of
+`space Y` against `y` — except that `space Y` is *narrower*, not the same:
+it is the main selection where `y` is the whole set. The duplication is
+recorded here so a later reader does not read it as an accident.
+
+### 17.17 A pre-existing test's *example* had to move: `space j` is now a leaf
+
+`goto_swallows_an_unmatched_key_while_space_retries_it` (M002) pins the
+unmatched-key policy: `g j` is swallowed by the chord, `space j` **retries**
+so `j` still moves the cursor. §6.5 binds `space j` to a statement of why
+there is no jumplist — so `space j` now **resolves** instead of retrying, and
+the test's example is no longer an example of anything.
+
+The test was **not** deleted and its **policy was not** changed: the example
+moved to `space l`, which is still an unbound space glyph and still moves the
+cursor. The behaviour it pins — that an unmatched space key is an ordinary
+verb — is unchanged and still tested; only the key that demonstrates it had to
+change, because the milestone consumed one of the two candidates the test
+could have used.
+
+This is the shape a binding change takes when an earlier milestone's test used
+that binding as a *fixture*: the test's **subject** survives, its **example**
+does not. It is recorded because a later reader looking for "was the retry
+policy weakened?" should find the answer here rather than in the diff.
+
+### 17.18 A third pre-existing test changed: the prefix table's own row
+
+`each_prefix_declares_its_leaf_and_its_unmatched_key_policy`
+(`src/tui/editor.rs`) asserts each prefix's leaf glyphs **exactly**, so that
+claiming a key is supposed to require editing the row there. The `Space` row
+listed the eight M013 leaves and now lists the nineteen M010 ones. The test
+did what it exists to do — it failed the moment a leaf was added without the
+row being updated — and the row was updated.
+
+This is the test working, not the test breaking, and it is recorded so the
+count in it is not mistaken for an arbitrary list.

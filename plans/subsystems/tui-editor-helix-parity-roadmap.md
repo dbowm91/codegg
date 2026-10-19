@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M008, M011, M012 and M013 closed; M009–M010 implementation started; M015 planned and ready; M014 blocked on ADR-0034)
+Status: active (M001–M013 closed; M015 planned and ready; M014 blocked on ADR-0034)
 
 Long-term references:
 
@@ -1011,6 +1011,76 @@ in Insert.
 >
 > Plan: `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md`
 
+> **Amendment A5 (2026-10-19) — M010 is `closed`, and two of its boundaries
+> moved.**
+>
+> 1. **M010 is `closed`.** Closure record:
+>    `plans/closure/tui-editor-helix-parity/010-status.md`. The space menu
+>    landed whole: the file picker (`space f`), the editor's own command
+>    palette (`space ?`), the clipboard family (`space p`/`space P`/
+>    `space R`/`space Y`), and the seven visible statements (`space F`,
+>    `space b`, `space j`, `space D`, `space c`, `space C`, `space '`).
+>    **No space key is silently dead**: every Helix space glyph is bound, bound
+>    to a statement with its reason, or documented as out of scope with its
+>    reason.
+> 2. **The picker browses the *tab's* workspace, and the editor's part is to
+>    check the binding first.** This entry's A1 amendment said the browser
+>    would be "seeded from the **session's** workspace root". The document
+>    attachment cannot supply one — `DocumentScope` carries a `workspace_id`
+>    and a relative path, and **no root path** — and the daemon resolves the
+>    listing from the **tab's** canonical project/workspace binding
+>    (ADR-0022, C005), with the local root as fencing state only. So the
+>    browser browses the active tab's workspace, and `space f` refuses
+>    **before** opening when that binding is missing, rather than opening a
+>    browser with nothing in it. The seeding decision moved into a new
+>    `App::open_file_picker`, and `Dialog::Files` delegates to it, so `/files`
+>    and `space f` cannot disagree — which also **fixed** `/files`, which used
+>    to show a tree belonging to another workspace under this one's name.
+> 3. **The seven statements are seven, not six-plus-one.** A1's point 4
+>    listed "buffer picker, jumplist picker, changed-file picker, global
+>    search, last-picker recall, and the three comment leaves" — and the
+>    changed-file picker and global search have **no reachable data source at
+>    all**. They are therefore **not bound to a statement**: a key that says
+>    "there is no data source" is a sentence about a feature that was never
+>    scoped, and the honest answer is that the chord does not exist. What
+>    ships is a statement for each glyph that **is** a Helix chord this
+>    editor recognises — `space F`, `space b`, `space j`, `space D`,
+>    `space c`, `space C`, `space '` — and the two with no data source are
+>    recorded here as deferred product work, not as keys.
+> 4. **The leaf tables are now policed.** `scripts/check_tui_editor_leaf_authority.py`
+>    is a **new** guard, wired into `verify.sh quick` and the CI `verify` job,
+>    that fails on a duplicated glyph in one table, on a glyph that is not
+>    printable ASCII, on one glyph claimed by two tables of the same prefix,
+>    on a leaf behind a guard-block chord, and on a table no prefix binds. It
+>    reads the guard-block chords through
+>    `scripts/check_tui_editor_key_authority.py` rather than re-parsing the
+>    dispatch chain. The plan's own rule 4 ("no leaf glyph is a guard-block
+>    chord's **glyph**") was **wrong as written** — the guard block's glyphs
+>    are `s` and `r`, and `space s` is a live leaf — and is implemented
+>    instead as the **chord** a leaf can resolve to. The plan's rule 3 was
+>    likewise implemented as the prefix's **union** across its tables.
+> 5. **The M013 leaf test lost exactly one row, by design.** This roadmap
+>    and the plan require the M013 leaf tests to pass **unmodified**, and
+>    A1's point 1 reclaims `space f` from the document-symbol read. As
+>    written the two conflict, because the `f` row of the M013 leaf test
+>    asserted the old binding. The row was **removed** — `space f` is no
+>    longer an LSP read at all — and the other thirteen M013 leaf tests and
+>    the remaining rows are unmodified. The closure record says so in those
+>    words rather than claiming fourteen.
+> 6. **What M015 now owns is unchanged**: `space r` (rename **preview**),
+>    `=` (format **preview**), and `space a`, which stays unbound with a
+>    visible reason because no code-action *read* exists to preview. They
+>    were separated rather than folded in because applying an LSP-driven
+>    mutation has no accepted authorization ADR, and a **preview** does not
+>    need one — so the two were kept apart from the apply.
+> 7. **The key-authority guard's chord counts are unchanged at 2 / 70 / 8.**
+>    That is the point, and it is worth stating: the space leaves are not
+>    Normal-mode or Insert-mode chords, so growing the space menu from eight
+>    leaves to nineteen moved **no** chord count at all. The leaf table is
+>    policed by its own guard, which is exactly why that guard was needed —
+>    the key-authority guard scopes itself to the three dispatch stages and
+>    never saw a leaf table.
+
 ### M011 — Insert-mode control chords
 
 Class: capability
@@ -1420,7 +1490,7 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M007 | **closed** | `plans/implementation/tui-editor-helix-parity/007-multi-selection-core.md` | `plans/closure/tui-editor-helix-parity/007-status.md` | — |
 | M008 | **closed** | `plans/implementation/tui-editor-helix-parity/008-multi-selection-command-surface.md` | `plans/closure/tui-editor-helix-parity/008-status.md` | — |
 | M009 | **closed** | `plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md` | `plans/closure/tui-editor-helix-parity/009-status.md` | Byte-derived boundary only; the syntax-node slice moved to M014 (Amendment A3). Closed 2026-10-19 (Amendment A4): the `m` grammar landed whole — bracket match, three surrounds, five text objects — and the guard's Normal chord count is **70**, one for the `m` arming arm |
-| M010 | **active** | `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md` | — | M013 closed; M005 closed earlier — unblocked. W1 landed: the pending-effect mechanism is editor-level, in `src/tui/editor_effect.rs` |
+| M010 | **closed** | `plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md` | `plans/closure/tui-editor-helix-parity/010-status.md` | M013 closed; M005 closed earlier — unblocked. Closed 2026-10-19 (Amendment A5): the space menu landed whole — the file picker (`space f`, reclaimed from a duplicate of `space s`), the editor's command palette (`space ?`), the clipboard family (`space p`/`space P`/`space R`/`space Y`) and seven visible statements — and a **new** leaf-authority guard polices the leaf tables |
 | M011 | **closed** | `plans/implementation/tui-editor-helix-parity/011-insert-mode-control-chords.md` | `plans/closure/tui-editor-helix-parity/011-status.md` | M002 edge discharged; the `Ctrl+s`/`Ctrl+r` conflict is decided (Amendment A1). Closed 2026-10-19 (Amendment A2): the nine insert-mode chords are bound with one owner each, the two mode-blind panels are fixed, a typing burst is one undo step, and the guard's Insert chord count is **8** — not the 9 §13 originally recorded |
 | M012 | **closed** | `plans/implementation/tui-editor-helix-parity/012-undo-history-traversal.md` | `plans/closure/tui-editor-helix-parity/012-status.md` | M002 edge discharged; sequenced after M011 (Amendment A1). Closed 2026-10-19 (Amendment A2): the history is one list with a cursor in it, `Alt-u`/`Alt-U` walk it and report their boundary, the position is observable on the banner row, the memory bound is one cap, and the guard's Normal chord count is **69** — not the 68 the plan recorded, because the two spellings of the capital differ in the key code |
 | M013 | **closed** | `plans/implementation/tui-editor-helix-parity/013-lsp-read-delivery-and-reachability.md` | `plans/closure/tui-editor-helix-parity/013-status.md` | — |
@@ -1694,8 +1764,24 @@ Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
 5. **Does M011's `Ctrl-x` need a guard?** `handle_completion_key` is outside
    the key-authority guard's scope, so the chord is invisible to it — the
    same blind spot the plans note for the leaf tables.
-6. **Which invariants does M010's new leaf-table guard police?** Its earlier
-   rule 4 was false and is replaced; see M010 §6.6.
+6. ~~**Which invariants does M010's new leaf-table guard police?**~~ **Answered
+   by M010 (2026-10-19).** Five, and the plan's own rule 4 was **wrong as
+   written** — it forbade a leaf glyph equal to a guard-block chord's
+   *glyph*, and the guard block's chords are `Ctrl+s` and `Ctrl+r`, so their
+   glyphs are `s` and `r`: the rule would have forbidden `space s`, which is
+   a live leaf. It is implemented as the **chord** a leaf can resolve to
+   (`(NONE, glyph)`, and for a capital `(SHIFT, lower-case glyph)`), so the
+   guard fails only when one of those chords is a guard-block chord. The
+   invariants are: **1** no duplicated glyph inside one table; **2** every
+   glyph is printable ASCII; **3** one glyph per prefix across that prefix's
+   tables (the *union*, not a second within-table check — the plan's own
+   parenthetical contradicted its heading); **4** no leaf behind a
+   guard-block chord; **5** no leaf table that no prefix binds (added — a
+   grammar written and never wired is how a leaf ends up "documented" and
+   absent). The guard is a **new** script,
+   `scripts/check_tui_editor_leaf_authority.py`, and it reads the guard-block
+   chords **through** `scripts/check_tui_editor_key_authority.py` rather than
+   re-parsing the dispatch chain. See Amendment A5 and the plan's §17.7–§17.10.
 
 ### 13.5 The pre-existing failures that are not this work's
 

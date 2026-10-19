@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than an honest question. Each suggestion opens the corresponding result.
 - **New read-only language-server features in `NOR`.** `gd` (definition), `gi`
   (implementation), `space k` (hover), `space h` and `gr` (references), `space
-  s`/`space f` (document symbols), `space S` (workspace symbols) and `space d`
+  s` (document symbols), `space S` (workspace symbols) and `space d`
   (diagnostics). The existing F2–F7 keys do the same jobs and are unchanged.
 - **Two keys now explain themselves instead of doing nothing.** `gy` (type
   definition) and `space F` (file picker) report that the underlying capability
@@ -75,8 +75,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The surround gestures keep their selection.** `m s` leaves the
   surrounded text selected so you can go on to delete or replace it as one
   thing, and each surround is a single undo step.
+- **The space menu is now a real menu.** `space f` opens the workspace file
+  browser, `space ?` opens the editor's own command palette — the `:` list,
+  filtered as you type — and `space p`, `space P`, `space R` and `space Y`
+  complete the clipboard family in the place a Helix user looks for it.
+  `space Y` copies **only** the main selection, where `space y` copies every
+  region you are holding; with nothing selected it says "Nothing to yank"
+  rather than putting an empty string on the clipboard.
+- **Seven space keys now explain themselves instead of doing nothing.**
+  `space F`, `space b`, `space j`, `space D`, `space c`, `space C` and
+  `space '` each report the reason they cannot run — one workspace root, one
+  attached document, no visited-position history, no workspace-diagnostics
+  capability, no comment syntax for the buffer you are editing, and no fuzzy
+  picker to recall.
+- **New `scripts/check_tui_editor_leaf_authority.py` fails the build when a
+  leaf table is wrong.** A duplicated glyph inside one table, a glyph that is
+  not printable ASCII, one glyph claimed by two tables of the same prefix, a
+  leaf behind a chord the dispatch already claims, and a table no prefix
+  binds are all failures — each of which compiles cleanly and leaves a key
+  that does nothing.
 
 ### Changed
+
+- **`space f` now opens the file browser instead of reading this document's
+  symbols.** It was a second name for `space s`, so the file browser was
+  unreachable from the editor and the symbols panel had two keys for one
+  request. The browser names the workspace root it is browsing, and when the
+  active tab has no workspace root — or no canonical project/workspace
+  binding, which is what the daemon resolves the listing from — the editor
+  says so rather than opening a browser with nothing in it.
 
 - **The undo history is one list with a cursor in it, not two stacks.** Undo
   and redo are now the same movement in opposite directions, so an entry can

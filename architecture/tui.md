@@ -3401,6 +3401,17 @@ never lose a path. Two things enforce the rule:
   and one that accepts exactly `ALT | SHIFT` are disjoint, exactly as Rust's
   `==` on the bitflags says they are, and the guard must not call them a
   duplicate.
+- `scripts/check_tui_editor_leaf_authority.py` polices the **leaf tables**,
+  which the key-authority guard scopes itself away from. It fails on a
+  duplicated glyph inside one table, on a glyph that is not printable ASCII,
+  on one glyph claimed by two tables of the same prefix, on a leaf whose chord
+  the guard block already claims, and on a table no prefix binds. It reads the
+  guard-block chords through the key-authority guard rather than re-parsing the
+  dispatch chain, because two parsers for one shape is two models of it. A
+  **leaf** is consulted only while its prefix is armed, and the resolver
+  disarms before consulting it, so a leaf cannot shadow a directly-bound
+  chord — the earlier rule that said otherwise was demonstrably false on the
+  shipped tree and was replaced.
 - The dispatch-path tests in `src/tui/commands/editor.rs` drive every
   Normal-mode arm through `editor_buffer_key` and assert both the reported
   `BufferKey` and the observable state change, so a shadowed arm fails on the
@@ -4715,6 +4726,7 @@ tui/
 ├── theme.rs                # TUI-local Theme (ratatui projection)
 ├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
 ├── editor.rs               # M006-A editor presentation record/state
+├── editor_effect.rs        # M010 editor-level pending effect + clipboard verb
 ├── document_session.rs     # TuiDocumentSession (DocumentController seam)
 ├── file_diff.rs            # Async diff stats for sidebar
 ├── file_tree.rs            # M006-D directory walk + node model
@@ -5152,7 +5164,12 @@ pending slot now live in `src/tui/editor_effect.rs`.)
 | Key | Effect |
 |---|---|
 | `space k` | hover |
-| `space s`, `space f` | document symbols |
+| `space s` | document symbols |
+| `space f` | open the workspace file browser |
+| `space ?` | open the editor's own `:` command palette |
+| `space y` | copy every selection |
+| `space Y` | copy **only** the primary selection |
+| `space p` / `space P` / `space R` | paste after / paste before / replace with the clipboard |
 | `space S` | workspace symbols, queried with the token at the cursor |
 | `space d` | refresh and open the diagnostics panel |
 | `space h`, `gr` | references |
@@ -5160,7 +5177,12 @@ pending slot now live in `src/tui/editor_effect.rs`.)
 | `gi` | implementation |
 | `]d` / `[d` | next / previous diagnostic, cursor moves |
 | `gy` | **unavailable**: no language server implements type definition here |
-| `space F` | **unavailable**: no multi-document file picker |
+| `space F` | **unavailable**: one workspace root, and `space f` opens it |
+| `space b` | **unavailable**: one document is attached at a time |
+| `space j` | **unavailable**: no visited-position history |
+| `space D` | **unavailable**: no server capability backs a separate workspace-diagnostics request |
+| `space c` / `space C` | **unavailable**: no comment syntax is known for the edited buffer |
+| `space '` | **unavailable**: the pickers are not fuzzy, so there is no query to recall |
 | `space r`, `space a`, `=` | **unbound**: applying an LSP-driven mutation has no accepted ADR |
 
 **The two halves of a leaf run at different authority levels.** The prefix
@@ -5172,6 +5194,33 @@ queued channel: a leaf can never leave a request armed, and a document change
 discards it — the effect is not LSP state, so an LSP scope change no longer
 clears it, but a *document* change does, because an effect aimed at a document
 the editor no longer shows is stale.
+
+**The effect enum is editor-level, not LSP-level** (M010). It was
+`EditorLspLeafEffect` while the only leaves were LSP reads, which left a file
+picker and a clipboard verb with nowhere to live: they are not LSP facts, and
+`EditorLspState` is reset wholesale on a scope change, which is the wrong
+fate for an effect that is not about the language server at all. The type
+moved to `src/tui/editor_effect.rs` and now carries `Clipboard`,
+`YankPrimary`, `OpenFilePicker` and `OpenCommandPalette` beside the reads.
+
+**The file browser is daemon-owned, so the editor's gesture is a *request* for
+a root, not a walk.** The listing is resolved from the active tab's canonical
+project/workspace binding (ADR-0022, C005); the TUI never walks its own
+filesystem, and the local root is only fencing state. So `space f` checks the
+binding **before** it opens anything: with no workspace root, or with a root
+that has no canonical project/workspace ids, it says so and opens nothing —
+a browser that opens empty is a key that appears to do nothing. When the
+binding is there, the browser is seeded from the shared tree state, and its
+title is a breadcrumb over that state's own root, so it names the root it is
+browsing. `App::open_file_picker` is the one place that knows how to seed it,
+so `/files` and `space f` cannot disagree.
+
+**The space menu has no dead keys** (M010). Every Helix space glyph is either
+bound, bound to `Unavailable` with a reason, or documented as out of scope
+with its reason. `space f` used to be a *second* binding of `space s`, which
+left the file browser unreachable from the editor route and gave the symbols
+panel two names for one request; the reclaim is a binding change, not a
+rename, and `CHANGELOG.md` records it under `### Changed`.
 
 **Degradation is a status row, not a toast.** `EditorPendingEffect::Unavailable`
 carries the reason a key is unbound, so a Helix user pressing `gy` learns the

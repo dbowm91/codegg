@@ -481,6 +481,39 @@ model to the wrong connection.
   `is_word_byte` and `m i W` uses `is_long_word_byte`, so each object agrees
   with the `w`/`W` the reader just used to get there. A WORD is everything
   up to whitespace, punctuation included — on `a.b` the two objects differ.
+- **The space menu is a table, and a leaf names a request, not an action.**
+  `SPACE_LEAVES` holds one row per Helix space gesture, and every row names
+  what it wants: `PrefixAction::Effect(EditorPendingEffect)`. The effect enum
+  is **editor-level** (`src/tui/editor_effect.rs`), not LSP-level — a file
+  picker and a clipboard verb are not language-server facts, and
+  `EditorLspState` is reset wholesale on a scope change, which is the wrong
+  fate for them. The leaf parks the effect on `EditorState::pending_effect`
+  and `handle_editor_key` drains it on the very next statement: one hop, not
+  a queue, so a leaf can never leave a request armed.
+- **`space f` is a request for a root, not a walk.** The listing is
+  daemon-owned (ADR-0022, C005): it is resolved from the active tab's
+  canonical project/workspace binding, and the TUI never walks its own
+  filesystem. So the editor checks that binding **before** it opens anything —
+  with no workspace root, or with a root that has no canonical ids, it says
+  so and opens nothing, because a browser that opens empty is a key that
+  appears to do nothing. `App::open_file_picker` is the one place that knows
+  how to seed the browser, so `/files` and `space f` cannot disagree about
+  what it shows, and the browser's title names the root it is browsing.
+- **A space key that cannot run says why.** `EditorPendingEffect::Unavailable`
+  carries the reason, and it renders as a **status row**, not a toast: a
+  toast disappears, a status line stays and can be read. Every Helix space
+  glyph is bound, bound to a statement, or documented as out of scope — there
+  is no dead key in the menu.
+- **A leaf table is policed by its own guard.**
+  `scripts/check_tui_editor_leaf_authority.py` rejects a duplicated glyph
+  inside one table, a glyph that is not printable ASCII, one glyph claimed by
+  two tables of the same prefix, a leaf behind a guard-block chord, and a
+  table no prefix binds. It reads the guard-block chords through the
+  key-authority guard rather than re-parsing the dispatch chain, because two
+  parsers for one shape is two models of it. A leaf is consulted only while
+  its prefix is armed, and the resolver disarms before consulting it, so a
+  leaf **cannot** shadow a directly-bound chord — the earlier rule that said
+  otherwise was demonstrably false on the shipped tree.
 - **A panel never claims a key that means text.** In `INS` a printable is
   text. The completion popup and the LSP diagnostics panel are mode-aware:
   their `j`/`k`/`r`/`Enter` claims are Normal-mode claims, and in `INS` the
@@ -1245,6 +1278,7 @@ adding TUI code - they are the executable form of the invariants above.
 | `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
 | `python3 scripts/check_tui_editor_key_authority.py` | Scans the editor's dispatch stages and rejects a chord claimed twice, a chord claimed by a later stage after an earlier one took it, and a shadowed arm. The conflict model is the **exact modifier bitmask**, so `ALT` and `ALT \| SHIFT` are disjoint. `--self-test` runs ten cases, including one the guard cannot resolve — that must be an error, not a pass. |
 | `python3 scripts/check_tui_editor_prefix_state.py` | Rejects a second pending-prefix mechanism: the presentation must hold exactly one, typed `EditorPrefix`. A grammar that wants a second level puts it in the **variant** (`EditorPrefix::MatchArg`), not in a second field. |
+| `python3 scripts/check_tui_editor_leaf_authority.py` | Polices the editor's **leaf tables**: no duplicated glyph inside one table, every glyph printable ASCII, one glyph per prefix across that prefix's tables, no leaf behind a guard-block chord, and no table no prefix binds. Reads the guard-block chords through the key-authority guard. `--self-test` runs nine synthetic cases through the same analysis the real check uses. |
 
 ## Testing
 

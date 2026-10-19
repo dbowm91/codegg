@@ -848,6 +848,14 @@ rather than "replace with a register". A clipboard the system refuses, and a
 clipboard holding nothing, are reported differently: with nothing on the
 clipboard, `p` says so rather than doing nothing in silence.
 
+The space menu carries the same family, so a reader looking for "the
+clipboard keys" finds them in one place: `space y` copies every selection,
+`space Y` copies **only** the main selection, and `space p`, `space P` and
+`space R` are the paste and replace verbs. `space Y` is the one that differs
+from the bare keys: with several regions held, `y` takes all of them and
+`space Y` takes just the main one. With nothing selected, `space Y` says
+"Nothing to yank" rather than putting an empty string on the clipboard.
+
 ### Selecting more than one region
 
 Once you can build a set, every verb above applies to all of it at once. These
@@ -924,6 +932,12 @@ indicator too, and any key after them still does what it normally does. A
 prefix never survives leaving the editor, opening a different file, reloading,
 or moving focus to the file tree.
 
+`space` is a whole menu, and it is the one prefix whose second level is a
+list rather than a single key: the file browser, the editor's command
+palette, the clipboard family, and the keys that say why they cannot run. See
+[The space menu](#the-space-menu). Every key in it is either bound or states
+its reason, so there is no Helix space gesture that does nothing at all.
+
 ### Goto mode
 
 `g` is a mode, not one chord. Its status row reads `g` while it is armed:
@@ -959,19 +973,53 @@ The language-server jumps are bound, through the space and `g` menus:
 | Key | What it asks the language server |
 |---|---|
 | `space k` | hover at the cursor |
-| `space s`, `space f` | this document's symbols |
+| `space s` | this document's symbols |
 | `space S` | workspace symbols, searched for the word at the cursor |
 | `space d` | open the diagnostics panel |
 | `space h`, `gr` | references |
 | `gd` | go to definition |
 | `gi` | go to implementation |
 
-Two more say why they cannot run rather than doing nothing:
+`gy` — go to type definition — says why it cannot run rather than doing
+nothing: no language server implements it here, so the editor tells you that
+instead of leaving the key dead.
 
-- `gy` — go to type definition. No language server implements it here, so the
-  editor tells you that instead of leaving the key dead.
-- `space F` — the file picker. One document is open at a time, so there is
-  nothing to switch to.
+### The space menu
+
+`space` is a menu, and every key in it either does something or says why it
+cannot. Nothing in it is dead.
+
+| Key | What it does |
+|---|---|
+| `space f` | open the workspace file browser |
+| `space ?` | open the editor's own command palette — the `:` list, filtered as you type |
+| `space y` | copy every selection |
+| `space Y` | copy **only** the main selection |
+| `space p` | paste after the selection, or after the character under the cursor |
+| `space P` | paste before the selection, or before the character under the cursor |
+| `space R` | replace the selection, or the character under the cursor, with the clipboard |
+
+`space f` opens the same browser `/files` opens, and the browser names the
+workspace root it is browsing. If the active tab has no workspace root — or
+no canonical project/workspace binding, which is what the daemon resolves the
+listing from — the editor says so instead of opening a browser with nothing
+in it. `space f` used to be a second name for `space s`; it is now the
+browser, and the two are different requests.
+
+`space ?` is the editor's own list of what it can do. Bare `?` still opens
+the general help; `space ?` is the editor's catalogue.
+
+These seven say why they cannot run rather than doing nothing:
+
+| Key | Why |
+|---|---|
+| `space F` | this build has one workspace root, and `space f` opens it |
+| `space b` | one document is open at a time, so there is no list to choose from |
+| `space j` | the editor keeps no visited-position history |
+| `space D` | no server capability backs a separate workspace-diagnostics request; `space d` opens the panel that exists |
+| `space c` | nothing here knows a comment syntax for the buffer you are editing |
+| `space C` | the same, for block comments |
+| `space '` | the pickers are not fuzzy, so there is no query to recall |
 
 `space r` (rename), `space a` (code action) and `=` (format) are deliberately
 **not** bound. Each would change your buffer through a language server, and

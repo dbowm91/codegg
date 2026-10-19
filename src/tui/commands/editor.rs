@@ -2446,15 +2446,99 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
             app.editor_state
                 .set_notice(EditorNotice::Note(reason.to_string()));
         }
-        // The clipboard family, the file picker and the command palette are
-        // bound by the later work packages of this milestone. No leaf
-        // constructs them yet, so this arm is unreachable: it exists so the
-        // match is total, and each binding replaces its own variant here.
-        EditorPendingEffect::Clipboard(_)
-        | EditorPendingEffect::YankPrimary
-        | EditorPendingEffect::OpenFilePicker
-        | EditorPendingEffect::OpenCommandPalette => {}
+        EditorPendingEffect::Clipboard(verb) => run_clipboard_verb(app, verb),
+        EditorPendingEffect::YankPrimary => yank_primary_selection(app),
+        EditorPendingEffect::OpenFilePicker => open_editor_file_picker(app),
+        EditorPendingEffect::OpenCommandPalette => open_editor_command_palette(app),
     }
+}
+
+/// The **primary** member's range — what `space Y` copies.
+///
+/// `None` when there is no member to copy, which is the same "nothing to
+/// yank" answer `space y` gives for an empty selection.
+///
+/// Split out from [`yank_primary_selection`] so the *choice* of member is
+/// testable without the clipboard: the copy itself belongs to the App layer
+/// and to the system clipboard, and a test that wrote to it would take the
+/// reader's real clipboard with it.
+fn primary_yank_range(session: &TuiDocumentSession) -> Option<std::ops::Range<usize>> {
+    let snapshot = session.try_snapshot()?;
+    editor::selection_range(session.presentation(), &snapshot)
+}
+
+/// Yank **only** the primary member of the selection set to the clipboard.
+///
+/// `space y` yanks every member; `space Y` is Helix's *main* selection — the
+/// distinguished member alone. The two differ only when the set has more than
+/// one member, which is exactly the case where guessing wrong is expensive:
+/// pasting the whole set into a place that wanted one member.
+///
+/// The selection is cleared exactly as `space y` clears it, and only when
+/// something was actually copied: a yank that dropped the selection and
+/// copied nothing would leave the reader with neither the text nor the
+/// highlight.
+fn yank_primary_selection(app: &mut App) {
+    let range = {
+        let Some(session) = app.editor_state.session.as_ref() else {
+            return;
+        };
+        primary_yank_range(session)
+    };
+    let mut ranges = Vec::new();
+    if let Some(range) = range {
+        if let Some(session) = app.editor_state.session.as_mut() {
+            session.presentation_mut().clear_selections();
+        }
+        ranges.push(range);
+    }
+    // An empty range list is the same "Nothing to yank" report `space y`
+    // gives, so the message lives in one place.
+    yank_editor_ranges(app, ranges);
+}
+
+/// Open the workspace file browser from the editor.
+///
+/// The browser is daemon-owned (ADR-0022, C005): the listing is resolved from
+/// the active tab's canonical project/workspace binding and the TUI never
+/// walks its own filesystem. So the picker needs that binding, and says so
+/// when there is none — a browser that opens empty is a key that appears to
+/// do nothing, which is the M002 failure mode in a new costume.
+///
+/// The check is **before** the box opens. `rebuild` already reports a missing
+/// binding, but it reports it from inside the dialog, by which time the
+/// reader is looking at an empty browser with no explanation in it.
+fn open_editor_file_picker(app: &mut App) {
+    let context = match app.project_execution_context() {
+        Ok(context) => context,
+        Err(error) => {
+            app.editor_state.set_notice(EditorNotice::Note(format!(
+                "file picker: the active tab has no workspace root ({error})"
+            )));
+            return;
+        }
+    };
+    if context.project_id.is_none() || context.workspace_id.is_none() {
+        app.editor_state.set_notice(EditorNotice::Note(
+            "file picker: the active tab has no canonical project/workspace binding".to_string(),
+        ));
+        return;
+    }
+    app.open_file_picker();
+}
+
+/// Open the editor's own `:` command palette.
+///
+/// The palette is the editor's catalogue — the rows are
+/// [`EditorCommandName::ALL`], filtered as you type — and it is deliberately
+/// **not** the global `?` help dialog. Bare `?` still opens the help; `space
+/// ?` is the editor's list of what it can do, which is a different question
+/// and a different reader.
+fn open_editor_command_palette(app: &mut App) {
+    let Some(session) = app.editor_state.session.as_mut() else {
+        return;
+    };
+    session.presentation_mut().open_command_line("");
 }
 
 /// Execute one parsed `:` command.
@@ -6345,13 +6429,17 @@ mod tests {
         assert_eq!(pending(&state), "");
 
         // `space y` is a modifier: an unmatched key is an ordinary verb.
+        // The example is `space l`, not `space j`: `space j` is a **bound**
+        // leaf since M010 — it states that there is no jumplist — so it
+        // resolves instead of retrying, and the policy this test pins is
+        // about the keys that are *not* leaves.
         let (mut state, _daemon) = opened_writer(&numbered_lines(8)).await;
         normal(&mut state, KeyCode::Char(' '));
         let before = cursor(&state);
-        assert_eq!(normal(&mut state, KeyCode::Char('j')), BufferKey::Consumed);
+        assert_eq!(normal(&mut state, KeyCode::Char('l')), BufferKey::Consumed);
         assert!(
             cursor(&state) > before,
-            "`space j` retries, so `j` still moved the cursor"
+            "`space l` retries, so `l` still moved the cursor"
         );
     }
 
@@ -9478,6 +9566,11 @@ mod tests {
     async fn every_helix_lsp_leaf_asks_for_its_own_operation() {
         // Each row is asserted against the operation the key is *for*, so a copy
         // and paste error between two rows is a failure rather than a surprise.
+        //
+        // `space f` was a row here until M010: it was a *duplicate* of `space s`,
+        // and M010 reclaimed it for the file browser. It is no longer an LSP
+        // read at all, so the row is gone rather than retyped — M010's own test
+        // asserts the reclaim.
         for (glyph, expected) in [
             ('k', EditorPendingEffect::Read(LspReadOperation::Hover)),
             (
@@ -9489,10 +9582,6 @@ mod tests {
                 EditorPendingEffect::Read(LspReadOperation::WorkspaceSymbols),
             ),
             ('h', EditorPendingEffect::Read(LspReadOperation::References)),
-            (
-                'f',
-                EditorPendingEffect::Read(LspReadOperation::DocumentSymbols),
-            ),
             ('d', EditorPendingEffect::OpenDiagnostics),
         ] {
             let (mut state, _daemon) = opened_writer("hello").await;
@@ -10408,5 +10497,378 @@ mod tests {
             "the refusal is surfaced explicitly: {:?}",
             notice_of(&state)
         );
+    }
+
+    // ── M010: the space-mode family ───────────────────────────────────
+    //
+    // Every leaf is driven as two real keystrokes through the dispatch path,
+    // and every App-level effect through `handle_editor_key`, so a leaf that
+    // is in the table but unreachable from the keyboard fails here rather
+    // than passing on the table's own evidence.
+
+    /// The reason a statement leaf rendered, if any.
+    fn notice_on_app(app: &App) -> Option<String> {
+        app.editor_state
+            .notice
+            .as_ref()
+            .map(|notice| notice.message())
+    }
+
+    /// Press `space` then `glyph` through the App-level dispatch.
+    ///
+    /// Two presses, because that is the gesture: the space prefix is armed by
+    /// the first and the leaf is resolved by the second. Driving the pair
+    /// through one helper call would hide a leaf the keyboard cannot reach.
+    fn press_space(app: &mut App, glyph: char) {
+        assert!(
+            handle_editor_key(app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+            "the space prefix must be claimed by the editor"
+        );
+        handle_editor_key(app, KeyEvent::new(KeyCode::Char(glyph), KeyModifiers::NONE));
+    }
+
+    /// Bind the active tab to a canonical project/workspace with `root`.
+    ///
+    /// The listing is daemon-owned, so the browser needs the canonical ids to
+    /// ask for one; the root itself is only fencing state.
+    fn bind_workspace(app: &mut App, root: &std::path::Path) {
+        let Some(tab) = app.project_tabs.active_mut() else {
+            panic!("the test app has one tab");
+        };
+        tab.workspace_root = Some(root.to_path_buf());
+        tab.project_id = Some("project-m010".to_string());
+        tab.workspace_id = Some("workspace-m010".to_string());
+    }
+
+    /// The reclaim: `space f` opens the browser, and the browser names the
+    /// root it is browsing.
+    #[tokio::test]
+    async fn space_f_opens_the_file_browser_and_it_names_the_root_it_is_browsing() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        let root = std::path::PathBuf::from("/tmp/codegg-m010-workspace");
+        bind_workspace(&mut app, &root);
+
+        press_space(&mut app, 'f');
+
+        assert!(
+            app.focus_manager
+                .has_dialog(crate::tui::components::component::DialogType::Files),
+            "the browser is open"
+        );
+        assert_eq!(
+            app.file_tree_state.root.as_deref(),
+            Some(root.as_path()),
+            "the browser browses the active workspace"
+        );
+        let title = app
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::files::FilesDialog, _>(|dialog| {
+                dialog.title()
+            })
+            .expect("the browser is on screen");
+        assert!(
+            title.contains("codegg-m010-workspace"),
+            "the browser names the root it is browsing, not an empty scope: {title}"
+        );
+    }
+
+    /// The browser opens **only** when there is something to browse. An empty
+    /// browser is a key that appears to do nothing, so the refusal comes
+    /// first and says why.
+    #[tokio::test]
+    async fn space_f_says_so_when_there_is_no_workspace_root_and_opens_nothing() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        let Some(tab) = app.project_tabs.active_mut() else {
+            panic!("the test app has one tab");
+        };
+        tab.workspace_root = None;
+        let before = app.focus_manager.len();
+
+        press_space(&mut app, 'f');
+
+        assert_eq!(app.focus_manager.len(), before, "nothing opened");
+        let note = notice_on_app(&app).expect("the reason is stated");
+        assert!(
+            note.contains("file picker") && note.contains("workspace root"),
+            "the reason names the picker and the missing root: {note}"
+        );
+    }
+
+    /// A root without a canonical project/workspace binding cannot be
+    /// listed: the daemon resolves the listing from that binding, and the
+    /// TUI never walks its own filesystem.
+    #[tokio::test]
+    async fn space_f_says_so_when_the_tab_has_no_canonical_binding() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        let Some(tab) = app.project_tabs.active_mut() else {
+            panic!("the test app has one tab");
+        };
+        tab.project_id = None;
+        tab.workspace_id = None;
+        let before = app.focus_manager.len();
+
+        press_space(&mut app, 'f');
+
+        assert_eq!(app.focus_manager.len(), before, "nothing opened");
+        let note = notice_on_app(&app).expect("the reason is stated");
+        assert!(
+            note.contains("no canonical project/workspace binding"),
+            "the reason names the missing binding: {note}"
+        );
+    }
+
+    /// The reclaim: `space s` is still the document-symbol read, and the two
+    /// are no longer the same gesture.
+    #[tokio::test]
+    async fn space_s_is_still_the_document_symbol_read_and_space_f_is_not_the_same_gesture() {
+        let (mut state, _daemon) = opened_writer("hello").await;
+        assert_eq!(
+            leaf(&mut state, EditorPrefix::Space, 's'),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            parked(&state),
+            Some(EditorPendingEffect::Read(LspReadOperation::DocumentSymbols))
+        );
+
+        let (mut state, _daemon) = opened_writer("hello").await;
+        assert_eq!(
+            leaf(&mut state, EditorPrefix::Space, 'f'),
+            BufferKey::Consumed
+        );
+        assert_eq!(
+            parked(&state),
+            Some(EditorPendingEffect::OpenFilePicker),
+            "the file picker displaced the duplicate, it did not replace the symbols read"
+        );
+    }
+
+    /// The clipboard family: each space chord names its own verb.
+    #[tokio::test]
+    async fn the_space_clipboard_family_names_the_verb_each_chord_runs() {
+        for (glyph, expected) in [
+            ('p', ClipboardVerb::PasteAfter),
+            ('P', ClipboardVerb::PasteBefore),
+            ('R', ClipboardVerb::Replace),
+        ] {
+            let (mut state, _daemon) = opened_writer("abc").await;
+            assert_eq!(
+                leaf(&mut state, EditorPrefix::Space, glyph),
+                BufferKey::Consumed,
+                "space {glyph} is claimed by the editor, not the composer"
+            );
+            assert_eq!(
+                parked(&state),
+                Some(EditorPendingEffect::Clipboard(expected)),
+                "space {glyph} must name its own verb"
+            );
+        }
+    }
+
+    /// `space Y` is the *main* selection: the distinguished member alone,
+    /// where `space y` takes every member.
+    #[tokio::test]
+    async fn space_y_yanks_only_the_primary_member_of_a_multi_member_selection() {
+        let (mut state, _daemon) = opened_writer("alpha beta gamma").await;
+        let snapshot = snapshot_of(&state);
+        let point = |byte: usize| EditorPoint {
+            byte,
+            line: editor::cursor_line(&snapshot, byte),
+        };
+        let member = |anchor: usize, head: usize| Selection {
+            anchor: point(anchor),
+            head: point(head),
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        };
+        {
+            let presentation = state.session.as_mut().unwrap().presentation_mut();
+            // "alpha" at 0..5 and "gamma" at 11..16, with the second primary.
+            presentation.selections = vec![member(0, 4), member(11, 15)];
+            presentation.primary_index = 1;
+        }
+
+        let session = state.session.as_ref().expect("open");
+        let whole_set = editor::selection_ranges(session.presentation(), &snapshot);
+        assert_eq!(whole_set.len(), 2, "the set really does have two members");
+
+        let range = primary_yank_range(session).expect("a member to yank");
+        assert_eq!(range, 11..16, "the primary member alone");
+        assert_eq!(
+            snapshot
+                .read_bytes(range.start, range.end)
+                .expect("readable"),
+            "gamma",
+            "and it is that member's text, not the set's"
+        );
+    }
+
+    /// `space Y` on an empty selection says so, and does not write an empty
+    /// string to the clipboard — the same answer `space y` gives.
+    #[tokio::test]
+    async fn space_y_on_an_empty_selection_says_nothing_to_yank() {
+        let (state, _daemon) = opened_writer("abc").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        press_space(&mut app, 'Y');
+
+        assert_eq!(
+            app.messages_state.toasts.len(),
+            1,
+            "the refusal is reported, not swallowed"
+        );
+        let toast = app.messages_state.toasts.iter().last().expect("a toast");
+        assert!(
+            toast.message.contains("Nothing to yank"),
+            "the message is the one `space y` uses: {:?}",
+            toast.message
+        );
+    }
+
+    /// The seven leaves with no substrate each state their reason.
+    ///
+    /// The expected strings are the **whole** reason, not a fragment, so the
+    /// test and `docs/tui.md` cannot drift apart: the docs carry the same
+    /// sentences, and a reader who is told "no workspace root" in the status
+    /// line is told the same thing the documentation says.
+    #[tokio::test]
+    async fn every_substrate_less_space_leaf_states_its_reason() {
+        for (glyph, expected) in [
+            (
+                'F',
+                "switch to file picker: this build has one workspace root, and `space f` opens it",
+            ),
+            (
+                'b',
+                "buffer list: one document is attached at a time, so there is no list to choose from",
+            ),
+            (
+                'j',
+                "jumplist: this editor keeps no visited-position history",
+            ),
+            (
+                'D',
+                "workspace diagnostics: no server capability backs a separate request; `space d` opens the panel",
+            ),
+            (
+                'c',
+                "toggle comment: this build knows no comment syntax for the edited buffer",
+            ),
+            (
+                'C',
+                "toggle block comment: this build knows no comment syntax for the edited buffer",
+            ),
+            (
+                '\'',
+                "last picker: this build's pickers are not fuzzy, so there is no query to recall",
+            ),
+        ] {
+            let (state, _daemon) = opened_writer("hello").await;
+            let mut app = app_on_the_editor_route(state).await;
+            press_space(&mut app, glyph);
+            let note = notice_on_app(&app).expect("the reason is stated");
+            assert_eq!(note, expected, "space {glyph} must state its reason");
+        }
+    }
+
+    /// `space ?` opens the editor's own palette — the `:` command line —
+    /// and not the global help dialog. Bare `?` still opens the help.
+    #[tokio::test]
+    async fn space_question_mark_opens_the_editors_own_command_palette() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        press_space(&mut app, '?');
+
+        let presentation = app.editor_state.session.as_ref().unwrap().presentation();
+        assert!(presentation.command_active, "the palette is open");
+        assert_eq!(
+            presentation.command_matches().len(),
+            EditorCommandName::ALL.len(),
+            "the palette lists every editor command"
+        );
+        assert_eq!(EditorCommandName::ALL.len(), 12, "twelve commands");
+    }
+
+    /// Insert mode types the space and the glyph. The space prefix is armed
+    /// only from Normal mode, so a space key in Insert mode is text.
+    #[tokio::test]
+    async fn space_and_a_leaf_glyph_type_both_characters_in_insert_mode() {
+        let (state, _daemon) = opened_writer("").await;
+        let mut app = app_on_the_editor_route(state).await;
+        app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
+
+        handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(text_on_app(&app), " f", "both characters are text");
+        assert!(
+            !app.focus_manager
+                .has_dialog(crate::tui::components::component::DialogType::Files),
+            "and nothing opened"
+        );
+    }
+
+    /// Insert mode types **every** leaf glyph. The space prefix is armed only
+    /// from Normal mode, so a space key in Insert mode is text — and so is
+    /// every glyph the space menu would otherwise consume.
+    #[tokio::test]
+    async fn every_space_leaf_glyph_types_text_in_insert_mode() {
+        for glyph in [
+            'y', 'k', 's', 'S', 'd', 'h', 'f', '?', 'p', 'P', 'R', 'Y', 'F', 'b', 'j', 'D', 'c',
+            'C', '\'',
+        ] {
+            let (state, _daemon) = opened_writer("").await;
+            let mut app = app_on_the_editor_route(state).await;
+            app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
+
+            handle_editor_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(glyph), KeyModifiers::NONE),
+            );
+
+            assert_eq!(
+                text_on_app(&app),
+                glyph.to_string(),
+                "space {glyph:?} is text in Insert"
+            );
+            assert!(
+                !app.focus_manager
+                    .has_dialog(crate::tui::components::component::DialogType::Files),
+                "space {glyph:?} opens nothing in Insert"
+            );
+        }
+    }
+
+    /// The space gesture is editor-local, so the global keymap's own
+    /// configuration cannot change it.
+    #[tokio::test]
+    async fn the_space_gesture_is_the_same_under_the_default_and_vim_global_keymaps() {
+        for vim_mode in [false, true] {
+            let (state, _daemon) = opened_writer("hello").await;
+            let mut app = app_on_the_editor_route(state).await;
+            let root = std::path::PathBuf::from("/tmp/codegg-m010-keymap");
+            bind_workspace(&mut app, &root);
+            app.ui_state.vim_mode = vim_mode;
+            app.ui_state.bindings = crate::tui::input::build_bindings(None, vim_mode);
+
+            app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+
+            assert!(
+                app.focus_manager
+                    .has_dialog(crate::tui::components::component::DialogType::Files),
+                "space f opens the browser under the global keymap (vim_mode = {vim_mode})"
+            );
+        }
     }
 }

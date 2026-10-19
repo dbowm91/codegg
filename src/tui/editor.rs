@@ -44,7 +44,7 @@ use codegg_protocol::document::MAX_DOCUMENT_EDITS;
 use codegg_protocol::lsp::LspReadOperation;
 
 use super::document_session::TuiDocumentPresentation;
-use crate::tui::editor_effect::EditorPendingEffect;
+use crate::tui::editor_effect::{ClipboardVerb, EditorPendingEffect};
 use crate::tui::editor_lsp::EditorDiagnosticStep;
 use crate::tui::editor_match;
 use crate::tui::helix_selection::{Selection, SelectionMode, SelectionState};
@@ -551,14 +551,23 @@ pub const GOTO_LEAVES: &[PrefixLeaf] = &[
 ///   either is an LSP *write*, and write authorization for an LSP-driven
 ///   mutation has no accepted ADR. Binding them to something that cannot
 ///   apply would be worse than absent.
-/// - `space D` / `[D` — workspace diagnostics. The daemon publishes
-///   per-project diagnostics, but there is no server capability behind a
-///   separate "workspace diagnostics" request, so this would be a second name
-///   for the panel `space d` already opens.
 /// - `space w` / `space W` — window/workspace switching, out of scope.
 ///
 /// `]`/`[` diagnostic stepping is already bound as bare keys, so the
 /// navigation half of Helix's diagnostics pair needed no new row.
+///
+/// The leaves that this table does **not** bind are not silently missing.
+/// Every Helix space-mode glyph this build cannot honour has a row whose
+/// action is [`EditorPendingEffect::Unavailable`], carrying the reason a user
+/// needs. An unbound letter is the M002 failure mode: the user cannot tell a
+/// missing feature from a key that never arrived. The message says which, and
+/// the reason is the same text the docs carry.
+///
+/// One note on `space f`. It used to be a *second* binding of this document's
+/// symbols, which meant the file picker was unreachable and the symbols panel
+/// had two keys that did the same thing. It is now the workspace file picker,
+/// and the row that used to be a duplicate of `space s` is gone rather than
+/// left as a second name for the same request.
 pub const SPACE_LEAVES: &[PrefixLeaf] = &[
     PrefixLeaf {
         glyph: 'y',
@@ -591,18 +600,97 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
         glyph: 'h',
         action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::References)),
     },
-    // `space f` — Helix's file picker. Multi-document attachment is out of
-    // scope, so the closest honest reading is this document's symbols.
+    // `space f` — the workspace file picker. The browser is daemon-owned
+    // (ADR-0022, C005): the listing is resolved from the active tab's
+    // canonical project/workspace binding and the TUI never walks its own
+    // filesystem, so the picker browses the workspace the tab is bound to.
     PrefixLeaf {
         glyph: 'f',
-        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::DocumentSymbols)),
+        action: PrefixAction::Effect(EditorPendingEffect::OpenFilePicker),
     },
-    // `space F` — switch to file picker. Same missing capability as `space f`,
-    // and unlike `space f` there is no document-local reading of it.
+    // `space ?` — the editor's own `:` command palette: the catalogue of
+    // `EditorCommandName::ALL`, filtered as you type. Deliberately not the
+    // global `?` help dialog: bare `?` still opens the help, and `space ?`
+    // is the editor's own list of what it can do.
+    PrefixLeaf {
+        glyph: '?',
+        action: PrefixAction::Effect(EditorPendingEffect::OpenCommandPalette),
+    },
+    // The clipboard family. `space y` yanks every member of the selection
+    // set; `space Y` is Helix's *main* selection — the distinguished member
+    // alone — and the other three paste.
+    PrefixLeaf {
+        glyph: 'p',
+        action: PrefixAction::Effect(EditorPendingEffect::Clipboard(ClipboardVerb::PasteAfter)),
+    },
+    PrefixLeaf {
+        glyph: 'P',
+        action: PrefixAction::Effect(EditorPendingEffect::Clipboard(ClipboardVerb::PasteBefore)),
+    },
+    PrefixLeaf {
+        glyph: 'R',
+        action: PrefixAction::Effect(EditorPendingEffect::Clipboard(ClipboardVerb::Replace)),
+    },
+    PrefixLeaf {
+        glyph: 'Y',
+        action: PrefixAction::Effect(EditorPendingEffect::YankPrimary),
+    },
+    // `space F` — the *other* file picker. This build has one workspace
+    // root, so "switch to" a file picker has nothing to switch to; the
+    // picker itself is `space f`.
     PrefixLeaf {
         glyph: 'F',
         action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
-            "file picker: multi-document attachment is not available in this build",
+            "switch to file picker: this build has one workspace root, and `space f` opens it",
+        )),
+    },
+    // `space b` — the buffer list. One document is attached at a time, so
+    // there is no list to choose from.
+    PrefixLeaf {
+        glyph: 'b',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "buffer list: one document is attached at a time, so there is no list to choose from",
+        )),
+    },
+    // `space j` — the jumplist. This editor keeps no visited-position
+    // history, so there is nothing to jump back to.
+    PrefixLeaf {
+        glyph: 'j',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "jumplist: this editor keeps no visited-position history",
+        )),
+    },
+    // `space D` — workspace diagnostics. The daemon publishes per-project
+    // diagnostics, but no server capability backs a separate "workspace
+    // diagnostics" request, so this would be a second name for the panel
+    // `space d` already opens.
+    PrefixLeaf {
+        glyph: 'D',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "workspace diagnostics: no server capability backs a separate request; `space d` opens the panel",
+        )),
+    },
+    // `space c` / `space C` — comment toggles. Nothing in this repository
+    // knows a comment syntax for the buffer it is editing, so the toggle
+    // would have to guess and could guess wrong.
+    PrefixLeaf {
+        glyph: 'c',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "toggle comment: this build knows no comment syntax for the edited buffer",
+        )),
+    },
+    PrefixLeaf {
+        glyph: 'C',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "toggle block comment: this build knows no comment syntax for the edited buffer",
+        )),
+    },
+    // `space '` — the last picker. The pickers here are not fuzzy, so there
+    // is no "last query" for a picker to recall.
+    PrefixLeaf {
+        glyph: '\'',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "last picker: this build's pickers are not fuzzy, so there is no query to recall",
         )),
     },
 ];
@@ -8066,7 +8154,15 @@ mod tests {
             ),
             (
                 EditorPrefix::Space,
-                vec!['y', 'k', 's', 'S', 'd', 'h', 'f', 'F'],
+                // The space menu. It grew in M010: the file picker reclaimed
+                // `space f` from a duplicate of `space s`, the editor's own
+                // command palette took `space ?`, the clipboard family took
+                // `space p`/`P`/`R`/`Y`, and seven leaves that have no
+                // substrate here say so rather than doing nothing.
+                vec![
+                    'y', 'k', 's', 'S', 'd', 'h', 'f', '?', 'p', 'P', 'R', 'Y', 'F', 'b', 'j', 'D',
+                    'c', 'C', '\'',
+                ],
                 false,
                 "space",
                 None,

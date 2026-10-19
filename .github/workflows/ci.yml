@@ -120,6 +120,9 @@ jobs:
       - name: TUI editor key-authority guard
         run: python3 scripts/check_tui_editor_key_authority.py
 
+      - name: TUI editor leaf-authority guard
+        run: python3 scripts/check_tui_editor_leaf_authority.py
+
       - name: TUI editor prefix-state guard
         run: python3 scripts/check_tui_editor_prefix_state.py
 
