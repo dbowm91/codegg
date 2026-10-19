@@ -73,6 +73,8 @@ def _parser() -> argparse.ArgumentParser:
     qualify.add_argument("--max-wallclock", type=float, default=3600.0)
     qualify.add_argument("--checkpoint", type=Path, default=Path("/tmp/codegg-harness-qualification.json"))
     qualify.add_argument("--resume", action="store_true")
+    qualify.add_argument("--max-candidate-retries", type=int, default=0,
+                         help="bounded OpenCode compile-correction retries; zero disables retries")
     candidate_tree = commands.add_parser("candidate-worktree", help="create a new isolated local candidate branch/worktree")
     candidate_tree.add_argument("--repository", type=Path, default=Path.cwd())
     candidate_tree.add_argument("--branch", required=True)
@@ -107,8 +109,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("status") != "BLOCKED" else 2
         if args.command == "qualify":
-            if not args.allow_prefix or args.timeout <= 0 or args.max_wallclock <= 0:
+            if not args.allow_prefix or args.timeout <= 0 or args.max_wallclock <= 0 or args.max_candidate_retries < 0:
                 raise HarnessError("qualification requires an allowlist and positive time budgets")
+            if args.max_candidate_retries and args.proposer != "opencode":
+                raise HarnessError("compile-correction retries require --proposer opencode")
             suite = args.suite.expanduser().resolve(strict=True)
             baseline_rows = [row for row in ledger.load_runs(args.ledger.expanduser().resolve(strict=True))
                              if row["candidate"] == args.baseline]
@@ -143,7 +147,9 @@ def main(argv: list[str] | None = None) -> int:
                     worktree, suite, args.ledger, baseline_candidate=args.baseline,
                     candidate=args.candidate, target_dir=args.target_dir,
                     allowed_prefixes=tuple(args.allow_prefix), timeout=args.timeout,
-                    max_wallclock=args.max_wallclock, checkpoint=checkpoint, resume=args.resume)
+                    max_wallclock=args.max_wallclock, checkpoint=checkpoint, resume=args.resume,
+                    proposer=args.proposer, correction_prompt=args.prompt or "",
+                    max_candidate_retries=args.max_candidate_retries)
             except (ValueError, RuntimeError, TimeoutError, OSError) as error:
                 if checkpoint.state not in improve.TERMINAL and "REJECTED" in improve.ALLOWED[checkpoint.state]:
                     checkpoint.transition("REJECTED", {"failure_class": type(error).__name__})

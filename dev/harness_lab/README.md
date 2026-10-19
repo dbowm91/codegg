@@ -103,7 +103,10 @@ The result is a qualification receipt; it does not switch branches or accept,
 merge, or push the candidate. Manual mode and the deterministic fixture require
 no OpenCode credentials or paid model call.
 To invoke the optional proposer from this command, set `--proposer opencode`
-and supply a bounded `--prompt`; the CLI version is pinned to 1.19.0. A
+and supply a bounded `--prompt`; the CLI version is pinned to 1.19.0. A bounded
+compile-correction retry can be enabled with `--max-candidate-retries N`; each
+retry consumes a separate proposal attempt, is checkpointed, and reruns the
+candidate gates. This option requires the OpenCode proposer. A
 checkpoint can resume an unchanged candidate before any candidate ledger trial
 has been appended. Partial candidate evaluations fail closed and require a new
 candidate ID so interrupted attempts remain visible in the ledger.

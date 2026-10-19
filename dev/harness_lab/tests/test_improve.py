@@ -31,6 +31,18 @@ class ImproveTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 Checkpoint(Path(temp) / "resume.json", "abc", "suite")
 
+            retry_checkpoint = Checkpoint(Path(temp) / "retry.json", "abc", "suite")
+            retry_checkpoint.transition("DIAGNOSED", {})
+            retry_checkpoint.transition("PROPOSING", {"attempt_kind": "initial"})
+            retry_checkpoint.transition("PATCHED", {"patch_sha256": "first"})
+            retry_checkpoint.transition("BUILDING", {})
+            retry_checkpoint.transition("PROPOSING", {"attempt_kind": "compile_correction", "retry": 1})
+            retry_checkpoint.transition("PATCHED", {"patch_sha256": "corrected"})
+            retry_checkpoint.transition("BUILDING", {})
+            resumed = Checkpoint.resume(Path(temp) / "retry.json", "abc", "suite")
+            self.assertEqual(resumed.state, "BUILDING")
+            self.assertEqual(resumed.attempt_id, 2)
+
     def test_opencode_json_event_parser_and_scope_gate(self) -> None:
         parsed = parse_opencode_events('{"type":"text","part":{"text":"proposal"}}\n{"type":"step_finish"}')
         self.assertEqual(parsed["text"], "proposal")
