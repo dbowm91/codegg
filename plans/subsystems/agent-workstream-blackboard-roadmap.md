@@ -69,10 +69,10 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             +-- M006 isolated session/worktree launch UX          [in progress: durable launch contract and CLI delivered; TUI outstanding; M005 not required]
             +-- M007 per-workspace build admission                [closed; M005 not required]
             +-- M010 isolated Rust/Python trajectory               [closed; deterministic functional evidence]
-            +-- M008 broad trajectory and economics                [blocked: M006, M007]
+            +-- M008 broad trajectory and economics                [blocked: M006]
 ~~~
 
-M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. M005 became active after strict M004 closure and ADR-0032 acceptance; its shared-write capability remains blocked until effective writer containment is verified. M006's isolated session ownership and M007's per-workspace scheduler quota do not depend on shared writes and may proceed alongside M005. M010 qualifies the closed M003/M004 substrate on isolated checkouts. M008 retains broad comparative and economic requirements and remains gated on M006/M007.
+M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. M005 became active after strict M004 closure and ADR-0032 acceptance; its shared-write capability remains blocked until effective writer containment is verified. M006's isolated session ownership and M007's per-workspace scheduler quota do not depend on shared writes and may proceed alongside M005. M010 qualifies the closed M003/M004 substrate on isolated checkouts. M008 retains broad comparative and economic requirements and remains gated on M006, which closed M007's half of the gate on 2026-10-19.
 
 ## Milestones / deliverables
 
