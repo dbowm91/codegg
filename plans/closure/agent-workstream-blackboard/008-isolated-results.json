@@ -1,5 +1,5 @@
 {
-  "evidence_kind": "partial exploratory measurement; one repetition each for IM-1/S0, IM-1/S1, and SI-1/S0, plus an incomplete over-budget OA-1/S0 attempt; not M008 closure",
+  "evidence_kind": "partial exploratory measurement; three under-budget cells for IM-1/S0, IM-1/S1, SI-1/S0; OA-1/S0 and OA-2/S0 produced accepted candidates after crossing their equal 700,000-token ceilings; not M008 closure",
   "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
   "fixture_baseline": "f5e27d388255726b0b85226a144fdcce2e91b73a",
   "binary": {
@@ -1738,6 +1738,66 @@
       },
       "status": "incomplete and over-budget; no candidate or evaluator result",
       "result": "The turn used 734236 tokens against B=700000. The final in-flight response exceeded the requested ceiling by 34236 tokens and ended with a pending tool call and no final report. This attempt is retained as an over-budget outcome; it was not retried or counted as a successful trajectory."
+    },
+    {
+      "trial_id": "OA-2-S0-R1",
+      "matrix_version": "008-task-matrix-v1",
+      "fixture": "plans/closure/agent-workstream-blackboard/008-overlapping-api-fixtures/oa2",
+      "fixture_baseline_source_commit": "9260fda525284b821beda2782de23f6888d37b56",
+      "fixture_baseline_tree": "edaa7d38feb37c8cc829f46daad88a24dd663c7e",
+      "fixture_content_digest": "8c0ac4b26b6a042843d629455d9fb689a6c684121026919118c2f966cdb6f436",
+      "condition": "S0",
+      "repetition": 1,
+      "session_id": "23e01903-a5b2-4fc2-a2de-b8f572c35cc9",
+      "turn_id": "turn-4ac18e3a-6c0b-4557-a191-72d814dc37e3",
+      "provider": "OpenCode Go",
+      "model": "gpt-6-luna",
+      "all_agent_budget_tokens": 700000,
+      "coordinator_budget_tokens": 0,
+      "worker_budget_tokens": 700000,
+      "actual_usage": {
+        "input_tokens": 698159,
+        "output_tokens": 5620,
+        "cached_tokens": 0,
+        "total_tokens": 703779,
+        "overrun_tokens": 3779,
+        "usage_rows": 22,
+        "provider_usage_span_seconds": 96.705,
+        "reported_cost_usd": 0.0,
+        "cost_available": false
+      },
+      "agent_reported": {
+        "turn_status": "completed without a final response",
+        "rust_acceptance": "8 passed through the supervised test runner",
+        "python_acceptance": "test command rejected by the supervised test runner safety validator; evaluator reran it",
+        "golden_acceptance": "not reported by agent before turn completion",
+        "candidate_commit": "not created by agent; evaluator created candidate after independent acceptance run"
+      },
+      "evaluator": {
+        "rust_acceptance": "8 passed",
+        "python_acceptance": "9 passed",
+        "golden_acceptance": "OA-2 source-revision golden passed",
+        "valid_integrated_result": true,
+        "accepted_contract_checks_passed": 18,
+        "candidate_commit": "6fcf198b8e6383734f8d02f217933e0239f36b89",
+        "candidate_paths": [
+          "rust/src/lib.rs",
+          "python/summary_report/consumer.py"
+        ],
+        "interventions": 1,
+        "intervention_detail": "Evaluator independently ran all three acceptance commands after the supervised runner rejected the Python unittest command; no source correction was needed.",
+        "evaluator_command_seconds": 1.9,
+        "integration_wall_seconds": null,
+        "scratch_cleanup": "Removed generated Cargo target, Python bytecode, and run scratch; isolated worktree clean."
+      },
+      "useful_throughput": {
+        "accepted_contract_checks_passed": 18,
+        "checks_per_worker_token": 2.558e-05,
+        "checks_per_total_agent_token": 2.558e-05,
+        "checks_per_provider_usage_minute": 11.17
+      },
+      "status": "valid integrated candidate after evaluator verification, but over-budget by 3779 tokens; excluded from equal-budget effectiveness comparison",
+      "result": "OA-2 passed its eight Rust tests, nine Python tests, and exact cross-language report evaluator. Actual use was 703779 against the 700000 ceiling. The final in-flight response crossed the budget and the agent did not return a final report; evaluator reran the Python command rejected by the runner and committed the validated implementation. Cost is unknown. The accepted outcome is retained but does not count as an in-budget trajectory."
     }
   ]
 }

@@ -1,10 +1,12 @@
 # Agent Workstream Blackboard M008 — Partial Results
 
 Evidence status: exploratory partial result; M008 remains active and is not
-strictly closed. The budget-matched set includes IM-1/S0, IM-1/S1, and SI-1/S0 at repetition
-1. An OA-1/S0 repetition-1 attempt exceeded its all-agent ceiling and returned
-no candidate. These results do not establish a repeatable effectiveness
-advantage.
+strictly closed. Three trials stayed within their equal all-agent ceilings: IM-1/S0, IM-1/S1,
+and SI-1/S0 at repetition 1. OA-1/S0 and OA-2/S0 repetition-1 attempts both
+exceeded 700,000 tokens; OA-1 returned no candidate, while OA-2 produced an
+accepted integrated candidate after evaluator reruns. The OA results do not
+count as in-budget trajectories. No repeatable effectiveness advantage is
+established.
 
 Source plan: `plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md`
 CodeGG source: `a0d7acef8e428d55971514addf685741a25ce047`
@@ -604,3 +606,19 @@ new evaluator cases fail for missing actor-v2 support. OA-2's independent
 revision-validation fixture is also frozen and its baseline failure confirmed;
 no provider trial has started for OA-2. Full per-row measurements remain in the
 JSON record.
+
+
+## 22. OA-2, S0, repetition 1 (2026-10-19)
+
+The frozen source-revision validation task used an equal 700,000-token ceiling.
+The usage journal recorded 698,159 input plus 5,620 output tokens (703,779
+total) across 22 rows over a 96.705-second provider-usage span, exceeding the
+ceiling by 3,779 tokens. The agent's Rust suite passed (8 tests); the
+supervised test runner rejected its Python unittest command, and the agent
+returned no final report before the overrun. The evaluator independently ran
+Rust (8/8), Python (9/9), and the exact cross-language golden evaluator; all
+passed. The evaluator committed the two implementation files as
+`6fcf198b8e6383734f8d02f217933e0239f36b89` without source corrections and
+removed generated caches. This is a valid integrated candidate but is excluded
+from equal-budget effectiveness comparisons because actual usage exceeded B.
+Cost is unknown; full measurements are in the JSON record.

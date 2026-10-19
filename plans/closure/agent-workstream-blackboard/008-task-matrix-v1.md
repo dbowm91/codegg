@@ -89,11 +89,13 @@ on invalid revision acceptance and the unsafe code span; its golden evaluator
 fails on that report mismatch. Both overlapping-API tasks and their budgets
 are frozen before scored trials.
 
-Three cells have been run under this equal-total-budget protocol: IM-1 S0 and
-S1 at repetition 1, and SI-1 S0 at repetition 1. The SI-1 fixture digest is
+Three under-budget cells have been completed: IM-1 S0 and S1 at repetition 1,
+and SI-1 S0 at repetition 1. OA-1 S0 and OA-2 S0 repetition-1 attempts are
+recorded as over-budget; OA-1 produced no candidate and OA-2 passed evaluators
+but is excluded from equal-budget effectiveness comparison. The SI-1 fixture digest is
 `93c0eadb64f4ec9bc423599085863a5018800322`. OA-1 is frozen with input tree
 `17fe5b0dbe7a233d25ac842bea5011f1e9e36c20` and source baseline
 `9260fda525284b821beda2782de23f6888d37b56`; results are recorded in
-`008-isolated-results.json` and `008-isolated-results.md`. Every other
-task/condition/repetition cell remains unrun; previous pilots remain separate
+`008-isolated-results.json` and `008-isolated-results.md`. All other
+task/condition/repetition cells remain unrun; previous pilots remain separate
 historical evidence.
