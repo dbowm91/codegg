@@ -87,3 +87,16 @@ Every milestone supplies focused unit/integration/security tests, explicit fail-
 Run `scripts/verify.sh quick`, supported-feature `cargo clippy --workspace --all-targets --locked -- -D warnings`, applicable focused tests, projection/transport/ownership guards and `git diff --check`. Use `cargo test -p codegg --test <target> --locked` for new integration targets. Do not use `--all-features` or mandate a live-model CI, VM, or SBC hardware job.
 
 The subsystem closes only after the **same real work** is visible and actionable through both entry points in a normal attached session, a late-attached session and after recovery, with no false-empty claims or unresolved high-severity lifecycle losses. Each milestone requires `plans/closure/tui-live-work-visibility-corrective/NNN-status.md` with commit hashes, requirement→test matrix, exact commands/results, transport/authorization negatives, cancellation/restart evidence, residuals and the observed binary/commit.
+
+## 9. Explicit milestone handoff and closure status
+
+| Milestone | Status | Implementation plan | Closure record |
+|---|---|---|---|
+| M001 | **ready** | `plans/implementation/tui-live-work-visibility-corrective/001-default-tui-session-projection-lifecycle.md` | — |
+| M002 | **ready** | `plans/implementation/tui-live-work-visibility-corrective/002-scheduler-job-publication-and-snapshot-recovery.md` | — |
+| M003 | **blocked — proposed ADR-0042** | `plans/implementation/tui-live-work-visibility-corrective/003-session-owned-subagent-lifecycle.md` | — |
+| M004 | **blocked — M001–M003** | `plans/implementation/tui-live-work-visibility-corrective/004-unified-session-work-model-and-visibility.md` | — |
+| M005 | **blocked — M004** | `plans/implementation/tui-live-work-visibility-corrective/005-job-and-subagent-inspection-controls.md` | — |
+| M006 | **blocked — M001–M005** | `plans/implementation/tui-live-work-visibility-corrective/006-real-daemon-to-tui-acceptance-and-recovery.md` | — |
+
+Historical convergence closures remain under `plans/closure/tui-subagent-and-job-visibility-convergence/`; do not overwrite them. Add successor closure records only after the corresponding real integration evidence is available.
