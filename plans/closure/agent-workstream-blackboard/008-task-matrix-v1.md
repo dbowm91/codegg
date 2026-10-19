@@ -15,8 +15,10 @@ in their respective strata.
 - Freeze one delegated-worker ceiling `B` per task before its first trial and
   use exactly that same `B` for every condition and repetition of that task.
   `IM-1` uses `B = 24,000`, above the earlier S0 range of 14,784–14,921
-  reported tokens. `SI-1` uses `B = 700,000`, above its earlier S0 result of
-  629,273 reported tokens. These ceilings are task-specific because the
+  reported tokens. `SI-1` uses `B = 1,400,000`, above the largest complete
+  prior S0–S3 aggregate of 1,033,105 worker tokens; a two-worker arm receives
+  700,000 per child. The task tool accepts up to 2,000,000 tokens so S0 can
+  receive this same aggregate ceiling. These ceilings are task-specific because the
   already-observed workloads differ by more than an order of magnitude. New
   contracts require a separate pilot and frozen ceiling before their
   comparison begins. S0 receives `max_model_tokens = B`; S1/S2/S3 receive
@@ -28,7 +30,8 @@ in their respective strata.
   Use the same provider, model, tool
   policy, workspace policy, approval mode, and wall-clock limit. Do not retry
   a failed run invisibly; retries are separate attempts and consume budget.
-- Record provider-reported input, output, cached tokens, and cost per worker;
+- Record provider-reported input, output, cached tokens, estimated cost, and
+  whether the local pricing table has a matching rate per worker;
   coordinator and integration usage; wall time; evaluator and tool time;
   useful throughput (accepted contract checks passed per worker-token and per
   wall-clock minute); valid integrated result; conflicts, duplicate work,

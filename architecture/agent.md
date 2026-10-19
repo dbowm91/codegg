@@ -606,7 +606,9 @@ input plus output tokens for one delegated run. The `spawn_many` action accepts
 requests; it cannot be combined with per-child caps. Each provider response
 advances the loop's cumulative token counter and adds a bounded
 `provider_usage` progress milestone to the run journal, including
-provider/model, input/output/cached token counts, and estimated cost. The
+provider/model, input/output/cached token counts, estimated cost, and whether
+the local price table has a rate for that model. A zero cost with no rate is
+unknown, not a free call. The
 provider's final response may cross the requested ceiling before the loop can
 stop, so recorded actual usage remains authoritative. Coordinator-session
 usage is accounted separately from child-run usage.

@@ -204,6 +204,18 @@ impl PricingService {
         Self { rates }
     }
 
+    /// Whether this provider/model resolves to a locally known price.
+    /// A zero estimate is otherwise ambiguous between a free model and a
+    /// model whose price is not present in this table.
+    pub fn has_pricing(&self, provider: &str, model: &str) -> bool {
+        let key = format!("{}/{}", provider.to_lowercase(), model.to_lowercase());
+        self.rates.contains_key(&key)
+            || self
+                .rates
+                .keys()
+                .any(|candidate| candidate.contains(&key) || key.contains(candidate))
+    }
+
     /// Calculates the cost in USD for an API call.
     ///
     /// # Arguments
@@ -267,5 +279,27 @@ impl PricingService {
 impl Default for PricingService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PricingService;
+
+    #[test]
+    fn pricing_availability_distinguishes_unknown_from_zero_cost() {
+        let pricing = PricingService::new();
+        assert!(pricing.has_pricing("openai", "gpt-4o"));
+        assert!(pricing.has_pricing("minimax", "minimax"));
+        assert!(!pricing.has_pricing("opencode_go", "gpt-6-luna"));
+
+        assert_eq!(
+            pricing.calculate_cost("minimax", "minimax", 100, 100, 0),
+            0.0
+        );
+        assert_eq!(
+            pricing.calculate_cost("opencode_go", "gpt-6-luna", 100, 100, 0),
+            0.0
+        );
     }
 }

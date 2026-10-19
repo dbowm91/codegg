@@ -535,6 +535,8 @@ async fn stream_once(
                         let input_tokens_i64 = i64::try_from(input_tokens).unwrap_or(i64::MAX);
                         let output_tokens_i64 = i64::try_from(output_tokens).unwrap_or(i64::MAX);
                         let cached_tokens_i64 = i64::try_from(cached_tokens).unwrap_or(i64::MAX);
+                        let cost_available =
+                            pricing_service.has_pricing(&provider_name, &model_name);
                         let cost_usd = pricing_service.calculate_cost(
                             &provider_name,
                             &model_name,
@@ -558,6 +560,7 @@ async fn stream_once(
                                         ("output_tokens".into(), output_tokens.to_string()),
                                         ("cached_tokens".into(), cached_tokens.to_string()),
                                         ("cost_usd".into(), cost_usd.to_string()),
+                                        ("cost_available".into(), cost_available.to_string()),
                                     ],
                                 )
                                 .await;

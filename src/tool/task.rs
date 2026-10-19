@@ -1341,7 +1341,7 @@ impl Tool for TaskTool {
                 "max_model_tokens": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 1000000,
+                    "maximum": 2000000,
                     "description": "Per-run cumulative provider-reported input plus output token ceiling."
                 },
                 "shared_scratch": {
@@ -1420,13 +1420,13 @@ impl Tool for TaskTool {
                 "max_model_tokens": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 1000000,
+                    "maximum": 2000000,
                     "description": "Per-run cumulative provider-reported input plus output token ceiling. Divide aggregate worker budgets across spawn_many children."
                 },
                 "aggregate_model_tokens": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 1000000,
+                    "maximum": 2000000,
                     "description": "Aggregate cumulative provider-reported input plus output token ceiling for all spawn_many children. CodeGG divides this ceiling across children; do not also set per-request max_model_tokens."
                 },
                 "allowed_paths": {
@@ -2641,10 +2641,10 @@ fn parse_model_token_budget(
     }
     let Some(tokens) = value
         .as_u64()
-        .filter(|tokens| (1..=1_000_000).contains(tokens))
+        .filter(|tokens| (1..=2_000_000).contains(tokens))
     else {
         return Err(ToolError::Execution(format!(
-            "{field} must be an integer between 1 and 1000000"
+            "{field} must be an integer between 1 and 2000000"
         )));
     };
     Ok(Some(tokens))
@@ -3047,16 +3047,16 @@ mod tests {
     fn model_token_budgets_reject_zero_nonintegers_and_oversized_values() {
         assert_eq!(
             parse_model_token_budget(
-                &serde_json::json!({"max_model_tokens": 10}),
+                &serde_json::json!({"max_model_tokens": 2_000_000}),
                 "max_model_tokens"
             )
             .unwrap(),
-            Some(10)
+            Some(2_000_000)
         );
         for value in [
             serde_json::json!({"max_model_tokens": 0}),
             serde_json::json!({"max_model_tokens": 1.5}),
-            serde_json::json!({"max_model_tokens": 1_000_001}),
+            serde_json::json!({"max_model_tokens": 2_000_001}),
         ] {
             assert!(parse_model_token_budget(&value, "max_model_tokens").is_err());
         }
