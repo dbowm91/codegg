@@ -136,7 +136,29 @@ C001 cannot fix these: the fence does not exist yet. They are recorded in
     Job Object gives a real tree kill, and that bounds lifetime, not write
     authority.
 
-## 7. C002 unblock audit
+## 7. The historical M005 gap, and what C001 changed about it
+
+The original milestone, `plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md`,
+left a Q0–Q5 qualification sequence unrun. C001 does not run any of them —
+it cannot; the permit does not exist. What C001 does is fix the *inputs* to
+that sequence, and turn the Q0 posture from a claim into an inventory.
+
+| Historical M005 question | State at C001 | What C001 added |
+|---|---|---|
+| **Q0** — safe-default posture (pass; negative evidence only) | Still negative evidence only | The posture is no longer a claim: 48 writer roots are enumerated with their disposition, and `scripts/check_writer_disposition.py` keeps that enumeration from silently drifting. A new writer route now fails the build until someone decides its disposition. |
+| **Q1** — identity/state machine (durable CAS on `(WorktreeId, generation)`) | Unrun; belongs to C002 | Fixed the tuple the permit must resolve — `(WorktreeId, lease generation, group reservation, authenticated actor/run, execution attempt)` — and identified that **a linked worktree does not collapse to one identity** (no writer consults a git common-dir mapping), and that the scheduler's exclusivity key sets are empty for the process kinds that matter. |
+| **Q2** — direct native writers (two overlapping runs, one barrier) | Unrun; belongs to C003 | Identified what would make a Q2 race vacuous: **no native file or Git sink takes the repository lock**, a batch containing `git`/`bash`/`formatter` takes **no lease at all**, and `replace`/`commit` are path-invisible to the permission layer. |
+| **Q3** — every enabled writer owner (and every disabled surface refused before spawn) | Unrun; belongs to C004/C005 | Enumerated the enabled writer owners and the surfaces that must be refused before spawn or mutation, and recorded the descendant verdict: **no Unix sink has proven descendant-tree quiescence**; only the Windows Job Object gives a real tree kill, and it bounds lifetime, not write authority. |
+| **Q4** — native platform matrix (Linux, macOS, Windows separately) | Unrun; belongs to C006 | Recorded the platform status C006 must qualify against, and the rule that a surface without evidenced process-tree or filesystem containment is marked unavailable rather than inferred. |
+| **Q5** — integration and recovery (nested worktree base, handoff, crash recovery) | Unrun; belongs to C006 | Recorded the integration hazards: the run-store **lost update** across three `FsRunStore` instances, the relative-path fallbacks that defeat the "outside the repository root" fence, the **disjoint** `WorkspaceLockTable` instances, and the legacy project database keyed to the **process cwd**. |
+
+The original milestone's own gate — "do not start Q1 storage until the
+product boundary and per-platform capability matrix are accepted" — is
+unchanged and still binding. C001 supplies the product-boundary package
+(ADR-0042, `proposed`) and the writer inventory Q1–Q5 will be measured
+against. It does not start Q1.
+
+## 8. C002 unblock audit
 
 **C002 is NOT unblocked.** C002 requires an explicit maintainer
 accept/reject decision on ADR-0042, and ADR-0042 is `proposed`. The
@@ -158,7 +180,7 @@ No part of this closure, the contract document, the manifest, the guard or the
 new tests changes ADR-0042's status, and none of them mark it accepted in
 code or in the registry.
 
-## 8. Provenance
+## 9. Provenance
 
 - Source audit performed against `e78497d2`, in four independent surface
   clusters, with every claim carrying a `file:line` citation and every
