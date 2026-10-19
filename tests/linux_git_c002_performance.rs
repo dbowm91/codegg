@@ -70,6 +70,7 @@ struct ContentionReport {
 
 #[derive(Debug, Serialize)]
 struct FixtureReport {
+    operation: String,
     shape: String,
     filesystem: String,
     cold_condition: String,
@@ -286,6 +287,10 @@ fn operation() -> codegg_git::GitOperation {
     }
 }
 
+fn status_operation() -> codegg_git::GitOperation {
+    codegg_git::GitOperation::Status { short: true }
+}
+
 fn native_git(git: &Path, repository: &Path, argv: &[String]) -> std::process::Output {
     let output = git_output(git, repository, &argv[1..]);
     assert!(
@@ -300,14 +305,18 @@ async fn immutable_snapshot(
     service: &GitExecutionService,
     operation: &codegg_git::GitOperation,
     repository: &Path,
-) -> String {
+) -> codegg::git_service::GitExecutionResult {
     let result = service
         .execute(operation, repository)
         .await
         .expect("typed snapshot Git read");
     assert!(result.success, "typed snapshot Git read returned failure");
-    assert!(matches!(result.payload, Some(GitPayload::Log(_))));
-    result.stdout
+    match (operation, result.payload.as_ref()) {
+        (codegg_git::GitOperation::Log { .. }, Some(GitPayload::Log(_)))
+        | (codegg_git::GitOperation::Status { .. }, Some(GitPayload::Status(_))) => {}
+        (operation, payload) => panic!("unexpected payload for {operation:?}: {payload:?}"),
+    }
+    result
 }
 
 async fn concurrent_native_batch(
@@ -357,7 +366,11 @@ async fn concurrent_snapshot_batch(
                 .await
                 .expect("concurrent immutable-snapshot Git read");
             assert!(result.success, "concurrent snapshot read failed");
-            assert!(matches!(result.payload, Some(GitPayload::Log(_))));
+            match (&operation, result.payload.as_ref()) {
+                (codegg_git::GitOperation::Log { .. }, Some(GitPayload::Log(_)))
+                | (codegg_git::GitOperation::Status { .. }, Some(GitPayload::Status(_))) => {}
+                (operation, payload) => panic!("unexpected payload for {operation:?}: {payload:?}"),
+            }
             assert_eq!(result.stdout.as_bytes(), expected);
             elapsed_us(started)
         });
@@ -371,6 +384,7 @@ async fn concurrent_snapshot_batch(
 
 async fn concurrent_live_batch(
     service: Arc<GitExecutionService>,
+    operation: codegg_git::GitOperation,
     git: &Path,
     repository: &Path,
     expected: &[u8],
@@ -379,6 +393,7 @@ async fn concurrent_live_batch(
     let mut tasks = tokio::task::JoinSet::new();
     for index in 0..concurrency {
         let service = Arc::clone(&service);
+        let operation = operation.clone();
         let git = git.to_path_buf();
         let repository = repository.to_path_buf();
         let expected = expected.to_vec();
@@ -386,6 +401,7 @@ async fn concurrent_live_batch(
             let started = Instant::now();
             let result = contained_live_git(
                 &service,
+                &operation,
                 &git,
                 &repository,
                 &format!("contention-{concurrency}-{index}"),
@@ -404,12 +420,13 @@ async fn concurrent_live_batch(
 
 async fn contained_live_git(
     service: &GitExecutionService,
+    operation: &codegg_git::GitOperation,
     git: &Path,
     repository: &Path,
     label: &str,
 ) -> ManagedProcessResult {
     let result = service
-        .execute_contained_live_read_test_only(&operation(), repository, git, label, true)
+        .execute_contained_live_read_test_only(operation, repository, git, label, true)
         .await
         .expect("required contained Git must run or fail closed");
     assert!(
@@ -532,12 +549,16 @@ fn output_bytes(output: &BoundedOutput) -> Vec<u8> {
         .collect()
 }
 
-async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
+async fn benchmark_fixture(
+    git: &Path,
+    packed: bool,
+    operation_label: &str,
+    op: &codegg_git::GitOperation,
+) -> FixtureReport {
     let fixture = tempfile::tempdir().expect("benchmark fixture directory");
     let repository = fixture.path().join("repository");
     let (object_store_bytes, loose_objects, pack_files) = create_fixture(git, &repository, packed);
-    let op = operation();
-    let argv = codegg_git::render_argv(&op);
+    let argv = codegg_git::render_argv(op);
     let typed_service = GitExecutionService::new();
 
     let mut native_cold = Vec::with_capacity(COLD_SAMPLES);
@@ -558,14 +579,15 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
 
         advise_drop_object_cache(&cold_objects);
         let started = Instant::now();
-        let snapshot = immutable_snapshot(&typed_service, &op, &cold_repository).await;
+        let snapshot = immutable_snapshot(&typed_service, op, &cold_repository).await;
         snapshot_cold.push(elapsed_us(started));
-        assert_eq!(snapshot.as_bytes(), native.stdout.as_slice());
+        assert_eq!(snapshot.stdout.as_bytes(), native.stdout.as_slice());
 
         advise_drop_object_cache(&cold_objects);
         let started = Instant::now();
         let live = contained_live_git(
             &typed_service,
+            op,
             git,
             &cold_repository,
             &format!("cold-{index}"),
@@ -581,12 +603,13 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
     assert_eq!(
         immutable_snapshot(&typed_service, &op, &repository)
             .await
+            .stdout
             .as_bytes(),
         expected.as_slice()
     );
     assert_eq!(
         output_bytes(
-            &contained_live_git(&typed_service, git, &repository, "warm-prime")
+            &contained_live_git(&typed_service, &op, git, &repository, "warm-prime")
                 .await
                 .stdout,
         ),
@@ -606,11 +629,17 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
         let started = Instant::now();
         let snapshot = immutable_snapshot(&typed_service, &op, &repository).await;
         snapshot_warm.push(elapsed_us(started));
-        assert_eq!(snapshot.as_bytes(), expected.as_slice());
+        assert_eq!(snapshot.stdout.as_bytes(), expected.as_slice());
 
         let started = Instant::now();
-        let live =
-            contained_live_git(&typed_service, git, &repository, &format!("warm-{index}")).await;
+        let live = contained_live_git(
+            &typed_service,
+            &op,
+            git,
+            &repository,
+            &format!("warm-{index}"),
+        )
+        .await;
         live_warm.push(elapsed_us(started));
         live_warm_resources.push(child_resource_sample(&live.stderr));
         assert_eq!(output_bytes(&live.stdout), expected);
@@ -642,6 +671,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
             live.extend(
                 concurrent_live_batch(
                     Arc::clone(&typed_service),
+                    op.clone(),
                     git,
                     &repository,
                     &expected,
@@ -661,6 +691,7 @@ async fn benchmark_fixture(git: &Path, packed: bool) -> FixtureReport {
     let filesystem =
         std::env::var("CODEGG_GIT_COST_FILESYSTEM").unwrap_or_else(|_| "unspecified".into());
     FixtureReport {
+        operation: operation_label.into(),
         shape: if packed { "packed" } else { "fragmented-loose" }.into(),
         filesystem,
         cold_condition: "unique repository path; POSIX_FADV_DONTNEED advised on each route, but eviction is not guaranteed".into(),
@@ -694,10 +725,12 @@ async fn c002_packed_and_fragmented_cold_warm_git_cost_qualification() {
         Path::new("/usr/bin/time").is_file(),
         "qualified runner must provide GNU time at /usr/bin/time"
     );
-    let reports = vec![
-        benchmark_fixture(&git, true).await,
-        benchmark_fixture(&git, false).await,
-    ];
+    let operations = [("log-1", operation()), ("status-short", status_operation())];
+    let mut reports = Vec::with_capacity(operations.len() * 2);
+    for (label, operation) in &operations {
+        reports.push(benchmark_fixture(&git, true, label, operation).await);
+        reports.push(benchmark_fixture(&git, false, label, operation).await);
+    }
     let git_version = git_output(&git, Path::new("."), &["--version".into()]);
     let git_version = String::from_utf8_lossy(&git_version.stdout)
         .trim()
@@ -706,6 +739,7 @@ async fn c002_packed_and_fragmented_cold_warm_git_cost_qualification() {
         "git": git_version,
         "cold_samples_per_shape": COLD_SAMPLES,
         "warm_samples_per_shape": WARM_SAMPLES,
+        "operations": operations.iter().map(|(label, _)| label).collect::<Vec<_>>(),
         "results": reports,
         "limits": [
             "wall time includes canonical service/launcher overhead",
