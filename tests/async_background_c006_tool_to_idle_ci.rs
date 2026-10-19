@@ -529,6 +529,7 @@ async fn model_facing_ci_watch_reaches_authenticated_idle_resume_without_injecte
                     .to_string(),
                 plan_mode: false,
                 human_shell_promotion_ids: vec![],
+                max_model_tokens: None,
             },
         ))
         .await
@@ -830,6 +831,7 @@ async fn model_facing_background_bash_completes_via_scheduler_without_autonomous
                     .to_string(),
                 plan_mode: false,
                 human_shell_promotion_ids: vec![],
+                max_model_tokens: None,
             },
         ))
         .await
