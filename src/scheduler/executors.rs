@@ -629,6 +629,42 @@ impl SubagentJobExecutor {
             );
         }
     }
+
+    async fn reclaim_terminal_agent_scratch(
+        &self,
+        store: &dyn codegg_core::agent_run::AgentRunStore,
+        run_id: &codegg_core::identity::AgentRunId,
+    ) {
+        let run = match store.get_run(run_id).await {
+            Ok(Some(run)) if run.status.is_terminal() => run,
+            Ok(_) => return,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    ?run_id,
+                    "cannot inspect terminal run for scratch cleanup"
+                );
+                return;
+            }
+        };
+        let task = match store.get_task(&run.task_id).await {
+            Ok(Some(task)) => task,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    ?run_id,
+                    "cannot inspect terminal run owner for scratch cleanup"
+                );
+                return;
+            }
+        };
+        if let Err(error) =
+            crate::scratch::reclaim_agent_run_scratch_dir(&task.originating_session_id, run_id)
+        {
+            tracing::warn!(?error, ?run_id, "terminal agent scratch cleanup deferred");
+        }
+    }
 }
 
 #[async_trait]
@@ -1131,6 +1167,9 @@ impl JobExecutor for SubagentJobExecutor {
                         .await
                     {
                         tracing::error!(?error, run_id = ?run_id, "agent run finish failed (success path)");
+                    } else {
+                        self.reclaim_terminal_agent_scratch(store.as_ref(), run_id)
+                            .await;
                     }
                     if let Some(control) = &self.run_control {
                         if let Err(error) = control.record_terminal(run_id.clone(), match outcome {
@@ -1199,6 +1238,9 @@ impl JobExecutor for SubagentJobExecutor {
                         .await
                     {
                         tracing::error!(?error, run_id = ?run_id, "agent run finish failed (error path)");
+                    } else {
+                        self.reclaim_terminal_agent_scratch(store.as_ref(), run_id)
+                            .await;
                     }
                     if let Some(control) = &self.run_control {
                         let status = if outcome

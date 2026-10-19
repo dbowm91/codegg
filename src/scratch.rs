@@ -186,21 +186,109 @@ pub(crate) fn reclaim_shared_scratch_dir(
     let shared_root = session_root.join("shared");
     let owner = directory_owner(&session_root)?;
     ensure_private_directory(&shared_root, owner)?;
-    let digest = resource_digest("shared-scratch", scratch_id.as_str());
-    let path = shared_root.join(hex_digest(&digest));
-    let canonical_shared_root = std::fs::canonicalize(&shared_root)?;
-    let recovered = recover_reclaim_tombstones(&shared_root, &digest, owner)?;
-    let tombstone = shared_root.join(format!(
-        ".reclaim-{}-{}",
-        hex_digest(&digest),
-        uuid::Uuid::new_v4()
-    ));
+    reclaim_owned_resource_dir(
+        &shared_root,
+        &resource_digest("shared-scratch", scratch_id.as_str()),
+        owner,
+    )
+}
+
+/// Remove an agent run's private scratch after its durable run has reached a
+/// terminal state. The run ID is converted to the same host-owned locator as
+/// allocation; callers never pass a filesystem path.
+#[cfg(any(unix, windows))]
+pub(crate) fn reclaim_agent_run_scratch_dir(
+    session_id: &str,
+    run_id: &codegg_core::identity::AgentRunId,
+) -> Result<bool, ScratchError> {
+    let _guard = SHARED_RECLAIM_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(session_root) = existing_session_scratch_dir(session_id)? else {
+        return Ok(false);
+    };
+    let runs_root = session_root.join("runs");
+    if !runs_root.exists() {
+        return Ok(false);
+    }
+    let owner = directory_owner(&session_root)?;
+    ensure_private_directory(&runs_root, owner)?;
+    reclaim_owned_resource_dir(
+        &runs_root,
+        &resource_digest("agent-run", run_id.as_str()),
+        owner,
+    )
+}
+
+/// Remove all scratch under a deleted session after durable jobs and runs are
+/// terminal. Session transcripts and child Git results live in their own
+/// stores and are not affected.
+#[cfg(any(unix, windows))]
+pub(crate) fn reclaim_deleted_session_scratch_dir(session_id: &str) -> Result<bool, ScratchError> {
+    let _guard = SHARED_RECLAIM_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(session_root) = existing_session_scratch_dir(session_id)? else {
+        return Ok(false);
+    };
+    let sessions_root = session_root
+        .parent()
+        .ok_or_else(|| ScratchError::InvalidPath(session_root.clone()))?;
+    let owner = directory_owner(sessions_root)?;
+    reclaim_owned_resource_dir(sessions_root, &Sha256::digest(session_id.as_bytes()), owner)
+}
+
+fn existing_session_scratch_dir(session_id: &str) -> Result<Option<PathBuf>, ScratchError> {
+    if session_id.is_empty() {
+        return Err(ScratchError::MissingSession);
+    }
+    let digest = Sha256::digest(session_id.as_bytes());
+    let name = hex_digest(&digest);
+    let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
+    let path = cache_root
+        .join(SCRATCH_VENDOR_NAME)
+        .join(SCRATCH_ROOT_NAME)
+        .join("sessions")
+        .join(name);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => session_scratch_dir(session_id).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn reclaim_agent_run_scratch_dir(
+    _session_id: &str,
+    _run_id: &codegg_core::identity::AgentRunId,
+) -> Result<bool, ScratchError> {
+    Err(ScratchError::CleanupUnavailable)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn reclaim_deleted_session_scratch_dir(_session_id: &str) -> Result<bool, ScratchError> {
+    Err(ScratchError::CleanupUnavailable)
+}
+
+#[cfg(any(unix, windows))]
+fn reclaim_owned_resource_dir(
+    parent: &Path,
+    digest: &[u8],
+    owner: impl OwnerCheck,
+) -> Result<bool, ScratchError> {
+    let name = hex_digest(digest);
+    let path = parent.join(&name);
+    let canonical_parent = std::fs::canonicalize(parent)?;
+    let recovered = recover_reclaim_tombstones(parent, digest, owner)?;
+    let tombstone = parent.join(format!(".reclaim-{name}-{}", uuid::Uuid::new_v4()));
     match std::fs::rename(&path, &tombstone) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(recovered),
         Err(error) => return Err(error.into()),
     }
-    validate_and_remove_tombstone(&tombstone, &canonical_shared_root, &digest, owner)?;
+    validate_and_remove_tombstone(&tombstone, &canonical_parent, digest, owner)?;
     Ok(true)
 }
 
@@ -622,6 +710,45 @@ mod tests {
         }
         std::fs::remove_dir_all(first).unwrap();
         std::fs::remove_dir_all(second).unwrap();
+    }
+
+    #[test]
+    fn terminal_run_cleanup_removes_only_its_private_root() {
+        let session_id = format!("scratch-run-cleanup-{}", uuid::Uuid::new_v4());
+        let run_id = codegg_core::identity::AgentRunId::new();
+        let other_run = codegg_core::identity::AgentRunId::new();
+        let run_root = agent_run_scratch_dir(&session_id, &run_id).unwrap();
+        let other_root = agent_run_scratch_dir(&session_id, &other_run).unwrap();
+        std::fs::write(run_root.join("temporary.txt"), "disposable").unwrap();
+        std::fs::write(other_root.join("keep.txt"), "still live").unwrap();
+
+        assert!(reclaim_agent_run_scratch_dir(&session_id, &run_id).unwrap());
+        assert!(!run_root.exists());
+        assert_eq!(
+            std::fs::read_to_string(other_root.join("keep.txt")).unwrap(),
+            "still live"
+        );
+        assert!(!reclaim_agent_run_scratch_dir(&session_id, &run_id).unwrap());
+
+        std::fs::remove_dir_all(other_root).unwrap();
+        let session_root = session_scratch_dir(&session_id).unwrap();
+        std::fs::remove_dir_all(session_root).unwrap();
+    }
+
+    #[test]
+    fn deleted_session_cleanup_reclaims_nested_private_and_shared_roots() {
+        let session_id = format!("scratch-session-cleanup-{}", uuid::Uuid::new_v4());
+        let run_id = codegg_core::identity::AgentRunId::new();
+        let scratch_id = codegg_core::identity::ScratchId::new();
+        let run_root = agent_run_scratch_dir(&session_id, &run_id).unwrap();
+        let shared_root = shared_scratch_dir(&session_id, &scratch_id).unwrap();
+        std::fs::write(run_root.join("run.tmp"), "temporary").unwrap();
+        std::fs::write(shared_root.join("shared.tmp"), "temporary").unwrap();
+
+        assert!(reclaim_deleted_session_scratch_dir(&session_id).unwrap());
+        assert!(!run_root.exists());
+        assert!(!shared_root.exists());
+        assert!(!reclaim_deleted_session_scratch_dir(&session_id).unwrap());
     }
 
     #[cfg(any(unix, windows))]

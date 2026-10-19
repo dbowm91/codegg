@@ -660,14 +660,43 @@ impl CoreDaemon {
                         message: "Core client missing database pool".to_string(),
                     });
                 };
-                let store = crate::session::SessionStore::new(pool);
+                let store = crate::session::SessionStore::new(pool.clone());
                 let result = if permanent {
                     store.delete(&session_id).await.map(|_| ())
                 } else {
                     store.soft_delete(&session_id).await.map(|_| ())
                 };
                 match result {
-                    Ok(()) => Ok(CoreResponse::Ack),
+                    Ok(()) => {
+                        // Keep scratch recoverable during the undo window, then
+                        // wait for durable runs and jobs to release their leases.
+                        let cleanup_session_id = session_id.clone();
+                        let cleanup_pool = pool.clone();
+                        let cleanup_runs = self.deps.agent_run_store.clone();
+                        let cleanup_jobs = self.deps.job_store.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                                match reclaim_deleted_session_scratch_when_idle(
+                                    &cleanup_session_id,
+                                    &cleanup_pool,
+                                    cleanup_runs.as_ref(),
+                                    cleanup_jobs.as_ref(),
+                                )
+                                .await
+                                {
+                                    Ok(true) => break,
+                                    Ok(false) => {}
+                                    Err(error) => tracing::warn!(
+                                        session_id = %cleanup_session_id,
+                                        %error,
+                                        "deleted session scratch cleanup retry deferred"
+                                    ),
+                                }
+                            }
+                        });
+                        Ok(CoreResponse::Ack)
+                    }
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_delete_failed".to_string(),
                         message: e.to_string(),
@@ -1156,4 +1185,53 @@ impl CoreDaemon {
             }
         }
     }
+}
+
+/// Returns `true` when cleanup completed or the session was restored, and
+/// `false` while an admitted run/job still owns the session scratch.
+async fn reclaim_deleted_session_scratch_when_idle(
+    session_id: &str,
+    pool: &sqlx::SqlitePool,
+    runs: &dyn codegg_core::agent_run::AgentRunStore,
+    jobs: &dyn codegg_core::jobs::JobStore,
+) -> Result<bool, String> {
+    // Acquire SQLite's writer lock and verify the row is still deleted before
+    // touching the tree. A concurrent restore either wins first (0 rows) or
+    // waits until the atomic tombstone cleanup has committed.
+    let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+    let claimed = sqlx::query(
+        "UPDATE session SET time_deleted = time_deleted WHERE id = ? AND time_deleted IS NOT NULL",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await.map_err(|error| error.to_string())?;
+        return Ok(true);
+    }
+    let run_records = runs
+        .list_by_session(session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if run_records.iter().any(|run| !run.status.is_terminal()) {
+        tx.rollback().await.map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    let job_records = jobs
+        .list_job_records(codegg_core::jobs::JobStoreQuery {
+            session_id: Some(session_id.to_string()),
+            limit: Some(2_000),
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    if job_records.len() == 2_000 || job_records.iter().any(|job| !job.state.is_terminal()) {
+        tx.rollback().await.map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    crate::scratch::reclaim_deleted_session_scratch_dir(session_id)
+        .map_err(|error| error.to_string())?;
+    tx.commit().await.map_err(|error| error.to_string())?;
+    Ok(true)
 }

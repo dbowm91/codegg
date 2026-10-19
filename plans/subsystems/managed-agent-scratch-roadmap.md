@@ -1,6 +1,6 @@
 # Managed Agent Scratch Spaces Roadmap
 
-Status: conditionally closed — M001–M003 closure records accepted; Linux/Windows native qualification and non-Unix shared cleanup remain explicitly unqualified.
+Status: active — M004 closes private session/agent scratch reclamation. M003 remains conditionally closed pending Linux/Windows native qualification.
 
 Planning baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (main inspected 2026-10-16).
 
@@ -81,6 +81,9 @@ M002 — delegated private scratch + explicit shared ScratchId grants [closed]
        |
        v
 M003 — actionable permission hints, cleanup hardening/qualification [conditionally closed: `plans/closure/managed-agent-scratch/003-status.md`]
+       |
+       v
+M004 — session and agent-private scratch reclamation [active: `plans/implementation/managed-agent-scratch/004-private-scratch-reclamation.md`]
 ```
 
 M001 is an end-to-end single-agent vertical slice, not merely a directory allocation type. M002 is a separate durable delegation contract with direct-parent and ownership checks. M003 qualifies security/restart/diagnostic behavior and closes the workstream; correctness blockers found earlier must be corrected *in that milestone*, not deferred as polish.
@@ -103,9 +106,16 @@ Exit: two child runs get distinct private roots, a parent can create/grant one s
 
 ### M003 — Permission recovery, cleanup and cross-platform qualification
 
-Class: polish / invariant hardening. Status: **active; M002 closed**.
+Class: polish / invariant hardening. Status: **conditionally closed**.
 Plan: `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md`.
 Exit: structured path denial / approval-needed results suggest authorized scratch but never rewrite a required path, explicit operator Deny remains authoritative, garbage collection is demonstrably safe under crash/race/symlink cases, Linux/macOS/Windows support claims are evidence-qualified.
+
+### M004 — Session and agent-private scratch reclamation
+
+Class: invariant / lifecycle correctness. Status: **active**.
+Plan: `plans/implementation/managed-agent-scratch/004-private-scratch-reclamation.md`.
+Dependencies: M001 session ownership, M002 durable run/job leases, M003 validated tombstone cleanup.
+Exit: terminal delegated runs reclaim only their private scratch; deleted sessions reclaim their full scratch tree only after all durable runs/jobs are terminal; busy cleanup retries and restored sessions retain their data. Durable transcripts, run results, and Git worktrees remain separate. M003's native-platform condition is unchanged.
 
 ## 8. Cross-cutting requirements
 
