@@ -455,8 +455,10 @@ async fn program_registry_uses_configured_search_runtime() {
         result.value.terminal_status,
         ToolTerminalStatus::InfrastructureError
     );
+    // Same host-scoped wording as the dedicated disabled-backend test
+    // below: the refusal names the backend the tool requires.
     assert!(
-        result.value.display.contains("disabled"),
+        result.value.display.contains("requires the eggsearch backend"),
         "unexpected: {}",
         result.value.display
     );
@@ -663,8 +665,15 @@ async fn disabled_backend_rejects_repository_search() {
         result.value.terminal_status,
         ToolTerminalStatus::InfrastructureError
     );
+    // The host-scoped managed retrieval path refuses a non-Eggsearch
+    // backend with a dedicated message, so a `Disabled` backend is reported
+    // as "the eggsearch backend is required" rather than by naming the
+    // disabled setting. The refusal is unchanged in kind — an
+    // infrastructure error that yields no results and names the backend the
+    // tool needs — and the message stays distinct from the
+    // eggsearch-but-unavailable wording asserted above.
     assert!(
-        result.value.display.contains("disabled"),
+        result.value.display.contains("requires the eggsearch backend"),
         "unexpected: {}",
         result.value.display
     );
