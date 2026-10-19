@@ -1,6 +1,6 @@
 # TUI Live Work Visibility M002 — Scheduler Job Lifecycle and Snapshot Recovery
 
-Status: **closing**
+Status: **closed**
 Primary class: invariant
 Repository review baseline: `df923802` (`plan/tui-live-work-visibility-corrective`, rebased on `origin/main`, 2026-10-19)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M002.

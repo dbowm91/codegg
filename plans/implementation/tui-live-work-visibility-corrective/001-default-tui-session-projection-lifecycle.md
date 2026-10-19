@@ -1,6 +1,6 @@
 # TUI Live Work Visibility M001 — Production Session Projection Lifecycle
 
-Status: **closing**
+Status: **closed**
 Primary class: infrastructure
 Repository review baseline: `df923802` (`plan/tui-live-work-visibility-corrective`, rebased on `origin/main`, 2026-10-19)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M001.
