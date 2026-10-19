@@ -2172,6 +2172,7 @@ impl TaskTool {
                     max_tool_calls: None,
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
+                    workspace_id: self.workspace_id.clone(),
                     workspace_locks: self.workspace_locks.clone(),
                     parent_sandbox_profile: Some(parent_sandbox),
                     // Inherit parent by default; worker narrows for

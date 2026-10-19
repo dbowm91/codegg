@@ -421,9 +421,9 @@ impl AgentLoop {
             accepted_call_ordinal,
         );
         let path_policy_fingerprint = self
-            .workspace_service_lease
+            .workspace_path_policy
             .as_ref()
-            .map(|lease| lease.path_policy().authority_fingerprint());
+            .map(|policy| policy.authority_fingerprint());
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),

@@ -94,6 +94,14 @@ pub struct SubAgentRequest {
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    /// The daemon-owned workspace identity this child runs under.
+    ///
+    /// A tool call is authorized against a workspace identity and a path
+    /// policy; a child that carries neither has every tool refused with
+    /// "verified tool authority is missing workspace identity". The
+    /// scheduler binds the workspace the job was admitted for, so the child
+    /// inherits it rather than inventing one.
+    pub workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     /// Shared with the owning turn when the child runs in the same workspace.
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     /// M005: parent turn sandbox ceiling (`None` = pre-M005 default
@@ -1515,7 +1523,7 @@ async fn execute_agent_task(
         mcp_service,
         pool,
         std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
-        workspace_root,
+        workspace_root.clone(),
         subagent_session_id,
     );
     if let Some(run_id) = request.run_id.as_ref() {
@@ -1568,6 +1576,19 @@ async fn execute_agent_task(
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }
+    // A delegated child holds no workspace services lease, so it would
+    // otherwise reach the broker with no workspace identity and no path
+    // policy, and have every tool call refused with "verified tool
+    // authority is missing workspace ...". Inherit the identity the
+    // scheduler bound this job to, and install the policy for the root the
+    // executor bound this run to. When that root is the workspace's
+    // canonical root this is the same policy the parent turn holds.
+    if let Some(workspace_id) = request.workspace_id.clone() {
+        agent_loop.set_workspace_id(workspace_id);
+    }
+    agent_loop.set_workspace_path_policy(
+        codegg_core::workspace_services::WorkspacePathPolicy::for_root(workspace_root),
+    );
     // M005: child loop carries the narrowed sandbox ceiling; approval
     // stays Interactive (never broader than the parent without explicit
     // narrowing through the snapshot ceiling).
@@ -1885,6 +1906,7 @@ mod admission_tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,

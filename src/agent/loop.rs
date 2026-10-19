@@ -109,6 +109,15 @@ pub struct AgentLoop {
     /// lock table while this loop is still executing.
     pub(super) workspace_service_lease:
         Option<codegg_core::workspace_services::WorkspaceServicesLease>,
+    /// The workspace path policy this loop's tool calls are authorized under.
+    ///
+    /// A parent turn takes this from its workspace services lease. A
+    /// delegated child loop has no lease of its own, so it installs the
+    /// policy for the root the executor bound it to. Without it every tool
+    /// call fails closed with "verified tool authority is missing workspace
+    /// path policy".
+    pub(super) workspace_path_policy:
+        Option<Arc<codegg_core::workspace_services::WorkspacePathPolicy>>,
     pub(super) checkpoint_batch_seq: u64,
     pub(super) recent_findings: Vec<crate::security::finding::SecurityFinding>,
     /// M006: equivalent-denial backstop counts keyed by
@@ -430,6 +439,7 @@ impl AgentLoop {
             workspace_id: None,
             workspace_locks: None,
             workspace_service_lease: None,
+            workspace_path_policy: None,
             recent_findings: Vec::new(),
             original_user_prompt: None,
             current_user_prompt: None,
@@ -716,7 +726,24 @@ impl AgentLoop {
         lease: codegg_core::workspace_services::WorkspaceServicesLease,
     ) {
         self.workspace_locks = Some(lease.locks());
+        self.workspace_path_policy = Some(lease.path_policy().clone());
         self.workspace_service_lease = Some(lease);
+    }
+
+    /// Install the workspace path policy this loop's tool calls are
+    /// authorized under.
+    ///
+    /// A delegated child loop holds no workspace services lease of its own,
+    /// so it installs the policy for the root its executor bound it to. The
+    /// policy must be present: the broker refuses a call whose execution
+    /// context carries no path policy, and that refusal denies the child
+    /// every tool — including the ones that write into its own scratch
+    /// space.
+    pub fn set_workspace_path_policy(
+        &mut self,
+        policy: Arc<codegg_core::workspace_services::WorkspacePathPolicy>,
+    ) {
+        self.workspace_path_policy = Some(policy);
     }
 
     /// Install a shared workspace lock table for a child loop whose owning
