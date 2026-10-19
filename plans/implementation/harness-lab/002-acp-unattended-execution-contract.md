@@ -1,6 +1,6 @@
 # Developer Harness Lab M002 — ACP Unattended Execution and Truthful Terminal Contract
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (`main`, 2026-10-18). Refresh source before implementing.
 

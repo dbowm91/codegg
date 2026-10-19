@@ -1,6 +1,6 @@
 # Developer Harness Lab M001 — Concurrent Daemon Subject Lanes
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `f37840ef5fca36d44b35daec5da6b26cd049a3ee` (`main`, reviewed 2026-10-18). Implementation must refresh against current branch head.
 

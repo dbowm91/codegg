@@ -1,8 +1,12 @@
 # ACP v1 Adapter
 
 `codegg acp` is a stdio Agent Client Protocol v1 agent. It is a presentation
-adapter, not an execution mode: the singleton daemon owns sessions, turns,
-providers, permissions, cancellation, and durable projection replay.
+adapter, not an execution mode: the daemon owns sessions, turns, providers,
+permissions, cancellation, and durable projection replay. With no policy flags
+the adapter leaves the daemon preference unchanged. Explicit unattended
+overrides use the canonical `RuntimePolicySet` and `ExecutionPolicyGet`
+contracts and require `CODEGG_DAEMON_HOME`; they never silently target the
+default user daemon.
 
 ## Purpose
 
@@ -25,18 +29,30 @@ state and execution live in the daemon.
 1. Reads JSON-RPC frames from stdin line-by-line (BufReader).
 2. Responds to `initialize` with protocol version 1, agent info, and
    capabilities (text prompts only; no image/audio/embeddedContext).
-3. Daemon attachment is **lazy**: `ensure_client()` (line 301) calls
+3. Daemon attachment is **lazy**: `ensure_client()` calls
    `connect_or_start_daemon()` on first session operation. Initialization
    and diagnostics remain usable when the daemon is unavailable.
+4. Explicit policy flags require both `--approval-mode yolo` and
+   `--sandbox full-host|workspace-write`. The adapter holds an OS advisory
+   lease for the lifetime of the connection, applies policy through the
+   daemon, and reads back the effective snapshot before admitting a session
+   request. A narrower or unavailable policy fails closed. Harness trials
+   use one ACP client per private daemon; external policy writers are outside
+   that lease and must not share the trial daemon.
 
 ### Session Lifecycle
 
+For each new or loaded native session, the adapter subscribes to the daemon's
+session-scoped core event stream as well as its projection stream. The native
+subscription carries correlated `TurnStarted`/terminal events; without it the
+ACP prompt could submit work successfully yet wait forever for completion.
+
 | Method | Behavior |
 |--------|----------|
-| `session/new` | Requires absolute, existing `cwd`. Calls `CoreRequest::SessionCreate`. Subscribes to projection events for the session. |
+| `session/new` | Requires absolute, existing `cwd`. Registers workspace and project, then calls `CoreRequest::SessionCreate`. Subscribes to projection events for the session. |
 | `session/load` | Loads an existing session via `CoreRequest::SessionLoad`, subscribes, and replays the snapshot as `session/update` notifications. |
 | `session/resume` | Same as `session/load` but skips snapshot replay. |
-| `session/prompt` | Submits a turn via `CoreRequest::TurnSubmit`. Only one active prompt per connection. |
+| `session/prompt` | Submits a turn via `CoreRequest::TurnSubmit`. Only one active prompt per connection. Explicit-policy trials require a `model` and namespaced `codeggAgent`. |
 | `session/cancel` | Sets cancel intent; sends `CoreRequest::TurnCancel` once a turn is bound. |
 | `session/close` | Cancels active turn, removes projection subscription, suppresses late updates. Does NOT destroy the native session. |
 | `shutdown` | Returns null result and breaks the event loop. |
@@ -74,16 +90,20 @@ notifications:
 | `ProjectionEvent::ToolStarted` | `session/update` with `tool_call` |
 | `ProjectionEvent::ToolCompleted` | `session/update` with `tool_call_update` |
 | `CoreEvent::TurnStarted` | Turn binding only (no notification) |
-| `CoreEvent::TurnCompleted` / `TurnFailed` | Terminal response |
+| `CoreEvent::TurnCompleted` | ACP `end_turn`, or `cancelled` when this client requested cancellation |
+| `CoreEvent::TurnFailed` | JSON-RPC error `-32010` with bounded type and session/turn correlation |
 
 Reasoning, private, and unknown projection events are omitted.
 
 ### Terminal Detection
 
-`event_is_terminal()` (line 502) checks for `TurnCompleted` or `TurnFailed`
-on both `CoreEvent` and `ProjectionEvent` variants, matching the bound turn
-identity. The `terminal_reason()` function (line 515) returns `"end_turn"`
-for completions and `"cancelled"` for failures.
+`event_is_terminal()` checks for `TurnCompleted` or `TurnFailed` on both
+`CoreEvent` and `ProjectionEvent` variants, matching the bound turn identity.
+Only confirmed completion maps to `end_turn`; a client-requested cancellation
+maps a completed terminal event to `cancelled`. Native failure maps to a
+standard JSON-RPC error and never fabricates cancellation or success.
+An unanswered native `PermissionPending` during a headless turn is cancelled
+and returned as JSON-RPC error `-32011` with bounded session/turn correlation.
 
 ### Snapshot Replay
 
@@ -124,9 +144,9 @@ The `run()` function (line 79) ensures on exit that:
 | `ACP_PROTOCOL_VERSION` | `1` | `src/acp.rs:22` |
 | `MAX_FRAME_BYTES` | `1 MiB` | `src/acp.rs:23` |
 
-The adapter reads `Config::load()` for agent resolution (line 359). No
-ACP-specific config keys exist. The `model` parameter in `session/prompt`
-defaults to `agent::EMERGENCY_DEFAULT_MODEL`.
+The adapter reads the resolved config for agent selection. No ACP-specific
+config keys exist. The `model` parameter in `session/prompt` defaults to
+`agent::EMERGENCY_DEFAULT_MODEL`.
 
 ## Invariants & Gotchas
 
@@ -153,6 +173,7 @@ defaults to `agent::EMERGENCY_DEFAULT_MODEL`.
 ```bash
 cargo test -p codegg --lib acp        # unit tests for ActivePrompt, helpers
 cargo test -p codegg --lib acp::tests  # lifecycle, cancellation, terminal detection
+python3 -m unittest discover -s dev/harness_lab/tests -v
 ```
 
 Test coverage (inline, `src/acp.rs:599-736`):
@@ -162,6 +183,8 @@ Test coverage (inline, `src/acp.rs:599-736`):
   binding and stale rejection
 - `cancellation_and_close_are_pending_and_idempotent` — cancel/close
   semantics
+- `terminal_outcome_does_not_mislabel_failure_as_cancellation` — native
+  failure is distinct from successful completion and requested cancellation
 - `rejects_relative_and_missing_cwd` — cwd validation
 - `accepts_text_prompt_and_rejects_non_text` — prompt block type check
 - `rejects_oversized_prompt` — 1 MiB frame limit
