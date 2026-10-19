@@ -118,13 +118,17 @@ impl Tool for CodeSearchTool {
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
         let request = Self::request_input(input)?;
         let result = self
             .search_runtime
-            .dispatch_repo_search_structured(&request)
+            .dispatch_repo_search_host_scoped(
+                &request,
+                crate::tool::repo_search::RepoSearchTool::authorized_local_root(ctx.as_ref())
+                    .as_deref(),
+            )
             .await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = self

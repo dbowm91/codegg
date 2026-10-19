@@ -15,6 +15,27 @@ pub struct RepoSearchTool {
 }
 
 impl RepoSearchTool {
+    pub(crate) fn authorized_local_root(
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Option<std::path::PathBuf> {
+        let ctx = ctx?;
+        if ctx.decision_outcome.as_deref() != Some("allowed")
+            || ctx.decision_id.as_deref().is_none_or(str::is_empty)
+            || ctx.session_id.as_deref().is_none_or(str::is_empty)
+            || ctx
+                .workspace_path_policy_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || ctx
+                .workspace_path_policy_revision
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return None;
+        }
+        let root = ctx.cwd.canonicalize().ok()?;
+        root.is_dir().then_some(root)
+    }
     /// Build the tool with an explicit runtime-owned search/MCP context.
     /// Registries constructed via `ToolRegistry::with_options` always use
     /// this; `Default` yields an isolated default context with no shared
@@ -166,12 +187,15 @@ impl Tool for RepoSearchTool {
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
         let result = self
             .search_runtime
-            .dispatch_repo_search_structured(&input)
+            .dispatch_repo_search_host_scoped(
+                &input,
+                Self::authorized_local_root(ctx.as_ref()).as_deref(),
+            )
             .await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = self

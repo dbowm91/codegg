@@ -21,7 +21,7 @@ const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RUNFILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_NOTICE_BYTES: u64 = 1024 * 1024;
 const CHECKSUM_LIMIT: usize = 64 * 1024;
-const PINNED_EGGSEARCH_VERSION: &str = "0.4.3";
+const PINNED_EGGSEARCH_VERSION: &str = "0.4.4";
 const SUPPORTED_TARGETS: [&str; 4] = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -849,9 +849,9 @@ mod tests {
     fn version_probe_requires_exact_identity_and_version_token() {
         assert!(version_probe_matches("CodeGG v2.3.4\n", "codegg", "2.3.4"));
         assert!(version_probe_matches(
-            "eggsearch 0.4.3\n",
+            "eggsearch 0.4.4\n",
             "eggsearch",
-            "0.4.3"
+            "0.4.4"
         ));
         assert!(!version_probe_matches(
             "notcodegg 2.3.4\n",

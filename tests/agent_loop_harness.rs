@@ -3,7 +3,9 @@ use codegg::agent::r#loop::AgentLoop;
 use codegg::agent::Agent;
 use codegg::bus::events::AppEvent;
 use codegg::bus::global::GlobalEventBus;
-use codegg::config::schema::{Config, ServerConfig};
+use codegg::config::schema::{
+    Config, EggsearchConfig, SearchBackendConfig, SearchConfig, ServerConfig,
+};
 use codegg::context::InMemoryArtifactStore;
 use codegg::error::AppError;
 use codegg::permission::{PermissionChecker, PermissionLevel, PermissionRuleset};
@@ -835,6 +837,236 @@ async fn build_test_agent_loop_with_permissions(
     );
     attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
     agent_loop
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "run only via scripts/test-eggsearch-pair.sh with the pinned Eggsearch child"]
+async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
+    use codegg::search_backend::bootstrap::bootstrap_search_runtime;
+    use codegg::tool::repo_search::RepoSearchTool;
+
+    let binary = std::env::var("CODEGG_EGGSEARCH_BIN")
+        .expect("pair script supplies the immutable Eggsearch binary");
+    let private = tempfile::tempdir().expect("private pair test directory");
+    let config_root = private.path().join("config");
+    let egg_config_dir = config_root.join("eggsearch");
+    let config_path = egg_config_dir.join("config.toml");
+    let child_stderr = private.path().join("eggsearch.stderr");
+    let launcher = private.path().join("eggsearch-launcher.sh");
+    std::fs::create_dir_all(&egg_config_dir).expect("private Eggsearch config directory");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\nexec \"$CODEGG_EGGSEARCH_REAL_BIN\" \"$@\" 2>\"$CODEGG_EGGSEARCH_STDERR\"\n",
+    )
+    .expect("write managed Eggsearch launcher");
+    use std::os::unix::fs::PermissionsExt;
+    let mut launcher_permissions = std::fs::metadata(&launcher)
+        .expect("launcher metadata")
+        .permissions();
+    launcher_permissions.set_mode(0o700);
+    std::fs::set_permissions(&launcher, launcher_permissions).expect("make launcher executable");
+    let roots = [
+        private.path().join("workspace-a"),
+        private.path().join("workspace-b"),
+    ];
+    let markers = [
+        format!("AGENT_LOOP_SCOPE_A_{}", std::process::id()),
+        format!("AGENT_LOOP_SCOPE_B_{}", std::process::id()),
+    ];
+    for (root, marker) in roots.iter().zip(markers.iter()) {
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("workspace repository directory");
+        std::fs::write(repo.join("scope_marker.rs"), marker).expect("write root-specific marker");
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .expect("git is available for the private repository fixture");
+        assert!(status.success(), "initialize private repository fixture");
+    }
+    let escaped_root = roots[0]
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    std::fs::write(
+        &config_path,
+        format!(
+            "[search]\nmode = \"off\"\ndefault_max_results = 5\nmax_results_cap = 5\nmax_query_chars = 256\ntimeout_ms = 1000\ndefault_providers = [\"duckduckgo\"]\n\n[search.providers]\nduckduckgo = true\n\n[fetch]\nenabled = false\n\n[local]\nenabled = true\nroots = [\"{escaped_root}\"]\nrespect_gitignore = true\n"
+        ),
+    )
+    .expect("write private offline Eggsearch config");
+    let mut child_env = std::collections::HashMap::new();
+    for (name, path) in [
+        ("HOME", private.path().join("home")),
+        ("XDG_CONFIG_HOME", config_root.clone()),
+        ("XDG_DATA_HOME", private.path().join("data")),
+        ("XDG_CACHE_HOME", private.path().join("cache")),
+    ] {
+        std::fs::create_dir_all(&path).expect("create isolated child environment directory");
+        child_env.insert(name.to_string(), path.to_string_lossy().into_owned());
+    }
+    child_env.insert("CODEGG_EGGSEARCH_REAL_BIN".into(), binary);
+    child_env.insert(
+        "CODEGG_EGGSEARCH_STDERR".into(),
+        child_stderr.to_string_lossy().into_owned(),
+    );
+    let config = Config {
+        search: Some(SearchConfig {
+            backend: Some(SearchBackendConfig::Eggsearch),
+            eggsearch: Some(EggsearchConfig {
+                command: Some(launcher.to_string_lossy().into_owned()),
+                args: Some(vec![
+                    "--config".into(),
+                    config_path.to_string_lossy().into_owned(),
+                    "mcp".into(),
+                    "stdio".into(),
+                ]),
+                env: Some(child_env),
+                timeout_ms: Some(30_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (runtime, report) = bootstrap_search_runtime(&config).await;
+    assert!(
+        report.connected,
+        "managed Eggsearch child connected: {:?}; stderr={}",
+        report.connection_error,
+        std::fs::read_to_string(&child_stderr).unwrap_or_default()
+    );
+
+    async fn run_search(
+        root: &std::path::Path,
+        session_id: &str,
+        marker: &str,
+        runtime: codegg::search_backend::SearchRuntimeContext,
+    ) -> String {
+        let provider = ScriptedProvider::new(vec![
+            vec![
+                ChatEvent::ToolCall(ToolCall {
+                    id: format!("repo-search-{session_id}").into(),
+                    name: String::from("repo_search").into(),
+                    arguments: serde_json::json!({
+                        "query": marker,
+                        "include_local": true,
+                        "max_results": 5
+                    }),
+                }),
+                ChatEvent::Finish {
+                    stop_reason: String::from("tool_calls").into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                ChatEvent::TextDelta(String::from("search complete").into()),
+                ChatEvent::Finish {
+                    stop_reason: String::from("stop").into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ]);
+        let mut registry = ToolRegistry::new();
+        registry.register(RepoSearchTool::with_search_runtime(runtime));
+        let agents = vec![Agent {
+            git_read_only: true,
+            name: "build".into(),
+            role: None,
+            description: "Pinned Eggsearch pair qualification".into(),
+            mode: codegg::agent::AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: std::collections::HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }];
+        let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        });
+        let mut agent_loop = AgentLoop::new(
+            agents,
+            Box::new(provider.clone()),
+            permissions,
+            registry,
+            Config::default(),
+            None,
+            None,
+            Arc::new(InMemoryArtifactStore::new()),
+            root.to_path_buf(),
+            session_id.to_string(),
+        );
+        attach_test_workspace_authority(&mut agent_loop, root).await;
+        agent_loop
+            .run(make_chat_request("search the attached workspace"))
+            .await
+            .expect("ordinary AgentLoop tool call completes");
+        let requests = provider.get_requests().await;
+        let tool_output = requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .find_map(|message| match message {
+                Message::Tool { content, .. } if content.contains("providers_queried") => {
+                    Some(content.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("model-visible repo_search result was returned through the broker");
+        tool_output
+    }
+
+    let runtime_a = runtime.clone();
+    let runtime_b = runtime.clone();
+    let (output_a, output_b) = tokio::join!(
+        run_search(&roots[0], "pair-session-a", &markers[0], runtime_a),
+        run_search(&roots[1], "pair-session-b", &markers[1], runtime_b),
+    );
+    let output_a = output_a;
+    let output_b = output_b;
+    assert!(
+        output_a.contains(&markers[0]),
+        "AgentLoop A missed its root marker: {output_a}"
+    );
+    assert!(
+        !output_a.contains(&markers[1]),
+        "AgentLoop A received root B bytes: {output_a}"
+    );
+    assert!(
+        output_b.contains(&markers[1]),
+        "AgentLoop B missed its root marker: {output_b}"
+    );
+    assert!(
+        !output_b.contains(&markers[0]),
+        "AgentLoop B received root A bytes: {output_b}"
+    );
+
+    let output_a_again = run_search(
+        &roots[0],
+        "pair-session-a-switched-back",
+        &markers[0],
+        runtime,
+    )
+    .await;
+    assert!(
+        output_a_again.contains(&markers[0]),
+        "workspace A lost scope after switching away"
+    );
+    assert!(
+        !output_a_again.contains(&markers[1]),
+        "workspace B leaked after switching back"
+    );
 }
 
 /// Build test AgentLoop with custom config for testing config-dependent behavior.

@@ -2,9 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-EXPECTED_VERSION="0.4.3"
-EXPECTED_COMMIT="5e7b853e7eebf29c58f84959805c8774279d7ea4"
-EXPECTED_TAG="v0.4.3"
+EXPECTED_VERSION="0.4.4"
+EXPECTED_COMMIT="32f48bb57a43274d763c7f9ba919eab84d125edc"
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codegg-eggsearch-pair.XXXXXX")"
 SOURCE_ROOT=""
 cleanup() {
@@ -30,24 +29,24 @@ fi
 
 if [[ -n "${CODEGG_EGGSEARCH_SOURCE:-}" ]]; then
     source_root="$(cd "$CODEGG_EGGSEARCH_SOURCE" && pwd -P)"
-    tag_commit="$(git -C "$source_root" rev-parse "refs/tags/$EXPECTED_TAG^{commit}")"
-    [[ "$tag_commit" == "$EXPECTED_COMMIT" ]] || {
-        printf 'error: %s resolves to %s, expected immutable commit %s\n' "$EXPECTED_TAG" "$tag_commit" "$EXPECTED_COMMIT" >&2
+    source_commit="$(git -C "$source_root" rev-parse "$EXPECTED_COMMIT^{commit}")"
+    [[ "$source_commit" == "$EXPECTED_COMMIT" ]] || {
+        printf 'error: Eggsearch source revision resolves to %s, expected immutable commit %s\n' "$source_commit" "$EXPECTED_COMMIT" >&2
         exit 2
     }
     SOURCE_ROOT="$TEMP_ROOT/eggsearch-source"
     mkdir -p "$SOURCE_ROOT"
     git -C "$source_root" archive "$EXPECTED_COMMIT" | tar -x -C "$SOURCE_ROOT"
-    printf 'building eggsearch %s from immutable %s (%s), with Cargo offline\n' "$EXPECTED_VERSION" "$EXPECTED_TAG" "$EXPECTED_COMMIT"
-    run_stage source_build env CARGO_NET_OFFLINE=true cargo build --locked --release --manifest-path "$SOURCE_ROOT/Cargo.toml" \
+    printf 'building eggsearch %s from immutable commit %s, with Cargo offline\n' "$EXPECTED_VERSION" "$EXPECTED_COMMIT"
+    run_stage source_build cargo build --offline --locked --release --manifest-path "$SOURCE_ROOT/Cargo.toml" \
         --target-dir "$TEMP_ROOT/eggsearch-target" --bin eggsearch || exit $?
     CODEGG_EGGSEARCH_BIN="$TEMP_ROOT/eggsearch-target/release/eggsearch"
-    CODEGG_EGGSEARCH_TAG="$EXPECTED_TAG"
+    CODEGG_EGGSEARCH_TAG="commit:$EXPECTED_COMMIT"
 elif [[ -n "${CODEGG_EGGSEARCH_BIN:-}" ]]; then
     CODEGG_EGGSEARCH_BIN="$(cd "$(dirname "$CODEGG_EGGSEARCH_BIN")" && pwd -P)/$(basename "$CODEGG_EGGSEARCH_BIN")"
     CODEGG_EGGSEARCH_TAG="v$EXPECTED_VERSION (binary-supplied)"
 else
-    printf '%s\n' "error: set CODEGG_EGGSEARCH_BIN to an explicit binary or CODEGG_EGGSEARCH_SOURCE to a checkout containing the immutable v0.4.3 tag" >&2
+    printf '%s\n' "error: set CODEGG_EGGSEARCH_BIN to an explicit binary or CODEGG_EGGSEARCH_SOURCE to a checkout containing immutable Eggsearch commit $EXPECTED_COMMIT" >&2
     exit 2
 fi
 export CODEGG_EGGSEARCH_BIN CODEGG_EGGSEARCH_TAG
@@ -91,6 +90,7 @@ export HTTP_PROXY=http://127.0.0.1:9
 export http_proxy=http://127.0.0.1:9
 export CODEGG_PAIR_PARENT_SECRET_SENTINEL=parent-only-test-sentinel
 cargo test -p codegg --test eggsearch_pair_compat -- --ignored --exact pinned_eggsearch_process_pair_is_compatible_offline --nocapture
+run_stage agent_loop_scoped_test cargo test -p codegg --test agent_loop_harness -- --ignored --exact pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root --nocapture
 unset BRAVE_API_KEY HTTP_PROXY http_proxy CODEGG_PAIR_PARENT_SECRET_SENTINEL
 run_stage verify_quick scripts/verify.sh quick
 

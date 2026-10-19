@@ -19,9 +19,9 @@
 use std::path::{Path, PathBuf};
 
 /// Pinned upstream eggsearch version carried as `codegg-eggsearch`.
-pub const PINNED_EGGSEARCH_VERSION: &str = "0.4.3";
-/// Immutable upstream release commit for the managed sidecar contract.
-pub const PINNED_EGGSEARCH_COMMIT: &str = "5e7b853e7eebf29c58f84959805c8774279d7ea4";
+pub const PINNED_EGGSEARCH_VERSION: &str = "0.4.4";
+/// Immutable upstream source revision for the managed sidecar contract.
+pub const PINNED_EGGSEARCH_COMMIT: &str = "32f48bb57a43274d763c7f9ba919eab84d125edc";
 /// Upstream eggsearch source for provenance diagnostics.
 pub const PINNED_EGGSEARCH_SOURCE: &str = "https://github.com/eggstack/eggsearch";
 /// In-process eggsact library baseline (no executable is ever resolved).
@@ -238,7 +238,7 @@ pub fn describe_sibling(name: &str) -> SiblingState {
 }
 
 /// Probe `codegg-eggsearch --version` with a bounded blocking spawn.
-/// Returns the raw first line on success (e.g. `eggsearch 0.4.3`).
+/// Returns the raw first line on success (e.g. `eggsearch 0.4.4`).
 pub fn probe_eggsearch_version(sidecar: &Path) -> Result<String, String> {
     let output = std::process::Command::new(sidecar)
         .arg("--version")
@@ -591,10 +591,10 @@ mod tests {
     fn version_check_accepts_pin_and_rejects_drift() {
         assert_eq!(
             PINNED_EGGSEARCH_COMMIT,
-            "5e7b853e7eebf29c58f84959805c8774279d7ea4"
+            "32f48bb57a43274d763c7f9ba919eab84d125edc"
         );
-        assert!(check_eggsearch_version_output("eggsearch 0.4.3").is_ok());
-        assert!(check_eggsearch_version_output("eggsearch 0.4.30").is_err());
+        assert!(check_eggsearch_version_output("eggsearch 0.4.4").is_ok());
+        assert!(check_eggsearch_version_output("eggsearch 0.4.40").is_err());
         assert!(check_eggsearch_version_output("eggsearch 0.4.2").is_err());
         assert!(check_eggsearch_version_output("something-else 0.4.1").is_err());
     }

@@ -67,7 +67,7 @@ C004 task state | independent; task/run contract and profile config already in-t
 C005 verify | independent; existing Cargo verifier and project testing policy.
 C006 batch admission | independent of C001–C005 for implementation; only batch-local bounded admission.
 C007 qualification/closure | hard on strict C001–C006 closure; C002 still blocks despite C008 being ready. C008 strict closure enables C002 to finish its outstanding capability evidence; only strict C002 closure permits C007.
-C008 host-scoped shared Eggsearch | ready; no new hard dependency beyond the existing closed broker authority; interface work inside one CodeGG-managed stdio child and pinned Eggsearch revision. CodeGG authorizes; Eggsearch enforces selected root/file containment. A public multi-client authority protocol is NOT authorized.
+C008 host-scoped shared Eggsearch | active implementation; no new hard dependency beyond the existing closed broker authority; interface work inside one CodeGG-managed stdio child and pinned Eggsearch revision. CodeGG authorizes; Eggsearch enforces selected root/file containment. A public multi-client authority protocol is NOT authorized.
 
 These six bounded owner-specific slices may proceed on separate worktrees. Avoid concurrent edits of `plans/registry.md`; each closure owns its own status change with a lease/rebase. If another ongoing roadmap modifies a touched file, coordinate by path and retain its contract.
 
@@ -82,7 +82,7 @@ These six bounded owner-specific slices may proceed on separate worktrees. Avoid
 | C005 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/005-project-compatible-verify-defaults.md` | closed | Typed bounded Cargo scope, feature and CWD tests; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md`. |
 | C006 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/006-batch-permit-admission-liveness.md` | closed | Parent/subagent overlap, admission deadline race, and admitted native timeout with partial output; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md`. |
 | C007 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/007-real-agent-tool-trajectory-qualification.md` | blocked | Integrated qualification waits on strict C002 closure; blocker audit `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md`. C008's existence alone does not unblock it. |
-| C008 | infrastructure | `plans/implementation/agent-tool-use-operability-post-audit-corrective/008-shared-eggsearch-host-scoped-local-retrieval.md` | **ready** | One shared Eggsearch process with CodeGG-owned authorized per-invocation workspace scope, isolated bounded local backend inventories and one real-child two-workspace privacy test; closes the architectural gap, enabling remaining C002 qualification. No opaque-handle registry or per-workspace child processes. |
+| C008 | infrastructure | `plans/implementation/agent-tool-use-operability-post-audit-corrective/008-shared-eggsearch-host-scoped-local-retrieval.md` | **active** | One shared Eggsearch process with CodeGG-owned authorized per-invocation workspace scope, isolated bounded local backend inventories and one real-child two-workspace privacy test; closes the architectural gap, enabling remaining C002 qualification. No opaque-handle registry or per-workspace child processes. |
 
 ## 8. Cross-cutting requirements
 

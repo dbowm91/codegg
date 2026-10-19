@@ -222,7 +222,7 @@ counts, truncation evidence, and `workflow_coverage` qualify that evidence.
 `not_applicable`, skipped, unavailable, partial, failed, interrupted, unknown
 states, incomplete role counts, and uncertain result limits cannot prove
 absence. These v0.4.1 fixtures are compatibility evidence; the current live
-wrapper contract is qualified against Eggsearch v0.4.3 in
+wrapper contract is qualified against Eggsearch v0.4.4 in
 `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`.
 The compact `retrieval_status` projection omits dimensions, so its
 aggregate booleans alone never establish complete retrieval. Unknown older

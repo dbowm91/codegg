@@ -247,9 +247,20 @@ impl LocalClient {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolCallResult, McpError> {
+        self.call_tool_structured_with_meta(tool, arguments, None)
+            .await
+    }
+
+    pub async fn call_tool_structured_with_meta(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+        meta: Option<serde_json::Value>,
+    ) -> Result<McpToolCallResult, McpError> {
         let params = json!({
             "name": tool,
-            "arguments": arguments
+            "arguments": arguments,
+            "_meta": meta.unwrap_or_else(|| json!({}))
         });
 
         let result = self.send_request("tools/call", params).await?;
