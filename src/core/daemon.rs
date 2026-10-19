@@ -4677,7 +4677,9 @@ mod tests {
                 max_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_READ_BYTES,
             },
         };
-        for _ in 0..30 {
+        // The standalone process is intentionally asynchronous; give slow
+        // CI hosts time to start and publish its first bounded output chunk.
+        for _ in 0..500 {
             let response = daemon
                 .handle_request(crate::core::new_request(
                     "standalone-shell-read".into(),
