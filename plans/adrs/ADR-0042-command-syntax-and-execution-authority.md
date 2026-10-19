@@ -16,7 +16,7 @@ Affected subsystem roadmaps:
 - `plans/subsystems/linux-execution-isolation-roadmap.md`
 - `plans/subsystems/execution-reliability-approval-autonomy-roadmap.md` (cross-reference; do not reopen historical closure).
 
-Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, accepted ADR-0035 (Linux composable isolation), and accepted ADR-0033 (directory-tied project identity). This ADR **refines** ADR-0004's separation of approval from obtained sandbox enforcement; it does not supersede its history or weaken immutable authority ceilings.
+Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, accepted ADR-0043 (Linux composable isolation), and accepted ADR-0033 (directory-tied project identity). This ADR **refines** ADR-0004's separation of approval from obtained sandbox enforcement; it does not supersede its history or weaken immutable authority ceilings.
 
 ## Context
 
@@ -83,4 +83,4 @@ Native effect-equivalence fixtures: workspace vs outside-root mutations, credent
 
 ## Supersession
 
-None. This ADR refines ADR-0004 and complements accepted Linux ADR-0035; previously accepted ADRs remain historical.
+None. This ADR refines ADR-0004 and complements accepted Linux ADR-0043; previously accepted ADRs remain historical.
