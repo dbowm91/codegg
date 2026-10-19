@@ -97,12 +97,16 @@ impl Tool for RepoFetchTool {
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
         let result = self
             .search_runtime
-            .dispatch_repo_fetch_structured(&input)
+            .dispatch_repo_fetch_host_scoped(
+                &input,
+                crate::tool::repo_search::RepoSearchTool::authorized_local_root(ctx.as_ref())
+                    .as_deref(),
+            )
             .await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = self

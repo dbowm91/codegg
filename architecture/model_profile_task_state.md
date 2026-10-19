@@ -258,7 +258,7 @@ Controlled by `TaskStatePolicy.mode` (re-exported from
 |------|-------------|---------------|-----------|
 | `Disabled` | No task state injection | No | 0 |
 | `SparsePlan` | Single-line status summary | Yes | 8 |
-| `ExplicitTodo` | Full bullet list with status | Yes | 10 |
+| `ExplicitTodo` | Full bullet list with status; multiple items may be `InProgress` by default | Yes | 10 |
 | `GuidedCurrentTask` | "Current task: X. Do this task only." | No | 4 |
 
 ### TaskStatePolicy (`crates/codegg-core/src/model_profile/types.rs:40`)
@@ -287,7 +287,7 @@ pub struct TaskStatePolicy {
 | Preset | Mode | Max Items | Write? | Inject After |
 |--------|------|-----------|--------|--------------|
 | `sparse_plan()` | SparsePlan | 8 | Yes | 10 tool calls |
-| `explicit_todo()` (default) | ExplicitTodo | 10 | Yes | 5 tool calls |
+| `explicit_todo()` (default) | ExplicitTodo; parallel in-progress allowed unless configured otherwise | 10 | Yes | 5 tool calls |
 | `guided_current_task()` | GuidedCurrentTask | 4 | No | 3 tool calls |
 | `disabled()` | Disabled | 0 | No | Never |
 
@@ -325,6 +325,11 @@ pub struct TaskStatePolicy {
 
 After acceptance, `revision` increments and `reminder_pending` is set
 to `true` unless all items are `Completed` or `Cancelled`.
+
+`explicit_todo()` defaults `require_single_in_progress` to `false`, so a
+model can report parallel work honestly. Set
+`task_state.require_single_in_progress = true` to retain the strict single
+active-item rule. `guided_current_task()` remains single-task and read-only.
 
 ### Projections
 

@@ -67,6 +67,15 @@ does not spawn one eggsearch server process per turn). Concurrent tool
 calls share the daemon service's existing synchronization; no extra
 global lookup lock is taken per call.
 
+The runtime context does not carry a session workspace root. In pinned
+Eggsearch v0.4.4, `repo_search.include_local` selects local search against
+the sidecar's configured `[local].roots`; it does not bind those roots to
+the active CodeGG session. CodeGG must not describe such a result as
+attached-workspace coverage unless the configured roots have been verified
+for that workspace. Per-session workspace binding needs an explicit
+upstream request contract or session-scoped sidecar lifecycle; the current
+adapter does not synthesize a root from a model argument.
+
 ### Legacy State (`state.rs`) — deprecated compatibility
 
 Two process-global slots backed by `std::sync::RwLock<Option<...>>`
@@ -317,6 +326,20 @@ source-build compatibility, never required for a prebuilt install.
 
 ## Invariants & Gotchas
 
+### Host-scoped local repository retrieval
+
+The CodeGG-managed Eggsearch stdio child receives a fresh process secret at
+startup. `repo_search`, `repo_fetch`, and `repo_map` calls carry a private MCP
+request metadata scope containing the accepted invocation's canonical
+workspace root, or `root: null` when the broker context cannot establish that
+scope. The secret authenticates this transport extension; it is never part of
+the model tool schema. Eggsearch 0.4.4+ rejects unauthenticated/malformed
+metadata and never falls back to static `[local].roots` when host metadata is
+present. Explicit remote MCP Eggsearch is not eligible for host-scoped local
+retrieval. The bounded Eggsearch cache is per canonical root and indexing
+configuration; it contains no authorization state. CodeGG remains the sole
+authority for selecting a root on each invocation.
+
 - **websearch/webfetch always registered** — unavailable Eggsearch returns
   an actionable error; it never invokes another provider implementation.
 - **Seven expanded wrappers conditionally registered** — based on
@@ -340,7 +363,7 @@ source-build compatibility, never required for a prebuilt install.
   path. The actual call will surface the real error if the tool is
   missing.
 - **Provider hints fail closed** — absent/`auto` omits the provider selector;
-  each other exposed value maps to a provider ID in eggsearch v0.4.3 or fails
+  each other exposed value maps to a provider ID in eggsearch v0.4.4 or fails
   before MCP dispatch. `github` maps to `github_repositories`; `brave` maps
   to the distinct `brave` provider; retired `google_news` gives guidance to
   use `intent="news"` with `brave_api` or `tavily` when source control matters.
@@ -370,7 +393,7 @@ MCP connection status, advertised tools, tool coverage classification
 surface, required/recommended coverage, default timeout, provider status,
 installation hint (bundle reinstall, never bare "install eggsearch"),
 `expose_raw_mcp_tools`, and all per-domain output caps. The search doctor
-checks exact eggsearch pin `0.4.3`, its ten-tool
+checks exact eggsearch pin `0.4.4`, its ten-tool
 surface, and every provider ID retained by the native wrapper. `doctor
 installation` prints `InstallationReport` (executable,
 directory, sibling states, helper/kernel probe, in-process eggsact line)

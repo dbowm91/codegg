@@ -24,6 +24,10 @@
 use sha2::Digest;
 use std::path::PathBuf;
 
+/// Let the tool's watchdog return typed timeout details and partial output
+/// before the broker's independent invocation watchdog fires.
+pub(crate) const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
+
 use crate::error::ToolError;
 
 use super::backend::{StructuredToolResult, ToolExecutionContext, ToolProvenance};
@@ -103,6 +107,8 @@ pub struct BrokerInvocationContext {
     pub principal_ref: Option<String>,
     /// M013-C-06: Workspace path policy ID for scope verification.
     pub workspace_path_policy_id: Option<String>,
+    /// Immutable workspace path-policy revision captured at admission.
+    pub workspace_path_policy_revision: Option<String>,
     /// M013-C-06: Allowed tools manifest for scope verification.
     pub allowed_tools: Option<Vec<String>>,
     /// M013-C-05: Current system policy revision for stale-revision detection.
@@ -188,8 +194,9 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             authority: BrokerAuthority::Unverified,
             cancellation: None,
             deadline: ctx.deadline,
-            principal_ref: None,
-            workspace_path_policy_id: None,
+            principal_ref: ctx.principal_identity,
+            workspace_path_policy_id: ctx.workspace_path_policy_id,
+            workspace_path_policy_revision: ctx.workspace_path_policy_revision,
             allowed_tools: None,
             current_policy_revision: None,
             execution_audit: ctx.execution_audit,
@@ -752,6 +759,19 @@ impl ToolBroker {
 
         // Steps 2-5: validation pipeline (once; retries never re-grant).
         let effective_timeout = self.validate_pre_execution(&contract, &ctx, &input)?;
+        let broker_watchdog_timeout = ctx
+            .deadline
+            .map(|deadline| {
+                let remaining = (deadline - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64;
+                effective_timeout
+                    .saturating_add(BROKER_WATCHDOG_GRACE_MS)
+                    .min(remaining)
+            })
+            .unwrap_or_else(|| effective_timeout.saturating_add(BROKER_WATCHDOG_GRACE_MS));
 
         let tool = registry
             .get(tool_name)
@@ -765,6 +785,36 @@ impl ToolBroker {
         validate_json_schema(&contract.input_schema, &input).map_err(|reason| {
             BrokerError::Execution(format!("input schema validation failed: {reason}"))
         })?;
+
+        // Tool Program receives a host-derived immutable snapshot of the
+        // exact catalog entries it requested. Derive this from the broker's
+        // live catalog once, before retries, so model arguments select only
+        // among registered contracts and cannot supply their own schemas.
+        let program_contract_snapshot = if tool_name == "tool_program" {
+            let tools = input
+                .get("tools")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    BrokerError::Execution(
+                        "Tool Program requires a frozen runtime tool manifest".into(),
+                    )
+                })?
+                .iter()
+                .map(|value| {
+                    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        BrokerError::Execution(
+                            "Tool Program manifest entries must be strings".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(
+                crate::tool::tool_program_context::resolve_contract_snapshot(self, &tools)
+                    .map_err(BrokerError::Execution)?,
+            )
+        } else {
+            None
+        };
 
         // M004 observe-only: compare the actual call against the session's
         // latest causal frontier. Evaluation only — an inadmissible
@@ -824,20 +874,21 @@ impl ToolBroker {
                 break;
             }
 
-            let exec_ctx = execution_context_for_attempt(&ctx, effective_timeout);
+            let mut exec_ctx = execution_context_for_attempt(&ctx, effective_timeout);
+            exec_ctx.program_contract_snapshot = program_contract_snapshot.clone();
             let attempt_input = input.clone();
             let result = match ctx.cancellation.clone() {
                 Some(token) => {
                     tokio::select! {
                         _ = token.cancelled() => Err(ToolError::Timeout("broker invocation cancelled".into())),
                         result = tokio::time::timeout(
-                            std::time::Duration::from_millis(effective_timeout),
+                            std::time::Duration::from_millis(broker_watchdog_timeout),
                             tool.execute_structured(attempt_input, Some(exec_ctx)),
                         ) => result.unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
                     }
                 }
                 None => tokio::time::timeout(
-                    std::time::Duration::from_millis(effective_timeout),
+                    std::time::Duration::from_millis(broker_watchdog_timeout),
                     tool.execute_structured(attempt_input, Some(exec_ctx)),
                 )
                 .await
@@ -893,7 +944,7 @@ impl ToolBroker {
                             ToolError::NotFound(name) => {
                                 ToolValue::infrastructure_error(format!("Tool not found: {name}"))
                             }
-                            ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                            ToolError::Timeout(message) => self.timeout_value(message),
                             ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
                             ToolError::Disabled(msg) => {
                                 ToolValue::infrastructure_error(format!("Tool is disabled: {msg}"))
@@ -937,7 +988,7 @@ impl ToolBroker {
                             );
                             if !will_retry {
                                 last_err_value = Some(match &e {
-                                    ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                                    ToolError::Timeout(message) => self.timeout_value(message),
                                     ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
                                     other => ToolValue::infrastructure_error(format!(
                                         "Tool error: {other}"
@@ -989,7 +1040,7 @@ impl ToolBroker {
                                 ToolError::NotFound(name) => ToolValue::infrastructure_error(
                                     format!("Tool not found: {name}"),
                                 ),
-                                ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                                ToolError::Timeout(message) => self.timeout_value(message),
                                 ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
                                 ToolError::Disabled(msg) => ToolValue::infrastructure_error(
                                     format!("Tool is disabled: {msg}"),
@@ -1135,6 +1186,23 @@ impl ToolBroker {
         Ok(value)
     }
 
+    fn timeout_value(&self, message: &str) -> ToolValue {
+        let display = if message.len() <= self.config.max_output_display_bytes {
+            message.to_owned()
+        } else {
+            const SUFFIX: &str = "\n...[timeout details truncated]";
+            let limit = self.config.max_output_display_bytes;
+            let suffix = if limit >= SUFFIX.len() { SUFFIX } else { "" };
+            let keep_bytes = limit.saturating_sub(suffix.len()).min(message.len());
+            let mut boundary = keep_bytes;
+            while !message.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            format!("{}{}", &message[..boundary], suffix)
+        };
+        ToolValue::timed_out_with_details(display)
+    }
+
     // ── Step 9: Artifact registration ─────────────────────────
 
     /// Register artifact handles for large outputs.
@@ -1263,6 +1331,8 @@ fn execution_context_for_attempt(
     ctx: &BrokerInvocationContext,
     effective_timeout: u64,
 ) -> ToolExecutionContext {
+    let grant = ctx.authority.grant();
+    let authorization = ctx.execution_authorization.as_ref();
     let mut exec_ctx = ToolExecutionContext {
         backend: super::backend::ToolBackendKind::Native,
         session_id: ctx.session_id.clone(),
@@ -1278,20 +1348,38 @@ fn execution_context_for_attempt(
         backend_policy: None,
         cancellation: ctx.cancellation.clone(),
         deadline: ctx.deadline,
-        decision_id: None,
-        decision_outcome: None,
-        workspace_path_policy_id: None,
-        workspace_path_policy_revision: None,
-        permission_policy_revision: None,
-        principal_identity: None,
+        decision_id: authorization
+            .map(|accepted| accepted.receipt.decision_id.clone())
+            .or_else(|| grant.map(|grant| grant.grant_id.clone())),
+        decision_outcome: authorization
+            .map(|accepted| match &accepted.receipt.outcome {
+                crate::permission::PermissionLevel::Allow => "allowed".to_owned(),
+                crate::permission::PermissionLevel::Deny => "denied".to_owned(),
+                crate::permission::PermissionLevel::Ask => "pending".to_owned(),
+            })
+            .or_else(|| grant.map(|_| "allowed".to_owned())),
+        workspace_path_policy_id: ctx
+            .workspace_path_policy_id
+            .clone()
+            .or_else(|| grant.map(|grant| grant.workspace_path_policy_id.clone())),
+        workspace_path_policy_revision: ctx.workspace_path_policy_revision.clone(),
+        permission_policy_revision: authorization
+            .and_then(|accepted| accepted.receipt.policy_revision.clone())
+            .or_else(|| grant.map(|grant| grant.policy_revision.clone())),
+        principal_identity: ctx
+            .principal_ref
+            .clone()
+            .or_else(|| grant.map(|grant| grant.principal_ref.clone())),
         origin_principal: None,
         origin_auth_method: None,
         origin_decision_id: None,
-        caller_class: None,
-        max_effect_class: None,
-        decision_issued_at: None,
-        decision_expires_at: None,
-        decision_revoked_at: None,
+        caller_class: grant.map(|grant| grant.allowed_caller_class.clone()),
+        max_effect_class: grant.map(|grant| grant.allowed_effect_class.clone()),
+        decision_issued_at: authorization
+            .map(|accepted| accepted.receipt.issued_at)
+            .or_else(|| grant.map(|grant| grant.issued_at)),
+        decision_expires_at: grant.and_then(|grant| grant.expires_at),
+        decision_revoked_at: grant.and_then(|grant| grant.revoked_at),
         program_contract_snapshot: None,
         sandbox_profile: None,
         execution_authorization: ctx.execution_authorization.clone(),
@@ -1453,7 +1541,8 @@ mod tests {
             cancellation: None,
             deadline: None,
             principal_ref: None,
-            workspace_path_policy_id: None,
+            workspace_path_policy_id: Some("workspace:ws-test".into()),
+            workspace_path_policy_revision: Some("path-policy-r1".into()),
             allowed_tools: None,
             current_policy_revision: None,
             execution_audit: None,
@@ -1490,6 +1579,14 @@ mod tests {
         let retry = execution_context_for_attempt(&invocation, 5_000);
         assert_eq!(first.execution_authorization, retry.execution_authorization);
         assert_eq!(
+            first.workspace_path_policy_id.as_deref(),
+            Some("workspace:ws-test")
+        );
+        assert_eq!(
+            first.workspace_path_policy_revision,
+            retry.workspace_path_policy_revision
+        );
+        assert_eq!(
             first
                 .execution_authorization
                 .as_ref()
@@ -1511,6 +1608,17 @@ mod tests {
             .unwrap();
         assert_eq!(result.value.terminal_status, ToolTerminalStatus::Success);
         assert_eq!(result.value.display, "result");
+    }
+
+    #[tokio::test]
+    async fn broker_preserves_captured_path_policy_revision_on_each_attempt() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::new(&registry);
+        let context = make_ctx();
+        let result = broker
+            .execute(&registry, "read", serde_json::json!({}), context)
+            .await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

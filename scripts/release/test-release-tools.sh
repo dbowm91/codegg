@@ -92,7 +92,7 @@ EOF
 # Fixture eggsearch: reports the given upstream version via --version.
 make_eggsearch_fixture() {
     local path="$1"
-    local version="${2:-0.4.3}"
+    local version="${2:-0.4.4}"
     cat > "$path" <<EOF
 #!/bin/sh
 if [ "\$1" = "--version" ]; then
@@ -130,20 +130,20 @@ fi
 if [ "$(codegg_release_runfiles_for_target "x86_64-unknown-linux-gnu" | LC_ALL=C sort | tr '\n' ' ')" = "codegg codegg-eggsearch codegg-sandbox-helper " ] \
     && [ "$(codegg_release_runfiles_for_target "aarch64-apple-darwin" | LC_ALL=C sort | tr '\n' ' ')" = "codegg codegg-eggsearch codegg-sandbox-helper " ] \
     && [ "$(codegg_release_runfiles_for_target "x86_64-pc-windows-msvc" | LC_ALL=C sort | tr '\n' ' ')" = "codegg-eggsearch.exe codegg-sandbox-helper.exe codegg.exe " ] \
-    && [ "$CODEGG_EGGSEARCH_PINNED_VERSION" = "0.4.3" ] \
-    && [ "$CODEGG_EGGSEARCH_UPSTREAM_TAG" = "v0.4.3" ] \
-    && [ "$CODEGG_EGGSEARCH_UPSTREAM_COMMIT" = "5e7b853e7eebf29c58f84959805c8774279d7ea4" ] \
+    && [ "$CODEGG_EGGSEARCH_PINNED_VERSION" = "0.4.4" ] \
+    && [ "$CODEGG_EGGSEARCH_UPSTREAM_TAG" = "commit:32f48bb57a43274d763c7f9ba919eab84d125edc" ] \
+    && [ "$CODEGG_EGGSEARCH_UPSTREAM_COMMIT" = "32f48bb57a43274d763c7f9ba919eab84d125edc" ] \
     && [ "$CODEGG_EGGSEARCH_SIDECAR" = "codegg-eggsearch" ]; then
-    ok "canonical per-target runfile manifest with pinned eggsearch 0.4.3"
+    ok "canonical per-target runfile manifest with pinned eggsearch 0.4.4"
 else
-    fail "canonical per-target runfile manifest with pinned eggsearch 0.4.3"
+    fail "canonical per-target runfile manifest with pinned eggsearch 0.4.4"
 fi
 
-if codegg_release_check_eggsearch_version_output "eggsearch 0.4.3" "0.4.3" 2>/dev/null \
-    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.1" "0.4.3" 2>/dev/null \
-    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.2" "0.4.3" 2>/dev/null \
-    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.30" "0.4.3" 2>/dev/null \
-    && ! codegg_release_check_eggsearch_version_output "codegg 0.1.0" "0.4.3" 2>/dev/null; then
+if codegg_release_check_eggsearch_version_output "eggsearch 0.4.4" "0.4.4" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.1" "0.4.4" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.2" "0.4.4" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.40" "0.4.4" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "codegg 0.1.0" "0.4.4" 2>/dev/null; then
     ok "eggsearch identity/version check accepts pin, rejects drift"
 else
     fail "eggsearch identity/version check accepts pin, rejects drift"
@@ -154,8 +154,8 @@ REL="$ROOT/rel"
 mkdir -p -- "$REL"
 make_fixture "$FIXBIN_DIR/codegg-fixture" "0.1.0"
 make_helper_fixture "$FIXBIN_DIR/helper-fixture"
-make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-fixture" "0.4.3"
-printf 'eggsearch 0.4.3 (%s tag %s)\nlicense: see upstream %s\n' "$CODEGG_EGGSEARCH_SOURCE" "$CODEGG_EGGSEARCH_UPSTREAM_TAG" "$CODEGG_EGGSEARCH_SOURCE" > "$FIXBIN_DIR/notice.txt"
+make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-fixture" "0.4.4"
+printf 'eggsearch 0.4.4 (%s revision %s)\nlicense: see upstream %s\n' "$CODEGG_EGGSEARCH_SOURCE" "$CODEGG_EGGSEARCH_UPSTREAM_COMMIT" "$CODEGG_EGGSEARCH_SOURCE" > "$FIXBIN_DIR/notice.txt"
 
 for t in $CODEGG_REQUIRED_TARGETS; do
     expect_pass "package bundle fixture for $t" "$PKG" --target "$t" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
@@ -179,7 +179,7 @@ for t in $CODEGG_REQUIRED_TARGETS; do
     out="$("$EXTRACT_CHECK/$t/codegg" --version)"
     [ "$out" = "codegg 0.1.0" ] || { payload_ok=0; break; }
     egg_out="$("$EXTRACT_CHECK/$t/codegg-eggsearch" --version)"
-    [ "$egg_out" = "eggsearch 0.4.3" ] || { payload_ok=0; break; }
+    [ "$egg_out" = "eggsearch 0.4.4" ] || { payload_ok=0; break; }
     if "$EXTRACT_CHECK/$t/codegg-sandbox-helper" >/dev/null 2>&1; then payload_ok=0; break; fi
 done
 if [ "$payload_ok" -eq 1 ]; then

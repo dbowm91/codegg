@@ -23,6 +23,16 @@ preflight summary through the canonical executor. Do not repeat command
 preflight after approval or let an executor use a broader sandbox profile than
 the accepted snapshot; unavailable required containment is a typed refusal.
 
+Repository retrieval must carry workspace scope from that accepted broker
+context through the canonical repository tool adapter. Derive the canonical
+root only from an allowed execution decision and its workspace path policy;
+never accept a model argument or ambient process cwd as authority. For the
+CodeGG-managed Eggsearch stdio child, send this scope as authenticated private
+MCP request metadata, with an explicit null root when the accepted context
+cannot establish a root. Keep it out of public tool schemas and ordinary MCP
+tool arguments. Preserve local-required failure semantics so missing or
+unmatched local scope cannot silently route to remote providers.
+
 `ManagedProcessService` remains the sole finite-process owner on every host.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup

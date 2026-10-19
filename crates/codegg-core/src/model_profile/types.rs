@@ -84,7 +84,7 @@ impl TaskStatePolicy {
             expose_completed_items: CompletedTodoExposure::SummaryOnly,
             allow_model_todo_read: true,
             allow_model_todo_write: true,
-            require_single_in_progress: true,
+            require_single_in_progress: false,
             require_blocker_reason: false,
             inject_after_tool_calls: Some(5),
             inject_on_resume: true,

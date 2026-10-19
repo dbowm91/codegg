@@ -609,10 +609,45 @@ pub(crate) async fn call_structured_tool_with_service<F>(
 where
     F: FnOnce(&str, &str) -> String,
 {
+    call_structured_tool_with_service_scope(
+        svc,
+        mcp_server,
+        tool,
+        args,
+        max_output_chars,
+        timeout_ms,
+        cap_label,
+        None,
+        frame,
+    )
+    .await
+}
+
+pub(crate) async fn call_structured_tool_with_service_scope<F>(
+    svc: Option<&McpHandle>,
+    mcp_server: &str,
+    tool: &str,
+    args: Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+    cap_label: &str,
+    host_scope: Option<Option<&std::path::Path>>,
+    frame: F,
+) -> Result<EggsearchCallResult, ToolError>
+where
+    F: FnOnce(&str, &str) -> String,
+{
     let svc = svc.ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
     let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
         let guard = svc.read().await;
-        guard.call_tool_structured(mcp_server, tool, args).await
+        match host_scope {
+            Some(root) => {
+                guard
+                    .call_tool_structured_host_scoped(mcp_server, tool, args, root)
+                    .await
+            }
+            None => guard.call_tool_structured(mcp_server, tool, args).await,
+        }
     })
     .await
     .map_err(|_| ToolError::Timeout(format!("eggsearch {tool} timed out after {timeout_ms}ms")))?
@@ -730,6 +765,25 @@ pub async fn call_repo_search_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
+    call_repo_search_structured_with_host_scope(
+        svc,
+        mcp_server,
+        input,
+        max_output_chars,
+        timeout_ms,
+        None,
+    )
+    .await
+}
+
+pub async fn call_repo_search_structured_with_host_scope(
+    svc: Option<&McpHandle>,
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+    host_scope: Option<Option<&std::path::Path>>,
+) -> Result<EggsearchCallResult, ToolError> {
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -773,7 +827,7 @@ pub async fn call_repo_search_structured(
         .min(30));
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_search",
@@ -781,6 +835,7 @@ pub async fn call_repo_search_structured(
         max_output_chars,
         timeout_ms,
         "max_repo_output_chars",
+        host_scope,
         frame_repo_results,
     )
     .await
@@ -808,6 +863,25 @@ pub async fn call_repo_fetch_structured(
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
+    call_repo_fetch_structured_with_host_scope(
+        svc,
+        mcp_server,
+        input,
+        max_output_chars,
+        timeout_ms,
+        None,
+    )
+    .await
+}
+
+pub async fn call_repo_fetch_structured_with_host_scope(
+    svc: Option<&McpHandle>,
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+    host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
     let path = non_empty_string(input, "path")?
         .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?;
@@ -837,7 +911,7 @@ pub async fn call_repo_fetch_structured(
     }
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_fetch",
@@ -845,6 +919,7 @@ pub async fn call_repo_fetch_structured(
         max_output_chars,
         timeout_ms,
         "max_repo_output_chars",
+        host_scope,
         frame_repo_file,
     )
     .await
@@ -872,6 +947,25 @@ pub async fn call_repo_map_structured(
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
+    call_repo_map_structured_with_host_scope(
+        svc,
+        mcp_server,
+        input,
+        max_output_chars,
+        timeout_ms,
+        None,
+    )
+    .await
+}
+
+pub async fn call_repo_map_structured_with_host_scope(
+    svc: Option<&McpHandle>,
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+    host_scope: Option<Option<&std::path::Path>>,
 ) -> Result<EggsearchCallResult, ToolError> {
     if input
         .get("path")
@@ -905,7 +999,7 @@ pub async fn call_repo_map_structured(
     args["max_depth"] = json!(depth);
     apply_internal_response_detail(input, &mut args)?;
 
-    call_structured_tool_with_service(
+    call_structured_tool_with_service_scope(
         svc,
         mcp_server,
         "repo_map",
@@ -913,6 +1007,7 @@ pub async fn call_repo_map_structured(
         max_output_chars,
         timeout_ms,
         "max_repo_output_chars",
+        host_scope,
         frame_repo_map,
     )
     .await
@@ -1167,7 +1262,7 @@ pub async fn call_build_evidence_bundle(
 }
 
 /// Translate a stable CodeGG provider hint into the exact accepted
-/// eggsearch v0.4.3 provider id. `None` means intentional automatic
+/// eggsearch v0.4.4 provider id. `None` means intentional automatic
 /// routing; every explicit hint either maps or fails before MCP dispatch.
 pub(crate) fn translate_provider_hint(
     hint: Option<&str>,
