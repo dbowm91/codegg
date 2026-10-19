@@ -567,7 +567,7 @@ This is calibration-only evidence from the reused setup session; no scored
 trial or additional stratum was completed. Exact usage and the unknown-cost
 status are in `008-isolated-results.json`.
 
-The first budgeted IM-1/S0 repetition now has a valid integrated candidate:
+The first budgeted IM-1/S0 repetition has a valid integrated candidate:
 Rust and Python each pass 5/5 frozen tests at 373,768 actual input-plus-output
 tokens under the 700,000 ceiling. The provider-usage span was 92.307 seconds;
 the Python tool test was unavailable inside the agent run, so the evaluator
@@ -575,3 +575,12 @@ reran both suites and committed the candidate. This counts as one evaluator
 intervention, not autonomous success. Cost is unknown and full integration
 wall time was not instrumented. Repetitions and all other conditions remain
 outstanding; M008 remains active.
+
+The first IM-1/S1 repetition also completed. Two isolated workers used a
+400,000-token aggregate allocation while the coordinator used 194,548 of its
+300,000-token ceiling. The integrated candidate passed both suites (5/5 each)
+at 502,491 total agent tokens, below the same 700,000-token ceiling as S0.
+No board, observations, claims, shared scratch, or shared writes were used.
+Evaluator integration had no conflicts; exact usage, throughput, and cleanup
+evidence are recorded in `008-isolated-results.json`. Repetitions and the
+shared-interface and overlapping-API strata remain outstanding.

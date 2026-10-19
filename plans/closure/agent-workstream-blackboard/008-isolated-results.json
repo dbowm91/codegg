@@ -1530,6 +1530,99 @@
       },
       "status": "valid integrated candidate after one evaluator intervention; not an autonomous-success result because the agent could not execute the Python acceptance command or create its commit",
       "result": "Both frozen suites pass on the committed candidate. Actual agent usage remained below the equal 700,000-token trial ceiling. Cost is unknown. The fixture uses an isolated managed worktree; no shared-write condition was used."
+    },
+    {
+      "trial_id": "IM-1-S1-R1",
+      "matrix_version": "008-task-matrix-v1",
+      "fixture": "plans/closure/agent-workstream-blackboard/008-fixture",
+      "fixture_baseline_commit": "ff0c4e2dd1ae73dc8feeaf0d28dfd58d46950078",
+      "condition": "S1",
+      "repetition": 1,
+      "session_id": "37bd8c35-96b2-422c-86ac-e93f409b1c34",
+      "turn_id": "turn-679fccff-338a-401a-8ce9-c0f11954ce73",
+      "group_id": "agent-group-cc6df38a1189c178b085e961164419db9afe4bd8e6216ff7806436d91966b8e1",
+      "provider": "OpenCode Go",
+      "model": "gpt-6-luna",
+      "all_agent_budget_tokens": 700000,
+      "coordinator_budget_tokens": 300000,
+      "worker_budget_tokens": 400000,
+      "worker_allocations": [200000, 200000],
+      "actual_usage": {
+        "coordinator": {
+          "input_tokens": 190955,
+          "output_tokens": 3593,
+          "cached_tokens": 0,
+          "total_tokens": 194548,
+          "usage_rows": 14,
+          "provider_usage_span_seconds": 83.524,
+          "reported_cost_usd": 0.0,
+          "cost_available": false
+        },
+        "workers": [
+          {
+            "run_id": "d835b789-0336-4f4d-9b4f-cdb40962d64a",
+            "allocation_tokens": 200000,
+            "input_tokens": 124648,
+            "output_tokens": 1318,
+            "cached_tokens": 0,
+            "total_tokens": 125966,
+            "usage_rows": 10,
+            "provider_usage_span_seconds": 25.367,
+            "reported_cost_usd": 0.0,
+            "cost_available": false
+          },
+          {
+            "run_id": "442e8df6-b32d-4652-a287-e30fbea18b67",
+            "allocation_tokens": 200000,
+            "input_tokens": 179574,
+            "output_tokens": 2403,
+            "cached_tokens": 0,
+            "total_tokens": 181977,
+            "usage_rows": 14,
+            "provider_usage_span_seconds": 43.066,
+            "reported_cost_usd": 0.0,
+            "cost_available": false
+          }
+        ],
+        "all_agent_input_tokens": 495177,
+        "all_agent_output_tokens": 7314,
+        "all_agent_cached_tokens": 0,
+        "all_agent_total_tokens": 502491,
+        "overrun_tokens": 0,
+        "all_agent_reported_cost_usd": 0.0,
+        "all_agent_cost_available": false,
+        "coordinator_to_last_provider_usage_seconds": 83.524,
+        "group_elapsed_seconds": 45.037
+      },
+      "agent_reported": {
+        "rust_acceptance": "5 passed; exact offline Cargo command",
+        "python_acceptance": "5 passed through Bash after supervised runner rejected the command",
+        "child_commits": [
+          "db7b9fc9321799676cac26173eb686069af2d484",
+          "d17410e7fb16e645990fb892a20543e16570ee18"
+        ],
+        "group_status": "completed; 2 successful, 0 failed, 0 active"
+      },
+      "evaluator": {
+        "integrated_rust_acceptance": "5 passed",
+        "integrated_python_acceptance": "5 passed",
+        "integrated_candidate_commit": "5d558fc",
+        "integrated_child_commits": ["702b84e", "5d558fc"],
+        "merge_conflicts": 0,
+        "evaluator_command_seconds": 1.27,
+        "integration_command_seconds": 0.66,
+        "integration_wall_seconds": null,
+        "interventions": 1,
+        "scratch_cleanup": "Removed .codegg artifacts, Rust target cache, and Python bytecode from coordinator and both child worktrees; all three worktrees are clean."
+      },
+      "useful_throughput": {
+        "accepted_contract_checks_passed": 10,
+        "checks_per_worker_token": 0.00003247,
+        "checks_per_total_agent_token": 0.0000199,
+        "checks_per_provider_usage_minute": 7.18
+      },
+      "status": "valid integrated candidate; both child runs and group completed without failure, followed by evaluator cherry-pick integration and integrated-suite rerun",
+      "result": "S1 used 502491 of the equal 700000 all-agent token ceiling. Coordinator and each child stayed below their fixed allocations. Both isolated child commits integrated without conflict; both frozen language suites passed again in the parent worktree. Cost is unknown. No peer board, observations, claims, or shared writes were used."
     }
   ]
 }

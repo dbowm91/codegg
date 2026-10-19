@@ -538,3 +538,24 @@ integrated result after one evaluator intervention, not autonomous success.
 Evaluator commands took 0.54 seconds and the commit command took 0.47 seconds;
 full wall time from turn completion through integration was not instrumented.
 No shared-checkout writes were used. Full measurements are in the JSON record.
+
+## 19. IM-1, S1, repetition 1 (2026-10-19)
+
+One coordinator turn issued exactly one `spawn_many` with a 400,000-token
+aggregate worker allocation divided evenly between the Rust and Python tasks;
+the coordinator ceiling was 300,000. Both children completed successfully.
+The Rust child used 125,966 tokens and passed 5/5 tests. The Python child used
+181,977 tokens and passed 5/5 tests through Bash after its supervised runner
+rejected the acceptance command. Their commits touched disjoint source files.
+
+The coordinator used 194,548 tokens. All-agent actual usage was 502,491
+(495,177 input, 7,314 output), within the same 700,000-token ceiling used by
+IM-1/S0. The evaluator cherry-picked both child commits into the isolated
+parent worktree without conflict and reran the Rust and Python suites (5/5
+each). Ten of ten frozen contract checks passed. The trial used no peer board,
+observations, claims, shared scratch, or shared-checkout writes. Cost is
+unknown. Evaluator test commands took 1.27 seconds and the two cherry-picks
+took 0.66 seconds; total elapsed integration wall time was not separately
+instrumented. Generated run scratch and test caches were removed from the
+parent and both child worktrees. Per-run budgets, token totals, usage spans,
+and throughput are in `008-isolated-results.json`.
