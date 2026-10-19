@@ -156,6 +156,35 @@ pub fn build_session_tool_registry(
         Some(Arc::new(store) as Arc<dyn codegg_core::run_store::RunStore>)
     };
 
+    // C007: build the private index publication backend. The journal lives
+    // in the **daemon's** session pool, which is the same pool the startup
+    // reconciler reads, so a publication recorded by a turn is resolvable by
+    // the next daemon start.
+    //
+    // The backend is absent — and the `Add` mutation therefore refused —
+    // when there is no pool or no pinned Git executable. It is never
+    // downgraded to the legacy in-place `git add` route, which cannot be
+    // made compare-and-swap safe.
+    let publication: Option<Arc<crate::git_publication::GitIndexPublisher>> =
+        match (pool.clone(), crate::git_publication::resolve_git_binary()) {
+            (Some(pool), Some(git_binary)) => {
+                let store = Arc::new(codegg_core::git_publication::GitIndexPublicationStore::new(
+                    pool,
+                ));
+                let staging = Arc::new(crate::git_publication::ContainedGitIndexStaging::new(
+                    git_binary,
+                ));
+                Some(Arc::new(crate::git_publication::GitIndexPublisher::new(
+                    store,
+                    crate::git_publication::default_publication_scratch_root(),
+                    staging,
+                    std::time::Duration::from_secs(30),
+                )))
+            }
+            (None, _) => None,
+            (_, None) => None,
+        };
+
     let mut tool_registry = ToolRegistry::with_options(ToolRegistryOptions {
         git_read_only: None,
         tool_advisor: config.tool_advisor.clone(),
@@ -184,6 +213,7 @@ pub fn build_session_tool_registry(
         deterministic_config: integrated.deterministic,
         preflight_config: integrated.preflight,
         run_store,
+        publication,
         submission: submission.clone(),
         command_intent: config.command_intent.clone(),
         windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),

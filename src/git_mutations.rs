@@ -17,6 +17,7 @@
 //! concerns belong to the tools and the routing layer respectively.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -242,6 +243,20 @@ pub enum GitMutationError {
     Timeout(u64),
     #[error("state mismatch: expected operation '{expected}' but found '{actual}' on disk")]
     StateMismatch { expected: String, actual: String },
+    /// C007: the private index publication was refused because the
+    /// repository changed under it.
+    ///
+    /// A conflict is a typed, retryable result. Nothing was published, and
+    /// the concurrent writer's index was not overwritten.
+    #[error("git index publication conflict: {0}")]
+    PublicationConflict(crate::git_publication::GitIndexPublicationConflict),
+    /// C007: the private index publication was refused before it was
+    /// attempted.
+    #[error("git index publication refused: {0}")]
+    PublicationRefused(crate::git_publication::GitIndexPublicationRefusal),
+    /// C007: the private index publication machinery itself failed.
+    #[error("git index publication failed: {0}")]
+    PublicationFailed(String),
 }
 
 impl GitMutationError {
@@ -493,6 +508,13 @@ pub struct GitMutationExecutor {
     /// Accepted authorization context from the agent/broker route, when
     /// available. Typed Git authority remains enforced by the Git policy.
     pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+    /// C007: the private index publication backend.
+    ///
+    /// `None` means the `Add` operation is **refused** rather than silently
+    /// downgraded to the legacy in-place `git add` route. An in-place add
+    /// cannot be made compare-and-swap safe, and a caller that was told a
+    /// publication happened must be able to rely on that.
+    pub publication: Option<Arc<crate::git_publication::GitIndexPublisher>>,
 }
 
 // Manual Debug impl because `GitExecutionService` does not derive Debug.
@@ -520,6 +542,7 @@ impl GitMutationExecutor {
             execution_audit: None,
             audit_emitter: None,
             execution_authorization: None,
+            publication: None,
         }
     }
 
@@ -559,6 +582,20 @@ impl GitMutationExecutor {
         authorization: crate::tool::authorization::ExecutionAuthorizationContext,
     ) -> Self {
         self.execution_authorization = Some(authorization);
+        self
+    }
+
+    /// Inject the C007 private index publication backend.
+    ///
+    /// Without it, the `Add` operation is refused. The refusal is deliberate:
+    /// silently falling back to the in-place `git add` route would publish an
+    /// index that a concurrent writer could have overwritten and that a crash
+    /// could have left unrecorded.
+    pub fn with_publication(
+        mut self,
+        publication: Arc<crate::git_publication::GitIndexPublisher>,
+    ) -> Self {
+        self.publication = Some(publication);
         self
     }
 
@@ -650,6 +687,18 @@ impl GitMutationExecutor {
         operation: &GitOperation,
         repo_root: &Path,
     ) -> Result<MutationResult, GitMutationError> {
+        // C007: `Add` publishes the repository index through the private
+        // index publication backend rather than running `git add` in place.
+        // An in-place add mutates the index under Git's lock with no
+        // compare-and-swap and no durable record, so a concurrent writer's
+        // index can be overwritten and a crash leaves nothing to recover
+        // from. Everything else keeps the legacy route.
+        if let GitOperation::Add { paths } = operation {
+            return self
+                .execute_add_publication(operation, paths, repo_root)
+                .await;
+        }
+
         let before = self.snapshot(repo_root).await?;
         let argv = render_argv(operation);
 
@@ -696,6 +745,81 @@ impl GitMutationExecutor {
             stderr,
             exit_code: raw.exit_code,
             success: raw.exit_code == 0,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
+    /// C007: publish a staged `git add` through the private index
+    /// publication backend.
+    ///
+    /// `Add` is a workspace-scoped, **non-destructive** mutation. The Git
+    /// execution policy already classifies it as a contained operation whose
+    /// only capability requirement is `CleanSmudgeFilter` — it does **not**
+    /// require `DestructiveRepositoryChange` — so the authority it needs is
+    /// the workspace lease and the daemon-owned mutation authority the
+    /// executor already requires, plus the path validation the caller
+    /// already performed.
+    ///
+    /// The publication itself is what makes this safe: the index is staged
+    /// privately, the intent is recorded durably, and the index is replaced
+    /// under Git's own lock with a compare-and-swap against the generation
+    /// the staging observed.
+    async fn execute_add_publication(
+        &self,
+        operation: &GitOperation,
+        paths: &[RepoPath],
+        repo_root: &Path,
+    ) -> Result<MutationResult, GitMutationError> {
+        let Some(publisher) = self.publication.as_ref() else {
+            return Err(GitMutationError::PublicationFailed(
+                "the private index publication backend is not configured".into(),
+            ));
+        };
+        let root = resolve_repo_root(repo_root)?;
+        let before = self.snapshot(repo_root).await?;
+        let request = crate::git_publication::GitIndexPublicationRequest {
+            intent_id: uuid::Uuid::new_v4().to_string(),
+            repository_root: root.as_path().to_path_buf(),
+            workspace_root: root.as_path().to_path_buf(),
+            paths: paths.iter().map(|path| path.as_str().to_string()).collect(),
+        };
+        let outcome = publisher
+            .publish_add(&request)
+            .await
+            .map_err(|error| GitMutationError::PublicationFailed(error.to_string()))?;
+        let receipt = match outcome {
+            crate::git_publication::GitIndexPublicationOutcome::Committed(receipt) => receipt,
+            crate::git_publication::GitIndexPublicationOutcome::Conflict(conflict) => {
+                return Err(GitMutationError::PublicationConflict(conflict));
+            }
+            crate::git_publication::GitIndexPublicationOutcome::Refused(refusal) => {
+                return Err(GitMutationError::PublicationRefused(refusal));
+            }
+        };
+        let after = match self.snapshot(repo_root).await {
+            Ok(snapshot) => snapshot,
+            Err(_) => before.clone(),
+        };
+        let raw = RawGitOutput {
+            stdout: publication_receipt_summary(&receipt),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        let outcome = classify_outcome(operation, &before, &after, raw.exit_code);
+        let delta = compute_delta(operation, &before, &after, &raw, &outcome);
+        self.emit_git_operation(operation, &outcome, &after).await;
+        let stdout = sanitize_truncate_for_result(&raw.stdout, 64 * 1024);
+        let stderr = sanitize_truncate_for_result(&raw.stderr, 64 * 1024);
+        let start = std::time::Instant::now();
+        Ok(MutationResult {
+            operation: operation.clone(),
+            subcommand: operation.subcommand_name().to_string(),
+            delta,
+            outcome,
+            stdout,
+            stderr,
+            exit_code: raw.exit_code,
+            success: true,
             duration_ms: start.elapsed().as_millis() as u64,
         })
     }
@@ -757,6 +881,23 @@ impl GitMutationExecutor {
         let _ = start;
         Ok(raw)
     }
+}
+
+/// A short, human-readable summary of a C007 publication receipt.
+///
+/// The receipt names the single resource the publication published, so the
+/// summary says so too. A summary that implied the refs were published as
+/// well would be a false claim about the repository's state.
+fn publication_receipt_summary(
+    receipt: &crate::git_publication::GitIndexPublicationReceipt,
+) -> String {
+    format!(
+        "staged {} path(s) into the repository index (published resource: {}; \
+         imported objects: {})",
+        receipt.staged_paths.len(),
+        receipt.scope.as_str(),
+        receipt.imported_objects.len()
+    )
 }
 
 /// Truncate a string to `max_bytes` with a clear marker. The cut point is

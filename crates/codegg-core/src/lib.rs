@@ -11,6 +11,7 @@ pub mod collaboration;
 pub mod context;
 pub mod decision;
 pub mod error;
+pub mod git_publication;
 pub mod goal;
 pub mod identity;
 pub mod jobs;

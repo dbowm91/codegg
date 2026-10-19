@@ -394,8 +394,8 @@ async fn v81_to_latest_preserves_queue_and_adds_network_intent() {
         "latest migration must land exactly at the declared storage layout version"
     );
     assert_eq!(
-        final_version, 84,
-        "the network-intent migration follows v83"
+        final_version, 85,
+        "the network-intent migration follows v83 and the publication journal follows v84"
     );
 
     let network_intent: i64 = sqlx::query_scalar(

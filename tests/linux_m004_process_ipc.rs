@@ -3032,3 +3032,244 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
+
+/// C007: the production private-index publisher, end to end, on a qualified
+/// Linux host.
+///
+/// The publisher stages into a private gitdir through the contained staging
+/// step, publishes the index under Git's own `index.lock` with a
+/// compare-and-swap against the generation the staging observed, and imports
+/// the staged object into the repository's object database.
+///
+/// The repository's own `filter.*` configuration must not run: the private
+/// gitdir's configuration is authored by the daemon and contains no
+/// `filter.*` section, so a repository-controlled clean filter has no
+/// command to execute. The filter probe is the positive control for that.
+#[cfg(feature = "linux-git-test-support")]
+#[tokio::test]
+async fn production_private_index_publisher_stages_and_publishes_under_containment() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the contained C007 publisher probe");
+        return;
+    }
+
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
+    use std::str::FromStr;
+
+    let workspace = tempfile::tempdir().expect("C007 workspace");
+    let repository = workspace.path().join("repository");
+    std::fs::create_dir(&repository).expect("create repository root");
+    let scratch = tempfile::tempdir().expect("daemon-owned publication scratch");
+
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+    let setup = |cwd: &Path, args: &[String]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare C007 Git fixture")
+    };
+
+    assert!(setup(&repository, &["init".into(), "--quiet".into()])
+        .status
+        .success());
+    std::fs::write(repository.join("tracked.txt"), "committed base\n")
+        .expect("write committed fixture");
+    std::fs::write(
+        repository.join(".gitattributes"),
+        "tracked.txt filter=probe\n",
+    )
+    .expect("write repository-controlled filter attribute");
+    assert!(setup(
+        &repository,
+        &[
+            "add".into(),
+            "--".into(),
+            ".gitattributes".into(),
+            "tracked.txt".into(),
+        ]
+    )
+    .status
+    .success());
+    let commit = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "user.name=Fixture".into(),
+            "-c".into(),
+            "user.email=fixture@example.invalid".into(),
+            "commit".into(),
+            "--quiet".into(),
+            "-m".into(),
+            "C007 publisher fixture".into(),
+        ],
+    );
+    assert!(
+        commit.status.success(),
+        "fixture commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    // A repository-controlled clean filter that would mark the repository if
+    // it ever ran. It must not run: the publisher stages against a private
+    // gitdir whose configuration the daemon authored.
+    let filter_marker = repository.join("source-filter-ran");
+    let filter_script = scratch.path().join("source-filter.sh");
+    std::fs::write(
+        &filter_script,
+        format!(
+            "#!/bin/sh\nprintf ran > {}\ncat\n",
+            shell_quote(&filter_marker.to_string_lossy())
+        ),
+    )
+    .expect("write source-configured filter probe");
+    let mut filter_permissions = std::fs::metadata(&filter_script)
+        .expect("stat source-configured filter probe")
+        .permissions();
+    filter_permissions.set_mode(0o755);
+    std::fs::set_permissions(&filter_script, filter_permissions)
+        .expect("make source-configured filter executable");
+    let configure_filter = setup(
+        &repository,
+        &[
+            "config".into(),
+            "filter.probe.clean".into(),
+            filter_script.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        configure_filter.status.success(),
+        "configure source repository filter: {}",
+        String::from_utf8_lossy(&configure_filter.stderr)
+    );
+
+    let source_gitdir = repository
+        .join(".git")
+        .canonicalize()
+        .expect("canonical source gitdir");
+    let source_odb = source_gitdir.join("objects");
+    let index_before = std::fs::read(source_gitdir.join("index")).expect("capture source index");
+    let objects_before = count_loose_objects(&source_odb);
+
+    // The journal lives in the daemon's session storage.
+    let url = format!(
+        "file:codegg_c007_publisher_{}?mode=memory&cache=shared",
+        uuid::Uuid::new_v4().simple()
+    );
+    let options = SqliteConnectOptions::from_str(&url)
+        .expect("valid sqlite options")
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(5))
+        .foreign_keys(true);
+    let pool: SqlitePool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("connect to in-memory sqlite");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("migrate the publication journal");
+
+    let store = std::sync::Arc::new(codegg_core::git_publication::GitIndexPublicationStore::new(
+        pool.clone(),
+    ));
+    let publisher = codegg::git_publication::GitIndexPublisher::new(
+        store,
+        scratch.path().to_path_buf(),
+        std::sync::Arc::new(codegg::git_publication::ContainedGitIndexStaging::new(
+            git.clone(),
+        )),
+        Duration::from_secs(60),
+    );
+
+    std::fs::write(repository.join("tracked.txt"), "staged by the publisher\n")
+        .expect("write the change to stage");
+    let request = codegg::git_publication::GitIndexPublicationRequest {
+        intent_id: "c007-hosted-publication".into(),
+        repository_root: repository.clone(),
+        workspace_root: repository.clone(),
+        paths: vec!["tracked.txt".into()],
+    };
+    let outcome = publisher
+        .publish_add(&request)
+        .await
+        .expect("the C007 publication completes");
+    let receipt = match outcome {
+        codegg::git_publication::GitIndexPublicationOutcome::Committed(receipt) => receipt,
+        other => panic!("expected a committed publication, got {other:?}"),
+    };
+
+    // The repository-controlled filter never ran.
+    assert!(
+        !filter_marker.exists(),
+        "the repository's clean filter must not run inside the publisher"
+    );
+    // The index was replaced and the change is staged.
+    let index_after = std::fs::read(source_gitdir.join("index")).expect("read published index");
+    assert_ne!(index_after, index_before);
+    let status = setup(&repository, &["status".into(), "--porcelain".into()]);
+    assert!(
+        status.status.success(),
+        "git status failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.contains("M  tracked.txt"),
+        "the change should be staged, got {status:?}"
+    );
+    // The staged blob reached the repository's object database.
+    assert_eq!(receipt.imported_objects.len(), 1);
+    assert_eq!(
+        count_loose_objects(&source_odb),
+        objects_before + 1,
+        "exactly the staged object was imported"
+    );
+    // The journal recorded the commitment.
+    let stored = codegg_core::git_publication::GitIndexPublicationStore::new(pool)
+        .get("c007-hosted-publication")
+        .await
+        .expect("read the journal entry")
+        .expect("the journal entry exists");
+    assert_eq!(
+        stored.state,
+        codegg_core::git_publication::GitIndexPublicationState::Committed
+    );
+}
+
+/// Count the loose objects in an object database.
+#[cfg(feature = "linux-git-test-support")]
+fn count_loose_objects(objects: &Path) -> usize {
+    let mut count = 0;
+    let Ok(entries) = std::fs::read_dir(objects) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let fanout = entry.file_name().to_string_lossy().into_owned();
+        if fanout.len() != 2 || !fanout.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        for object in std::fs::read_dir(entry.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = object.file_name().to_string_lossy().into_owned();
+            if name.len() == 38 && name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                count += 1;
+            }
+        }
+    }
+    count
+}

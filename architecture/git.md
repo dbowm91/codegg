@@ -22,6 +22,7 @@ logging, or persistence surfaces.
 | Typed workflow model | `crates/codegg-git/` | `GitOperation`, risk/parser/render/path/ref/sensitive types, portable `RepoSnapshot`/`StateDelta`/`MutationResult` workflow boundary |
 | Execution adapter | `src/git_service.rs` | `GitExecutionService` — maps typed operations to structured egggit reads and the generic process boundary |
 | Mutations | `src/git_mutations.rs` | `GitMutationExecutor` and repository snapshot/delta orchestration over `codegg_git::workflow` |
+| Index publication | `src/git_publication/` | Private-index staging, compare-and-swap publication under Git's own `index.lock`, crash reconciler; durable journal in `codegg-core::git_publication` |
 | Typed ops | `src/git_mutations_ops.rs` | Stage, commit, branch, restore, stash, merge, rebase, cherry-pick, revert, tag-delete |
 | Network | `src/git_network_ops.rs` | Fetch, pull, push, remote add/remove/set-url/rename, config get/set/unset, reset variants, clean |
 | Network policy | `src/git_network_policy.rs` | `NetworkEnvPolicy`, `NETWORK_ALLOWED_ENV_VARS`, `NetworkFailureKind`, URL credential redaction, `sanitize_argv_for_run_store` |
@@ -42,6 +43,7 @@ logging, or persistence surfaces.
 | Local Git process construction and environment hardening | `egggit::process` | all CodeGG-owned local Git subprocess callers |
 | Credential-safe remote process overlay and failure classification | root `git_network_policy` / `git_network_ops` | typed network mutation adapters; raw credentials remain ephemeral |
 | Commit, stage, restore, branch, stash, merge/rebase/cherry-pick/revert | root `git_mutations` + `git_mutations_ops` | GitTool and command routing |
+| Private index publication (stage → compare-and-swap → publish → recover) | root `git_publication` publisher; durable journal in `codegg-core::git_publication` | the `Add` arm of `GitMutationExecutor`, GitTool `stage_paths`, the commit tool, daemon bootstrap reconciler |
 | Worktree create/remove/list/validate and leases | `codegg-core::worktree_service` (durable lifecycle); generic facts in `egggit::worktree` | agent-run scheduler/worktree services |
 | Base/result commit relationships and integration | `codegg-core` agent-run/worktree services and root `agent::run_integration` | parent-side integration only |
 | Mutation provenance and rerun metadata | root `git_run_store` over `codegg_git::workflow` results | RunStore; future rerun vertical M005 |
@@ -135,6 +137,60 @@ names as `BranchName`/`RefName`). Merge strategies are gated by
 
 `run_raw_mutation` handles variants the typed parser cannot model (e.g.
 `git add -A`, `git reset HEAD`) — same snapshot/policy pipeline.
+
+### Private index publication
+
+`GitOperation::Add` does not reach the in-place `git add` route. It is
+published through `src/git_publication/`, which stages into a **private** index
+and publishes it into the real repository index under Git's own `index.lock`.
+A plain `git add` has no compare-and-swap and no durable record of intent, so
+a concurrent writer can be silently overwritten and a crash leaves no evidence
+of what was intended.
+
+The path has four parts:
+
+1. **Private staging.** The daemon-pinned Git child runs under the M004
+   process/IPC tier and the M005 offline-network candidate. It writes into a
+   private gitdir in daemon-owned scratch: a private index seeded byte-for-byte
+   from the real index (so an already-staged change is not lost by staging)
+   and a private object database whose `alternates` points at the real one, so
+   existing objects resolve read-only while new blobs stay private.
+   `GIT_INDEX_FILE` is deliberately **not** used — `EnvironmentPolicy` denies
+   that variable, and the private gitdir already provides the property it
+   would have been used for.
+2. **Durable intent.** The intent (the gitdir identity, the index fingerprint
+   the staging observed, the staged fingerprint, the staged paths) is written
+   to the `git_index_publication` journal (`codegg-core::git_publication`,
+   migration v84) before anything is published. The journal's states are
+   `prepared`/`publishing` (non-terminal) and `committed`/`aborted`/`ambiguous`
+   (terminal); a transition out of a terminal state is refused, not merely
+   unused.
+3. **Compare-and-swap publication.** The real `index.lock` is taken by a
+   same-filesystem `hard_link` from a temp file written *in* the gitdir, so
+   the lock's content is correct from the instant it exists and a leftover
+   lock is attributable by content hash. Under the lock, the real index's
+   fingerprint is compared against the one the staging observed; a mismatch is
+   a typed conflict (`StaleIndex`, `GitDirIdentityChanged`) and writes nothing
+   at all. The daemon then imports the staged objects (content-addressed,
+   idempotent, byte-verified against their source) and replaces the real index
+   by an atomic rename inside the gitdir, followed by a directory fsync.
+4. **Crash recovery.** A daemon-start reconciler (bootstrap phase 5) resolves
+   any publication a prior generation left in flight, from the recorded
+   evidence alone, into exactly one of committed / aborted / ambiguous. It
+   removes a leftover `index.lock` only when the lock's content equals the
+   published fingerprint — an empty or foreign lock is never removed — and
+   discards the scratch only for a committed or aborted publication. An
+   ambiguous publication is escalated, never guessed at and never replayed.
+
+The published scope is the **index only** (`PublishedResourceScope::IndexOnly`):
+no ref is written and the worktree is not modified. Merge, rebase, checkout,
+reset, clean, fetch, push, and pull are out of scope.
+
+`Add` is **refused** when no publisher is configured
+(`GitMutationError::PublicationRefused`) rather than downgraded to the
+in-place route, which cannot be made compare-and-swap safe. `stage_all` and
+`stage_tracked` still use the legacy in-place route — they carry whole-tree
+`-A` / `-u` semantics that the path-scoped publisher does not model.
 
 ### Network path
 
@@ -420,6 +476,31 @@ the canonical `git` surface.
 15. **Recovery not auto-resolved.** Conflicts are presented as typed
     data. The agent must edit files, `git add`, then `recover: continue`.
 
+16. **Staging is private; publication is compare-and-swap.**
+    `GitOperation::Add` no longer mutates the repository index in place. It
+    stages into a private index in daemon-owned scratch and publishes under
+    Git's own `index.lock` with a compare-and-swap against the index
+    generation the staging observed. Three rules follow:
+    - **No silent fallback.** With no publisher configured, `Add` is
+      *refused* (`GitMutationError::PublicationRefused`). Falling back to
+      the in-place `git add` would reintroduce exactly the silent overwrite
+      and unrecorded intent the vertical exists to remove.
+    - **`GIT_INDEX_FILE` stays denied.** `codegg_git::ALWAYS_STRIPPED_ENV_VARS`
+      refuses it by design; the private gitdir already provides the
+      isolation it would have been used for.
+    - **The receipt states one resource.** `PublishedResourceScope::IndexOnly`
+      — the index is published, no ref is written, and the worktree is not
+      modified. Merge/rebase/checkout and the whole-tree `stage_all` /
+      `stage_tracked` routes stay outside this vertical.
+
+17. **Ambiguity is not success.** A publication whose outcome cannot be
+    determined from the recorded evidence is reported `Ambiguous` and
+    escalated. It is never reported as published and never replayed: a
+    committed publication is not re-applied, and an abandoned one is not
+    re-staged. A leftover `index.lock` is removed only when its content
+    equals the published fingerprint — an empty or foreign lock is left
+    alone.
+
 ## Testing
 
 ### Narrowest commands
@@ -442,6 +523,9 @@ cargo test --test git_mutations_integration
 cargo test --test git_network_integration
 cargo test --test git_recovery_integration
 cargo test --test git_execution_origin_matrix
+
+# Private index publication (C007)
+cargo test -p codegg --locked --test git_index_publication
 ```
 
 ### Isolated delegated-run commits and integration
@@ -525,6 +609,7 @@ remains an explicit parent-side typed Git operation.
 | `tests/git_mutations_integration.rs` | 12 (tokio::test) |
 | `tests/git_network_integration.rs` | 29 |
 | `tests/git_recovery_integration.rs` | 19 |
+| `tests/git_index_publication.rs` | 21 (C007 private-index publication; 16 C007 + 5 shared secret-scan) |
 
 ### Key test categories
 
@@ -544,12 +629,28 @@ remains an explicit parent-side typed Git operation.
   progress, skip during rebase.
 - **git_execution_origin_matrix**: Track U routing — verifies
   `route_git_local_mutation` gate behavior.
+- **git_index_publication** (C007): the journal's typed state machine and its
+  refusal of a terminal transition; the three reconciled verdicts and their
+  idempotence across restarts; a concurrent **external** writer producing a
+  typed `StaleIndex` conflict without overwriting the writer's index; a held
+  `index.lock` producing a typed `IndexLockHeld` conflict; a failed staging
+  leaving the repository byte-identical; and the atomic replacement importing
+  the staged object. The **contained** staging step additionally needs a
+  qualified host — it is exercised by the hosted
+  `production_private_index_publisher_stages_and_publishes_under_containment`
+  test in `tests/linux_m004_process_ipc.rs`.
 - **policy_drift_tests** (root): Ensures canonical lists match Phase F
   entries. `root_and_core_share_canonical_lists` verifies root and
   codegg-core read from same source.
 
 ## Related Docs
 
+- `plans/implementation/linux-trusted-git-cost-corrective/007-production-private-index-publication-vertical.md`
+  — the C007 plan for the private-index publication vertical, including §9's
+  three recorded departures from the plan text.
+- `plans/closure/linux-trusted-git-cost-corrective/007-status.md` — the C007
+  closure: requirement-to-evidence matrix, the three deviations, and the open
+  items (the contained staging step is still unproven on a qualified host).
 - `architecture/git_phase_f_handoff.md` — Phase F review context
   (do not modify).
 - `architecture/git_polish_verification_handoff.md` — Verified state,

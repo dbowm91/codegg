@@ -414,6 +414,14 @@ pub struct ToolRegistryOptions {
     /// When `Some`, Python and Bash tools persist structured run manifests
     /// with artifact handles to the filesystem index.
     pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    /// C007: the private index publication backend.
+    ///
+    /// When `Some`, the `Add` mutation publishes the repository index
+    /// through the private staging, compare-and-swap, and crash-recovery
+    /// path. When `None`, `Add` is **refused** rather than silently falling
+    /// back to the legacy in-place `git add` route, which cannot be made
+    /// compare-and-swap safe.
+    pub publication: Option<Arc<crate::git_publication::GitIndexPublisher>>,
     /// Daemon-owned scheduler submission facade for heavy work.
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     /// Optional command-intent classification and routing configuration.
@@ -1002,6 +1010,15 @@ impl ToolRegistry {
                 } else {
                     tool
                 };
+                // C007: the `Add` mutation publishes the repository index
+                // through the private index publication backend. Without it,
+                // `Add` is refused rather than downgraded to the legacy
+                // in-place route.
+                let tool = if let Some(ref publication) = options.publication {
+                    tool.with_publication(publication.clone())
+                } else {
+                    tool
+                };
                 Box::new(tool)
             }
             None => unrooted(Box::new(crate::tool::git::GitTool::default())),
@@ -1150,6 +1167,13 @@ impl ToolRegistry {
         };
         let commit_tool = if let Some(ref store) = options.run_store {
             commit_tool.with_run_store(store.clone())
+        } else {
+            commit_tool
+        };
+        // C007: the commit tool stages through the same private index
+        // publication backend as the `git` tool.
+        let commit_tool = if let Some(ref publication) = options.publication {
+            commit_tool.with_publication(publication.clone())
         } else {
             commit_tool
         };
@@ -1467,6 +1491,7 @@ impl ToolRegistry {
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
             run_store: None,
+            publication: None,
             submission: None,
             command_intent: config.command_intent.clone(),
             windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),
@@ -1524,6 +1549,7 @@ impl ToolRegistry {
             deterministic_config: None,
             preflight_config: None,
             run_store: None,
+            publication: None,
             submission: None,
             command_intent: None,
             windows_shell: None,

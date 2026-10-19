@@ -274,6 +274,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 84 {
         migrate_and_record(pool, 84).await?;
     }
+    if current_version < 85 {
+        migrate_and_record(pool, 85).await?;
+    }
 
     Ok(())
 }
@@ -370,6 +373,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             82 => migrate_v82(&mut tx).await?,
             83 => migrate_v83(&mut tx).await?,
             84 => migrate_v84(&mut tx).await?,
+            85 => migrate_v85(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3734,6 +3738,53 @@ async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     for statement in crate::approval::RUNTIME_PREFERENCE_NETWORK_INTENT_MIGRATION_STATEMENTS {
         add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
     }
+    Ok(())
+}
+
+/// C007: the durable journal for private Git index publication.
+///
+/// Additive only — one table and one index. No existing table is altered and
+/// no stored data is rewritten.
+///
+/// The table records one row per publication intent, carrying the gitdir
+/// identity the publication is bound to, the fingerprint of the real index the
+/// staging observed (the compare-and-swap operand), the fingerprint of the
+/// index that was staged, and the path of the private staged index. That is
+/// the evidence a recovery pass needs to decide — after a crash — whether the
+/// publication committed, aborted, or is ambiguous, without re-running the
+/// operation.
+async fn migrate_v85(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS git_index_publication (
+            id TEXT PRIMARY KEY NOT NULL,
+            workspace_root TEXT NOT NULL,
+            gitdir_path TEXT NOT NULL,
+            gitdir_dev TEXT NOT NULL,
+            gitdir_ino TEXT NOT NULL,
+            private_index_path TEXT NOT NULL,
+            expected_index_fingerprint TEXT NOT NULL,
+            published_index_fingerprint TEXT NOT NULL,
+            staged_paths TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (
+                state IN ('prepared', 'publishing', 'committed', 'aborted', 'ambiguous')
+            ),
+            detail TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_git_index_publication_state \
+         ON git_index_publication(state, created_at_ms)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
 

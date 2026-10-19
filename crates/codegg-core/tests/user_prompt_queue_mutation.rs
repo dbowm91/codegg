@@ -133,14 +133,15 @@ async fn user_prompt_queue_v81_migration_creates_the_owner_table() {
     // equals the highest wired migration.
     //
     // It is currently v84: M007 took v82 for `run_at_ms`, managed scratch
-    // reserved v83, and Linux M005 takes v84 for the additive network-intent
-    // preference. M002b's own claim — that the owner binding bumped the
+    // reserved v83, Linux M005 takes v84 for the additive network-intent
+    // preference, and C007 takes v85 for the private index publication journal. M002b's own claim — that the owner binding bumped the
     // layout at all — is unchanged and is what the table assertions below prove.
     assert_eq!(
-        STORAGE_LAYOUT_VERSION, 84,
+        STORAGE_LAYOUT_VERSION, 85,
         "M002b bumps the layout to the owner binding; M007 (ADR-0039) advanced it \
          to v82 for the optional due time; managed scratch advanced it to v83; \
-         M005 added network intent at v84"
+         M005 added network intent at v84; C007 added the private index \
+         publication journal at v85"
     );
 
     let table: i64 = sqlx::query_scalar(

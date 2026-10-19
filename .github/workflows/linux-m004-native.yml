@@ -37,6 +37,18 @@ on:
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
       - 'tests/interactive_process_attach_resume.rs'
+      # C007 publisher surface: the private-index staging, the durable
+      # journal, the compare-and-swap publication, and the startup
+      # reconciler. A change to any of these must be able to trigger this
+      # qualification job, because the contained staging step is only
+      # exercised here.
+      - 'crates/codegg-core/src/git_publication.rs'
+      - 'src/git_publication/**'
+      - 'src/git_mutations.rs'
+      - 'src/tool/factory.rs'
+      - 'src/tool/git.rs'
+      - 'src/tool/commit.rs'
+      - 'tests/git_index_publication.rs'
   push:
     paths:
       - '.github/workflows/linux-m004-native.yml'
@@ -72,6 +84,18 @@ on:
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
       - 'tests/interactive_process_attach_resume.rs'
+      # C007 publisher surface: the private-index staging, the durable
+      # journal, the compare-and-swap publication, and the startup
+      # reconciler. A change to any of these must be able to trigger this
+      # qualification job, because the contained staging step is only
+      # exercised here.
+      - 'crates/codegg-core/src/git_publication.rs'
+      - 'src/git_publication/**'
+      - 'src/git_mutations.rs'
+      - 'src/tool/factory.rs'
+      - 'src/tool/git.rs'
+      - 'src/tool/commit.rs'
+      - 'tests/git_index_publication.rs'
 
 permissions:
   contents: read

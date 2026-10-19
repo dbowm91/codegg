@@ -13,6 +13,8 @@
 //!   2. start_event_bridge (spawn global-bus -> event-log forwarder)
 //!   3. recover_state (interrupted turns -> TurnFailed; stale perms/questions logged)
 //!   4. recover_jobs (prior-generation attempts -> Interrupted/requeue)
+//!   5. reconcile_git_index_publications (C007: unresolved index publications
+//!      -> committed / aborted / ambiguous, from the recorded evidence)
 //!
 //! Socket/daemon entry points (`src/main.rs`) currently run steps 2-4 without
 //! step 1 (pre-existing shape; unchanged by this polish milestone). Do not
@@ -857,6 +859,44 @@ impl CoreDaemon {
         });
     }
 
+    /// C007: resolve the private Git index publications that a prior daemon
+    /// generation left unresolved.
+    ///
+    /// A publication is resolved from the **recorded evidence** — the gitdir
+    /// identity, the fingerprint of the index the staging observed, and the
+    /// fingerprint of the index that was staged — and never by re-running the
+    /// operation. A committed publication is closed, not replayed; an
+    /// ambiguous one is escalated with a typed "unknown outcome" result and
+    /// its private index is retained for inspection.
+    ///
+    /// Best-effort: a failure here never fails the daemon's recovery.
+    pub async fn reconcile_git_index_publications(
+        &self,
+    ) -> Option<crate::git_publication::GitIndexPublicationReconciliationReport> {
+        let Some(pool) = self.pool.as_ref() else {
+            return None;
+        };
+        let store = codegg_core::git_publication::GitIndexPublicationStore::new(pool.clone());
+        let scratch = crate::git_publication::default_publication_scratch_root();
+        let report = crate::git_publication::reconcile_git_index_publications_at_startup(
+            &store,
+            &scratch,
+            crate::git_publication::reconciler::GIT_INDEX_PUBLICATION_MAX_RECONCILE,
+        )
+        .await;
+        let resolved = report.committed + report.aborted + report.ambiguous;
+        if resolved > 0 || report.unresolved > 0 {
+            tracing::info!(
+                committed = report.committed,
+                aborted = report.aborted,
+                ambiguous = report.ambiguous,
+                unresolved = report.unresolved,
+                "git index publication recovery complete"
+            );
+        }
+        Some(report)
+    }
+
     /// Canonical in-process bootstrap sequence: hydrate, bridge, recover.
     ///
     /// Preserves the exact order previously inline in
@@ -872,6 +912,7 @@ impl CoreDaemon {
         if self.recover_jobs().await.is_none() {
             tracing::error!("durable job recovery produced no report during core initialization");
         }
+        self.reconcile_git_index_publications().await;
         Ok(())
     }
 
@@ -879,12 +920,13 @@ impl CoreDaemon {
     ///
     /// Pinned by `bootstrap_phases_match_documented_order`.
     #[cfg(test)]
-    pub(crate) fn bootstrap_phase_names() -> [&'static str; 4] {
+    pub(crate) fn bootstrap_phase_names() -> [&'static str; 5] {
         [
             "hydrate_workspace_registry",
             "start_event_bridge",
             "recover_state",
             "recover_jobs",
+            "reconcile_git_index_publications",
         ]
     }
 }
@@ -925,6 +967,7 @@ mod tests {
                 "start_event_bridge",
                 "recover_state",
                 "recover_jobs",
+                "reconcile_git_index_publications",
             ]
         );
     }
