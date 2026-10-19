@@ -4,7 +4,7 @@ Status: closed
 Source implementation plan: `plans/implementation/agent-workstream-m005-writer-containment-corrective/002-durable-writer-permit-and-quarantine.md`
 Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md` (C002)
 Repository baseline reviewed: `aa65cf7c` (post-C001, post-ADR-0042 acceptance `37a82843`)
-Implementation commits: see §3
+Implementation commits: `190f5df1` (pre-existing branch lints, see §4.2), `7fb56e11` (the permit, the adapter, the schema and the qualification tests)
 Decision: `plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19, option B**)
 
 ## 1. Executive finding
@@ -79,6 +79,8 @@ ADR-0002 and ADR-0032 are unmodified.
 | No user-visible shared-mutation selector activated | There is no `CoreRequest` variant, no CLI command, no protocol surface and no config key for shared mutation. The permit is reachable only from the daemon's own service |
 
 ## 3. Production implementation evidence
+
+Commits: `190f5df1` and `7fb56e11` on `work/agent-workstream-m005-writer-audit`.
 
 **New — `crates/codegg-core/src/writer_permit.rs`** (the authority)
 
