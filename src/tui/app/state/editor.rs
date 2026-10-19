@@ -301,6 +301,17 @@ pub struct EditorState {
     /// Completion popup state bound to this document generation. Typed
     /// candidates and presentation identity only; never document text.
     pub completion: crate::tui::editor_completion::EditorCompletionState,
+    /// A prefix leaf's effect, waiting for the App layer to run it.
+    ///
+    /// One hop, not a second grammar: the prefix resolver sets it and the App
+    /// drains it on the very next statement, so a leaf can never leave a stale
+    /// request armed.
+    ///
+    /// It lives on the editor state rather than on the LSP state because it is
+    /// an **editor** fact, not a language-server one: a file picker and a
+    /// clipboard verb are named here too, and neither is an LSP read. A scope
+    /// change therefore no longer clears it — the document change below does.
+    pub pending_effect: Option<crate::tui::editor_effect::EditorPendingEffect>,
     /// When the quiet-period syntax-highlight re-request is due.
     ///
     /// See [`EditorState::arm_semantic_refresh`]. `None` means nothing is
@@ -331,6 +342,7 @@ impl Default for EditorState {
             close_after_save: false,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
             completion: crate::tui::editor_completion::EditorCompletionState::default(),
+            pending_effect: None,
             highlight: crate::tui::editor_highlight::EditorHighlight::default(),
         }
     }
@@ -450,6 +462,12 @@ impl EditorState {
         self.close_after_save = false;
         self.lsp.reset();
         self.completion.clear();
+        // A parked effect is aimed at the document the editor was showing.
+        // A file picker opened against a document the editor no longer shows
+        // is stale, so a document change discards it — the same fate it had
+        // when the slot lived on the LSP state, but for a reason that no
+        // longer depends on the language server.
+        self.pending_effect = None;
         // The built-in highlighter keys on path, code theme, and revision —
         // and a fresh attachment to an unmodified file is *revision 0*, so
         // reopening the same path after discarding edits would otherwise

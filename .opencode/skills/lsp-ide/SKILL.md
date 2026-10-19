@@ -21,17 +21,33 @@ existing typed unsupported result instead of an unqualified request.
 
 For diagnostics, keep readiness separate from contents: `NotReady` is not an
 empty clean set. Preserve the last complete view until a `Ready` pull arrives.
-The current diagnostics change publisher has no production driver, so do not
-promise ongoing push updates or add implicit polling in a presentation-only
-change.
+M013 gave the change publisher a **daemon-owned** driver
+(`CoreDaemon::start_lsp_diagnostics_driver`), so push updates do arrive now. Do
+not add implicit polling in a presentation-only change, and do not move the
+cadence onto a frontend — a frontend-triggered poll would put the "may start a
+server" decision on whichever client happens to be open.
+
+Reads resolve **which** warm server answers in four steps: an explicit
+`server_id`, then an extension match (only when exactly one warm client claims
+it), then the single warm client, then an `Ambiguous` result naming the
+candidates. `Ambiguous` is not a readiness state — retrying cannot make it go
+away. Warm-only is structural, not a pre-gate check: every daemon read path
+goes through a `*_for_warm_client` entry point, and any new operation must have
+one, or it will resolve a client of its own and can start a server.
 
 The native TUI editor uses F2 for diagnostics, F3 for hover, F4 for
 definition, F5 for references, F6 for document symbols, and F7 for workspace
 symbol search. These are existing `LspDiagnosticsGet`/`LspReadGet` operations;
-bind results to the active editor identity and generation. Semantic tokens
-are only a presentation overlay for the exact controller revision that was
-queried; malformed UTF-16 ranges, overlap, unsupported types, or revision
-changes fall back to plain text.
+bind results to the active editor identity and generation. M013 added the
+Helix leaves on top: `space k` hover, `space s` document symbols, `space S`
+workspace symbols, `space d` diagnostics, `space h` and `gr` references,
+`gd` definition, `gi` implementation, `space f` document symbols. A leaf that
+cannot run says so in the status row rather than doing nothing. `space r`
+(rename), `space a` (code action) and `=` (format) are **unbound**: their
+preview reads exist, but applying an LSP-driven mutation needs an accepted ADR.
+Semantic tokens are only a presentation overlay for the exact controller
+revision that was queried; malformed UTF-16 ranges, overlap, unsupported types,
+or revision changes fall back to plain text.
 
 For location DTOs, preserve display `path` separately from optional
 `workspace_relative_path`. Only the daemon derives this locator after

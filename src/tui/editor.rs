@@ -41,8 +41,11 @@
 
 use codegg_document::{BytePosition, DocumentSnapshot, TextEdit, TextTransaction};
 use codegg_protocol::document::MAX_DOCUMENT_EDITS;
+use codegg_protocol::lsp::LspReadOperation;
 
 use super::document_session::TuiDocumentPresentation;
+use crate::tui::editor_effect::EditorPendingEffect;
+use crate::tui::editor_lsp::EditorDiagnosticStep;
 use crate::tui::helix_selection::{Selection, SelectionMode, SelectionState};
 
 /// Maximum retained undo/redo entries per document attachment.
@@ -299,6 +302,17 @@ pub enum PrefixAction {
     /// name a lie and routed it into `editor_motion`, which is the one place
     /// in the dispatch that promises never to touch text.
     Edit(EditorCommand),
+    /// Ask the editor surface for something, or open the diagnostics panel.
+    ///
+    /// A fourth arm rather than an `EditorCommand` because an effect leaf
+    /// moves no cursor and edits no text: it is a request, and putting it in
+    /// the motion or edit arm would have made a leaf that cannot change the
+    /// buffer look like one that does.
+    ///
+    /// The effect is *named* here, not performed. Resolving a leaf has only
+    /// `&mut EditorState`; a read needs the App's core client. See
+    /// [`EditorPendingEffect`].
+    Effect(EditorPendingEffect),
 }
 
 /// One row of a prefix's leaf table.
@@ -321,8 +335,6 @@ pub struct PrefixLeaf {
 /// the omissions are deliberate and each is a capability this surface does
 /// not have, not an oversight:
 ///
-/// - `gd`/`gy`/`gr`/`gi` — LSP definition/type/reference/implementation. These
-///   belong with the language-server read surface, not here.
 /// - `gf`/`ga`/`gm`/`gn`/`gp`/`.` — files and alternate buffers. Multi-document
 ///   attachment is out of this roadmap's scope.
 /// - `gt`/`gc`/`gb` — top/middle/bottom **of the screen**. Excluded because
@@ -374,17 +386,98 @@ pub const GOTO_LEAVES: &[PrefixLeaf] = &[
         glyph: 'k',
         action: PrefixAction::Motion(EditorCommand::MoveUp),
     },
+    // `gd`/`gi`/`gr` — LSP definition/implementation/references. M013 owns
+    // these; they were previously a silent `Swallowed` no-op.
+    PrefixLeaf {
+        glyph: 'd',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::Definition)),
+    },
+    PrefixLeaf {
+        glyph: 'i',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::Implementation)),
+    },
+    PrefixLeaf {
+        glyph: 'r',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::References)),
+    },
+    // `gy` — type definition. Bound to an explanation rather than left
+    // unbound, because `egg lsp` does not implement `textDocument/
+    // typeDefinition` and offering the operation in the protocol would be a
+    // promise the daemon cannot keep. An unbound `gy` would be
+    // indistinguishable from a key that never arrived; this one says why.
+    PrefixLeaf {
+        glyph: 'y',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "go to type definition: no language server implements it in this build",
+        )),
+    },
 ];
 
-/// Space mode's leaves.
+/// Space mode's leaves, against `https://docs.helix-editor.com/keymap.html`.
 ///
-/// One row today. M010 owns the rest of Helix's space mode — the pickers, the
-/// LSP mappings, `space p`/`space P` — and this table is the surface it adds
-/// them to.
-pub const SPACE_LEAVES: &[PrefixLeaf] = &[PrefixLeaf {
-    glyph: 'y',
-    action: PrefixAction::YankSelection,
-}];
+/// Helix binds about twenty; the omissions are each a capability this surface
+/// does not have:
+///
+/// - `space r` (rename) and `space a` (code action) — the **preview** halves
+///   are on the read surface (`LspReadOperation::RenamePreview`), but applying
+///   either is an LSP *write*, and write authorization for an LSP-driven
+///   mutation has no accepted ADR. Binding them to something that cannot
+///   apply would be worse than absent.
+/// - `space D` / `[D` — workspace diagnostics. The daemon publishes
+///   per-project diagnostics, but there is no server capability behind a
+///   separate "workspace diagnostics" request, so this would be a second name
+///   for the panel `space d` already opens.
+/// - `space w` / `space W` — window/workspace switching, out of scope.
+///
+/// `]`/`[` diagnostic stepping is already bound as bare keys, so the
+/// navigation half of Helix's diagnostics pair needed no new row.
+pub const SPACE_LEAVES: &[PrefixLeaf] = &[
+    PrefixLeaf {
+        glyph: 'y',
+        action: PrefixAction::YankSelection,
+    },
+    PrefixLeaf {
+        glyph: 'k',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::Hover)),
+    },
+    PrefixLeaf {
+        glyph: 's',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::DocumentSymbols)),
+    },
+    // Workspace symbols carry the token under the cursor, exactly as F7 does;
+    // a read with no query is not a request the daemon can answer.
+    PrefixLeaf {
+        glyph: 'S',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(
+            LspReadOperation::WorkspaceSymbols,
+        )),
+    },
+    PrefixLeaf {
+        glyph: 'd',
+        action: PrefixAction::Effect(EditorPendingEffect::OpenDiagnostics),
+    },
+    // Helix's "select references" highlights them in the buffer. There is no
+    // highlight-overlay authority on the read surface yet, so this is the
+    // references read — the part of the gesture that can be honoured.
+    PrefixLeaf {
+        glyph: 'h',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::References)),
+    },
+    // `space f` — Helix's file picker. Multi-document attachment is out of
+    // scope, so the closest honest reading is this document's symbols.
+    PrefixLeaf {
+        glyph: 'f',
+        action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::DocumentSymbols)),
+    },
+    // `space F` — switch to file picker. Same missing capability as `space f`,
+    // and unlike `space f` there is no document-local reading of it.
+    PrefixLeaf {
+        glyph: 'F',
+        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
+            "file picker: multi-document attachment is not available in this build",
+        )),
+    },
+];
 
 /// `[` mode's leaves: the **non-ts subset** of Helix's unimpaired `[` grammar.
 ///
@@ -428,6 +521,13 @@ pub const OPEN_BRACKET_LEAVES: &[PrefixLeaf] = &[
         glyph: 'p',
         action: PrefixAction::Motion(EditorCommand::PrevParagraph),
     },
+    // `[d` — jump to the previous diagnostic.
+    PrefixLeaf {
+        glyph: 'd',
+        action: PrefixAction::Effect(EditorPendingEffect::DiagnosticStep(
+            EditorDiagnosticStep::Backward,
+        )),
+    },
 ];
 
 /// `]` mode's leaves: the non-ts subset of Helix's unimpaired `]` grammar.
@@ -447,6 +547,15 @@ pub const CLOSE_BRACKET_LEAVES: &[PrefixLeaf] = &[
     PrefixLeaf {
         glyph: 'p',
         action: PrefixAction::Motion(EditorCommand::NextParagraph),
+    },
+    // `]d` — jump to the next diagnostic. `]` is forward throughout this
+    // layer, and Helix pairs `[d`/`]d` with the same bracket that arms them,
+    // so the leaf does not carry a direction the prefix has not already said.
+    PrefixLeaf {
+        glyph: 'd',
+        action: PrefixAction::Effect(EditorPendingEffect::DiagnosticStep(
+            EditorDiagnosticStep::Forward,
+        )),
     },
 ];
 
@@ -6368,7 +6477,10 @@ mod tests {
     ///
     /// The leaf column is a **set** where it used to be a single `Option<char>`:
     /// M005 gave goto mode seven leaves, and a one-glyph accessor would have
-    /// meant a special case per prefix. Every other column is unchanged, and
+    /// meant a special case per prefix. M013 grew four of those seven rows and
+    /// two bracket rows into LSP gestures, which is the point of this table: a
+    /// new leaf is an edit to a row here, not a new branch in the dispatcher.
+    /// Every other column is unchanged, and
     /// the facts M002 asserted about `gg` and `space y` — `Goto` accepts `g`,
     /// `Space` accepts `y`, and the four find prefixes accept no leaf at all —
     /// are still asserted here, against the new shape. The four find prefixes
@@ -6389,17 +6501,35 @@ mod tests {
             (EditorPrefix::Idle, vec![], false, "", None),
             (
                 EditorPrefix::Goto,
-                vec!['g', 's', 'e', 'h', 'l', 'j', 'k'],
+                vec!['g', 's', 'e', 'h', 'l', 'j', 'k', 'd', 'i', 'r', 'y'],
                 true,
                 "g",
                 None,
             ),
-            (EditorPrefix::Space, vec!['y'], false, "space", None),
+            (
+                EditorPrefix::Space,
+                vec!['y', 'k', 's', 'S', 'd', 'h', 'f', 'F'],
+                false,
+                "space",
+                None,
+            ),
             // The two unimpaired rows stopped being empty in M006, which is the change
             // this table exists to notice. Claiming a key is supposed to require
             // editing the row here.
-            (EditorPrefix::OpenBracket, vec![' ', 'p'], false, "[", None),
-            (EditorPrefix::CloseBracket, vec![' ', 'p'], false, "]", None),
+            (
+                EditorPrefix::OpenBracket,
+                vec![' ', 'p', 'd'],
+                false,
+                "[",
+                None,
+            ),
+            (
+                EditorPrefix::CloseBracket,
+                vec![' ', 'p', 'd'],
+                false,
+                "]",
+                None,
+            ),
             (
                 EditorPrefix::FindNext,
                 vec![],

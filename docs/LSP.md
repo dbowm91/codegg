@@ -128,7 +128,45 @@ Use the lsp tool to find the definition of the `processRequest` function
 1. File changes are sent to LSP server via `textDocument/didChange`
 2. Server publishes diagnostics via `textDocument/publishDiagnostics`
 3. `DiagnosticsCollector` receives and debounces updates (150ms)
-4. TUI displays diagnostics with severity indicators
+4. The daemon's diagnostics cadence compares what changed and publishes an
+   envelope for each file whose set actually changed
+5. TUI displays diagnostics with severity indicators
+
+The daemon drives step 4 on its own, every 750 ms, for each live session whose
+workspace already has a warm server. Nothing has to ask for it — the editor
+does not poll, and closing it does not stop diagnostics from being delivered.
+If you only need the current state once, `LspDiagnosticsGet` returns it
+directly and remains the correctness authority after a daemon restart.
+
+Diagnostics are reported by **workspace-relative path**, so `src/lib.rs` and
+`tests/lib.rs` are tracked separately.
+
+## Editor Reads
+
+Reads issued from the editor (hover, goto definition, goto implementation,
+references, declaration, document highlights, document and workspace symbols,
+signature help, semantic tokens, formatting preview, rename preview) go through
+the daemon and are **warm-only**: a read never starts a language server. If no
+server is running for your workspace, the read comes back `NotReady`, which
+means "nothing is running yet" — not "no results."
+
+If more than one language server is running for the same workspace and the
+file's extension does not single one out, the read comes back `Ambiguous` and
+names the candidates, rather than silently answering from whichever server
+happened to be first. Name a server explicitly to resolve it. `Ambiguous` is
+not a temporary state: retrying will not change the answer.
+
+If the server is running but does not offer that feature, the read comes back
+`Unsupported` and names the capability it lacks. That is different from
+`NotReady` on purpose: your language server is fine, it simply does not do this,
+and nothing you do will change that.
+
+### Previews change nothing
+
+Formatting and rename can both be asked for, and both return a **preview**: a
+diff, or the list of files a rename would touch. Neither writes to your buffer.
+Applying a language-server-driven edit has not been authorised yet, which is
+why `space r`, `space a` and `=` are not bound to any key.
 
 ## Error Handling
 

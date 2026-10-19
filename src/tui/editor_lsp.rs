@@ -48,6 +48,15 @@ pub enum EditorLspPanel {
     ReadResult,
 }
 
+/// Which way an unimpaired diagnostic leaf walks the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorDiagnosticStep {
+    /// `]d` — forward. `]` is forward throughout this layer.
+    Forward,
+    /// `[d` — backward.
+    Backward,
+}
+
 /// Bounded LSP state attached to one editor generation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditorLspState {

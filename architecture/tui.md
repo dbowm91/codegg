@@ -4967,6 +4967,59 @@ controller snapshot revision and valid non-overlapping UTF-16 ranges;
 unknown token types and malformed/stale results render as plain text. The
 TUI retains no document text outside the controller snapshot.
 
+### Editor LSP keymap and its degradation contract (M013)
+
+M013 bound Helix's LSP gestures into the M005 leaf tables
+(`src/tui/editor.rs`: `SPACE_LEAVES`, `GOTO_LEAVES`) rather than adding a
+second prefix mechanism. `PrefixAction::Effect(EditorPendingEffect)` is a
+fourth arm rather than a bool or an `EditorCommand`, because an LSP leaf moves
+no cursor and edits no text. (M010's W1 generalized the arm: it was
+`PrefixAction::Lsp(EditorLspLeafEffect)` until then, and the effect enum was
+LSP-typed because a file picker is not an LSP fact. The arm, the enum and the
+pending slot now live in `src/tui/editor_effect.rs`.)
+
+| Key | Effect |
+|---|---|
+| `space k` | hover |
+| `space s`, `space f` | document symbols |
+| `space S` | workspace symbols, queried with the token at the cursor |
+| `space d` | refresh and open the diagnostics panel |
+| `space h`, `gr` | references |
+| `gd` | definition |
+| `gi` | implementation |
+| `]d` / `[d` | next / previous diagnostic, cursor moves |
+| `gy` | **unavailable**: no language server implements type definition here |
+| `space F` | **unavailable**: no multi-document file picker |
+| `space r`, `space a`, `=` | **unbound**: applying an LSP-driven mutation has no accepted ADR |
+
+**The two halves of a leaf run at different authority levels.** The prefix
+resolver holds `&mut EditorState` and can decide *what* was asked for; only
+the App holds a core client, a task registry and toasts, so it owns *how* the
+request runs. The leaf parks its effect on `EditorState::pending_effect` and
+`handle_editor_key` drains it on the very next statement. It is one hop, not a
+queued channel: a leaf can never leave a request armed, and a document change
+discards it — the effect is not LSP state, so an LSP scope change no longer
+clears it, but a *document* change does, because an effect aimed at a document
+the editor no longer shows is stale.
+
+**Degradation is a status row, not a toast.** `EditorPendingEffect::Unavailable`
+carries the reason a key is unbound, so a Helix user pressing `gy` learns the
+capability is missing rather than assuming the keypress was dropped. A
+`NotReady` read prints "Language server not ready"; an `Ambiguous` one names the
+several servers running; an `Unsupported` one names the missing server
+capability. None of them falls through to "No results", which would read as a
+clean workspace.
+
+**Capital leaves resolve on both terminal conventions.** `PrefixLeaf::glyph`'s
+doc always claimed the dispatch reconciled `Char('S')`+`NONE` with
+`Char('s')`+`SHIFT`; the lookup gated on `NONE` alone, so `space S` and `space
+F` would have been live on one terminal and dead on another. `leaf_lookup_char`
+now upper-cases under `SHIFT`, which makes the doc true.
+
+F2–F9 are untouched: the function-key `match` in `handle_editor_key` returns
+before `editor_buffer_key` runs, and a leaf is a *second* key after a prefix, so
+the two cannot collide.
+
 ### Completion popup and transactional acceptance (M004)
 
 The completion popup consumes the M003 `LspCompletionGet` surface and

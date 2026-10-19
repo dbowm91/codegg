@@ -1,7 +1,9 @@
 # TUI editor Helix parity Milestone 013 — LSP read delivery and editor reachability
 
-Status: ready for handoff
-Repository baseline: `84440fe7f` (`feat/auto-20261018-12255c45`)
+Status: closed
+Closure: `plans/closure/tui-editor-helix-parity/013-status.md`
+Repository baseline: `84440fe7f` (`feat/auto-20261018-12255c45`); W1/W2 were
+implemented against `a8778e87c`
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7 M013
 Long-term requirements: `plans/000-long-term-specification.md` (IDE-grade

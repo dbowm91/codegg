@@ -457,6 +457,34 @@ impl LspOperations {
         )
         .await?;
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.semantic_tokens_with_key(&key, file_path, max_tokens)
+            .await
+    }
+
+    /// `textDocument/semanticTokens/full` against an already-warm client key.
+    /// Warm-only by construction; see
+    /// [`Self::completion_for_warm_client`].
+    pub async fn semantic_tokens_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        max_tokens: usize,
+    ) -> Result<Vec<DecodedSemanticToken>, LspError> {
+        self.require_capability_for_key(
+            key,
+            crate::capability::LspSemanticOperation::SemanticTokens,
+        )
+        .await?;
+        self.semantic_tokens_with_key(key, file_path, max_tokens)
+            .await
+    }
+
+    async fn semantic_tokens_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        max_tokens: usize,
+    ) -> Result<Vec<DecodedSemanticToken>, LspError> {
         let uri = url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -469,7 +497,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/semanticTokens/full", params)
+            .send_request(key, "textDocument/semanticTokens/full", params)
             .await?;
 
         if resp.is_null() {
@@ -512,12 +540,42 @@ impl LspOperations {
         line: u32,
         column: u32,
     ) -> Result<Option<super::signature::SignatureHelpSummary>, LspError> {
-        self.require_capability(
-            file_path,
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.signature_help_typed_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// [`signature_help_typed`](Self::signature_help_typed) against an
+    /// already-warm client key.
+    ///
+    /// Warm-only by construction: the caller resolved `key` itself, so this
+    /// method can never transitively reach `get_or_create_client` and start a
+    /// language server. The capability gate is taken against the same key —
+    /// a gate that resolved its own client could answer about a *different*
+    /// server than the one that answers the request.
+    pub async fn signature_help_typed_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Option<super::signature::SignatureHelpSummary>, LspError> {
+        self.signature_help_typed_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn signature_help_typed_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Option<super::signature::SignatureHelpSummary>, LspError> {
+        self.require_capability_for_key(
+            key,
             crate::capability::LspSemanticOperation::SignatureHelp,
         )
         .await?;
-        let (key, _root) = self.service.get_or_create_client(file_path).await?;
         let uri = url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -536,7 +594,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/signatureHelp", params)
+            .send_request(key, "textDocument/signatureHelp", params)
             .await?;
 
         if resp.is_null() {

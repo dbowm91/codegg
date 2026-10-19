@@ -567,6 +567,29 @@ impl EditorWidget<'_> {
                     if result.status == LspReadStatus::NotReady {
                         lines.push(Line::from("Language server not ready"));
                     }
+                    if result.status == LspReadStatus::Ambiguous {
+                        // Not an empty result. Falling through to "No results"
+                        // would tell the user the workspace is clean at this
+                        // position, when in fact the daemon declined to
+                        // choose between two healthy servers.
+                        lines.push(Line::from(
+                            "Several language servers are running for this workspace",
+                        ));
+                    }
+                    if result.status == LspReadStatus::Unsupported {
+                        // A live server that simply does not do this. Reporting
+                        // it as "not ready" would send the user looking for a
+                        // server that is already running and already answered.
+                        let capability = match result.payload.as_ref() {
+                            Some(LspReadPayloadDto::UnsupportedCapability { capability }) => {
+                                capability.as_str()
+                            }
+                            _ => "this operation",
+                        };
+                        lines.push(Line::from(format!(
+                            "The language server does not support this ({capability})"
+                        )));
+                    }
                     match result.payload.as_ref() {
                         Some(LspReadPayloadDto::Hover { text, .. }) => lines.push(Line::from(
                             crate::tui::editor_lsp::truncate_chars(text, 240),
@@ -603,7 +626,144 @@ impl EditorWidget<'_> {
                                 ))
                             }),
                         ),
-                        _ => {}
+                        Some(LspReadPayloadDto::AmbiguousClients { candidates }) => {
+                            lines.push(Line::from("Name one to answer:"));
+                            lines.extend(candidates.iter().take(8).map(|candidate| {
+                                Line::from(format!(
+                                    "  · {}",
+                                    crate::tui::editor_lsp::truncate_chars(candidate, 80)
+                                ))
+                            }));
+                        }
+                        Some(LspReadPayloadDto::Highlights { highlights, .. }) => {
+                            lines.extend(highlights.iter().take(8).enumerate().map(
+                                |(index, entry)| {
+                                    Line::from(format!(
+                                        "{}{}:{} · {}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        entry.range.start_line + 1,
+                                        entry.range.start_column + 1,
+                                        // The server's own read/write
+                                        // classification, carried rather than
+                                        // reinterpreted — the same contract
+                                        // `LspSymbolDto::kind` follows.
+                                        match entry.kind {
+                                            Some(2) => "read",
+                                            Some(3) => "write",
+                                            Some(_) => "text",
+                                            None => "occurrence",
+                                        }
+                                    ))
+                                },
+                            ))
+                        }
+                        Some(LspReadPayloadDto::SignatureHelp {
+                            signatures,
+                            active_signature,
+                            active_parameter,
+                        }) => {
+                            if signatures.is_empty() {
+                                lines.push(Line::from("No signature at this position"));
+                            }
+                            lines.extend(signatures.iter().take(8).enumerate().map(
+                                |(index, signature)| {
+                                    Line::from(format!(
+                                        "{}{}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        crate::tui::editor_lsp::truncate_chars(
+                                            &signature.label,
+                                            200,
+                                        )
+                                    ))
+                                },
+                            ));
+                            // Which overload the server considers live, if it
+                            // said. Left as a separate line rather than
+                            // spliced into the label: the label is the
+                            // server's text and rewriting it would make the
+                            // panel disagree with what was returned.
+                            if let Some(active) = active_signature {
+                                let active = *active as usize;
+                                let parameter = active_parameter.map(|p| p.to_string());
+                                lines.push(Line::from(format!(
+                                    "active signature {}{}",
+                                    active + 1,
+                                    parameter
+                                        .map(|p| format!(" · argument {p}"))
+                                        .unwrap_or_default()
+                                )));
+                            }
+                        }
+                        Some(LspReadPayloadDto::FormatPreview(preview)) => {
+                            if preview.diff.is_empty() {
+                                lines.push(Line::from("Already formatted — no changes"));
+                            } else {
+                                if preview.base_stale {
+                                    lines.push(Line::from(
+                                        "The file changed while this preview was built; it is stale",
+                                    ));
+                                }
+                                lines.push(Line::from(format!(
+                                    "{} edit(s) · not applied",
+                                    preview.edit_count
+                                )));
+                                lines.extend(preview.diff.lines().take(16).map(|line| {
+                                    Line::from(crate::tui::editor_lsp::truncate_chars(line, 200))
+                                }));
+                            }
+                        }
+                        Some(LspReadPayloadDto::RenamePreview(preview)) => {
+                            lines.push(Line::from(format!(
+                                "{} → {} · {} edit(s) in {} file(s) · not applied",
+                                preview.old_name.as_deref().unwrap_or("(symbol)"),
+                                preview.new_name,
+                                preview.edit_count,
+                                preview.files.len()
+                            )));
+                            if preview.base_stale {
+                                lines.push(Line::from(
+                                    "A file changed while this preview was built; it is stale",
+                                ));
+                            }
+                            lines.extend(preview.files.iter().take(8).enumerate().map(
+                                |(index, file)| {
+                                    Line::from(format!(
+                                        "{}{} · {} edit(s)",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        file.path,
+                                        file.edit_count
+                                    ))
+                                },
+                            ));
+                            lines.extend(preview.warnings.iter().take(4).map(|warning| {
+                                Line::from(format!(
+                                    "  ! {}",
+                                    crate::tui::editor_lsp::truncate_chars(warning, 120)
+                                ))
+                            }));
+                        }
+                        // Two payloads whose explanation is rendered above, next to
+                        // the status it belongs to, rather than here: semantic
+                        // tokens are a presentation overlay consumed by
+                        // `request_editor_semantic_tokens`, and an unsupported
+                        // capability already printed its own line. Explicit
+                        // arms rather than a wildcard, so a new payload cannot
+                        // slip through unrendered and print "No results".
+                        Some(LspReadPayloadDto::SemanticTokens { .. }) => {}
+                        Some(LspReadPayloadDto::UnsupportedCapability { .. }) => {}
+                        None => {}
                     }
                 }
                 if lines.is_empty() {

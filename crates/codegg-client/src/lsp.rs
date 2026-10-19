@@ -254,10 +254,16 @@ pub fn operation_label(operation: LspReadOperation) -> &'static str {
     match operation {
         LspReadOperation::Hover => "hover",
         LspReadOperation::Definition => "definition",
+        LspReadOperation::Declaration => "declaration",
+        LspReadOperation::Implementation => "implementation",
         LspReadOperation::References => "references",
+        LspReadOperation::DocumentHighlight => "document highlights",
         LspReadOperation::DocumentSymbols => "document symbols",
         LspReadOperation::WorkspaceSymbols => "workspace symbols",
         LspReadOperation::SemanticTokens => "semantic tokens",
+        LspReadOperation::SignatureHelp => "signature help",
+        LspReadOperation::FormatPreview => "format preview",
+        LspReadOperation::RenamePreview => "rename preview",
     }
 }
 

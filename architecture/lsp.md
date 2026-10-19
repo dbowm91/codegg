@@ -861,24 +861,98 @@ structural, not incidental: `src/main.rs:2894` builds the frontend's
 `LspTool` only under `if !is_socket_mode`, so a daemon-connected client had
 **no LSP at all**.
 
-#### Two request variants, not seven
+#### Two request variants, not twelve
 
-`CoreRequest::LspReadGet` covers hover, definition, references, document
-symbols, workspace symbols, and semantic tokens through an
-`LspReadOperation` enum. All six share one authority (`file.read` via
-session), one handler, and one cost profile, so six variants would mean six
-arms of identical policy and six chances to drift.
+`CoreRequest::LspReadGet` covers hover, definition, declaration, implementation,
+references, document highlight, document symbols, workspace symbols, semantic
+tokens, signature help, formatting preview and rename preview through an
+`LspReadOperation` enum. All twelve share one authority (`file.read` via
+session), one handler, and one cost profile, so twelve variants would mean
+twelve arms of identical policy and twelve chances to drift.
 
 `CoreRequest::LspDiagnosticsGet` stays separate because its scope genuinely
 differs: `direct_project`, matching the project stream it backs.
 
+**The operations are split three ways, not two.** `is_point` (path + position),
+`is_file_scoped` (path, no position: document symbols, semantic tokens, format
+preview) and `is_workspace` (query, no path). Document symbols and semantic
+tokens used to ride inside `is_point` with a line exemption bolted on, so the
+predicate meant two different things at once and a whole-document format
+preview would have been told it needed a cursor it does not have.
+
+**Three facts, three statuses.** `NotReady` (no warm server — start one),
+`Ambiguous` (several — name one) and `Unsupported` (a live server that does not
+do this — neither will help) are never collapsed. `Unsupported` exists because
+a server that never advertised `renameProvider` has still *answered*; reporting
+it as `NotReady` would send a client into a retry loop that can never succeed.
+The result names the actual `ServerCapabilities` key via
+`LspReadOperation::capability`, so a client can point at the server's own
+documentation rather than at a protocol-invented label.
+
+**Previews are previews.** `FormatPreview` and `RenamePreview` return a diff and
+a file list. Neither applies anything. Applying an LSP-driven mutation needs an
+accepted ADR, which does not exist, so both are unbound in the editor today even
+though the reads are on the wire. A rename preview additionally requires
+`new_name`: the whole question is what *that* name would touch, and inventing a
+placeholder when the server advertised no `prepareRename` would be a guess about
+what the user is renaming. `new_name` is rejected on every other operation, so
+a rename name cannot ride along on an unrelated read where nothing would
+consume it.
+
 #### Warm-only reads
 
-A read calls `find_existing_client_for_root_hint`, which resolves an existing
-client or errors and **never falls through to a create path**. A cold read
+A read resolves one warm client key through `resolve_warm_client` and hands *that
+key* to the query, which reaches the server through an `*_for_warm_client`
+entry point. Neither step can reach `get_or_create_client`, so a cold read
 returns `LspReadStatus::NotReady`, which carries no payload — so a caller
 cannot render a warming workspace as clean code by accident. This is
 structural rather than a check someone has to remember.
+
+M013 replaced a weaker version of this that only *looked* structural. The gate
+resolved a client, and the query then discarded it and re-resolved through
+`get_or_create_client`, which computes its own root from the target file and
+its own server id from the file's language. That second resolution could
+disagree with the root the gate checked, and could **start a language
+server**. Warm-only is now a property of the call graph.
+
+`workspace_symbols` was the worst case: it never took a path at all, and
+routed to whichever client `first_client_key()` returned, so in a polyglot
+workspace its answer depended on hash-map iteration order rather than on
+anything about the request.
+
+#### Resolving which server answers
+
+`resolve_warm_client` answers three situations with three outcomes:
+
+| Situation | Outcome | Status |
+|---|---|---|
+| No client for the root | `WarmClient::Cold` | `NotReady` |
+| Several clients, none selected | `WarmClient::Ambiguous { candidates }` | `Ambiguous` |
+| Exactly one, or one selected | `WarmClient::Resolved { key }` | `Ready` |
+
+The order is deliberate and every step can only narrow the choice:
+
+1. **Explicit `server_id`** from `LspReadRequestDto`. Additive and
+   `#[serde(default)]`, so an older client omits it and an older daemon
+   ignores it. A named-but-cold server is `Cold`, not `Ambiguous`: there is
+   genuinely no warm server for what was asked for, and "several" would be
+   false.
+2. **Extension match**, and only when *exactly one* warm client claims the
+   target's extension. `egglsp::server::servers_for_extension` returns every
+   claimant rather than the first, precisely so this step can see a second one;
+   two claimants is a polyglot answer, not a pick.
+3. **Exactly one warm client.**
+4. **Otherwise ambiguous**, naming the candidates.
+
+`Ambiguous` is not a readiness state and must not be treated as one: retrying
+does not make the ambiguity go away. It carries `AmbiguousClients`, which holds
+**no answer** — only the server ids to choose from — and is constructed only
+through `LspReadResultDto::ambiguous`, so an ambiguity always names its
+candidates and never carries a result.
+
+Before M013 every one of the resolver's errors was mapped to `NotReady`, so a
+polyglot workspace with two healthy servers was indistinguishable from a cold
+one: same status, same absent payload, same “nothing to see yet.”
 
 Denial is *not* `NotReady`. A precondition failure is an `CoreResponse::Error`
 with a non-enumerable message; `NotReady` means "no warm server". Conflating
@@ -974,10 +1048,33 @@ is `NotReady`; it must preserve the client's previous view and must never be
 rendered as “no diagnostics.” Older daemon responses that omit this additive
 field deserialize as `NotReady` for compatibility and safety.
 
-The change publisher currently has no production driver. The subscribe path
-provides its initial authoritative snapshot, but this implementation does not
-emit ongoing diagnostic changes. Consumers must use the pull result and must
-not claim live push updates until a separately qualified driver exists.
+The change publisher is driven by a daemon-owned cadence. M013 found
+`publish_changed_diagnostics` with **zero callers**: the store, the digest
+tracker, the resync authority and the publisher all existed, and nothing ever
+ran them, so `LspDiagnosticsUpdated` was never emitted and every client read
+the stream as permanently cold. `start_lsp_diagnostics_driver` spawns it in the
+serving daemon (`src/main.rs`), ticking every `DIAGNOSTICS_POLL_INTERVAL`.
+
+Three decisions inside the driver are load-bearing:
+
+- **The daemon owns the cadence, not a frontend.** ADR-0011 allows a process
+  with a workspace root to start a language server. A frontend-triggered poll
+  would put that decision on whichever client happened to be open, and
+  `NotReady` would then be indistinguishable from “this client never asked.”
+- **It enumerates `SessionRuntimeRegistry`, not the session table.** The
+  registry holds sessions this daemon has actually resolved, so a session from
+  a previous run — with a root that may since have been deleted — is not
+  walked every 750 ms forever.
+- **It holds a `Weak`**, so the task ends when the daemon does instead of
+  keeping it alive.
+
+The publisher is scoped to one workspace root. It used to walk *every* client
+in the process, so with two projects open each project's tracker recorded the
+other project's files. Diagnostic paths are resolved to full
+**workspace-relative** paths, not file names: the previous file-name-only key
+made `src/lib.rs` and `tests/lib.rs` the same entry, so the second silently
+overwrote the first and a client was shown one file's diagnostics under the
+other's name.
 
 ### Completion read surface (M003, ADR-0021 Option B)
 

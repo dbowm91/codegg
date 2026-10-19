@@ -881,14 +881,39 @@ difference this surface can show.
 
 Not bound, on purpose rather than by omission:
 
-- `gd`, `gy`, `gr`, `gi` — the language-server jumps. They arrive with the LSP
-  read surface; until then `g` followed by one of them is an unbound key.
 - `gf`, `ga`, `gm`, `gn`, `gp` — files and alternate buffers. One document is
   open at a time.
 - `gt`, `gc`, `gb` — top, middle and bottom **of the screen**. These need the
   real viewport height, and motions currently resolve against a fixed guess at
   it, so binding them today would land on a line that is not the top of your
   screen.
+
+The language-server jumps are bound, through the space and `g` menus:
+
+| Key | What it asks the language server |
+|---|---|
+| `space k` | hover at the cursor |
+| `space s`, `space f` | this document's symbols |
+| `space S` | workspace symbols, searched for the word at the cursor |
+| `space d` | open the diagnostics panel |
+| `space h`, `gr` | references |
+| `gd` | go to definition |
+| `gi` | go to implementation |
+
+Two more say why they cannot run rather than doing nothing:
+
+- `gy` — go to type definition. No language server implements it here, so the
+  editor tells you that instead of leaving the key dead.
+- `space F` — the file picker. One document is open at a time, so there is
+  nothing to switch to.
+
+`space r` (rename), `space a` (code action) and `=` (format) are deliberately
+**not** bound. Each would change your buffer through a language server, and
+that permission has not been decided yet — so rather than offer a key that
+could only ever preview, they are absent.
+
+The function keys do the same jobs and keep working: F2 diagnostics, F3 hover,
+F4 definition, F5 references, F6 document symbols, F7 workspace symbols.
 
 ### Unimpaired navigation
 
@@ -925,14 +950,19 @@ only unimpaired keys here that write — while `]p` and `[p` still work.
 
 Not bound, because nothing in this codebase can answer them yet:
 
-- `[q`, `[Q`, `[F`, `[f`, `[n`, `[%`, `[i`, `[c`, `[s`, `[t`, `[d`, `[b` —
+- `[q`, `[Q`, `[F`, `[f`, `[n`, `[%`, `[i`, `[c`, `[s`, `[t`, `[b` —
   unimpaired's find family: definitions, type definitions, workspace search,
-  occurrences, todos, files, configuration, diagnostics.
+  occurrences, todos, files, configuration.
 - `[a`, `[v`, `[w`, `[e` — quotes and words. A half-built `[w` would be worse
   than none, since it would look like `[W` was simply broken.
-- `[d`, `[D`, `[g`, `[G`, `]g`, `]G` — diagnostics and change navigation. Change
-  navigation in particular has no reachable data source: the VCS layer reports
-  which files changed, not which lines.
+- `[D`, `]D` — workspace diagnostics. There is no server capability behind a
+  separate "all diagnostics" request, so these would only be a second name for
+  the panel `space d` already opens.
+- `[g`, `[G`, `]g`, `]G` — change navigation. This has no reachable data source:
+  the VCS layer reports which files changed, not which lines.
+
+`[d` and `]d` **are** bound: they step to the previous and next diagnostic and
+move the cursor there, wrapping at either end.
 
 ### Long words
 

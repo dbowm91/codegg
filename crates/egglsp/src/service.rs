@@ -1410,11 +1410,26 @@ impl LspService {
 
     pub async fn open_file(&self, file_path: &Path, text: &str) -> Result<(), LspError> {
         let (key, _root) = self.get_or_create_client(file_path).await?;
+        self.open_file_for_key(&key, file_path, text).await
+    }
 
+    /// [`open_file`](Self::open_file) against an already-warm client key.
+    ///
+    /// Warm-only by construction (ADR-0012 §3): the caller resolved `key`
+    /// itself, so synchronizing a document onto an already-running server can
+    /// never transitively reach `get_or_create_client` and launch one. A read
+    /// that has to open the file to see its text must be able to fail instead
+    /// of starting a language server as a side effect.
+    pub async fn open_file_for_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        text: &str,
+    ) -> Result<(), LspError> {
         let client = {
             let clients = self.clients.read().await;
             clients
-                .get(&key)
+                .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
@@ -1438,7 +1453,7 @@ impl LspService {
         self.document_owners
             .write()
             .await
-            .insert(uri.to_string(), key.clone());
+            .insert(uri.to_string(), key.to_string());
 
         // Record in the authoritative document registry for restart replay.
         let language_id = file_path
@@ -1447,7 +1462,7 @@ impl LspService {
             .unwrap_or("")
             .to_string();
         self.document_registry
-            .open(&key, uri.clone(), language_id, version, text.to_string())
+            .open(key, uri.clone(), language_id, version, text.to_string())
             .await;
 
         Ok(())
@@ -1467,10 +1482,24 @@ impl LspService {
         dirty: bool,
     ) -> Result<(), LspError> {
         let (key, _) = self.get_or_create_client(file_path).await?;
+        self.set_managed_document_for_key(&key, file_path, text, dirty)
+            .await
+    }
+
+    /// [`set_managed_document`](Self::set_managed_document) against an
+    /// already-warm client key. Warm-only by construction; see
+    /// [`Self::open_file_for_key`].
+    pub async fn set_managed_document_for_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        text: &str,
+        dirty: bool,
+    ) -> Result<(), LspError> {
         let client = {
             let clients = self.clients.read().await;
             clients
-                .get(&key)
+                .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
@@ -1482,12 +1511,12 @@ impl LspService {
         let language_id = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if previous_version.is_some() {
             self.document_registry
-                .change_managed(&key, &uri, version, text.to_string(), dirty)
+                .change_managed(key, &uri, version, text.to_string(), dirty)
                 .await;
         } else {
             self.document_registry
                 .open_managed(
-                    &key,
+                    key,
                     uri.clone(),
                     language_id,
                     version,
@@ -1499,14 +1528,14 @@ impl LspService {
         self.document_owners
             .write()
             .await
-            .insert(uri.to_string(), key.clone());
+            .insert(uri.to_string(), key.to_string());
         let result = if previous_version.is_some() {
             client.update_file(&uri, text, version).await
         } else {
             client.open_file(&uri, text, version).await
         };
         self.document_registry
-            .set_sync_stale(&key, &uri, result.is_err())
+            .set_sync_stale(key, &uri, result.is_err())
             .await;
         result?;
         Ok(())
@@ -1519,11 +1548,21 @@ impl LspService {
 
     pub async fn update_file(&self, file_path: &Path, text: &str) -> Result<(), LspError> {
         let (key, _root) = self.get_or_create_client(file_path).await?;
+        self.update_file_for_key(&key, file_path, text).await
+    }
 
+    /// [`update_file`](Self::update_file) against an already-warm client key.
+    /// Warm-only by construction; see [`Self::open_file_for_key`].
+    pub async fn update_file_for_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        text: &str,
+    ) -> Result<(), LspError> {
         let client = {
             let clients = self.clients.read().await;
             clients
-                .get(&key)
+                .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
@@ -1545,7 +1584,7 @@ impl LspService {
 
         // Record change in the authoritative document registry.
         self.document_registry
-            .change(&key, &uri, version, text.to_string())
+            .change(key, &uri, version, text.to_string())
             .await;
 
         Ok(())
@@ -2063,22 +2102,41 @@ impl LspService {
         file_path: &Path,
     ) -> Result<(String, String), LspError> {
         let (key, _root) = self.get_or_create_client(file_path).await?;
+        let uri_str = self
+            .ensure_file_open_from_disk_for_key(&key, file_path)
+            .await?;
+        Ok((key, uri_str))
+    }
+
+    /// [`ensure_file_open_from_disk`](Self::ensure_file_open_from_disk)
+    /// against an already-warm client key, returning the document URI.
+    ///
+    /// Warm-only by construction. This helper is where the file-path form's
+    /// hidden server launch lived: it resolved a client itself, then each of
+    /// the open/refresh helpers it delegated to resolved one *again*. Keying
+    /// only the entry point would therefore have bought nothing — every call
+    /// routed below is the keyed form so the whole path stays warm.
+    pub async fn ensure_file_open_from_disk_for_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+    ) -> Result<String, LspError> {
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
         let uri_str = uri.to_string();
 
-        let is_open = self.is_file_open(&key, &uri_str).await?;
+        let is_open = self.is_file_open(key, &uri_str).await?;
 
         // Canonical editor text outranks disk for managed documents. In
         // particular, a hover/completion lookup must not overwrite unsaved
         // text merely because this legacy helper is disk-oriented.
-        if let Some(managed) = self.document_registry.managed_snapshot(&key, &uri).await {
+        if let Some(managed) = self.document_registry.managed_snapshot(key, &uri).await {
             if !is_open || managed.sync_stale {
-                self.set_managed_document(file_path, &managed.text, managed.dirty)
+                self.set_managed_document_for_key(key, file_path, &managed.text, managed.dirty)
                     .await?;
             }
-            return Ok((key, uri_str));
+            return Ok(uri_str);
         }
 
         let text = tokio::fs::read_to_string(file_path).await.map_err(|e| {
@@ -2090,12 +2148,12 @@ impl LspService {
         })?;
 
         if is_open {
-            self.update_file(file_path, &text).await?;
+            self.update_file_for_key(key, file_path, &text).await?;
         } else {
-            self.open_file(file_path, &text).await?;
+            self.open_file_for_key(key, file_path, &text).await?;
         }
 
-        Ok((key, uri_str))
+        Ok(uri_str)
     }
 
     pub async fn get_diagnostics_for_key(
@@ -2372,6 +2430,30 @@ impl LspService {
         self.operational_state_for_key(&key).await
     }
 
+    /// Keys of every **existing** client rooted at `root`, sorted.
+    ///
+    /// This is the disambiguation input for a caller that has to tell three
+    /// situations apart — no client, exactly one, and several — because
+    /// [`Self::find_existing_client_for_root_hint`] can only answer "one" or
+    /// an `Err` that reads the same for both of the others.
+    ///
+    /// It matches the same `"<root>:<server_id>"` prefix the resolver matches
+    /// on, and the resolver is built on top of it, so the set a caller
+    /// disambiguates over and the set the resolver picks from cannot drift.
+    /// Sorted, because a caller that renders the candidates must not order
+    /// them by hash-map iteration.
+    pub async fn existing_client_keys_for_root(&self, root: &Path) -> Vec<String> {
+        let prefix = format!("{}:", root.display());
+        let mut keys: Vec<String> = self
+            .client_keys()
+            .await
+            .into_iter()
+            .filter(|key| key.starts_with(&prefix))
+            .collect();
+        keys.sort();
+        keys
+    }
+
     pub async fn find_existing_client_for_root_hint(
         &self,
         root_hint: Option<&Path>,
@@ -2381,11 +2463,11 @@ impl LspService {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-        let keys = self.client_keys().await;
+        let matching = self.existing_client_keys_for_root(&root).await;
 
         if let Some(sid) = server_id {
             let key = format!("{}:{}", root.display(), sid);
-            if keys.contains(&key) {
+            if matching.contains(&key) {
                 return Ok((key, root));
             }
             return Err(LspError::ServerNotFound(format!(
@@ -2393,12 +2475,6 @@ impl LspService {
                 root.display()
             )));
         }
-
-        let matching: Vec<_> = keys
-            .iter()
-            .filter(|k| k.starts_with(&format!("{}:", root.display())))
-            .cloned()
-            .collect();
 
         if matching.len() == 1 {
             return Ok((matching.into_iter().next().unwrap(), root));

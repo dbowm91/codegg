@@ -39,6 +39,8 @@ use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::{spawn_registered_tui_task, spawn_scoped_registered_tui_task};
 use crate::tui::document_session::{TuiDocumentPresentation, TuiDocumentSession};
 use crate::tui::editor::{self, EditorCommand, EditorCommandName, EditorMode, EditorPrefix};
+use crate::tui::editor_effect::{ClipboardVerb, EditorPendingEffect};
+use crate::tui::editor_lsp::EditorDiagnosticStep;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 use super::super::editor_completion::EditorCompletionScope;
@@ -688,6 +690,10 @@ fn start_editor_lsp_read(app: &mut App, operation: LspReadOperation, query: Opti
         line,
         column,
         query,
+        // The editor does not pin a server. The daemon resolves one from the
+        // target's extension, and reports an ambiguity instead of guessing.
+        server_id: None,
+        new_name: None,
     };
     if let Err(error) = request.validate() {
         app.editor_state.lsp.read_loading = false;
@@ -1702,43 +1708,6 @@ fn editor_editing_verb(
     submit_edit(state, edit);
 }
 
-/// One verb whose payload is the system clipboard's contents.
-///
-/// The clipboard is not editor state, so these three are reported to the App
-/// layer and performed there, in the same division of labour as
-/// [`yank_editor_range`]: the buffer resolves the *target*, the App layer
-/// owns the *bytes*. There is no local register — `space y` writes to the
-/// OS clipboard and nothing else, so what `p` pastes is whatever the
-/// clipboard holds, including text from another application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClipboardVerb {
-    /// `p` — paste after the selection, or after the character under the
-    /// cursor.
-    PasteAfter,
-    /// `P` — paste before the selection, or before the character under the
-    /// cursor.
-    PasteBefore,
-    /// `R` — replace the selection, or the character under the cursor, with
-    /// the clipboard's contents.
-    Replace,
-}
-
-impl ClipboardVerb {
-    /// Build this verb's edit against `snapshot` with the clipboard's `text`.
-    fn build(
-        self,
-        snapshot: &codegg_document::DocumentSnapshot,
-        presentation: &TuiDocumentPresentation,
-        text: &str,
-    ) -> Option<editor::EditorEdit> {
-        match self {
-            Self::PasteAfter => editor::paste_after(snapshot, presentation, text),
-            Self::PasteBefore => editor::paste_before(snapshot, presentation, text),
-            Self::Replace => editor::replace_with_text(snapshot, presentation, text),
-        }
-    }
-}
-
 /// Read the clipboard and run one clipboard-backed verb.
 fn run_clipboard_verb(app: &mut App, verb: ClipboardVerb) {
     apply_clipboard_text(app, verb, crate::util::clipboard::read_from_clipboard());
@@ -2161,7 +2130,12 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
     }
     // Lifecycle round trips stay on the App layer, so the buffer handler
     // reports the request instead of performing it.
-    match editor_buffer_key(&mut app.editor_state, app.ui_state.input_mode, key) {
+    //
+    // Drained here, on the very next statement after the buffer handler
+    // returns. A prefix leaf can therefore never leave an LSP request parked:
+    // either this runs in the same keypress, or the scope change that reset
+    // the editor's LSP state already discarded it.
+    let consumed = match editor_buffer_key(&mut app.editor_state, app.ui_state.input_mode, key) {
         BufferKey::Consumed => true,
         // Normal mode deliberately returns `false` for a key it does not own.
         // That is what hands typing to the bottom input box while the buffer
@@ -2221,6 +2195,78 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             run_editor_command(app, command, argument);
             true
         }
+    };
+    if let Some(effect) = app.editor_state.pending_effect.take() {
+        run_editor_pending_effect(app, effect);
+    }
+    consumed
+}
+
+/// Move the cursor one diagnostic along, in the direction the bracket said.
+///
+/// The selection index is the cursor through the list, and the jump itself is
+/// [`jump_to_selected_diagnostic`]'s — the same code F2's panel selection uses.
+/// Stepping past either end wraps, because a list you can walk off the end of
+/// is a list that silently stops working at the last file; wrapping is also
+/// what Helix does. With no diagnostics loaded it says so rather than doing
+/// nothing, for the same reason an unbound leaf explains itself.
+fn step_editor_diagnostic(app: &mut App, direction: EditorDiagnosticStep) {
+    let count = app.editor_state.lsp.diagnostics.len();
+    if count == 0 {
+        app.editor_state.set_notice(EditorNotice::Note(
+            "No diagnostics yet — run the diagnostics check first".to_string(),
+        ));
+        return;
+    }
+    let next = match direction {
+        EditorDiagnosticStep::Forward => (app.editor_state.lsp.selected_index + 1) % count,
+        // `selected_index` is a usize, so `0 - 1` is a debug panic and a
+        // silent wrap to usize::MAX in release. The wrapping arithmetic is
+        // done here instead.
+        EditorDiagnosticStep::Backward => (app.editor_state.lsp.selected_index + count - 1) % count,
+    };
+    app.editor_state.lsp.selected_index = next;
+    jump_to_selected_diagnostic(&mut app.editor_state);
+}
+
+/// Run the editor effect one Helix leaf named.
+///
+/// The App layer owns the core client, the task registry and the toasts, which
+/// is exactly why the prefix resolver stops at naming the effect. Every arm
+/// reports something: a leaf that neither answers nor explains would be the
+/// same silent no-op M002 recorded.
+fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
+    match effect {
+        EditorPendingEffect::Read(LspReadOperation::WorkspaceSymbols) => {
+            // A workspace-symbol read is defined by its query, and there is no
+            // picker to supply one. The token under the cursor is what F7
+            // already uses, and it is the only query a keypress can carry.
+            let Some(query) = editor_word_at_cursor(&app.editor_state) else {
+                app.messages_state.toasts.info("No symbol at the cursor");
+                return;
+            };
+            start_editor_lsp_read(app, LspReadOperation::WorkspaceSymbols, Some(query));
+        }
+        EditorPendingEffect::Read(operation) => start_editor_lsp_read(app, operation, None),
+        EditorPendingEffect::OpenDiagnostics => {
+            refresh_editor_diagnostics(app);
+            app.editor_state.lsp.open_diagnostics_panel();
+        }
+        EditorPendingEffect::DiagnosticStep(direction) => {
+            step_editor_diagnostic(app, direction);
+        }
+        EditorPendingEffect::Unavailable(reason) => {
+            app.editor_state
+                .set_notice(EditorNotice::Note(reason.to_string()));
+        }
+        // The clipboard family, the file picker and the command palette are
+        // bound by the later work packages of this milestone. No leaf
+        // constructs them yet, so this arm is unreachable: it exists so the
+        // match is total, and each binding replaces its own variant here.
+        EditorPendingEffect::Clipboard(_)
+        | EditorPendingEffect::YankPrimary
+        | EditorPendingEffect::OpenFilePicker
+        | EditorPendingEffect::OpenCommandPalette => {}
     }
 }
 
@@ -2379,6 +2425,12 @@ fn lsp_result_count(state: &crate::tui::editor_lsp::EditorLspState) -> usize {
     {
         Some(LspReadPayloadDto::Locations { locations, .. }) => locations.len(),
         Some(LspReadPayloadDto::Symbols { symbols, .. }) => symbols.len(),
+        Some(LspReadPayloadDto::Highlights { highlights, .. }) => highlights.len(),
+        Some(LspReadPayloadDto::SignatureHelp { signatures, .. }) => signatures.len(),
+        // One previewed file, so one entry — but only when it would actually
+        // change something. A no-op format is not a result worth counting.
+        Some(LspReadPayloadDto::FormatPreview(preview)) => usize::from(!preview.diff.is_empty()),
+        Some(LspReadPayloadDto::RenamePreview(preview)) => preview.files.len(),
         _ => 0,
     }
 }
@@ -2435,6 +2487,21 @@ fn open_selected_lsp_target(app: &mut App) {
                 .range
                 .workspace_relative_path
                 .clone(),
+            // Highlights always live in the requested file, and the daemon
+            // stamped the relative locator on each one, so opening one jumps
+            // within the current document rather than switching files.
+            LspReadPayloadDto::Highlights { highlights, .. } => highlights
+                .get(app.editor_state.lsp.selected_index)?
+                .range
+                .workspace_relative_path
+                .clone(),
+            LspReadPayloadDto::RenamePreview(preview) => Some(
+                preview
+                    .files
+                    .get(app.editor_state.lsp.selected_index)?
+                    .path
+                    .clone(),
+            ),
             _ => None,
         });
     let Some(target) = target else {
@@ -2787,6 +2854,29 @@ fn capture_char(key: KeyEvent) -> Option<char> {
     }
 }
 
+/// The character a leaf lookup should use for `key`, if any.
+///
+/// A leaf glyph may be a capital, and terminals disagree about how they encode
+/// one: some send `Char('S')` with no modifier, others send `Char('s')` plus
+/// `SHIFT`. The bare-key table has always accepted both spellings, and
+/// `PrefixLeaf::glyph`'s own doc has always claimed the leaf lookup did too —
+/// but the lookup gated on `NONE` alone, so `space S`, `space F` and every
+/// other capital leaf would have been live on one terminal and dead on the
+/// next. That is a key that silently does nothing, which is the M002 failure
+/// mode this milestone exists to end, so the claim is made true here rather
+/// than left as a doc that outruns the code.
+///
+/// `SHIFT` upper-cases rather than passing the raw glyph through, so a
+/// terminal that reports `Char('s')` + `SHIFT` still reaches the `'S'` row.
+/// Anything else — a control, alt, or a non-character key — is not a leaf.
+fn leaf_lookup_char(key: KeyEvent) -> Option<char> {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Char(glyph)) => Some(glyph),
+        (KeyModifiers::SHIFT, KeyCode::Char(glyph)) => Some(glyph.to_ascii_uppercase()),
+        _ => None,
+    }
+}
+
 /// Resolve `key` against the armed prefix, disarming it either way.
 ///
 /// This is the single place prefix state is read or written on the dispatch
@@ -2852,15 +2942,13 @@ fn resolve_pending_prefix(
     // One lookup, N leaves. A prefix that has no row for this glyph takes the
     // mismatch path below, which is what `swallows_unmatched` then decides —
     // so adding a leaf never invents a new mismatch policy.
-    let matched = if key.modifiers == KeyModifiers::NONE {
+    let matched = leaf_lookup_char(key).and_then(|glyph| {
         pending
             .leaves()
             .iter()
-            .find(|leaf| key.code == KeyCode::Char(leaf.glyph))
+            .find(|leaf| leaf.glyph == glyph)
             .copied()
-    } else {
-        None
-    };
+    });
     if let Some(leaf) = matched {
         return match leaf.action {
             // The **raw** motion path, deliberately, not `helix_motion`. This is
@@ -2896,6 +2984,18 @@ fn resolve_pending_prefix(
             // is the exact behaviour the milestone forbids.
             editor::PrefixAction::Edit(command) => {
                 editor_editing_command(state, command);
+                PrefixResolution::Handled(BufferKey::Consumed)
+            }
+            // Name the request; do not perform it. Running an LSP read needs
+            // the App's core client, task registry and toasts, none of which
+            // this function can see — so the effect is parked on the editor's
+            // own state and drained by `handle_editor_key` on the next line.
+            //
+            // Deliberately *not* `note_motion`: an LSP read is not a motion,
+            // and recording one would make `space k` then `Alt-.` re-issue the
+            // hover — the same mistake the edit arm documents.
+            editor::PrefixAction::Effect(effect) => {
+                state.pending_effect = Some(effect);
                 PrefixResolution::Handled(BufferKey::Consumed)
             }
         };
@@ -3826,10 +3926,15 @@ fn enter_insert(state: &mut EditorState, command: EditorCommand) -> BufferKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Only the stepping tests' fixtures need these; the module above has no use
+    // for them, and a module-level import would be dead weight in the shipped
+    // binary.
     use crate::protocol::core::{CoreRequest, CoreResponse};
     use crate::tui::app::state::EditorNoticeSeverity;
     use crate::tui::editor::EditorPoint;
     use crate::tui::helix_selection::Selection;
+    use codegg_protocol::lsp::{LspDiagnosticDto, LspRangeDto};
 
     use crate::tui::app::state::EditorState;
     use crate::tui::input::InputMode;
@@ -5997,7 +6102,7 @@ mod tests {
     #[tokio::test]
     async fn leaving_the_editor_route_disarms_the_pending_prefix() {
         let (state, _daemon) = opened_writer(&numbered_lines(8)).await;
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         arm_on_app(&mut app, EditorPrefix::Goto);
 
         app.ui_state
@@ -6015,7 +6120,7 @@ mod tests {
     #[tokio::test]
     async fn moving_focus_to_the_tree_pane_disarms_the_pending_prefix() {
         let (state, _daemon) = opened_writer(&numbered_lines(8)).await;
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         arm_on_app(&mut app, EditorPrefix::Space);
 
         crate::tui::commands::file_tree::toggle_tree(&mut app);
@@ -6362,6 +6467,24 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let mut app = App::new_for_testing(root.path().display().to_string());
         app.editor_state = state;
+        app
+    }
+
+    /// The same app, but on the editor route.
+    ///
+    /// `handle_editor_key` refuses every key unless the editor route is
+    /// current, so a test that calls it without this reaches none of the
+    /// dispatch under test and would pass for the wrong reason.
+    async fn app_on_the_editor_route(state: EditorState) -> App {
+        let mut app = app_with_the_editor_attached(state).await;
+        app.ui_state
+            .routes
+            .navigate_to(crate::tui::route::Route::Editor);
+        // Normal, because every gesture under test is a Normal-mode one and
+        // the App's default is not: `editor_buffer_key` dispatches on
+        // `app.ui_state.input_mode`, so an Insert-mode app would type `k` into
+        // the document instead of resolving the leaf.
+        app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
         app
     }
 
@@ -6979,7 +7102,7 @@ mod tests {
     #[tokio::test]
     async fn paste_after_reports_the_clipboard_contents_it_was_given() {
         let (state, _daemon) = opened_writer("abc").await;
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         park_on_app(&mut app, 0);
         apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, Some("XY".to_string()));
         assert_eq!(text_on_app(&app), "aXYbc");
@@ -6993,7 +7116,7 @@ mod tests {
     #[tokio::test]
     async fn paste_before_reports_the_clipboard_contents_it_was_given() {
         let (state, _daemon) = opened_writer("abc").await;
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         park_on_app(&mut app, 0);
         apply_clipboard_text(&mut app, ClipboardVerb::PasteBefore, Some("X".to_string()));
         assert_eq!(text_on_app(&app), "Xabc");
@@ -7002,7 +7125,7 @@ mod tests {
     #[tokio::test]
     async fn r_the_replace_verb_replaces_with_the_clipboard_contents() {
         let (state, _daemon) = opened_writer("abc").await;
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         park_on_app(&mut app, 0);
         apply_clipboard_text(&mut app, ClipboardVerb::Replace, Some("Z".to_string()));
         assert_eq!(text_on_app(&app), "Zbc");
@@ -7012,7 +7135,7 @@ mod tests {
     async fn an_empty_clipboard_and_a_failed_read_are_different_answers() {
         let (state, _daemon) = opened_writer("abc").await;
 
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         park_on_app(&mut app, 0);
         apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, None);
         assert_eq!(text_on_app(&app), "abc");
@@ -7023,7 +7146,7 @@ mod tests {
         );
 
         let (state, _daemon) = opened_writer("abc").await;
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         park_on_app(&mut app, 0);
         apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, Some(String::new()));
         assert_eq!(text_on_app(&app), "abc");
@@ -7037,7 +7160,7 @@ mod tests {
     #[tokio::test]
     async fn a_clipboard_verb_on_a_read_only_attachment_refuses_visibly() {
         let (state, _daemon) = opened_reader("abc").await;
-        let mut app = app_with_the_editor_attached(state).await;
+        let mut app = app_on_the_editor_route(state).await;
         park_on_app(&mut app, 0);
         apply_clipboard_text(&mut app, ClipboardVerb::PasteAfter, Some("X".to_string()));
         assert_eq!(text_on_app(&app), "abc");
@@ -8238,10 +8361,16 @@ mod tests {
     /// amendment A1.2 and A1.3 answered by *not* landing them here.
     #[tokio::test]
     async fn the_deferred_diagnostic_and_change_quartets_are_asserted_unbound() {
-        // `]D`/`[D` are diagnostics and `]G`/`[G` are change navigation in
-        // Helix — the two slices A1 moved out of this milestone. `d` and `g`
-        // are also the leaf glyphs of no unimpaired row here.
-        for glyph in ['d', 'D', 'g', 'G'] {
+        // `]D`/`[D` are workspace diagnostics and `]G`/`[G` are change
+        // navigation in Helix. Both slices are still deferred: no server
+        // capability backs a separate workspace-diagnostics request, and change
+        // navigation has no reachable data source at all. `g` remains unbound
+        // for the same reason.
+        //
+        // `d` was in this list until M013, which claimed `]d`/`[d` for
+        // diagnostic stepping and owns them here; the rest of this test is
+        // unchanged and still guards the three that stayed deferred.
+        for glyph in ['D', 'g', 'G'] {
             for leaves in [editor::OPEN_BRACKET_LEAVES, editor::CLOSE_BRACKET_LEAVES] {
                 assert!(
                     !leaves.iter().any(|leaf| leaf.glyph == glyph),
@@ -8251,12 +8380,12 @@ mod tests {
         }
 
         // And at the dispatch: the key disarms and then resolves **normally**,
-        // which is the plan's wording. `d` with nothing selected is the delete
-        // operator over an empty range — a consumed no-op — and `g` arms goto.
-        // Neither is a diagnostic or change jump, and neither leaves the
-        // bracket armed. `D` and `G` are deliberately absent from this half:
-        // their own bare meanings legitimately change the buffer and the
-        // cursor, so "nothing happened" is not a claim those two can make.
+        // which is the plan's wording. `g` arms goto. It is neither a change
+        // jump nor a diagnostic, and it leaves the bracket armed as `g` — the
+        // assertion is that the bracket did *not* swallow it. `D` and `G` are
+        // deliberately absent from this half: their own bare meanings
+        // legitimately change the buffer and the cursor, so "nothing happened"
+        // is not a claim those two can make.
         for arming in ['[', ']'] {
             let (mut state, _daemon) = opened_writer("hello").await;
             press(&mut state, KeyCode::Char(arming), KeyModifiers::NONE);
@@ -8430,5 +8559,409 @@ mod tests {
                 "{glyph:?} ({label}) must reach the document verbatim"
             );
         }
+    }
+
+    // ── M013 W4: the Helix LSP leaves ──────────────────────────────────────
+
+    /// The effect a prefix leaf parks on the editor's own state.
+    ///
+    /// Read back through the public field rather than by running the request:
+    /// `editor_buffer_key` has no core client, and a test that needed one would be
+    /// testing the daemon transport instead of the dispatch.
+    fn parked(state: &EditorState) -> Option<EditorPendingEffect> {
+        state.pending_effect
+    }
+
+    fn prefix_on_state(state: &EditorState) -> EditorPrefix {
+        state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation()
+            .pending_prefix
+    }
+
+    /// Dispatch `prefix` then `glyph` through the real buffer path.
+    fn leaf(state: &mut EditorState, prefix: EditorPrefix, glyph: char) -> BufferKey {
+        arm(state, prefix);
+        normal(state, KeyCode::Char(glyph))
+    }
+
+    #[tokio::test]
+    async fn every_helix_lsp_leaf_asks_for_its_own_operation() {
+        // Each row is asserted against the operation the key is *for*, so a copy
+        // and paste error between two rows is a failure rather than a surprise.
+        for (glyph, expected) in [
+            ('k', EditorPendingEffect::Read(LspReadOperation::Hover)),
+            (
+                's',
+                EditorPendingEffect::Read(LspReadOperation::DocumentSymbols),
+            ),
+            (
+                'S',
+                EditorPendingEffect::Read(LspReadOperation::WorkspaceSymbols),
+            ),
+            ('h', EditorPendingEffect::Read(LspReadOperation::References)),
+            (
+                'f',
+                EditorPendingEffect::Read(LspReadOperation::DocumentSymbols),
+            ),
+            ('d', EditorPendingEffect::OpenDiagnostics),
+        ] {
+            let (mut state, _daemon) = opened_writer("hello").await;
+            assert_eq!(
+                leaf(&mut state, EditorPrefix::Space, glyph),
+                BufferKey::Consumed,
+                "space {glyph} is consumed by the editor, not the composer"
+            );
+            assert_eq!(
+                parked(&state),
+                Some(expected),
+                "space {glyph} must ask for its own operation"
+            );
+        }
+
+        for (glyph, expected) in [
+            ('d', EditorPendingEffect::Read(LspReadOperation::Definition)),
+            (
+                'i',
+                EditorPendingEffect::Read(LspReadOperation::Implementation),
+            ),
+            ('r', EditorPendingEffect::Read(LspReadOperation::References)),
+        ] {
+            let (mut state, _daemon) = opened_writer("hello").await;
+            assert_eq!(
+                leaf(&mut state, EditorPrefix::Goto, glyph),
+                BufferKey::Consumed
+            );
+            assert_eq!(
+                parked(&state),
+                Some(expected),
+                "g {glyph} must ask for its own operation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_goto_lsp_leaf_disarms_its_prefix_like_every_other_goto_leaf() {
+        // `gd` used to be a silent no-op. The fix must not have left the machine
+        // armed: a leaked prefix would swallow the next key the user presses.
+        let (mut state, _daemon) = opened_writer("hello").await;
+        leaf(&mut state, EditorPrefix::Goto, 'd');
+        assert_eq!(prefix_on_state(&state), EditorPrefix::Idle);
+    }
+
+    #[tokio::test]
+    async fn a_capital_leaf_resolves_on_both_terminal_conventions() {
+        // Terminals disagree about how a capital arrives. `PrefixLeaf::glyph`'s
+        // doc always claimed the dispatch reconciled both spellings; the lookup
+        // gated on NONE alone, so `space S` would have been live on one terminal
+        // and dead on the other.
+        for (event, label) in [
+            (
+                KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+                "capital reported directly",
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SHIFT),
+                "capital reported as a shifted lower-case glyph",
+            ),
+        ] {
+            let (mut state, _daemon) = opened_writer("hello").await;
+            arm(&mut state, EditorPrefix::Space);
+            assert_eq!(
+                editor_buffer_key(&mut state, InputMode::Normal, event),
+                BufferKey::Consumed,
+                "space S ({label}) must resolve rather than fall to the mismatch path"
+            );
+            assert_eq!(
+                parked(&state),
+                Some(EditorPendingEffect::Read(
+                    LspReadOperation::WorkspaceSymbols
+                )),
+                "space S ({label}) must reach its leaf"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lower_case_leaf_is_not_satisfied_by_its_capital() {
+        // The mirror of the test above: `space s` and `space S` are different
+        // requests, and folding them would make one of them unreachable.
+        let (mut state, _daemon) = opened_writer("hello").await;
+        arm(&mut state, EditorPrefix::Space);
+        editor_buffer_key(
+            &mut state,
+            InputMode::Normal,
+            KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
+        );
+        assert_eq!(
+            parked(&state),
+            Some(EditorPendingEffect::Read(
+                LspReadOperation::WorkspaceSymbols
+            )),
+            "an already-capital glyph plus SHIFT is still the capital leaf"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_modified_key_never_resolves_a_leaf() {
+        for (event, label) in [
+            (KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT), "alt"),
+            (
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+                "control",
+            ),
+        ] {
+            let (mut state, _daemon) = opened_writer("hello").await;
+            arm(&mut state, EditorPrefix::Space);
+            let resolved = editor_buffer_key(&mut state, InputMode::Normal, event);
+            assert_eq!(
+                parked(&state),
+                None,
+                "{label}-k must not run a leaf; a chord is not a gesture"
+            );
+            let _ = resolved;
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_mode_never_parks_an_lsp_effect() {
+        // Insert gives the document the keyboard. A leaf that fired there would
+        // turn two characters into a request and swallow them.
+        let (mut state, _daemon) = opened_writer("hello").await;
+        for glyph in ['k', 's', 'S', 'h', 'f', 'd'] {
+            arm(&mut state, EditorPrefix::Space);
+            assert_eq!(
+                insert(&mut state, KeyCode::Char(glyph)),
+                BufferKey::Consumed,
+                "space {glyph} in Insert is text"
+            );
+            assert_eq!(
+                parked(&state),
+                None,
+                "space {glyph} in Insert must not reach a leaf"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_leaf_says_why_instead_of_doing_nothing() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        arm_on_app(&mut app, EditorPrefix::Goto);
+        handle_editor_key(&mut app, key(KeyCode::Char('y')));
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .pending_prefix,
+            EditorPrefix::Idle,
+            "`gy` must resolve its prefix"
+        );
+        assert_eq!(
+            parked(&app.editor_state),
+            None,
+            "`gy` is consumed, not left armed"
+        );
+        let notice = app
+            .editor_state
+            .notice
+            .as_ref()
+            .expect("an unbound leaf must leave a reason behind");
+        assert!(
+            notice.message().contains("type definition"),
+            "the notice must name what is missing, got {:?}",
+            notice.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_leaf_resolves_through_the_app_route_not_only_the_buffer_route() {
+        // Every other leaf test drives `editor_buffer_key` directly. That
+        // skips the App route, which decides Normal-mode key bindings, the
+        // F-key intercept, and the LSP panel — so a leaf table that resolved
+        // perfectly in a unit test could still be dead for a user. The first
+        // M013 W4 drafts of these tests passed against `editor_buffer_key` and
+        // failed here, which is exactly the gap this one closes.
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        arm_on_app(&mut app, EditorPrefix::Goto);
+        handle_editor_key(&mut app, key(KeyCode::Char('y')));
+        assert_eq!(
+            app.editor_state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .pending_prefix,
+            EditorPrefix::Idle,
+            "`gy` must resolve its prefix through the App route"
+        );
+        assert!(
+            app.editor_state
+                .notice
+                .as_ref()
+                .is_some_and(|notice| notice.message().contains("type definition")),
+            "`gy` must reach its leaf and report why it cannot run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prefixed_key_is_reached_only_after_its_arming_key() {
+        // The other half of the App route: the bare key must still be the
+        // editor's own verb when nothing is armed, or a route test could pass
+        // because the prefix machinery ran on the first key.
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('y'))));
+        assert!(
+            app.editor_state.notice.is_none(),
+            "a bare `y` is the clipboard yank, not the `gy` leaf"
+        );
+        assert_eq!(editor_text(&app.editor_state), "hello", "and typed nothing");
+    }
+
+    #[tokio::test]
+    async fn the_app_drains_a_parked_leaf_on_the_same_keypress() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        app.core_client = None;
+
+        arm_on_app(&mut app, EditorPrefix::Space);
+        let consumed = handle_editor_key(&mut app, key(KeyCode::Char('k')));
+
+        assert!(consumed, "space k belongs to the editor");
+        assert_eq!(
+            parked(&app.editor_state),
+            None,
+            "the effect must be drained, never left armed for a later keypress"
+        );
+        // The proof that the leaf reached `start_editor_lsp_read` rather than
+        // being swallowed is that the read *ran and refused*: with no
+        // workspace-bound session there is no LSP scope, so the first thing
+        // `start_editor_lsp_read` checks fails and it says so. Asserting the
+        // daemon-unavailable branch instead would have needed a bound scope
+        // and a present client, and would have proved less about the leaf.
+        let reported = app
+            .messages_state
+            .toasts
+            .history()
+            .map(|record| record.message.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            reported
+                .iter()
+                .any(|message| message.contains("LSP is unavailable")),
+            "`space k` must reach the LSP read path and report why it cannot run, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_leaf_that_parked_nothing_leaves_no_read_error() {
+        // The drain must not fire for gestures that were never LSP requests.
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        app.core_client = None;
+
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('y')));
+        assert!(
+            app.editor_state.lsp.read_error.is_none(),
+            "`space y` still yanks; it must not start a read"
+        );
+    }
+
+    /// One diagnostic on a given line, for the stepping tests.
+    fn test_diagnostic(line: u32, message: &str) -> LspDiagnosticDto {
+        LspDiagnosticDto {
+            range: LspRangeDto {
+                path: "doc".to_string(),
+                workspace_relative_path: Some("doc".to_string()),
+                start_line: line,
+                start_column: 0,
+                end_line: line,
+                end_column: 1,
+            },
+            severity: 1,
+            tag: 0,
+            code: None,
+            message: message.to_string(),
+            source: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_two_bracket_diagnostic_leaves_step_to_different_entries() {
+        // `]` is forward and `[` is backward throughout this layer, so the leaf
+        // itself carries no direction the prefix has not already said. From the
+        // same starting entry the two must land on different diagnostics —
+        // a swapped direction would pass a test that only checks each leaf moves
+        // at all.
+        let mut indices = Vec::new();
+        for arming in [KeyCode::Char(']'), KeyCode::Char('[')] {
+            let (mut state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+            state.lsp.diagnostics = vec![
+                test_diagnostic(0, "first"),
+                test_diagnostic(1, "second"),
+                test_diagnostic(2, "third"),
+            ];
+            state.lsp.selected_index = 0;
+            let mut app = app_on_the_editor_route(state).await;
+            // Pressed through the real key path, because `[`/`]` arm a prefix
+            // and `arm_on_app` would skip the very dispatch under test.
+            assert!(
+                handle_editor_key(&mut app, key(arming)),
+                "the bracket arms a prefix"
+            );
+            assert!(
+                handle_editor_key(&mut app, key(KeyCode::Char('d'))),
+                "a diagnostic leaf belongs to the editor"
+            );
+            indices.push(app.editor_state.lsp.selected_index);
+        }
+        assert_eq!(
+            indices,
+            vec![1, 2],
+            "forward and backward must disagree from the same start"
+        );
+    }
+
+    #[tokio::test]
+    async fn stepping_past_the_end_wraps_rather_than_stopping() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        state.lsp.diagnostics = vec![test_diagnostic(0, "only")];
+        state.lsp.selected_index = 0;
+        let mut app = app_on_the_editor_route(state).await;
+
+        // Backward from index 0 is the underflow case. `0usize - 1` panics in
+        // debug and silently becomes usize::MAX in release, so the wrap is done
+        // with explicit arithmetic before it reaches the index.
+        step_editor_diagnostic(&mut app, EditorDiagnosticStep::Backward);
+        assert_eq!(
+            app.editor_state.lsp.selected_index, 0,
+            "a single diagnostic wraps onto itself from either direction"
+        );
+    }
+
+    #[tokio::test]
+    async fn stepping_with_no_diagnostics_says_so_instead_of_doing_nothing() {
+        let (state, _daemon) = opened_writer("one\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        step_editor_diagnostic(&mut app, EditorDiagnosticStep::Forward);
+        let notice = app
+            .editor_state
+            .notice
+            .as_ref()
+            .expect("`d` with nothing loaded must leave a reason behind");
+        assert!(
+            notice.message().contains("diagnostic"),
+            "the notice must name what is missing, got {:?}",
+            notice.message()
+        );
     }
 }

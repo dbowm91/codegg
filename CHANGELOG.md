@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The editor's language-server features now work in an ordinary
+  workspace.** Two things had been blocking every one of them. Diagnostics were
+  never collected — the code that publishes them existed but nothing ever ran
+  it — so every read came back "not ready" forever, which is indistinguishable
+  from a broken integration. And in a workspace with **two** language servers
+  running (say `rust-analyzer` and `gopls` in one repository), the editor gave
+  up and reported "not ready" rather than answering. If you have more than one
+  server in a project, F2–F7 and the new Helix keys will now actually answer
+  instead of reporting a server that was running the whole time.
+- **When several servers are running, the editor names them.** It asks you to
+  pick rather than guessing — an answer from the wrong language server is worse
+  than an honest question. Each suggestion opens the corresponding result.
+- **New read-only language-server features in `NOR`.** `gd` (definition), `gi`
+  (implementation), `space k` (hover), `space h` and `gr` (references), `space
+  s`/`space f` (document symbols), `space S` (workspace symbols) and `space d`
+  (diagnostics). The existing F2–F7 keys do the same jobs and are unchanged.
+- **Two keys now explain themselves instead of doing nothing.** `gy` (type
+  definition) and `space F` (file picker) report that the underlying capability
+  is not available, so you can tell a missing feature from a keypress that was
+  dropped.
+- **`]d` and `[d` step between diagnostics** and move the cursor there, wrapping
+  at either end of the list.
+- **A language server that does not support a feature now says so.** Previously
+  this was reported as "not ready", which sent you looking for a server that was
+  already running and had already answered. The panel names the missing
+  capability.
+- **Rename and format are offered as previews only, and are not yet bound to a
+  key.** You can ask what a rename would touch or what formatting would change,
+  but nothing is ever written: applying a language-server-driven edit to your
+  buffer has not been authorised yet.
+
+### Fixed
+
+- **Diagnostics are now collected automatically.** The editor refreshes the
+  diagnostic set on its own instead of only when you asked.
+- **Language-server requests in a multi-project workspace no longer leak across
+  projects.** Diagnostics were tracked by file name alone, so `src/lib.rs` and
+  `tests/lib.rs` collided and a second open project recorded files it had never
+  touched.
+- **Capital-letter bindings (`space S`) now work on every terminal.** Some
+  terminals report a capital directly and some report it as a shifted
+  lower-case letter; only the first worked, so `space S` was dead on the others.
+
+### Added
+
 - **Helix's character-finding motions (`f`, `F`, `t`, `T`, and `Alt` + `.`) are
   available in `NOR`.** Each of the first four arms the shared pending-prefix
   grammar and waits for a character; the status row shows which one is armed,
@@ -25,7 +70,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grammar.** Pressing `[` or `]` in `NOR` arms the prefix and shows it in the
   status row; any following key disarms it and is then resolved normally, so
   `[` followed by a letter still reaches the composer instead of being eaten.
-  The leaves themselves (`[d`, `]d`, `[p`, …) are not bound yet.
+  The leaves are being filled in by the later milestones: `[p`/`]p` and
+  `[Space`/`]Space` arrived with unimpaired navigation, and `[d`/`]d` with LSP
+  diagnostic delivery.
 - **A pending `space` prefix is now visible.** `space y` previously armed a
   `bool` with nowhere to render to, so pressing `space` looked like nothing
   had happened. Every pending prefix now renders a distinct label in the status
