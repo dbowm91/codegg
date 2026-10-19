@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability Corrective C001 — Preserve Verified Authority Through Broker and Tool Program
 
-Status: active
+Status: blocked — production-path Tool Program qualification remains incomplete; see `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md`.
 Repository baseline: `4c86bac2a608dd717be085247838fd2f37d81ab6` (2026-10-19 main)
 Source roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`; `#28-observability`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`.
