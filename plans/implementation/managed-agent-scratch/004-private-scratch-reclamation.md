@@ -26,6 +26,7 @@ M001 provides stable session roots; M002 provides run-owned private roots and du
 - Reclamation uses atomic tombstones, validates the owner record and full tree, rejects symlinks/reparse points and refuses unsafe traversal.
 - A run's private scratch is retained until its run is terminal and its supervised child process has returned.
 - A deleted session's full scratch tree is retained while any session run or durable session job is nonterminal. Restore before deferred cleanup preserves the tree.
+- Daemon startup re-enqueues cleanup for deleted sessions so a process restart cannot permanently orphan a cleanup retry.
 - Cleanup failure is best effort and retains/quarantines data; durable transcripts, run results and Git worktrees are outside the scratch tree.
 - Workspace and scratch writes continue to bypass only implicit default `Ask`; explicit permission decisions remain authoritative.
 
@@ -58,7 +59,7 @@ D. Reconcile roadmap, registry and closure evidence without changing the conditi
 
 ## 8. Failure, restart and contention
 
-An active or ambiguous job/run retains session scratch. Cleanup query errors do not delete. A failed or interrupted filesystem removal leaves a retryable tombstone. Duplicate cleanup is idempotent. Restoring a session while the retry is waiting cancels reclamation. Restart may lose an in-memory retry; repeating session deletion or later lifecycle cleanup must remain safe.
+An active or ambiguous job/run retains session scratch. Cleanup query errors do not delete. A failed or interrupted filesystem removal leaves a retryable tombstone. Duplicate cleanup is idempotent. Restoring a session while the retry is waiting cancels reclamation. Startup scans soft-deleted sessions and restores retry watchers, so cleanup is recovered after daemon restart.
 
 ## 9. Compatibility
 
