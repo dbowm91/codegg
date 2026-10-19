@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability Corrective C007 — Qualify the Normal Agent Tool-Use Trajectory
 
-Status: blocked — C002's trusted workspace-to-Eggsearch local retrieval scope contract remains unresolved; all other hard predecessors are closed. See `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md`.
+Status: active implementation (2026-10-19); all hard predecessors C001–C006 and C008 are strictly closed, and C002's follow-up closure is `plans/closure/agent-tool-use-operability-post-audit-corrective/002-follow-up-status.md`. Historical blocker record `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md` remains unchanged.
 Repository baseline: `4c86bac2a608dd717be085247838fd2f37d81ab6` (main, 2026-10-19)
 Source roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`; `#28-observability`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`.
@@ -10,8 +10,8 @@ Primary class: capability
 ## 1. Objective
 Prove across ordinary daemon/agent/broker dispatch that a scripted coding agent can perform local discovery, first-use edit, verification, restricted Tool Program execution, explicit todo updates, durable subagent lookup and concurrent tool calls without the reported unexplained failures.
 
-## 2. Why this milestone is blocked
-Hard dependencies: C001, C002, C003, C004, C005 and C006 strict individual closures. Existing deterministic fake-provider and real pinned eggsearch private-child fixtures are stable interfaces; this milestone is not ready until all six pass.
+## 2. Why this milestone is ready
+Hard dependencies C001–C006 and C008 have strict closure records; C002's authenticated workspace binding and remaining capability matrix are strictly closed in the follow-up record. Existing deterministic fake-provider and real pinned Eggsearch private-child fixtures are stable interfaces. No ownership-changing decision is required.
 
 ## 3. Current implementation evidence
 - The 2026-10-19 assessment exercised each tool individually and found mixed failures. Isolated unit/child tests can pass while production-path context is lost (notably Tool Program). `tests/agent_loop_harness.rs`, `tests/tool_execution.rs`, `tests/eggsearch_pair_compat.rs` already provide building blocks; the roadmap requires one end-to-end path, not a new permanent benchmark pipeline.
