@@ -1,19 +1,22 @@
 # Agent Workstream Blackboard M006 — Isolated Session/Worktree Fork-and-Launch
 
-Status: in progress — the durable launch contract and the CLI affordance are
-delivered; the TUI surface is outstanding
+Status: closed — 2026-10-19. Closure: `plans/closure/agent-workstream-blackboard/006-status.md`
 
-Delivered so far: the durable, idempotent launch saga in `codegg-core`
+Delivered: the durable, idempotent launch saga in `codegg-core`
 (`session_launch`, storage layout v85), the typed worktree request with a base
 ref and a target branch, the daemon-side `SessionLaunchService`, the
 `CoreRequest::SessionLaunch` / `CoreResponse::SessionLaunch` protocol pair, the
-`workspace_project_binding.worktree_id` binding that was never written, and the
-`codegg launch` CLI affordance.
+`workspace_project_binding.worktree_id` binding that was never written, the
+`codegg launch` CLI affordance, the `worktree.create` authorization for the
+checkout half of a launch, the TUI surface (branch, ownership, fork ancestry and
+attention state, with the create/reuse/fork actions), and a service-level
+integration test against a real Git repository.
 
-Outstanding: the TUI surface (branch, ownership, fork ancestry and attention
-state), the `worktree.create` authorization for the checkout half of a launch,
-and a service-level integration test against a real Git repository. See
-`architecture/session_launch.md`.
+Not claimed: the product's checkout *creation* on a host with the contained Git
+backend — this revision has no contained backend, so the creation always fails
+closed here — and three of work package E's cases that need a fault injector the
+codebase does not have. See `architecture/session_launch.md` and the closure
+record.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M006
@@ -51,11 +54,12 @@ Stop if a request can bypass worktree lease generation, principal/project author
 
 ## Delivery status 2026-10-19
 
-Work package A (the typed request), B (the authorization descriptor and the
-project-scoped resolution), and the durable half of C (the stage machine,
-the idempotency contract, the restart reconciliation) are delivered. The
-CLI affordance is delivered; the TUI surface is not. M006 is **not
-closed** — see the plan header for the outstanding work.
+Work packages A (the typed request), B (the authorization and the
+project-scoped resolution), C (the recoverable materialization), D (the
+TUI surface) and the CLI affordance are delivered. Work package E is
+delivered for every case that can be exercised without a fault injector;
+the three that cannot are recorded below as a named gap rather than
+claimed. M006 is **closed** — see `plans/closure/agent-workstream-blackboard/006-status.md`.
 
 ### Delivered
 
@@ -102,24 +106,74 @@ closed** — see the plan header for the outstanding work.
 - `src/main.rs`, `docs/cli.md` — `codegg launch`, with `--project`,
   `--fork`, `--worktree`, `--base`, `--branch` and `--idempotency-key`.
 
-### Outstanding
+### Delivered since the first pass
 
-- **The TUI surface** (work package D): the session surface must show
-  the current branch, the owned/external worktree, the fork ancestry and
-  any cleanup/attention state, and the TUI must expose create/select/fork
-  actions. `/worktree` is still list-only.
 - **The `worktree.create` authorization** for the checkout half of a
-  launch. The descriptor carries `session.create`; the checkout half is
-  not yet authorized separately, so the handler must add that check
-  before a launch may allocate a checkout.
-- **A service-level integration test** against a real Git repository. The
-  store contract is tested (11 tests in
-  `crates/codegg-core/tests/session_launch.rs`) and the submission
-  boundary is tested, but the service's Git path — reserve, create,
-  register, bind — has no end-to-end test yet.
-- **Work package E's remaining cases**: simultaneous identical requests
-  at the service level, two principals, invalid ref, conflicting branch,
-  nonexistent checkout, symlink path, post-create SQLite failure,
-  cancellation between Git registration and session bind, restart repair,
-  clean vs dirty retained, and Windows path-length and linked `.git`-file
-  handling.
+  launch. `Daemon::authorize_launch_checkout` runs *before* dispatch and
+  before the allow event is recorded, so a denied launch has no side
+  effect at all. A launch that reuses an existing managed checkout
+  allocates nothing and therefore does not ask for the capability.
+- **The project scope for a launch.** `resolve_authorization_project` had
+  no `SessionLaunch` arm, so the `DirectProject` scope resolved to
+  `None` and a team principal's launch was denied for a *missing scope*
+  rather than for a missing grant.
+- **The checkout's workspace is bound to the launch's project.**
+  `ProjectStorage::bind_checkout_workspace` replaces the
+  auto-provisioning path, which gave the checkout's root its own logical
+  project and then failed the launch at the last step, after the checkout
+  was already on disk.
+- **The launch resumes and it leaves a visible record.** A failed launch
+  advances its own record to `needs_attention` with a bounded category
+  and cleans nothing up. A resumed launch continues from the stage the
+  record reached; the fork's child id is derived from the launch id, so a
+  retry converges on the child the first attempt made.
+- **The TUI surface** (work package D). The session dialog shows each
+  session's checkout — the branch, whether it is a CodeGG-managed
+  checkout or the project's own root, and whether it needs an operator —
+  and the fork's ancestry by name. It exposes the three actions: `n`
+  places a new session in a new checkout, `w` places a new session in the
+  selected session's *existing* checkout, and `F` forks the selected
+  session into a new checkout. The plain `f` fork is untouched.
+- **A service-level integration test** against a real Git repository:
+  `tests/session_launch_service.rs` drives the service through a real
+  `git worktree` in a real repository, and asserts on the linked
+  worktree's `.git` *file*, the branch, the canonical bindings, the
+  worktree count, and the failures.
+
+### The contained Git backend
+
+`git worktree` requires **contained** execution
+(`egggit::process::classify_git_request` → `CleanSmudgeFilter`), and this
+revision has **no contained Git backend**: a contained request becomes
+`BackendUnavailable` on both the async and the sync boundary, and
+`WorktreeService::create_reserved` goes through the sync one.
+
+So on this host the product's own checkout creation **always fails
+closed**. That is the plan's own anticipated condition — *"If the
+available Git backend cannot safely create a managed checkout on a
+platform, the request must fail closed and retain recoverable state"* —
+and it is implemented and proven: the launch refuses with the backend's
+own error, creates no session, leaves a `needs_attention` record, and
+marks the checkout `orphaned` / `git_error` for an operator.
+
+The **placement** semantics are proven against a real linked worktree
+that the test fixture creates with a plain `git worktree add`. The
+product's checkout *creation* on a host with the contained backend is
+**not** claimed.
+
+### The named gap
+
+Three of work package E's cases need a **fault injector** the codebase
+does not have: a post-create SQLite failure, a cancellation between the
+Git registration and the session bind, and a symlinked checkout path.
+They are not claimed, and not simulated by a fake that proves nothing
+about the filesystem. The properties they cover are argued in
+`architecture/session_launch.md` ("The narrow windows") instead, and the
+two *observable* halves of the same properties — a failed launch leaves a
+visible `needs_attention` record, and a launch never cleans up — are
+tested directly.
+
+Two further cases are platform-scoped and are marked rather than run:
+Windows path-length handling and the linked `.git`-file case are
+exercised on Linux (the `.git` file assertion), and the Windows-specific
+half is not claimed.

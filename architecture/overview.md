@@ -281,7 +281,9 @@ request-variant method taken from `scripts/check_authorization_matrix.py`
 so the table and the guard count the same thing. The `CoreRequest`,
 `CoreResponse` and `CoreEvent` rows had already drifted from their
 `Source` before this measurement and are corrected here rather than
-incremented.
+incremented. The integration-test-file row moved again on 2026-10-19 when
+M006's service-level Git test was added (268 → 269); every other row in
+the table was re-measured on the same pass and did not move.
 
 | Item | Count | Source |
 |------|-------|--------|
@@ -307,7 +309,7 @@ incremented.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 268 | `tests/*.rs` |
+| Integration test files | 269 | `tests/*.rs` |
 | CI guard scripts | 53 | `scripts/check_*` |
 
 ## Feature gates

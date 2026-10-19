@@ -198,6 +198,27 @@ the highlight move without refetching, because `pending_update` pairs the
 rendered models with the highlighted connection and would bind the wrong
 model to the wrong connection.
 
+## The session checkout surface (M006)
+
+The session dialog is where a session's **checkout** is shown and where a
+session is *placed* in one. Read `architecture/tui.md`
+§"The session checkout surface (M006, agent-workstream-blackboard)" before
+changing it.
+
+Three rules, each of which was a defect first:
+
+- The row shows the checkout's **branch**, or `root` for the project's own
+  working tree, and a `⚠` when the checkout needs an operator. A row that
+  shows only a title and a timestamp makes the checkout invisible.
+- `n` (new session in a new checkout), `w` (new session in the selected
+  session's **existing** checkout) and `F` (fork into a new checkout) are
+  three different acts. `w` must **name** the checkout: reusing "nothing"
+  would quietly allocate one. The lowercase `f` is the pre-existing plain
+  fork and stays untouched.
+- The launch runs as a registered background task and reports itself in a
+  toast. The dialog stays open while it runs — closing the dialog cancels
+  the task that reports it.
+
 ## Other Invariants
 
 - **The launch directory is registered at startup.** `ProjectContextResolver`

@@ -243,6 +243,28 @@ change-triggered (`ls scripts/check_*` for the full list):
   holds **no** permit: the quota is checked before any dimension is reserved,
   and the slots come back when the permit guard drops, after the process
   lifetime ends. The queue caps are not execution quotas.
+- A **checkout is a second working directory of a project, not a new
+  project.** The catalog's auto-provisioning rule gives every previously
+  unseen workspace root **its own logical project**
+  (`ProjectStorage::reconcile_workspace_path` → `resolve_project_and_repository`),
+  which is right for a directory the user opens and wrong for a launch
+  (M006, `architecture/session_launch.md`). A launch that auto-provisions
+  the checkout's workspace binds the session to a project nobody asked
+  for — and then fails at the *last* step, because
+  `SessionStore::create_with_binding` requires the workspace's binding to
+  name the same project as the session, with the checkout already on disk.
+  `ProjectStorage::bind_checkout_workspace` is the explicit path: the
+  checkout's workspace joins the launch's project, shares its repository,
+  and names the managed checkout. It is refused when the workspace is
+  already bound to a *different* project.
+- A **launch does not take the worktree lease.** The lease is what fences
+  writers, and the writer that works in the checkout is the session's own
+  agent run. A lease held by a synthetic owner would fence that run out
+  (`acquire_lease` refuses a checkout that already has an owner) and
+  nothing would ever release it, because a synthetic owner has no
+  lifetime. The checkout stays `ready` and unleased until a run takes it —
+  and a checkout another run *holds* is refused as a placement, because
+  sharing it is shared-checkout execution, which M006 does not enable.
 - The **working strip row 0 is reserved unconditionally** and is the main buffer's only
   status surface. Its height is subtracted from the transcript (`session_layout` splits
   `prompt_height` against `Min(10)`), so gating it on turn state reflowed the transcript
