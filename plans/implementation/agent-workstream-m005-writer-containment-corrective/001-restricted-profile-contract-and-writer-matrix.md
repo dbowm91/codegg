@@ -1,11 +1,22 @@
 # M005 Writer-Containment Corrective C001 — Restricted Profile Decision and Writer-Path Matrix
 
-Status: ready — design/negative-test handoff only; cannot authorize shared execution
+Status: closed — design/negative-test handoff only; cannot authorize shared execution
 Primary class: invariant / cross-subsystem decision contract
 Planning baseline: plan/agent-workstream-m005-writer-audit inspected 2026-10-19; ancestor main 61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C001
 Original incomplete milestone: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md (audit Q0 and Q1–Q5).
 ADRs: accepted ADR-0002/ADR-0032; proposed ADR-0042. Canonical: plans/000-long-term-specification.md §§9, 16–17, 26–29; plans/001-terminology-and-domain-model.md §§5, 7–8; planning governance plans/003-planning-process.md.
+
+## Delivered by
+
+- Contract deliverable: `c001-restricted-profile-contract.md` — the 48-root writer matrix, the policy matrix, the user-visible guarantee and exact refusal contract, the lock-order and ownership model, the C002 protocol shape, and the twelve named holes.
+- Disposition manifest: `docs/writer-disposition.toml`.
+- Guard: `scripts/check_writer_disposition.py` (wired into `scripts/verify.sh quick`, with `--self-test`).
+- Negative guards: `tests/writer_disposition_guards.rs`.
+- Source audit evidence: `c001-evidence/`.
+- Closure record: `plans/closure/agent-workstream-m005-writer-containment-corrective/001-status.md`.
+
+Decision outcome: **ADR-0042 is still proposed.** C002 remains blocked on an independent maintainer accept/reject decision.
 
 ## Objective and defect
 

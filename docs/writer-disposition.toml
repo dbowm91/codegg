@@ -1,0 +1,555 @@
+# M005 writer-containment corrective C001 — CodeGG writer-root dispositions.
+#
+# WHAT THIS FILE IS
+#   A contract manifest. It records, for every CodeGG writer root identified
+#   by the C001 source audit, the restricted-profile disposition that the
+#   proposed ADR-0042 contract assigns to it.
+#
+# WHAT THIS FILE IS NOT
+#   It is not a permission, a permit, a fence, or an enablement. No entry
+#   here authorizes any writer. `fenced-native` names a CANDIDATE for the
+#   successor milestones C002/C003 to consider -- it does not fence anything
+#   today, and C002 remains blocked until ADR-0042 is accepted.
+#
+#   ADR-0042 is `proposed`. C002-C006 are blocked. This manifest exists so
+#   that a new writer route cannot appear without someone deciding its
+#   disposition explicitly.
+#
+# GUARD
+#   scripts/check_writer_disposition.py fails when a model-facing writer tool
+#   or a daemon/HTTP/project-state module that performs a filesystem effect
+#   has no entry here, when an entry's vocabulary is invalid, when a declared
+#   path no longer exists, or when a checkout writer is classified as a
+#   harmless read.
+#
+# SCOPE
+#   CodeGG-managed writers only. Independent external same-UID programs (an
+#   editor the user runs, another agent, a build script outside CodeGG) are
+#   explicitly out of contract: CodeGG cannot fence them. The `external`
+#   entry records that boundary instead of pretending to hold it.
+#
+# VOCABULARY
+#   surface      model-tool | direct-tool | daemon | http | project-state |
+#                process | external
+#   scope        checkout-writer  -- can mutate a checkout
+#                non-checkout     -- writes managed state proven outside every
+#                                   checkout
+#                read-only        -- proven read-only
+#                external         -- an independent same-UID program
+#   disposition  allowed-read     -- proven read-only, nothing to restrict
+#                fenced-native    -- candidate fenced native file/Git writer
+#                denied-process   -- process-backed or persistent; denied
+#                                   before launch or effect
+#                fenced-or-denied -- CodeGG non-broker writer; fence it or
+#                                   refuse it
+#                unsupported      -- platform / node / NonGit unsupported
+#                out-of-contract  -- outside the restricted profile's
+#                                   guarantee
+#
+# CHECKOUT LOCATOR LEGEND
+#   workspace-root    resolved from the job/turn workspace identity
+#   worktree-path     resolved from a leased worktree record
+#   model-path        a model/client supplied path, joined onto the root
+#   managed-root      a CodeGG-owned root outside every checkout
+#   process-cwd       inherited from the spawned child's working directory
+#   none              the sink performs no filesystem effect
+
+# ---------------------------------------------------------------------------
+# Model-facing writer tools (reached through the ToolBroker).
+# ---------------------------------------------------------------------------
+
+[[root]]
+id = "tool.write"
+tool = "write"
+path = "src/tool/write.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "WriteTool"
+locator = "model-path joined onto workspace-root"
+lifetime = "request-scoped"
+kind = "native-file"
+note = "Native file write. Candidate for the C003 fenced transaction; not fenced today."
+
+[[root]]
+id = "tool.edit"
+tool = "edit"
+path = "src/tool/edit.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "EditTool"
+locator = "model-path joined onto workspace-root"
+lifetime = "request-scoped"
+kind = "native-file"
+note = "Native file edit. Candidate for the C003 fenced transaction."
+
+[[root]]
+id = "tool.replace"
+tool = "replace"
+path = "src/tool/replace.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "ReplaceTool"
+locator = "model-path joined onto workspace-root"
+lifetime = "request-scoped"
+kind = "native-file"
+note = "Native file replace. Candidate for the C003 fenced transaction."
+
+[[root]]
+id = "tool.apply_patch"
+tool = "apply_patch"
+path = "src/tool/apply_patch.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "ApplyPatchTool"
+locator = "model-path joined onto workspace-root"
+lifetime = "request-scoped"
+kind = "native-file"
+note = "Native patch application. Candidate for the C003 fenced transaction."
+
+[[root]]
+id = "tool.lsp_preview_apply"
+tool = "lsp_preview_apply"
+path = "src/tool/lsp_preview_apply.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "LspPreviewApplyTool -> src/lsp/mutation.rs"
+locator = "workspace-root, via a reviewed LSP preview identifier"
+lifetime = "request-scoped"
+kind = "native-file"
+note = "Applies a reviewed LSP workspace edit through the daemon-owned applier."
+
+[[root]]
+id = "tool.commit"
+tool = "commit"
+path = "src/tool/commit.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "CommitTool"
+locator = "worktree-path of the leased checkout"
+lifetime = "request-scoped"
+kind = "native-git"
+note = "Typed Git commit over already-staged content. Candidate for the C003 fenced Git writer; not fenced today."
+
+[[root]]
+id = "tool.git"
+tool = "git"
+path = "src/tool/git.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "GitTool -> codegg-git typed operations"
+locator = "worktree-path of the leased checkout"
+lifetime = "request-scoped"
+kind = "native-git"
+note = "Typed Git mutation API. The typed operations are native Git candidates; the raw-subcommand fallback spawns git as a process and is therefore denied-process."
+
+[[root]]
+id = "tool.bash"
+tool = "bash"
+path = "src/tool/bash.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "BashTool"
+locator = "workdir defaults to workspace-root, else model-path"
+lifetime = "request-scoped, but the child may detach and outlive the request"
+kind = "process"
+note = "Arbitrary shell. Denied before launch under the restricted profile; its write set is not statically enumerable."
+
+[[root]]
+id = "tool.terminal"
+tool = "terminal"
+path = "src/tool/terminal.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "TerminalTool"
+locator = "process-cwd of the attached PTY"
+lifetime = "persistent; an attached PTY outlives the request that opened it"
+kind = "process"
+note = "Interactive PTY. Denied before launch under the restricted profile."
+
+[[root]]
+id = "tool.python_script"
+tool = "python_script"
+path = "src/python_script/tool.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "PythonScriptTool"
+locator = "process-cwd of the spawned interpreter"
+lifetime = "request-scoped, but the child may detach"
+kind = "process"
+note = "Materializes Python source to a temp file and executes it. Denied before launch."
+
+[[root]]
+id = "tool.test"
+tool = "test"
+path = "src/tool/test.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "TestTool"
+locator = "process-cwd of the spawned test runner"
+lifetime = "request-scoped, but the child may detach"
+kind = "process"
+note = "Runs the project test command. Denied before launch under the restricted profile."
+
+[[root]]
+id = "tool.verify"
+tool = "verify"
+path = "src/tool/verify.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "VerifyTool"
+locator = "process-cwd of the spawned verifier"
+lifetime = "request-scoped, but the child may detach"
+kind = "process"
+note = "Runs project verification. Denied before launch under the restricted profile."
+
+[[root]]
+id = "tool.ci_watch"
+tool = "ci_watch"
+path = "src/tool/ci_watch.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "CiWatchTool"
+locator = "process-cwd of the registered watch"
+lifetime = "persistent; a registered watch keeps running after the request"
+kind = "process"
+note = "Registers a CI watch that keeps executing. Denied before registration under the restricted profile."
+
+[[root]]
+id = "tool.job"
+tool = "job"
+path = "src/tool/job.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "JobTool"
+locator = "the job's own execution context"
+lifetime = "request-scoped control over work that may be persistent"
+kind = "process-control"
+note = "Controls scheduler jobs, which run process-class work. Denied before it can adopt a writer job."
+
+[[root]]
+id = "tool.task"
+tool = "task"
+path = "src/tool/task.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "TaskTool -> codegg-core agent run / task records"
+locator = "workspace-root, under the project-local .codegg state"
+lifetime = "durable; a task record outlives the request"
+kind = "delegation"
+note = "Delegation and workstream claims. Its durable records land under the project-local .codegg state, inside the checkout. The delegation surface it grants is denied-process: a child run is not a smaller writer."
+
+[[root]]
+id = "tool.work_order"
+tool = "work_order"
+path = "src/tool/work_order.rs"
+surface = "model-tool"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "WorkOrderTool -> codegg-core work order records"
+locator = "workspace-root, under the project-local .codegg state"
+lifetime = "durable"
+kind = "managed-state"
+note = "Work order records land inside the project tree and must join the same permit."
+
+[[root]]
+id = "tool.image"
+tool = "image"
+path = "src/tool/image.rs"
+surface = "model-tool"
+scope = "non-checkout"
+disposition = "out-of-contract"
+owner = "ImageTool -> managed artifact store"
+locator = "managed-root outside every checkout"
+lifetime = "request-scoped write, durable artifact"
+kind = "managed-state"
+note = "Image generation performs NO filesystem effect: it is an external network request to the image API. The tool declares ToolCategory::Mutating, so it appears in the writer inventory, but it cannot touch a checkout; the restricted profile does not govern it."
+
+# ---------------------------------------------------------------------------
+# Non-broker daemon, HTTP and project-state writer modules.
+#
+# These are the easiest to miss: they mutate a checkout WITHOUT passing
+# through the model ToolBroker, and an authenticated human CodeGG write may
+# not bypass them either.
+# ---------------------------------------------------------------------------
+
+[[root]]
+id = "module.lsp_mutation"
+path = "src/lsp/mutation.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "LspMutationApplier"
+locator = "workspace-root"
+lifetime = "request-scoped"
+kind = "module"
+note = "Daemon-owned application of reviewed LSP workspace edits. The checked native primitives already exist in-tree (checked_workspace_text_write / _file_delete / _file_create), so this is the strongest fenced-native candidate; every digest check is check-then-act."
+
+[[root]]
+id = "module.server_file_route"
+path = "src/server/routes/file.rs"
+surface = "http"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "FileRoute"
+locator = "workspace-root, from the HTTP request path"
+lifetime = "request-scoped"
+kind = "module"
+note = "HTTP file write and delete API. An authenticated human write must not bypass the shared permit."
+
+[[root]]
+id = "module.document_service"
+path = "src/document_service.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "DocumentService"
+locator = "workspace-root"
+lifetime = "request-scoped, with a durable document record"
+kind = "module"
+note = "Editor document create/save/delete. This module is a COORDINATOR, not the effect owner: it performs no filesystem write of its own, and the write goes through crate::lsp::mutation::checked_workspace_text_write / _file_delete / _file_create, recorded as module.lsp_mutation. It carries a writer lease, revision, base-disk digest and repository lock, but every digest check is check-then-act."
+
+[[root]]
+id = "module.daemon_project_init"
+path = "src/core/daemon_project_init.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "ProjectInitAuthority"
+locator = "workspace-root, publishing the root AGENTS.md"
+lifetime = "request-scoped, at project initialization"
+kind = "module"
+note = "Publishes a root document into the checkout through publish_checked; runs before a model turn, so it does not know a run id."
+
+[[root]]
+id = "module.checked_restore"
+path = "crates/codegg-core/src/snapshot/checked_restore.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "CheckedRestore"
+locator = "workspace-root"
+lifetime = "recovery-time, before any model turn"
+kind = "module"
+note = "Restores a snapshot into the checkout at recovery; runs before a run id exists."
+
+[[root]]
+id = "module.snapshot"
+path = "crates/codegg-core/src/snapshot/mod.rs"
+surface = "daemon"
+scope = "non-checkout"
+disposition = "out-of-contract"
+owner = "SnapshotStore"
+locator = "workspace-root"
+lifetime = "durable snapshot records"
+kind = "module"
+note = "The legacy SnapshotManager::restore is dormant: no production caller. The live edit-checkpoint restore path is crates/codegg-core/src/goal/checkpoint.rs, recorded separately."
+
+[[root]]
+id = "module.worktree_service"
+path = "crates/codegg-core/src/worktree_service.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "WorktreeService"
+locator = "worktree-path of the leased checkout"
+lifetime = "durable lease and worktree records"
+kind = "module"
+note = "Creates and removes worktrees. Leases track checkout ownership, not every mutation; the managed-worktree relative-root fallback can defeat the native outside-the-repository-root fence."
+
+[[root]]
+id = "module.workspace_services"
+path = "crates/codegg-core/src/workspace_services.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "WorkspaceServices"
+locator = "workspace-root, under the project-local .codegg state"
+lifetime = "durable"
+kind = "module"
+note = "Owns the run root at <workspace>/.codegg/runs, which is physically inside the checkout."
+
+[[root]]
+id = "module.run_store"
+path = "crates/codegg-core/src/run_store.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "RunStore"
+locator = "workspace-root, under the project-local .codegg state"
+lifetime = "durable"
+kind = "module"
+note = "Durable run state and artifacts under <workspace>/.codegg/runs."
+
+[[root]]
+id = "module.storage"
+path = "crates/codegg-core/src/storage/mod.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "Database"
+locator = "project-local <project_root>/.codegg/sessions.db"
+lifetime = "durable, database lifetime"
+kind = "module"
+note = "Legacy project-local SQLite database. Physically inside the checkout."
+
+[[root]]
+id = "module.tool_program_interpreter"
+path = "crates/codegg-core/src/tool_program/interpreter.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "ToolProgramInterpreter"
+locator = "the program's own execution context"
+lifetime = "request-scoped, but a program may be backgrounded"
+kind = "module"
+note = "Deterministic IR interpreter for Tool Programs; a program may run detached after its request returns."
+
+[[root]]
+id = "module.goal_checkpoint"
+path = "crates/codegg-core/src/goal/checkpoint.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-native"
+owner = "GoalCheckpointStore"
+locator = "workspace-root, under the project-local .codegg state"
+lifetime = "durable"
+kind = "module"
+note = "The live edit-checkpoint undo/reapply path: restores a durable checkpoint into the checkout and takes the repository lock while doing so."
+
+[[root]]
+id = "module.memory_habit"
+path = "crates/codegg-core/src/memory/habit.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "HabitStore"
+locator = "workspace-root, under the project-local .codegg state"
+lifetime = "durable"
+kind = "module"
+note = "Workflow habit observation state written under the project-local state root."
+
+[[root]]
+id = "module.memory"
+path = "crates/codegg-core/src/memory/mod.rs"
+surface = "daemon"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "MemoryStore"
+locator = "workspace-root, under the project-local .codegg state"
+lifetime = "durable"
+kind = "module"
+note = "Session-to-session memory written under the project-local state root."
+
+[[root]]
+id = "module.global_agent_authority"
+path = "src/core/global_agent_authority.rs"
+surface = "daemon"
+scope = "non-checkout"
+disposition = "out-of-contract"
+owner = "GlobalAgentAuthority"
+locator = "managed-root: the user-level agent directory"
+lifetime = "durable"
+kind = "module"
+note = "Creates and owns the user-level agent directory, outside every checkout."
+
+[[root]]
+id = "module.daemon_instance"
+path = "src/core/instance.rs"
+surface = "daemon"
+scope = "non-checkout"
+disposition = "out-of-contract"
+owner = "DaemonInstance"
+locator = "managed-root: the user-scoped daemon home"
+lifetime = "daemon lifetime"
+kind = "module"
+note = "User-scoped daemon paths and instance files live in the daemon home, outside every checkout."
+
+[[root]]
+id = "module.daemon_socket"
+path = "src/core/transport/daemon_socket.rs"
+surface = "daemon"
+scope = "non-checkout"
+disposition = "out-of-contract"
+owner = "DaemonSocket"
+locator = "managed-root: the user-scoped daemon home"
+lifetime = "daemon lifetime"
+kind = "module"
+note = "Daemon socket file in the daemon home, outside every checkout."
+
+[[root]]
+id = "module.socket"
+path = "src/core/transport/socket.rs"
+surface = "daemon"
+scope = "non-checkout"
+disposition = "out-of-contract"
+owner = "SocketTransport"
+locator = "managed-root: the user-scoped daemon home"
+lifetime = "daemon lifetime"
+kind = "module"
+note = "Socket transport endpoints in the daemon home, outside every checkout."
+
+[[root]]
+id = "module.ide"
+path = "src/ide/mod.rs"
+surface = "daemon"
+scope = "non-checkout"
+disposition = "out-of-contract"
+owner = "IdeTempFiles"
+locator = "managed-root: a temporary directory"
+lifetime = "request-scoped, deleted after the diff is rendered"
+kind = "module"
+note = "Temporary diff copies for the IDE surface; outside every checkout."
+
+[[root]]
+id = "module.server_project_route"
+path = "src/server/routes/project.rs"
+surface = "http"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "ProjectRoute"
+locator = "workspace-root"
+lifetime = "request-scoped"
+kind = "module"
+note = "HTTP project routes that write project-local state inside the checkout."
+
+[[root]]
+id = "module.server_workspace_route"
+path = "src/server/routes/workspace.rs"
+surface = "http"
+scope = "checkout-writer"
+disposition = "fenced-or-denied"
+owner = "WorkspaceRoute"
+locator = "workspace-root"
+lifetime = "request-scoped"
+kind = "module"
+note = "HTTP workspace routes that write project-local state inside the checkout."
+
+# ---------------------------------------------------------------------------
+# Explicitly out of contract. Recorded so the boundary is visible, not implied.
+# ---------------------------------------------------------------------------
+
+[[root]]
+id = "external.same_uid_programs"
+surface = "external"
+scope = "external"
+disposition = "out-of-contract"
+owner = "none: CodeGG does not own these writers"
+locator = "outside CodeGG's control"
+lifetime = "not controlled by CodeGG"
+kind = "module"
+note = "Editors, shells and agents the user runs outside CodeGG under the same OS user. ADR-0042 option B explicitly does not exclude them; excluding them needs a separate OS isolation ADR."
