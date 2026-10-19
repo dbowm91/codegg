@@ -1251,6 +1251,7 @@ async fn turn_submit_atomically_acquires_controller() {
                 messages: Vec::new(),
                 reasoning: None,
                 human_shell_promotion_ids: Vec::new(),
+                max_model_tokens: None,
             },
         ),
         "client-alice",
@@ -1392,6 +1393,7 @@ async fn concurrent_submits_converge_on_one_controller() {
                 messages: Vec::new(),
                 reasoning: None,
                 human_shell_promotion_ids: Vec::new(),
+                max_model_tokens: None,
             },
         )
     };
