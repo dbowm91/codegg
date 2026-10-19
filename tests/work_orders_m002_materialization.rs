@@ -494,6 +494,8 @@ async fn managed_worktree_creation_fails_closed_without_git_containment_backend(
         node_id: None,
         repository_root: repo_dir.path().to_path_buf(),
         base_commit: None,
+        base_ref: None,
+        target_branch: None,
         base_path: None,
         owner_run_id: codegg_core::identity::AgentRunId::new(),
     };

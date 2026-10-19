@@ -32,6 +32,7 @@ pub mod run_result;
 pub mod run_store;
 pub mod session;
 pub mod session_control;
+pub mod session_launch;
 pub mod snapshot;
 pub mod storage;
 pub mod task_state;

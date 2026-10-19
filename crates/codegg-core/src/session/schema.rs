@@ -274,6 +274,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 84 {
         migrate_and_record(pool, 84).await?;
     }
+    if current_version < 85 {
+        migrate_and_record(pool, 85).await?;
+    }
 
     Ok(())
 }
@@ -370,6 +373,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             82 => migrate_v82(&mut tx).await?,
             83 => migrate_v83(&mut tx).await?,
             84 => migrate_v84(&mut tx).await?,
+            85 => migrate_v85(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3611,6 +3615,50 @@ async fn migrate_v84(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "CREATE INDEX IF NOT EXISTS idx_writer_permit_state ON writer_permit(state)",
         "CREATE INDEX IF NOT EXISTS idx_writer_permit_project ON writer_permit(project_id, state)",
         "CREATE INDEX IF NOT EXISTS idx_writer_permit_group ON writer_permit(group_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Migration(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M006: the durable session-launch saga.
+///
+/// A launch spans two resources that cannot share one transaction — a Git
+/// worktree on the filesystem and a session row in SQLite. This table is
+/// what makes the launch *recoverable*: it records that a request was
+/// accepted, which checkout and session it produced, and how far it got.
+///
+/// `stage` is a closed enum. `needs_attention` is terminal until an
+/// operator resolves it; a launch never silently re-enters a stage.
+async fn migrate_v85(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS session_launch (
+            launch_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            intent TEXT NOT NULL CHECK (intent IN ('new','fork')),
+            placement TEXT NOT NULL,
+            parent_session_id TEXT,
+            idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) BETWEEN 1 AND 1024),
+            stage TEXT NOT NULL CHECK (stage IN (
+                'accepted','checkout_reserved','checkout_ready',
+                'session_created','bound','completed','needs_attention'
+            )),
+            worktree_id TEXT,
+            session_id TEXT,
+            workspace_id TEXT,
+            attention_code TEXT CHECK (attention_code IS NULL OR length(attention_code) <= 128),
+            created_at_ms INTEGER NOT NULL DEFAULT 0,
+            updated_at_ms INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_session_launch_project ON session_launch(project_id, created_at_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_session_launch_stage ON session_launch(stage)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_launch_idempotency ON session_launch(project_id, idempotency_key)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

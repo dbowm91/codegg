@@ -1822,6 +1822,9 @@ pub struct SchedulerConfig {
     pub resources: Option<SchedulerResourceConfig>,
     pub queue: Option<SchedulerQueueConfig>,
     pub fairness: Option<SchedulerFairnessConfig>,
+    /// M007: keyed quota limits. The limit belongs to the
+    /// configuration, never to the job request.
+    pub quota: Option<SchedulerQuotaConfig>,
 }
 impl SchedulerConfig {
     /// Merge a later config layer into this one: every top-level field
@@ -1847,6 +1850,9 @@ impl SchedulerConfig {
         }
         if other.fairness.is_some() {
             self.fairness.clone_from(&other.fairness);
+        }
+        if other.quota.is_some() {
+            self.quota.clone_from(&other.quota);
         }
     }
 }
@@ -1888,6 +1894,23 @@ pub struct SchedulerFairnessConfig {
     pub maintenance_weight: Option<u32>,
     pub max_high_priority_burst: Option<u32>,
     pub aging_secs: Option<u64>,
+}
+
+/// M007: keyed quota limits.
+///
+/// A quota is a *count* of weighted slots per scope, where the scope is
+/// a canonical workspace. The limit is configuration-owned: a job may
+/// ask for slots, but it can never widen the bound it is measured
+/// against.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "snake_case")]
+pub struct SchedulerQuotaConfig {
+    /// Maximum concurrent build-class jobs per canonical workspace.
+    ///
+    /// Must be greater than zero. Defaults to one, which preserves the
+    /// pre-M007 behaviour of one build-class job at a time within a
+    /// workspace while letting unrelated workspaces build concurrently.
+    pub max_concurrent_builds_per_workspace: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

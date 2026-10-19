@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15; M005 active for checkout-scoped writer-containment feasibility and qualification. Shared mutation remains unavailable until complete writer mediation and native lifecycle containment are proven. M006 isolated session/worktree UX and M007 per-workspace build admission are independently eligible; M008's broad comparison remains blocked on M006/M007.
+Status: active; M001–M004, M007 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15; M005 active for checkout-scoped writer-containment feasibility and qualification. Shared mutation remains unavailable until complete writer mediation and native lifecycle containment are proven. M007 per-workspace build admission is closed; M006 isolated session/worktree UX is in progress (durable launch contract delivered, CLI/TUI surfaces outstanding). M008's broad comparison remains blocked on M006.
 
 Repository planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main inspected 2026-10-16). Re-inspect exact working branch before implementation.
 
@@ -66,8 +66,8 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             +-- M004 peer observation and model-facing tools    [strictly closed via M009]
                  |
                  +-- M005 explicit group checkout placement     [active: design/qualification; shared-write capability blocked]
-            +-- M006 isolated session/worktree launch UX          [ready; M005 not required]
-            +-- M007 per-workspace build admission                [ready; M005 not required]
+            +-- M006 isolated session/worktree launch UX          [in progress: durable launch contract and CLI delivered; TUI outstanding; M005 not required]
+            +-- M007 per-workspace build admission                [closed; M005 not required]
             +-- M010 isolated Rust/Python trajectory               [closed; deterministic functional evidence]
             +-- M008 broad trajectory and economics                [blocked: M006, M007]
 ~~~
@@ -132,17 +132,19 @@ Plan: plans/implementation/agent-workstream-blackboard/005-group-worktree-placem
 Corrective: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md.
 Decision: plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md (**accepted 2026-10-19**, option B — restricted CodeGG-managed coordination; enables no shared mutation).
 
-### M006 — Isolated session/worktree fork-and-launch UX (ready)
+### M006 — Isolated session/worktree fork-and-launch UX (in progress)
 
 Native daemon operation for 'new session in new/existing isolated worktree' and 'fork session in new/existing isolated worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. Session fork alone retains old semantics. Shared checkout execution is excluded and M005 is not a dependency.
 
 Plan: plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md
 
-### M007 — Per-workspace build admission (ready; independent of M005)
+### M007 — Per-workspace build admission (closed; independent of M005)
 
 Use the canonical scheduler to enforce a bounded per-workspace concurrent-build limit with correct waiting/cancellation/restart behavior and authorized coarse job status. No shared target, compiler cache, build coalescing, or shared checkout is introduced; those optimizations remain separate future work.
 
 Plan: plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md
+
+Closure: `plans/closure/agent-workstream-blackboard/007-status.md`.
 The plan's deferred cache note is research only and does not authorize target sharing or coalescing.
 
 ### Corrective M010 — Isolated Rust/Python coordination trajectory (closed)
@@ -152,7 +154,7 @@ M010 closed the deterministic claim/worktree/Rust/Python/integration trajectory.
 Plan: `plans/implementation/agent-workstream-blackboard/010-isolated-rust-python-trajectory.md`.
 Closure: `plans/closure/agent-workstream-blackboard/010-status.md`.
 
-### M008 — Comparative validation and closure (blocked: M006, M007)
+### M008 — Comparative validation and closure (blocked: M006)
 
 Measure one strong agent vs silent isolated agents vs peer-aware isolated vs claims+peer-aware using identical task/evaluation budgets; include Rust and Python fixtures, overlapping API changes, failure/recovery, CPU/RSS/disk/token cost, useful throughput and integration outcomes. Any shared checkout arm is unavailable until M005 qualifies it; never emulate shared writes unsafely. Deterministic traces support CI; provider-backed experiments are separately reported. Negative/no-improvement results must be reported without hiding them.
 

@@ -102,6 +102,7 @@ fn admission_capacity_is_respected() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
+        keyed_quotas: Vec::new(),
     };
 
     let p1 = controller.try_admit_arc(&dims);
@@ -133,6 +134,7 @@ fn exclusivity_keys_block_concurrent_jobs() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![format!("exclusive:{key}")],
+        keyed_quotas: Vec::new(),
     };
     let a = controller.try_admit_arc(&dims_holder("run-tests"));
     let b = controller.try_admit_arc(&dims_holder("run-tests"));
@@ -162,6 +164,7 @@ fn guard_drop_releases_capacity() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
+        keyed_quotas: Vec::new(),
     };
     let p1 = match controller.try_admit_arc(&dims) {
         codegg::scheduler::AdmissionDecision::Admitted(p) => p,
@@ -231,6 +234,7 @@ fn admission_budget_is_shared_across_workspaces() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
+        keyed_quotas: Vec::new(),
     };
     let mut held = Vec::new();
     for _ in 0..4 {
@@ -479,6 +483,7 @@ fn admission_blocks_when_only_exclusivity_is_held() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:test-only".into()],
+        keyed_quotas: Vec::new(),
     };
     let other = PermitDimensions {
         cpu_weight: 0,
@@ -487,6 +492,7 @@ fn admission_blocks_when_only_exclusivity_is_held() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec!["exclusive:test-only".into()],
+        keyed_quotas: Vec::new(),
     };
     let first = controller.try_admit_arc(&key_holder);
     let second = controller.try_admit_arc(&other);

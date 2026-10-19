@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use codegg_core::jobs::{
-    DaemonGeneration, JobId, JobKind, JobPayload, JobRecord, JobState, JobStore, NewJob,
-    ResourceRequest, GOAL_PROVENANCE_LABEL_KEY,
+    DaemonGeneration, JobId, JobKind, JobPayload, JobRecord, JobState, JobStore, KeyedQuotaRequest,
+    NewJob, ResourceClass, ResourceRequest, GOAL_PROVENANCE_LABEL_KEY,
 };
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
@@ -475,6 +475,30 @@ fn apply_resource_policy(spec: &mut NewJob) {
             *key = format!("exclusive:{key}");
         }
     }
+    // M007: bind the resource class scope to the canonical workspace.
+    //
+    // The kind-derived policy names the class but cannot scope it —
+    // the workspace is only known here. Binding it here is what makes
+    // two unrelated workspaces independent: before M007 the build class
+    // shared the *global* `exclusive:workspace-mutation` key, so a build
+    // in one workspace excluded a build in every other workspace.
+    //
+    // The binding is applied unconditionally, not only for a defaulted
+    // request: a caller that supplied its own resource request must not
+    // be able to opt out of the bound it is measured against. The legacy
+    // global key is dropped for the same reason — leaving it in place
+    // would keep the global coupling this milestone removes.
+    if let Some(class) = ResourceClass::for_job_kind(spec.kind) {
+        spec.resource_request
+            .exclusivity_keys
+            .retain(|key| key != "exclusive:workspace-mutation");
+        spec.resource_request
+            .keyed_quotas
+            .retain(|quota| quota.namespace() != Some(class.namespace()));
+        spec.resource_request
+            .keyed_quotas
+            .push(KeyedQuotaRequest::for_workspace(class, &spec.workspace_id));
+    }
 }
 
 fn fingerprint(spec: &NewJob) -> String {
@@ -626,10 +650,18 @@ mod tests {
             assert!(profile.io_weight > 0, "{kind:?} must reserve IO");
             assert!(profile.process_slots > 0, "{kind:?} must reserve a process");
         }
-        assert!(ResourceRequest::for_kind(JobKind::Build)
+        // M007: the build class no longer carries the *global*
+        // `exclusive:workspace-mutation` key. That key serialized every
+        // build in every workspace; it is replaced by the counted,
+        // workspace-scoped build quota below.
+        assert!(!ResourceRequest::for_kind(JobKind::Build)
             .exclusivity_keys
             .iter()
             .any(|key| key == "exclusive:workspace-mutation"));
+        let build = ResourceRequest::for_kind(JobKind::Build);
+        assert_eq!(build.keyed_quotas.len(), 1);
+        assert_eq!(build.keyed_quotas[0].namespace(), Some("build"));
+        assert_eq!(build.keyed_quotas[0].scope(), "");
         assert!(ResourceRequest::for_kind(JobKind::GitMutation)
             .exclusivity_keys
             .iter()
@@ -900,5 +932,73 @@ mod tests {
             .await
             .expect("list jobs");
         assert_eq!(jobs.len(), 1);
+    }
+
+    /// M007: the submission boundary binds the build class to the
+    /// canonical workspace and drops the legacy global key.
+    #[test]
+    fn the_build_class_scope_is_bound_at_the_submission_boundary() {
+        let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-bound");
+        let mut job = spec(workspace.clone());
+        job.kind = JobKind::Build;
+        job.payload = JobPayload::ManagedArgv {
+            argv: vec!["cargo".into(), "build".into()],
+            cwd: None,
+        };
+        apply_resource_policy(&mut job);
+        assert_eq!(job.resource_request.keyed_quotas.len(), 1);
+        assert_eq!(
+            job.resource_request.keyed_quotas[0].key,
+            format!("build:{workspace}")
+        );
+        assert!(job
+            .resource_request
+            .exclusivity_keys
+            .iter()
+            .all(|key| key != "exclusive:workspace-mutation"));
+    }
+
+    /// M007: a caller that supplies its own resource request cannot opt
+    /// out of the build bound it is measured against.
+    #[test]
+    fn a_caller_supplied_request_cannot_escape_the_build_bound() {
+        let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-escape");
+        let mut job = spec(workspace.clone());
+        job.kind = JobKind::Build;
+        job.payload = JobPayload::ManagedArgv {
+            argv: vec!["cargo".into(), "build".into()],
+            cwd: None,
+        };
+        // A request that names the legacy global key, or a quota of its
+        // own, must not survive the boundary.
+        job.resource_request = ResourceRequest {
+            exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+            keyed_quotas: vec![codegg_core::jobs::KeyedQuotaRequest::new(
+                "build:elsewhere",
+                8,
+            )],
+            ..ResourceRequest::default()
+        };
+        apply_resource_policy(&mut job);
+        assert_eq!(job.resource_request.keyed_quotas.len(), 1);
+        assert_eq!(
+            job.resource_request.keyed_quotas[0].key,
+            format!("build:{workspace}")
+        );
+        assert!(job
+            .resource_request
+            .exclusivity_keys
+            .iter()
+            .all(|key| key != "exclusive:workspace-mutation"));
+    }
+
+    /// M007: an unsupported kind keeps its existing admission and
+    /// carries no quota.
+    #[test]
+    fn an_unsupported_kind_carries_no_quota() {
+        let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-plain");
+        let mut job = spec(workspace);
+        apply_resource_policy(&mut job);
+        assert!(job.resource_request.keyed_quotas.is_empty());
     }
 }

@@ -13,6 +13,8 @@ use parking_lot::Mutex;
 
 use crate::scheduler::admission::AdmissionController;
 
+use codegg_core::jobs::quota::KeyedQuotaRequest;
+
 /// Dimensions that can be reserved on the admission controller. Each
 /// admission acquires all of these atomically.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -23,6 +25,12 @@ pub struct PermitDimensions {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// M007: keyed, weighted quota scopes.
+    ///
+    /// A counted bound scoped to a host-computed key, where an
+    /// exclusivity key is a binary mutex over a name. The scopes are
+    /// acquired and released atomically with the other dimensions.
+    pub keyed_quotas: Vec<KeyedQuotaRequest>,
 }
 
 /// Token returned by the admission controller when a permit is taken.
@@ -144,6 +152,24 @@ pub fn permit_from_request(
         io_weight: io,
         network_slots: network,
         exclusivity_keys: keys,
+        keyed_quotas: Vec::new(),
+    }
+}
+
+/// Convenience for tests: build a `PermitDimensions` that also carries
+/// keyed quota scopes.
+pub fn permit_from_request_with_quotas(
+    cpu: u32,
+    memory_mb: u64,
+    process: u16,
+    io: u32,
+    network: u16,
+    keys: Vec<String>,
+    quotas: Vec<KeyedQuotaRequest>,
+) -> PermitDimensions {
+    PermitDimensions {
+        keyed_quotas: quotas,
+        ..permit_from_request(cpu, memory_mb, process, io, network, keys)
     }
 }
 

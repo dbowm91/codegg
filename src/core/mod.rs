@@ -45,6 +45,7 @@ pub mod project_init;
 pub mod provider_connections;
 pub mod provider_qualification;
 pub mod runtime_deps;
+pub mod session_launch;
 pub mod session_runtime;
 pub mod session_selection;
 pub mod transport;
@@ -684,6 +685,11 @@ pub(crate) fn map_app_event_to_core_event(
             Some(CoreEvent::AgentRunGroupUpserted { session_id, group })
         }
         crate::bus::events::AppEvent::WorkstreamClaimUpdated { .. } => None,
+        // M007: the coarse job status is an in-process, same-group
+        // subscription. It is not a client protocol event: the group
+        // projection learns the job's authoritative kind and terminal
+        // state from the durable job record, not from this hint.
+        crate::bus::events::AppEvent::JobStatusObserved { .. } => None,
         crate::bus::events::AppEvent::AgentRunEvidenceObserved { .. } => None,
         crate::bus::events::AppEvent::ConvergenceUpdated {
             session_id,

@@ -553,6 +553,10 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_rename", "session_attach"),
     ("session_import_data", "session_create"),
     ("session_fork", "session_create"),
+    // M006: a session launch creates a session and places it in an
+    // isolated checkout. It is a shared-state mutation, so it is
+    // instrumented rather than hidden in the uninstrumented list.
+    ("session_launch", "session_create"),
     ("turn_submit", "prompt_submit"),
     ("session_prompt_submit", "prompt_submit"),
     ("human_shell_promotion_stage", "prompt_submit"),

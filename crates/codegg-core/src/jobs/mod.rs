@@ -44,9 +44,12 @@ use crate::workspace::WorkspaceId;
 /// with the exact active goal that authorized its submission.
 pub const GOAL_PROVENANCE_LABEL_KEY: &str = "goal_id";
 
+pub mod quota;
 pub mod schedule;
 pub mod schedule_store;
 pub mod store;
+
+pub use quota::{KeyedQuotaRequest, ResourceClass, MAX_QUOTA_KEY_BYTES, MAX_QUOTA_SLOTS};
 
 pub use schedule::{
     compute_next_run, missed_run_targets, ClaimedOccurrence, MissedRunPolicy,
@@ -690,6 +693,15 @@ pub struct ResourceRequest {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// M007: typed keyed quota slots.
+    ///
+    /// A quota is a *counted* bound scoped to a host-computed key
+    /// (currently a canonical `WorkspaceId`), where an exclusivity key
+    /// is a binary mutex over a name. The field is serde-defaulted so a
+    /// request persisted before M007 decodes unchanged and keeps its
+    /// historical admission.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyed_quotas: Vec<KeyedQuotaRequest>,
 }
 
 impl Default for ResourceRequest {
@@ -705,13 +717,22 @@ impl Default for ResourceRequest {
             io_weight: 1,
             network_slots: 0,
             exclusivity_keys: Vec::new(),
+            keyed_quotas: Vec::new(),
         }
     }
 }
 
 impl ResourceRequest {
+    /// The kind-derived resource policy.
+    ///
+    /// The policy is *class*-level: it names the resource classes a kind
+    /// belongs to without binding their scope. A quota's scope is the
+    /// canonical workspace, which only the submission boundary knows;
+    /// the boundary binds it. An unbound class request is still
+    /// counted — against one shared global bucket — so a request that
+    /// never reached the boundary cannot escape the bound.
     pub fn for_kind(kind: JobKind) -> Self {
-        match kind {
+        let mut request = match kind {
             JobKind::AgentTurn | JobKind::Subagent | JobKind::Research => Self {
                 cpu_weight: 1,
                 memory_mb_hint: 512,
@@ -719,6 +740,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 1,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::Build => Self {
                 cpu_weight: 3,
@@ -726,7 +748,12 @@ impl ResourceRequest {
                 process_slots: 1,
                 io_weight: 3,
                 network_slots: 0,
-                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                // M007: the legacy global `exclusive:workspace-mutation`
+                // key is replaced by the counted, workspace-scoped build
+                // class attached below. The key was never checkout-scoped
+                // and serialized unrelated workspaces against each other.
+                exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::Lint => Self {
                 cpu_weight: 1,
@@ -735,6 +762,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::Format => Self {
                 cpu_weight: 1,
@@ -742,7 +770,9 @@ impl ResourceRequest {
                 process_slots: 1,
                 io_weight: 1,
                 network_slots: 0,
-                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                // M007: see the `Build` arm.
+                exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::Test => Self {
                 cpu_weight: 2,
@@ -751,6 +781,7 @@ impl ResourceRequest {
                 io_weight: 2,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::Shell | JobKind::ManagedProcess => Self {
                 cpu_weight: 1,
@@ -759,6 +790,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::Python => Self {
                 cpu_weight: 1,
@@ -767,6 +799,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::GitRead => Self {
                 cpu_weight: 1,
@@ -775,6 +808,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::GitMutation => Self {
                 cpu_weight: 1,
@@ -783,6 +817,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:worktree-mutation".to_string()],
+                keyed_quotas: Vec::new(),
             },
             JobKind::Maintenance => Self {
                 cpu_weight: 1,
@@ -791,6 +826,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::ToolProgram => Self {
                 cpu_weight: 1,
@@ -799,8 +835,23 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                keyed_quotas: Vec::new(),
             },
             JobKind::Unsupported => Self::default(),
+        };
+        request.attach_resource_class(kind);
+        request
+    }
+
+    /// Attach the resource class a kind belongs to, if any.
+    ///
+    /// The class is attached with an *unbound* scope; the submission
+    /// boundary binds it to the canonical workspace.
+    pub fn attach_resource_class(&mut self, kind: JobKind) {
+        if let Some(class) = ResourceClass::for_job_kind(kind) {
+            self.keyed_quotas
+                .retain(|quota| quota.namespace() != Some(class.namespace()));
+            self.keyed_quotas.push(KeyedQuotaRequest::unbound(class));
         }
     }
 }
@@ -2085,10 +2136,15 @@ mod tests {
         let agent = ResourceRequest::for_kind(JobKind::AgentTurn);
         assert!(agent.network_slots >= 1);
         let format = ResourceRequest::for_kind(JobKind::Format);
+        // M007: the build class carries a counted, workspace-scoped quota
+        // rather than the legacy *global* exclusivity key, which
+        // serialized every build in every workspace.
         assert!(format
             .exclusivity_keys
             .iter()
-            .any(|k| k == "exclusive:workspace-mutation"));
+            .all(|k| k != "exclusive:workspace-mutation"));
+        assert_eq!(format.keyed_quotas.len(), 1);
+        assert_eq!(format.keyed_quotas[0].namespace(), Some("build"));
         let git = ResourceRequest::for_kind(JobKind::GitMutation);
         assert!(git
             .exclusivity_keys

@@ -910,6 +910,8 @@ impl JobExecutor for SubagentJobExecutor {
                         node_id: None,
                         repository_root: repository_root.clone(),
                         base_commit,
+                        base_ref: None,
+                        target_branch: None,
                         base_path: Some(repository_root.clone()),
                         owner_run_id: run_id.clone(),
                     };

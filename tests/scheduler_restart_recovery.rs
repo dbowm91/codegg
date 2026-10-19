@@ -623,6 +623,7 @@ async fn recovery_preserves_permit_accounting() {
         io_weight: 0,
         network_slots: 0,
         exclusivity_keys: vec![],
+        keyed_quotas: Vec::new(),
     };
     let _permit = match controller.try_admit_arc(&dims) {
         codegg::scheduler::AdmissionDecision::Admitted(p) => p,

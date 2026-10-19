@@ -188,6 +188,8 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Presence | Ephemeral project-scoped presence — leases, heartbeat, expiry | [presence.md](presence.md) |
 | Workstream Claims | Durable group-scoped task/path/interface claims and prerequisite edges; intent only | [workstream_claims.md](workstream_claims.md) |
 | Checkout Writer Permit | Durable, generation-fenced per-checkout writer token; state machine, CAS, quarantine, bounded waiter; enables no writer yet | [writer_permit.md](writer_permit.md) |
+| Build Admission | Counted, workspace-scoped build quota; configuration-owned limit; coarse authorized group status | [build_admission.md](build_admission.md) |
+| Session Launch | Durable, idempotent session launch into an isolated managed checkout; stage machine, saga, binding | [session_launch.md](session_launch.md) |
 | Server | Axum HTTP/WS server (feature `server`) — remote TUI, REST, SSE, token auth | [server.md](server.md) |
 | Client | Remote TUI WebSocket client with resume/replay | [client.md](client.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | [exec.md](exec.md) |
@@ -272,31 +274,40 @@ the M005 corrective C002 moved — architecture docs, `codegg-core` modules,
 database tables, storage layout version, and integration test files — were
 remeasured against their own `Source` on **2026-10-19**.
 
+M006 and M007 moved the same rows plus the event and request/response
+variant counts and the authorized-operation count. All of them were
+remeasured against their own `Source` on **2026-10-19**, with the
+request-variant method taken from `scripts/check_authorization_matrix.py`
+so the table and the guard count the same thing. The `CoreRequest`,
+`CoreResponse` and `CoreEvent` rows had already drifted from their
+`Source` before this measurement and are corrected here rather than
+incremented.
+
 | Item | Count | Source |
 |------|-------|--------|
-| Architecture docs | 88 | `architecture/*.md` |
+| Architecture docs | 90 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
 | Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
 | Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
-| `codegg-core` modules | 48 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
-| `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 243 (219 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 158 | `crates/codegg-protocol/src/core.rs` |
-| `CoreEvent` variants | 88 | `crates/codegg-protocol/src/core.rs` |
+| `codegg-core` modules | 49 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
+| `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
+| `CoreRequest` variants | 259 | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 169 | `crates/codegg-protocol/src/core.rs` |
+| `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 237 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 259 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 18 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 164 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 31 (32 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 93 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 84 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 94 | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | 85 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 267 | `tests/*.rs` |
+| Integration test files | 268 | `tests/*.rs` |
 | CI guard scripts | 53 | `scripts/check_*` |
 
 ## Feature gates
@@ -440,6 +451,8 @@ Every architecture document in this directory, grouped by theme.
 - [Workspace](workspace.md) — registry, execution context
 - [Workspace Services](workspace_services.md) — per-workspace bundles, migration
 - [Checkout Writer Permit](writer_permit.md) — durable generation-fenced writer token, quarantine, bounded waiter
+- [Build Admission](build_admission.md) — counted per-workspace build quota, configuration-owned limit, coarse group status
+- [Session Launch](session_launch.md) — durable idempotent session launch into an isolated checkout
 - [Jobs](jobs.md) — durable jobs, attempts, schedules, recovery
 - [Scheduler](scheduler.md) — admission control, fair queue, dispatch
 - [Session](session.md) — SQLite storage, message history

@@ -150,8 +150,27 @@ impl SessionProjectionSnapshot {
     }
 
     /// Upsert a job, dropping the oldest if the cap is reached.
-    pub fn upsert_job(&mut self, job: JobProjection) {
+    ///
+    /// The upsert *merges*: facts already observed for a job are kept
+    /// when the incoming projection does not carry them. A lifecycle
+    /// event that knows only the job id and the attempt id must not
+    /// erase the kind and the workspace the creation event recorded —
+    /// a job whose kind is blank cannot be classified, and a job whose
+    /// workspace is blank cannot be authorized against one.
+    pub fn upsert_job(&mut self, mut job: JobProjection) {
         if let Some(slot) = self.jobs.iter_mut().find(|j| j.job_id == job.job_id) {
+            if job.workspace_id.is_empty() {
+                job.workspace_id = std::mem::take(&mut slot.workspace_id);
+            }
+            if job.kind.is_empty() {
+                job.kind = std::mem::take(&mut slot.kind);
+            }
+            if job.session_id.is_none() {
+                job.session_id = slot.session_id.clone();
+            }
+            if job.turn_id.is_none() {
+                job.turn_id = slot.turn_id.clone();
+            }
             *slot = job;
             return;
         }

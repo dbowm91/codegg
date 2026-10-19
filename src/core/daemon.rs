@@ -3754,6 +3754,7 @@ impl CoreDaemon {
                 codegg_core::identity::ProjectId::parse(request.project_id.as_str()).ok()
             }
             CoreRequest::SessionList { project_id, .. }
+            | CoreRequest::SessionLaunch { project_id, .. }
             | CoreRequest::ProjectGet { project_id }
             | CoreRequest::ProjectArchive { project_id }
             | CoreRequest::ProjectRestore { project_id }

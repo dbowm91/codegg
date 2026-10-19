@@ -252,10 +252,40 @@ its own bounded per-checkout waiter. Do not add it to `src/scheduler/`, and do
 not route it through `JobSubmissionService`. `scripts/check_scheduler_bypass.py`
 is the guard for the first; the second is a design rule, not a static check.
 
+## The build quota is admission, not a writer permit
+
+M007 added a third thing, and it is easy to confuse with the other two: the
+**per-workspace build quota** (`crates/codegg-core/src/jobs/quota.rs`,
+`architecture/build_admission.md`).
+
+It answers "how many build-class jobs may run in *this* workspace at once".
+It is **admission**, and it is not the checkout writer permit:
+
+- The quota is a **counted, scoped** bound (`build:<workspace_id>`), where an
+  exclusivity key is a binary mutex over a name. The scope is the canonical
+  `WorkspaceId`, so unrelated workspaces never share a bucket.
+- The limit is **configuration-owned** (`scheduler.quota
+  .max_concurrent_builds_per_workspace`, default 1). A job may ask for
+  slots; it may never widen the bound it is measured against. An unknown
+  quota namespace is **refused**, not ignored.
+- The scope is bound at the **submission boundary**
+  (`JobSubmissionService::apply_resource_policy`), and the binding is
+  applied unconditionally — a caller that supplies its own resource request
+  cannot opt out of the bound.
+- The build class **replaced** the legacy global `exclusive:workspace-mutation`
+  key, which was never checkout-scoped and serialized every build in every
+  workspace.
+
+A waiting job holds **no** permit: the quota is checked before any dimension
+is reserved, and the slots are released when the permit guard drops, after
+the executor's process lifetime ends. A job that waits on the quota never
+holds a parent execution permit, so it cannot deadlock.
+
 ## See Also
 
 - `architecture/scheduler.md`, `architecture/jobs.md`
 - `architecture/writer_permit.md` — the checkout writer permit (C002)
+- `architecture/build_admission.md` — the per-workspace build quota (M007)
 - `.opencode/skills/jobs/SKILL.md` — durable store, attempts, recovery
 - `.opencode/skills/permission/SKILL.md` — tool-permission boundaries
 - `docs/execution-ownership.md` + `docs/execution-ownership.toml` — the

@@ -1118,6 +1118,65 @@ impl SessionStore {
     /// one: ordering ascending before the `LIMIT` silently keeps the oldest
     /// messages and drops the recent turn a fork was made to branch from.
     ///
+    /// M006: move a session to a different workspace root.
+    ///
+    /// A fork launched into a new checkout must leave the parent's
+    /// workspace behind. The *canonical* binding lives in
+    /// `session_project_binding`; this updates the session row's own
+    /// `workspace_id` and `directory` projection so the two agree.
+    ///
+    /// A read-then-write path: the session is read to confirm it exists
+    /// and to learn its previous workspace, and the decision is written
+    /// on the strength of that read. The transaction is therefore
+    /// immediate, not deferred — a deferred transaction takes no lock at
+    /// `BEGIN`, and the first `UPDATE` would have to upgrade a shared
+    /// read lock, which SQLite refuses without waiting.
+    pub async fn rebind_workspace(
+        &self,
+        session_id: &str,
+        workspace_id: &crate::workspace::WorkspaceId,
+        directory: &str,
+    ) -> Result<(), StorageError> {
+        if directory.is_empty() {
+            return Err(StorageError::Database(
+                "a session workspace rebind needs a directory".to_string(),
+            ));
+        }
+        let mut tx = crate::storage::immediate::ImmediateWrite::begin(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT workspace_id FROM session WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+        let Some(previous) = existing else {
+            return Err(StorageError::NotFound(format!("session {session_id}")));
+        };
+        if previous == workspace_id.as_str() {
+            tx.commit()
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+            return Ok(());
+        }
+        let now = Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE session SET workspace_id = ?, directory = ?, time_updated = ? WHERE id = ?",
+        )
+        .bind(workspace_id.as_str())
+        .bind(directory)
+        .bind(now)
+        .bind(session_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Only parts belonging to a copied message are carried over. `part`
     /// references `message` by foreign key, so copying an orphan part would
     /// fail the constraint and lose the whole fork.

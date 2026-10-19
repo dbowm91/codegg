@@ -301,9 +301,9 @@ are centralized in `ResourceRequest::for_kind` (`mod.rs:713`):
 | AgentTurn | 1 | 512 MB | 1 | 1 | 1 | — |
 | Subagent | 1 | 512 MB | 1 | 1 | 1 | — |
 | Research | 1 | 512 MB | 1 | 1 | 1 | — |
-| Build | 3 | 2048 MB | 1 | 3 | 0 | exclusive:workspace-mutation |
+| Build | 3 | 2048 MB | 1 | 3 | 0 | build quota (workspace-scoped) |
 | Lint | 1 | 768 MB | 1 | 1 | 0 | — |
-| Format | 1 | 256 MB | 1 | 1 | 0 | exclusive:workspace-mutation |
+| Format | 1 | 256 MB | 1 | 1 | 0 | build quota (workspace-scoped) |
 | Test | 2 | 1024 MB | 1 | 2 | 0 | — |
 | Shell/ManagedProcess | 1 | 256 MB | 1 | 1 | 0 | — |
 | Python | 1 | 512 MB | 1 | 1 | 0 | — |

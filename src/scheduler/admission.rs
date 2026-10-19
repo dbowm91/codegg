@@ -24,6 +24,8 @@ use parking_lot::Mutex;
 use crate::scheduler::config::{QueueCaps, ResolvedSchedulerConfig, ResourceBudget};
 use crate::scheduler::permit::{PermitDimensions, ResourcePermitGuard};
 
+use codegg_core::jobs::quota::{KeyedQuotaRequest, ResourceClass};
+
 /// Decision returned by [`AdmissionController::try_admit`].
 #[derive(Debug)]
 pub enum AdmissionDecision {
@@ -42,12 +44,39 @@ pub enum AdmissionDecision {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum BlockReason {
-    InsufficientProcessSlots { requested: u16, available: u16 },
-    InsufficientCpuWeight { requested: u32, available: u32 },
-    InsufficientMemory { requested: u64, available: u64 },
-    InsufficientIoWeight { requested: u32, available: u32 },
-    InsufficientNetworkSlots { requested: u16, available: u16 },
-    KeyContended { key: String },
+    InsufficientProcessSlots {
+        requested: u16,
+        available: u16,
+    },
+    InsufficientCpuWeight {
+        requested: u32,
+        available: u32,
+    },
+    InsufficientMemory {
+        requested: u64,
+        available: u64,
+    },
+    InsufficientIoWeight {
+        requested: u32,
+        available: u32,
+    },
+    InsufficientNetworkSlots {
+        requested: u16,
+        available: u16,
+    },
+    KeyContended {
+        key: String,
+    },
+    /// M007: a counted quota scope is at its limit.
+    ///
+    /// Unlike a contended exclusivity key, a quota scope can admit
+    /// several holders up to its limit. The scope is reported so the
+    /// diagnostic surface can name *which* workspace is at its bound.
+    QuotaContended {
+        key: String,
+        requested: u32,
+        available: u32,
+    },
     QueueFull,
 }
 
@@ -55,11 +84,44 @@ pub enum BlockReason {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum UnschedulableReason {
-    ProcessSlotsExceedBudget { requested: u16, budget: u32 },
-    CpuWeightExceedsBudget { requested: u32, budget: u32 },
-    MemoryExceedsBudget { requested: u64, budget: u64 },
-    IoWeightExceedsBudget { requested: u32, budget: u32 },
-    NetworkSlotsExceedBudget { requested: u16, budget: u32 },
+    ProcessSlotsExceedBudget {
+        requested: u16,
+        budget: u32,
+    },
+    CpuWeightExceedsBudget {
+        requested: u32,
+        budget: u32,
+    },
+    MemoryExceedsBudget {
+        requested: u64,
+        budget: u64,
+    },
+    IoWeightExceedsBudget {
+        requested: u32,
+        budget: u32,
+    },
+    NetworkSlotsExceedBudget {
+        requested: u16,
+        budget: u32,
+    },
+    /// M007: the request asks for more slots than the scope's limit.
+    ///
+    /// The limit is configuration-owned, so this is an admin/config
+    /// matter, not a transient one.
+    QuotaExceedsLimit {
+        key: String,
+        requested: u32,
+        limit: u32,
+    },
+    /// M007: the request names a quota namespace the controller does
+    /// not know.
+    ///
+    /// Refused rather than ignored. An unenforced bound that was
+    /// silently dropped would be worse than a refusal: the job would
+    /// report a reservation it never held.
+    UnknownQuotaNamespace {
+        namespace: String,
+    },
 }
 
 /// Internal admission state. Held under a `Mutex`; the lock is held
@@ -76,6 +138,13 @@ struct InnerState {
     /// conflicting key like `workspace-mutation` must be exclusive
     /// (count > 0).
     held_keys: HashMap<String, u32>,
+    /// M007: map of quota key -> weighted slots currently held.
+    ///
+    /// A counted scope, unlike a contended exclusivity key: several
+    /// holders may share a scope up to its configured limit. The key is
+    /// `<namespace>:<scope>`, so unrelated workspaces never share a
+    /// bucket.
+    held_quotas: HashMap<String, u32>,
     /// Total rejected (TemporarilyBlocked) requests since boot.
     rejected: u64,
     /// Total impossible (Unschedulable) requests since boot.
@@ -93,6 +162,8 @@ pub struct AdmissionState {
     pub used_io: u32,
     pub used_network: u32,
     pub held_keys: HashMap<String, u32>,
+    /// M007: weighted slots currently held per quota scope.
+    pub held_quotas: HashMap<String, u32>,
 }
 
 #[derive(Debug)]
@@ -196,6 +267,44 @@ impl AdmissionController {
                 available: budget.max_network_slots.saturating_sub(g.used_network) as u16,
             });
         }
+        // M007: keyed quota scopes. A counted bound, not a mutex: a
+        // scope admits several holders up to its configuration-owned
+        // limit, and the scope key keeps unrelated workspaces apart.
+        for quota in &dims.keyed_quotas {
+            if !quota.is_valid() {
+                g.impossible += 1;
+                return AdmissionDecision::Impossible(UnschedulableReason::UnknownQuotaNamespace {
+                    namespace: quota.namespace().unwrap_or_default().to_string(),
+                });
+            }
+            let Some(limit) = self.quota_limit(quota) else {
+                // An unknown namespace is refused, never ignored: an
+                // unenforced bound silently dropped would be a lie.
+                g.impossible += 1;
+                return AdmissionDecision::Impossible(UnschedulableReason::UnknownQuotaNamespace {
+                    namespace: quota.namespace().unwrap_or_default().to_string(),
+                });
+            };
+            if quota.slots > limit {
+                g.impossible += 1;
+                return AdmissionDecision::Impossible(UnschedulableReason::QuotaExceedsLimit {
+                    key: quota.key.clone(),
+                    requested: quota.slots,
+                    limit,
+                });
+            }
+            let held = g.held_quotas.get(&quota.key).copied().unwrap_or(0);
+            let available = limit.saturating_sub(held);
+            if quota.slots > available {
+                g.rejected += 1;
+                return AdmissionDecision::TemporarilyBlocked(BlockReason::QuotaContended {
+                    key: quota.key.clone(),
+                    requested: quota.slots,
+                    available,
+                });
+            }
+        }
+
         // Exclusivity keys: a key is "conflicting" if its name starts
         // with `exclusive:`. All other keys are read-only/no-conflict.
         for key in &dims.exclusivity_keys {
@@ -210,8 +319,8 @@ impl AdmissionController {
             }
         }
 
-        // Reserve atomically: all dimensions and keys update together
-        // before releasing the lock.
+        // Reserve atomically: all dimensions, keys and quota slots
+        // update together before releasing the lock.
         g.used_process += dims.process_slots as u32;
         g.used_cpu += dims.cpu_weight;
         g.used_memory += dims.memory_mb_hint;
@@ -222,6 +331,9 @@ impl AdmissionController {
                 let bare = key.trim_start_matches("exclusive:").to_string();
                 *g.held_keys.entry(bare).or_insert(0) += 1;
             }
+        }
+        for quota in &dims.keyed_quotas {
+            *g.held_quotas.entry(quota.key.clone()).or_insert(0) += quota.slots;
         }
         drop(g);
         self.admitted_total.fetch_add(1, Ordering::SeqCst);
@@ -287,6 +399,31 @@ impl AdmissionController {
                 }
             }
         }
+        // M007: release the weighted quota slots the guard held. The
+        // release happens when the permit guard drops, which is after
+        // the executor's process lifetime ends — a cancelled job never
+        // returns its slots early.
+        for quota in &dims.keyed_quotas {
+            if let Some(held) = g.held_quotas.get_mut(&quota.key) {
+                *held = held.saturating_sub(quota.slots);
+                if *held == 0 {
+                    g.held_quotas.remove(&quota.key);
+                }
+            }
+        }
+    }
+
+    /// The configuration-owned limit for a quota scope.
+    ///
+    /// `None` means the namespace is not enabled. The caller refuses
+    /// the request rather than admitting it unbounded.
+    fn quota_limit(&self, quota: &KeyedQuotaRequest) -> Option<u32> {
+        match quota.namespace() {
+            Some(namespace) if namespace == ResourceClass::Build.namespace() => {
+                Some(self.cfg.quota.max_concurrent_builds_per_workspace)
+            }
+            _ => None,
+        }
     }
 
     pub fn snapshot(&self) -> AdmissionState {
@@ -300,6 +437,7 @@ impl AdmissionController {
             used_io: g.used_io,
             used_network: g.used_network,
             held_keys: g.held_keys.clone(),
+            held_quotas: g.held_quotas.clone(),
         }
     }
 }

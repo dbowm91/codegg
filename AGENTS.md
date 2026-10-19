@@ -228,6 +228,21 @@ change-triggered (`ls scripts/check_*` for the full list):
   `WriterPermitGuard` quarantines the permit rather than releasing it. Nothing
   is routed through the permit yet — C003/C004 do that — so its presence
   enables no shared mutation.
+- The **build quota** is admission, and it is not the writer permit. M007
+  replaced the legacy *global* `exclusive:workspace-mutation` key on the
+  `Build`/`Format` profiles with a **counted, workspace-scoped** quota
+  (`codegg_core::jobs::quota`, `architecture/build_admission.md`). Three
+  properties are load-bearing: the scope is the canonical `WorkspaceId`, so
+  unrelated workspaces never share a bucket; the limit is
+  **configuration-owned** (`scheduler.quota.max_concurrent_builds_per_workspace`,
+  default 1), so a job can ask for slots but never widen the bound it is
+  measured against; and the scope is bound at the *submission boundary*
+  **unconditionally**, so a caller that supplies its own resource request
+  cannot opt out. An unknown quota namespace is **refused**, not ignored — an
+  unenforced bound that was silently dropped would be a lie. A waiting job
+  holds **no** permit: the quota is checked before any dimension is reserved,
+  and the slots come back when the permit guard drops, after the process
+  lifetime ends. The queue caps are not execution quotas.
 - The **working strip row 0 is reserved unconditionally** and is the main buffer's only
   status surface. Its height is subtracted from the transcript (`session_layout` splits
   `prompt_height` against `Min(10)`), so gating it on turn state reflowed the transcript

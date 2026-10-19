@@ -372,16 +372,25 @@ mod tests {
             CoreEvent::JobStarted {
                 job_id: "j".into(),
                 attempt_id: "a".into(),
+                session_id: Some("s".into()),
+                workspace_id: Some("w".into()),
+                kind: Some("test".into()),
             },
             CoreEvent::JobCompleted {
                 job_id: "j".into(),
                 attempt_id: "a".into(),
+                session_id: Some("s".into()),
+                workspace_id: Some("w".into()),
+                kind: Some("test".into()),
             },
             CoreEvent::JobFailed {
                 job_id: "j".into(),
                 attempt_id: "a".into(),
                 error_class: "e".into(),
                 message: "m".into(),
+                session_id: Some("s".into()),
+                workspace_id: Some("w".into()),
+                kind: Some("test".into()),
             },
             CoreEvent::AssetRefreshCompleted {
                 report: codegg_protocol::core::AssetRefreshReportDto {

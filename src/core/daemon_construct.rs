@@ -256,6 +256,24 @@ impl CoreDaemon {
             codegg_core::jobs::DaemonGeneration::new_unchecked(generation.clone());
         deps.workspace_services = Some(workspace_services.clone());
 
+        // M006: the session launch service. It shares the daemon's pool
+        // (for the durable launch record), the daemon's worktree service
+        // (for the checkout) and the daemon's workspace registry (for
+        // the checkout's own workspace).
+        deps.session_launch_service = deps.pool.clone().map(|pool| {
+            Arc::new(crate::core::session_launch::SessionLaunchService::new(
+                Arc::new(codegg_core::session_launch::SqliteSessionLaunchStore::new(
+                    pool.clone(),
+                )),
+                worktree_service.clone(),
+                Arc::new(codegg_core::session::SessionStore::new(pool.clone())),
+                Arc::new(codegg_core::project_storage::ProjectStorage::new(
+                    pool.clone(),
+                )),
+                workspaces.clone(),
+            ))
+        });
+
         let asset_builder = Arc::new(
             crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::new(Arc::new(
                 config.clone(),

@@ -1375,6 +1375,25 @@ impl JobScheduler {
         })
         .await;
 
+        // M007: the coarse, scheduler-owned status the group projection
+        // publishes. Emitted after admission — the point at which the
+        // job holds its permit and is about to execute.
+        self.emit_event(SchedulerEvent::JobStatus {
+            job_id: job.job_id.to_string(),
+            attempt_id: attempt.attempt_id.clone(),
+            phase: "running".to_string(),
+        })
+        .await;
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::JobStatusObserved {
+                session_id: job.session_id.clone().unwrap_or_default(),
+                turn_id: job.turn_id.clone(),
+                job_id: job.job_id.to_string(),
+                kind: job.kind.as_str().to_string(),
+                phase: "running".to_string(),
+            },
+        );
+
         // Dispatch via the already-validated executor; record completion.
         let me = self.clone();
         let attempt_id = attempt.attempt_id.clone();
@@ -1567,6 +1586,49 @@ impl JobScheduler {
                 // duplicate terminal rows are produced.
                 match persist_completion(&store, &attempt_id, &completion).await {
                     Ok(terminal_job) => {
+                        // M007: the terminal phase, published only after
+                        // the terminal state is durably accepted — the
+                        // event must describe a real transition.
+                        {
+                            let guard = event_tx.lock().await;
+                            if let Some(tx) = guard.as_ref() {
+                                let _ = tx
+                                    .send(SchedulerEvent::JobStatus {
+                                        job_id: terminal_job.job_id.to_string(),
+                                        attempt_id: attempt_id.clone(),
+                                        phase: match completion.status {
+                                            ExecutorStatus::Completed => "completed",
+                                            ExecutorStatus::Failed => "failed",
+                                            ExecutorStatus::Cancelled => "cancelled",
+                                            ExecutorStatus::TimedOut => "timed_out",
+                                            ExecutorStatus::Interrupted => "interrupted",
+                                        }
+                                        .to_string(),
+                                    })
+                                    .await;
+                            }
+                        }
+                        // M007: the coarse group-visible status. It
+                        // carries only the job identity, the typed kind
+                        // and the phase — never the command line, the
+                        // environment, the logs, the cache contents or
+                        // an artifact path.
+                        crate::bus::global::GlobalEventBus::publish(
+                            crate::bus::events::AppEvent::JobStatusObserved {
+                                session_id: terminal_job.session_id.clone().unwrap_or_default(),
+                                turn_id: terminal_job.turn_id.clone(),
+                                job_id: terminal_job.job_id.to_string(),
+                                kind: terminal_job.kind.as_str().to_string(),
+                                phase: match completion.status {
+                                    ExecutorStatus::Completed => "completed",
+                                    ExecutorStatus::Failed => "failed",
+                                    ExecutorStatus::Cancelled => "cancelled",
+                                    ExecutorStatus::TimedOut => "timed_out",
+                                    ExecutorStatus::Interrupted => "interrupted",
+                                }
+                                .to_string(),
+                            },
+                        );
                         if let Some(emitter) = audit_emitter_for_task.as_ref() {
                             super::job_complete_audit::emit_terminal_completion(
                                 emitter,
@@ -2202,6 +2264,9 @@ fn build_permit_dimensions(job: &JobRecord) -> PermitDimensions {
         io_weight: job.resource_request.io_weight,
         network_slots: job.resource_request.network_slots,
         exclusivity_keys: job.resource_request.exclusivity_keys.clone(),
+        // M007: the keyed quota scopes travel with the job, so a job
+        // that was admitted under a scope releases exactly that scope.
+        keyed_quotas: job.resource_request.keyed_quotas.clone(),
     }
 }
 

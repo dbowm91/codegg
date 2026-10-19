@@ -45,6 +45,8 @@ pub enum SchedulerConfigError {
     PerWorkspaceExceedsTotal { per_workspace: usize, total: usize },
     #[error("claim_batch must be > 0 and <= max_total")]
     InvalidClaimBatch,
+    #[error("max_concurrent_builds_per_workspace must be > 0 when scheduler enabled")]
+    ZeroBuildQuota,
 }
 
 /// Resolved configuration. All `Option`s are filled and validated; the
@@ -58,6 +60,8 @@ pub struct ResolvedSchedulerConfig {
     pub resources: ResourceBudget,
     pub queue: QueueCaps,
     pub fairness: FairnessWeights,
+    /// M007: config-owned keyed quota limits.
+    pub quota: QuotaPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +91,23 @@ pub struct FairnessWeights {
     pub aging_secs: u64,
 }
 
+/// M007: configuration-owned keyed quota limits.
+///
+/// A limit is a *count* of weighted slots per scope. The limit belongs
+/// to the configuration, never to the request: a job may ask for slots,
+/// but it can never widen the bound it is measured against.
+///
+/// The default is one build-class slot per workspace. That is the
+/// behaviour M007 replaced: build-class jobs previously shared the
+/// *global* `exclusive:workspace-mutation` exclusivity key, which
+/// serialized every build in every workspace — including workspaces
+/// that had nothing to do with each other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaPolicy {
+    /// Maximum concurrent build-class slots per canonical workspace.
+    pub max_concurrent_builds_per_workspace: u32,
+}
+
 impl Default for ResolvedSchedulerConfig {
     fn default() -> Self {
         Self {
@@ -113,6 +134,9 @@ impl Default for ResolvedSchedulerConfig {
                 maintenance_weight: 1,
                 max_high_priority_burst: 8,
                 aging_secs: 300,
+            },
+            quota: QuotaPolicy {
+                max_concurrent_builds_per_workspace: 1,
             },
         }
     }
@@ -184,6 +208,11 @@ impl ResolvedSchedulerConfig {
                 out.fairness.aging_secs = v;
             }
         }
+        if let Some(q) = &cfg.quota {
+            if let Some(v) = q.max_concurrent_builds_per_workspace {
+                out.quota.max_concurrent_builds_per_workspace = v;
+            }
+        }
         if out.enabled {
             Self::validate(&out)?;
         }
@@ -230,6 +259,9 @@ impl ResolvedSchedulerConfig {
         }
         if self.fairness.max_high_priority_burst == 0 {
             return Err(SchedulerConfigError::ZeroHighPriorityBurst);
+        }
+        if self.quota.max_concurrent_builds_per_workspace == 0 {
+            return Err(SchedulerConfigError::ZeroBuildQuota);
         }
         for (name, w) in [
             ("interactive_weight", self.fairness.interactive_weight),

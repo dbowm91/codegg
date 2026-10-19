@@ -285,6 +285,32 @@ enum Commands {
         /// Session ID
         id: String,
     },
+    /// Launch a session in an isolated worktree
+    ///
+    /// M006. Starts a new session, or forks an existing one, in a managed
+    /// checkout. The launch is durable and idempotent: a retry with the
+    /// same `--idempotency-key` converges on the original launch instead
+    /// of allocating a second checkout.
+    Launch {
+        /// The project to launch in
+        #[arg(long)]
+        project: String,
+        /// Fork this session instead of starting a new one
+        #[arg(long)]
+        fork: Option<String>,
+        /// Placement: `new` for a fresh managed checkout, or a worktree id
+        #[arg(long, default_value = "new")]
+        worktree: String,
+        /// Base branch or tag the new checkout is created from
+        #[arg(long)]
+        base: Option<String>,
+        /// Target branch for the new checkout
+        #[arg(long)]
+        branch: Option<String>,
+        /// Idempotency key. A retry with the same key converges.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
     /// Export a session to JSON
     Export {
         /// Session ID
@@ -1386,6 +1412,24 @@ async fn main() -> Result<(), AppError> {
             Commands::Models { provider } => cmd_models(provider.clone()).await?,
             Commands::Sessions { archived } => cmd_sessions(*archived).await?,
             Commands::Session { id } => cmd_session_view(id).await?,
+            Commands::Launch {
+                project,
+                fork,
+                worktree,
+                base,
+                branch,
+                idempotency_key,
+            } => {
+                cmd_launch(
+                    project,
+                    fork.as_deref(),
+                    worktree,
+                    base.as_deref(),
+                    branch.as_deref(),
+                    idempotency_key.as_deref(),
+                )
+                .await?
+            }
             Commands::Export { id, output } => cmd_export(id, output.as_deref()).await?,
             Commands::Import { file } => cmd_import(file).await?,
             Commands::Upgrade => cmd_upgrade().await?,
@@ -1806,6 +1850,102 @@ async fn cmd_sessions(archived: bool) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+/// M006: launch a session in an isolated managed checkout.
+///
+/// The launch goes through the daemon, because the daemon owns the
+/// durable launch record, the worktree service and the workspace
+/// registry. The CLI is a client of that service, not a second
+/// implementation of it.
+async fn cmd_launch(
+    project: &str,
+    fork: Option<&str>,
+    worktree: &str,
+    base: Option<&str>,
+    branch: Option<&str>,
+    idempotency_key: Option<&str>,
+) -> Result<(), AppError> {
+    use codegg::core::instance::DaemonPaths;
+    use codegg::core::transport::SocketCoreClient;
+    use codegg_protocol::core::{SessionLaunchIntentDto, SessionLaunchPlacementDto};
+
+    let placement = if worktree == "new" {
+        SessionLaunchPlacementDto::NewManagedCheckout {
+            base_ref: base.map(str::to_string),
+            target_branch: branch.map(str::to_string),
+        }
+    } else {
+        SessionLaunchPlacementDto::ExistingManagedWorktree {
+            worktree_id: worktree.to_string(),
+        }
+    };
+    let intent = if fork.is_some() {
+        SessionLaunchIntentDto::Fork
+    } else {
+        SessionLaunchIntentDto::New
+    };
+    // The idempotency key defaults to a fresh one, so two *different*
+    // launches are two different launches. A caller that wants to retry
+    // must pass the same key explicitly.
+    let idempotency_key = idempotency_key
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("cli-launch-{}", uuid::Uuid::new_v4()));
+
+    let paths = DaemonPaths::resolve_for_endpoint(None);
+    let client = SocketCoreClient::connect(&paths.endpoint_uri())
+        .await
+        .map_err(|error| {
+            AppError::Other(anyhow::anyhow!(
+                "cannot reach the daemon at {}: {error}",
+                paths.endpoint_uri()
+            ))
+        })?;
+    let request = codegg::core::new_request(
+        format!("cli-launch-{}", uuid::Uuid::new_v4()),
+        CoreRequest::SessionLaunch {
+            project_id: project.to_string(),
+            intent,
+            parent_session_id: fork.map(str::to_string),
+            placement,
+            idempotency_key,
+        },
+    );
+    match client.request(request).await {
+        Ok(CoreResponse::SessionLaunch {
+            launch_id,
+            session_id,
+            workspace_id,
+            worktree_id,
+            branch,
+            checkout_path,
+            stage,
+            converged,
+        }) => {
+            if converged {
+                println!("launch {launch_id} already completed; converged.");
+            } else {
+                println!("launch {launch_id} completed at stage {stage}.");
+            }
+            println!("  session:   {session_id}");
+            println!("  workspace: {workspace_id}");
+            println!("  worktree:  {worktree_id}");
+            if let Some(branch) = branch {
+                println!("  branch:    {branch}");
+            }
+            println!("  checkout:  {checkout_path}");
+            Ok(())
+        }
+        Ok(CoreResponse::Error { code, message }) => Err(AppError::Other(anyhow::anyhow!(
+            "session launch refused ({code}): {message}"
+        ))),
+        Ok(other) => Err(AppError::Other(anyhow::anyhow!(
+            "unexpected daemon response: {other:?}"
+        ))),
+        Err(error) => Err(AppError::Other(anyhow::anyhow!(
+            "session launch failed: {error}"
+        ))),
+    }
 }
 
 async fn cmd_session_view(id: &str) -> Result<(), AppError> {

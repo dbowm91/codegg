@@ -88,6 +88,16 @@ pub struct CoreRuntimeDeps {
     /// writer: C002 builds the permit, and C003/C004 are what route writers
     /// through it. No shared mutation is enabled by its presence.
     pub writer_permit_service: Option<Arc<crate::core::writer_permit::WriterPermitService>>,
+    /// M006: the durable, recoverable session-launch service.
+    ///
+    /// It places a new or forked session in an isolated managed
+    /// checkout. Like the permit service it is durable: the launch
+    /// request is recorded before any work happens, so a retry
+    /// converges instead of allocating a second checkout.
+    ///
+    /// The daemon owns exactly one. A daemon without a pool has no
+    /// durable launch record, so it gets none.
+    pub session_launch_service: Option<Arc<crate::core::session_launch::SessionLaunchService>>,
     /// Phase 3: workspace service lifecycle policy. Tunables for
     /// `max_active_workspaces` and `idle_evict_after`. The daemon
     /// constructs a default policy if the caller does not supply one.
@@ -157,6 +167,7 @@ impl Clone for CoreRuntimeDeps {
             workspace_services: self.workspace_services.clone(),
             worktree_service: self.worktree_service.clone(),
             writer_permit_service: self.writer_permit_service.clone(),
+            session_launch_service: self.session_launch_service.clone(),
             workspace_service_policy: self.workspace_service_policy.clone(),
             job_store: Arc::clone(&self.job_store),
             schedule_store: Arc::clone(&self.schedule_store),
@@ -270,6 +281,7 @@ impl CoreRuntimeDeps {
                 Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
             )),
             writer_permit_service: None,
+            session_launch_service: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -324,6 +336,7 @@ impl CoreRuntimeDeps {
             // "who may write", which is exactly what this milestone is trying
             // not to create.
             writer_permit_service: None,
+            session_launch_service: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -401,6 +414,7 @@ impl CoreRuntimeDeps {
             workspace_services: None,
             worktree_service: Some(worktree_service),
             writer_permit_service: Some(writer_permit_service),
+            session_launch_service: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -426,6 +440,18 @@ impl CoreRuntimeDeps {
         service: Arc<crate::core::writer_permit::WriterPermitService>,
     ) -> Self {
         self.writer_permit_service = Some(service);
+        self
+    }
+
+    /// Builder-style setter for the session launch service.
+    ///
+    /// M006. The daemon owns exactly one of these; the constructor
+    /// installs one when a pool is available.
+    pub fn with_session_launch_service(
+        mut self,
+        service: Arc<crate::core::session_launch::SessionLaunchService>,
+    ) -> Self {
+        self.session_launch_service = Some(service);
         self
     }
 
