@@ -5750,7 +5750,7 @@ tui/
 ├── unified_diff.rs         # Bounded patch/hunk parser
 ├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
 ├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
-├── command.rs              # Slash command registry (164 built-in)
+├── command.rs              # Slash command registry (165 built-in)
 ├── ui_builders/            # Pure UiNode builder functions
 │   ├── mod.rs
 │   ├── stats.rs            # stats_node for /tui-stats
@@ -6122,7 +6122,7 @@ files incl. `mod.rs`), `TuiMsg` (149 variants) at `app/types.rs:123`,
 `InputAction` (62) at `input.rs`, and the render-regression test count (111
 `#[test]` in `tests/tui_render.rs`). The Directory Structure counts below were
 corrected in the same pass: `commands/` (37 submodules), `components/dialogs/`
-(40 dialogs), `command.rs` (164 built-ins), and `app/state/` — which had been
+(40 dialogs), `command.rs` (165 built-ins), and `app/state/` — which had been
 missing `panel_hotkeys.rs`, `subagents.rs`, `subagent_tabs.rs`, and `tasks.rs`
 entirely, so the map silently understated the module count.
 

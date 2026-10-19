@@ -1215,6 +1215,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
+        // 165th is `/network` (the per-principal network intent policy).
         // 164th is `/projects` (the project picker spelling that stays
         // typeable mid-prompt, mirroring `/panels` for `⇧S`). 163rd is
         // `/start` and 162nd is `/stop` (carry on after a stopped turn;

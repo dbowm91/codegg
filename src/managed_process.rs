@@ -1270,6 +1270,7 @@ async fn run_windows_test_restricted_inner(
         provenance,
         execution_authorization: _execution_authorization,
         required_sandbox_profile: _required_sandbox_profile,
+        required_network_intent: _required_network_intent,
     } = request;
     if executable.is_empty() {
         return Err(ManagedProcessError::EmptyArgv);
