@@ -5089,6 +5089,7 @@ async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visibl
                 model: "fixture-model".into(),
                 authority_digest: "fixture-authority".into(),
                 budget: AgentRunBudget::default(),
+                shared_scratch: vec![],
             },
         )
         .await
