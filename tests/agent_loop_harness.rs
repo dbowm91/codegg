@@ -1046,8 +1046,6 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
             codegg::agent::AgentMode::Primary,
         ),
     );
-    let output_a = output_a;
-    let output_b = output_b;
     assert!(
         output_a.contains(&markers[0]),
         "AgentLoop A missed its root marker: {output_a}"

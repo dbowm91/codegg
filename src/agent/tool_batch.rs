@@ -128,14 +128,6 @@ async fn acquire_batch_permit(
     Ok(permit)
 }
 
-/// Head start the broker's watchdog gets over the tool's own deadline.
-///
-/// The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
-/// around the tool invocation, so it must expire strictly after the tool's
-/// internal deadline or it preempts the tool before it can return the output it
-/// collected while being killed. Expressed in milliseconds because that is the
-/// unit `BrokerContext::timeout_ms` uses.
-
 /// Deadline handed to the broker watchdog for a tool whose own deadline is
 /// `tool_timeout_ms`.
 ///

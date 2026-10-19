@@ -623,6 +623,7 @@ where
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn call_structured_tool_with_service_scope<F>(
     svc: Option<&McpHandle>,
     mcp_server: &str,

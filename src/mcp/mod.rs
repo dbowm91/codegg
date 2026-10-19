@@ -551,12 +551,13 @@ impl McpService {
             .get(server)
             .ok_or_else(|| McpError::Server(format!("server {server} not found")))?;
 
-        if host_scoped && (root.is_some() || self.host_scope_tokens.contains_key(server)) {
-            if !supports_host_scoped_eggsearch(srv.server_version.as_deref()) {
-                return Err(McpError::Server(
-                    "Eggsearch does not advertise the supported host-scoped retrieval protocol (0.4.4 through 0.4.x)".into(),
-                ));
-            }
+        if host_scoped
+            && (root.is_some() || self.host_scope_tokens.contains_key(server))
+            && !supports_host_scoped_eggsearch(srv.server_version.as_deref())
+        {
+            return Err(McpError::Server(
+                "Eggsearch does not advertise the supported host-scoped retrieval protocol (0.4.4 through 0.4.x)".into(),
+            ));
         }
 
         match &srv.client {
