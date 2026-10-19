@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability — Post-Audit Corrective Addendum
 
-Status: active planning; C001–C006 and C008 closed; C007 active.
+Status: closed; C001–C008 implementation and qualification milestones are closed.
 Planning baseline: CodeGG `4c86bac2a608dd717be085247838fd2f37d81ab6` (main, 2026-10-19)
 Evidence: 2026-10-19 agent tool-surface exercise (Agent Findings 2); source review of the same main revision. This is reported runtime evidence, not a reproduced CI result.
 
@@ -66,7 +66,7 @@ C003 file tools | independent; existing workspace-root contract.
 C004 task state | independent; task/run contract and profile config already in-tree.
 C005 verify | independent; existing Cargo verifier and project testing policy.
 C006 batch admission | independent of C001–C005 for implementation; only batch-local bounded admission.
-C007 qualification/closure | ready after strict C002 follow-up closure; all C001–C006 and C008 predecessors strictly closed. Its normal-path all-surface, no-index, long-queued and concurrent-use trajectory remains to run.
+C007 qualification/closure | closed after strict C002 follow-up closure and AgentLoop qualification across normal-path tool surfaces, no-index, scoped verification, explicit multi-active todos, and concurrent use. See follow-up closure; historical blocker remains immutable.
 C008 host-scoped shared Eggsearch | closed; authenticated private metadata carries the accepted canonical root through one CodeGG-managed stdio child and pinned Eggsearch revision; isolated bounded local views and real-child/AgentLoop A/B isolation are qualified. CodeGG authorizes; Eggsearch enforces selected root/file containment. A public multi-client authority protocol is NOT authorized. Closure `plans/closure/agent-tool-use-operability-post-audit-corrective/008-status.md`.
 
 These six bounded owner-specific slices may proceed on separate worktrees. Avoid concurrent edits of `plans/registry.md`; each closure owns its own status change with a lease/rebase. If another ongoing roadmap modifies a touched file, coordinate by path and retain its contract.
@@ -76,13 +76,13 @@ These six bounded owner-specific slices may proceed on separate worktrees. Avoid
 | Milestone | Primary class | Plan | Status | Boundary and exit gate |
 |---|---|---|---|---|
 | C001 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/001-broker-accepted-authority-projection.md` | closed | Real native Tool Program foreground/background trajectory and pre-job denial matrix; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md`. |
-| C002 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/002-live-workspace-repository-search.md` | closed | Follow-up closure `plans/closure/agent-tool-use-operability-post-audit-corrective/002-follow-up-status.md`; historical blocker `002-status.md` remains unchanged. C007 is ready. |
+| C002 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/002-live-workspace-repository-search.md` | closed | Follow-up closure `plans/closure/agent-tool-use-operability-post-audit-corrective/002-follow-up-status.md`; historical blocker `002-status.md` remains unchanged. C007 was unblocked and is now strictly closed. |
 | C003 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/003-grep-and-patch-first-use-contract.md` | closed | Real AgentLoop create→grep path and tool contract matrix; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/003-status.md`. |
 | C004 | polish | `plans/implementation/agent-tool-use-operability-post-audit-corrective/004-task-and-todo-status-contracts.md` | closed | Model-visible TaskTool status/get/group and cross-session denial; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md`. |
 | C005 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/005-project-compatible-verify-defaults.md` | closed | Typed bounded Cargo scope, feature and CWD tests; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md`. |
 | C006 | invariant | `plans/implementation/agent-tool-use-operability-post-audit-corrective/006-batch-permit-admission-liveness.md` | closed | Parent/subagent overlap, admission deadline race, and admitted native timeout with partial output; closure `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md`. |
-| C007 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/007-real-agent-tool-trajectory-qualification.md` | active | All strict predecessors including C002 and C008 are closed; integrated production-path qualification is in progress. |
-| C008 | infrastructure | `plans/implementation/agent-tool-use-operability-post-audit-corrective/008-shared-eggsearch-host-scoped-local-retrieval.md` | closed | Closure `plans/closure/agent-tool-use-operability-post-audit-corrective/008-status.md`; one shared Eggsearch child with authenticated CodeGG workspace scope, isolated bounded local views, real-child and AgentLoop A/B/A privacy proof, and quick verification. C002 ready; C007 still waits for C002. |
+| C007 | capability | `plans/implementation/agent-tool-use-operability-post-audit-corrective/007-real-agent-tool-trajectory-qualification.md` | closed | Follow-up closure `plans/closure/agent-tool-use-operability-post-audit-corrective/007-follow-up-status.md`; production AgentLoop trajectories, pinned child isolation, no-index, authority, task, Tool Program, verification, and contention evidence passed. |
+| C008 | infrastructure | `plans/implementation/agent-tool-use-operability-post-audit-corrective/008-shared-eggsearch-host-scoped-local-retrieval.md` | closed | Closure `plans/closure/agent-tool-use-operability-post-audit-corrective/008-status.md`; one shared Eggsearch child with authenticated CodeGG workspace scope, isolated bounded local views, real-child and AgentLoop A/B/A privacy proof, and quick verification. C002 and C007 subsequently closed; no remaining dependency in this corrective line. |
 
 ## 8. Cross-cutting requirements
 
@@ -104,17 +104,17 @@ Production local-index root/config may be missing despite correct flag forwardin
 
 ## 11. Completion definition
 
-C001/C003/C004/C005/C006 historical closures remain; C008 shared-child scoped retrieval and cross-workspace no-leak evidence close first, then C002's remaining capability evidence strictly closes; C007 normal-path scripted trajectory including no-index, no-permission, long-queued and concurrent-use cases passes; no severity-high defect remains in the addressed surfaces. History and separate eggsearch/recovery roadmaps stay intact.
+C001–C008 are strictly closed with their implementation and integration evidence recorded in closure files. C008 unblocked C002; strict C002 closure then unblocked C007. No registered downstream plan became newly eligible, and no severity-high defect remains in the addressed surfaces. History and separate eggsearch/recovery roadmaps stay intact.
 
 ## 12. Milestone status
 
 | Milestone | Status | Closure | Hard blockers |
 |---|---|---|---|
-| C001 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md` | None; C007 remains blocked on C002 |
-| C002 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/002-status.md` | C008 private host-scope interface/implementation and real-child proof must close, then C002 completes its remaining acceptance matrix; historical 002 record stays unchanged |
-| C003 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/003-status.md` | None; C007 remains blocked on C002 |
-| C004 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md` | None; C007 remains blocked on C002 |
-| C005 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md` | None; C007 remains blocked on C002 |
-| C006 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md` | None; C007 remains blocked on C002 |
-| C007 | blocked | `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md` | C002 strict closure after C008; all other hard predecessors closed |
-| C008 | **ready** | Not created (planning handoff only); future `plans/closure/agent-tool-use-operability-post-audit-corrective/008-status.md` | Existing C001 broker authority closed; one shared CodeGG-managed Eggsearch process, trusted per-request root, isolated local retrieval and offline two-workspace proof |
+| C001 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/001-status.md` | None |
+| C002 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/002-follow-up-status.md` | C008 host scope, runtime session/subagent binding, alias/output bounds, local-only/no-index/no-match and integration disposition qualified; historical 002 record stays unchanged |
+| C003 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/003-status.md` | None |
+| C004 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/004-status.md` | None |
+| C005 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/005-status.md` | None |
+| C006 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/006-status.md` | None |
+| C007 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/007-follow-up-status.md` | None; historical 007 blocker record stays unchanged |
+| C008 | closed | `plans/closure/agent-tool-use-operability-post-audit-corrective/008-status.md` | None; C002 and then C007 were unblocked and strictly closed |

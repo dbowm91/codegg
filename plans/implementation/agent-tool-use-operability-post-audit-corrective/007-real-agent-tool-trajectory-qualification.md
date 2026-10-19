@@ -1,6 +1,6 @@
 # Agent Tool-Use Operability Corrective C007 — Qualify the Normal Agent Tool-Use Trajectory
 
-Status: active implementation (2026-10-19); all hard predecessors C001–C006 and C008 are strictly closed, and C002's follow-up closure is `plans/closure/agent-tool-use-operability-post-audit-corrective/002-follow-up-status.md`. Historical blocker record `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md` remains unchanged.
+Status: implemented — strict follow-up closure `plans/closure/agent-tool-use-operability-post-audit-corrective/007-follow-up-status.md` (2026-10-19). Historical blocker record `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md` remains unchanged.
 Repository baseline: `4c86bac2a608dd717be085247838fd2f37d81ab6` (main, 2026-10-19)
 Source roadmap: `plans/subsystems/agent-tool-use-operability-post-audit-corrective-addendum.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`; `#28-observability`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`.
@@ -74,7 +74,7 @@ If any predecessor is not strictly closed, tests silently bypass broker/real sid
 Do not improvise an unapproved ADR, silently weaken security, substitute mocks for required production-path qualification or rewrite historical closure records.
 
 ## 15. Closure evidence required
-Closure `plans/closure/agent-tool-use-operability-post-audit-corrective/007-status.md`: exact implementation SHAs, before/after repro, evidence matrix, tests/commands with pass/fail/unrun, failure/restart/contention/security analysis, residual findings and unblock audit; update roadmap and registry in the same closure commit.
+Follow-up closure `plans/closure/agent-tool-use-operability-post-audit-corrective/007-follow-up-status.md`: exact implementation SHAs, before/after repro, evidence matrix, tests/commands with pass/fail/unrun, failure/restart/contention/security analysis, residual findings and unblock audit; preserve the historical blocked record at `007-status.md` and update roadmap and registry in the same closure commit.
 
 ## 16. Handoff notes
 This is integration/qualification, not an excuse to reopen already closed tool-seam scope. Explicitly identify source-verified fixes vs live validated behavior and do not claim real-model autonomous endurance from scripted outcomes.
