@@ -7,6 +7,7 @@ Source implementation plan: `plans/implementation/tui-live-work-visibility-corre
 Source subsystem roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md#7-milestones`
 Qualified dependencies: M001–M005 closed; ADR-0041 and ADR-0042 accepted
 Implementation commit: `a735ffed21fce498a26b1f50aa7085456760ce9d`
+Evidence amendment commit: `7bbdb81` — production-bridge child events, late-attach snapshot, and same-project session-isolation regression.
 
 ## Disposition
 
