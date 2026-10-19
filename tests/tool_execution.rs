@@ -515,11 +515,27 @@ async fn test_bash_tool_allowed_paths_violation() {
 
 #[tokio::test]
 async fn test_bash_tool_allowed_paths_missing() {
-    let (_root, tool) = rooted_bash_tool();
-    let tool = tool.with_allowed_paths(vec!["/tmp".to_string()]);
+    // The subject is the DEFAULT workdir: with `allowed_paths` set, the
+    // effective workdir (here the tool's own workspace root) must fall
+    // inside one of the allowed paths or the tool refuses before spawning.
+    // The allowed directory is a sibling of the root, not an ancestor, so
+    // the default workdir is genuinely uncovered.
+    let parent = tempfile::tempdir().expect("allowed-paths parent");
+    let allowed = parent.path().join("allowed");
+    fs::create_dir_all(&allowed).unwrap();
+    let root = parent.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+
+    let tool = BashTool::new()
+        .with_workspace_root(root)
+        .with_allowed_paths(vec![allowed.to_string_lossy().into_owned()]);
     let input = serde_json::json!({ "command": "echo hello" });
     let result = tool.execute(input).await;
     assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), ToolError::Permission(_)),
+        "a default workdir outside allowed_paths must be a permission refusal"
+    );
 }
 
 #[tokio::test]
