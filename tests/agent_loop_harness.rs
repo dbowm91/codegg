@@ -1101,6 +1101,159 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
     );
 }
 
+#[tokio::test]
+async fn verify_and_two_explicit_in_progress_todos_reach_the_model_through_agent_loop() {
+    use codegg::model_profile::types::TaskStatePolicy;
+    use codegg::tool::ToolRegistryOptions;
+
+    let root = tempfile::tempdir().expect("verification workspace");
+    std::fs::create_dir_all(root.path().join("src")).expect("create fixture source directory");
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname = \"trajectory-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write fixture manifest");
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "pub fn answer() -> u8 { 42 }\n",
+    )
+    .expect("write fixture source");
+    let cargo_home = root.path().join("cargo-home");
+    std::fs::create_dir_all(&cargo_home).expect("create private Cargo home");
+    struct RestoreCargoHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreCargoHome {
+        fn drop(&mut self) {
+            if let Some(previous) = self.0.take() {
+                std::env::set_var("CARGO_HOME", previous);
+            } else {
+                std::env::remove_var("CARGO_HOME");
+            }
+        }
+    }
+    let _restore_cargo_home = RestoreCargoHome(std::env::var_os("CARGO_HOME"));
+    std::env::set_var("CARGO_HOME", &cargo_home);
+
+    let todos = Arc::new(tokio::sync::Mutex::new(codegg::task_state::TodoState::new()));
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        workspace_root: Some(root.path().to_path_buf()),
+        todo_state: Some(todos.clone()),
+        todo_policy: Some(TaskStatePolicy::explicit_todo()),
+        ..Default::default()
+    });
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: String::from("trajectory-verify-lint").into(),
+                name: String::from("verify").into(),
+                arguments: serde_json::json!({
+                    "action": "lint",
+                    "scope": "package",
+                    "package": "trajectory-fixture",
+                    "timeout": 120
+                }),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: String::from("trajectory-parallel-todos").into(),
+                name: String::from("todowrite").into(),
+                arguments: serde_json::json!({
+                    "todos": [
+                        {"id": "search", "content": "Find the local implementation", "status": "in_progress"},
+                        {"id": "verify", "content": "Verify the scoped workspace", "status": "in_progress"}
+                    ]
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: String::from("tool_calls").into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta(String::from("verification and todo state recorded").into()),
+            ChatEvent::Finish {
+                stop_reason: String::from("stop").into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent_loop = AgentLoop::new(
+        vec![Agent {
+            git_read_only: false,
+            name: "build".into(),
+            role: None,
+            description: "C007 same-session workflow qualification".into(),
+            mode: codegg::agent::AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: Default::default(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }],
+        Box::new(provider.clone()),
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        }),
+        registry,
+        Config::default(),
+        None,
+        None,
+        Arc::new(InMemoryArtifactStore::new()),
+        root.path().to_path_buf(),
+        "c007-verify-todo-session".into(),
+    );
+    attach_test_workspace_authority(&mut agent_loop, root.path()).await;
+    agent_loop
+        .run(make_chat_request(
+            "verify the workspace and track two active tasks",
+        ))
+        .await
+        .expect("normal AgentLoop workflow completes");
+    let tool_results: Vec<_> = provider
+        .get_requests()
+        .await
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .filter_map(|message| match message {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => Some((tool_call_id.to_string(), content.to_string())),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        tool_results.iter().any(|(id, output)| {
+            id == "trajectory-verify-lint"
+                && output.contains("passed")
+                && output.contains("trajectory-fixture")
+        }),
+        "verify result was not truthful and model-visible: {tool_results:?}"
+    );
+    assert!(
+        tool_results.iter().any(|(id, output)| {
+            id == "trajectory-parallel-todos" && output.contains("in_progress")
+        }),
+        "explicit todo update was not model-visible: {tool_results:?}"
+    );
+
+    let state = todos.lock().await;
+    assert_eq!(state.items.len(), 2);
+    assert!(state
+        .items
+        .iter()
+        .all(|item| item.status == codegg::task_state::TodoStatus::InProgress));
+}
+
 /// Build test AgentLoop with custom config for testing config-dependent behavior.
 async fn build_test_agent_loop_with_config(
     provider: Box<dyn Provider>,
