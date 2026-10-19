@@ -810,7 +810,6 @@ impl App {
             TuiMsg::SearchNext => self.messages_state.messages.search_next(),
             TuiMsg::SearchPrev => self.messages_state.messages.search_prev(),
             TuiMsg::ClearSearch => self.messages_state.messages.clear_search(),
-            TuiMsg::FocusPrompt => self.prompt_state.prompt.focus(),
             TuiMsg::StashPrompt => self.stash_prompt(),
             TuiMsg::RestorePrompt => self.restore_prompt(),
             TuiMsg::CopyMessage => self.copy_message(),

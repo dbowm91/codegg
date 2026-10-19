@@ -1010,16 +1010,20 @@ fn a_working_turn_names_the_key_that_stops_it() {
 #[test]
 fn the_stop_confirmation_is_visible_between_the_two_presses() {
     let mut app = test_app();
-    // A fresh app composes (Insert), and bare-char bindings are Normal-mode
-    // only so `x` can never shadow a letter being typed. Reaching for the stop
-    // key therefore means leaving Insert first.
+    // The stop key is a chord (`Ctrl+Alt+X`) since ADR-0042 gave the bare `x`
+    // to the composer. A chord cannot be composed as text, so it needs no
+    // mode gate — but the app is put in Normal mode anyway, because that is
+    // where the user reaches for it.
     app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
     app.session_state.session_status = SessionStatus::Working;
 
     // First press: arm, and say what completes it. Without this the second
     // press looks like a no-op and the key reads as broken.
     let _ = render_to_buffer(&mut app, 100, 30);
-    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.on_key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ));
     assert!(
         app.prompt_state.stop_armed_at.is_some(),
         "one press must arm, not stop"
