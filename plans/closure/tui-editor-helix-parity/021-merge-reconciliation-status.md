@@ -37,19 +37,19 @@ set survived the reconciliation with `main` **unchanged**. `main` touched
 **zero** editor-owned files across its 113 commits — not
 `src/tui/editor.rs`, not `src/tui/commands/editor.rs`, not
 `src/tui/editor_lsp.rs`, not `src/tui/components/editor.rs`, not the editor's
-plan or closure records, and not the editor's five guard scripts — so the
-four conflicts were resolved by keeping both sides' semantics rather than by
-negotiating the editor's behaviour.
+plan or closure records, and not any of the seven editor guard scripts — so
+the four conflicts were resolved by keeping both sides' semantics rather than
+by negotiating the editor's behaviour.
 
 The reconciliation nonetheless found and fixed **three defects**, all of them
-documentation defects, and none of them in the editor's runtime. Two of the
-three were `main`-side and would have left the merged tree's own
-"single source of truth for counts" table wrong on arrival; the third was
-this branch's. The load-bearing one is described in §3.1: sixteen of the
-twenty-four rows of `architecture/overview.md`'s Verified-counts table were
-stale in the merged tree, and four of the methods behind them were ambiguous
-until they were pinned against the commits that originally recorded each
-value.
+documentation defects, and none of them in the editor's runtime. All three
+were *surfaced* by the merge rather than caused by it: each was correct, or
+nearly so, on the tree that last wrote it, and the merge put the two trees'
+claims side by side. The load-bearing one is described in §3.1: sixteen of
+the twenty-four rows of `architecture/overview.md`'s Verified-counts table
+were stale in the merged tree, and four of the methods behind them were
+ambiguous until they were pinned against the commits that originally recorded
+each value. Most of that drift is `main`-side; the attribution is in §3.1.
 
 The merged tree is green on every step that is not one of the pre-existing
 load-sensitive failures: `cargo fmt --all -- --check`, `cargo clippy
@@ -163,11 +163,21 @@ and its dependency separately.
 
 ### 3.3 The skill's guard table had outgrown its own sentence
 
-`.opencode/skills/tui/SKILL.md` introduced its Static Guards table with
-"Both guards fail `verify.sh quick`". It listed nine guards after this
-merge. The sentence is corrected to "Every guard in the table below", because
-a guard table that undercounts itself is the same class of drift as the
-counts table.
+`.opencode/skills/tui/SKILL.md` introduces its Static Guards table with "Both
+guards fail `verify.sh quick` and the CI `verify` job". The sentence was
+accurate at the merge-base, where the table listed **two** rows. This branch
+grew the table to **eight** (six editor guards: key authority, prefix state,
+leaf authority, the apply path, the completion triggers, and the doc-drift
+guard) and `main` grew it to **three** (adding the composer key-authority
+guard). The merged table lists **nine**, and the sentence undercounts all of
+them.
+
+Two further guards were on disk and in `verify.sh quick` but in **no**
+version of the table: `check_tui_transport_authority.py` and
+`check_tui_subagent_name_pool_isolation.py`. Both rows are added, so the
+table now carries **eleven** — every TUI guard in the routine set — and the
+sentence is corrected to "Every guard in the table below". A guard table that
+undercounts itself is the same class of drift as the counts table.
 
 ## 4. Qualification evidence
 
