@@ -168,6 +168,19 @@ impl JobSubmissionService {
         Ok(lease.path_policy().authority_fingerprint())
     }
 
+    /// Fetch a durable job by id, if it exists.
+    ///
+    /// The schedule materializer uses this for the crash-replay path: an
+    /// occurrence whose job row was written before the daemon stopped must
+    /// not be materialized a second time. The job id is a pure function of
+    /// the occurrence, so the lookup is exact.
+    pub async fn existing_job(
+        &self,
+        job_id: &JobId,
+    ) -> Result<Option<JobRecord>, JobSubmissionError> {
+        Ok(self.store.get_job(job_id).await?)
+    }
+
     pub async fn submit(
         &self,
         key: Option<SubmissionKey>,

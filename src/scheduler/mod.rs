@@ -43,6 +43,8 @@ pub mod idle_continuation;
 pub mod job_complete_audit;
 pub mod job_notifications;
 pub mod permit;
+pub mod schedule_driver;
+pub mod schedule_materializer;
 #[allow(clippy::module_inception)]
 pub mod scheduler;
 pub mod snapshot;

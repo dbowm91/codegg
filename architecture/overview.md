@@ -270,35 +270,42 @@ after reconciling the search-backend retirement with current `main`. The
 protocol-variant, authorized-operation, slash-command, and
 integration-test-file rows were remeasured on **2026-10-20** after Eggwork
 M002 added the node-telemetry request, its response, its operation, the
-`/nodes` command, and its integration test file; the remaining rows are
-unchanged from the earlier snapshots.
+`/nodes` command, and its integration test file.
+
+Every row was remeasured against its own listed `Source` on **2026-10-20**
+after Eggwork M004 added the schedule materialization driver and its
+integration test file. Seven rows had drifted and were corrected:
+architecture docs (86 → 87), `CoreEvent` variants (88 → 92), tool source
+files (78 → 80), TUI state modules (31/32 → 32/33), storage layout
+version (79 → 82), CI guard scripts (53 → 57), and integration test files
+(267 → 268). The remaining rows were confirmed unchanged.
 
 | Item | Count | Source |
 |------|-------|--------|
-| Architecture docs | 86 | `architecture/*.md` |
+| Architecture docs | 87 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
 | Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
-| Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
+| Tool source files | 80 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
 | `CoreRequest` variants | 259 (235 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreResponse` variants | 169 | `crates/codegg-protocol/src/core.rs` |
-| `CoreEvent` variants | 88 | `crates/codegg-protocol/src/core.rs` |
+| `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
 | Authorized operations | 253 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 18 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 167 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
-| TUI state modules | 31 (32 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 87 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 79 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| TUI state modules | 32 (33 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
+| Database tables (`CREATE TABLE`) | 87 | `crates/codegg-core/src/session/schema.rs` (distinct table names; `migration_version` and the `origin_attribution` rebuild each appear twice) |
+| Storage layout version | 82 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 267 | `tests/*.rs` |
-| CI guard scripts | 53 | `scripts/check_*` |
+| Integration test files | 268 | `tests/*.rs` |
+| CI guard scripts | 57 | `scripts/check_*` |
 
 ## Feature gates
 

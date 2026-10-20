@@ -52,6 +52,16 @@ impl CoreDaemon {
         if let Some(handle) = self._ci_watch_driver_handle.take() {
             handle.abort();
         }
+        // M004 schedule driver: request cooperative shutdown first so the
+        // loop finishes its current bounded tick, then abort the handle.
+        // An occurrence that was materialized but not yet recorded stays
+        // due and is retried on the next daemon's first tick.
+        if let Some(driver) = self.schedule_driver.take() {
+            driver.request_shutdown();
+        }
+        if let Some(handle) = self._schedule_driver_handle.take() {
+            handle.abort();
+        }
         // C004 completion fanout: abort the forwarder; the unbounded
         // channel is dropped with the notifier, so in-flight terminals
         // already committed stay durable and are recovered via the notice

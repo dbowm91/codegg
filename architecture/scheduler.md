@@ -702,6 +702,41 @@ live `BackgroundJobCompleted` hint. No per-job task, no busy poll, no
 long-held CPU permit; shutdown aborts the forwarder while committed
 notices stay durable for notice-row + next-turn recovery.
 
+### Schedule materialization driver (M004, worker telemetry and targeting)
+
+A schedule is durable data with no trigger until something claims its
+occurrences. Until M004 nothing in production called
+`ScheduleStore::claim_due`; the only callers were tests. The driver
+(`src/scheduler/schedule_driver.rs`) is that trigger: one
+daemon-lifecycle-owned earliest-due wake loop per daemon, sleeping until
+the earliest durable due horizon, claiming the due occurrences in one
+bounded tick, and exiting on shutdown.
+
+Its ownership boundary against `JobScheduler` is strict:
+
+- the driver **creates** work; the scheduler **runs** it. A claimed
+  occurrence becomes a durable job through `JobSubmissionService`, and the
+  scheduler remains the only authority that admits and dispatches it;
+- the driver owns no executor and no queue of its own. Its durable state
+  is the schedule store's rows; the durable job store is the queue the
+  scheduler reconciles from;
+- there is no per-schedule timer, no second scheduler, and no model
+  polling.
+
+The driver is installed only where it can do its job: the scheduler
+enabled (the submission facade refuses every submission otherwise) and a
+pool present (a pool-less daemon has no cross-process durability to
+claim). Schedule creation and resumption wake it, so a schedule that is
+already due fires promptly rather than waiting out the sleep.
+
+The occurrence's job id is a pure function of `(schedule_id,
+scheduled_for)`, so the `job.id` primary key is the durable uniqueness
+constraint: a daemon that stopped between writing the job row and writing
+the occurrence row replays into the same job. An occurrence the
+materializer refuses is not recorded at all, so it stays retryable instead
+of being silently consumed. See `architecture/jobs.md` for the tick's
+three phases and the refusal semantics.
+
 ### Shutdown (`scheduler.rs:1503`)
 
 Three shutdown modes:

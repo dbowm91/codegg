@@ -124,6 +124,15 @@ pub struct CoreDaemon {
     /// one loop per daemon when present; held to keep the task alive.
     pub ci_watch_driver: Option<Arc<crate::scheduler::ci_watch_idle::CiWatchIdleDriver>>,
     pub(crate) _ci_watch_driver_handle: Option<tokio::task::JoinHandle<()>>,
+    /// M004: daemon-owned schedule materialization driver (earliest-due
+    /// wake loop).
+    ///
+    /// `None` when the scheduler is disabled or when the daemon has no
+    /// pool — a pool-less daemon has no cross-process durability to
+    /// claim. Exactly one loop per daemon when present; held to keep the
+    /// task alive.
+    pub schedule_driver: Option<Arc<crate::scheduler::schedule_driver::ScheduleDriver>>,
+    pub(crate) _schedule_driver_handle: Option<tokio::task::JoinHandle<()>>,
     /// C004 daemon-owned idle-continuation grant/intent store. `None` in
     /// legacy/test daemons that never asked for the shared handle.
     /// C005 (ADR-0031, accepted): the store now feeds the authenticated

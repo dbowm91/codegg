@@ -57,9 +57,10 @@ pub mod schedule_store;
 pub mod store;
 
 pub use schedule::{
-    compute_next_run, missed_run_targets, ClaimedOccurrence, MissedRunPolicy,
-    OccurrenceMaterializer, OccurrenceStatus, OverlapPolicy, ScheduleError, ScheduleKind,
-    ScheduleQuery, ScheduleRecord, ScheduleState, ScheduleStore, ScheduleSummary, ScheduleTemplate,
+    compute_next_run, missed_run_targets, occurrence_job_id, ClaimedOccurrence, JobTemplate,
+    MaterializerError, MissedRunPolicy, OccurrenceMaterializer, OccurrenceStatus, OverlapPolicy,
+    ScheduleError, ScheduleKind, ScheduleQuery, ScheduleRecord, ScheduleState, ScheduleStore,
+    ScheduleSummary, ScheduleTemplate,
 };
 pub use schedule_store::{InMemoryScheduleStore, SqliteScheduleStore};
 
@@ -348,7 +349,9 @@ impl ToolProgramExecutionContext {
 /// Created at submit time by the daemon and never re-derived. Equality
 /// is structural (string compare) and the type is `Hash` so it can be
 /// used as a map key. The string content is a UUID v4 produced by the
-/// store at creation time.
+/// store at creation time, except for a scheduled job, whose id is
+/// derived from its occurrence so the same occurrence can never own two
+/// jobs (see [`schedule::occurrence_job_id`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct JobId(String);

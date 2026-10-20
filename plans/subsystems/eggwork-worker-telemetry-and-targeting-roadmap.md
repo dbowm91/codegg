@@ -1,6 +1,6 @@
 # Eggwork Worker Targeting and Host Telemetry — Subsystem Roadmap
 
-Status: active planning; M001 closed, M002 closed, M003 closed
+Status: active planning; M001 closed, M002 closed, M003 closed, M004 closed
 Primary class: scheduler / infrastructure
 Authority: `plans/000-long-term-specification.md`, `plans/001-terminology-and-domain-model.md`, `plans/002-long-term-roadmap.md`, `plans/003-planning-process.md`.
 Related existing subsystem: `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` (M001+C001+M002+M002a+M003 **closed**, its M004 whole-AgentRun remains **deferred**).
@@ -39,6 +39,8 @@ Eggwork M001 local Gregg adapter [closed] -> Eggwork M002 mTLS telemetry API [cl
                                              |
                                              v
          future cross-node resource-aware placement [deferred, not in this batch]
+
+M001 schedule target [closed] ---> M004 production materialization + occurrence idempotency [closed]
 ```
 
 M003 closed on the M001 closure: the explicit target boundary (host-boundary admission, `Capability::NodeTarget`, `[eggwork.allowed_target_nodes]`, schedule target preservation) in `plans/closure/eggwork-worker-telemetry-and-targeting/001-status.md` gave M003 a real target contract to define limits against. M003 landed the operator's per-node resource ceiling with required/best-effort enforcement, the unit-safe conversion into the node's cgroup requirements, the capability-gated fail-closed preflight, the node-scoped scheduler reservation that keeps remote compute off the local CPU/memory budget, and typed remote outcomes with a bounded same-node wait (`plans/closure/eggwork-worker-telemetry-and-targeting/003-status.md`). M002 closed on 2026-10-20: upstream Eggwork closed optional Gregg telemetry M001 (`ac55985`) and M002 (`5ccb1e6`) on 2026-10-19, merged to upstream `main` as `81f34e08`; CodeGG re-pinned to that revision and consumed the frozen `NodeTelemetry` contract through a bounded, daemon-owned projection (`968c9dfb`, `plans/closure/eggwork-worker-telemetry-and-targeting/002-status.md`).
@@ -61,6 +63,11 @@ Plan: `plans/implementation/eggwork-worker-telemetry-and-targeting/003-remote-re
 Closure: `plans/closure/eggwork-worker-telemetry-and-targeting/003-status.md`.
 User-visible exit: CodeGG can configure typed per-kind remote request limits with clear required/best-effort semantics, preserves local/remote capacity distinction, and handles typed remote busy/resource failures with bounded queue/retry; no automatic target selection.
 
+**M004 — Production schedule materialization and crash-safe occurrence idempotency (closed).**
+Plan: `plans/implementation/eggwork-worker-telemetry-and-targeting/004-production-schedule-materialization-and-occurrence-idempotency.md`.
+Closure: `plans/closure/eggwork-worker-telemetry-and-targeting/004-status.md`.
+User-visible exit: a recurring or one-shot schedule actually fires — one durable job per occurrence, carrying the target the schedule was created with, exactly once across a daemon crash, with the administrator's approval re-checked at firing time. This is the milestone M001's closure §10 deferred ("the milestone that wires a production materializer … together with an occurrence-level idempotency key"): before it, nothing in production called `ScheduleStore::claim_due`, so a schedule was durable data with no trigger.
+
 ## Cross-cutting risks
 
 API auth escalation if target is user-controlled; irreversible schedule migrations; resource tokens incorrectly translated into cgroup CPU time quotas; extra scheduler permit retention artificially throttling controller; stale metrics driving false availability; multi-workspace contention; old-client compatibility; pin drift and Linux/non-Linux enforcement differences. Each implementation plan contains negative tests and stop conditions.
@@ -68,6 +75,8 @@ API auth escalation if target is user-controlled; irreversible schedule migratio
 ## Deferred, explicitly not claimed
 
 Automatic multi-node placement, worker discovery, whole remote AgentRun/subagent/Test, reverse-connect, Gregg collector extraction, per-execution cgroup timeseries and dynamic migration of accepted jobs. These require separate scoped planning/evidence; this roadmap **does not** rename or close the existing Eggwork remote AgentRun M004.
+
+**Milestone-number disambiguation.** This line's M004 is the production schedule materialization and occurrence-idempotency milestone. It is **not** the `eggwork-fixed-target-remote-execution` line's M004 (whole remote `AgentRun`, still deferred), and **not** the `async-background-jobs` line's closed M004 (GitHub Actions completion watch).
 
 ## Completion
 

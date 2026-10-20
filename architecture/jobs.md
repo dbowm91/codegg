@@ -513,21 +513,100 @@ the projection replay path (`projection_replay/publication.rs:514`).
 | `list(ScheduleQuery)` | Filter by workspace/state |
 | `claim_due(DateTime, &dyn OccurrenceMaterializer)` | Atomically claim due occurrences, create jobs |
 
-### `claim_due` Semantics (`schedule.rs:262`, impls `schedule_store.rs:243`, `:521`)
+### `claim_due` Semantics (`schedule.rs`, impls `schedule_store.rs`)
 
-`claim_due` scans schedules where `next_run_at <= now` and state is
-`Active`. For each due schedule, it:
-1. Computes `missed_run_targets` based on `MissedRunPolicy`
-2. Checks overlap policy against existing running/queued occurrences
-3. Atomically inserts `schedule_occurrence` rows with
-   `PRIMARY KEY(schedule_id, scheduled_for)` — duplicate claims fail
-   with `DuplicateOccurrence`
-4. Calls `OccurrenceMaterializer::materialize` to create the job
-   from the `JobTemplate`
-5. Updates `schedule.next_run_at` via `compute_next_run`
+`claim_due` is the only way an occurrence becomes a job. It runs in three
+phases, and the split is load-bearing:
+
+1. **Plan** — a short read of the schedules where `next_run_at <= now` and
+   state is `Active`, plus the occurrences each one owes
+   (`missed_run_targets`, by `MissedRunPolicy`) and the schedule's
+   running-job count for the overlap policy. No transaction is held.
+2. **Materialize** — the slow part: a job submission, and for a remote
+   target a node round trip. It runs with **no** transaction open.
+3. **Commit** — one write transaction that inserts the
+   `schedule_occurrence` rows and advances the schedules' cursors
+   together.
+
+The split is not cosmetic. Materialization needs the job store, the job
+store needs a pool connection, and materializing while the schedule store
+held its own connection waits for a second connection that a
+single-connection pool never has — a self-deadlock that no amount of
+waiting resolves. The phases are safe to separate because the occurrence's
+job id is a pure function of the occurrence (below), so a crash between
+the materialization and the commit replays into the *same* job.
+
+The commit transaction reads each schedule's stored cursor and writes it
+back, so it opens with `BEGIN IMMEDIATE` (`ImmediateWrite`) rather than a
+deferred transaction — a deferred transaction holds a shared read lock
+across the read and then has to upgrade it to write, which SQLite refuses
+with `SQLITE_BUSY` without waiting (C002).
 
 The `PRIMARY KEY(schedule_id, scheduled_for)` constraint prevents
-double-firing after restart.
+double-firing after restart, and the cursor only ever advances.
+
+### Occurrence identity and idempotency (M004)
+
+An occurrence is the pair `(schedule_id, scheduled_for)`. Its job id is a
+pure function of that pair — `occurrence_job_id` in
+`crates/codegg-core/src/jobs/schedule.rs` — and the job store derives a
+scheduled job's id from its source. The `job.id` primary key is therefore
+the **durable** uniqueness constraint for an occurrence: a database
+guarantee, not a convention. `JobStore::create_job` is idempotent on that
+id; a non-scheduled job keeps a random UUID v4, which cannot collide.
+
+The consequence is that a daemon which stopped between "the job row was
+written" and "the occurrence row was written" replays into the **same**
+job. The occurrence table's primary key then records it. One occurrence
+never owns two jobs.
+
+The occurrence identity is **derived, not stored** — no migration, and
+`STORAGE_LAYOUT_VERSION` is unchanged.
+
+### Refused occurrences (M004)
+
+A refused occurrence is **not** recorded. The occurrence row is the
+durable "this already happened" marker, and its primary key would turn
+the later retry into a no-op, so an unrecorded occurrence stays
+retryable. The consequences are all deliberate:
+
+- the schedule's `last_occurrence_at` does not advance past the refusal,
+  so the occurrence is re-planned;
+- the schedule's next horizon does not move past the refusal, so the
+  occurrence is not skipped;
+- `OccurrenceStatus::Failed` and `ClaimedOccurrence::job_id: Option<JobId>`
+  report the outcome. An occurrence that produced no job says `None`,
+  never a synthetic id.
+
+The cursor advances to the **occurrence**, not to the tick time. An
+interval schedule anchored at `T0` therefore keeps its own grid instead
+of drifting to whenever the daemon happened to tick.
+
+### Production materialization (M004)
+
+`src/scheduler/schedule_materializer.rs` is the production
+`OccurrenceMaterializer`; `src/scheduler/schedule_driver.rs` is the
+daemon-owned earliest-due wake loop that calls it. The materializer
+creates a job through `JobSubmissionService` — the single production
+admission facade — so a scheduled job is admitted exactly like a submitted
+one, and it invokes no executor.
+
+The materializer **re-applies the host-boundary gates** at materialization
+time: the remotely-runnable shape, the administrator's approval, and the
+operator's resource ceiling. A schedule is authorized once, when it is
+created; by the time an occurrence fires, the daemon may have restarted
+with a different configuration, and the administrator may have withdrawn
+the node's approval. The *principal* gate is deliberately not re-applied:
+a timer-driven occurrence has no live principal, and re-deriving one
+would manufacture authority rather than check it.
+
+Refusals carry a stable, secret-free reason code. No endpoint, credential
+path, or policy detail reaches a log line or a durable field.
+
+The driver is installed only where it can do its job: the scheduler
+enabled (the submission facade refuses every submission otherwise) and a
+pool present (a pool-less daemon has no cross-process durability to
+claim). Schedule creation and resumption wake it.
 
 ## Configuration Surface
 

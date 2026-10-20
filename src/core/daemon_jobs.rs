@@ -401,6 +401,12 @@ impl CoreDaemon {
                 match self.deps.schedule_store.create(template).await {
                     Ok(record) => {
                         let schedule_id = record.schedule_id.as_str().to_string();
+                        // M004: wake the materialization driver so a
+                        // schedule that is already due fires now instead of
+                        // waiting for the driver's next sleep.
+                        if let Some(driver) = self.schedule_driver.as_ref() {
+                            driver.wake();
+                        }
                         self.event_log
                             .publish(
                                 None,
@@ -495,6 +501,12 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(_record) => {
+                        // M004: a resumed schedule may already be due, so
+                        // the driver wakes rather than waiting out its
+                        // sleep.
+                        if let Some(driver) = self.schedule_driver.as_ref() {
+                            driver.wake();
+                        }
                         self.event_log
                             .publish(
                                 None,

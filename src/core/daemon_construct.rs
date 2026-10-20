@@ -519,6 +519,35 @@ impl CoreDaemon {
             }
             None => (None, None),
         };
+        // M004: the schedule materialization driver — one earliest-due
+        // wake loop per pooled daemon with the scheduler enabled.
+        //
+        // The driver *creates* work; the scheduler *runs* it. It is gated
+        // on the scheduler being enabled because the submission facade
+        // refuses every submission when the scheduler is disabled, and on
+        // a pool because a pool-less daemon has no cross-process
+        // durability to claim. A schedule that never fires is worse than
+        // an honest absence, so the driver is installed only where it
+        // can actually do its job.
+        let (schedule_driver, schedule_driver_handle) = match deps.pool.clone() {
+            Some(_) if scheduler.is_enabled() => {
+                let materializer =
+                    crate::scheduler::schedule_materializer::ScheduleMaterializer::new(
+                        submission.clone(),
+                        deps.remote_target_policy.clone(),
+                    );
+                let driver = crate::scheduler::schedule_driver::ScheduleDriver::new(
+                    deps.schedule_store.clone(),
+                    materializer,
+                );
+                let handle = tokio::runtime::Handle::try_current()
+                    .ok()
+                    .map(|_| driver.spawn());
+                tracing::info!("schedule materialization driver installed");
+                (Some(driver), handle)
+            }
+            _ => (None, None),
+        };
         if let Some(pool) = deps.legacy_agent.subagent_pool.as_ref() {
             pool.configure_durable_delegation(
                 submission.clone(),
@@ -630,6 +659,8 @@ impl CoreDaemon {
             _projection_maintenance_handle: projection_maintenance_handle,
             ci_watch_driver,
             _ci_watch_driver_handle: ci_watch_driver_handle,
+            schedule_driver,
+            _schedule_driver_handle: schedule_driver_handle,
             continuation_service: Some(shared_continuation),
             _idle_completion_handle: idle_completion_handle,
             idle_wake_cell,
