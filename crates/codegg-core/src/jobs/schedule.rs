@@ -20,7 +20,7 @@ use crate::error::StorageError;
 use crate::jobs::{JobId, JobPayload, JobPriority, JobSource, ResourceRequest, RetryPolicy};
 use crate::workspace::WorkspaceId;
 
-use super::{IdempotencyClass, JobKind};
+use super::{ExecutionTarget, IdempotencyClass, JobKind};
 
 /// Schedule lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -116,6 +116,91 @@ pub struct JobTemplate {
     pub timeout: Option<Duration>,
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    /// Execution target for every job this schedule materializes.
+    ///
+    /// `#[serde(default)]` keeps templates persisted before explicit
+    /// targeting existed readable: they decode as
+    /// [`ExecutionTarget::Local`], which is the behavior they always had.
+    /// The target is carried unchanged into the durable job spec at
+    /// materialization time.
+    #[serde(default)]
+    pub target: ExecutionTarget,
+}
+
+impl JobTemplate {
+    /// Build the durable job spec for one schedule occurrence.
+    ///
+    /// This is the single construction path for a materialized
+    /// occurrence, so the template's execution target is carried into
+    /// the job unchanged. A schedule that targets a remote node
+    /// therefore produces remote jobs, and a schedule that does not
+    /// keeps the historical local behavior.
+    ///
+    /// `not_before` is the scheduled occurrence time: the job becomes
+    /// eligible exactly when the schedule said it should.
+    pub fn new_job_for_occurrence(
+        &self,
+        workspace_id: WorkspaceId,
+        schedule_id: crate::jobs::ScheduleId,
+        session_id: Option<String>,
+        occurrence: DateTime<Utc>,
+    ) -> crate::jobs::NewJob {
+        crate::jobs::NewJob {
+            workspace_id,
+            session_id,
+            turn_id: None,
+            kind: self.kind,
+            source: JobSource::Scheduled {
+                schedule_id: schedule_id.clone(),
+                occurrence,
+            },
+            priority: self.priority,
+            payload: self.payload.clone(),
+            resource_request: self.resource_request.clone(),
+            timeout: self.timeout,
+            retry_policy: self.retry_policy.clone(),
+            idempotency: self.idempotency,
+            not_before: Some(occurrence),
+            deadline: None,
+            schedule_id: Some(schedule_id),
+            depends_on: vec![],
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: self.target.clone(),
+        }
+    }
+
+    /// The node id this template targets, if it targets a remote node.
+    pub fn target_node_id(&self) -> Option<&str> {
+        self.target.eggwork_node_id()
+    }
+}
+
+/// The durable job id of one schedule occurrence.
+///
+/// An occurrence is the pair `(schedule_id, scheduled_for)`. Its job id is
+/// a pure function of that pair, so the `job.id` primary key is the
+/// **durable** uniqueness constraint for the occurrence. Materializing the
+/// same occurrence twice — after a crash, a retry, or a concurrent tick —
+/// collides with the row an earlier attempt already wrote instead of
+/// creating a second job.
+///
+/// The id is opaque and stable. It encodes the schedule id and the
+/// occurrence instant and nothing else: no endpoint, no credential path,
+/// no node detail.
+pub fn occurrence_job_id(
+    schedule_id: &crate::jobs::ScheduleId,
+    occurrence: DateTime<Utc>,
+) -> JobId {
+    JobId::new_unchecked(format!(
+        "occ-{}-{}",
+        schedule_id.as_str(),
+        occurrence.timestamp_millis()
+    ))
 }
 
 /// Persisted schedule record.
@@ -182,6 +267,14 @@ pub enum OccurrenceStatus {
     Skipped,
     /// The occurrence was suppressed due to missed-run policy.
     Suppressed,
+    /// The occurrence could not be materialized.
+    ///
+    /// A failed occurrence is **not** recorded durably: the
+    /// `(schedule_id, scheduled_for)` primary key would make the later
+    /// retry a no-op, so an unrecorded occurrence stays retryable. It
+    /// appears in the tick report so the failure is visible, and it never
+    /// claims a job.
+    Failed,
 }
 
 impl OccurrenceStatus {
@@ -191,6 +284,7 @@ impl OccurrenceStatus {
             OccurrenceStatus::Queued => "queued",
             OccurrenceStatus::Skipped => "skipped",
             OccurrenceStatus::Suppressed => "suppressed",
+            OccurrenceStatus::Failed => "failed",
         }
     }
 
@@ -199,6 +293,7 @@ impl OccurrenceStatus {
             "queued" => OccurrenceStatus::Queued,
             "skipped" => OccurrenceStatus::Skipped,
             "suppressed" => OccurrenceStatus::Suppressed,
+            "failed" => OccurrenceStatus::Failed,
             _ => OccurrenceStatus::Pending,
         }
     }
@@ -259,6 +354,12 @@ pub trait ScheduleStore: Send + Sync {
     /// claim, atomically insert a `schedule_occurrence` row with status
     /// `Queued`, attach the produced `JobId`, and update the
     /// schedule's `next_run_at`.
+    ///
+    /// An occurrence that the materializer refuses is **not** recorded:
+    /// the occurrence row is the durable "this already happened" marker,
+    /// and its `(schedule_id, scheduled_for)` primary key would make the
+    /// later retry a no-op. An unrecorded occurrence stays retryable, and
+    /// the schedule's `last_occurrence_at` does not advance past it.
     async fn claim_due(
         &self,
         now: DateTime<Utc>,
@@ -271,24 +372,48 @@ pub trait ScheduleStore: Send + Sync {
 pub struct ClaimedOccurrence {
     pub schedule_id: crate::jobs::ScheduleId,
     pub scheduled_for: DateTime<Utc>,
-    pub job_id: JobId,
+    /// The job this occurrence produced.
+    ///
+    /// `None` for an occurrence that produced no job: one skipped by the
+    /// overlap policy, and one that could not be materialized. A
+    /// materialized occurrence always carries one.
+    pub job_id: Option<JobId>,
     pub status: OccurrenceStatus,
+    /// Why the occurrence produced no job.
+    ///
+    /// A stable, secret-free reason code — for example
+    /// `remote_target_not_approved`. It is `None` for an occurrence that
+    /// produced a job or was skipped by the overlap policy.
+    ///
+    /// The code reaches a log line and nothing else. A refused occurrence
+    /// is **not** recorded durably, so the code is not a durable record
+    /// of the refusal — it is what the tick could report at the time.
+    pub failure_code: Option<String>,
 }
 
 /// Materializes a job for a single fired occurrence. The schedule
 /// store does not own the executor; this callback lets the daemon
 /// translate a `JobTemplate` into a `JobId` exactly once per
 /// occurrence.
+///
+/// The whole [`ScheduleRecord`] is passed, not just the template: the
+/// materialized job belongs to the schedule's workspace and session,
+/// and a materializer that had to look those up would need the store it
+/// is being called from.
 #[async_trait]
 // Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
 // (the desugared future is already must_use). Suppressed at the macro site;
 // no behavior change.
 #[allow(clippy::double_must_use)]
 pub trait OccurrenceMaterializer: Send + Sync {
+    /// Materialize the job for one occurrence of `schedule`.
+    ///
+    /// The returned job id is the occurrence's durable identity. A
+    /// materializer that already produced a job for this occurrence
+    /// returns that same id rather than producing a second one.
     async fn materialize(
         &self,
-        schedule_id: &crate::jobs::ScheduleId,
-        template: &JobTemplate,
+        schedule: &ScheduleRecord,
         scheduled_for: DateTime<Utc>,
     ) -> Result<JobId, MaterializerError>;
 }
@@ -301,6 +426,25 @@ pub enum MaterializerError {
 
     #[error("invalid template: {0}")]
     InvalidTemplate(String),
+
+    /// The daemon refused to admit this occurrence.
+    ///
+    /// The code is a stable, secret-free slug — for example
+    /// `remote_target_not_approved`. It is the only part of the refusal
+    /// that reaches a log line or a durable field.
+    #[error("occurrence refused: {code}")]
+    Refused { code: String },
+}
+
+impl MaterializerError {
+    /// A stable, secret-free reason code.
+    pub fn code(&self) -> &str {
+        match self {
+            MaterializerError::JobStore(_) => "job_store_error",
+            MaterializerError::InvalidTemplate(_) => "invalid_template",
+            MaterializerError::Refused { code } => code,
+        }
+    }
 }
 
 impl JobTemplate {
@@ -330,6 +474,7 @@ impl JobTemplate {
             idempotency: IdempotencyClass::SafeRepeat,
             timeout: None,
             labels: HashMap::new(),
+            target: ExecutionTarget::Local,
         }
     }
 

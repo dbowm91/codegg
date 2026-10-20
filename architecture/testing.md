@@ -33,9 +33,10 @@ scripts/verify.sh full     # broad verification before handoff or release
 16. `check_provider_catalog_consistency.py`
 17. `check_provider_resilience_ownership.py`
 18. `check_eggwork_target_routing.py`
-19. `cargo check --workspace --all-targets --locked`
+19. `check_eggwork_target_routing.py --self-test`
+20. `cargo check --workspace --all-targets --locked`
 
-Quick runs **19** steps (18 checks plus the workspace `cargo check`). The
+Quick runs **20** steps (19 checks plus the workspace `cargo check`). The
 boundary and provider-wire guards were added after this list was first
 written; `scripts/verify.sh` is the authority.
 

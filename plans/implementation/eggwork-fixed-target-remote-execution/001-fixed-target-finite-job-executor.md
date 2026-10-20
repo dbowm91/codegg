@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M001 — Fixed-Target Finite-Job Executor
 
-Status: ready for handoff
+Status: implemented — closed (`plans/closure/eggwork-fixed-target-remote-execution/001-status.md`; implementation `67f8f3d3`). Corrective C001 is closed (`plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`); M002/M002a/M003 are closed and M004 stays deferred.
 
 Source roadmap:
 

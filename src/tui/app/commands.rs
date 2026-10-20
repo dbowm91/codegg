@@ -1464,6 +1464,18 @@ pub enum TuiCommand {
     LspStatusDetailLoaded {
         detail: Option<String>,
     },
+    /// Eggwork M002: request the host telemetry of the configured remote
+    /// nodes. Awaiting the daemon is off the render path.
+    NodeTelemetryRequested,
+    /// Eggwork M002: completion of a [`TuiCommand::NodeTelemetryRequested`]
+    /// round trip.
+    ///
+    /// `nodes` carries the daemon's snapshots verbatim, including the nodes
+    /// that could not be read; the TUI never fills in a missing dimension.
+    NodeTelemetryLoaded {
+        nodes: Vec<crate::protocol::dto::NodeTelemetryDto>,
+        error: Option<String>,
+    },
     /// M007: request a daemon-resolved policy snapshot
     /// (`ApprovalPreferenceGet` + `ExecutionPolicyGet`). The completion
     /// carries daemon DTOs only; the TUI never invents effective state.

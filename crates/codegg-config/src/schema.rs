@@ -430,10 +430,231 @@ impl Default for ProviderConnectionsConfig {
 /// against this table at execution time. Jobs persist only the node id;
 /// endpoints and key material stay daemon/config-owned and are never written
 /// into job rows, diagnostics, or audit metadata.
+///
+/// Client-driven targeting is a separate, administrator-owned decision:
+/// `allowed_target_nodes` names the nodes a client may target, and the
+/// `required_*_policy` fields are the daemon-wide posture ceiling a
+/// targetable node must declare. Both default to "nothing is
+/// targetable", so a daemon that never opts in refuses every remote
+/// target at the host boundary.
+/// Maximum bytes the remote node accepts for a memory limit (1 PiB).
+///
+/// Mirrors the bound the node itself validates; a value above it is a
+/// configuration error rather than a silently clamped limit.
+pub const MAX_REMOTE_MEMORY_BYTES: u64 = 1_125_899_906_842_624;
+
+/// Maximum value the remote node accepts for a CPU quota limit.
+///
+/// The unit is *milli-percent of one CPU*, not milliseconds of CPU time:
+/// `1000` means one full CPU (`100.0%`), `2000` means two CPUs (`200.0%`).
+pub const MAX_REMOTE_CPU_QUOTA_MILLI_PERCENT: u64 = 1_000_000;
+
+/// Maximum value the remote node accepts for a process/thread limit.
+pub const MAX_REMOTE_PIDS: u64 = 1_000_000;
+
+/// How strongly a remote resource limit must hold on the node.
+///
+/// `Required` is a hard contract: the daemon refuses to submit when the
+/// node cannot enforce the limit. `BestEffort` is advisory: the node may
+/// decline to apply it, and the outcome is reported truthfully as
+/// *not applied* rather than being silently downgraded to *not requested*.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteLimitEnforcement {
+    /// The node must enforce the limit or the submission is refused.
+    #[default]
+    Required,
+    /// The node may apply the limit; a node that cannot says so.
+    BestEffort,
+}
+
+/// One remote resource dimension: a value plus how strongly it must hold.
+///
+/// The unit is carried by the *field* that holds this value, never by the
+/// value itself:
+///
+/// - `memory_bytes` — bytes of resident memory (`MemoryMax`).
+/// - `cpu_quota_milli_percent` — milli-percent of one CPU's quota
+///   (`CPUQuota`); this is **not** a CPU-time budget.
+/// - `pids` — process/thread count (`TasksMax`).
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct RemoteResourceLimit {
+    /// The limit value in the dimension's own unit. Must be greater than
+    /// zero; zero is a configuration error, not "unlimited".
+    pub value: u64,
+    /// How strongly the limit must hold. Defaults to `required`.
+    pub enforcement: RemoteLimitEnforcement,
+}
+
+/// A set of remote resource limits across the three supported dimensions.
+///
+/// An absent dimension means the dimension is *not requested* — the node
+/// applies no limit for it. This preserves the pre-M003 behavior (no
+/// remote limits) unless an operator configures one.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct RemoteResourceLimits {
+    /// Resident-memory limit in bytes.
+    pub memory_bytes: Option<RemoteResourceLimit>,
+    /// CPU quota limit in milli-percent of one CPU.
+    pub cpu_quota_milli_percent: Option<RemoteResourceLimit>,
+    /// Process/thread limit.
+    pub pids: Option<RemoteResourceLimit>,
+}
+
+impl RemoteResourceLimits {
+    /// `true` when no dimension carries a limit.
+    pub fn is_empty(&self) -> bool {
+        self.memory_bytes.is_none() && self.cpu_quota_milli_percent.is_none() && self.pids.is_none()
+    }
+
+    /// Validate every configured dimension against the node's own bounds.
+    pub fn validate(&self, scope: &str, errors: &mut Vec<String>) {
+        for (field, limit, max) in [
+            ("memory_bytes", self.memory_bytes, MAX_REMOTE_MEMORY_BYTES),
+            (
+                "cpu_quota_milli_percent",
+                self.cpu_quota_milli_percent,
+                MAX_REMOTE_CPU_QUOTA_MILLI_PERCENT,
+            ),
+            ("pids", self.pids, MAX_REMOTE_PIDS),
+        ] {
+            let Some(limit) = limit else { continue };
+            if limit.value == 0 {
+                errors.push(format!(
+                    "{scope}.{field}: limit value must be greater than zero (zero is not 'unlimited')"
+                ));
+                continue;
+            }
+            if limit.value > max {
+                errors.push(format!(
+                    "{scope}.{field}: limit value exceeds the node's maximum of {max}"
+                ));
+            }
+        }
+    }
+
+    /// Merge an overlay onto this set, one dimension at a time.
+    ///
+    /// A dimension present in the overlay replaces the base dimension
+    /// outright, including its enforcement kind: an operator that writes
+    /// `best_effort` over a `required` limit is making that dimension
+    /// advisory on purpose.
+    pub fn merge(&mut self, other: &RemoteResourceLimits) {
+        if other.memory_bytes.is_some() {
+            self.memory_bytes = other.memory_bytes;
+        }
+        if other.cpu_quota_milli_percent.is_some() {
+            self.cpu_quota_milli_percent = other.cpu_quota_milli_percent;
+        }
+        if other.pids.is_some() {
+            self.pids = other.pids;
+        }
+    }
+}
+
+/// Bounded wait-and-retry budget for a remote submission that hits node
+/// contention (the node is busy) or a transient node outage.
+///
+/// The wait always stays on the *same* node: it never re-targets another
+/// node and never falls back to local execution. A node that is draining or
+/// that lacks a required capability is a policy outcome, not contention,
+/// and is never waited on.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct EggworkRemoteRetryPolicy {
+    /// How many times a retryable remote outcome may be waited on and
+    /// retried. `0` disables waiting entirely.
+    pub max_waits: Option<u32>,
+    /// Delay before the first wait, in milliseconds.
+    pub initial_backoff_ms: Option<u64>,
+    /// Upper bound on a single wait, in milliseconds.
+    pub max_backoff_ms: Option<u64>,
+    /// Total wall-clock budget for all waits of one attempt, in
+    /// milliseconds.
+    pub deadline_ms: Option<u64>,
+}
+
+impl EggworkRemoteRetryPolicy {
+    /// Resolved wait budget with conservative defaults.
+    ///
+    /// The defaults preserve prior behavior in spirit: a remote job still
+    /// runs, but a momentarily busy node no longer fails the attempt
+    /// outright. The budget is bounded in every dimension so a saturated
+    /// node cannot produce an unbounded retry loop.
+    pub fn resolve(&self) -> ResolvedRemoteRetryPolicy {
+        ResolvedRemoteRetryPolicy {
+            max_waits: self.max_waits.unwrap_or(DEFAULT_REMOTE_MAX_WAITS).min(16),
+            initial_backoff_ms: self
+                .initial_backoff_ms
+                .unwrap_or(DEFAULT_REMOTE_INITIAL_BACKOFF_MS)
+                .min(DEFAULT_REMOTE_MAX_BACKOFF_MS),
+            max_backoff_ms: self
+                .max_backoff_ms
+                .unwrap_or(DEFAULT_REMOTE_MAX_BACKOFF_MS)
+                .min(DEFAULT_REMOTE_MAX_BACKOFF_MS),
+            deadline_ms: self
+                .deadline_ms
+                .unwrap_or(DEFAULT_REMOTE_RETRY_DEADLINE_MS)
+                .min(DEFAULT_REMOTE_MAX_DEADLINE_MS),
+        }
+    }
+}
+
+/// Default number of waits a remote submission may take on contention.
+pub const DEFAULT_REMOTE_MAX_WAITS: u32 = 2;
+/// Default delay before the first remote wait.
+pub const DEFAULT_REMOTE_INITIAL_BACKOFF_MS: u64 = 250;
+/// Default upper bound on a single remote wait.
+pub const DEFAULT_REMOTE_MAX_BACKOFF_MS: u64 = 5_000;
+/// Default total wall-clock budget for one attempt's remote waits.
+pub const DEFAULT_REMOTE_RETRY_DEADLINE_MS: u64 = 30_000;
+/// Hard ceiling on the configured total wait budget.
+pub const DEFAULT_REMOTE_MAX_DEADLINE_MS: u64 = 600_000;
+
+/// A remote wait budget with every field resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedRemoteRetryPolicy {
+    pub max_waits: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+    pub deadline_ms: u64,
+}
+
+impl Default for ResolvedRemoteRetryPolicy {
+    fn default() -> Self {
+        EggworkRemoteRetryPolicy::default().resolve()
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct EggworkConfig {
     pub nodes: Option<HashMap<String, EggworkNodeProfile>>,
+    /// Nodes a client may target by name.
+    ///
+    /// Each entry is a key of the `nodes` table above — the same
+    /// identifier an `ExecutionTarget::EggworkNode { node_id }` carries.
+    /// `None` (the default) means no node may be targeted: remote
+    /// execution stays unreachable from the protocol until an
+    /// administrator names the approved nodes here.
+    pub allowed_target_nodes: Option<Vec<String>>,
+    /// Minimum filesystem isolation posture a targetable node must
+    /// declare in its own profile.
+    ///
+    /// `None` means the node's own declaration governs and no daemon
+    /// ceiling applies.
+    pub required_isolation_policy: Option<EggworkIsolationPolicy>,
+    /// Minimum network posture a targetable node must declare in its
+    /// own profile.
+    ///
+    /// `None` means the node's own declaration governs and no daemon
+    /// ceiling applies.
+    pub required_network_policy: Option<EggworkNetworkPolicy>,
+    /// Bounded wait-and-retry budget for remote submissions that hit node
+    /// contention or a transient node outage.
+    pub remote_retry: Option<EggworkRemoteRetryPolicy>,
 }
 
 impl EggworkConfig {
@@ -452,6 +673,18 @@ impl EggworkConfig {
                 None => self.nodes = Some(nodes.clone()),
             }
         }
+        if other.allowed_target_nodes.is_some() {
+            self.allowed_target_nodes = other.allowed_target_nodes.clone();
+        }
+        if other.required_isolation_policy.is_some() {
+            self.required_isolation_policy = other.required_isolation_policy;
+        }
+        if other.required_network_policy.is_some() {
+            self.required_network_policy = other.required_network_policy;
+        }
+        if other.remote_retry.is_some() {
+            self.remote_retry = other.remote_retry.clone();
+        }
     }
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -462,6 +695,52 @@ impl EggworkConfig {
                 profile.validate(name, &mut errors);
             }
         }
+        if let Some(ref allowed) = self.allowed_target_nodes {
+            validate_bound(
+                &mut errors,
+                "eggwork.allowed_target_nodes",
+                allowed.len(),
+                0,
+                64,
+            );
+            for node_id in allowed {
+                if node_id.trim().is_empty() {
+                    errors.push("eggwork.allowed_target_nodes: node id must not be empty".into());
+                    continue;
+                }
+                // A target names a key of the node table. An allowlist
+                // entry that names no configured node can never be
+                // satisfied, so it is a configuration error rather than a
+                // silently ignored line.
+                if self.node(node_id).is_none() {
+                    errors.push(format!(
+                        "eggwork.allowed_target_nodes: '{node_id}' is not a configured [eggwork.nodes] entry"
+                    ));
+                }
+            }
+        }
+        if let Some(ref retry) = self.remote_retry {
+            let scope = "eggwork.remote_retry";
+            if let Some(max_waits) = retry.max_waits {
+                validate_bound(&mut errors, &format!("{scope}.max_waits"), max_waits, 0, 16);
+            }
+            for (field, value) in [
+                ("initial_backoff_ms", retry.initial_backoff_ms),
+                ("max_backoff_ms", retry.max_backoff_ms),
+                ("deadline_ms", retry.deadline_ms),
+            ] {
+                if let Some(value) = value {
+                    validate_bound(&mut errors, &format!("{scope}.{field}"), value, 0, 600_000);
+                }
+            }
+            if let (Some(initial), Some(max)) = (retry.initial_backoff_ms, retry.max_backoff_ms) {
+                if initial > max {
+                    errors.push(format!(
+                        "{scope}.initial_backoff_ms must not exceed {scope}.max_backoff_ms"
+                    ));
+                }
+            }
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -469,9 +748,26 @@ impl EggworkConfig {
         }
     }
 
+    /// Resolved remote wait budget for this configuration.
+    pub fn resolved_remote_retry(&self) -> ResolvedRemoteRetryPolicy {
+        self.remote_retry
+            .as_ref()
+            .map(|policy| policy.resolve())
+            .unwrap_or_default()
+    }
+
     /// Resolve the profile selected by an Eggwork execution target.
     pub fn node(&self, name: &str) -> Option<&EggworkNodeProfile> {
         self.nodes.as_ref().and_then(|nodes| nodes.get(name))
+    }
+
+    /// `true` when `name` is approved for client-driven targeting.
+    ///
+    /// An absent allowlist approves nothing.
+    pub fn allows_targeting(&self, name: &str) -> bool {
+        self.allowed_target_nodes
+            .as_ref()
+            .is_some_and(|allowed| allowed.iter().any(|entry| entry == name))
     }
 }
 
@@ -497,6 +793,15 @@ pub struct EggworkNodeProfile {
     pub isolation_policy: Option<EggworkIsolationPolicy>,
     /// Required network posture for remote execution.
     pub network_policy: Option<EggworkNetworkPolicy>,
+    /// Operator ceiling for the resource limits this node may be asked to
+    /// enforce. Absent means "no limits configured", which preserves the
+    /// pre-M003 behavior of running remote work unconstrained.
+    pub resource_limits: Option<RemoteResourceLimits>,
+    /// Maximum number of remote executions CodeGG will admit for this node
+    /// at once. Absent falls back to the controller's local process-slot
+    /// budget, which preserves the effective concurrency bound that remote
+    /// work had before the local/remote budgets were split.
+    pub max_concurrent_executions: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -529,6 +834,8 @@ impl std::fmt::Debug for EggworkNodeProfile {
             .field("required_capabilities", &self.required_capabilities)
             .field("isolation_policy", &self.isolation_policy)
             .field("network_policy", &self.network_policy)
+            .field("resource_limits", &self.resource_limits)
+            .field("max_concurrent_executions", &self.max_concurrent_executions)
             .finish()
     }
 }
@@ -559,6 +866,15 @@ impl EggworkNodeProfile {
         }
         if other.network_policy.is_some() {
             self.network_policy = other.network_policy;
+        }
+        if let Some(ref limits) = other.resource_limits {
+            match self.resource_limits {
+                Some(ref mut existing) => existing.merge(limits),
+                None => self.resource_limits = Some(limits.clone()),
+            }
+        }
+        if other.max_concurrent_executions.is_some() {
+            self.max_concurrent_executions = other.max_concurrent_executions;
         }
     }
 
@@ -597,6 +913,18 @@ impl EggworkNodeProfile {
             &self.required_capabilities,
             64,
         );
+        if let Some(ref limits) = self.resource_limits {
+            limits.validate(&format!("{scope}.resource_limits"), errors);
+        }
+        if let Some(max_concurrent) = self.max_concurrent_executions {
+            validate_bound(
+                errors,
+                &format!("{scope}.max_concurrent_executions"),
+                max_concurrent,
+                1,
+                4096,
+            );
+        }
     }
 }
 
@@ -1868,6 +2196,15 @@ pub struct SchedulerResourceConfig {
     pub max_memory_mb_hint: Option<u64>,
     pub max_io_weight: Option<u32>,
     pub max_network_slots: Option<u32>,
+    /// Bound on the remote transfers the controller may have in flight at
+    /// once.
+    ///
+    /// This is the controller's own cost of moving a workspace to a node
+    /// and streaming events back. It is a *separate* budget from
+    /// `max_network_slots`, which measures the network demand of local
+    /// jobs: charging a remote transfer against the local network budget
+    /// would throttle remote work by an unrelated dimension.
+    pub max_remote_transfers: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -4613,6 +4950,8 @@ mod tests {
             required_capabilities: Some(vec!["exec.argv.v1".to_string()]),
             isolation_policy: Some(EggworkIsolationPolicy::None),
             network_policy: Some(EggworkNetworkPolicy::Unrestricted),
+            resource_limits: None,
+            max_concurrent_executions: None,
         }
     }
 
@@ -4647,7 +4986,10 @@ mod tests {
         let mut nodes = std::collections::HashMap::new();
         nodes.insert("bad".to_string(), eggwork_profile("http://node-1:8443"));
         let cfg = Config {
-            eggwork: Some(EggworkConfig { nodes: Some(nodes) }),
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let errs = cfg.validate().unwrap_err();
@@ -4659,7 +5001,10 @@ mod tests {
             eggwork_profile("https://user:pass@node-1:8443/x?y=1#z"),
         );
         let cfg = Config {
-            eggwork: Some(EggworkConfig { nodes: Some(nodes) }),
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let errs = cfg.validate().unwrap_err();
@@ -4694,6 +5039,7 @@ mod tests {
         let mut base = Config {
             eggwork: Some(EggworkConfig {
                 nodes: Some(base_nodes),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -4709,6 +5055,7 @@ mod tests {
         let overlay = Config {
             eggwork: Some(EggworkConfig {
                 nodes: Some(overlay_nodes),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -4739,5 +5086,312 @@ mod tests {
                 .as_deref(),
             Some("https://node-1:8443")
         );
+    }
+
+    /// M001: an absent allowlist approves no node. This is the
+    /// fail-closed default for client-driven remote targeting.
+    #[test]
+    fn eggwork_target_allowlist_is_empty_by_default() {
+        let cfg = EggworkConfig::default();
+        assert!(!cfg.allows_targeting("node-1"));
+        assert!(cfg.allowed_target_nodes.is_none());
+    }
+
+    /// M001: an allowlist entry that names no configured node is a
+    /// configuration error, not a silently ignored line.
+    #[test]
+    fn eggwork_validation_rejects_unknown_allowed_target_node() {
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert("node-1".to_string(), eggwork_profile("https://node-1:8443"));
+        let cfg = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                allowed_target_nodes: Some(vec!["ghost".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("ghost") && e.contains("eggwork.nodes")),
+            "{errs:?}"
+        );
+    }
+
+    /// M001: an allowlist entry that names a configured node validates.
+    #[test]
+    fn eggwork_validation_accepts_known_allowed_target_node() {
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert("node-1".to_string(), eggwork_profile("https://node-1:8443"));
+        let cfg = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                allowed_target_nodes: Some(vec!["node-1".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        cfg.validate().expect("known node validates");
+    }
+
+    /// M001: the targeting keys merge by whole-value replacement, so a
+    /// later layer can narrow the allowlist without touching the node
+    /// table.
+    #[test]
+    fn eggwork_target_keys_merge_by_replacement() {
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert("node-1".to_string(), eggwork_profile("https://node-1:8443"));
+        nodes.insert("node-2".to_string(), eggwork_profile("https://node-2:8443"));
+        let base = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(nodes),
+                allowed_target_nodes: Some(vec!["node-1".to_string(), "node-2".to_string()]),
+                required_isolation_policy: Some(EggworkIsolationPolicy::None),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let overlay = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: None,
+                allowed_target_nodes: Some(vec!["node-1".to_string()]),
+                required_isolation_policy: Some(EggworkIsolationPolicy::Required),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = crate::paths::merge_configs(&[base, overlay]);
+        let eggwork = merged.eggwork.clone().unwrap();
+        assert_eq!(
+            eggwork.allowed_target_nodes,
+            Some(vec!["node-1".to_string()]),
+            "the later layer replaces the allowlist"
+        );
+        assert_eq!(
+            eggwork.required_isolation_policy,
+            Some(EggworkIsolationPolicy::Required)
+        );
+        assert!(eggwork.node("node-2").is_some(), "nodes survive");
+    }
+
+    // ── M003: remote resource limits ────────────────────────────────────
+
+    fn limit(value: u64, enforcement: RemoteLimitEnforcement) -> RemoteResourceLimit {
+        RemoteResourceLimit { value, enforcement }
+    }
+
+    #[test]
+    fn remote_limits_are_absent_by_default_so_prior_behavior_is_preserved() {
+        let profile = eggwork_profile("https://node-1:8443");
+        assert!(profile.resource_limits.is_none());
+        assert!(profile.max_concurrent_executions.is_none());
+        let empty = RemoteResourceLimits::default();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn remote_limits_deserialize_additively() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"eggwork": {"nodes": {"node-1": {
+                "endpoint": "https://node-1:8443",
+                "resource_limits": {
+                    "memory_bytes": {"value": 536870912, "enforcement": "required"},
+                    "cpu_quota_milli_percent": {"value": 1000, "enforcement": "best_effort"},
+                    "pids": {"value": 64}
+                },
+                "max_concurrent_executions": 3
+            }}}}"#,
+        )
+        .unwrap();
+        let profile = cfg.eggwork.clone().unwrap().node("node-1").unwrap().clone();
+        let limits = profile.resource_limits.clone().unwrap();
+        assert_eq!(
+            limits.memory_bytes,
+            Some(limit(536870912, RemoteLimitEnforcement::Required))
+        );
+        assert_eq!(
+            limits.cpu_quota_milli_percent,
+            Some(limit(1000, RemoteLimitEnforcement::BestEffort))
+        );
+        // The enforcement kind defaults to `required` — the stricter
+        // reading — when the key is absent.
+        assert_eq!(
+            limits.pids,
+            Some(limit(64, RemoteLimitEnforcement::Required))
+        );
+        assert_eq!(profile.max_concurrent_executions, Some(3));
+    }
+
+    #[test]
+    fn a_zero_limit_is_a_configuration_error_not_unlimited() {
+        let mut nodes = HashMap::new();
+        let mut profile = eggwork_profile("https://node-1:8443");
+        profile.resource_limits = Some(RemoteResourceLimits {
+            memory_bytes: Some(limit(0, RemoteLimitEnforcement::Required)),
+            ..Default::default()
+        });
+        nodes.insert("node-1".to_string(), profile);
+        let cfg = EggworkConfig {
+            nodes: Some(nodes),
+            ..Default::default()
+        };
+        let errors = cfg.validate().expect_err("zero must be refused");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("memory_bytes") && e.contains("zero")));
+    }
+
+    #[test]
+    fn a_limit_beyond_the_node_bound_is_a_configuration_error() {
+        let mut nodes = HashMap::new();
+        let mut profile = eggwork_profile("https://node-1:8443");
+        profile.resource_limits = Some(RemoteResourceLimits {
+            cpu_quota_milli_percent: Some(limit(
+                MAX_REMOTE_CPU_QUOTA_MILLI_PERCENT + 1,
+                RemoteLimitEnforcement::Required,
+            )),
+            ..Default::default()
+        });
+        nodes.insert("node-1".to_string(), profile);
+        let cfg = EggworkConfig {
+            nodes: Some(nodes),
+            ..Default::default()
+        };
+        let errors = cfg.validate().expect_err("overflow must be refused");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("cpu_quota_milli_percent") && e.contains("maximum")));
+    }
+
+    #[test]
+    fn remote_limits_merge_per_dimension() {
+        let mut base = RemoteResourceLimits {
+            memory_bytes: Some(limit(1024, RemoteLimitEnforcement::Required)),
+            cpu_quota_milli_percent: Some(limit(500, RemoteLimitEnforcement::BestEffort)),
+            ..Default::default()
+        };
+        let overlay = RemoteResourceLimits {
+            memory_bytes: Some(limit(512, RemoteLimitEnforcement::Required)),
+            ..Default::default()
+        };
+        base.merge(&overlay);
+        assert_eq!(
+            base.memory_bytes,
+            Some(limit(512, RemoteLimitEnforcement::Required)),
+            "the overlay replaces the dimension it names"
+        );
+        assert_eq!(
+            base.cpu_quota_milli_percent,
+            Some(limit(500, RemoteLimitEnforcement::BestEffort)),
+            "a dimension the overlay does not name survives"
+        );
+    }
+
+    #[test]
+    fn node_resource_limits_survive_a_layered_merge() {
+        let mut base_nodes = HashMap::new();
+        let mut base_profile = eggwork_profile("https://node-1:8443");
+        base_profile.resource_limits = Some(RemoteResourceLimits {
+            memory_bytes: Some(limit(1024, RemoteLimitEnforcement::Required)),
+            ..Default::default()
+        });
+        base_nodes.insert("node-1".to_string(), base_profile);
+        let base = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(base_nodes),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut overlay_nodes = HashMap::new();
+        let mut overlay_profile = eggwork_profile("https://node-1:8443");
+        overlay_profile.max_concurrent_executions = Some(2);
+        overlay_nodes.insert("node-1".to_string(), overlay_profile);
+        let overlay = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(overlay_nodes),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = crate::paths::merge_configs(&[base, overlay]);
+        let profile = merged
+            .eggwork
+            .clone()
+            .unwrap()
+            .node("node-1")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            profile.resource_limits.unwrap().memory_bytes.unwrap().value,
+            1024
+        );
+        assert_eq!(profile.max_concurrent_executions, Some(2));
+    }
+
+    #[test]
+    fn a_zero_max_concurrent_executions_is_refused() {
+        let mut nodes = HashMap::new();
+        let mut profile = eggwork_profile("https://node-1:8443");
+        profile.max_concurrent_executions = Some(0);
+        nodes.insert("node-1".to_string(), profile);
+        let cfg = EggworkConfig {
+            nodes: Some(nodes),
+            ..Default::default()
+        };
+        let errors = cfg.validate().expect_err("zero must be refused");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("max_concurrent_executions")));
+    }
+
+    #[test]
+    fn the_remote_retry_budget_resolves_to_bounded_defaults() {
+        let resolved = EggworkRemoteRetryPolicy::default().resolve();
+        assert_eq!(resolved.max_waits, DEFAULT_REMOTE_MAX_WAITS);
+        assert_eq!(
+            resolved.initial_backoff_ms,
+            DEFAULT_REMOTE_INITIAL_BACKOFF_MS
+        );
+        assert_eq!(resolved.max_backoff_ms, DEFAULT_REMOTE_MAX_BACKOFF_MS);
+        assert_eq!(resolved.deadline_ms, DEFAULT_REMOTE_RETRY_DEADLINE_MS);
+        assert!(resolved.max_waits <= 16);
+        assert!(resolved.deadline_ms <= DEFAULT_REMOTE_MAX_DEADLINE_MS);
+    }
+
+    #[test]
+    fn an_oversized_remote_retry_budget_is_clamped_to_a_bound() {
+        let resolved = EggworkRemoteRetryPolicy {
+            max_waits: Some(1000),
+            initial_backoff_ms: Some(10_000_000),
+            max_backoff_ms: Some(10_000_000),
+            deadline_ms: Some(10_000_000),
+        }
+        .resolve();
+        assert!(resolved.max_waits <= 16);
+        assert!(resolved.initial_backoff_ms <= DEFAULT_REMOTE_MAX_BACKOFF_MS);
+        assert!(resolved.max_backoff_ms <= DEFAULT_REMOTE_MAX_BACKOFF_MS);
+        assert!(resolved.deadline_ms <= DEFAULT_REMOTE_MAX_DEADLINE_MS);
+    }
+
+    #[test]
+    fn a_backoff_above_its_ceiling_is_a_configuration_error() {
+        let cfg = EggworkConfig {
+            remote_retry: Some(EggworkRemoteRetryPolicy {
+                initial_backoff_ms: Some(5_000),
+                max_backoff_ms: Some(1_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let errors = cfg
+            .validate()
+            .expect_err("inverted backoff must be refused");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("initial_backoff_ms") && e.contains("max_backoff_ms")));
     }
 }

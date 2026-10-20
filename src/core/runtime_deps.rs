@@ -128,10 +128,32 @@ pub struct CoreRuntimeDeps {
     /// Even when `scheduler` is `None`, the resolved config is held
     /// here so it can be queried for snapshots and settings pages.
     pub scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig,
+    /// M001: daemon-owned admission policy for explicit remote job
+    /// targets.
+    ///
+    /// `None` means "derive the policy from the daemon configuration at
+    /// construction time". `Some` is an explicit policy the caller owns:
+    /// the daemon never overrides it. Either way the resolved policy
+    /// approves no node until an administrator names one, so a daemon
+    /// that never opted in refuses every remote target at the host
+    /// boundary while local execution keeps working unchanged.
+    pub remote_target_policy: Option<Arc<crate::core::remote_targets::RemoteTargetPolicy>>,
     /// Daemon-owned lazy provider-connection runtime manager. `None` keeps
     /// legacy/test constructors source-compatible; production wiring can
     /// install it with [`Self::with_connection_manager`].
     pub connection_manager: Option<Arc<crate::core::provider_connections::ConnectionManager>>,
+    /// Eggwork M002: daemon-owned coordinator for remote node host
+    /// telemetry.
+    ///
+    /// One service per daemon, holding one cache and one probe lock per
+    /// named node, so concurrent readers of the same node coalesce onto a
+    /// single upstream read. `None` means no `[eggwork.nodes]` table was
+    /// configured, which the request surfaces as an explicit status rather
+    /// than an empty list.
+    ///
+    /// The service is independent of job dispatch: it exists whether or not
+    /// the scheduler is enabled, and reading it never touches the queue.
+    pub node_telemetry: Option<Arc<crate::scheduler::eggwork_telemetry::NodeTelemetryService>>,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -161,11 +183,39 @@ impl Clone for CoreRuntimeDeps {
             ci_watch_driver: self.ci_watch_driver.clone(),
             scheduler_config: self.scheduler_config.clone(),
             connection_manager: self.connection_manager.clone(),
+            remote_target_policy: self.remote_target_policy.clone(),
+            node_telemetry: self.node_telemetry.clone(),
         }
     }
 }
 
 impl CoreRuntimeDeps {
+    /// M001: install the daemon-owned remote-target admission policy.
+    ///
+    /// The policy is built from the daemon configuration at construction
+    /// time so the host boundary answers "may this client name that
+    /// node?" without re-reading configuration on every request.
+    pub fn with_remote_target_policy(
+        mut self,
+        policy: crate::core::remote_targets::RemoteTargetPolicy,
+    ) -> Self {
+        self.remote_target_policy = Some(Arc::new(policy));
+        self
+    }
+
+    /// Eggwork M002: install the daemon-owned node telemetry coordinator.
+    ///
+    /// Production wiring builds this from the daemon configuration; the
+    /// builder exists so a test can install a coordinator over a scripted
+    /// node without a TLS fixture.
+    pub fn with_node_telemetry(
+        mut self,
+        service: Arc<crate::scheduler::eggwork_telemetry::NodeTelemetryService>,
+    ) -> Self {
+        self.node_telemetry = Some(service);
+        self
+    }
+
     /// C001 shared daemon-scoped notifier, creating it once on first use.
     /// The same `Arc` is returned on every call (pointer identity is the
     /// singleton proof); per-turn construction must not replace it.
@@ -273,6 +323,8 @@ impl CoreRuntimeDeps {
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
+            remote_target_policy: None,
+            node_telemetry: None,
         }
     }
 
@@ -322,6 +374,8 @@ impl CoreRuntimeDeps {
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
+            remote_target_policy: None,
+            node_telemetry: None,
         }
     }
 
@@ -390,6 +444,8 @@ impl CoreRuntimeDeps {
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager,
+            remote_target_policy: None,
+            node_telemetry: None,
         }
     }
 

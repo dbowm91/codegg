@@ -919,6 +919,8 @@ async fn persist_to_run_store(
                 // Workstream A: actual backend is TestRunner (canonical).
                 actual_backend: Some(codegg_core::run_store::ActualBackend::TestRunner),
                 fallback: None,
+
+                remote_resources: None,
             },
         )
         .await

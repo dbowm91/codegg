@@ -164,6 +164,9 @@ run_quick() {
     echo "==> python3 scripts/check_eggwork_target_routing.py"
     (cd "$REPO_ROOT" && python3 scripts/check_eggwork_target_routing.py)
 
+    echo "==> python3 scripts/check_eggwork_target_routing.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_eggwork_target_routing.py --self-test)
+
     echo "==> python3 scripts/check_first_party_skills.py"
     (cd "$REPO_ROOT" && python3 scripts/check_first_party_skills.py)
 

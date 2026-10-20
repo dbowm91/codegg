@@ -7372,6 +7372,13 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
+            B::Nodes => {
+                // Eggwork M002: a read-only operator read of the remote
+                // nodes' host telemetry. It never touches the queue and
+                // never creates a job.
+                self.ui_state.command_mode = false;
+                self.enqueue_tui_command(TuiCommand::NodeTelemetryRequested);
+            }
             B::LspPreviews => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {

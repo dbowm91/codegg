@@ -509,6 +509,7 @@ pub fn permit_dimensions_for_interactive() -> PermitDimensions {
         io_weight: request.io_weight,
         network_slots: request.network_slots,
         exclusivity_keys: Vec::new(),
+        remote_node: None,
     }
 }
 

@@ -442,6 +442,66 @@ guidance.
   Eggwork currently has no qualified network-isolation backend, so unrestricted
   networking must be assumed for the supported mode.
 
+  Two more keys govern whether a *client* may name a node at all
+  (M001, "Explicit target boundary" in `architecture/jobs.md`):
+
+  - `allowed_target_nodes: [ "name", ... ]` — the approved-node allowlist.
+    Each entry is a key of the `nodes` table above, which is the identifier an
+    `ExecutionTarget::EggworkNode { node_id }` carries. An absent list approves
+    nothing, so a daemon that never opts in refuses every remote target at the
+    host boundary while local execution keeps working. An entry that names no
+    configured node is a configuration error, not a silently ignored line.
+  - `required_isolation_policy` / `required_network_policy` — the daemon-wide
+    posture ceiling a targetable node must declare in its own profile. Absent
+    means the node's own declaration governs and the executor re-verifies the
+    advertised posture at execution time.
+
+  Both keys merge by whole-value replacement, like the other `Option` fields
+  in the section.
+
+  Two more keys govern how much remote work the controller and the node may
+  carry (M003, "Remote resource limits" in `architecture/jobs.md`):
+
+  - `nodes: { name: { resource_limits?, max_concurrent_executions? } }` —
+    `resource_limits` is the operator's *ceiling* on the physical limits a
+    job may ask the node to enforce, and `max_concurrent_executions` bounds
+    how many remote executions the controller admits against that node at
+    once. Both are absent by default, which preserves the pre-M003
+    behavior exactly: remote work runs unconstrained, and its concurrency
+    is bounded by the controller's local process-slot budget.
+
+    `resource_limits` carries up to three dimensions, each with a `value`
+    and an `enforcement` kind:
+
+    ```jsonc
+    "resource_limits": {
+      "memory_bytes":            { "value": 1073741824, "enforcement": "required" },
+      "cpu_quota_milli_percent": { "value": 1000,         "enforcement": "required" },
+      "pids":                    { "value": 64,            "enforcement": "required" }
+    }
+    ```
+
+    The units are the node's own: bytes, milli-percent of one CPU's quota
+    (`1000` is one full CPU — this is **not** a CPU-time budget), and task
+    count. `enforcement` is `required` (the daemon refuses to submit when
+    the node cannot enforce it) or `best_effort` (the node may decline, and
+    the outcome is reported truthfully as *not applied*). A value of zero is
+    a configuration error, not "unlimited"; a value beyond the node's own
+    bound is a configuration error, not a clamp.
+
+    A job may narrow a limit but never widen one, never introduce a
+    dimension the operator did not configure, and never weaken a `required`
+    limit. Those attempts are refused at the host boundary before the job
+    becomes durable.
+
+  - `remote_retry: { max_waits?, initial_backoff_ms?, max_backoff_ms?,
+    deadline_ms? }` — the bounded wait budget for a remote attempt that
+    hits node contention (the node is busy) or a transient node outage.
+    Defaults are 2 waits, 250 ms growing to 5 s, and 30 s total. The wait
+    always stays on the same node; a draining node or a missing capability
+    is a policy outcome and is never waited on. Every bound is clamped, so
+    a misconfigured budget cannot become an unbounded retry loop.
+
 `orchestration.auto_convergence` defaults to `false`. The host clamps
 `default_max_cycles` to 1–4, `max_producers_per_cycle` to 1–3, and
 `max_wall_clock_ms` to at most 24 hours. Explicit convergence calls remain

@@ -181,6 +181,8 @@ fn test_job_spec(workspace_id: &str) -> codegg::protocol::dto::JobSubmitDto {
         schedule_id: None,
         depends_on: Vec::new(),
         labels: std::collections::HashMap::new(),
+        target: None,
+        remote_resources: None,
     }
 }
 

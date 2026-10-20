@@ -293,12 +293,15 @@ eggplan-codegg-compat = { git = "https://github.com/eggstack/eggplan.git", rev =
 eggplan-core = { git = "https://github.com/eggstack/eggplan.git", rev = "0dd33b761e85f1364320a9208aaebd5be281c6a5", default-features = false }
 eggplan-repo = { git = "https://github.com/eggstack/eggplan.git", rev = "0dd33b761e85f1364320a9208aaebd5be281c6a5", default-features = false }
 
-# Eggwork fixed-target remote execution substrate (M001/M002a/M003).
+# Eggwork fixed-target remote execution substrate (M001/M002a/M003) and
+# optional Gregg host telemetry (M002).
 # Pinned to the upstream immutable revision that carries Workspace M004
-# (`workspace.derive.v1`) plus the later Security M004 Landlock hardening.
+# (`workspace.derive.v1`), the later Security M004 Landlock hardening, the
+# M004b sandbox-helper staging correction, and the closed optional Gregg
+# host telemetry M001+M002 (`NodeTelemetry` schema version 1).
 # Default features only: no Eggress-routed dialer (per plan §3).
-eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
-eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
+eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "81f34e083bc6d44dbcc31ce2daae21b7dffda717", default-features = false }
+eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "81f34e083bc6d44dbcc31ce2daae21b7dffda717", default-features = false }
 
 # External local decision runtime, pinned to the M002-compatible revision.
 # Optional so default builds remain unchanged; no training dependency is imported.

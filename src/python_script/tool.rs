@@ -199,6 +199,8 @@ pub(crate) async fn complete_python_run(
                 rerun: None,
                 actual_backend: Some(ActualBackend::PythonScript),
                 fallback: None,
+
+                remote_resources: None,
             },
         )
         .await
