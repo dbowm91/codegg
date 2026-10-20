@@ -169,8 +169,8 @@ accurate at the merge-base, where the table listed **two** rows. This branch
 grew the table to **eight** (six editor guards: key authority, prefix state,
 leaf authority, the apply path, the completion triggers, and the doc-drift
 guard) and `main` grew it to **three** (adding the composer key-authority
-guard). The merged table lists **nine**, and the sentence undercounts all of
-them.
+guard). The merge resolution produced **nine**, and the sentence undercounts
+all of them.
 
 Two further guards were on disk and in `verify.sh quick` but in **no**
 version of the table: `check_tui_transport_authority.py` and
@@ -235,7 +235,6 @@ load-sensitive class, in isolation"), and `012-status.md` §6.5 ("The
 full-library sweep was **not green**, and why"). It is deliberately **not**
 in the registry's "Deferred unregistered product work" section: that section
 holds product work, and a timing-sensitive test is not a product.
-
 
 ## 5. Known limits and non-claims
 
