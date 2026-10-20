@@ -310,7 +310,7 @@ deletes to end of line in both capital encodings.
 - Unblock audit: M002 depends on M001 only. M001's own prerequisites were
   ADR-0011 and ADR-0021, both accepted and untouched, so the dependency edge is
   discharged with no residual condition. No other row changes status.
-- M009's ADR-0037 gate is unaffected and still open.
+- M009's ADR-0034 gate is unaffected and still open.
 
 ## 10. Residual findings not acted on
 

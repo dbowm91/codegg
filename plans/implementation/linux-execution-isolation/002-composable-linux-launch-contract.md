@@ -3,7 +3,7 @@
 Status: implemented (closure: `plans/closure/linux-execution-isolation/002-status.md`; macOS compile evidence pending)
 Primary class: infrastructure
 Interface dependency: M001/C001 trusted Git capability matrix; M001 strict closure is NOT a hard dependency.
-Repository baseline: `481d5077de516758795084a860a15c747a889170` (rebased Linux branch, 2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed Linux backend gate: ADR-0043; do not treat it as accepted. Accepted cross-tool security authority: ADR-0042. The infrastructure interface and legacy/fake adapter work may close without backend promotion. Target closure: `plans/closure/linux-execution-isolation/002-status.md`.
+Repository baseline: `481d5077de516758795084a860a15c747a889170` (rebased Linux branch, 2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed Linux backend gate: ADR-0043; do not treat it as accepted. Accepted cross-tool security authority: ADR-0045. The infrastructure interface and legacy/fake adapter work may close without backend promotion. Target closure: `plans/closure/linux-execution-isolation/002-status.md`.
 
 ## 1. Objective
 
@@ -77,4 +77,4 @@ Do not implement/publish this milestone before ADR-0043 is accepted. Stop for in
 
 ## 12. Independence from M001 Git compatibility corrective
 
-This milestone is **ready** under accepted ADR-0016, ADR-0042 and ADR-0043 because it defines internal typed requests, required/obtained outcomes, feature probes and test-only adapters while leaving existing Landlock unchanged. It **must not** register a real Bubblewrap/namespace backend or advertise new mount/network/process security until M003–M005 deliver real native proof. M001's 9/12 failing mutation suite is tracked by correctives C001–C003 and is not an input-hard dependency on defining the launch interface. Preserve failure evidence in every closure; do not flip M001 to closed to unblock this work.
+This milestone is **ready** under accepted ADR-0016, ADR-0045 and ADR-0043 because it defines internal typed requests, required/obtained outcomes, feature probes and test-only adapters while leaving existing Landlock unchanged. It **must not** register a real Bubblewrap/namespace backend or advertise new mount/network/process security until M003–M005 deliver real native proof. M001's 9/12 failing mutation suite is tracked by correctives C001–C003 and is not an input-hard dependency on defining the launch interface. Preserve failure evidence in every closure; do not flip M001 to closed to unblock this work.

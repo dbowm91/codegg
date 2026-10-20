@@ -259,6 +259,7 @@ async fn structured_python_route_runs_with_accepted_workspace_profile() {
                 Some("test-policy-r1".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     let result = tool
         .execute_structured(

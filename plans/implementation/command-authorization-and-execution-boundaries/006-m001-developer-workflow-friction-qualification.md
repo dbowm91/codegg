@@ -3,7 +3,7 @@
 Status: closed
 Class: capability / compatibility
 Closure: `plans/closure/command-authorization-and-execution-boundaries/006-status.md`.
-Authority: accepted `plans/adrs/ADR-0042-command-syntax-and-execution-authority.md` and `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Parent handoff: `plans/implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md`. Baseline inspected: `planning/linux-execution-isolation` @ `7b72582c4f01f8a53c7f20ed5dde1bc620f82965` (2026-10-13). No tests are represented as executed by this plan.
+Authority: accepted `plans/adrs/ADR-0045-command-syntax-and-execution-authority.md` and `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Parent handoff: `plans/implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md`. Baseline inspected: `planning/linux-execution-isolation` @ `7b72582c4f01f8a53c7f20ed5dde1bc620f82965` (2026-10-13). No tests are represented as executed by this plan.
 
 ## 1. Objective and peer-informed rationale
 

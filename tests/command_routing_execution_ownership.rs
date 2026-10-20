@@ -158,6 +158,7 @@ fn accepted_full_host_context() -> codegg::tool::backend::ToolExecutionContext {
                 Some("policy".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     context
 }

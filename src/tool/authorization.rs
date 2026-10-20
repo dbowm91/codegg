@@ -133,6 +133,7 @@ mod tests {
                 policy_revision: matching_revision.then_some(revision).flatten(),
             },
             command_preflight: None,
+            scratch_scope: None,
         }
     }
 

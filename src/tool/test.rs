@@ -796,6 +796,7 @@ mod tests {
                     policy_revision: Some("policy-r1".into()),
                 },
                 command_preflight: None,
+                scratch_scope: None,
             });
         context
     }

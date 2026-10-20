@@ -92,10 +92,10 @@ Native Linux real-child probes on supported kernels and at least one negative/no
 References: https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md ; https://github.com/containers/bubblewrap/blob/main/README.md ; https://docs.kernel.org/userspace-api/landlock.html ; https://git-scm.com/docs/git-config .
 
 
-## Command syntax / policy layering (ADR-0042)
+## Command syntax / policy layering (ADR-0045)
 
-ADR-0042 is accepted and defines the cross-platform authorization semantics above this Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. The Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under accepted ADR-0016/ADR-0042; production adoption of the concrete Linux backend still requires native qualification and the separate rollout gates in the roadmap. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
+ADR-0045 is accepted and defines the cross-platform authorization semantics above this Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. The Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under accepted ADR-0016/ADR-0045; production adoption of the concrete Linux backend still requires native qualification and the separate rollout gates in the roadmap. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
 
 ## Supersession
 
-None. ADR-0042 governs command authorization and representation-independent enforcement semantics; this ADR selects the Linux mechanisms implementing those semantics. Acceptance records the architecture decision; it does not register or enable a production backend, change defaults, or satisfy native qualification and rollout gates.
+None. ADR-0045 governs command authorization and representation-independent enforcement semantics; this ADR selects the Linux mechanisms implementing those semantics. Acceptance records the architecture decision; it does not register or enable a production backend, change defaults, or satisfy native qualification and rollout gates.

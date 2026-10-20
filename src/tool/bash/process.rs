@@ -1486,12 +1486,11 @@ impl BashTool {
                 .await
             }
             CommandDispatchTarget::RouteToShell { command, .. } => {
-                self.dispatch_to_shell(command, canonical_workdir, timeout, session_id)
-                    .await
                 self.dispatch_to_shell(
                     command,
                     canonical_workdir,
                     timeout,
+                    session_id,
                     network_intent,
                     sandbox_profile,
                 )

@@ -75,6 +75,7 @@ fn m004_authorization(
 ) -> codegg::tool::authorization::ExecutionAuthorizationContext {
     use codegg_core::approval::{ApprovalMode, ExecutionPolicySnapshot};
     codegg::tool::authorization::ExecutionAuthorizationContext {
+        scratch_scope: None,
         snapshot: ExecutionPolicySnapshot::capture(
             ApprovalMode::Interactive,
             profile,

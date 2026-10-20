@@ -891,9 +891,25 @@ fn trusted_object_directory(
     Ok(Some(object_dir))
 }
 
+/// Fingerprint of a Git object store.
+///
+/// It is injected rather than called directly so a test can reproduce the
+/// transient failure a concurrent object-store rewrite produces — a pack file
+/// removed between the directory read and the stat — without racing a real
+/// repository.
+type ObjectStoreFingerprint<'a> = &'a dyn Fn(&Path) -> std::io::Result<[u8; 32]>;
+
 fn prepare_private_object_view(
     argv: &[String],
     cwd: &Path,
+) -> Result<Option<PrivateObjectView>, GitExecutionPolicyOutcome> {
+    prepare_private_object_view_with(argv, cwd, &object_store_fingerprint)
+}
+
+fn prepare_private_object_view_with(
+    argv: &[String],
+    cwd: &Path,
+    fingerprint: ObjectStoreFingerprint<'_>,
 ) -> Result<Option<PrivateObjectView>, GitExecutionPolicyOutcome> {
     if !argv_reads_objects(argv) {
         return Ok(None);
@@ -941,13 +957,28 @@ fn prepare_private_object_view(
             continue;
         }
         let clean = if let Some(watcher) = &view.watcher {
-            watcher
-                .is_clean()
-                .map_err(|error| unavailable_with("cached view watcher", &error))?
+            match watcher.is_clean() {
+                Ok(clean) => clean,
+                Err(error) => {
+                    // A watcher that cannot answer has no verdict on the
+                    // store. It invalidates this generation; the view is
+                    // rebuilt below rather than refused.
+                    report_private_object_view_failure("cached view watcher", &error);
+                    false
+                }
+            }
         } else {
-            let current = object_store_fingerprint(&object_dir)
-                .map_err(|error| unavailable_with("cached view fingerprint", &error))?;
-            current == view.fingerprint
+            match fingerprint(&object_dir) {
+                Ok(current) => current == view.fingerprint,
+                Err(error) => {
+                    // The object store changed while it was being read — a
+                    // concurrent repack removes a pack between the directory
+                    // read and the stat. That is instability, not an
+                    // unavailable backend: rebuild instead of refusing.
+                    report_private_object_view_failure("cached view fingerprint", &error);
+                    false
+                }
+            }
         };
         if clean {
             view.last_used
@@ -972,34 +1003,70 @@ fn prepare_private_object_view(
     // Each attempt gets a fresh watcher and source fingerprint; no unstable
     // partial copy can reach a child or the cache.
     let mut stable_snapshot = None;
+    let mut last_instability: Option<std::io::Error> = None;
     for _ in 0..OBJECT_VIEW_SNAPSHOT_ATTEMPTS {
         let watcher = ObjectStoreWatcher::new(&object_dir).ok().flatten();
-        let fingerprint = object_store_fingerprint(&object_dir)
-            .map_err(|error| unavailable_with("source fingerprint", &error))?;
+        let source_fingerprint = match fingerprint(&object_dir) {
+            Ok(value) => value,
+            Err(error) => {
+                // The store moved under the read. The bounded retry exists for
+                // exactly this: Git's own background maintenance rewrites the
+                // pack directory while a read is walking it.
+                report_private_object_view_failure("source fingerprint", &error);
+                last_instability = Some(error);
+                continue;
+            }
+        };
 
         // Build inside the daemon-owned cache root. The resulting TempDir
         // remains private and immutable for every child holding a lease.
-        let view = tempfile::Builder::new()
+        let view = match tempfile::Builder::new()
             .prefix("view-")
             .tempdir_in(cache.root.path())
-            .map_err(|error| unavailable_with("snapshot directory", &error))?;
-        let bytes = copy_object_files(&object_dir, view.path())
-            .map_err(|error| unavailable_with("snapshot copy", &error))?;
+        {
+            Ok(view) => view,
+            Err(error) => {
+                report_private_object_view_failure("snapshot directory", &error);
+                last_instability = Some(error);
+                continue;
+            }
+        };
+        let bytes = match copy_object_files(&object_dir, view.path()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                report_private_object_view_failure("snapshot copy", &error);
+                last_instability = Some(error);
+                continue;
+            }
+        };
         let stable = if let Some(watcher) = &watcher {
-            watcher
-                .is_clean()
-                .map_err(|error| unavailable_with("snapshot watcher", &error))?
+            match watcher.is_clean() {
+                Ok(clean) => clean,
+                Err(error) => {
+                    report_private_object_view_failure("snapshot watcher", &error);
+                    last_instability = Some(error);
+                    false
+                }
+            }
         } else {
-            object_store_fingerprint(&object_dir)
-                .map_err(|error| unavailable_with("post-copy fingerprint", &error))?
-                == fingerprint
+            match fingerprint(&object_dir) {
+                Ok(current) => current == source_fingerprint,
+                Err(error) => {
+                    report_private_object_view_failure("post-copy fingerprint", &error);
+                    last_instability = Some(error);
+                    false
+                }
+            }
         };
         if stable {
-            stable_snapshot = Some((view, bytes, fingerprint, watcher));
+            stable_snapshot = Some((view, bytes, source_fingerprint, watcher));
             break;
         }
     }
-    let Some((view, bytes, fingerprint, watcher)) = stable_snapshot else {
+    let Some((view, bytes, source_fingerprint, watcher)) = stable_snapshot else {
+        if let Some(error) = &last_instability {
+            report_private_object_view_failure("source instability", error);
+        }
         report_private_object_view_failure("source stability", &"source changed during snapshot");
         return Err(unavailable());
     };
@@ -1046,7 +1113,7 @@ fn prepare_private_object_view(
 
     let cached = Arc::new(CachedObjectView {
         source: object_dir,
-        fingerprint,
+        fingerprint: source_fingerprint,
         directory: view,
         _cache_root: Arc::clone(&cache.root),
         bytes,
@@ -1761,6 +1828,87 @@ mod tests {
     use super::*;
 
     use std::path::PathBuf;
+
+    /// A minimal repository whose object store passes `trusted_object_directory`:
+    /// a `.git` directory with `objects/pack` and `objects/info`, and no
+    /// alternates file.
+    fn object_store_repository() -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("repository root");
+        let objects = root.path().join(".git/objects");
+        std::fs::create_dir_all(objects.join("pack")).expect("pack directory");
+        std::fs::create_dir_all(objects.join("info")).expect("info directory");
+        root
+    }
+
+    #[test]
+    fn a_transient_object_store_read_failure_is_retried_and_not_refused() {
+        // A concurrent `git gc`/repack removes a pack file between the object
+        // store's directory read and the stat of that file. The read then
+        // fails. That is object-store instability, not an unavailable backend:
+        // the read must be retried inside the existing bound, and the command
+        // must still run.
+        let root = object_store_repository();
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let fingerprint = |path: &Path| -> std::io::Result<[u8; 32]> {
+            if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "pack file vanished during the object store walk",
+                ));
+            }
+            object_store_fingerprint(path)
+        };
+
+        let result = prepare_private_object_view_with(
+            &["git".to_owned(), "status".to_owned()],
+            root.path(),
+            &fingerprint,
+        );
+
+        assert!(
+            result.is_ok(),
+            "a transient object store read failure must be retried, not refused: {result:?}"
+        );
+        assert!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst) >= 3,
+            "the failing read must have been retried inside the bounded attempts"
+        );
+    }
+
+    #[test]
+    fn a_persistent_object_store_read_failure_still_fails_closed() {
+        // The retry must not turn a genuinely unreadable object store into a
+        // success: after the bounded attempts the read is still refused, and
+        // it is refused with the typed outcome, never with a fabricated path.
+        let root = object_store_repository();
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let fingerprint = |_path: &Path| -> std::io::Result<[u8; 32]> {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "object store unreadable",
+            ))
+        };
+
+        let result = prepare_private_object_view_with(
+            &["git".to_owned(), "status".to_owned()],
+            root.path(),
+            &fingerprint,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(GitExecutionPolicyOutcome::BackendUnavailable { .. })
+            ),
+            "a persistent object store failure must stay a typed refusal: {result:?}"
+        );
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            OBJECT_VIEW_SNAPSHOT_ATTEMPTS as usize,
+            "the refusal must come after the bounded attempts, not before the first one"
+        );
+    }
 
     #[test]
     fn private_object_view_omits_temporary_entries() {

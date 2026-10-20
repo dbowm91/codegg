@@ -287,7 +287,7 @@ test-only defect that changes three tests in another milestone is worth being fi
 - `plans/registry.md` — the C004 row is now **closed** with the closure link and the four
   deliverables recorded; the roadmap row's status is `C004 closed`; the execution-order
   paragraphs name C004's closure. The C004 row's dependency cell previously carried a *blocked*
-  paragraph about M008 and proposed ADR-0037 (syntax-node text objects) belonging to the
+  paragraph about M008 and proposed ADR-0034 (syntax-node text objects) belonging to the
   selection-advisor workstream; it contradicted the row's own `ready` status, was a copy error,
   and is corrected here with that correction stated rather than silently dropped.
 - `plans/subsystems/interactive-terminal-liveness-post-closure-corrective-addendum.md` — status is

@@ -22,7 +22,7 @@ The post-merge candidate passed exact-head native Linux qualification and cross-
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
 | Reconcile feature branch against current main | Merge commit `611f6bee`; quick verification on merge and final source | pass | Resolved conflicts using current-main Git behavior and test contracts; preserved Linux isolation implementation and accepted ADR. |
-| Accepted ADR and unique canonical identities | `python3 scripts/check_adr_integrity.py` | pass | ADR-0043 remains accepted; ADR-0042 remains accepted; active IDs unique and local paths resolve. |
+| Accepted ADR and unique canonical identities | `python3 scripts/check_adr_integrity.py` | pass | ADR-0043 remains accepted; ADR-0045 remains accepted; active IDs unique and local paths resolve. |
 | Exact-head Linux protected-mount native behavior | Hosted run [`38749191367`](https://github.com/dbowm91/codegg/actions/runs/38749191367), exact SHA `f6befe51` | pass | 11/11 protected-mount tests and 18/18 trusted-Git tests. Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, Bubblewrap 0.9.0, UID/GID 1001, AppArmor `unconfined`. The ephemeral runner changed `kernel.apparmor_restrict_unprivileged_userns` 1→0. |
 | Native behavior on an AppArmor-restricted-userns local host | Local exact merge-source native test | pass | Ubuntu x86_64, kernel `6.8.0-147-generic`, ext4, Bubblewrap 0.9.0, UID/GID 1000, AppArmor active, userns restriction sysctl remained 1; 11/11 tests passed. |
 | Packed and mixed/fragmented object-store preparation | Temporary test called the exact `GitEnvPolicy::apply_sync` private-view path | partial | Cache-warm single samples: mixed 105 MiB store 325 ms; single-pack 29.07 MiB store 47 ms. C009 cold fragmented measurement was 2.95 seconds. No cold/p95 distribution or stable acceptable budget. |
@@ -61,7 +61,7 @@ No production code, persisted policy, protocol, backend registration or default 
 
 ## 5. Invariant review
 
-- ADR-0043 remains accepted and unmodified; ADR-0042 remains accepted and unmodified.
+- ADR-0043 remains accepted and unmodified; ADR-0045 remains accepted and unmodified.
 - Canonical ADR identifiers remain unique.
 - Landlock remains the default; the candidate remains explicit and unregistered for production.
 - No test or feature result is used to imply process, IPC, seccomp, network or resource containment beyond the achieved filesystem view.
@@ -110,7 +110,7 @@ including `origin/main` at `de49884f3fdc6d528620f2a2645694b9b19fc087`.
 
 The later current-main merge revealed that ADR-0031 is already accepted for
 authenticated idle continuation. The unchanged accepted Linux decision now has
-canonical identity ADR-0043; ADR-0042 remains the accepted command-authority
+canonical identity ADR-0043; ADR-0045 remains the accepted command-authority
 decision. The Linux ADR integrity self-test now represents all three active
 identities. This renumbering does not alter C010's no-admission result.
 

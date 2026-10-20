@@ -4,7 +4,7 @@ Status: **implemented** — identity-only migration complete; closure evidence i
 Class: invariant / cleanup
 Owner: planning integrity / security architecture
 Closure target: `plans/closure/linux-execution-isolation/012-status.md`.
-Baseline: implementation branch @ `eb2ca664d8e8aebe51fddeed8ac06d63f15f555b` (2026-10-14 UTC). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0042-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
+Baseline: implementation branch @ `eb2ca664d8e8aebe51fddeed8ac06d63f15f555b` (2026-10-14 UTC). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0045-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
 
 ## 1. Defect confirmed
 
@@ -14,7 +14,7 @@ The pre-migration checked-out tree had two active decisions named ADR-0027:
 
 It also had two active ADR-0028 decisions:
 - `plans/adrs/ADR-0030-windows-broad-read-compatibility-profile.md` (**proposed**; not approved);
-- `plans/adrs/ADR-0042-command-syntax-and-execution-authority.md` (**accepted**; existing low-friction command-policy authority).
+- `plans/adrs/ADR-0045-command-syntax-and-execution-authority.md` (**accepted**; existing low-friction command-policy authority).
 
 The existing `scripts/check_adr_integrity.py` checks unique active IDs and local ADR links; therefore the exact current tree is statically inconsistent with its own required guard, irrespective of otherwise passing historical CI. Cross-branch authorship: Windows decisions were committed at `2fe3cab5` (2026-10-13 18:56 UTC), Linux/command ADR path allocations at `f7ac5228` (2026-10-14 02:00 UTC). The open Windows identity migration branch reserves IDs 0029/0030, so this branch assigns the Linux mechanism ADR to 0031 and accepted command ADR to 0032. This is a path/identity reconciliation only; it does not change either decision or disposition.
 
@@ -65,7 +65,7 @@ behavior or production-admission status.
 The 2026-10-16 merge of current main exposed a further collision: accepted
 agent-workstream coordination now owns ADR-0042. The unchanged accepted
 command-syntax decision is therefore canonical ADR-0042 at
-`plans/adrs/ADR-0042-command-syntax-and-execution-authority.md`; the Linux
+`plans/adrs/ADR-0045-command-syntax-and-execution-authority.md`; the Linux
 decision remains ADR-0043 and idle continuation remains ADR-0031. The
 agent-workstream decision keeps ADR-0042. No decision status, content or
 authority changed; the identity guard now checks all four active decisions.

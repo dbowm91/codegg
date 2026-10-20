@@ -2832,6 +2832,7 @@ mod tests {
                 Some("policy".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         }
     }
 

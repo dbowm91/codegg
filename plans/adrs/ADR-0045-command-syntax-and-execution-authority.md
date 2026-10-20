@@ -1,4 +1,4 @@
-# ADR-0042: Command Syntax Is Advisory; Execution Authority Is Enforced
+# ADR-0045: Command Syntax Is Advisory; Execution Authority Is Enforced
 
 Status: accepted
 

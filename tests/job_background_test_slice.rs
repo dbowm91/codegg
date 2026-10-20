@@ -117,6 +117,7 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
                 Some(policy_revision.into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         }),
     }
 }
@@ -207,6 +208,7 @@ async fn background_test_without_session_fails_without_spawning() {
                 Some("test-policy-r1".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     let err = tool
         .execute_structured(

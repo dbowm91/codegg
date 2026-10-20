@@ -362,7 +362,7 @@ and M006 will widen it. That is the expected composition, not a defect.
 
 Nothing else was newly unblocked. M007 remains independently available in
 parallel; M008 stays blocked on M007; M009 stays blocked on M008 plus
-ADR-0037 acceptance.
+ADR-0034 acceptance.
 
 The plan's §15 unblock expectation is **not** met in full. It predicted M004,
 M005 and M010 would all become ready; only M004 and M005 are actually

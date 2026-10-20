@@ -184,6 +184,7 @@ async fn managed_process_owner_applies_authenticated_offline_network_intent() {
                 Some("m005-policy-r1".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     request.sandbox = SandboxRequest::Required(spec);
 

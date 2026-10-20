@@ -108,6 +108,7 @@ fn authorize_full_host(ctx: &mut ToolExecutionContext) {
                 Some("policy-m002".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
 }
 
@@ -457,7 +458,9 @@ async fn bash_failure_timeout_and_denial_matrix() {
     // command syntax alone is advisory in the current policy.
     let ctx = tool_ctx(&pool, "corr-bash-denied", "inv-bash-denied");
     let err = codegg::tool::bash::BashTool::new()
-        .with_workspace_root(root.path().to_path_buf())
+        .with_workspace_root(
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+        )
         .with_deny_all()
         .execute_structured(serde_json::json!({"command": "echo denied"}), Some(ctx))
         .await
@@ -666,6 +669,7 @@ async fn scheduler_test_dispatch_emits_test_family_event() {
                 Some("test-policy-r1".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     let out = tool
         .execute_structured(

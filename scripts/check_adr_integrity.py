@@ -82,7 +82,7 @@ def self_test() -> list[str]:
             "ADR-0039-queue-advancement-wakeup-authority.md",
             "ADR-0040-evidence-based-agent-recovery-termination.md",
             "ADR-0041-subagent-run-addressing-and-human-interaction-authority.md",
-            "ADR-0042-command-syntax-and-execution-authority.md",
+            "ADR-0045-command-syntax-and-execution-authority.md",
             "ADR-0043-composable-linux-execution-isolation.md",
             "ADR-0044-contained-git-live-objects-and-metadata-authority.md",
         ]
@@ -108,17 +108,17 @@ def self_test() -> list[str]:
         if check(root):
             failures.append("valid active ADR plus archived alias should pass")
         active, active_errors = active_adrs(root)
-        expected = {"0027", "0028", "0029", "0030", "0031", "0032", "0042", "0043", "0044"}
+        expected = {"0027", "0028", "0029", "0030", "0031", "0032", "0043", "0044", "0045"}
         if active_errors or not expected.issubset(active):
             failures.append("merged Windows/Linux/command ADR fixture should have unique identities")
         (adrs / "ADR-0023-second.md").write_text("# duplicate\n", encoding="utf-8")
         if not any("duplicate active ADR-0023" in error for error in check(root)):
             failures.append("duplicate active ADR number should fail")
         (adrs / "ADR-0023-second.md").unlink()
-        (adrs / "ADR-0042-second.md").write_text("# duplicate command ID\n", encoding="utf-8")
-        if not any("duplicate active ADR-0042" in error for error in check(root)):
+        (adrs / "ADR-0045-second.md").write_text("# duplicate command ID\n", encoding="utf-8")
+        if not any("duplicate active ADR-0045" in error for error in check(root)):
             failures.append("duplicate command ADR identity should fail")
-        (adrs / "ADR-0042-second.md").unlink()
+        (adrs / "ADR-0045-second.md").unlink()
         (root / "plans/active.md").write_text(
             "See `plans/adrs/ADR-0027-missing.md`.\n", encoding="utf-8"
         )
