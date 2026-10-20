@@ -109,6 +109,7 @@ contract** rather than an accident of the host.
 | The forty-four tests that failed in the authoritative sweep pass | the sweep's result is recorded in §4.1; the previously-failing families (`scratch`, `core::daemon`, `core::daemon_sessions`, `tool_program_m015/016/017`, `session_family control_m004`, `async_background_c006`, `agent_loop_harness`, `identity_live_execution_audit`, `identity_m002_live_audit_hooks`, `workspace_root_execution_authority`, `linux_native_scratch_containment`, `python_script::executor`, `managed_process`, `tool::bash`) pass | pass |
 | The sweep's result does not depend on the operator's home directory | `scripts/verify.sh full` and `.github/workflows/ci.yml` both give the sweep a private cache root; the authoritative sweep in §4.1 was run with the host's own `~/.cache` still world-writable (0777) and still passed | pass |
 | The branch passes the CI clippy step | `cargo clippy --workspace --all-targets --locked -- -D warnings` → **clean**; four lints in branch-owned code would have failed it (§3.8) | pass |
+| The feature-enabled tier passes | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci` → 11803 run, **5 failed** — all five are the live Eggwork qualification, whose cause is not established here (§4.2). Recorded as a failure, not as a pass. | **fail** |
 | No work is lost by the force push | the remote branch's two commits past the rebase base (`32611c8d`, `5019fb26`) are replayed onto the rebased branch; their files are **byte-identical** to the remote's originals (§3.10) | pass |
 | Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20; six rows corrected | pass |
 | The canonical gate after the sweep | `scripts/verify.sh quick` → "Quick verification passed." (§4) | pass |
@@ -384,6 +385,8 @@ Local, on the final tree, in this order.
 | `cargo nextest run -p codegg --locked --profile ci -E '<the 14 recorded failures>'` | **18 passed, 0 failed** |
 | `cargo test -p codegg --locked --lib -- --list` | the three live-language-server tests are **absent**; the four rejection tests remain |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(scratch_cache_root_contract) or binary(linux_native_scratch_containment) or test(/scratch::tests::/)'` | **28 passed, 0 failed** (the scratch allocator's own qualifications, its resolution contract, and the native containment fixture) |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | **clean** (0 errors) — after the four lints in §3.8 and the two in `crates/egggit` were fixed |
+| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | 11803 tests run: **11798 passed, 5 failed, 7 skipped** — all five failures are the live Eggwork qualification (§4.2) |
 
 The two `crates/egggit` regression tests were proved **non-vacuous**: with the
 pre-fix behaviour restored temporarily, both fail — the transient test with
@@ -403,11 +406,11 @@ The authoritative workspace sweep is recorded in §4.1.
 ### 4.1 The authoritative sweep
 
 `XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast`,
-run on the committed tree (`58a26531`) with no concurrent edits and no Git
+run on the committed tree (`9b346776`) with no concurrent edits and no Git
 commands in the worktree:
 
 - **15003 tests run: 15003 passed, 8 skipped, 0 failed, 0 timed out**
-  (`Summary [ 481.534s]`, exit 0).
+  (`Summary [ 490.406s]`, exit 0).
 - The eight skipped tests are the repository's own `#[ignore]` declarations:
   four tool-advisor qualifications, the manual object-view performance
   qualification, and three opt-in real-process runs (a local Eggsearch
@@ -415,10 +418,13 @@ commands in the worktree:
   in every earlier sweep as well. Nothing was disabled, filtered, or excluded
   to reach this result — the sweep ran the whole workspace under the `ci`
   profile with `--no-fail-fast`.
-- The sweep ran with **this workstation's `~/.cache` still at mode 0777** —
-  world-writable, and correctly refused by the product — and with the sweep's
-  own private cache root. The green result is therefore a property of the
-  product and of the sweep's own environment, not of a repaired host.
+- An earlier run of the same command on this tree ran with **this
+  workstation's `~/.cache` still at mode 0777** — world-writable, and correctly
+  refused by the product — and with the sweep's own private cache root, and
+  was green: 15003 passed, 0 failed. The green result is therefore a property
+  of the product and of the sweep's own environment, not of a repaired host.
+  The host's cache root was repaired to 0755 *after* that run; the final run
+  above was made with the repaired host and the private cache root.
 - The earlier sweep of this tree recorded **44 failures across 15 binaries**,
   every one of them the typed refusal `WrongOwner`. The families that failed
   then — `scratch`, `core::daemon`, `core::daemon_sessions`,
@@ -430,6 +436,35 @@ commands in the worktree:
 - The three live-language-server tests are **absent** from this sweep (they
   sit behind `lsp-real-server-tests`), and the four sibling rejection tests
   that use the same tool are present and pass.
+
+### 4.2 The feature-enabled tier, and the live Eggwork qualification
+
+`cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast`
+— the third tier of `scripts/verify.sh full` — was also run on the final tree:
+
+- **11803 tests run: 11798 passed, 5 failed, 7 skipped** (`Summary [ 491.023s]`).
+- **All five failures are in one binary, `eggwork_remote_execution_live`**, and
+  all five have the same cause: the live node does not advertise the isolation
+  capability the daemon requires, so the run is refused before the workspace is
+  uploaded —
+  `eggwork: node 'live-node-1' does not satisfy required isolation capability 'isolation.landlock.workspace-rw.v1'; refusing before workspace upload`
+  (`src/scheduler/eggwork.rs:1512`).
+- This is the **live** qualification, not a unit test. `ci.yml` excludes it
+  from an unrelated-PR run — `cargo nextest run --workspace --locked --profile ci -E 'not binary(eggwork_remote_execution_live)'`
+  — and provisions it separately (`scripts/prebuild-eggwork-fixtures.sh`,
+  `CODEGG_EGGWORK_TEST_NODE`, `CODEGG_EGGWORK_FIXTURES_PREBUILT=1`), because it
+  needs a provisioned node rather than a mocked one.
+- The **same five tests passed** in the authoritative workspace sweep of §4.1
+  on the same tree, in the same session, and they **fail in isolation** under
+  the feature-enabled build. Their outcome therefore follows the build and
+  provisioning environment, not the tree. This host's Landlock is already
+  recorded as insufficient for the native M004/M005 tier (§13).
+- They are recorded as **failures**, not as an explanation: this milestone does
+  not claim the feature-enabled tier is green, and does not claim the cause is
+  settled. What is settled is that the refusal is the product's own
+  fail-closed behaviour — the daemon refuses to upload a workspace to a node
+  that cannot isolate it — and that the qualification is a live one whose
+  provisioning this workstation does not reproduce.
 
 ## 5. Invariant review
 
@@ -565,6 +600,15 @@ repair. The repair is a host action; nothing in the repository depends on it.
   The three live-language-server timeouts that were observed are closed. The
   remaining exposure is a property of the profile, recorded in
   `.config/nextest.toml`, and is not introduced by this milestone.
+- **medium — the feature-enabled tier is not green on this host.** The five
+  failures are the live Eggwork qualification refusing a workspace upload to a
+  node that does not advertise `isolation.landlock.workspace-rw.v1` (§4.2).
+  The same five tests passed in the authoritative workspace sweep on the same
+  tree and fail in isolation under the feature-enabled build, so their outcome
+  follows the build and the node's provisioning rather than the tree. The
+  qualification is a live one that `ci.yml` excludes from unrelated-PR runs
+  and provisions separately. The cause is **not** established here, and this
+  record does not claim the tier is green.
 - **medium — the hosted CI runs recorded in the C007 and C023 closures qualify
   the *code* those closures describe, not the rebased head.** The rebase
   rewrote every SHA, and the recorded runs predate it. The rebased head has
@@ -616,7 +660,12 @@ names them:
 - **The rebased head has not been observed in a hosted CI run.** The recorded
   runs (`39356728579` and its predecessors) qualify the pre-rebase source.
   The rebased tree is verified locally, and the hosted workflow is expected to
-  exercise it, but that is an expectation and not evidence.
+  exercise it, but that is an expectation and not evidence. Pushing the branch
+  does not start it either: `ci.yml` runs on pull requests and on pushes to
+  `main`.
+- **The feature-enabled tier is not green on this host** (§4.2): five live
+  Eggwork qualification tests fail there and their cause is not established.
+  The canonical gate and the authoritative workspace sweep are green.
 - **No native Windows or macOS run.** The rebased tree was verified on Linux
   only.
 - **The M004/M005 tier was not re-qualified on the rebased head.** This
@@ -625,3 +674,5 @@ names them:
 - **Three published rows were carried forward rather than re-derived** (§3.6).
 - **The two historical commits with the invalid guard script were recorded,
   not rewritten** (§10).
+- **The parallel planning packet's C001 is not merged into this one** (§3.10);
+  its two records now describe the same evidence under two names.
