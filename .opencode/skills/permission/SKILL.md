@@ -73,6 +73,15 @@ skill covers the ordering and isolation invariants that are easy to break.
   rejects it. Never rewrite the request, expose an ungranted shared path, or
   let a suggestion override explicit Ask/Deny. Structured reads and shell
   commands keep their normal semantics.
+- **The model is answered before the human for a temp-root write.** When the
+  pending decision is the *implicit default* `Ask` and the target is a
+  structured `write` of a known host temp root outside every authorized root,
+  the agent loop refuses the call with that same actionable message and lets
+  the model continue. A model that repeats the same path is not offered again
+  and reaches the human. The offer replaces only the implicit default: an
+  operator tool rule, path rule, stored decision, or hard deny still asks the
+  human directly. It is scoped to `write`, because the edit family cannot
+  write into a scratch root. See `architecture/permission.md`.
 
 ## The Automatic Reviewer
 
