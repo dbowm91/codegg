@@ -696,7 +696,7 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
         )
         .await,
     );
-    let daemon = Arc::new(CoreDaemon::new(Some(pool), Some(worker_pool), None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), Some(worker_pool), None));
     daemon.start_event_bridge();
 
     let root = tempfile::tempdir().expect("workspace root");
@@ -945,6 +945,33 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
     })
     .await
     .expect("real child lifecycle reaches a projected terminal state");
+    let restarted = Arc::new(CoreDaemon::new(Some(pool), None, None));
+    restarted
+        .initialize_recovery_sequence()
+        .await
+        .expect("restart recovery reconciles the completed worker job");
+    let restart_snapshot = restarted
+        .projection_snapshot_for_session(
+            &session.id,
+            project.project_id.as_str(),
+            workspace.id.as_str(),
+        )
+        .await;
+    assert!(
+        restart_snapshot.subagents.is_empty(),
+        "a fresh daemon does not resurrect the old in-memory child as Running"
+    );
+    let recovered_job = restarted
+        .deps
+        .job_store
+        .get_job(&job.job_id)
+        .await
+        .expect("read recovered durable job")
+        .expect("job remains durable after restart");
+    assert!(
+        recovered_job.state.is_terminal(),
+        "terminal cancellation remains terminal after restart"
+    );
     drop(app);
     drop(client);
     shutdown.cancel();
