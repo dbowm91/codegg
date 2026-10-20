@@ -90,9 +90,9 @@ negotiates a boundary.
 
 `main` added `plans/adrs/ADR-0042-composer-normal-mode-key-ownership.md`
 (the TUI composer's normal-mode key ownership). This branch had independently
-filed `plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md`
-(the restricted shared-checkout writer contract) while its number was still
-free on the branch's fork point.
+filed a writer-contract ADR under the number `ADR-0042` (the restricted
+shared-checkout writer contract) while that number was still free on the
+branch's fork point.
 
 `scripts/check_adr_integrity.py` enforces that an active ADR number resolves
 to exactly one path, and that every `plans/adrs/…` reference in the tree
@@ -322,8 +322,10 @@ This record adds to, and does not rewrite, the evidence history:
 - `001-status.md` (C001) is unchanged apart from the ADR renumbering.
 - `002-status.md` (C002) is unchanged apart from the ADR renumbering.
 - `003-status.md` (C003) is unchanged apart from the ADR renumbering.
-- `plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md`
-  is preserved as `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md`,
-  with its content, its decision and its acceptance record unchanged.
+- The branch's writer-contract ADR is preserved under its new number, as
+  `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md`.
+  Its previous filename carried the number `ADR-0042`, which `main` had
+  already taken; its content, its decision and its acceptance record are
+  unchanged.
 - `main`'s `ADR-0042-composer-normal-mode-key-ownership.md` and `ADR-0043`
   are untouched.
