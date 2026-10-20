@@ -45,9 +45,9 @@ use eggwork_core::{
     ArtifactRecord, BlobDigest, CommandSpec, ExecutionEvent, ExecutionEventKind,
     ExecutionGeneration, ExecutionHandle, ExecutionId, ExecutionResult, ExecutionSnapshot,
     ExecutionSpec, ExecutionState, IsolationRequirement, LeaseId, NetworkRequirement,
-    NodeCapabilities, NodeStatus, OutputPolicy, RelativePath, Requirement, ResourceRequirements,
-    StdinPolicy, WorkspaceEntry, WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
-    WorkspaceManifestPatch, WorkspacePatchEntry,
+    NodeCapabilities, NodeId, NodeStatus, NodeTelemetry, OutputPolicy, RelativePath, Requirement,
+    ResourceRequirements, StdinPolicy, WorkspaceEntry, WorkspaceId as EggworkWorkspaceId,
+    WorkspaceManifest, WorkspaceManifestPatch, WorkspacePatchEntry,
 };
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
@@ -471,6 +471,17 @@ pub fn validate_remote_job(
 pub trait EggworkNodeClient: Send + Sync {
     async fn capabilities(&self) -> Result<NodeCapabilities, EggworkClientError>;
     async fn status(&self) -> Result<NodeStatus, EggworkClientError>;
+    /// Read the node's authenticated host telemetry (Eggwork M002).
+    ///
+    /// `expected` is the node identity the caller asked for. An
+    /// implementation MUST refuse a document addressed to a different node
+    /// rather than return it, so the observation is joined to the requested
+    /// node only after an authenticated identity check.
+    ///
+    /// A node that does not implement the telemetry contract answers with
+    /// [`EggworkClientError::TelemetryUnsupported`]; that is distinct from
+    /// an authorized node whose provider is merely absent or unavailable.
+    async fn telemetry(&self, expected: &NodeId) -> Result<NodeTelemetry, EggworkClientError>;
     async fn find_missing_blobs(
         &self,
         digests: &[BlobDigest],
@@ -570,6 +581,10 @@ impl EggworkNodeClient for NodeClientAdapter {
 
     async fn status(&self) -> Result<NodeStatus, EggworkClientError> {
         self.client.status().await
+    }
+
+    async fn telemetry(&self, expected: &NodeId) -> Result<NodeTelemetry, EggworkClientError> {
+        self.client.telemetry_for(expected).await
     }
 
     async fn find_missing_blobs(
@@ -2815,6 +2830,7 @@ fn describe_client_error(e: &EggworkClientError) -> String {
         EggworkClientError::InvalidResponse => "invalid response".to_string(),
         EggworkClientError::ProtocolIncompatible => "protocol incompatible".to_string(),
         EggworkClientError::UnsupportedCapability => "unsupported capability".to_string(),
+        EggworkClientError::TelemetryUnsupported => "telemetry unsupported".to_string(),
     }
 }
 
@@ -2941,6 +2957,13 @@ mod tests {
 
         async fn status(&self) -> Result<NodeStatus, EggworkClientError> {
             Ok(self.status.lock().unwrap().clone())
+        }
+
+        async fn telemetry(&self, _expected: &NodeId) -> Result<NodeTelemetry, EggworkClientError> {
+            // The fake node does not implement the telemetry contract; the
+            // distinction matters, because "no route" must stay distinct
+            // from "authorized but no provider".
+            Err(EggworkClientError::TelemetryUnsupported)
         }
 
         async fn find_missing_blobs(

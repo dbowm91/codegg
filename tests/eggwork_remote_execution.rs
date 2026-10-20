@@ -36,7 +36,7 @@ use eggwork_core::{
     EventSequence, ExecutionEvent, ExecutionEventKind, ExecutionGeneration, ExecutionHandle,
     ExecutionId, ExecutionResult, ExecutionSnapshot, ExecutionSpec, ExecutionState,
     IsolationRequirement, LeaseId, NetworkRequirement, NodeCapabilities, NodeId, NodeStatus,
-    OutputPolicy, ProtocolVersion, ProtocolVersionRange, RelativePath, Requirement,
+    NodeTelemetry, OutputPolicy, ProtocolVersion, ProtocolVersionRange, RelativePath, Requirement,
     ResourceRequirements, StdinPolicy, WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
     WorkspaceManifestPatch,
 };
@@ -78,6 +78,13 @@ struct ScriptedClient {
     /// How many more `capabilities()` probes fail as if the node were
     /// unreachable.
     unreachable_probes: Mutex<u32>,
+    /// The scripted host telemetry document. `None` means the node does not
+    /// implement the telemetry contract at all, which the fake reports as
+    /// the typed "unsupported" answer rather than as an empty observation.
+    telemetry: Mutex<Option<NodeTelemetry>>,
+    /// How many telemetry reads the fake has served. A coalescing test
+    /// asserts this does not grow with the number of concurrent readers.
+    telemetry_probes: AtomicUsize,
 }
 
 fn test_capabilities(features: Vec<String>) -> NodeCapabilities {
@@ -150,6 +157,8 @@ impl ScriptedClient {
             submitted_specs: Mutex::new(Vec::new()),
             busy_probes: Mutex::new(0),
             unreachable_probes: Mutex::new(0),
+            telemetry: Mutex::new(None),
+            telemetry_probes: AtomicUsize::new(0),
         }
     }
 
@@ -203,6 +212,22 @@ impl EggworkNodeClient for ScriptedClient {
             return Ok(status);
         }
         Ok(self.status.lock().unwrap().clone())
+    }
+
+    async fn telemetry(&self, expected: &NodeId) -> Result<NodeTelemetry, EggworkClientError> {
+        self.telemetry_probes.fetch_add(1, Ordering::SeqCst);
+        match self.telemetry.lock().unwrap().clone() {
+            None => Err(EggworkClientError::TelemetryUnsupported),
+            Some(document) => {
+                // The identity check is part of the upstream contract: a
+                // document addressed to another node is refused, never
+                // returned and never joined to the requested node.
+                if document.node_id != *expected {
+                    return Err(EggworkClientError::InvalidResponse);
+                }
+                Ok(document)
+            }
+        }
     }
 
     async fn find_missing_blobs(

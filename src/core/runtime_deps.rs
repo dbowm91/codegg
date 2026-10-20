@@ -142,6 +142,18 @@ pub struct CoreRuntimeDeps {
     /// legacy/test constructors source-compatible; production wiring can
     /// install it with [`Self::with_connection_manager`].
     pub connection_manager: Option<Arc<crate::core::provider_connections::ConnectionManager>>,
+    /// Eggwork M002: daemon-owned coordinator for remote node host
+    /// telemetry.
+    ///
+    /// One service per daemon, holding one cache and one probe lock per
+    /// named node, so concurrent readers of the same node coalesce onto a
+    /// single upstream read. `None` means no `[eggwork.nodes]` table was
+    /// configured, which the request surfaces as an explicit status rather
+    /// than an empty list.
+    ///
+    /// The service is independent of job dispatch: it exists whether or not
+    /// the scheduler is enabled, and reading it never touches the queue.
+    pub node_telemetry: Option<Arc<crate::scheduler::eggwork_telemetry::NodeTelemetryService>>,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -172,6 +184,7 @@ impl Clone for CoreRuntimeDeps {
             scheduler_config: self.scheduler_config.clone(),
             connection_manager: self.connection_manager.clone(),
             remote_target_policy: self.remote_target_policy.clone(),
+            node_telemetry: self.node_telemetry.clone(),
         }
     }
 }
@@ -187,6 +200,19 @@ impl CoreRuntimeDeps {
         policy: crate::core::remote_targets::RemoteTargetPolicy,
     ) -> Self {
         self.remote_target_policy = Some(Arc::new(policy));
+        self
+    }
+
+    /// Eggwork M002: install the daemon-owned node telemetry coordinator.
+    ///
+    /// Production wiring builds this from the daemon configuration; the
+    /// builder exists so a test can install a coordinator over a scripted
+    /// node without a TLS fixture.
+    pub fn with_node_telemetry(
+        mut self,
+        service: Arc<crate::scheduler::eggwork_telemetry::NodeTelemetryService>,
+    ) -> Self {
+        self.node_telemetry = Some(service);
         self
     }
 
@@ -298,6 +324,7 @@ impl CoreRuntimeDeps {
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
             remote_target_policy: None,
+            node_telemetry: None,
         }
     }
 
@@ -348,6 +375,7 @@ impl CoreRuntimeDeps {
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
             remote_target_policy: None,
+            node_telemetry: None,
         }
     }
 
@@ -417,6 +445,7 @@ impl CoreRuntimeDeps {
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager,
             remote_target_policy: None,
+            node_telemetry: None,
         }
     }
 

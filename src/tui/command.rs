@@ -216,6 +216,9 @@ pub enum BuiltinSlashAction {
     Logs,
     ToolContracts,
     LspStatus,
+    /// Eggwork M002: read-only view of the configured remote nodes' host
+    /// telemetry.
+    Nodes,
     LspPreviews,
     LspPreview,
     LspPreviewClear,
@@ -726,6 +729,8 @@ impl CommandRegistry {
                 .with_description("Show recent daemon log lines and past notifications"),
             Command::new("/lsp-status", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspStatus))
                 .with_description("Show LSP server status and diagnostics"),
+            Command::new("/nodes", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Nodes))
+                .with_description("Show remote Eggwork node host telemetry"),
             Command::new("/lsp-previews", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviews))
                 .with_aliases(&["/preview-list"])
                 .with_description("List LSP preview artifacts"),
@@ -1220,12 +1225,15 @@ mod tests {
         // registered without updating this pin or `architecture/command.md`.
         // Both are now in step; the tripwire itself is unchanged.
         //
+        // 166 -> 167 for **Eggwork M002's `/nodes`** (the read-only view of
+        // the configured remote nodes' host telemetry).
+        //
         // 165 -> 166 for **C007's `/subagent-send`**. Two pins guard this
         // number and they live in different files — this one and
         // `architecture/command.md` via `command_docs_count_matches_registry`.
         // Updating only the doc, as the M004 note's wording invites, leaves the
         // build red here with no indication which of the two drifted.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 166);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 167);
     }
 
     #[test]

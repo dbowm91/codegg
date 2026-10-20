@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
-    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDeleteRequestDto,
-    ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto,
-    ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto, RunQueryDto,
-    RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
-    SessionBindingDto, WorkspaceServiceHealthDto,
+    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, NodeTelemetryDto,
+    ProjectDeleteRequestDto, ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto,
+    ProjectSummaryDto, ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto,
+    RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto,
+    ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -1378,6 +1378,14 @@ pub enum CoreResponse {
     /// Bounded scheduler state for operator-facing clients.
     SchedulerSnapshot {
         snapshot: serde_json::Value,
+    },
+    /// Sanitized host telemetry for the requested Eggwork nodes
+    /// (Eggwork M002).
+    ///
+    /// One snapshot per requested node, in the daemon's node order. A node
+    /// that could not be read still appears, with a bounded diagnostic.
+    NodeTelemetry {
+        nodes: Vec<NodeTelemetryDto>,
     },
     ModelsSnapshot {
         current_model: Option<String>,
@@ -2786,6 +2794,20 @@ pub enum CoreRequest {
     },
     /// Request the current bounded scheduler snapshot.
     SchedulerSnapshot,
+    /// Read the host telemetry of the named Eggwork nodes (Eggwork M002).
+    ///
+    /// A read-only operator request: it observes a remote node's host and
+    /// never creates, mutates or releases a job. `node_id` selects one
+    /// `[eggwork.nodes]` table key; `None` asks for every configured node.
+    ///
+    /// The answer carries one snapshot per node, including the nodes that
+    /// could not be read — a node without a usable observation reports a
+    /// bounded diagnostic rather than being omitted or zero-filled.
+    NodeTelemetry {
+        /// The `[eggwork.nodes]` table key to read, or every node.
+        #[serde(default)]
+        node_id: Option<String>,
+    },
     /// Wait for one durable job completion without giving the client direct
     /// access to scheduler internals.
     JobWait {

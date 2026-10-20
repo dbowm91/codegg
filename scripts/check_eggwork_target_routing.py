@@ -285,6 +285,12 @@ def main() -> int:
         # The limit-resolution module owns the one conversion from the
         # operator's ceiling to the node's physical requirements.
         "src/scheduler/eggwork_limits.rs",
+        # The node-telemetry module owns the one projection from the node's
+        # authenticated telemetry document into CodeGG's sanitized operator
+        # view. It reads through the `EggworkNodeClient` seam and never
+        # constructs a job, a selection, or an execution, so it cannot
+        # bypass target selection either.
+        "src/scheduler/eggwork_telemetry.rs",
         "tests/",
         "src/scheduler/mod.rs",
         "crates/eggwork-test-node/",

@@ -593,7 +593,9 @@ probed/uploaded, uploaded bytes — no paths or contents) are emitted on
 the progress sink. Blob bytes were already content-deduplicated by
 Eggwork before M003; this milestone adds manifest-level reuse.
 The Eggwork pin carries Workspace M004 plus the later Security M004
-Landlock hardening.
+Landlock hardening, the M004b sandbox-helper staging correction, and the
+closed optional Gregg host telemetry M001+M002 that M002 consumes
+(`81f34e08`, upstream `main` head).
 
 ### Ephemeral interactive admission (M001)
 
@@ -724,6 +726,31 @@ ID.
 `WokeReason` variants (`src/scheduler/events.rs:68`): `JobEnqueued`,
 `ExecutorCompleted`, `CancellationRequested`, `ScheduleTick`,
 `ScheduleClaimed`, `Manual`, `RetryRequested`, `Reconciled`.
+
+### Remote node host telemetry (M002)
+
+`NodeTelemetry` is a read-only operator request over the core protocol
+(`CoreRequest::NodeTelemetry { node_id }` → `CoreResponse::NodeTelemetry
+{ nodes }`). It answers with one sanitized snapshot per configured
+`[eggwork.nodes]` entry — including the nodes that could not be read, which
+carry a bounded diagnostic instead of being dropped.
+
+The coordinator is daemon-owned (`src/scheduler/eggwork_telemetry.rs`),
+independent of the scheduler: it exists whether or not job dispatch is
+enabled, and reading it never touches the queue. The node's own contract
+and the projection rules are documented in
+`architecture/jobs.md` → "Remote node host telemetry (M002)".
+
+The read is scoped to no project, so it reuses the existing remote-node
+grant: only the local owner's broad policy authorizes it, and a team
+principal fails closed on the missing scope **before** any network call.
+The operation is classified as an uninstrumented read in
+`crates/codegg-core/src/audit_instrumentation.rs` — it discloses inert host
+metadata and mutates nothing — while the refusal itself is audited by
+`authorize_request`.
+
+The TUI surfaces it as `/nodes`; the native client exposes it as
+`SessionProjectionDriver::node_telemetry`.
 
 ## Static guards
 

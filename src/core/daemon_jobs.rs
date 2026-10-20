@@ -619,6 +619,13 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::NodeTelemetry { node_id } => {
+                Ok(crate::core::node_telemetry::handle_node_telemetry(
+                    self.deps.node_telemetry.as_deref(),
+                    node_id,
+                )
+                .await)
+            }
             CoreRequest::RunList {
                 workspace_id,
                 query,

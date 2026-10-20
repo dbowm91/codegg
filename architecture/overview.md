@@ -266,7 +266,12 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 Every count below was re-measured against the current tree on
 **2026-10-13**, each against its own listed `Source`. The tool-source,
 integration-test, and guard-script counts were remeasured on **2026-10-15**
-after reconciling the search-backend retirement with current `main`.
+after reconciling the search-backend retirement with current `main`. The
+protocol-variant, authorized-operation, slash-command, and
+integration-test-file rows were remeasured on **2026-10-20** after Eggwork
+M002 added the node-telemetry request, its response, its operation, the
+`/nodes` command, and its integration test file; the remaining rows are
+unchanged from the earlier snapshots.
 
 | Item | Count | Source |
 |------|-------|--------|
@@ -277,13 +282,13 @@ after reconciling the search-backend retirement with current `main`.
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 243 (219 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 158 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 259 (235 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 169 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 88 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 237 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 253 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 18 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 164 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 167 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 31 (32 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
@@ -292,7 +297,7 @@ after reconciling the search-backend retirement with current `main`.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 244 | `tests/*.rs` |
+| Integration test files | 267 | `tests/*.rs` |
 | CI guard scripts | 53 | `scripts/check_*` |
 
 ## Feature gates

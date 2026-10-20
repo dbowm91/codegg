@@ -187,6 +187,7 @@ impl DaemonRequestFamily {
             CoreRequest::SchedulePause { .. } => Self::Jobs,
             CoreRequest::ScheduleResume { .. } => Self::Jobs,
             CoreRequest::SchedulerSnapshot => Self::Jobs,
+            CoreRequest::NodeTelemetry { .. } => Self::Jobs,
             CoreRequest::TaskDelete { .. } => Self::Jobs,
             CoreRequest::TaskList => Self::Jobs,
             CoreRequest::TaskSchedule { .. } => Self::Jobs,

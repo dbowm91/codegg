@@ -18,8 +18,11 @@ use std::time::Duration;
 
 use eggwork_runner::{LocalProcessRunner, TrustedLandlockSetup};
 use eggwork_server::{
-    FingerprintPrincipalResolver, NodeConfig, NodePrincipal, NodeServer, Operation,
+    telemetry::HostTelemetryConfig, FingerprintPrincipalResolver, NodeConfig, NodePrincipal,
+    NodeServer, Operation,
 };
+
+mod synthetic_provider;
 
 fn usage() -> String {
     r#"codegg-eggwork-test-node: bounded Eggwork fixture node
@@ -42,6 +45,8 @@ Optional:
   --max-active <n>          max active executions (default 4)
   --blob-quota-bytes <n>    (default 268435456)
   --workspace-quota-bytes <n> (default 268435456)
+  --telemetry-provider      run a synthetic loopback Gregg provider and
+                            configure the node's host telemetry against it
 "#
     .to_string()
 }
@@ -186,9 +191,24 @@ async fn run() -> Result<NodeServer, String> {
     let runner = Arc::new(LocalProcessRunner::new(
         TrustedLandlockSetup::discover_sibling(),
     ));
+    // Eggwork M002: the node's host telemetry is opt-in and default-off.
+    // With `--telemetry-provider` the fixture stands up a synthetic loopback
+    // Gregg provider and points the node at it; without the flag the node
+    // has no provider at all, which is the honest "no telemetry" shape.
+    let host_telemetry = if args.values.contains_key("telemetry-provider") {
+        let provider = synthetic_provider::start().await?;
+        let endpoint = format!("http://127.0.0.1:{}/v2/status", provider.port);
+        Some(
+            HostTelemetryConfig::new(&endpoint, 1, 5)
+                .map_err(|e| format!("configure host telemetry: {e:?}"))?,
+        )
+    } else {
+        None
+    };
     phase("server-starting");
     let server = NodeServer::start(
         NodeConfig {
+            host_telemetry,
             node_id,
             bind,
             execution_root: PathBuf::from(args.required("exec-root")?),

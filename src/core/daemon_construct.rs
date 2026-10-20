@@ -397,6 +397,46 @@ impl CoreDaemon {
             };
             deps.remote_target_policy = Some(Arc::new(policy));
         }
+        // Eggwork M002: resolve the daemon's node table exactly once.
+        //
+        // The same resolution feeds the read-only host-telemetry
+        // coordinator and the fixed-target executor, so both agree on
+        // which nodes exist and on their trust material. A resolution
+        // failure leaves both surfaces empty rather than half-configured,
+        // and it is logged once here instead of once per consumer.
+        let mut eggwork_nodes = match config.eggwork.as_ref() {
+            Some(eggwork) => {
+                match crate::scheduler::eggwork::EggworkExecutorConfig::from_daemon_config(eggwork)
+                {
+                    Ok(exec_config) => Some(exec_config),
+                    Err(error) => {
+                        tracing::error!(
+                            error = %error,
+                            "USER ACTION REQUIRED: eggwork nodes not resolved - fix [eggwork.nodes] key material paths"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        // The telemetry coordinator is daemon-owned and independent of job
+        // dispatch, so it is installed whether or not the scheduler is
+        // enabled.
+        if let Some(exec_config) = eggwork_nodes.as_ref() {
+            if !exec_config.nodes.is_empty() {
+                deps.node_telemetry = Some(Arc::new(
+                    crate::scheduler::eggwork_telemetry::NodeTelemetryService::new(
+                        exec_config.nodes.clone(),
+                        Arc::new(crate::scheduler::eggwork::NodeClientFactory),
+                    ),
+                ));
+                tracing::info!(
+                    node_count = exec_config.nodes.len(),
+                    "eggwork node telemetry coordinator installed"
+                );
+            }
+        }
         if let Err(error) = scheduler.configure_agent_run_store_sync(deps.agent_run_store.clone()) {
             tracing::error!(
                 ?error,
@@ -515,30 +555,21 @@ impl CoreDaemon {
             // Fixed-target Eggwork remote execution (M001). The executor is
             // registered only when named nodes are configured; Eggwork jobs
             // without a matching profile fail closed at execution time.
-            if let Some(ref eggwork) = config.eggwork {
-                match crate::scheduler::eggwork::EggworkExecutorConfig::from_daemon_config(eggwork)
-                {
-                    Ok(exec_config) => {
-                        if exec_config.nodes.is_empty() {
-                            tracing::info!("eggwork executor not registered: no nodes configured");
-                        } else {
-                            let count = exec_config.nodes.len();
-                            let executor = crate::scheduler::eggwork::EggworkExecutor::new(
-                                exec_config.with_store(deps.job_store.clone()),
-                            );
-                            if let Err(error) = scheduler.register_executor_sync(Arc::new(executor))
-                            {
-                                tracing::warn!(?error, "eggwork executor registration failed");
-                            } else {
-                                tracing::info!(node_count = count, "eggwork executor registered");
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        tracing::error!(
-                            error = %error,
-                            "USER ACTION REQUIRED: eggwork executor not registered - fix [eggwork.nodes] key material paths"
-                        );
+            //
+            // The node table was resolved once above, where the telemetry
+            // coordinator took its share of the same resolution.
+            if let Some(exec_config) = eggwork_nodes.take() {
+                if exec_config.nodes.is_empty() {
+                    tracing::info!("eggwork executor not registered: no nodes configured");
+                } else {
+                    let count = exec_config.nodes.len();
+                    let executor = crate::scheduler::eggwork::EggworkExecutor::new(
+                        exec_config.with_store(deps.job_store.clone()),
+                    );
+                    if let Err(error) = scheduler.register_executor_sync(Arc::new(executor)) {
+                        tracing::warn!(?error, "eggwork executor registration failed");
+                    } else {
+                        tracing::info!(node_count = count, "eggwork executor registered");
                     }
                 }
             }

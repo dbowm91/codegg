@@ -47,7 +47,7 @@ use eggfetch_core::{BoxBytesStream, Error as EggfetchError};
 use eggwork_client::{ClientError as EggworkClientError, WorkspaceReady};
 use eggwork_core::{
     ArtifactRecord, BlobDigest, ExecutionHandle, ExecutionId, ExecutionSnapshot, ExecutionSpec,
-    ExecutionState, LeaseId, NodeCapabilities, NodeStatus, SandboxResult,
+    ExecutionState, LeaseId, NodeCapabilities, NodeId, NodeStatus, NodeTelemetry, SandboxResult,
     WorkspaceId as EggworkWorkspaceId, WorkspaceManifest, WorkspaceManifestPatch,
 };
 use futures_util::StreamExt;
@@ -262,7 +262,14 @@ struct LiveNode {
 }
 
 impl LiveNode {
+    /// Start the fixture node with no host-telemetry provider.
     async fn start() -> Self {
+        Self::start_with_options(false).await
+    }
+
+    /// Start the fixture node, optionally with the synthetic loopback Gregg
+    /// provider the node's telemetry owner polls.
+    async fn start_with_options(telemetry_provider: bool) -> Self {
         init_crypto();
         let temp = tempfile::TempDir::new().unwrap();
         let (root, ca, ca_key) = test_ca();
@@ -285,7 +292,8 @@ impl LiveNode {
 
         let helper = helper_binary();
         ensure_helper_built(&helper).await;
-        let mut child = tokio::process::Command::new(&helper)
+        let mut command = tokio::process::Command::new(&helper);
+        command
             .arg("--node-id")
             .arg("live-node-1")
             .arg("--bind")
@@ -309,7 +317,11 @@ impl LiveNode {
             .arg("--principal")
             .arg("live-test-controller")
             .arg("--lease-ttl-secs")
-            .arg("300")
+            .arg("300");
+        if telemetry_provider {
+            command.arg("--telemetry-provider");
+        }
+        let mut child = command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -408,6 +420,9 @@ impl LiveNode {
             required_capabilities: Vec::new(),
             isolation_policy: codegg_config::schema::EggworkIsolationPolicy::None,
             network_policy: codegg_config::schema::EggworkNetworkPolicy::Unrestricted,
+            // M003 added the per-node resource ceiling; the live fixture
+            // asserts on limits in its own tests and configures none here.
+            resource_limits: None,
         };
         Self {
             _temp: temp,
@@ -510,6 +525,10 @@ impl EggworkNodeClient for CountingClient {
 
     async fn status(&self) -> Result<NodeStatus, EggworkClientError> {
         self.inner.status().await
+    }
+
+    async fn telemetry(&self, expected: &NodeId) -> Result<NodeTelemetry, EggworkClientError> {
+        self.inner.telemetry(expected).await
     }
 
     async fn find_missing_blobs(
@@ -1321,5 +1340,107 @@ async fn live_blob_upload_and_workspace_materialization() {
         .await
         .expect("blob probe after upload");
     assert!(missing_after.is_empty());
+    live.shutdown().await;
+}
+
+/// Eggwork M002: the real node serves the host telemetry it polled from a
+/// provider, and CodeGG's projection reports exactly what the node said.
+///
+/// The node runs with the synthetic loopback provider, so the numbers below
+/// are the provider's own synthetic values, not a measurement of the build
+/// host. The identity is the node's: the read is joined to the node only
+/// after the authenticated node-id check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_node_serves_its_provider_host_telemetry() {
+    let live = LiveNode::start_with_options(true).await;
+    let mut nodes = HashMap::new();
+    nodes.insert("live-node-1".to_string(), live.node.clone());
+    let service = codegg::scheduler::eggwork_telemetry::NodeTelemetryService::new(
+        nodes,
+        Arc::new(NodeClientFactory),
+    );
+
+    // The node's telemetry owner polls the provider on its own schedule; the
+    // first read may race that first poll, so the read is retried briefly
+    // rather than asserted on a cold cache.
+    let mut snapshot = None;
+    for _ in 0..50 {
+        let snapshots = service.snapshots(None).await.expect("telemetry read");
+        let candidate = snapshots.into_iter().next().expect("one node");
+        if candidate.state == codegg::scheduler::eggwork_telemetry::NodeTelemetryState::Ready {
+            snapshot = Some(candidate);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let snapshot = snapshot.expect("the node must report a ready observation");
+
+    assert_eq!(snapshot.node_id, "live-node-1");
+    assert!(
+        snapshot.observed_at_unix_ms.is_some(),
+        "a ready observation carries its timestamp"
+    );
+    assert!(snapshot.age_ms.is_some());
+
+    // The provider's synthetic values, projected through the node.
+    let cpu = snapshot.cpu.expect("cpu");
+    assert_eq!(cpu.logical_cores, Some(8));
+    assert_eq!(cpu.usage_pct, Some(12.5));
+    assert_eq!(cpu.iowait_pct, Some(1.5));
+
+    let memory = snapshot.memory.expect("memory");
+    assert_eq!(memory.total_bytes, Some(8_000));
+    assert_eq!(memory.used_bytes, Some(4_000));
+    assert_eq!(memory.available_bytes, Some(4_000));
+
+    let load = snapshot.load.expect("load");
+    assert_eq!(load.one, Some(0.5));
+    assert_eq!(load.five, Some(0.25));
+    assert_eq!(load.fifteen, Some(0.125));
+
+    let swap = snapshot.swap.expect("swap");
+    assert_eq!(swap.total_bytes, Some(2_000));
+    assert_eq!(swap.used_bytes, Some(0));
+
+    let disk = snapshot.disk.expect("disk");
+    assert_eq!(disk.total_bytes, Some(4_000));
+    assert_eq!(disk.available_bytes, Some(3_000));
+    assert_eq!(disk.volume_count, Some(1));
+
+    let disk_io = snapshot.disk_io.expect("disk io");
+    assert_eq!(disk_io.read_bytes_per_sec, Some(3));
+    assert_eq!(disk_io.write_bytes_per_sec, Some(4));
+
+    let network = snapshot.network.expect("network");
+    assert_eq!(network.rx_bytes_per_sec, Some(5));
+    assert_eq!(network.tx_bytes_per_sec, Some(6));
+
+    live.shutdown().await;
+}
+
+/// Eggwork M002: a node with no provider is honest about it. The node
+/// answers the telemetry route with the provider state, and CodeGG reports
+/// the absence rather than a zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_node_without_a_provider_reports_no_observation() {
+    let live = LiveNode::start().await;
+    let mut nodes = HashMap::new();
+    nodes.insert("live-node-1".to_string(), live.node.clone());
+    let service = codegg::scheduler::eggwork_telemetry::NodeTelemetryService::new(
+        nodes,
+        Arc::new(NodeClientFactory),
+    );
+
+    let snapshots = service.snapshots(None).await.expect("telemetry read");
+    let snapshot = snapshots.into_iter().next().expect("one node");
+    assert_eq!(
+        snapshot.state,
+        codegg::scheduler::eggwork_telemetry::NodeTelemetryState::Disabled
+    );
+    assert!(snapshot.cpu.is_none());
+    assert!(snapshot.memory.is_none());
+    assert_eq!(snapshot.observed_at_unix_ms, None);
+    assert!(snapshot.diagnostic.is_some());
+
     live.shutdown().await;
 }

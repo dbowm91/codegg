@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 166 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 167 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,7 +20,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 166 hardcoded commands (highest priority)
+1. **Built-in commands**: 167 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -253,7 +253,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (166 total)
+### Built-in Commands (167 total)
 
 Representative built-ins:
 
@@ -323,6 +323,7 @@ Representative built-ins:
 | `/edit-checkpoints` | `/checkpoints`, `/history` | List durable edit checkpoints |
 | `/tool-contracts` | | Show tool contract diagnostics |
 | `/logs` | | Show recent daemon log lines and past toast notifications |
+| `/nodes` | | Eggwork M002: show the configured remote nodes' host telemetry |
 | `/worktree` | | List worktrees for the active workspace |
 | `/pr` | | GitHub pull requests |
 | `/issue` | `bugs`, `features` | GitHub issues |
@@ -391,7 +392,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 166**: Guarded by
+- **Built-in count is 167**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -412,7 +413,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-166 count stays in sync with this documentation.
+167 count stays in sync with this documentation.
 
 ## Related Docs
 
@@ -422,12 +423,13 @@ The `built_in_command_count_matches_release_docs` test ensures the
 ## Source verification
 
 Verified 2026-10-13 against `src/tui/command.rs` and `src/command/mod.rs`,
-and re-verified 2026-10-19 after C007 added `/subagent-send`:
+re-verified 2026-10-19 after C007 added `/subagent-send`, and re-verified
+2026-10-20 after Eggwork M002 added `/nodes`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1209`) asserts 166, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 166 (the three
+(`command.rs:1209`) asserts 167, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 167 (the three
 former's matches are on lines 15, 23, and 256; the latter's on line 394).
-Also verified the 166 built-in registry length, `BuiltinSlashAction`
+Also verified the 167 built-in registry length, `BuiltinSlashAction`
 (158 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction`

@@ -319,6 +319,56 @@ a host measurement, and `ExecutorMetrics.cpu_time_ms` /
 `peak_memory_mb` are **not** populated from remote numbers — those are
 Gregg host telemetry and belong to M002.
 
+### Remote node host telemetry (M002)
+
+`src/scheduler/eggwork_telemetry.rs` owns the read-only view of a remote
+node's **host**. The node polls its own Gregg provider and serves the
+resulting observation over its authenticated telemetry route; CodeGG reads
+that route and nothing else. There is no Gregg connection in CodeGG, no
+provider poll, and no daemon-managed provider process.
+
+**The upstream contract is frozen.** `eggwork_core::NodeTelemetry` at schema
+version 1 (`deny_unknown_fields`, with a `validate()` that enforces the
+documented `state`/`observation` pairing and the age invariant), served by
+`GET /v1/node/telemetry` behind the separate narrow `Operation::Telemetry`
+grant — not folded into `status` — and read through
+`NodeClient::telemetry()` / `telemetry_for(&NodeId)`.
+
+**Identity is checked before the join.** The read uses `telemetry_for`, so a
+document addressed to another node is refused rather than returned. The
+snapshot is only ever joined to the node that was asked for.
+
+**What CodeGG projects.** The snapshot carries the provider's state, the
+freshness of the observation, and the metric dimensions the node actually
+reported. Each dimension keeps the upstream tri-state: `Value` (the node
+reported it), `Unknown` (the node supports it but did not report it this
+time), and `Unsupported` (the host platform cannot produce it). The last
+two are never rendered as a zero. The provider's error *category* is
+carried; its message is not. No interface identity, hostname, mount path or
+process id is ever carried.
+
+**What the read is not.** It is not a measurement of a CodeGG execution:
+per-attempt CPU, RSS and elapsed time stay the executor's own numbers. It
+is not an admission input: a node's free memory never reserves capacity.
+It is not a second scheduler: a read never creates, mutates or releases a
+job, and it does not touch the queue.
+
+**One coordinator.** `NodeTelemetryService` is daemon-owned and holds one
+cache and one probe lock per named node. Concurrent readers of the same node
+coalesce onto a single upstream read, and a repeated read inside the
+30 s freshness window is served from the cache — a refresh loop cannot
+amplify the node's poll of its provider. A failed probe is remembered for
+3 s only, so a fixed node is visible again quickly. The read is bounded at
+10 s, well inside the upstream client's own 120 s unary deadline.
+
+**Refusals are typed and distinct.** A node that does not implement the
+contract (`TelemetryUnsupported`), a node whose schema this client does not
+understand (`ProtocolIncompatible`), a rejected response
+(`InvalidResponse`), a transport failure and a timeout each produce their
+own bounded diagnostic. A node that cannot be read still appears in the
+answer with a diagnostic — it is never dropped, and it never reports a
+measurement.
+
 ### Eggwork lease-fencing contract (corrective C001)
 
 The persisted tuple must be byte-exact with the live Eggwork

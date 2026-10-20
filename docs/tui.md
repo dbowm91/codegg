@@ -279,6 +279,7 @@ A few commonly used entries:
 | `/themes` | Theme picker (`/theme` is an alias) |
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
+| `/nodes` | Host telemetry of the configured remote Eggwork nodes — state, freshness, and the dimensions each node actually reported |
 | `/reload` | Refresh project runtime assets — `/reload skills`, `/reload agents` |
 | `/init` | Review a bounded root `AGENTS.md` proposal; press `a` in the preview to publish |
 | `/exit` | Quit (`quit` and `q` are aliases) |

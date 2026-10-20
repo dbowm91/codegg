@@ -534,6 +534,219 @@ pub struct Session {
     pub time_deleted: Option<i64>,
 }
 
+/// Where a node's host telemetry came from.
+///
+/// Only the node's locally installed Gregg provider exists today; the enum
+/// keeps the wire shape open without inventing a second source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeTelemetrySourceDto {
+    /// Readings come from the node's locally installed Gregg provider.
+    Gregg,
+}
+
+/// The provider's own view of whether its observation is usable.
+///
+/// This is the node's statement, not CodeGG's: `ready` means the node
+/// validated a sample inside its freshness bound, `stale` means it holds a
+/// sample that is now older than that bound, and the remaining variants
+/// mean no usable observation exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeTelemetryStateDto {
+    /// No provider is configured on the node.
+    Disabled,
+    /// A provider is configured but has not produced an observation yet.
+    Warming,
+    /// A validated observation is available and within its freshness bound.
+    Ready,
+    /// An observation exists but is older than the freshness bound.
+    Stale,
+    /// The provider could not be reached, or answered with something unusable.
+    Unavailable,
+    /// The provider answered with a payload that failed validation.
+    Invalid,
+}
+
+/// Whether one metric dimension carries a measurement.
+///
+/// `value` means the node reported the dimension, `unknown` means the node
+/// supports it but did not report it this time, and `unsupported` means the
+/// host platform cannot produce it at all. The last two are never rendered
+/// as a zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeMetricStateDto {
+    /// The node reported a measurement.
+    Value,
+    /// The dimension is supported but was not reported in this sample.
+    Unknown,
+    /// The host platform cannot produce this dimension.
+    Unsupported,
+}
+
+/// CPU utilization of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeCpuDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Logical CPU cores visible to the kernel.
+    #[serde(default)]
+    pub logical_cores: Option<u32>,
+    /// Aggregate CPU busy percentage.
+    #[serde(default)]
+    pub usage_pct: Option<f64>,
+    /// Aggregate CPU I/O-wait percentage, when the host reports it.
+    #[serde(default)]
+    pub iowait_pct: Option<f64>,
+}
+
+/// Physical memory of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeMemoryDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Bytes available without swapping.
+    #[serde(default)]
+    pub available_bytes: Option<u64>,
+    /// Total physical memory in bytes.
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    /// Bytes currently resident in physical memory.
+    #[serde(default)]
+    pub used_bytes: Option<u64>,
+}
+
+/// Load averages of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeLoadDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// One-minute load average.
+    #[serde(default)]
+    pub one: Option<f64>,
+    /// Five-minute load average.
+    #[serde(default)]
+    pub five: Option<f64>,
+    /// Fifteen-minute load average.
+    #[serde(default)]
+    pub fifteen: Option<f64>,
+}
+
+/// Swap utilization of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeSwapDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Bytes currently in swap.
+    #[serde(default)]
+    pub used_bytes: Option<u64>,
+    /// Total swap in bytes.
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+}
+
+/// Storage capacity of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeDiskDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Free bytes across the reported volumes.
+    #[serde(default)]
+    pub available_bytes: Option<u64>,
+    /// Total bytes across the reported volumes.
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    /// How many volumes contributed to the aggregate.
+    #[serde(default)]
+    pub volume_count: Option<u32>,
+}
+
+/// Aggregate disk throughput of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeDiskIoDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Aggregate read throughput in bytes per second.
+    #[serde(default)]
+    pub read_bytes_per_sec: Option<u64>,
+    /// Aggregate write throughput in bytes per second.
+    #[serde(default)]
+    pub write_bytes_per_sec: Option<u64>,
+}
+
+/// Aggregate network throughput of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeNetworkDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Aggregate receive throughput in bytes per second.
+    #[serde(default)]
+    pub rx_bytes_per_sec: Option<u64>,
+    /// Aggregate transmit throughput in bytes per second.
+    #[serde(default)]
+    pub tx_bytes_per_sec: Option<u64>,
+}
+
+/// One node's sanitized host telemetry (Eggwork M002).
+///
+/// The shape is CodeGG-owned. It projects the node's authenticated
+/// telemetry document into a bounded operator view and deliberately carries
+/// no interface identity, hostname, mount path, process id, or provider
+/// error text — only the provider state, the freshness of the observation,
+/// the dimensions the node actually reported, and a bounded diagnostic when
+/// no usable observation exists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeTelemetryDto {
+    /// The `[eggwork.nodes]` table key of the node this snapshot describes.
+    ///
+    /// This is the same identifier space as
+    /// [`ExecutionTargetDto::EggworkNode`], so an operator can copy it
+    /// straight into a job target.
+    pub node_id: String,
+    /// The provider that produced the observation.
+    pub source: NodeTelemetrySourceDto,
+    /// The provider's own view of the observation.
+    pub state: NodeTelemetryStateDto,
+    /// Age of the observation in milliseconds, as reported by the node.
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    /// The provider's bounded error *category*, when it reported one.
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// Wall-clock time of the observation, in unix milliseconds.
+    #[serde(default)]
+    pub observed_at_unix_ms: Option<u64>,
+    /// The interval the node sampled at, in milliseconds.
+    #[serde(default)]
+    pub sample_interval_ms: Option<u64>,
+    /// CPU utilization.
+    #[serde(default)]
+    pub cpu: Option<NodeCpuDto>,
+    /// Physical memory utilization.
+    #[serde(default)]
+    pub memory: Option<NodeMemoryDto>,
+    /// Load averages.
+    #[serde(default)]
+    pub load: Option<NodeLoadDto>,
+    /// Swap utilization.
+    #[serde(default)]
+    pub swap: Option<NodeSwapDto>,
+    /// Storage capacity.
+    #[serde(default)]
+    pub disk: Option<NodeDiskDto>,
+    /// Aggregate disk throughput.
+    #[serde(default)]
+    pub disk_io: Option<NodeDiskIoDto>,
+    /// Aggregate network throughput.
+    #[serde(default)]
+    pub network: Option<NodeNetworkDto>,
+    /// A bounded, endpoint-free explanation of why this snapshot carries no
+    /// usable observation.
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

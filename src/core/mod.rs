@@ -39,6 +39,7 @@ pub mod event_log;
 pub mod global_agent_authority;
 pub mod instance;
 pub mod lsp_diagnostics_store;
+pub mod node_telemetry;
 pub mod notification;
 pub mod project_activation;
 pub mod project_init;
