@@ -2,6 +2,8 @@
 
 Status: active planning — C001/C002/C003/C004 are bounded test-only handoffs; C007's production private-index publication vertical is closed (publisher, journal, reconciler, and the contained staging step under M004/M005 all proven, the last on the hosted Linux runner); C005 and production admission remain blocked; **no new production Git backend admitted**
 
+**Cross-roadmap corrective handoff (2026-10-20):** `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md` C003 owns the bounded typed consistency/hostile-metadata **pre-admission** review; C002 there owns remaining M005 Tool Program/host evidence and C001 owns branch/CI integrity. Existing **Git C005** continues to own parity/performance/admission; no substitute owner or acceptance of proposed ADR-0044 is created.
+
 Parent: `plans/subsystems/linux-execution-isolation-roadmap.md`. Corrects C010 no-admission (`plans/closure/linux-execution-isolation/018-status.md`) and C012's closed-negative no-writer/live-mount finding (`020-status.md`) **without rewriting them**. M004 closed only on its qualified host (`004-status.md`); M005 offline-network remains internal candidate. Linux C002 contained local Git and C003 mediated remote Git remain separate authoritative acceptance paths.
 
 Normative authority: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/002-long-term-roadmap.md`; `plans/003-planning-process.md`. Accepted ADR-0004, ADR-0016, ADR-0042, ADR-0043. Proposed **ADR-0044**, not accepted, gates any replacement of immutable trusted Git with live-object reads or production private promotion.
