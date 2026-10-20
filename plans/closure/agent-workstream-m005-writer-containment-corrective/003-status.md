@@ -228,7 +228,11 @@ See §4.4 for the environment note that applies to the workspace-wide sweep.
 and the sweep's `cargo check --workspace --all-targets --locked` finished
 clean.
 
-`cargo clippy --workspace --all-targets -- -D warnings` — see §4.4.
+`cargo clippy --workspace --all-targets -- -D warnings` — **pass**, 0 errors.
+Three `#[allow(clippy::double_must_use)]` attributes were added to the fence's
+three `#[async_trait]` traits, matching the codebase's established convention
+for the `#[must_use]` that the async-trait expansion injects under toolchain
+1.99 (`src/core/writer_permit.rs:104-107` is the sibling instance).
 
 The scoped suites that cover the changed surfaces:
 
