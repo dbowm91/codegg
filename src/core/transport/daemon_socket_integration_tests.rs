@@ -669,11 +669,13 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
         release: release.clone(),
         id: "held".into(),
     });
-    let mut config = Config::default();
-    config.subagent = Some(SubagentConfig {
-        enabled: Some(true),
+    let config = Config {
+        subagent: Some(SubagentConfig {
+            enabled: Some(true),
+            ..Default::default()
+        }),
         ..Default::default()
-    });
+    };
     let agent = Agent {
         name: "held-worker".into(),
         description: "M006 deterministic worker".into(),
