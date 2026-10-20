@@ -340,6 +340,7 @@ impl BashTool {
         outcome: &str,
         route: Option<&str>,
         filesystem_enforcement: Option<&str>,
+        network_enforcement: Option<&str>,
         risk_level: Option<&str>,
         result_metadata: Option<crate::live_execution_audit::CommandExecutionResultMetadata>,
     ) {
@@ -362,7 +363,11 @@ impl BashTool {
             ctx.execution_authorization.as_ref(),
             route,
             filesystem_enforcement,
-            ctx.execution_authorization.as_ref().map(|_| "unrestricted"),
+            // The network boundary is recorded only when it was observed. A
+            // record that asserted "unrestricted" for every authorized
+            // command would state a boundary nobody saw, and it would
+            // contradict the launch when the launch obtained one.
+            network_enforcement,
             risk_level,
             result_metadata,
         )
@@ -390,6 +395,32 @@ fn sandbox_outcome_label(
         #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
         crate::managed_process::SandboxExecutionOutcome::TestOnlyAppContainer { .. } => {
             "test_only_appcontainer_no_filesystem_claim".into()
+        }
+    }
+}
+
+/// The obtained network boundary, as the audit record states it.
+///
+/// The audit states the boundary the launch **obtained**, never the one it
+/// requested. A record that named the request would overstate what the
+/// system actually provided; a record that asserted a boundary nobody
+/// observed would understate it.
+fn network_outcome_label(outcome: &crate::managed_process::SandboxExecutionOutcome) -> String {
+    use codegg_core::approval::NetworkEnforcement;
+    match outcome {
+        crate::managed_process::SandboxExecutionOutcome::Enforced { network, .. } => {
+            match network {
+                NetworkEnforcement::Enforced { backend } => format!("enforced:{backend}"),
+                NetworkEnforcement::Unrestricted => "unrestricted".into(),
+                NetworkEnforcement::Unavailable { .. } => "unavailable".into(),
+            }
+        }
+        // A disabled sandbox means the child ran with the host's network, so
+        // "unrestricted" is the obtained fact rather than a request.
+        crate::managed_process::SandboxExecutionOutcome::Disabled => "unrestricted".into(),
+        #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+        crate::managed_process::SandboxExecutionOutcome::TestOnlyAppContainer { .. } => {
+            "unrestricted".into()
         }
     }
 }
@@ -751,6 +782,9 @@ impl BashTool {
                 "submitted",
                 Some("scheduler_background"),
                 None,
+                // The child has not run yet, so no network boundary was
+                // obtained. The field is omitted rather than asserted.
+                None,
                 intent_risk_label(intent.as_ref()),
                 None,
             )
@@ -833,6 +867,9 @@ impl BashTool {
                             audit_ctx
                                 .and_then(|ctx| ctx.execution_authorization.as_ref())
                                 .map(|_| "full_host"),
+                            // The executor does not carry the launch's
+                            // obtained boundary, so nothing is asserted.
+                            None,
                             intent_risk_label(intent.as_ref()),
                             None,
                         )
@@ -875,6 +912,7 @@ impl BashTool {
                                 crate::live_execution_audit::OUTCOME_TIMEOUT,
                                 Some("active_route"),
                                 Some("full_host"),
+                                None,
                                 intent_risk_label(intent.as_ref()),
                                 None,
                             )
@@ -908,6 +946,9 @@ impl BashTool {
                         crate::live_execution_audit::OUTCOME_TIMEOUT,
                         Some("raw_shell"),
                         Some("timeout_outcome_not_reported"),
+                        // The launch outcome was not reported, so no network
+                        // boundary was observed.
+                        None,
                         intent_risk_label(intent.as_ref()),
                         None,
                     )
@@ -933,6 +974,8 @@ impl BashTool {
                     &sandbox_outcome,
                     audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref()),
                 )),
+                // The launch's obtained boundary, stated as observed.
+                Some(&network_outcome_label(&sandbox_outcome)),
                 intent_risk_label(intent.as_ref()),
                 Some(
                     crate::live_execution_audit::CommandExecutionResultMetadata {
@@ -1011,6 +1054,60 @@ mod tests {
         // repository is what the process cwd used to supply implicitly.
         tool.workspace_root = Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         tool
+    }
+
+    /// The audit's network field states the boundary the launch **obtained**.
+    ///
+    /// The anti-overclaim case is the third one: a launch that could not
+    /// determine its network boundary is recorded as `unavailable`, never as
+    /// `unrestricted` — reporting "no isolation" for a boundary nobody
+    /// observed would be a claim, and a claim in an audit record is worse
+    /// than an absence.
+    #[test]
+    fn the_audit_network_label_states_the_obtained_boundary() {
+        use crate::managed_process::SandboxExecutionOutcome;
+        use codegg_core::approval::NetworkEnforcement;
+
+        let enforced = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Enforced {
+                backend: "bubblewrap-netns".into(),
+            },
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(
+            network_outcome_label(&enforced),
+            "enforced:bubblewrap-netns"
+        );
+
+        let unrestricted = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Unrestricted,
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(network_outcome_label(&unrestricted), "unrestricted");
+
+        let unavailable = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Unavailable {
+                reason: "not observed".into(),
+            },
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(network_outcome_label(&unavailable), "unavailable");
+
+        // A disabled sandbox means the child ran with the host's network, so
+        // "unrestricted" is the obtained fact.
+        assert_eq!(
+            network_outcome_label(&SandboxExecutionOutcome::Disabled),
+            "unrestricted"
+        );
     }
 
     /// C007: a bash-routed `git add` is an authorized `Add`, so the bash
