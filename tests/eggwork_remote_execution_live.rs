@@ -16,9 +16,27 @@
 //! remains the node's canonical process owner — no second production process
 //! owner is created in CodeGG.
 //!
-//! Linux-only: `eggwork-runner` depends on Linux-only `landlock`, so the
-//! helper cannot compile on macOS. On other platforms this target builds
-//! zero tests; Linux CI qualifies the gate.
+//! Linux-only: `eggwork-runner` depends on Linux-only `landlock`. The helper
+//! does compile and run off Linux — the gate is here because the node cannot
+//! *enforce* required isolation there, so five of these tests cannot pass.
+//! On other platforms this target builds zero tests; Linux CI qualifies the
+//! gate.
+//!
+//! To get the fast local signal anyway, lift the gate below and run the
+//! target directly. On macOS, ten of the fifteen pass; the five that do not
+//! are the ones that require the Landlock capability
+//! (`isolation.landlock.workspace-rw.v1`), which the node does not advertise
+//! off Linux:
+//!
+//! ```text
+//! sed -i '' 's/#!\[cfg(target_os = "linux")\]/#![cfg(all())]/' \
+//!   tests/eggwork_remote_execution_live.rs
+//! cargo test --locked --test eggwork_remote_execution_live -- --test-threads=1
+//! git checkout tests/eggwork_remote_execution_live.rs
+//! ```
+//!
+//! This is a debugging aid, not a qualification: the gate is restored, and
+//! Linux CI remains the qualification for the whole target.
 
 #![cfg(target_os = "linux")]
 
