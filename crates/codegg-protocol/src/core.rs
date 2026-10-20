@@ -2079,6 +2079,12 @@ pub struct ClientSnapshot {
     pub attached_sessions: Vec<String>,
 }
 
+// Request variants carry bounded request payloads by design: `JobSubmit`
+// embeds the job spec (which carries the explicit remote target), and
+// `WorkOrderCreate` embeds its request. The enum's largest variant is
+// therefore the one that carries a payload, which is the point of the
+// enum — the same reason `CoreResponse` and `CoreEvent` below are allowed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreRequest {

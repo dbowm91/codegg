@@ -1565,6 +1565,7 @@ impl EggworkExecutor {
 
     /// Map an authoritative terminal snapshot to an `ExecutorCompletion`,
     /// importing artifacts into the RunStore.
+    #[allow(clippy::too_many_arguments)]
     async fn finish_from_snapshot(
         &self,
         ctx: &JobExecutionContext,
@@ -1618,6 +1619,7 @@ impl EggworkExecutor {
     /// Import declared artifacts plus bounded captured stdio into the
     /// RunStore. Best-effort: import failures are reported in the returned
     /// note, never in place of the terminal status.
+    #[allow(clippy::too_many_arguments)]
     async fn import_artifacts(
         &self,
         ctx: &JobExecutionContext,

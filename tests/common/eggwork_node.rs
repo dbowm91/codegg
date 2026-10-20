@@ -122,7 +122,7 @@ impl EggworkNodeClient for ScriptedNodeClient {
 
     async fn telemetry(&self, expected: &NodeId) -> Result<NodeTelemetry, EggworkClientError> {
         self.telemetry_reads.fetch_add(1, Ordering::SeqCst);
-        if let Some(error) = self.telemetry_error.lock().unwrap().clone() {
+        if let Some(error) = *self.telemetry_error.lock().unwrap() {
             return Err(error.into_client_error());
         }
         match self.telemetry.lock().unwrap().clone() {
