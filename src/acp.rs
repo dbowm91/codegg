@@ -10,9 +10,11 @@ use crate::core::transport::SocketCoreClient;
 use crate::core::{new_request, CoreClient};
 use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse, EventEnvelope};
 use crate::protocol::dto::{ContentPart, ProjectRegisterRequestDto, ProviderMessage};
+use crate::protocol::projection::dto::ToolArgumentProjection;
 use crate::protocol::projection::event::ProjectionEvent;
 use crate::protocol::projection::replay::{ProjectionStreamKind, ProjectionSubscriptionRequest};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -371,7 +373,8 @@ pub async fn run(
                         let prompt = active.take().unwrap();
                         match terminal_stop_reason(&event) {
                             Some(completed_reason) => {
-                                write_result(&stdout, prompt.request_id, json!({"stopReason": completed_reason})).await?;
+                                write_result(&stdout, prompt.request_id, json!({"stopReason": completed_reason,
+                                    "codeggUsage": terminal_usage(&event)})).await?;
                             }
                             None => {
                                 write_error_with_data(
@@ -764,7 +767,7 @@ async fn handle_event(
         }
         match &envelope.payload {
             ProjectionEvent::MessageAppended { message } if message.visibility == crate::protocol::projection::dto::VisibilityClass::Public => update(stdout, &prompt.session_id, json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":message.text}})).await?,
-            ProjectionEvent::ToolStarted { tool } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call","toolCallId":tool.tool_id,"title":tool.tool_name,"status":"in_progress"})).await?,
+            ProjectionEvent::ToolStarted { tool } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call","toolCallId":tool.tool_id,"title":tool.tool_name,"status":"in_progress","codeggArgumentsSha256":tool_arguments_sha256(&tool.arguments)})).await?,
             ProjectionEvent::ToolCompleted { tool_id, output, success, .. } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id,"status":if *success {"completed"} else {"failed"},"rawOutput":format!("{output:?}")})).await?,
             _ => {}
         }
@@ -856,6 +859,68 @@ fn terminal_stop_reason(event: &EventEnvelope<CoreEvent>) -> Option<&'static str
         },
         _ => None,
     }
+}
+
+fn terminal_usage(event: &EventEnvelope<CoreEvent>) -> Value {
+    let usage = match &event.payload {
+        CoreEvent::TurnCompleted {
+            turn_id,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            context_limit,
+            ..
+        } => Some((
+            turn_id.as_str(),
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            context_limit,
+        )),
+        CoreEvent::ProjectionStreamEvent { envelope, .. } => match &envelope.payload {
+            ProjectionEvent::TurnCompleted {
+                turn_id,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                context_limit,
+                ..
+            } => Some((
+                turn_id.as_str(),
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                context_limit,
+            )),
+            _ => None,
+        },
+        _ => None,
+    };
+    match usage {
+        Some((turn_id, input, output, cached, reasoning, context)) => json!({
+            "turnId": turn_id,
+            "inputTokens": input,
+            "outputTokens": output,
+            "cachedTokens": cached,
+            "reasoningTokens": reasoning,
+            "contextLimit": context,
+        }),
+        None => Value::Null,
+    }
+}
+
+fn tool_arguments_sha256(arguments: &ToolArgumentProjection) -> Option<String> {
+    let text = match arguments {
+        ToolArgumentProjection::Inline { arguments } => arguments,
+        ToolArgumentProjection::Summary { summary } => summary,
+        ToolArgumentProjection::TruncatedArguments { preview, .. } => preview,
+        ToolArgumentProjection::Handle { .. } => return None,
+    };
+    Some(format!("{:x}", Sha256::digest(text.as_bytes())))
 }
 
 fn map_acp_stop_reason(native: &str) -> &'static str {
@@ -1059,6 +1124,37 @@ mod tests {
             ),
             &active
         ));
+    }
+
+    #[test]
+    fn acp_harness_extensions_expose_turn_usage_and_argument_fingerprint() {
+        let completed = event(
+            13,
+            "session-1",
+            CoreEvent::TurnCompleted {
+                session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+                stop_reason: "end_turn".into(),
+                input_tokens: Some(120),
+                output_tokens: Some(35),
+                cached_tokens: Some(20),
+                reasoning_tokens: Some(8),
+                context_limit: Some(8192),
+            },
+        );
+        assert_eq!(terminal_usage(&completed)["inputTokens"], 120);
+        assert_eq!(terminal_usage(&completed)["outputTokens"], 35);
+        assert!(tool_arguments_sha256(&ToolArgumentProjection::Inline {
+            arguments: "{\"path\":\"src/lib.rs\"}".into(),
+        })
+        .is_some());
+        assert_eq!(
+            tool_arguments_sha256(&ToolArgumentProjection::Handle {
+                handle: "private".into(),
+                byte_length: 10,
+            }),
+            None
+        );
     }
 
     #[test]

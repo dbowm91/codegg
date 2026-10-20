@@ -602,6 +602,13 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             finishes = [item for item in tool_updates if item.get("sessionUpdate") == "tool_call_update"]
             outcomes = [{"status": item.get("status"), "raw_output_bytes": len(str(item.get("rawOutput", "")).encode())}
                         for item in finishes]
+            raw_usage = result.get("codeggUsage")
+            usage = ({"turn_id": raw_usage.get("turnId"),
+                      "input_tokens": raw_usage.get("inputTokens"),
+                      "output_tokens": raw_usage.get("outputTokens"),
+                      "cached_tokens": raw_usage.get("cachedTokens"),
+                      "reasoning_tokens": raw_usage.get("reasoningTokens")}
+                     if isinstance(raw_usage, dict) else None)
             failures = sum(item.get("status") == "failed" or
                            "Tool error:" in str(item.get("rawOutput", "")) or
                            re.search(r"\[exit code: ([1-9][0-9]*)\]", str(item.get("rawOutput", ""))) is not None
@@ -650,6 +657,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "tool_finished": len(finishes),
                 "tool_failures": failures,
                 "tool_outcomes": outcomes,
+                "tool_selection": [item.get("title") for item in starts],
+                "codegg_usage": usage,
                 "tool_receipt_created": observed_exists,
                 "provider_calls": provider.calls,
                 "wall_time_ms": int((time.monotonic() - trial_started) * 1000),
@@ -665,9 +674,14 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                     update = notification.get("params", {}).get("update", {})
                     event_kind = update.get("sessionUpdate") if isinstance(update, dict) else None
                     if event_kind == "tool_call":
-                        trace.append({"kind": "tool_started", "elapsed_ms": notification.get("_received_elapsed_ms")})
+                        trace.append({"kind": "tool_started",
+                                      "tool": update.get("title"),
+                                      "arguments_sha256": update.get("codeggArgumentsSha256"),
+                                      "elapsed_ms": notification.get("_received_elapsed_ms")})
                     elif event_kind == "tool_call_update":
-                        trace.append({"kind": "tool_finished", "elapsed_ms": notification.get("_received_elapsed_ms")})
+                        trace.append({"kind": "tool_finished", "tool": update.get("title"),
+                                      "status": update.get("status"),
+                                      "elapsed_ms": notification.get("_received_elapsed_ms")})
                 trace.append({"kind": "turn_terminal", "status": result.get("stopReason")})
                 result["ledger_manifest"] = record(
                     ledger_root, result, task_id=task_id, group_id=group_id,

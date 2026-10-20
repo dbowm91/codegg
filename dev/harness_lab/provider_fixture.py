@@ -132,6 +132,10 @@ class FixtureProvider:
                     chunks = [
                         {"id": "fixture-2", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "fixture turn complete"}, "finish_reason": None}]},
                         {"id": "fixture-2", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                        {"id": "fixture-2", "object": "chat.completion.chunk", "choices": [],
+                         "usage": {"prompt_tokens": 17, "completion_tokens": 9, "total_tokens": 26,
+                                   "prompt_tokens_details": {"cached_tokens": 3},
+                                   "completion_tokens_details": {"reasoning_tokens": 2}}},
                     ]
                 payload = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
                 body = payload.encode()

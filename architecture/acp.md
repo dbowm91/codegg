@@ -95,6 +95,15 @@ notifications:
 
 Reasoning, private, and unknown projection events are omitted.
 
+For harness accounting, `tool_call` adds the optional `codeggArgumentsSha256`
+field when the bounded argument projection is available. It hashes the
+projection and does not expose tool arguments. A successful `session/prompt`
+result adds `codeggUsage` with the native turn ID and provider-reported input,
+output, cached and reasoning token counts plus context limit; each metric stays
+null if the provider omitted it. `codeggUsage` does not include a price or
+estimated cost. These additive fields are CodeGG extensions; ACP clients may
+ignore them.
+
 ### Terminal Detection
 
 `event_is_terminal()` checks for `TurnCompleted` or `TurnFailed` on both

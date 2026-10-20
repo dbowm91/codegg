@@ -102,6 +102,46 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
     terminal = terminal_override or verification["status"]
     if terminal not in TERMINALS:
         raise ValueError("unsupported terminal classification")
+    usage = receipt_snapshot.get("codegg_usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    cached_tokens = usage.get("cached_tokens")
+    reasoning_tokens = usage.get("reasoning_tokens")
+    for value in (input_tokens, output_tokens, cached_tokens, reasoning_tokens):
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            raise ValueError("provider usage fields must be non-negative integer counts")
+    tool_starts = [item for item in (trace or []) if item.get("kind") == "tool_started"]
+    call_keys = [(item.get("tool"), item.get("arguments_sha256")) for item in tool_starts
+                 if item.get("tool") and item.get("arguments_sha256")]
+    seen_calls: set[tuple[str, str]] = set()
+    repeated_calls = 0
+    for key in call_keys:
+        if key in seen_calls:
+            repeated_calls += 1
+        seen_calls.add(key)
+    recovery_followups = 0
+    failed_call = False
+    for item in trace or []:
+        if item.get("kind") == "tool_finished":
+            failed_call = item.get("status") == "failed"
+        elif item.get("kind") == "tool_started":
+            if failed_call:
+                recovery_followups += 1
+            failed_call = False
+    unavailable = ["provider_cost", "cpu", "rss", "model-visible context projection"]
+    turn_id = usage.get("turn_id")
+    if turn_id is None:
+        unavailable.append("native turn id")
+    if input_tokens is None:
+        unavailable.append("input_tokens")
+    if output_tokens is None:
+        unavailable.append("output_tokens")
+    if cached_tokens is None:
+        unavailable.append("cached_tokens")
+    if reasoning_tokens is None:
+        unavailable.append("reasoning_tokens")
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -115,7 +155,7 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
         "subject": receipt_snapshot.get("daemon", {}),
         "policy": receipt_snapshot.get("policy"),
         "session_id": receipt_snapshot.get("session_id"),
-        "turn_id": None,
+        "turn_id": turn_id,
         "terminal": terminal,
         "failure_class": failure_class,
         "verifier": {"kind": "workspace_file", "path": expected_file, "expected_sha256": expected_sha256, "expected_exists": expected_exists,
@@ -123,8 +163,10 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
                      **verification},
         "metrics": {"tool_started": receipt_snapshot.get("tool_started"), "tool_finished": receipt_snapshot.get("tool_finished"),
                     "provider_calls": receipt_snapshot.get("provider_calls"), "wall_time_ms": receipt_snapshot.get("wall_time_ms"),
-                    "input_tokens": None, "output_tokens": None, "cost_usd": None,
-                    "unavailable": ["native turn id", "token usage", "provider cost", "cpu", "rss", "model-visible context projection"]},
+                    "input_tokens": input_tokens, "output_tokens": output_tokens,
+                    "cached_tokens": cached_tokens, "reasoning_tokens": reasoning_tokens,
+                    "cost_usd": None, "repeated_tool_calls": repeated_calls,
+                    "recovery_followups": recovery_followups, "unavailable": unavailable},
         "receipt_digest": canonical_digest(receipt_snapshot),
         "trace_count": len(trace or []),
         "receipt": receipt_snapshot,
@@ -146,6 +188,7 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
             raise ValueError("trace contains an unsupported event kind")
         events.append({"schema_version": SCHEMA_VERSION, "seq": seq, "run_id": run_id,
                        "kind": item["kind"], "tool": item.get("tool"), "status": item.get("status"),
+                       "arguments_sha256": item.get("arguments_sha256"),
                        "elapsed_ms": item.get("elapsed_ms")})
     events.append({"schema_version": SCHEMA_VERSION, "seq": len(events) + 1, "run_id": run_id,
                    "kind": "terminal", "terminal": terminal,
@@ -204,6 +247,26 @@ def load_runs(root: Path) -> list[dict[str, Any]]:
     return runs
 
 
+def validate_candidate_resume_rows(root: Path, candidate: str, cases: list[dict[str, Any]],
+                                  suite_sha256: str, default_group_id: str) -> dict[tuple[str, int], dict[str, Any]]:
+    """Return immutable completed task/repeat rows after validating the frozen suite."""
+    by_task = {case["task_id"]: case for case in cases}
+    existing: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in load_runs(root):
+        if row["candidate"] != candidate:
+            continue
+        key = (row["task_id"], row.get("repeat", 0))
+        case = by_task.get(key[0])
+        if (case is None or key[1] >= case.get("repeats", 1)
+                or row.get("suite_sha256") != suite_sha256
+                or row.get("case_sha256") != canonical_digest(case)
+                or row.get("group_id") != case.get("group_id", default_group_id)
+                or key in existing):
+            raise ValueError("existing candidate ledger rows do not match the immutable suite")
+        existing[key] = row
+    return existing
+
+
 def replay(root: Path, run_id: str) -> dict[str, Any]:
     manifest = next((row for row in load_runs(root) if row["run_id"] == run_id), None)
     if manifest is None:
@@ -231,9 +294,21 @@ def report(root: Path) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for run in runs:
         counts[run["terminal"]] = counts.get(run["terminal"], 0) + 1
+    measured_usage = [row["metrics"] for row in runs
+                      if row["metrics"].get("input_tokens") is not None
+                      and row["metrics"].get("output_tokens") is not None]
     return {"schema_version": SCHEMA_VERSION, "runs": len(runs), "terminals": counts,
             "tool_started": sum(row["metrics"]["tool_started"] or 0 for row in runs),
-            "token_usage": None, "cost_usd": None, "missing_metrics": sorted({item for row in runs for item in row["metrics"]["unavailable"]})}
+            "token_usage": ({"measured_runs": len(measured_usage),
+                             "input_tokens": sum(row["input_tokens"] for row in measured_usage),
+                             "output_tokens": sum(row["output_tokens"] for row in measured_usage),
+                             "cached_tokens": sum(row["cached_tokens"] or 0 for row in measured_usage),
+                             "reasoning_tokens": sum(row["reasoning_tokens"] or 0 for row in measured_usage)}
+                            if measured_usage else None),
+            "cost_usd": None,
+            "repeated_tool_calls": sum(row["metrics"].get("repeated_tool_calls", 0) for row in runs),
+            "recovery_followups": sum(row["metrics"].get("recovery_followups", 0) for row in runs),
+            "missing_metrics": sorted({item for row in runs for item in row["metrics"]["unavailable"]})}
 
 
 def compare(root: Path, left_candidate: str, right_candidate: str) -> dict[str, Any]:

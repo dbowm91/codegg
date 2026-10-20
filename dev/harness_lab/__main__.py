@@ -40,6 +40,8 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--max-wallclock", type=float, default=600.0)
     evaluate.add_argument("--max-trials", type=int, default=100)
     evaluate.add_argument("--deny-bash", action="store_true")
+    evaluate.add_argument("--resume-candidate", action="store_true",
+                          help="resume missing task/repeat pairs for an interrupted candidate")
     report = commands.add_parser("report", help="summarize a frozen ledger without provider calls")
     report.add_argument("--ledger", type=Path, required=True)
     replay = commands.add_parser("replay", help="re-run a deterministic verifier from captured artifacts")
@@ -59,6 +61,21 @@ def _parser() -> argparse.ArgumentParser:
     improve_cmd.add_argument("--prompt")
     improve_cmd.add_argument("--allow-prefix", action="append", default=[])
     improve_cmd.add_argument("--timeout", type=float, default=300.0)
+    optimize = commands.add_parser("optimize", help="run a bounded multi-iteration assess/correct/retest controller")
+    optimize.add_argument("--repository", type=Path, default=Path.cwd())
+    optimize.add_argument("--suite", type=Path, required=True)
+    optimize.add_argument("--ledger", type=Path, required=True)
+    optimize.add_argument("--baseline", required=True)
+    optimize.add_argument("--candidate-root", type=Path, required=True)
+    optimize.add_argument("--target-root", type=Path, required=True)
+    optimize.add_argument("--checkpoint", type=Path, required=True)
+    optimize.add_argument("--allow-prefix", action="append", required=True)
+    optimize.add_argument("--prompt", required=True)
+    optimize.add_argument("--max-iterations", type=int, default=3)
+    optimize.add_argument("--max-candidate-retries", type=int, default=0)
+    optimize.add_argument("--max-wallclock", type=float, default=3600.0)
+    optimize.add_argument("--timeout", type=float, default=900.0)
+    optimize.add_argument("--resume", action="store_true")
     qualify = commands.add_parser("qualify", help="build, test, and paired-ACP-evaluate a scoped candidate")
     qualify.add_argument("--worktree", type=Path, required=True)
     qualify.add_argument("--suite", type=Path, required=True)
@@ -108,6 +125,18 @@ def main(argv: list[str] | None = None) -> int:
                 raise HarnessError("manual mode requires --dry-run; OpenCode mode requires --worktree, --prompt, and at least one --allow-prefix")
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("status") != "BLOCKED" else 2
+        if args.command == "optimize":
+            result = improve.run_optimizer(
+                args.repository, args.suite, args.ledger,
+                baseline_candidate=args.baseline, candidate_root=args.candidate_root,
+                target_root=args.target_root, checkpoint_path=args.checkpoint,
+                allowed_prefixes=tuple(args.allow_prefix), prompt=args.prompt,
+                max_iterations=args.max_iterations,
+                max_candidate_retries=args.max_candidate_retries,
+                max_wallclock=args.max_wallclock, timeout=args.timeout,
+                resume=args.resume)
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result.get("status") == "ACCEPTED" else 2
         if args.command == "qualify":
             if not args.allow_prefix or args.timeout <= 0 or args.max_wallclock <= 0 or args.max_candidate_retries < 0:
                 raise HarnessError("qualification requires an allowlist and positive time budgets")
@@ -239,9 +268,29 @@ def main(argv: list[str] | None = None) -> int:
                 result = {"ok": True, "suite": str(args.suite), "trials": []}
                 started = time.monotonic()
                 exhausted = False
+                existing = {}
+                if args.resume_candidate:
+                    existing = ledger.validate_candidate_resume_rows(
+                        args.ledger.expanduser().resolve(strict=True), args.candidate,
+                        cases, suite_sha256, args.group_id)
+                    for case in cases:
+                        for repeat in range(case.get("repeats", 1)):
+                            row = existing.get((case["task_id"], repeat))
+                            if row is None:
+                                continue
+                            expected_terminal = case.get("expected_terminal", "passed")
+                            matched = row["terminal"] == expected_terminal
+                            result["trials"].append({"task_id": case["task_id"], "repeat": repeat,
+                                                     "ledger_manifest": row,
+                                                     "expected_terminal_matched": matched,
+                                                     "resumed": True})
+                            if not matched or row["terminal"] != "passed":
+                                result["ok"] = False
                 for case in cases:
                     case_sha256 = ledger.canonical_digest(case)
                     for repeat in range(case.get("repeats", 1)):
+                        if (case["task_id"], repeat) in existing:
+                            continue
                         remaining = args.max_wallclock - (time.monotonic() - started)
                         if remaining <= 0:
                             result["unattempted_task_ids"] = sorted({item["task_id"] for item in cases

@@ -3,10 +3,33 @@ import unittest
 from pathlib import Path
 import sqlite3
 
-from dev.harness_lab.ledger import compare, record, replay, report
+from dev.harness_lab.ledger import (canonical_digest, compare, record, replay, report,
+                                    validate_candidate_resume_rows)
 
 
 class LedgerTests(unittest.TestCase):
+    def test_report_uses_provider_usage_and_summarizes_repeats_and_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "receipt.txt").write_text("ok", encoding="utf-8")
+            record(root / "ledger", {"codegg_usage": {"turn_id": "turn-1", "input_tokens": 17,
+                                                       "output_tokens": 9, "cached_tokens": 3,
+                                                       "reasoning_tokens": 2}},
+                   task_id="recover", group_id="g", candidate="c", workspace=workspace,
+                   expected_file="receipt.txt", expected_text="ok",
+                   trace=[{"kind": "tool_started", "tool": "read", "arguments_sha256": "same"},
+                          {"kind": "tool_finished", "tool": "read", "status": "failed"},
+                          {"kind": "tool_started", "tool": "read", "arguments_sha256": "same"},
+                          {"kind": "tool_finished", "tool": "read", "status": "completed"}])
+            summary = report(root / "ledger")
+            self.assertEqual(summary["token_usage"], {"measured_runs": 1, "input_tokens": 17,
+                                                       "output_tokens": 9, "cached_tokens": 3,
+                                                       "reasoning_tokens": 2})
+            self.assertEqual(summary["repeated_tool_calls"], 1)
+            self.assertEqual(summary["recovery_followups"], 1)
+
     def test_verifier_artifact_replays_offline_and_compare_pairs_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -67,6 +90,26 @@ class LedgerTests(unittest.TestCase):
                        suite_sha256="suite", case_sha256=digest)
             with self.assertRaises(ValueError):
                 compare(root / "ledger", "base", "candidate")
+
+    def test_candidate_resume_preserves_completed_prefix_and_rejects_changed_suite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "one.txt").write_text("one", encoding="utf-8")
+            cases = [{"task_id": "one", "group_id": "g", "repeats": 2},
+                     {"task_id": "two", "group_id": "g"}]
+            suite_digest = "frozen-suite"
+            record(root / "ledger", {}, task_id="one", group_id="g", candidate="candidate",
+                   workspace=workspace, expected_file="one.txt", expected_text="one", repeat=0,
+                   suite_sha256=suite_digest, case_sha256=canonical_digest(cases[0]))
+
+            existing = validate_candidate_resume_rows(root / "ledger", "candidate", cases,
+                                                      suite_digest, "default")
+            self.assertEqual(set(existing), {("one", 0)})
+            with self.assertRaisesRegex(ValueError, "immutable suite"):
+                validate_candidate_resume_rows(root / "ledger", "candidate", cases,
+                                               "changed-suite", "default")
 
     def test_verifier_refuses_workspace_escape(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

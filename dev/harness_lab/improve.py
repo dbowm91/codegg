@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -505,14 +506,16 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
         checkpoint.transition("QUALIFYING", {"gates": gates, "binary_sha256": binary_digest})
         checkpoint.transition("EVALUATING", {"candidate": candidate, "binary_sha256": binary_digest})
     candidate_prior = [row for row in ledger.load_runs(ledger_root) if row["candidate"] == candidate]
-    if candidate_prior:
-        raise ValueError("candidate already has ledger trials; preserve them and use a fresh candidate ID")
+    if candidate_prior and not resume:
+        raise ValueError("candidate already has ledger trials; pass --resume to continue its exact frozen trials")
     remaining = max_wallclock - (time.monotonic() - started)
     if remaining <= 0:
         raise TimeoutError("candidate qualification wallclock budget exhausted before ACP trials")
     command = [sys.executable, "-m", "dev.harness_lab", "evaluate", "--binary", str(binary),
                "--suite", str(suite), "--ledger", str(ledger_root), "--candidate", candidate,
                "--max-wallclock", str(remaining), "--timeout", str(min(timeout, remaining))]
+    if candidate_prior:
+        command.append("--resume-candidate")
     evaluated = subprocess.run(command, cwd=worktree, env=env, capture_output=True, text=True,
                                timeout=remaining)
     try:
@@ -563,3 +566,182 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
             "compile_correction_retries": retry_count,
             "wall_time_seconds": time.monotonic() - started,
             "accepted": accepted, "next_gate": None if accepted else "propose a candidate with a verified correctness improvement"}
+
+
+class OptimizationCheckpoint:
+    """Hash-linked, append-only run receipt with an atomic current-state pointer."""
+
+    def __init__(self, path: Path, inputs: dict[str, Any]) -> None:
+        self.path = path
+        self.events_path = path.with_suffix(".jsonl")
+        self.inputs = inputs
+        self.inputs_sha256 = hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if path.exists() or self.events_path.exists():
+            raise FileExistsError("optimization checkpoint exists; use --resume with identical inputs")
+        self.run_id = __import__("uuid").uuid4().hex
+        self.last_hash = "0" * 64
+        self.sequence = 0
+        self.events: list[dict[str, Any]] = []
+        self.record("run_started", {"run_id": self.run_id, "inputs": inputs})
+
+    @classmethod
+    def resume(cls, path: Path, inputs: dict[str, Any]) -> "OptimizationCheckpoint":
+        events_path = path.with_suffix(".jsonl")
+        decoded = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        if not decoded or not path.is_file():
+            raise ValueError("optimization checkpoint is incomplete")
+        pointer = json.loads(path.read_text(encoding="utf-8"))
+        previous = "0" * 64
+        for sequence, event in enumerate(decoded, 1):
+            digest = event.pop("event_sha256", None)
+            if event.get("seq") != sequence or event.get("prev_sha256") != previous:
+                raise ValueError("optimization event chain is corrupt")
+            actual = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            event["event_sha256"] = digest
+            if digest != actual:
+                raise ValueError("optimization event checksum is corrupt")
+            previous = actual
+        if pointer != decoded[-1] or decoded[0].get("kind") != "run_started":
+            raise ValueError("optimization pointer does not match its append-only event tail")
+        stored_inputs = decoded[0].get("data", {}).get("inputs")
+        digest = hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if stored_inputs != inputs or decoded[0].get("inputs_sha256") != digest:
+            raise ValueError("optimization inputs changed; refusing resume")
+        instance = cls.__new__(cls)
+        instance.path, instance.events_path, instance.inputs = path, events_path, inputs
+        instance.inputs_sha256, instance.run_id = digest, decoded[0]["data"]["run_id"]
+        instance.last_hash, instance.sequence, instance.events = previous, len(decoded), decoded
+        if decoded[-1]["kind"] == "run_finished":
+            raise ValueError("optimization checkpoint is already finished")
+        return instance
+
+    def record(self, kind: str, data: dict[str, Any]) -> None:
+        event = {"schema_version": 1, "seq": self.sequence + 1, "kind": kind,
+                 "created_unix_ms": int(time.time() * 1000), "inputs_sha256": self.inputs_sha256,
+                 "prev_sha256": self.last_hash, "data": data}
+        digest = hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        event["event_sha256"] = digest
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.events_path.open("a", encoding="utf-8") as output:
+            output.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(event, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, self.path)
+        self.sequence, self.last_hash = event["seq"], digest
+        self.events.append(event)
+
+
+def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_candidate: str,
+                  candidate_root: Path, target_root: Path, checkpoint_path: Path,
+                  allowed_prefixes: tuple[str, ...], prompt: str, max_iterations: int = 3,
+                  max_candidate_retries: int = 0, max_wallclock: float = 3600.0,
+                  timeout: float = 900.0, resume: bool = False,
+                  proposer_executable: str | None = None) -> dict[str, Any]:
+    """Schedule assess/propose/build/retest iterations from one frozen baseline."""
+    from . import ledger
+
+    if not prompt.strip() or len(prompt.encode()) > 8192:
+        raise ValueError("optimization requires a non-empty assessment prompt no larger than 8 KiB")
+    if not allowed_prefixes or not 1 <= max_iterations <= 20 or max_candidate_retries < 0:
+        raise ValueError("optimization needs an allowlist, 1-20 iterations, and non-negative retries")
+    if max_wallclock <= 0 or timeout <= 0:
+        raise ValueError("optimization time budgets must be positive")
+    repository = repository.expanduser().resolve(strict=True)
+    suite = suite.expanduser().resolve(strict=True)
+    ledger_root = ledger_root.expanduser().resolve(strict=True)
+    candidate_root = candidate_root.expanduser().resolve()
+    target_root = target_root.expanduser().resolve()
+    if candidate_root.is_relative_to(repository) or target_root.is_relative_to(repository):
+        raise ValueError("candidate worktrees and build outputs must be outside the source repository")
+    baseline_rows = [row for row in ledger.load_runs(ledger_root) if row["candidate"] == baseline_candidate]
+    if not baseline_rows or not baseline_rows[0].get("subject", {}).get("revision"):
+        raise ValueError("optimization requires a frozen baseline with source revision receipts")
+    base_revision = baseline_rows[0]["subject"]["revision"]
+    suite_digest = hashlib.sha256(suite.read_bytes()).hexdigest()
+    inputs = {"base_revision": base_revision, "suite_sha256": suite_digest,
+              "baseline_candidate": baseline_candidate, "max_iterations": max_iterations,
+              "max_candidate_retries": max_candidate_retries,
+              "allowed_prefixes": list(allowed_prefixes), "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
+    if resume:
+        try:
+            stored_inputs = json.loads(checkpoint_path.read_text(encoding="utf-8"))["data"]["inputs"]
+        except (OSError, KeyError, json.JSONDecodeError) as error:
+            raise ValueError("optimization checkpoint does not contain resumable immutable inputs") from error
+        if any(stored_inputs.get(key) != value for key, value in inputs.items()):
+            raise ValueError("optimization settings changed; refusing resume")
+        if not isinstance(stored_inputs.get("deadline_unix"), (int, float)):
+            raise ValueError("optimization checkpoint has no cumulative wallclock deadline")
+        inputs["deadline_unix"] = stored_inputs["deadline_unix"]
+    else:
+        inputs["deadline_unix"] = time.time() + max_wallclock
+    state = OptimizationCheckpoint.resume(checkpoint_path, inputs) if resume else OptimizationCheckpoint(checkpoint_path, inputs)
+    done = {event["data"]["iteration"]: event["data"] for event in state.events
+            if event["kind"] == "iteration_finished"}
+    active = next((event["data"] for event in reversed(state.events)
+                   if event["kind"] == "iteration_started" and event["data"]["iteration"] not in done), None)
+    results = [done[index] for index in sorted(done)]
+    accepted = next((item for item in results if item.get("result", {}).get("accepted")), None)
+    if accepted:
+        return {"status": "ACCEPTED", "iterations": results, "checkpoint": str(checkpoint_path)}
+    first_iteration = active["iteration"] if active else (max(done, default=0) + 1)
+    candidate_root.mkdir(parents=True, exist_ok=True)
+    for iteration in range(first_iteration, max_iterations + 1):
+        remaining = float(inputs["deadline_unix"]) - time.time()
+        if remaining <= 0:
+            state.record("run_interrupted", {"reason": "wallclock_budget_exhausted", "iterations_finished": len(done)})
+            return {"status": "INTERRUPTED", "iterations": results, "checkpoint": str(checkpoint_path)}
+        candidate = active["candidate"] if active and iteration == first_iteration else f"{state.run_id}-i{iteration:02d}"
+        worktree = Path(active["worktree"]) if active and iteration == first_iteration else candidate_root / candidate
+        child_path = Path(active["candidate_checkpoint"]) if active and iteration == first_iteration else checkpoint_path.with_name(f"{checkpoint_path.stem}-{candidate}.json")
+        if not active:
+            state.record("iteration_started", {"iteration": iteration, "candidate": candidate,
+                                                "worktree": str(worktree), "candidate_checkpoint": str(child_path)})
+        if not worktree.exists():
+            branch = f"harness/{state.run_id}-i{iteration:02d}"
+            create_candidate_worktree(repository, branch, worktree, base_revision)
+        child = Checkpoint.resume(child_path, base_revision, suite_digest) if child_path.exists() else Checkpoint(child_path, base_revision, suite_digest)
+        try:
+            if child.state == "BASELINED":
+                child.transition("DIAGNOSED", {"baseline": baseline_candidate, "iteration": iteration,
+                                                "suite_sha256": suite_digest})
+                child.transition("PROPOSING", {"proposer": "opencode", "iteration": iteration})
+                prior = results[-1]["result"] if results else None
+                iteration_prompt = prompt
+                if prior:
+                    iteration_prompt += "\n\nPrior iteration assessment (deterministic controller summary):\n" + json.dumps(
+                        {"status": prior.get("status"), "accepted": prior.get("accepted"),
+                         "correctness_improvements": prior.get("correctness_improvements"),
+                         "paired_comparison": prior.get("paired_comparison")}, sort_keys=True)[:4096]
+                proposal = opencode_propose(worktree, iteration_prompt, allowed_prefixes,
+                                            min(timeout, remaining), proposer_executable)
+                child.transition("PATCHED", {"changed_paths": proposal["changed_paths"],
+                                              "patch_sha256": proposal["patch_sha256"],
+                                              "proposer_receipt": proposal["proposer"]})
+            elif child.state in {"PATCHED", "BUILDING", "QUALIFYING", "EVALUATING", "COMPARING"}:
+                proposal = None
+            else:
+                raise RuntimeError("interrupted proposal has no committed patch receipt; inspect its candidate worktree before resuming")
+            result = qualify_candidate(worktree, suite, ledger_root,
+                                       baseline_candidate=baseline_candidate, candidate=candidate,
+                                       target_dir=target_root / candidate, allowed_prefixes=allowed_prefixes,
+                                       timeout=min(timeout, remaining), max_wallclock=remaining,
+                                       checkpoint=child, resume=child.state != "PATCHED",
+                                       proposer="opencode", correction_prompt=prompt,
+                                       max_candidate_retries=max_candidate_retries)
+            row = {"iteration": iteration, "candidate": candidate, "result": result}
+            state.record("iteration_finished", row)
+            results.append(row)
+            done[iteration] = row
+            active = None
+            if result.get("accepted"):
+                state.record("run_finished", {"status": "ACCEPTED", "iteration": iteration,
+                                               "candidate": candidate, "patch_sha256": result["patch_sha256"]})
+                return {"status": "ACCEPTED", "iterations": results, "checkpoint": str(checkpoint_path)}
+        except (ValueError, RuntimeError, TimeoutError, OSError) as error:
+            state.record("iteration_interrupted", {"iteration": iteration, "candidate": candidate,
+                                                    "failure_class": type(error).__name__})
+            raise
+    state.record("run_finished", {"status": "NO_IMPROVEMENT", "iterations": len(results)})
+    return {"status": "NO_IMPROVEMENT", "iterations": results, "checkpoint": str(checkpoint_path)}

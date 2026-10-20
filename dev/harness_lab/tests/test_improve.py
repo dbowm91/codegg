@@ -5,7 +5,7 @@ import subprocess
 
 from dev.harness_lab.improve import (Budget, Checkpoint, candidate_patch_sha256, check_scope,
                                      changed_paths, create_candidate_worktree, manual_dry_run,
-                                     parse_opencode_events, run_opencode)
+                                     OptimizationCheckpoint, parse_opencode_events, run_opencode)
 
 
 class ImproveTests(unittest.TestCase):
@@ -105,6 +105,23 @@ class ImproveTests(unittest.TestCase):
                                     check=True, capture_output=True, text=True).stdout.strip()
             self.assertEqual(actual, revision)
             self.assertEqual(result["branch"], "candidate/test")
+
+    def test_optimization_checkpoint_is_hash_linked_and_resume_validates_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "optimize.json"
+            inputs = {"base_revision": "abc", "suite_sha256": "suite", "max_iterations": 2}
+            checkpoint = OptimizationCheckpoint(path, inputs)
+            checkpoint.record("iteration_started", {"iteration": 1, "candidate": "one"})
+            resumed = OptimizationCheckpoint.resume(path, inputs)
+            self.assertEqual(resumed.run_id, checkpoint.run_id)
+            resumed.record("iteration_finished", {"iteration": 1, "candidate": "one"})
+            with self.assertRaises(ValueError):
+                OptimizationCheckpoint.resume(path, {**inputs, "max_iterations": 3})
+            rows = path.with_suffix(".jsonl").read_text(encoding="utf-8").splitlines()
+            rows[-1] = rows[-1].replace('"iteration":1', '"iteration":2')
+            path.with_suffix(".jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                OptimizationCheckpoint.resume(path, inputs)
 
 
 if __name__ == "__main__":

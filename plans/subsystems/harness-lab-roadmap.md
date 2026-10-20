@@ -1,6 +1,6 @@
 # Developer Harness Lab Roadmap
 
-Status: conditionally closed — M001–M003 closed; M004 implemented with operational evidence outstanding
+Status: conditionally closed — M001–M003 closed; M004 and M005 conditional
 
 Long-term references:
 
@@ -95,6 +95,10 @@ Class: infrastructure/capability. Plan: `plans/implementation/harness-lab/003-tr
 
 Class: capability. Plan: `plans/implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md`. **Conditionally closed** (`plans/closure/harness-lab/004-status.md`). Candidate-only proposer, qualification gates, and bounded compile-correction retries are implemented. A live OpenCode/correction pilot, accepted correctness-fix trace and full trial interruption/resume proof remain outstanding; no automatic merge/push.
 
+### M005 — Multi-iteration controller and agent pilot
+
+Class: capability. Plan: `plans/implementation/harness-lab/005-optimization-controller-and-agent-pilot.md`. **Conditionally closed** (`plans/closure/harness-lab/005-status.md`). Implements a bounded outer assess/propose/build/retest scheduler, restartable immutable run checkpoints, candidate partial-trial validation, and ACP usage/tool-selection telemetry. The live pilot is blocked because the pinned shared OpenCode Go profile lacks an exact LongCat 2.5 route and this environment exposes no secret-safe handoff for the supplied temporary key. M004's accepted-fix and live proposal/correction evidence conditions remain open. No automatic merge/push.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -140,4 +144,5 @@ Two independent CodeGG versions can run headlessly and concurrently via ACP on t
 | M001 | closed | `implementation/harness-lab/001-concurrent-daemon-subject-lanes.md` | `closure/harness-lab/001-status.md` | — |
 | M002 | closed | `implementation/harness-lab/002-acp-unattended-execution-contract.md` | `closure/harness-lab/002-status.md` | — |
 | M003 | closed | `implementation/harness-lab/003-trajectory-evaluation-and-ledger.md` | `closure/harness-lab/003-status.md` | — |
-| M004 | conditionally closed | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | `closure/harness-lab/004-status.md` | accepted trace, retry/resume qualification, optional live pilot |
+| M004 | conditionally closed | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | `closure/harness-lab/004-status.md` | accepted correctness-fix trace and live proposal/correction evidence; full interrupted qualification receipt |
+| M005 | conditionally closed | `implementation/harness-lab/005-optimization-controller-and-agent-pilot.md` | `closure/harness-lab/005-status.md` | live LongCat route in the shared profile and secret-safe credential handoff; two-model frozen-baseline pilot |

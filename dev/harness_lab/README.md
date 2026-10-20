@@ -59,8 +59,12 @@ that ledger offline. The projection case forces a large native `read` result
 through its artifact handle, then requires `context_read` to return a tail
 marker omitted from the initial model-visible projection. Comparison pairs task IDs and repeat indexes only when
 group, suite digest, and case digest match. Unknown token, cost,
-CPU, RSS, native turn ID, and model-visible context metrics remain `null` or are
-listed as unavailable; the controller does not estimate them from tool counts.
+CPU, RSS, provider cost, and model-visible context metrics remain unavailable;
+token counts and native turn identity are recorded only when CodeGG's ACP
+terminal event carries provider-reported usage. Tool selection is captured from
+the ACP tool name; argument values are not stored, only their bounded projection
+digest. Repeated identical tool calls and tool calls following failures are
+reported as trace-derived recovery indicators, not model-declared recovery.
 The suite intentionally includes `assertion_failed`, `execution_failed`,
 `cancelled`, and `timeout` terminals, so its process exit is nonzero when those
 negative cases are observed; inspect each JSON trial's `expected_terminal_matched`
@@ -107,9 +111,39 @@ and supply a bounded `--prompt`; the CLI version is pinned to 1.19.0. A bounded
 compile-correction retry can be enabled with `--max-candidate-retries N`; each
 retry consumes a separate proposal attempt, is checkpointed, and reruns the
 candidate gates. This option requires the OpenCode proposer. A
-checkpoint can resume an unchanged candidate before any candidate ledger trial
-has been appended. Partial candidate evaluations fail closed and require a new
-candidate ID so interrupted attempts remain visible in the ledger.
+checkpoint binds the candidate patch, baseline and suite. With `--resume`, an
+interrupted build/evaluation can continue only after those immutable inputs and
+the recorded candidate binary match. Partial ledger evaluations continue only
+the missing task/repeat pairs after validating every existing row against the
+frozen suite.
+
+For a bounded outer assess/propose/build/retest loop, use `optimize` after a
+baseline ledger is complete:
+
+```bash
+python3 -m dev.harness_lab optimize \
+  --repository . \
+  --suite dev/harness_lab/fixtures/smoke.jsonl \
+  --ledger /path/to/frozen-experiment-ledger \
+  --baseline baseline \
+  --candidate-root /tmp/codegg-optimization-candidates \
+  --target-root /tmp/codegg-optimization-targets \
+  --checkpoint /tmp/codegg-optimization.json \
+  --allow-prefix src/ --allow-prefix crates/ \
+  --max-iterations 3 --max-candidate-retries 1 \
+  --max-wallclock 3600 --timeout 900 \
+  --prompt 'Assess the frozen baseline failures and propose a scoped correction.'
+```
+
+The controller creates a dedicated candidate branch/worktree for each
+iteration, keeps all iterations pinned to the baseline revision and suite, and
+stops at the first candidate that completes every expected outcome without a
+regression and improves at least one expected correctness result. It never
+accepts an incomplete or unpaired run. Each event is hash-linked to an
+append-only JSONL log and mirrored by an atomic pointer. Restart with identical
+arguments plus `--resume`; the original wallclock deadline is retained. An
+ambiguous interrupted proposal is preserved and refused for manual inspection.
+Accepted code remains in its candidate worktree and is never merged or pushed.
 
 An optional `--output-dir` must be empty and outside the candidate worktree.
 Without it, the supervisor creates an OS temporary experiment directory and
