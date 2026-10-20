@@ -482,6 +482,7 @@ fn acquire_policy_lease() -> Result<AcpPolicyLease, crate::error::AppError> {
     std::fs::create_dir_all(&root)?;
     let file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(root.join("acp-policy-lease.lock"))?;
