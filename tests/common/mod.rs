@@ -7,6 +7,7 @@
 //! test binary as a normal module subtree, and `common` is the
 //! conventional name to avoid colliding with target names.
 
+pub mod checkout_reservation;
 pub mod pool;
 pub mod projection_replay;
 pub mod secret_scan;

@@ -461,6 +461,22 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         visibility: AuditVisibility::Project,
         live_mapped: true,
     },
+    AuditCoverageEntry {
+        action: "checkout_writer_refusal",
+        owner: "daemon:checkout_mediation",
+        actor: "transport-bound principal",
+        scope: "via_session",
+        decision: "document_modify",
+        metadata: &[
+            "writer.sink",
+            "writer.op",
+            "group.id",
+            "decision.outcome",
+        ],
+        causation: "checkout reservation -> refused writer; the refusal precedes every effect, so no file, index, branch or metadata change follows it",
+        visibility: AuditVisibility::Project,
+        live_mapped: true,
+    },
 ];
 
 /// One executor-owned live audit hook (identity/audit M004).
@@ -516,6 +532,41 @@ pub const EXECUTOR_LIVE_AUDIT_HOOKS: &[ExecutorAuditHook] = &[
 /// outside [`EXECUTOR_LIVE_AUDIT_HOOKS`], and outside
 /// [`INSTRUMENTED_OPERATIONS`].
 pub const FUTURE_DISTRIBUTED_AUDIT_ACTIONS: &[&str] = &["node_enrollment", "remote_execute"];
+
+/// One daemon-gate-owned live audit hook (M005 C004).
+///
+/// A daemon gate is a pre-effect check inside the daemon that refuses an
+/// operation before it can change anything. Its refusal event is not the
+/// event of the refused operation — the refused operation never happened —
+/// so it has no daemon operation mapping and needs its own owner pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaemonAuditHook {
+    /// Canonical audit action wire name.
+    pub action: &'static str,
+    /// Canonical gate owner (`daemon:checkout_mediation`, ...).
+    pub owner: &'static str,
+    /// Canonical emit symbol at the owner.
+    pub emit: &'static str,
+}
+
+/// Daemon-gate-owned live hooks with executable evidence (M005 C004).
+///
+/// `checkout_writer_refusal` is emitted by the checkout mediation gate when
+/// a non-broker writer is refused because the checkout is reserved by a live
+/// agent-run group. The event is live: the gate is on the write path, so the
+/// refusal is recorded durably rather than only logged.
+pub const DAEMON_LIVE_AUDIT_HOOKS: &[DaemonAuditHook] = &[DaemonAuditHook {
+    action: "checkout_writer_refusal",
+    owner: "daemon:checkout_mediation",
+    emit: "emit_checkout_writer_refusal",
+}];
+
+/// `true` when `action` must have executable daemon-gate hook evidence.
+pub fn is_daemon_live_action(action: &str) -> bool {
+    DAEMON_LIVE_AUDIT_HOOKS
+        .iter()
+        .any(|hook| hook.action == action)
+}
 
 /// `true` when `action` must have executable executor-hook evidence.
 pub fn is_executor_live_action(action: &str) -> bool {
@@ -1437,6 +1488,30 @@ pub fn file_mutate_event(
         .with_visibility(AuditVisibility::Project)
         .with_metadata("file.path_digest", truncate_label(path_digest_hex, 128))
         .with_metadata("file.op", truncate_label(op, 64))
+        .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// Checkout writer refusal structural event (M005 C004).
+///
+/// The refusal names the sink that was refused and the group that holds the
+/// checkout. The checkout itself is a structural locator — the worktree id
+/// carried by the chain — never a path: a refusal must not disclose the
+/// checkout layout, and a path never enters audit metadata.
+pub fn checkout_writer_refusal_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    sink: &str,
+    op: &str,
+    group_id: &str,
+    outcome: &str,
+) -> AuditEventBuilder {
+    let builder = AuditEventBuilder::new(AuditAction::CheckoutWriterRefusal, principal, provenance)
+        .with_visibility(AuditVisibility::Project)
+        .with_metadata("writer.sink", truncate_label(sink, 64))
+        .with_metadata("writer.op", truncate_label(op, 64))
+        .with_metadata("group.id", truncate_label(group_id, 128))
         .with_metadata("decision.outcome", truncate_label(outcome, 64));
     apply_chain(builder, chain, provenance.project())
 }

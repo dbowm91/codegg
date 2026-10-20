@@ -56,11 +56,25 @@ MANIFEST_PATH = ROOT / "docs" / "writer-disposition.toml"
 # C002/C003 to consider, never an active fence.
 DISPOSITIONS = {
     "allowed-read",       # proven read-only; no checkout effect to restrict
-    "fenced-native",      # candidate fenced native file/Git writer (C002/C003)
+    "fenced-native",      # fenced native file/Git writer (C002/C003)
     "denied-process",     # process-backed or persistent; denied pre-effect
     "fenced-or-denied",   # CodeGG non-broker writer; fence it or refuse it
+    # C004: the non-broker writer dispositions.
+    "mediated-gate",      # mediated by the C004 checkout reservation gate
+    "namespaced-state",   # inside the checkout, per-actor namespaced state
+    "shared-sidecar",     # inside the checkout, fixed shared sidecar path
+    "compatibility-store",  # the legacy project-local SQLite file
+    "new-root-only",      # creates only a path that does not exist yet
     "unsupported",        # platform / node / NonGit: not supported here
     "out-of-contract",    # outside CodeGG's mediation (external same-UID)
+}
+
+# How a root's writes are mediated. `none` is a claim: the root's
+# disposition must say why no checkout mediation applies.
+MEDIATIONS = {
+    "writer-fence",   # the C003 native writer fence
+    "checkout-gate",  # the C004 checkout reservation gate
+    "none",           # no checkout mediation claimed
 }
 
 SCOPES = {
@@ -85,8 +99,49 @@ CHECKOUT_WRITER_DISPOSITIONS = {
     "fenced-native",
     "denied-process",
     "fenced-or-denied",
+    "mediated-gate",
+    "namespaced-state",
+    "shared-sidecar",
+    "compatibility-store",
+    "new-root-only",
     "unsupported",
 }
+
+# The daemon-side mediator names every non-broker checkout writer it
+# mediates. The manifest must claim every one of them: a sink that quietly
+# loses its manifest row would otherwise be mediated in code but undeclared,
+# and the guard would not notice.
+MEDIATOR_MODULE = "src/core/checkout_mediation.rs"
+_SINK_VARIANT_RE = re.compile(r"^\s{4}([A-Z][A-Za-z0-9]*),\s*$", re.MULTILINE)
+
+
+def detect_mediated_sinks() -> set[str]:
+    """Return the checkout-writer sinks the mediator declares."""
+    path = ROOT / MEDIATOR_MODULE
+    if not path.is_file():
+        return set()
+    source = path.read_text(encoding="utf-8")
+    start = source.find("pub enum CheckoutWriterSink {")
+    if start == -1:
+        return set()
+    brace = source.find("{", start)
+    if brace == -1:
+        return set()
+    depth = 0
+    end = -1
+    for pos in range(brace, len(source)):
+        if source[pos] == "{":
+            depth += 1
+        elif source[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                end = pos
+                break
+    if end == -1:
+        return set()
+    body = source[brace:end]
+    return {f"CheckoutWriterSink::{name}" for name in _SINK_VARIANT_RE.findall(body)}
+
 
 # --- Detection --------------------------------------------------------------
 
@@ -122,6 +177,14 @@ WRITER_SURFACE_DIRS = (
     "src/lsp",
     "src/ide",
     "src/worktree",
+    # C004: the project-local sidecar writers. A static inventory of direct
+    # process sites cannot substitute for inspection of nested tools and
+    # backend effects, so the sweep covers the nested tool-side state
+    # writers too.
+    "src/research",
+    "src/python_script",
+    "src/skills",
+    "src/test_runner",
     "crates/codegg-core/src",
 )
 
@@ -199,14 +262,91 @@ def has_effect_primitive(text: str) -> bool:
     return EFFECT_PRIMITIVES.search(text) is not None
 
 
+def _blank_literals_and_comments(text: str) -> str:
+    """Blank out Rust string literals and comments, preserving offsets.
+
+    A brace inside a literal (``"{"``) is not a block delimiter. Brace
+    matching over raw source therefore mis-counts, and a mis-count can make
+    the test-module removal give up and leave the whole file in place — a
+    silent false positive that would demand a manifest entry for a module
+    that never writes anything in production.
+
+    The blanks keep every offset, so the result can still be scanned for
+    effect primitives and for brace depth.
+    """
+    out = list(text)
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "/" and index + 1 < length and text[index + 1] == "/":
+            while index < length and text[index] != "\n":
+                out[index] = " "
+                index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "*":
+            depth = 1
+            out[index] = out[index + 1] = " "
+            index += 2
+            while index < length and depth:
+                if text[index] == "/" and index + 1 < length and text[index + 1] == "*":
+                    depth += 1
+                    out[index] = out[index + 1] = " "
+                    index += 2
+                    continue
+                if text[index] == "*" and index + 1 < length and text[index + 1] == "/":
+                    depth -= 1
+                    out[index] = out[index + 1] = " "
+                    index += 2
+                    continue
+                if text[index] != "\n":
+                    out[index] = " "
+                index += 1
+            continue
+        if char == "r" and index + 1 < length and text[index + 1] in ("\"", "#"):
+            hashes = 0
+            cursor = index + 1
+            while cursor < length and text[cursor] == "#":
+                hashes += 1
+                cursor += 1
+            if cursor < length and text[cursor] == "\"":
+                terminator = "\"" + ("#" * hashes)
+                end = text.find(terminator, cursor + 1)
+                end = length if end == -1 else end + len(terminator)
+                for pos in range(index, end):
+                    if text[pos] != "\n":
+                        out[pos] = " "
+                index = end
+                continue
+        if char == "\"":
+            cursor = index + 1
+            while cursor < length:
+                if text[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if text[cursor] == "\"":
+                    cursor += 1
+                    break
+                cursor += 1
+            for pos in range(index, min(cursor, length)):
+                if text[pos] != "\n":
+                    out[pos] = " "
+            index = cursor
+            continue
+        index += 1
+    return "".join(out)
+
+
 def strip_test_modules(text: str) -> str:
     """Remove ``#[cfg(test)]`` module bodies before scanning for effects.
 
     A source file that only writes files inside its own unit-test module is
-    not a production writer root. Brace matching keeps the removal precise
-    enough for the Rust shapes this repository uses.
+    not a production writer root. Brace matching over a literal- and
+    comment-blanked copy keeps the removal precise for the Rust shapes this
+    repository uses: a brace inside a string literal cannot desynchronise
+    the matcher and leave a test-only writer in the production set.
     """
-    out = text
+    out = _blank_literals_and_comments(text)
     while True:
         index = out.find("#[cfg(test)]")
         if index == -1:
@@ -430,6 +570,98 @@ def check(entries: list[dict]) -> list[str]:
         if not entry.get("owner"):
             problems.append(f"entry '{ident}' does not name a final effect owner")
 
+    # 5. C004 mediation declarations. Every checkout writer says how it is
+    #    mediated, and a mediated root names the file that holds its
+    #    mediation call together with the markers that identify it. Removing
+    #    the call from the source therefore fails the guard.
+    for entry in entries:
+        ident = entry.get("id") or sorted(_entry_keys(entry)) or "<unnamed>"
+        disposition = entry.get("disposition", "")
+        scope = entry.get("scope", "")
+        mediation = entry.get("mediation")
+        if mediation is None:
+            problems.append(
+                f"entry '{ident}' does not declare a mediation; every root must say "
+                f"how it is mediated (one of {sorted(MEDIATIONS)})"
+            )
+            continue
+        if mediation not in MEDIATIONS:
+            problems.append(
+                f"entry '{ident}' has unknown mediation '{mediation}' "
+                f"(expected one of {sorted(MEDIATIONS)})"
+            )
+            continue
+        if scope != "checkout-writer":
+            continue
+        if disposition == "mediated-gate" and mediation != "checkout-gate":
+            problems.append(
+                f"entry '{ident}' is mediated-gate but its mediation is '{mediation}'"
+            )
+        if disposition == "fenced-native" and mediation != "writer-fence":
+            problems.append(
+                f"entry '{ident}' is fenced-native but its mediation is '{mediation}'"
+            )
+        site = entry.get("mediation_site")
+        markers = entry.get("mediation_markers")
+        if mediation == "checkout-gate":
+            if not site:
+                problems.append(
+                    f"entry '{ident}' is mediated by the checkout gate but names no "
+                    "mediation_site"
+                )
+                continue
+            if not markers:
+                problems.append(
+                    f"entry '{ident}' is mediated by the checkout gate but names no "
+                    "mediation_markers"
+                )
+                continue
+            site_path = ROOT / site
+            if not site_path.is_file():
+                problems.append(
+                    f"entry '{ident}' names a missing mediation site '{site}'"
+                )
+                continue
+            source = site_path.read_text(encoding="utf-8")
+            for marker in (m.strip() for m in markers.split(",")):
+                if not marker:
+                    continue
+                if marker not in source:
+                    problems.append(
+                        f"entry '{ident}' lost its mediation: '{marker}' is no longer "
+                        f"present in '{site}'"
+                    )
+        elif site or markers:
+            problems.append(
+                f"entry '{ident}' declares a mediation site but its mediation is "
+                f"'{mediation}'"
+            )
+
+    # 6. Every sink the mediator declares is claimed by exactly one manifest
+    #    root. A sink that quietly loses its manifest row would otherwise be
+    #    mediated in code but undeclared, and nothing would fail.
+    claimed: list[str] = []
+    for entry in entries:
+        if entry.get("mediation") != "checkout-gate":
+            continue
+        for marker in (m.strip() for m in (entry.get("mediation_markers") or "").split(",")):
+            if marker:
+                claimed.append(marker)
+    declared = detect_mediated_sinks()
+    for marker in sorted(declared - set(claimed)):
+        problems.append(
+            f"mediated sink '{marker}' is declared by {MEDIATOR_MODULE} but no manifest "
+            "root claims it"
+        )
+    for marker in sorted(set(claimed) - declared):
+        problems.append(
+            f"manifest root claims the mediated sink '{marker}', which {MEDIATOR_MODULE} "
+            "does not declare"
+        )
+    duplicates = sorted({m for m in claimed if claimed.count(m) > 1})
+    for marker in duplicates:
+        problems.append(f"mediated sink '{marker}' is claimed by more than one manifest root")
+
     return problems
 
 
@@ -563,6 +795,115 @@ impl Tool for SneakyWriter {
     )
     if not any("missing path" in p for p in problems):
         failures.append("a stale manifest path was not reported")
+
+    # A checkout writer with no mediation declaration must be reported.
+    problems = check(
+        [
+            {
+                "id": "no-mediation",
+                "tool": "unrelated_tool",
+                "path": "src/tool/write.rs",
+                "surface": "model-tool",
+                "scope": "checkout-writer",
+                "disposition": "fenced-native",
+                "owner": "WriteTool",
+            }
+        ]
+    )
+    if not any("does not declare a mediation" in p for p in problems):
+        failures.append("a root without a mediation declaration was not reported")
+
+    # A mediated root whose marker is gone from its site must be reported:
+    # this is the "a known CodeGG file API lost its mediation" case.
+    problems = check(
+        [
+            {
+                "id": "lost-mediation",
+                "tool": "unrelated_tool",
+                "path": "src/tool/write.rs",
+                "surface": "model-tool",
+                "scope": "checkout-writer",
+                "disposition": "mediated-gate",
+                "mediation": "checkout-gate",
+                "mediation_site": "src/core/daemon.rs",
+                "mediation_markers": "CheckoutWriterSink::ThisMarkerDoesNotExist",
+                "owner": "WriteTool",
+            }
+        ]
+    )
+    if not any("lost its mediation" in p for p in problems):
+        failures.append("a root whose mediation marker disappeared was not reported")
+
+    # A mediated root whose site file is gone must be reported.
+    problems = check(
+        [
+            {
+                "id": "missing-site",
+                "tool": "unrelated_tool",
+                "path": "src/tool/write.rs",
+                "surface": "model-tool",
+                "scope": "checkout-writer",
+                "disposition": "mediated-gate",
+                "mediation": "checkout-gate",
+                "mediation_site": "src/core/definitely_not_a_real_file.rs",
+                "mediation_markers": "Whatever",
+                "owner": "WriteTool",
+            }
+        ]
+    )
+    if not any("missing mediation site" in p for p in problems):
+        failures.append("a root whose mediation site disappeared was not reported")
+
+    # A disposition and a mediation that disagree must be reported.
+    problems = check(
+        [
+            {
+                "id": "mismatched",
+                "tool": "unrelated_tool",
+                "path": "src/tool/write.rs",
+                "surface": "model-tool",
+                "scope": "checkout-writer",
+                "disposition": "mediated-gate",
+                "mediation": "writer-fence",
+                "owner": "WriteTool",
+            }
+        ]
+    )
+    if not any("is mediated-gate but its mediation is" in p for p in problems):
+        failures.append("a disposition/mediation mismatch was not reported")
+
+    # A mediated sink that no manifest root claims must be reported.
+    problems = check(
+        [
+            {
+                "id": "unclaimed",
+                "tool": "unrelated_tool",
+                "path": "src/tool/write.rs",
+                "surface": "model-tool",
+                "scope": "checkout-writer",
+                "disposition": "mediated-gate",
+                "mediation": "checkout-gate",
+                "mediation_site": "src/core/daemon.rs",
+                "mediation_markers": "CheckoutWriterSink::NotARealSink",
+                "owner": "WriteTool",
+            }
+        ]
+    )
+    if not any("no manifest root claims it" in p for p in problems):
+        failures.append("a mediated sink that no manifest root claims was not reported")
+
+    # The test-module stripper must survive a brace inside a string literal.
+    # A stripper that gives up would demand a manifest entry for a module
+    # that only writes inside its own unit tests.
+    stripped = strip_test_modules(
+        "fn real() {}\n#[cfg(test)]\nmod tests {\n    let s = \"{\";\n"
+        "    std::fs::write(\"x\", s).unwrap();\n}\n"
+    )
+    if has_effect_primitive(stripped):
+        failures.append(
+            "a test module containing an unbalanced brace in a string literal was "
+            "not stripped, so a test-only writer was detected as a production writer"
+        )
 
     if failures:
         for failure in failures:

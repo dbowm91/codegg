@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective C005 — Process-Lifetime Denials and Platform Gate (Q3–Q4)
 
-Status: blocked — C004 strict closure; ADR-0044 acceptance inherited
+Status: ready — C004 closed (`plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`); ADR-0044 acceptance inherited
 Primary class: invariant / capability
 Planning baseline: plan/agent-workstream-m005-writer-audit audit 2026-10-19
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C005

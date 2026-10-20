@@ -7,6 +7,7 @@ pub mod audit;
 pub mod audit_instrumentation;
 pub mod authorization;
 pub mod bus;
+pub mod checkout_reservation;
 pub mod collaboration;
 pub mod context;
 pub mod decision;

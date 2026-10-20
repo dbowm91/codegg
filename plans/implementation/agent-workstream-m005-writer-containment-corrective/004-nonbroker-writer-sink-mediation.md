@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective C004 — Non-Broker Project-Root Writer Mediation (Q3)
 
-Status: ready — C003 closed (`plans/closure/agent-workstream-m005-writer-containment-corrective/003-status.md`) and upstream accepted ADR-0044
+Status: closed — C003 closed (`plans/closure/agent-workstream-m005-writer-containment-corrective/003-status.md`) and upstream accepted ADR-0044; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`
 Primary class: invariant / capability
 Planning baseline: plan/agent-workstream-m005-writer-audit source audit 2026-10-19; revalidate before editing.
 Roadmap: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C004

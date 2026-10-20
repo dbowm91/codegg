@@ -7,6 +7,7 @@ use crate::protocol::core::{
     CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope, PROTOCOL_VERSION,
 };
 
+pub mod checkout_mediation;
 pub mod client_registry;
 pub mod daemon;
 pub mod daemon_assets;

@@ -289,10 +289,19 @@ impl CoreDaemon {
         degraded
     }
 
+    /// Re-read the document's bytes from disk and reconcile the snapshot.
+    ///
+    /// `repository_lock_held` says the caller already holds the
+    /// workspace's repository lock. It must: the create path holds that
+    /// lock across create-then-open so a concurrent write to the same new
+    /// path cannot land between the two steps and be silently adopted as
+    /// our snapshot, and re-acquiring the same lock here would wait for
+    /// the guard the caller is still holding — a self-deadlock.
     async fn refresh_external_disk(
         &self,
         mut snapshot: codegg_protocol::document::DocumentSnapshotDto,
         client_id: &str,
+        repository_lock_held: bool,
     ) -> codegg_protocol::document::DocumentSnapshotDto {
         let Ok(workspace_id) = codegg_core::workspace::WorkspaceId::parse(&snapshot.workspace_id)
         else {
@@ -304,10 +313,16 @@ impl CoreDaemon {
         let Ok(services) = self.workspace_services.acquire(&workspace_id).await else {
             return snapshot;
         };
-        let _guard = services
-            .locks()
-            .acquire_repository(&workspace.canonical_root)
-            .await;
+        let _guard = if repository_lock_held {
+            None
+        } else {
+            Some(
+                services
+                    .locks()
+                    .acquire_repository(&workspace.canonical_root)
+                    .await,
+            )
+        };
         let Ok(path) = crate::tool::util::validate_path(
             std::path::Path::new(&snapshot.relative_path),
             &workspace.canonical_root,
@@ -400,7 +415,7 @@ impl CoreDaemon {
                     .await
                 {
                     Ok((snapshot, writer_lease)) => {
-                        let snapshot = self.refresh_external_disk(snapshot, client_id).await;
+                        let snapshot = self.refresh_external_disk(snapshot, client_id, false).await;
                         let lsp_degraded = self.sync_managed_document(&snapshot).await;
                         Ok(CoreResponse::DocumentSnapshot {
                             snapshot,
@@ -496,7 +511,7 @@ impl CoreDaemon {
                     .await
                 {
                     Ok((snapshot, writer_lease)) => {
-                        let snapshot = self.refresh_external_disk(snapshot, client_id).await;
+                        let snapshot = self.refresh_external_disk(snapshot, client_id, true).await;
                         let lsp_degraded = self.sync_managed_document(&snapshot).await;
                         Ok(CoreResponse::DocumentSnapshot {
                             snapshot,
@@ -592,7 +607,7 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(snapshot) => {
-                        let snapshot = self.refresh_external_disk(snapshot, client_id).await;
+                        let snapshot = self.refresh_external_disk(snapshot, client_id, false).await;
                         let lsp_degraded = self.sync_managed_document(&snapshot).await;
                         Ok(CoreResponse::DocumentSnapshot {
                             snapshot,

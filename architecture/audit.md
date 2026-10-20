@@ -59,7 +59,7 @@ best-effort emission, redaction, backpressure, and operator reads).
 
 ## Action and visibility taxonomy
 
-Known actions (`AuditAction::ALL`, 26): `authentication`,
+Known actions (`AuditAction::ALL`, 28): `authentication`,
 `authorization_decision`, `membership_change`, `node_enrollment`,
 `session_create`, `session_attach`, `prompt_submit`,
 `provider_select`, `model_select`, `agent_delegate`,
@@ -67,7 +67,8 @@ Known actions (`AuditAction::ALL`, 26): `authentication`,
 `file_mutate`, `git_operation`, `worktree_lifecycle`, `job_submit`,
 `job_cancel`, `job_complete`, `remote_execute`,
 `chat_triggered_action`, `config_change`, `asset_refresh`,
-`audit_export`, `audit_query`, `work_order_lifecycle`.
+`audit_export`, `audit_query`, `work_order_lifecycle`,
+`human_shell_run`, `checkout_writer_refusal`.
 
 Writers use strict parsing (unknown actions fail closed at build
 time). Readers use lenient parsing: unknown stored actions degrade to
@@ -600,3 +601,24 @@ the `AuditAction::ALL` count of 26 and its exact name list, the
 1–100 query clamp (default 50) and the 200-event export bound, and
 `session_turn_controller` being applied at v65 through
 `SESSION_CONTROL_SCHEMA_STATEMENTS` rather than a standalone `CREATE TABLE`.
+
+**2026-10-20 (M005 corrective C004).** The `AuditAction::ALL` count in the
+taxonomy above was **stale at 26**; the canonical list in
+`crates/codegg-core/src/audit.rs` is **28**. The two actions it was missing
+are `human_shell_run` (M006) and `checkout_writer_refusal` (C004). The
+historical paragraph above records the count as it stood at its own
+verification and is left unchanged.
+
+`checkout_writer_refusal` is the durable **deny** event for the restricted
+writer profile: the C004 checkout reservation gate refuses a non-broker
+writer before its first effect, and that refusal — which never reaches the
+writer permit store, because it never happens — is recorded here. It is
+attributed to the transport-bound principal, carries the M003 decision
+provenance, and names the refused sink, the live group and the outcome. It
+carries no path, no file body and no other run's content.
+
+It is a **daemon-gate** live action: the refused operation never ran, so it
+has no daemon operation mapping. The gate owns the live evidence through
+`DAEMON_LIVE_AUDIT_HOOKS` in `crates/codegg-core/src/audit_instrumentation.rs`,
+and the declarative owner pin in `src/core/checkout_mediation.rs` fails the
+coverage guard if the gate or its emit symbol moves.

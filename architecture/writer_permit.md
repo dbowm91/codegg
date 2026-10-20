@@ -306,6 +306,93 @@ its own isolated worktree. C004 (non-broker sinks) and C005 (process denial)
 must complete the profile, and C006 must produce the real production path and
 the native Q1–Q5 evidence, before any shared mutation exists.
 
+## The checkout reservation gate (C004)
+
+C003 mediates the **model's** writers: the native file tools and the typed Git
+mutations, through the fence. CodeGG has writers that never reach the broker,
+and C004 found all of them unguarded: the document service, the human
+change-review LSP applier, project initialization, checkpoint restore, the
+managed-worktree admin requests and the HTTP file routes. A human with a
+broader approval profile could write into a checkout a live agent-run group
+was reserving, and nothing noticed.
+
+The gate is a **pre-effect reservation check**, not a permit. It answers one
+question from durable state — *is this checkout reserved, and who may write
+it?* — and refuses the write before its first effect if the answer is no.
+
+### The authority
+
+`crates/codegg-core/src/checkout_reservation.rs` owns the durable state
+machine. `CheckoutReservationService` resolves a target path to a **canonical
+checkout identity** (absolute, lexically normalized, canonicalized over its
+longest existing prefix, so an alias resolves to the same checkout and a
+linked worktree stays distinct from its parent), finds the managed worktree
+that contains it, and derives the reservation from that record's lease owner
+and the durable run-group record.
+
+A checkout is **reserved** exactly when its lease owner belongs to a **live**
+(non-terminal) agent-run group. The group's members may write it; nobody else
+may — not the project owner with a broader approval profile, and not a
+principal from another project. A checkout with no live group behind it is
+ordinary: an API write proceeds with no writer authority at all.
+
+The service is read-only. It takes no lock, holds no permit and never waits,
+which is what keeps it free of the lock-order inversion between the document
+revision lease, the repository lock and the permit.
+
+### The adapter
+
+`src/core/checkout_mediation.rs` is the daemon adapter. It names every
+mediated sink (`CheckoutWriterSink`), owns the typed `CheckoutConflict` a
+refused caller receives — the sink, the checkout's durable identity, the live
+group, the lease owner, and a recovery path — and owns the live durable deny
+event.
+
+The gate runs in `src/core/daemon.rs` **after** the M003 authorization
+decision and **before** dispatch. A refused writer therefore has no effect at
+all: no file write, no document revision, no index, branch or metadata
+change. The HTTP routes call the same authority and answer **409 Conflict**
+with the recovery path in the body.
+
+The fourteen mediated sinks are the document create/save/delete requests,
+the human change-review LSP apply, the project-init publication, the four
+checkpoint restore requests, the managed-worktree cleanup/archive requests,
+and the HTTP file write/delete and workspace-create routes.
+
+### The durable deny event
+
+The refusal is recorded as the `checkout_writer_refusal` audit action — a new
+`AuditAction` in `codegg-core`'s event-coverage matrix, with its own coverage
+row and a daemon-gate hook table (`DAEMON_LIVE_AUDIT_HOOKS`) pinned to its
+owner. The refused operation never ran, so the refusal has no daemon
+operation mapping; the gate owns the live evidence instead. The event names
+the sink, the group and the outcome — never a path, a file body or another
+run's content.
+
+### The project-local state
+
+CodeGG's project-local state lives under `<checkout>/.codegg/`. It is
+physically **inside** the checkout and is never claimed to be outside it. It
+is CodeGG-managed sidecar state: writing it changes no repository file, no
+Git index entry, no branch and no ref. Each writer root is classified
+individually in `docs/writer-disposition.toml` as `namespaced-state` (the
+path carries a per-actor identifier), `shared-sidecar` (a fixed name every
+actor writes) or `compatibility-store` (the legacy project-local SQLite
+file). The accepted consequence of a `shared-sidecar` root is recorded in the
+root's own note: two concurrent CodeGG writers may lose one line in
+CodeGG's *own* sidecar index. Nothing in the repository is affected.
+
+### The writer disposition manifest
+
+`docs/writer-disposition.toml` records, per root, the final effect owner, the
+checkout locator, the lifetime, the disposition and the mediation.
+`scripts/check_writer_disposition.py` enforces it: every root declares how it
+is mediated, a mediated root names the file that holds its mediation call
+and the markers that identify it, and **every sink the mediator declares is
+claimed by exactly one manifest root**. Removing a mediation call, or a sink's
+manifest row, fails the guard — proved on the real tree by injected
+violations, not only in the self-test.
+
 ## What This Does Not Claim
 
 - **Not a filesystem exclusion.** The permit coordinates CodeGG's own writers.
@@ -313,13 +400,21 @@ the native Q1–Q5 evidence, before any shared mutation exists.
 - **Not a sandbox.** Nothing here contains a process.
 - **Not an enablement.** C003 routes the native file writers and the typed Git
   mutations through the fence, and it closes the model-supplied `workdir`
-  hole. It does **not** enable shared mutation: no production path places two
-  runs on one checkout, and the shared profile refuses every effect class
-  C004 and C005 have not yet qualified. C004, C005 and C006 own the rest.
+  hole. C004 mediates the non-broker writers with a pre-effect reservation
+  check. Neither enables shared mutation: no production path places two runs
+  on one checkout, and the shared profile refuses every effect class C005 has
+  not yet qualified. C005 and C006 own the rest.
+- **Not a permit for the non-broker path.** The C004 gate is a *check*. A
+  reserved checkout is refused to every writer outside the group even when the
+  group's own writer is idle. That is the deliberate trade: a check cannot
+  deadlock against the document or repository lock, and a permit could.
 - **Not a claim of mediation.** A permit existing does not mean any particular
   writer went through it. C003's own evidence is in
   `tests/writer_fence_c003.rs`, and it constructs the shared case directly
-  rather than waiting for a product path to exist.
+  rather than waiting for a product path to exist. C004's evidence is in
+  `tests/checkout_reservation_c004.rs` (through a real `CoreDaemon`) and
+  `tests/checkout_reservation_c004_http.rs` (through a real HTTP route), over
+  a temporary Git checkout.
 
 ## Verification
 

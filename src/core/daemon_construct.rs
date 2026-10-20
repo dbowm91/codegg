@@ -356,6 +356,19 @@ impl CoreDaemon {
                 Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
             )
         });
+        // M005 corrective C004: the daemon's mediation for non-broker
+        // checkout writers. The reservation authority needs the managed
+        // worktree service (to resolve a canonical checkout identity) and
+        // the run-group service (to learn whether a live group holds that
+        // checkout). A local-only daemon has neither a durable worktree
+        // nor a durable group, so it can never share a checkout and has
+        // nothing to refuse.
+        let checkout_mediator = super::checkout_mediation::CheckoutMediator::new(Some(
+            codegg_core::checkout_reservation::CheckoutReservationService::new(
+                worktree_service.clone(),
+                Some(deps.run_group_service.clone()),
+            ),
+        ));
         // Keep `deps.workspace_services` in sync so callers reading the
         // field observe the active registry.
         let mut deps = deps;
@@ -752,6 +765,7 @@ impl CoreDaemon {
             context_resolver,
             workspace_services,
             worktree_service,
+            checkout_mediator,
             _worktree_reconcile_handle: worktree_reconcile_handle,
             _writer_permit_reconcile_handle: writer_permit_reconcile_handle,
             eggpool_provisioner,

@@ -126,13 +126,18 @@ pub enum AuditAction {
     AuditQuery,
     WorkOrderLifecycle,
     HumanShellRun,
+    /// M005 C004: a checkout writer was refused because the checkout is
+    /// reserved by a live agent-run group. This is the durable deny event
+    /// for the non-broker writer surface — the side that never reaches the
+    /// writer permit store because it is refused before any effect.
+    CheckoutWriterRefusal,
     #[serde(other)]
     Unknown,
 }
 
 impl AuditAction {
     /// Every known action in canonical order.
-    pub const ALL: [&'static str; 27] = [
+    pub const ALL: [&'static str; 28] = [
         "authentication",
         "authorization_decision",
         "membership_change",
@@ -160,6 +165,7 @@ impl AuditAction {
         "audit_query",
         "work_order_lifecycle",
         "human_shell_run",
+        "checkout_writer_refusal",
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -191,6 +197,7 @@ impl AuditAction {
             Self::AuditQuery => "audit_query",
             Self::WorkOrderLifecycle => "work_order_lifecycle",
             Self::HumanShellRun => "human_shell_run",
+            Self::CheckoutWriterRefusal => "checkout_writer_refusal",
             Self::Unknown => "unknown",
         }
     }
@@ -225,6 +232,7 @@ impl AuditAction {
             "audit_query" => Self::AuditQuery,
             "work_order_lifecycle" => Self::WorkOrderLifecycle,
             "human_shell_run" => Self::HumanShellRun,
+            "checkout_writer_refusal" => Self::CheckoutWriterRefusal,
             _ => {
                 return Err(AuditError::UnknownAction(value.to_owned()));
             }
