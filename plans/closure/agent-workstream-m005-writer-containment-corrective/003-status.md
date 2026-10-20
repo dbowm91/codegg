@@ -201,6 +201,46 @@ The broker carries the fence and never acquires from it. A read, a denied
 call, or a job submission holds no permit and writes nothing — which is also
 what keeps a nested dispatch from acquiring the same checkout twice.
 
+### 3.5 A C001 debt discharged here: the process launchers were outside the manifest
+
+C001's manifest named the *tools* that reach the process sinks but not the
+*launchers* that perform them, and the guard only detected modules containing
+a filesystem-effect primitive — so a module whose child does the writing was
+invisible to it. The final effect owner of every CodeGG-managed process
+writer therefore sat outside the enforceable manifest, and the guard's scan
+lists did not cover the launchers.
+
+That made C004's and C005's worklist wrong: it named the callers, not the
+owners. Ten owners were undeclared:
+
+| Owner | Root | Sink |
+|---|---|---|
+| `ManagedProcessService` | `src/managed_process.rs` | the single owner of every finite process writer |
+| `ManagedArgvExecutor`, `TestJobExecutor`, `PythonJobExecutor` | `src/scheduler/executors.rs` | the durable job launch surface |
+| `PythonJobExecutor` | `src/python_script/executor.rs` | the Python subsystem's own launch |
+| `InteractiveProcessService` | `src/interactive_process.rs` | the PTY-backed interactive shell |
+| `LocalClient` | `src/mcp/local.rs` | the local MCP stdio child |
+| `egglsp launch::spawn_server` | `crates/egglsp/src/launch.rs` | the LSP server child |
+| `ProcessRuntime` | `src/plugin/runtime/process.rs` | the process-backed plugin runtime |
+| `ShellCommandHook` | `src/hooks/mod.rs` | the hook shell adapter |
+| `Formatter::format_file` | `src/tool/formatter.rs` | the formatter's formatting command |
+| `ShellRuntime::spawn` | `src/shell/runtime.rs` | the human `!` shell |
+
+All ten are now declared in `docs/writer-disposition.toml` with the
+`denied-process` disposition C005 will implement, and the guard now scans
+them: `scripts/check_writer_disposition.py` gained `PROCESS_SURFACE_FILES`
+and a launch-site primitive, so a launcher is a writer root on its own
+account. The manifest went from 39 declared roots to 49, and the guard's
+detected writer modules from 20 to 30.
+
+**Guard non-vacuity was proved on the real tree.** Removing the
+`module.managed_process` manifest entry made the guard fail with
+`writer module 'src/managed_process.rs' has no disposition`; adding
+`src/tool/bash/process.rs` to the launcher list — a real launcher with no
+manifest entry — made the guard fail with the same class of error for all
+eleven launchers. Both injections were reverted and the guard returned to
+passing.
+
 ## 4. Verification executed
 
 See §4.4 for the environment note that applies to the workspace-wide sweep.
@@ -340,6 +380,12 @@ for the test and clippy runs, and in the shared directory for
   to say no writer consults the permit, which C003 made false.
 - `architecture/overview.md` — the Checkout Writer Permit row was corrected
   for the same reason.
+- `docs/writer-disposition.toml` — ten CodeGG-managed process launchers were
+  added as declared `denied-process` roots (§3.5), and the header's claim
+  that no writer consults the permit was corrected.
+- `scripts/check_writer_disposition.py` — the guard now scans the process
+  launchers, so a launcher without a declared disposition fails the guard
+  rather than sitting outside it (§3.5).
 - `plans/implementation/agent-workstream-m005-writer-containment-corrective/003-native-file-and-git-writer-interposition.md` — the status line was advanced from "ready … not started" to closed, with this record as its closure.
 
 ## 10. Unresolved findings

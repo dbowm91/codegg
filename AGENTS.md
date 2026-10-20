@@ -12,7 +12,8 @@ scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/des
                           # scheduler-bypass,
                           # config-merge-coverage, no-hardcoded-models, provider
                           # wire/catalog/resilience +
-                          # OpenAI endpoint, Eggwork target routing, cargo check workspace
+                          # OpenAI endpoint, Eggwork target routing,
+                          # writer-disposition, cargo check workspace
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
@@ -132,6 +133,12 @@ change-triggered (`ls scripts/check_*` for the full list):
   changing any model list → `check_no_hardcoded_models.py` (CodeGG ships **no**
   compiled-in model catalog; discovery is canonical, config models are
   additive — see `architecture/provider.md` "Model discovery authority");
+  adding a **writer surface** (a tool that can mutate a checkout, a daemon
+  module that performs a filesystem effect, or a CodeGG-managed process
+  launcher) → `check_writer_disposition.py`, which requires an explicit
+  disposition in `docs/writer-disposition.toml`. The launcher list lives in
+  the guard's `PROCESS_SURFACE_FILES`: a new launcher is a deliberate
+  addition there *and* in the manifest, never a silent omission;
   projection
   transport → `check_projection_*.py` +
   `check_websocket_bounds.py`; provider lifecycle → `check_provider_connections_*.sh`

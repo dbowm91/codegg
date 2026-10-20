@@ -159,6 +159,12 @@ jobs:
       - name: Shell policy test-safety fixtures
         run: python3 scripts/test_shell_policy_test_safety.py
 
+      - name: Writer disposition guard
+        run: python3 scripts/check_writer_disposition.py
+
+      - name: Writer disposition guard self-test
+        run: python3 scripts/check_writer_disposition.py --self-test
+
       - name: Formatting
         run: cargo fmt --check --all
 

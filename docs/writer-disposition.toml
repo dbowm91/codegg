@@ -16,12 +16,18 @@
 #   own predecessor closures. This manifest exists so that a new writer route
 #   cannot appear without someone deciding its disposition explicitly.
 #
-#   C002 has since shipped the checkout writer permit itself
-#   (crates/codegg-core/src/writer_permit.rs, src/core/writer_permit.rs).
-#   **No writer consults it yet** -- C003 and C004 are what route writers
-#   through it -- so the permit exists without fencing anything, and every
-#   disposition below is still a statement of intent rather than a fact about
-#   the running system.
+#   C002 shipped the checkout writer permit itself
+#   (crates/codegg-core/src/writer_permit.rs, src/core/writer_permit.rs) and
+#   C003 routed the native file writers and the typed Git mutations through
+#   the checkout writer fence (src/tool/writer_fence.rs,
+#   src/core/writer_fence.rs). C003's containment rule is a fact about the
+#   running system: a native writer whose target resolves outside the run's
+#   own checkout is refused before the effect.
+#
+#   The remaining dispositions are still statements of intent rather than
+#   facts. C004 (non-broker sinks), C005 (process denial) and C006 (the
+#   production path) remain, and no shared mutation exists yet: nothing in
+#   production places two runs on one checkout.
 #
 # GUARD
 #   scripts/check_writer_disposition.py fails when a model-facing writer tool
@@ -546,6 +552,141 @@ locator = "workspace-root"
 lifetime = "request-scoped"
 kind = "module"
 note = "HTTP workspace routes that write project-local state inside the checkout."
+
+# ---------------------------------------------------------------------------
+# CodeGG-managed process launchers. These are the *final effect owners* of
+# the process sinks C001 recorded in
+# `plans/implementation/agent-workstream-m005-writer-containment-corrective/c001-evidence/02-process-persistent-sinks.md`.
+#
+# The manifest already named the *tools* that reach most of these sinks, but
+# not the launchers that perform them, so the owner of every process writer
+# was outside the manifest. A launcher is a writer root on its own account:
+# what its child writes is not statically knowable, so the root is declared
+# and denied rather than inferred from the command text.
+#
+# C005 owns the deny contract for these. Until then the disposition is a
+# statement of the required outcome, not a behaviour.
+# ---------------------------------------------------------------------------
+
+[[root]]
+id = "module.managed_process"
+path = "src/managed_process.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "ManagedProcessService"
+locator = "canonical_workdir from the tool's allowed paths, else the workspace root"
+lifetime = "request-scoped for the child, but a descendant that calls setsid escapes the process-group cleanup"
+kind = "process"
+note = "The single owner of every finite process writer: bash, terminal, formatter, the plugin runtime, the hook shell adapter and the human shell all launch through it."
+
+[[root]]
+id = "module.scheduler_executors"
+path = "src/scheduler/executors.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "ManagedArgvExecutor, TestJobExecutor, PythonJobExecutor"
+locator = "the durable job payload's cwd"
+lifetime = "durable; the process outlives the submitting request by design"
+kind = "process"
+note = "The durable job launch surface for build, lint, format, test and Python jobs. The job kinds that matter carry no exclusivity key, so a job writer contends with nothing."
+
+[[root]]
+id = "module.python_script_executor"
+path = "src/python_script/executor.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "PythonJobExecutor"
+locator = "the request's cwd, validated against an explicit workspace root"
+lifetime = "request-scoped, subject to the same descendant escape as every managed child"
+kind = "process"
+note = "The Python subsystem's own managed launch. Its validator falls back to the process cwd when no root is supplied, which is the relative-path fallback C001 gap 8 recorded."
+
+[[root]]
+id = "module.interactive_process"
+path = "src/interactive_process.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "InteractiveProcessService"
+locator = "ExecutionContext::resolve_relative_cwd over the canonical workspace root"
+lifetime = "long-lived by design; detach leaves the process running"
+kind = "process"
+note = "The PTY-backed interactive shell. A human surface rather than a model tool, and it has no filesystem sandbox on this path."
+
+[[root]]
+id = "module.mcp_local_client"
+path = "src/mcp/local.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "LocalClient"
+locator = "the MCP server's configured working directory"
+lifetime = "persistent; the server outlives the request that started it"
+kind = "process"
+note = "The local MCP stdio child. The child sets no current_dir at all, which is C001 gap 11."
+
+[[root]]
+id = "module.egglsp_server_launch"
+path = "crates/egglsp/src/launch.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "egglsp launch::spawn_server"
+locator = "the language server's configured root"
+lifetime = "persistent; the server is reaped by the egglsp runtime"
+kind = "process"
+note = "The LSP server child. The LSP-mediated edit application is a native writer and is fenced by C003; the server process itself is a process writer."
+
+[[root]]
+id = "module.plugin_process_runtime"
+path = "src/plugin/runtime/process.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "ProcessRuntime"
+locator = "the plugin's configured working directory"
+lifetime = "request-scoped, subject to the same descendant escape as every managed child"
+kind = "process"
+note = "The process-backed plugin runtime. It launches through ManagedProcessService, so the managed-process lifetime rules apply. C001 gap 11 recorded that the daemon-cwd guard does not cover this file."
+
+[[root]]
+id = "module.hook_shell_adapter"
+path = "src/hooks/mod.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "ShellCommandHook"
+locator = "the hook's configured working directory"
+lifetime = "request-scoped, subject to the same descendant escape as every managed child"
+kind = "process"
+note = "The hook shell adapter. C001 gap 11 recorded that the daemon-cwd guard does not cover this file."
+
+[[root]]
+id = "tool.formatter"
+path = "src/tool/formatter.rs"
+surface = "direct-tool"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "Formatter::format_file"
+locator = "the tool's workspace root"
+lifetime = "request-scoped"
+kind = "process"
+note = "The formatter's file-formatting command. C001 recorded this row as dead code; it is declared here so that the root is decided rather than implied if the formatter is wired."
+
+[[root]]
+id = "module.shell_runtime"
+path = "src/shell/runtime.rs"
+surface = "process"
+scope = "checkout-writer"
+disposition = "denied-process"
+owner = "ShellRuntime::spawn"
+locator = "the human shell's session workspace root"
+lifetime = "request-scoped for the stream, but the child may detach"
+kind = "process"
+note = "The human `!` shell. Human-originated rather than model-originated, and its principal and authority path are materially stronger, but it is still a process writer of the checkout."
 
 # ---------------------------------------------------------------------------
 # Explicitly out of contract. Recorded so the boundary is visible, not implied.

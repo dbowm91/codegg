@@ -16,6 +16,12 @@ WHAT THIS GUARD DELIBERATELY DOES NOT DO
     otherwise. The guard reasons about *call sites, owners and declared
     metadata* -- never about effects inferred from command text.
 
+    It DOES require a disposition for every CodeGG-managed *process launcher*,
+    because a launcher is a writer root even when it performs no filesystem
+    effect itself: the child does. The launchers are listed explicitly in
+    PROCESS_SURFACE_FILES, so a new one is a deliberate addition rather than
+    a silent omission.
+
     It grants no permission, enables no writer, and creates no permit. It is
     a contract guard: it fails when a writer route lacks a disposition.
 
@@ -126,6 +132,36 @@ WRITER_SURFACE_FILES = (
     "src/git_recovery.rs",
     "src/git_network_ops.rs",
     "src/tool/git.rs",
+)
+
+# CodeGG-managed process launchers. A module that launches a child process
+# is a writer root on its own account: what the child writes is not
+# statically knowable, so the root is declared and denied rather than
+# inferred from the command text.
+#
+# The manifest named the *tools* that reach most of these sinks but not the
+# launchers that perform them, so the final effect owner of every process
+# writer sat outside the manifest. These are the owners named by
+# `c001-evidence/02-process-persistent-sinks.md`.
+PROCESS_SURFACE_FILES = (
+    "src/managed_process.rs",
+    "src/scheduler/executors.rs",
+    "src/python_script/executor.rs",
+    "src/interactive_process.rs",
+    "src/mcp/local.rs",
+    "crates/egglsp/src/launch.rs",
+    "src/plugin/runtime/process.rs",
+    "src/hooks/mod.rs",
+    "src/tool/formatter.rs",
+    "src/shell/runtime.rs",
+)
+
+# A process launch is a writer root even when the module performs no
+# filesystem effect itself: the child does. This is a *site* signal, not an
+# effect claim -- the disposition of each such root is declared, never
+# inferred.
+PROCESS_LAUNCH_PRIMITIVES = re.compile(
+    r"\b(?:Command::new|ManagedProcessService|spawn_server)\b"
 )
 
 _TOOL_NAME_RE = re.compile(
@@ -244,6 +280,14 @@ def detect_writer_modules() -> set[str]:
                 path.read_text(encoding="utf-8", errors="replace")
             )
             if has_effect_primitive(text):
+                found.add(rel)
+    for rel in PROCESS_SURFACE_FILES:
+        path = ROOT / rel
+        if path.is_file():
+            text = strip_test_modules(
+                path.read_text(encoding="utf-8", errors="replace")
+            )
+            if PROCESS_LAUNCH_PRIMITIVES.search(text):
                 found.add(rel)
     return found
 
