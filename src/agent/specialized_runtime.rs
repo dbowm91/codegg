@@ -182,6 +182,7 @@ async fn run_research_child(
         max_tool_calls: Some(MAX_CHILD_TOOL_CALLS),
         parent_model: Some(parent_model.into()),
         workspace_root: Some(workspace.to_path_buf()),
+        workspace_id: None,
         workspace_locks: None,
         // M005: research children inherit the parent WorkspaceWrite
         // ceiling by default; read-only evidence work narrows further

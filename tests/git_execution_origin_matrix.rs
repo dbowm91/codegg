@@ -127,9 +127,10 @@ async fn all_manifests(store: &MemRunStore) -> Vec<codegg_core::run_store::RunMa
     out
 }
 
-fn make_bash_tool(store: Arc<MemRunStore>) -> BashTool {
+fn make_bash_tool(store: Arc<MemRunStore>, workspace_root: &Path) -> BashTool {
     std::env::remove_var("CODEGG_ROUTING_DISABLE");
     BashTool::new()
+        .with_workspace_root(workspace_root.to_path_buf())
         .with_run_store(store)
         .with_command_intent_config(active_config())
 }
@@ -471,9 +472,9 @@ async fn row_4_bash_simple_git_read() {
         return;
     }
 
-    let _repo = fresh_repo();
+    let repo = fresh_repo();
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(store.clone());
+    let tool = make_bash_tool(store.clone(), repo.path());
 
     // Verify classification first.
     let intent = classify_command("git status");
@@ -546,7 +547,7 @@ async fn row_5_bash_simple_git_mutation() {
         ..Default::default()
     };
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(store.clone()).with_command_intent_config(conservative);
+    let tool = make_bash_tool(store.clone(), repo.path()).with_command_intent_config(conservative);
 
     // Verify classification picks GitMutating.
     let intent = classify_command("git add new_file.txt");
@@ -669,7 +670,7 @@ async fn row_5b_bash_simple_git_mutation_active() {
     let mut cic = active_config();
     // Track U: enable the new local-mutation routing gate.
     cic.route_git_local_mutation = Some(codegg::config::schema::RouteLevel::Active);
-    let tool = make_bash_tool(store.clone()).with_command_intent_config(cic);
+    let tool = make_bash_tool(store.clone(), repo.path()).with_command_intent_config(cic);
 
     // Stage the file. The test repo is outside the workspace, so use
     // `git -C <repo> add ...`. The bash-translated dispatcher handles
@@ -800,7 +801,7 @@ async fn row_5c_bash_typed_git_mutation_active() {
     let store = Arc::new(MemRunStore::new());
     let mut cic = active_config();
     cic.route_git_local_mutation = Some(codegg::config::schema::RouteLevel::Active);
-    let tool = make_bash_tool(store.clone()).with_command_intent_config(cic);
+    let tool = make_bash_tool(store.clone(), &repo_root).with_command_intent_config(cic);
 
     // Pure `git add <file>` invocation. The parser types this as
     // `Stage` (not ManagedGitArgv), so `dispatch_to_git` runs the
@@ -963,7 +964,11 @@ async fn row_7_raw_shell_with_git_leading_command() {
 
     // Execute via BashTool without active routing (raw shell path).
     let store = Arc::new(MemRunStore::new());
-    let mut tool = BashTool::new().with_run_store(store.clone());
+    let mut tool = BashTool::new()
+        .with_workspace_root(
+            std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+        )
+        .with_run_store(store.clone());
     // Use observe config so git pipes stay as raw shell.
     use codegg::config::schema::CommandIntentMode;
     tool = tool.with_command_intent_config(codegg::config::schema::CommandIntentConfig {

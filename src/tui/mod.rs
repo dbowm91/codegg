@@ -2158,6 +2158,10 @@ mod async_cmd_tests {
         app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
             endpoint: "unix:///tmp/core.sock".into(),
         };
+        // Socket-daemon mode carries requests through CoreClient. Keep the
+        // client present even though this fixture has no event loop to execute
+        // the eventual async request.
+        app.set_core_client(std::sync::Arc::new(crate::core::InprocCoreClient::default()));
         let mut tab = crate::tui::app::state::ProjectTabState::empty(
             crate::tui::app::state::ProjectTabId::new(),
             "test".into(),
@@ -2940,8 +2944,10 @@ mod async_cmd_tests {
 pub mod document_session;
 pub mod editor;
 pub mod editor_completion;
+pub mod editor_effect;
 pub mod editor_highlight;
 pub mod editor_lsp;
+pub mod editor_match;
 pub mod file_tree;
 pub mod file_tree_coordinator;
 pub mod unified_diff;

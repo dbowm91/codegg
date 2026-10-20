@@ -218,6 +218,7 @@ mod tests {
             model: "model".into(),
             authority_digest: "digest".into(),
             budget: AgentRunBudget::default(),
+            shared_scratch: Vec::new(),
             status: AgentRunStatus::Failed,
             terminal: Some(AgentRunTerminal::Failed),
             result_ref: None,

@@ -213,6 +213,7 @@ async fn create_linked_agent_run(
                 model: "model".to_string(),
                 authority_digest: "authority".to_string(),
                 budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
             },
         )
         .await

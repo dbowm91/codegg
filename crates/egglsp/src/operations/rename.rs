@@ -131,6 +131,32 @@ impl super::LspOperations {
         column: u32,
     ) -> Result<Option<PrepareRenameResponse>, LspError> {
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.prepare_rename_unchecked_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// [`prepare_rename_unchecked`](Self::prepare_rename_unchecked) against
+    /// an already-warm client key. Warm-only by construction: the caller
+    /// resolved `key` itself, so nothing below can transitively reach
+    /// `get_or_create_client` and start a language server.
+    pub async fn prepare_rename_unchecked_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Option<PrepareRenameResponse>, LspError> {
+        self.prepare_rename_unchecked_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn prepare_rename_unchecked_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Option<PrepareRenameResponse>, LspError> {
         let uri = url_to_file_path_from_url(file_path)?;
 
         let params = serde_json::to_value(TextDocumentPositionParams {
@@ -145,7 +171,7 @@ impl super::LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/prepareRename", params)
+            .send_request(key, "textDocument/prepareRename", params)
             .await?;
 
         if resp.is_null() {
@@ -239,6 +265,34 @@ impl super::LspOperations {
         line: u32,
         column: u32,
     ) -> Result<PrepareRenameResult, LspError> {
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.prepare_rename_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// [`prepare_rename_typed`](Self::prepare_rename_typed) against an
+    /// already-warm client key. Warm-only by construction, and the
+    /// PrepareRename decision is taken against the same key that then answers
+    /// the request — a decision resolved separately could describe a different
+    /// server.
+    pub async fn prepare_rename_typed_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<PrepareRenameResult, LspError> {
+        self.prepare_rename_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn prepare_rename_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<PrepareRenameResult, LspError> {
         // Inspect the explicit capability decision so we can
         // distinguish Supported / Unsupported / Unknown.
         // `require_capability` would collapse Unsupported and
@@ -247,7 +301,7 @@ impl super::LspOperations {
         // rename pipeline skips prepare-rename when the server
         // does not advertise it).
         match self
-            .capability_decision_for_file(file_path, LspSemanticOperation::PrepareRename)
+            .capability_decision_for_key(key, LspSemanticOperation::PrepareRename)
             .await?
         {
             CapabilityDecision::Supported => {}
@@ -266,7 +320,7 @@ impl super::LspOperations {
             }
         }
         let resp = self
-            .prepare_rename_unchecked(file_path, line, column)
+            .prepare_rename_unchecked_for_warm_client(key, file_path, line, column)
             .await?;
         Ok(PrepareRenameResult::from_response(resp))
     }
@@ -309,6 +363,42 @@ impl super::LspOperations {
         new_name: &str,
         allowed_root: Option<&Path>,
     ) -> Result<RenamePreview, LspError> {
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.rename_preview_with_key(&key, file_path, line, column, new_name, allowed_root)
+            .await
+    }
+
+    /// [`rename_preview_typed`](Self::rename_preview_typed) against an
+    /// already-warm client key.
+    ///
+    /// Warm-only by construction, and this is the flow where it mattered
+    /// most: rename consults *two* capability decisions, syncs the document
+    /// from disk, and stamps the server generation, and every one of those
+    /// used to resolve its own client. Two gates answering about different
+    /// servers would let a preview describe edits from a client other than
+    /// the one the caller asked.
+    pub async fn rename_preview_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+        new_name: &str,
+        allowed_root: Option<&Path>,
+    ) -> Result<RenamePreview, LspError> {
+        self.rename_preview_with_key(key, file_path, line, column, new_name, allowed_root)
+            .await
+    }
+
+    async fn rename_preview_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+        new_name: &str,
+        allowed_root: Option<&Path>,
+    ) -> Result<RenamePreview, LspError> {
         if new_name.is_empty() {
             return Err(LspError::RequestFailed(
                 "new_name must not be empty".to_string(),
@@ -329,7 +419,7 @@ impl super::LspOperations {
         // Step 1: explicit Rename capability gate. The server MUST
         // advertise rename; if it does not, fail fast with a
         // structured `LspUnavailable` so the caller can react.
-        self.require_capability(file_path, LspSemanticOperation::Rename)
+        self.require_capability_for_key(key, LspSemanticOperation::Rename)
             .await?;
 
         // Step 2: inspect the explicit PrepareRename decision so
@@ -340,7 +430,7 @@ impl super::LspOperations {
         // not advertise prepare-rename" with "the position is
         // not renameable".
         let prepare_decision = self
-            .capability_decision_for_file(file_path, LspSemanticOperation::PrepareRename)
+            .capability_decision_for_key(key, LspSemanticOperation::PrepareRename)
             .await?;
 
         let mut warnings: Vec<String> = Vec::new();
@@ -348,7 +438,8 @@ impl super::LspOperations {
             CapabilityDecision::Supported => {
                 // Server advertises prepare-rename. Call it and
                 // branch on the typed result.
-                self.prepare_rename_typed(file_path, line, column).await?
+                self.prepare_rename_typed_for_warm_client(key, file_path, line, column)
+                    .await?
             }
             CapabilityDecision::Unsupported(u) => {
                 // Server does NOT advertise prepare-rename but
@@ -381,8 +472,7 @@ impl super::LspOperations {
         // renameable, do not send the rename request — return a
         // structured empty preview.
         if matches!(prepared, PrepareRenameResult::NotRenameable) {
-            let (key, _root) = self.service.get_or_create_client(file_path).await?;
-            let server_generation = self.service.generation_for_key(&key).await;
+            let server_generation = self.service.generation_for_key(key).await;
             return Ok(RenamePreview {
                 old_name: None,
                 new_name: new_name.to_string(),
@@ -409,7 +499,7 @@ impl super::LspOperations {
         // raw WorkspaceEdit (so we can inspect document_changes
         // for resource ops) AND the prepared WorkspaceEditPreview.
         let (raw_edit, preview) = self
-            .rename_raw_and_preview(file_path, line, column, new_name, allowed_root)
+            .rename_raw_and_preview_for_key(key, file_path, line, column, new_name, allowed_root)
             .await?;
 
         // Step 4: scan for resource operations in document_changes.
@@ -498,8 +588,7 @@ impl super::LspOperations {
             });
         }
 
-        let (key, _root) = self.service.get_or_create_client(file_path).await?;
-        let server_generation = self.service.generation_for_key(&key).await;
+        let server_generation = self.service.generation_for_key(key).await;
 
         Ok(RenamePreview {
             old_name,
@@ -514,27 +603,37 @@ impl super::LspOperations {
         })
     }
 
-    /// Private helper: run the rename pipeline and return BOTH
-    /// the raw `WorkspaceEdit` (for resource-op inspection) AND
-    /// the prepared `WorkspaceEditPreview` (for the model-facing
-    /// surface). Reuses the same logic as the public
+    /// Run the rename pipeline and return BOTH the raw `WorkspaceEdit`
+    /// (for resource-op inspection) AND the prepared `WorkspaceEditPreview`
+    /// (for the model-facing surface). Reuses the same logic as the public
     /// `rename_preview_unchecked` method.
-    pub(crate) async fn rename_raw_and_preview(
+    ///
+    /// Key-addressed because the document sync needs a key: the unkeyed shape
+    /// reached `ensure_file_open_from_disk`, which resolves a client and can
+    /// therefore start a server on a path that is supposed to be read-only.
+    /// Resolving here as well would send a second `didChange` for the same
+    /// file and inflate the document version, so the single sync stays in the
+    /// keyed body.
+    pub(crate) async fn rename_raw_and_preview_for_key(
         &self,
+        key: &str,
         file_path: &Path,
         line: u32,
         column: u32,
         new_name: &str,
         allowed_root: Option<&Path>,
     ) -> Result<(WorkspaceEdit, crate::edit::WorkspaceEditPreview), LspError> {
-        let (key, _uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+        let _uri_str = self
+            .service
+            .ensure_file_open_from_disk_for_key(key, file_path)
+            .await?;
         let uri = url_to_file_path_from_url(file_path)?;
 
         // Best-effort prepareRename — ignored on failure.
         let _ = self
             .service
             .send_request(
-                &key,
+                key,
                 "textDocument/prepareRename",
                 serde_json::to_value(TextDocumentPositionParams {
                     text_document: TextDocumentIdentifier {
@@ -564,7 +663,7 @@ impl super::LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/rename", params)
+            .send_request(key, "textDocument/rename", params)
             .await?;
 
         if resp.is_null() {

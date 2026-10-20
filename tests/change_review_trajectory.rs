@@ -27,6 +27,7 @@ fn open_review() -> ChangeReviewState {
         "agent".to_string(),
         false,
         parse_review(&[("src/lib.rs".to_string(), PREVIEW.to_string())]),
+        vec!["src/lib.rs".to_string()],
     );
     state
 }
@@ -139,6 +140,7 @@ fn a_candidate_with_several_files_is_reviewed_file_by_file() {
             ("src/a.rs".to_string(), PREVIEW.to_string()),
             ("src/b.rs".to_string(), PREVIEW.to_string()),
         ]),
+        vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
     );
     assert_eq!(
         state.active_patch().map(|p| p.path.as_str()),
@@ -161,6 +163,7 @@ fn a_stale_candidate_is_flagged_before_a_decision_is_possible() {
         "agent".to_string(),
         true,
         parse_review(&[("src/lib.rs".to_string(), PREVIEW.to_string())]),
+        vec!["src/lib.rs".to_string()],
     );
     assert!(state.stale, "a stale candidate must be visible to the user");
     // The state still allows a decision; the *view* is what warns. Refusing to

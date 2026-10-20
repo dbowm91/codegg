@@ -175,7 +175,7 @@ fn the_vertical_motions_land_on_the_shared_geometrys_offsets() {
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(
             caret(&app),
-            text_geometry::move_vertical(text, offset, 1),
+            text_geometry::move_vertical(text, offset, 1, None),
             "`j` disagreed with the shared geometry at offset {offset}"
         );
 
@@ -184,7 +184,7 @@ fn the_vertical_motions_land_on_the_shared_geometrys_offsets() {
         press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(
             caret(&app),
-            text_geometry::move_vertical(text, offset, -1),
+            text_geometry::move_vertical(text, offset, -1, None),
             "`k` disagreed with the shared geometry at offset {offset}"
         );
     }

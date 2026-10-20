@@ -74,8 +74,11 @@ composer's buffer). The motions — `word_forward`, `word_backward`, `word_end`,
 `next_char_boundary`, `prev_char_boundary` — are written once against the trait.
 
 The word policy is `is_word_byte`: ASCII alphanumerics, `_`, and every byte `>= 0x80`. The last
-part is what makes a byte-at-a-time scan safe: a byte inside a UTF-8 sequence is still word
-content, so the walk cannot mistake the interior of a character for a separator.
+part is what lets a scan classify a multi-byte character without decoding it — but the scan must
+read that character's **first** byte, not one byte at `offset`. A one-byte read needs a character
+boundary at *both* ends, so it is `Err` for the first byte of a multi-byte character as much as
+for its interior. (This paragraph asserted the opposite when the milestone closed; §6.1 records
+the correction.)
 
 ### 3.2 The editor's migration — `src/tui/editor.rs`
 
@@ -161,6 +164,46 @@ The one subtlety worth recording: the editor's word scan reads one byte per step
 `read_bytes`, and the shared module preserves that exactly for a `DocumentSnapshot` (its
 `byte_at` default reads a one-byte range). The composer, whose buffer is a `String`, gets an
 allocation-free `byte_at` instead. The migration is therefore a move rather than a rewrite.
+
+### 6.1 A correction this milestone got wrong
+
+**Corrected 2026-10-20, during the reconciliation with `main`.** The subtlety recorded above was
+wrong, and it was wrong in the direction that mattered. The two adapters therefore classified the
+*same* offset differently — the exact drift the shared module was created to remove. A
+`DocumentSnapshot` one-byte read is `Err` for the **first** byte of a multi-byte character as much
+as for its interior, so the editor's scan walked past every non-ASCII character, while the
+composer's raw-byte read classified the same character as word content.
+
+The TUI editor Helix-parity workstream found the same defect independently in the editor and
+fixed it there — see `plans/closure/tui-editor-helix-parity/005-status.md` §5, "A pre-existing
+defect found and fixed: `w`/`b`/`e` skipped all non-ASCII", and §6, "An unbounded loop, found by
+sampling a stack". When that workstream was reconciled with `main`, the fix was carried **into the
+shared module** rather than left on one side of it:
+
+| | before | after |
+|---|---|---|
+| `DocumentSnapshot::byte_at` | one-byte range — `Err` at a multi-byte character's first byte | reads the whole character, returns its **first** byte (the editor's `leading_byte`) |
+| `str::byte_at` | the raw byte, so the interior of a character was classified as word content | `None` unless the offset is on a character boundary |
+| `word_end` | probed `offset + 1` | steps a whole character at a time |
+
+Both adapters now classify identically, and `text_geometry`'s own tests assert it **on non-ASCII
+text** — a case no test in this milestone covered, which is why the defect survived here. The
+milestone's AC-M3 evidence is extended by
+`a_string_and_a_snapshot_agree_on_word_boundaries_in_non_ascii_text` and
+`a_multi_byte_character_is_a_word_and_not_a_separator`; the first of them walks every offset of
+`日本語 text café naïve` and asserts that the `&str` and the `DocumentSnapshot` agree.
+
+The other half of the editor's fix — `move_vertical`'s `desired_column`, the sticky column a
+vertical run aims for — was carried into the shared module the same way, as an
+`Option<usize>` parameter. The composer passes `None` (it has no sticky column); the editor
+passes the column its own presentation is holding. The two surfaces therefore share the
+line-motion rule rather than keeping one copy each, and the editor's feature is not lost.
+
+**What this does not change.** The milestone's decision, its acceptance criteria, and its
+conclusion all stand: there is one word rule, the editor's private copy is deleted, and the two
+surfaces answer "where is a word" with one answer. What was false was the milestone's *account*
+of how the rule reads a byte — and it is corrected here rather than left for the next reader to
+find.
 
 ## 7. Migration and compatibility review
 

@@ -1110,38 +1110,548 @@ security signal pipeline that can escalate them, are described in
 Opening a file puts you in `NOR`, not `INS`. It is a surface you read before
 you type into, and `i` is one keystroke away. `NOR` gives the keyboard to the
 Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
-`v` selects by character, `x` selects the whole line (press again for one
-more), `d` deletes the selection, and `space y` copies it — the same keys
-`/terminal` uses in its viewing mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`,
-where typing goes into the file and `Esc` returns. `u`/`U` undo and redo, the
-Helix pair. In `NOR` anything the buffer does not claim types into the input
-box at the bottom, so you can talk to the agent without leaving the file. `Esc`
-never closes the editor; `:q` does.
+`W`/`B`/`E` jump by WORD, `v` selects by character, `x` selects the whole line
+(press again for one more), `d` deletes the selection, `y` and `space y` copy
+it, and `p`/`P` paste it back — the same keys `/terminal` uses in its viewing
+mode. `m` is Helix's match mode: `m m` jumps to the mate of the bracket under
+the cursor, `m s`/`m d`/`m r` surround the selection, and `m a`/`m i` select a
+text object — see [Match mode and text objects](#match-mode-and-text-objects).
+`i`/`a`/`I`/`A`/`o`/`O` enter `INS`, where typing goes into the file and
+`Esc` returns. `u`/`U` undo and redo, the Helix pair, and `Alt+u`/`Alt+U` walk
+the same history one entry at a time — see
+[History gestures](#history-gestures). In `NOR` anything the
+buffer does not claim types into the input box at the bottom, so you can talk
+to the agent without leaving the file. `Esc` never closes the editor; `:q` does.
 
-Three chords work in either mode, because they are round trips rather than
-verbs: `Ctrl+S` saves, `Ctrl+R` resyncs the replica after a transport failure,
-and `R` — `NOR` only — reloads from disk and throws the local draft away. Each
-chord has exactly one owner. In particular `U` is redo and `Ctrl+R` is resync;
-they are not two spellings of the same thing.
+Two chords work in either mode, because they are round trips rather than
+verbs: `Ctrl+S` saves and `Ctrl+R` resyncs the replica after a transport
+failure. Each chord has exactly one owner. In particular `U` is redo and
+`Ctrl+R` is resync; they are not two spellings of the same thing. Helix gives
+`Ctrl+s` and `Ctrl+r` different Insert-mode meanings — an undo checkpoint and
+a register prompt — and CodeGG declines both; see
+[Insert-mode chords](#insert-mode-chords).
+
+### History gestures
+
+`u` undoes and `U` redoes. `Alt+u` and `Alt+U` are Helix's `earlier` and
+`later`: they walk the same history, one entry back and one entry forward.
+
+The difference is what happens at the edge. `u` with nothing to undo, and `U`
+with nothing to redo, do nothing and say nothing — they always have. `Alt+u`
+at the oldest change says **no earlier change**, and `Alt+U` at the newest says
+**no later change**, in the status row. A key that silently does nothing is
+the one failure this editor is built to avoid, and these are the keys where
+you are most likely to be at the edge without knowing it.
+
+The history is **one** list with a cursor in it, not two stacks. An entry
+never moves to a different pile, so undo and redo are the same movement in
+opposite directions. While the cursor is not at the newest change, the status
+row says where it is — `history 1/3` — so you can see that you are standing
+in the middle of your own history. At the newest change it says nothing,
+because there is nothing to disclose.
+
+`Alt+u` and `Alt+U` are `NOR` gestures. In `INS` they are inert: the `INS`
+catch-all covers unmodified and `Shift`-modified keys only, so an `Alt` chord
+reaches the input box rather than vanishing.
+
+### Insert-mode chords
+
+`INS` has chords of its own, and they are the Helix ones. A chord may mean one
+thing in `NOR` and another in `INS` — `Ctrl+d` pages down in `NOR` and deletes
+one character forward in `INS` — and each still has exactly one owner.
+
+| Chord | What it does in `INS` |
+|---|---|
+| `Ctrl+h` | delete one character backward |
+| `Ctrl+d` | delete one character forward |
+| `Ctrl+j` | insert a newline |
+| `Ctrl+k` | delete to the end of the line |
+| `Ctrl+u` | delete to the start of the line |
+| `Ctrl+w`, `Alt+Backspace` | delete the previous word |
+| `Alt+d`, `Alt+Delete` | delete the next word |
+| `Ctrl+x` | open the completion popup, staying in `INS` |
+
+The two word deletions stop at the line boundary: `Ctrl+w` in column zero
+deletes nothing rather than reaching into the line above, and `Alt+d` at the
+end of a line does not eat the newline.
+
+Everything you type in one go in `INS` is **one** undo step. Leaving `INS`
+closes the burst, so a single `u` takes back the whole run rather than its
+last keystroke. A run ends early if you delete something, or move the cursor
+and type somewhere else — then the parts are separate steps, because they are
+separate edits. A reload throws the burst away with the rest of the local
+draft.
+
+To reload from disk and throw the local draft away, use `:e`. It used to be `R`,
+which now means something else — see [Change verbs](#change-verbs).
 
 The cursor is a block in `NOR` and a thin bar in `INS`, so you can always see
 where you are. `Ctrl+d` pages down and continues to the end of the file when a
 half-page would land past it.
+
+### Change verbs
+
+| Key | What it does |
+|---|---|
+| `p` / `P` | paste after / before the cursor or selection |
+| `y` | copy the selection |
+| `r` + char | replace the selection, or the character under the cursor |
+| `R` | replace the selection, or the character under the cursor, with the clipboard |
+| `~` | flip the case of the selection, or of the character under the cursor |
+| `` ` `` / `` Alt-` `` | set that text to lower / upper case |
+
+`y` and `p` together are a complete move-text loop: select, `y`, move, `p`.
+`y` behaves exactly like `space y`, including the toast — it is the same code
+path, not a second implementation.
+
+`r`, `R` and the three case keys all act on *the selection* when one is held
+and on *the character under the cursor* when none is. On a single character
+the two are the same thing, which is why `~` flips one letter when nothing is
+selected and a whole phrase when something is.
+
+Every one of these verbs acts on **all** held selections at once, and does it
+as a single undoable change. See [Selecting more than one region](#selecting-more-than-one-region)
+for how you get more than one in the first place.
+
+`y` over several selections copies them in reading order into the clipboard as
+one piece of text, so the order you see on screen is the order you get.
+
+A buffer you cannot write refuses to **grow** a selection: `v` and `x` report
+that they were refused instead of arming a highlight you cannot do anything
+with. It also refuses the verbs that would rewrite text — `&`, `Alt-(`, `Alt-)`,
+`o` and `O`. Moving the cursor still works, as do `v`, `x`, `C` and the merge
+keys: you can always read and select in a read-only file, you just cannot change
+it.
+
+`o` opens a line **below** the cursor's line and `O` opens one **above**, and
+both hand you the keyboard: you are typing into the line they opened, with the
+cursor on it. The line is a real document edit, so a read-only buffer refuses
+both and says so.
+
+The line `o` opens and the word you type into it are **two** undo steps: `u`
+takes back the word, and a second `u` takes back the line. The newline that
+ends the opened line sits *after* the text you type, so the two are not one
+contiguous change and cannot be one step. Everything you type in one go in
+`INS` is still **one** step — see
+[Insert-mode chords](#insert-mode-chords).
+
+`~` flips per character, so `~` on `abC` gives `Abc` and a second `~` gives
+back `abC`. `` ` `` and `` Alt-` `` **set** rather than flip: `` ` `` on `Abc`
+gives `abc` and pressing it again does nothing, which is what tells the two
+apart. Characters with no case — digits, punctuation, CJK — are left alone by
+all three, and text that is already the case you asked for reports nothing
+rather than pushing an undo step for no change.
+
+`r` shows its indicator while waiting, like `f` does, because the character it
+wants is the next keystroke. A key that cannot be that character — an arrow,
+`Esc`, `:` — is passed through and does its normal job instead of being eaten.
+
+**Paste reads the system clipboard**, and CodeGG keeps no editor-local register.
+`y` and `space y` are the same write. That means `p` pastes whatever is on the
+OS clipboard, including text you copied from another application — which is
+Helix's own behaviour, and is why `R` is "replace with the clipboard" here
+rather than "replace with a register". A clipboard the system refuses, and a
+clipboard holding nothing, are reported differently: with nothing on the
+clipboard, `p` says so rather than doing nothing in silence.
+
+The space menu carries the same family, so a reader looking for "the
+clipboard keys" finds them in one place: `space y` copies every selection,
+`space Y` copies **only** the main selection, and `space p`, `space P` and
+`space R` are the paste and replace verbs. `space Y` is the one that differs
+from the bare keys: with several regions held, `y` takes all of them and
+`space Y` takes just the main one. With nothing selected, `space Y` says
+"Nothing to yank" rather than putting an empty string on the clipboard.
+
+### Selecting more than one region
+
+Once you can build a set, every verb above applies to all of it at once. These
+are the keys that build and reshape the set.
+
+| Key | What it does |
+|---|---|
+| `C` / `Alt-C` | add a cursor on the next / previous line |
+| `%` | select the whole file |
+| `S` | split each selection into one selection per regex match |
+| `K` / `Alt-K` | keep / drop the selections whose text matches a regex |
+| `;` | collapse to a single cursor at the main selection's head |
+| `,` / `Alt-,` | keep only / remove the main selection |
+| `(` / `)` | move which selection is the main one |
+| `Alt-(` / `Alt-)` | rotate the selections' **contents** around the set |
+| `Alt-minus` | merge every selection into one |
+| `Alt-_` | merge only selections that touch; gaps stay |
+| `&` | pad every selection out to the widest one's width |
+| `Alt-;` | flip each selection's start and end |
+| `Alt-:` | make every selection run forwards |
+
+`(`/`)` move the main selection and change no text. `Alt-(`/`Alt-)` move the
+text and leave every selection where it is. They are the easiest pair in this
+list to confuse, and they are the only two pairs here where a mistake corrupts
+the buffer rather than just surprising you.
+
+`Alt-minus` and `Alt-_` differ the same way: `Alt-minus` bridges the gaps
+between your selections, `Alt-_` only merges selections that are already
+touching.
+
+`C` adds a cursor rather than moving one, so one press gives you two, two give
+you four, and the cursor stays on the main selection — pressing it near the end
+of a file adds only the cursors that had a line to move to, and says so.
+
+`&` measures in **display columns**, not bytes, so a tab and a CJK character
+count for what they occupy on screen. It pads after each selection, which
+equalises their widths and lines up whatever comes next. A selection wider than
+the 32 KiB measurement budget is measured over a prefix, so its padding is
+approximate — and `&` tells you that when it happens rather than leaving you to
+guess why one line looks wrong.
+
+### The regex keys
+
+`S`, `K` and `Alt-K` need a pattern, so they open the `:` command line already
+filled in with `split-regex `, `keep-regex ` or `remove-regex `. Type the
+pattern, press `Enter`, and `Esc` abandons it with nothing changed.
+
+They are commands rather than a private prompt because the `:` line already
+knows how to take text, how to show you what you are typing, and how to abort.
+The line you get is the line you could have typed by hand, and the pattern is
+listed in the palette. A pattern that will not compile, and one that matches
+nothing, are both reported and both leave your buffer alone.
+
+### The preview keys
+
+`=` and `space r` ask the language server what it **would** change, and — when
+the whole change is known — offer it for review.
+
+| Key | What it does |
+|---|---|
+| `=` | the format preview for this document: the diff, and how many edits that is |
+| `space r` | the rename preview for the symbol under the cursor: the old and new names, the files that would change, and the edits in each |
+
+`space r` needs a new name, so it opens the `:` command line already filled
+in with `rename-preview `. Type the name, press `Enter`, and the preview
+arrives. `Esc` abandons it with nothing changed. The line is the same one you
+could have typed by hand — `:rename-preview newname` — and it is in the
+palette like the others. An empty name is refused before a request is sent,
+and so is one longer than the server's limit; the refusal names the limit.
+
+**A preview you can apply opens the review.** The diff in the review is the
+change that would be written, and the review is where you decide:
+
+- `[a]pply` sends the change through the daemon's checked apply path — the
+  same path `/lsp-preview-apply` uses, with the same revalidation of the file
+  it was computed against;
+- `Esc` rejects it. Nothing is written.
+
+A preview that **cannot** be applied stays a preview and says so: a truncated
+change, a change with no edits, and a change too large to apply are all
+previews still. The daemon's own refusals — unsaved edits in the file, or a
+file that changed since the preview was built — appear verbatim in the review.
+
+After a successful apply the editor reloads the file it wrote, unless your
+buffer holds edits the editor has not saved; then it keeps them and tells you
+that the file changed on disk.
+
+`space a` — the code action — asks the server what code actions it would offer
+**at the cursor**, and shows each one with the diff of its own edit. It is a
+**choice**, not a single change, so the panel is the picker: `j` and `k` move
+the selection, `Enter` opens the change review on the action you selected,
+and `Esc` closes the panel. See
+[Code actions: the picker is the panel](#code-actions-the-picker-is-the-panel).
+
+### Code actions: the picker is the panel
+
+`space a` asks the server what code actions it would offer at the cursor, and
+the **panel** is where you choose one. It is a list, not a single change, so it
+cannot be a preview the way `=` and `space r` are.
+
+| Key | What it does |
+|---|---|
+| `space a` | ask the server for the code actions it would offer at the cursor |
+| `j` / `k` | move the selection through the offered actions |
+| `Enter` | open the change review on the selected action |
+| `Esc` | close the panel |
+
+The review is the same one the preview keys open, and the change in it is the
+change that would be written. `[a]pply` sends it through the daemon's checked
+apply path; `Esc` rejects it.
+
+The panel shows eight actions at a time and the window follows the selection,
+so the action you are about to apply is always the one you can read. When the
+server offered more, the panel says how many.
+
+**One request, many previews.** The editor asks the server once, and computes
+the diff of each action's own edit locally. It does not ask once per action,
+and it does not ask for a list and then ask again for the one you picked: an
+action's position in a list is only meaningful for the list the server
+returned in that moment, and a second request may return a different list. The
+action you pick is therefore the action that was previewed.
+
+**Not every action can be applied, and the panel says which and why.**
+
+| The action… | What the panel says |
+|---|---|
+| carries an edit | *ready to apply* |
+| carries a command | the server attaches a command, and this editor does not run commands |
+| carries no edit at all | the server offered no edit, so there is nothing to apply |
+| is disabled by the server | the server disabled this action, with the server's own reason |
+| has a change too large to apply | the change is too large to apply |
+| has a change that could not be previewed completely | the preview is incomplete, so there is nothing to apply |
+| arrives after the result reached its preview bound | the result reached its preview bound, so this action has no preview |
+
+An action that carries a **command** is never applied here, even one that also
+carries an edit. The LSP specification has the client apply an action's edit
+*and then* its command; applying the edit alone would apply half of what the
+action means, so the whole action is refused and the reason is on the screen.
 
 ### Multi-key gestures
 
 `gg` (buffer start) and `space y` (copy the selection) each take two keys. While
 the first one is held, the status row shows which one: `g` or `space`. The
 indicator is there because a prefix that shows nothing is a prefix you cannot
-predict.
+predict. `r` is a gesture too, for the same reason: it shows `r` while it waits
+for the character to write.
+
+`m` is the one mode that takes **three** keys: `m` names a command, and the
+command may name an argument. It shows `m`, then `m s`, then `m r (` — the last
+of which is the *second* half of the replace, and it has to say so, because the
+two halves are otherwise the same word on screen. See
+[Match mode and text objects](#match-mode-and-text-objects).
 
 The two gestures finish differently, on purpose. After `g`, any key belongs to
 the chord — `g j` does nothing, because `g j` is not a gesture. After `space`,
-an unmapped key is just a normal-mode key: `space j` moves down. `[` and `]`
-are Helix's unimpaired prefixes; they show their indicator too, and any key
-after them still does what it normally does. A prefix never survives leaving
-the editor, opening a different file, reloading, or moving focus to the file
-tree.
+an unmapped key is just a normal-mode key: `space j` moves down. After `m`, an
+unmapped key is a normal-mode key too: `m z` is not a gesture, so `z` is
+what you asked for. `[` and `]` are Helix's unimpaired prefixes; they show their
+indicator too, and any key after them still does what it normally does. A
+prefix never survives leaving the editor, opening a different file, reloading,
+or moving focus to the file tree.
+
+`space` is a whole menu, and it is the one prefix whose second level is a
+list rather than a single key: the file browser, the editor's command
+palette, the clipboard family, and the keys that say why they cannot run. See
+[The space menu](#the-space-menu). Every key in it is either bound or states
+its reason, so there is no Helix space gesture that does nothing at all.
+
+### Goto mode
+
+`g` is a mode, not one chord. Its status row reads `g` while it is armed:
+
+| Key | What it does |
+|---|---|
+| `gg` | start of the file |
+| `gs` | first non-whitespace on the line |
+| `ge` | end of the file |
+| `gh` | start of the line |
+| `gl` | end of the line |
+| `gj` / `gk` | down / up one line |
+
+`gs` is the one worth learning: `0` is the only key that reaches a line start, so
+in an indented file every placement went through column zero.
+
+`gj`/`gk` are Helix's *textual* line motions, against `j`/`k`'s *visual* ones.
+CodeGG wraps no lines — one screen row is one buffer line — so the two are the
+same move, and `gj`/`gk` exist for the muscle memory rather than for a
+difference this surface can show.
+
+Not bound, on purpose rather than by omission:
+
+<!-- unbound: the keys below are deliberately not bound -->
+
+- `gf`, `ga`, `gm`, `gn`, `gp` — files and alternate buffers. One document is
+  open at a time.
+- `gt`, `gc`, `gb` — top, middle and bottom **of the screen**. These need the
+  real viewport height, and motions currently resolve against a fixed guess at
+  it, so binding them today would land on a line that is not the top of your
+  screen.
+
+A list like this is **checked**. The build compares the keys declared here
+against the editor's own tables, so a key that gets implemented without leaving
+this list is a defect the build reports. It cannot go stale in the direction
+that matters — a document that says a key does not work is worse than one that
+omits it.
+
+The language-server jumps are bound, through the space and `g` menus:
+
+| Key | What it asks the language server |
+|---|---|
+| `space k` | hover at the cursor |
+| `space s` | this document's symbols |
+| `space S` | workspace symbols, searched for the word at the cursor |
+| `space d` | open the diagnostics panel |
+| `space h`, `gr` | references |
+| `gd` | go to definition |
+| `gi` | go to implementation |
+
+`gy` — go to type definition — says why it cannot run rather than doing
+nothing: no language server implements it here, so the editor tells you that
+instead of leaving the key dead.
+
+Three more language-server features are bound as **previews** rather than
+jumps: `=`, `space r` and `space a` show what a format, a rename or a code
+action *would* change, and open the review when the whole change is known and
+can be applied. See [The preview keys](#the-preview-keys).
+
+### The space menu
+
+`space` is a menu, and every key in it either does something or says why it
+cannot. Nothing in it is dead.
+
+| Key | What it does |
+|---|---|
+| `space f` | open the workspace file browser |
+| `space ?` | open the editor's own command palette — the `:` list, filtered as you type |
+| `space r` | open the rename prompt — the `:` line, pre-filled — and preview the rename |
+| `space a` | ask what code actions the server would offer at the cursor, and pick one |
+| `space y` | copy every selection |
+| `space Y` | copy **only** the main selection |
+| `space p` | paste after the selection, or after the character under the cursor |
+| `space P` | paste before the selection, or before the character under the cursor |
+| `space R` | replace the selection, or the character under the cursor, with the clipboard |
+
+`space f` opens the same browser `/files` opens, and the browser names the
+workspace root it is browsing. If the active tab has no workspace root — or
+no canonical project/workspace binding, which is what the daemon resolves the
+listing from — the editor says so instead of opening a browser with nothing
+in it. `space f` used to be a second name for `space s`; it is now the
+browser, and the two are different requests.
+
+`space ?` is the editor's own list of what it can do. Bare `?` still opens
+the general help; `space ?` is the editor's catalogue.
+
+`space r` and `=` show what the language server **would** change, and open the
+review when the change can be applied: the rename preview lists the files a
+rename would touch, and the format preview shows the diff.
+See [The preview keys](#the-preview-keys).
+
+These seven say why they cannot run rather than doing nothing:
+
+| Key | Why |
+|---|---|
+| `space F` | this build has one workspace root, and `space f` opens it |
+| `space b` | one document is open at a time, so there is no list to choose from |
+| `space j` | the editor keeps no visited-position history |
+| `space D` | no server capability backs a separate workspace-diagnostics request; `space d` opens the panel that exists |
+| `space c` | nothing here knows a comment syntax for the buffer you are editing |
+| `space C` | the same, for block comments |
+| `space '` | the pickers are not fuzzy, so there is no query to recall |
+
+The function keys do the same jobs and keep working: F2 diagnostics, F3 hover,
+F4 definition, F5 references, F6 document symbols, F7 workspace symbols.
+
+### Match mode and text objects
+
+`m` is a mode, and it is the only **two-level** one: `m` names a command, and
+for most of those commands the key after it names an argument. The status row
+says which half you are in — `m`, then `m s`, then `m r (` for the two halves
+of the replace.
+
+| Gesture | What it does |
+|---|---|
+| `m m` | jump to the mate of the bracket under the cursor |
+| `m s (` | surround the selection with a pair |
+| `m d (` | remove the pair around the selection, keeping the contents |
+| `m r ( [` | replace the outer pair around the selection with another pair |
+| `m a w` | select **around** the word under the cursor |
+| `m i w` | select **inside** the word under the cursor |
+| `m i (` | select the inside of the pair under the cursor |
+| `m i m` | select the inside of the innermost pair under the cursor |
+
+The objects are `w` (word), `W` (WORD — the whitespace-delimited run), `p`
+(paragraph), a delimiter pair such as `(`, and `m` (the innermost pair of any
+kind). `a` takes the object **with** its boundary and `i` takes it **without**:
+`m a w` is the word plus the space after it, `m i w` is the word alone. `m i (`
+is the text between the brackets; `m a (` is the brackets too.
+
+A character outside that vocabulary is not an object, so it is handed back to
+the input box rather than swallowed. `m i z` types a `z`.
+
+**`m m` is a delimiter match, not a syntax match.** It counts brackets over the
+bytes around the cursor, so it finds the mate of `(`, `[`, `{`, `<`, `'`, `"`
+and `` ` ``, and it does not know what your language calls a string. When it
+cannot answer it says which of the two things went wrong — **no bracket under
+the cursor** when there is no delimiter there, and **no matching bracket** when
+the delimiter has no mate. The two are different answers and both are worth
+saying: the first means *move the cursor*, the second means *the code is
+unbalanced*.
+
+**`m r` replaces the outer pair.** On `(a(b))`, `m r ( [` gives `[a(b)]`, not
+`[a(b])` — the inner pair is left alone, so the nesting you wrote survives the
+edit. `m d` is the other way round: it removes the pair **immediately** around
+your selection, so unwrapping `b` in `(a(b))` gives `(a)`.
+
+The three surround gestures work on your selection, or on the character under
+the cursor when nothing is selected. `m s` leaves the surrounded text selected,
+so you can go on to delete or replace it as one thing. Each is one undo step,
+and each is refused on a file you cannot write.
+
+### Unimpaired navigation
+
+`[` and `]` are modes with the same arm-and-resolve behaviour as `g`. While one
+is held, the status row reads `[` or `]`.
+
+| Key | What it does |
+|---|---|
+| `]p` | first non-whitespace byte of the next paragraph |
+| `[p` | first non-whitespace byte of the previous paragraph |
+| `]Space` | insert a line below the cursor's line |
+| `[Space` | insert a line above the cursor's line |
+
+A *paragraph* is a run of non-blank lines; a *blank* line is one holding nothing
+but spaces and tabs. So `]p` crosses the blank run and lands on the next
+paragraph's first non-blitespace byte, skipping indentation. Runs of several
+blank lines are one separator, not several.
+
+Both motions either move or say why they did not — `]p` at the last paragraph
+reports that rather than standing still, because a key that quietly does nothing
+is indistinguishable from a dropped keypress.
+
+`Alt-.` repeats them. Helix documents `Alt-.` as "repeat last motion (`f`, `t`,
+`m`, `[` or `]`)", so `]p` is repeatable and `]Space` deliberately is **not**:
+an edit is not a motion, and `]Space` followed by `Alt-.` inserts one line, not
+two. The useful pairing is `]Space` then `]p`, which splits the paragraph you
+are standing in.
+
+`]` `Space` is Helix's `add_newline_below`, not `o`. The difference is visible:
+`o` opens the line *and* hands you the keyboard, while `]Space` inserts the line
+and leaves the cursor exactly where it was, so you keep reading from the same
+place. On a read-only buffer the two `Space` keys are refused — they are the
+only unimpaired keys here that write — while `]p` and `[p` still work.
+
+Not bound, because nothing in this codebase can answer them yet:
+
+<!-- unbound: the keys below are deliberately not bound -->
+
+- `[q`, `[Q`, `[F`, `[f`, `[n`, `[%`, `[i`, `[c`, `[s`, `[t`, `[b` —
+  unimpaired's find family: definitions, type definitions, workspace search,
+  occurrences, todos, files, configuration.
+- `[a`, `[v`, `[w`, `[e` — quotes and words. A half-built `[w` would be worse
+  than none, since it would look like `[W` was simply broken.
+- `[D`, `]D` — workspace diagnostics. There is no server capability behind a
+  separate "all diagnostics" request, so these would only be a second name for
+  the panel `space d` already opens.
+- `[g`, `[G`, `]g`, `]G` — change navigation. This has no reachable data source:
+  the VCS layer reports which files changed, not which lines.
+
+`[d` and `]d` **are** bound: they step to the previous and next diagnostic and
+move the cursor there, wrapping at either end.
+
+### Long words
+
+| Key | What it does |
+|---|---|
+| `W` / `B` / `E` | next / previous WORD start, next WORD end |
+| `w` / `b` / `e` | next / previous word start, next word end |
+
+A *word* is alphanumerics, `_`, or any non-ASCII character. A *WORD* is
+everything up to whitespace, punctuation included. On `foo.bar` the two differ:
+`w` stops at `bar`, `W` skips to the next space. Use `W`/`B`/`E` to cross code
+without stopping at every dot and bracket.
+
+### Holding your column
+
+`j` and `k` remember the column you started from. Move down onto a short line
+and back up and you land where you began, rather than at that short line's end.
+Any horizontal move re-seeds the column; anything that places the cursor
+somewhere else — `G`, `gg`, `w`, `e`, `$`, `gs`, a find, a page, a search jump —
+ends the run, and the next `j` starts a new one from where the cursor is.
 
 ### Finding a character
 
@@ -1221,11 +1731,18 @@ updates.
 ### Completion
 
 Press F8 — or type `:complete` in Normal mode — to ask the language server for
-completions at the cursor. A popup
+completions at the cursor. In `INS`, `Ctrl+x` asks the same question and
+leaves you in `INS`. A popup
 lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
 Normal mode) move the selection, `Enter` applies the selected item, and
 `Esc` dismisses the popup without touching anything. Typing anything else
 dismisses the popup first and inserts normally.
+
+In `INS` the popup never takes a key that means text. `Enter` inserts a
+newline, `↑`/`↓` move the cursor, and `Tab`/`Shift+Tab` move the candidate
+selection. Helix's completion menu accepts the candidate on any other
+keypress; CodeGG does not, because a printable in `INS` is text, and losing
+one to a popup would be a quiet way to lose a character.
 
 Only supported plain-text edits can be applied, and only after the editor
 re-checks the document identity, revision, and edit range against the

@@ -241,7 +241,7 @@ impl FilesDialog {
     /// The path already carried this information and nobody could use it — a
     /// nested scope presented as one unbroken string hides which component you
     /// arrived through, so `h` looked like it would jump somewhere arbitrary.
-    fn title(&self) -> String {
+    pub(crate) fn title(&self) -> String {
         let total = self.state.rows().len();
         let workspace = self
             .state

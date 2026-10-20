@@ -194,6 +194,36 @@ class, and content hash. The compiler emits a versioned fingerprint used
 by `ContextPlan` for context identity. There is no production
 post-compaction system-string mutation.
 
+Turn construction adds one bounded required capability block for the
+canonical session's private scratch path. It is compiled with the normal
+runtime blocks and does not change on each tool call; other sessions receive
+their own path. The broker independently carries the authenticated session
+identity to the tool/process owners, so the prompt text itself never grants
+filesystem authority.
+
+Durable delegated runs get a separate private root keyed by `AgentRunId` under
+their originating session scratch tree. A parent may create a named shared
+resource with `task` and grant its opaque `ScratchId` to selected direct child
+runs. The run record stores the immutable grant snapshot. At child startup the
+worker rechecks session, direct-parent ownership, alias, and revocation against
+`AgentRunStore`; only then does it provision paths and attach them to the child
+authorization context. Standard temp variables still point only at the private
+run root. Shared roots use `CODEGG_SHARED_SCRATCH_<ALIAS>` and are added as
+explicit structured-tool and Required-sandbox roots. Prompt text is descriptive
+and does not confer access. Structured tools reject ungranted reads and writes;
+Required sandboxes deny ungranted writes, while native backends that permit
+broad reads provide no OS-level read-confidentiality guarantee. Revocation
+blocks new child admission while an
+already-admitted attempt retains its durable scratch lease until its child run
+and managed processes have completed.
+
+Terminal run-private scratch is reclaimed after the supervised child process
+returns. When the owning session is soft-deleted, its complete managed scratch
+tree is reclaimed only after all durable runs and jobs are terminal. Cleanup
+defers while work remains active, stops if the session is restored, and is
+re-armed by daemon startup reconciliation. Durable transcripts, run results,
+and Git worktrees are stored outside this tree.
+
 Prompt-block precedence for overlapping work state (M002 §6.9, M004 §6.5):
 current turn user input outranks an active goal revision newer than the
 checkpoint, which outranks the installed continuation projection
@@ -477,12 +507,12 @@ canonical concern independently of the others.
 Full field list: `services`, `lifecycle`, `state`, `limits`, `steering`,
 `follow_up_tx`, `follow_up_rx`, `question_tx`, `question_rx`, `plugin_service`,
 `session_id`, `turn_id`, `workspace_id`, `workspace_locks`,
-`workspace_service_lease`, `checkpoint_batch_seq`, `recent_findings`,
-`reviewer_denial_counts`, `original_user_prompt`, `current_user_prompt`,
-`subagent_pool`, `submission`, `workspace_root`, `max_tool_calls`,
-`goal_wall_clock`, `cancel_rx`, `steer_rx`, `pending_steer`, `local_paths`,
-`context_ledger`, `run_id`, `habit_project_namespace`, `habit_actions`,
-`habit_had_failure`.
+`workspace_service_lease`, `workspace_path_policy`, `checkpoint_batch_seq`,
+`recent_findings`, `reviewer_denial_counts`, `original_user_prompt`,
+`current_user_prompt`, `subagent_pool`, `submission`, `workspace_root`,
+`max_tool_calls`, `goal_wall_clock`, `cancel_rx`, `steer_rx`, `pending_steer`,
+`local_paths`, `context_ledger`, `run_id`, `habit_project_namespace`,
+`habit_actions`, `habit_had_failure`.
 
 - **Coordinator state**: `state`, `limits`, `lifecycle`, `pending_steer`, and live control channels
 - **Identity**: `session_id`, `turn_id`, `run_id`, and immutable `workspace_root`
@@ -566,6 +596,22 @@ or Git authority. Child Git policy permits only local staging/commit, while
 push, remote/configuration, reset/clean, history integration, and recovery
 remain separately controlled.
 
+A delegated child holds no workspace services lease of its own, so it inherits
+the workspace identity the scheduler bound its job to
+(`JobExecutionContext::workspace_id`) and installs the workspace path policy
+for the root its executor bound it to. That policy is the per-workspace
+single-root policy over that root — the bundle always builds it with
+`WorkspacePathPolicy::for_workspace` — so it is the *same* policy the parent
+turn holds, not a stand-in for one. The broker refuses a tool call whose
+execution context carries no workspace identity and no path policy ("verified
+tool authority is missing workspace ..."), so a child without them loses
+*every* tool, including the writes into the scratch space it was provisioned.
+Scratch roots stay out of the path policy: they are carried by the tool-level
+scratch scope, in the same way a parent turn's session scratch is not part of
+the workspace policy. The in-process standalone core's root turn, which has no
+lease either, installs the policy for its own canonical root for the same
+reason.
+
 Completion persists a bounded `codegg_core::agent_run_result::AgentRunResult`
 with Git-derived base/result commits, changed paths, repository state,
 findings, validation/artifact slots, retryability, and recovery guidance.
@@ -646,6 +692,7 @@ pub struct SubAgentRequest {
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    pub workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     pub parent_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,

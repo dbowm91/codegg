@@ -5830,9 +5830,10 @@ mod tests {
         let registry = effect_binding_registry();
         let mut historical_schemas = BTreeMap::new();
 
-        // Workstream peer observation and claims extended TaskTool after the
-        // M003 receipt was frozen. Reconstruct the original action set and
-        // remove only those added input fields; the receipt remains immutable.
+        // Workstream coordination and managed scratch extended TaskTool
+        // after the M003 receipt was frozen. Reconstruct the original action
+        // set and remove only those added input fields; the receipt remains
+        // immutable.
         let mut historical_task_schema = registry
             .get("task")
             .expect("task tool remains registered")
@@ -5840,12 +5841,17 @@ mod tests {
         let task_properties = historical_task_schema["properties"]
             .as_object_mut()
             .expect("task input schema properties");
+        task_properties.remove("scratch_alias");
+        task_properties.remove("scratch_id");
+        task_properties.remove("shared_scratch");
         let task_action = task_properties
             .get_mut("action")
             .expect("task action schema");
         assert_eq!(
             task_action["enum"],
             serde_json::json!([
+                "scratch_create",
+                "scratch_revoke",
                 "spawn",
                 "converge",
                 "convergence_status",
@@ -5868,6 +5874,17 @@ mod tests {
                 "request_handoff"
             ]),
             "unexpected post-M003 task action schema"
+        );
+        // The action description carries two independent post-M003 edits and
+        // the merged wording is their union: the scratch workstream named the
+        // scratch actions and the `main` side named the run_id/task_id/
+        // group_id addressing rules. The pin below follows the merged
+        // description; the receipt and the content-addressed action enum
+        // above are untouched.
+        assert_eq!(
+            task_action["description"],
+            serde_json::json!("Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID). Group actions use group_id."),
+            "unexpected post-M003 task action description"
         );
         task_action["description"] = serde_json::json!("Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group");
         task_action["enum"] = serde_json::json!([
@@ -5901,6 +5918,68 @@ mod tests {
                 "expected post-M003 task input field {field}"
             );
         }
+        // Shared-scratch grants were added to spawn_many after M003. Restore
+        // the frozen request description and opaque item schema while
+        // asserting the live extension, so the receipt remains immutable.
+        let live_spawn_many_description = task_properties["requests"]["description"]
+            .as_str()
+            .expect("spawn_many requests description");
+        assert_eq!(
+            live_spawn_many_description,
+            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, allowed_paths, and explicitly granted shared_scratch.",
+            "unexpected post-M003 spawn_many request description"
+        );
+        task_properties["requests"]["description"] = serde_json::json!(
+            "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, and optional allowed_paths."
+        );
+        let request_items = task_properties["requests"]["items"]
+            .as_object()
+            .expect("spawn_many request item schema");
+        assert_eq!(
+            request_items.get("type"),
+            Some(&serde_json::json!("object")),
+            "unexpected post-M003 spawn_many request item type"
+        );
+        task_properties["requests"]["items"] = serde_json::json!({"type": "object"});
+        // The `main` side also reworded the three identifier properties after
+        // the M003 receipt was frozen, and widened `task_id` from a bare
+        // description to an `anyOf` of string-or-integer. None of those edits
+        // are scratch changes, so restore the frozen shapes here as well:
+        // the receipt stays immutable and the live schema keeps the newer,
+        // more explicit identifier contract.
+        let live_task_id = task_properties["task_id"].clone();
+        assert_eq!(
+            live_task_id["anyOf"][0]["type"],
+            serde_json::json!("string"),
+            "unexpected post-M003 task_id schema"
+        );
+        assert_eq!(
+            live_task_id["anyOf"][1]["type"],
+            serde_json::json!("integer"),
+            "unexpected post-M003 task_id schema"
+        );
+        task_properties.insert(
+            "task_id".to_string(),
+            serde_json::json!({"description": "Durable AgentTaskId or legacy numeric task ID"}),
+        );
+        let live_run_id_description = task_properties["run_id"]["description"]
+            .as_str()
+            .expect("run_id description");
+        assert_eq!(
+            live_run_id_description,
+            "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. Do not use task_id here."
+        );
+        task_properties["run_id"]["description"] =
+            serde_json::json!("Durable AgentRunId for control/status/wait");
+        let live_group_id_description = task_properties["group_id"]["description"]
+            .as_str()
+            .expect("group_id description");
+        assert_eq!(
+            live_group_id_description,
+            "Required by status_group, wait_group, and cancel_group; durable AgentRunGroupId."
+        );
+        task_properties["group_id"]["description"] =
+            serde_json::json!("Durable AgentRunGroupId for group actions");
         historical_schemas.insert("task".to_string(), historical_task_schema);
 
         // Reconstruct the frozen test-tool schema. These two fields were
@@ -6019,6 +6098,65 @@ mod tests {
             "Provider hint. Unknown values fall back to eggsearch's automatic provider selection."
         );
         historical_schemas.insert("websearch".to_string(), historical_websearch_schema);
+
+        // The agent-tool-use operability workstream widened two more tool
+        // schemas after the M003 receipt was frozen: `apply_patch` learned to
+        // create a file from whole contents, and `verify` gained a package
+        // scope. Both are post-M003 changes, so reconstruct the M003-era
+        // schemas here and keep the immutable receipt matching — assert the
+        // live values first, so the override cannot silently stop working.
+        let mut historical_apply_patch_schema = registry
+            .get("apply_patch")
+            .expect("apply_patch tool remains registered")
+            .parameters();
+        let apply_patch_content = historical_apply_patch_schema["properties"]["patch"]
+            .as_object_mut()
+            .expect("apply_patch patch schema property");
+        assert_eq!(
+            apply_patch_content.insert(
+                "description".to_string(),
+                serde_json::json!("Unified diff patch content"),
+            ),
+            Some(serde_json::json!(
+                "File contents for mode=create; unified diff for mode=update; rename header for mode=move"
+            )),
+            "unexpected post-M003 apply_patch.content description"
+        );
+        historical_schemas.insert("apply_patch".to_string(), historical_apply_patch_schema);
+
+        let mut historical_verify_schema = registry
+            .get("verify")
+            .expect("verify tool remains registered")
+            .parameters();
+        let verify_properties = historical_verify_schema["properties"]
+            .as_object_mut()
+            .expect("verify input schema properties");
+        let mut observed_post_m003_verify_fields = Vec::new();
+        for field in ["package", "features", "all_features"] {
+            if verify_properties.remove(field).is_some() {
+                observed_post_m003_verify_fields.push(field);
+            }
+        }
+        assert_eq!(
+            observed_post_m003_verify_fields,
+            ["package", "features", "all_features"],
+            "unexpected verify-tool input-schema changes: {observed_post_m003_verify_fields:?}"
+        );
+        let verify_scope = verify_properties
+            .get_mut("scope")
+            .expect("verify scope schema property");
+        assert_eq!(
+            verify_scope["enum"],
+            serde_json::json!(["workspace", "package"]),
+            "unexpected post-M003 verify scope schema"
+        );
+        assert_eq!(
+            verify_scope["description"],
+            "Workspace-wide or one named workspace package."
+        );
+        verify_scope["enum"] = serde_json::json!(["workspace"]);
+        verify_scope["description"] = serde_json::json!("The authoritative workspace root.");
+        historical_schemas.insert("verify".to_string(), historical_verify_schema);
 
         let mut historical_repo_search_schema = registry
             .get("repo_search")

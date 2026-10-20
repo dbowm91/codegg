@@ -59,14 +59,14 @@ async fn two_workspaces_register_and_resolve_independently() {
     assert_eq!(rec_a.canonical_root, dir_a.path().canonicalize().unwrap());
     assert_eq!(rec_b.canonical_root, dir_b.path().canonicalize().unwrap());
 
-    // Verify the registry deduplicates aliases.
+    // A symlink alias cannot create a second registered workspace identity.
     let alias = dir_a.path().join("alias");
     std::os::unix::fs::symlink(dir_a.path(), &alias).unwrap();
-    let alias_rec = registry.get_or_register(&alias).await.unwrap();
-    assert_eq!(
-        rec_a.id, alias_rec.id,
-        "symlink alias deduplicates to same workspace"
-    );
+    assert!(matches!(
+        registry.get_or_register(&alias).await,
+        Err(codegg::workspace::WorkspaceError::InvalidRootPath(_))
+    ));
+    assert_eq!(registry.list(false).await.unwrap().len(), 2);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -97,6 +97,14 @@ Every other row is unchanged. The table is now **all live**: `composer_claims.rs
 pins the key set to ADR-0042 part 4's closed set — `a b d e i j k o p u U v w x` — so a future
 addition to the table that is not in the ADR's set fails a test.
 
+The live-set assertion was **renamed** by this milestone, from
+`the_live_claims_are_the_motions_the_selection_verbs_and_the_insert_transition` to
+`every_claim_is_live`. The old name described a subset of the table ("the live claims are the
+motions, the selection verbs and the insert transition") that was true when M004 wrote it and
+widened by M005; this milestone made every claim live, so the name would have been a description
+of the table's *history* rather than of its *state*. M004's and M005's closure records cite the
+current name and record the rename chain.
+
 ### 3.2 The runner is exhaustive
 
 `run_composer_claim`'s match on `ComposerVerb` used to end in a catch-all arm that logged a

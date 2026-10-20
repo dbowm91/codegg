@@ -193,10 +193,25 @@ def check_backend_registry() -> list[str]:
             "backend.rs: enhanced Linux backend cannot be registered before native proof"
         )
     if not re.search(
-        r"tempdir\(\)[\s\S]{0,900}spec\.write_paths\.push\(scratch_path\.clone\(\)\)[\s\S]{0,300}with_var\(\"TMPDIR\"",
+        r"tempdir\(\)[\s\S]{0,900}spec\.write_paths\.push\(scratch_path\.clone\(\)\)"
+        r"[\s\S]{0,500}if let Some\(session_scratch\) = session_scratch\.as_ref\(\)"
+        r"[\s\S]{0,180}spec\.write_paths\.push\(session_scratch\.clone\(\)\)",
         managed,
     ):
-        errors.append("managed_process.rs: constrained launches must receive private scoped TMPDIR")
+        errors.append(
+            "managed_process.rs: Required launches must grant private staging and authenticated session scratch roots"
+        )
+    if not re.search(
+        r"if let Some\(path\) = session_scratch\.as_ref\(\)[\s\S]{0,350}"
+        r"with_var\(\"TMPDIR\", path\.as_os_str\(\)\)",
+        managed,
+    ) or not re.search(
+        r"else \{[\s\S]{0,250}with_var\(\"TMPDIR\", scratch_path\.as_os_str\(\)\)",
+        managed,
+    ):
+        errors.append(
+            "managed_process.rs: model session TMPDIR must be trusted and other constrained launches must retain private scoped TMPDIR"
+        )
     if not re.search(r"validate_denied_paths\(&spec\.deny_paths\)", managed):
         errors.append("managed_process.rs: hardlinked denied files must fail before launch")
     err = check_contains(

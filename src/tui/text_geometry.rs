@@ -238,10 +238,14 @@ pub fn word_backward<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize
 /// the next word, so `e` from whitespace lands on a word rather than standing
 /// still.
 ///
-/// The byte-at-a-time scan is deliberate: [`is_word_byte`] treats any byte
-/// `>= 0x80` as word content, so walking `offset + 1` can cross the interior
-/// of a multi-byte character and still classify it correctly, exactly as
-/// [`word_forward`] does.
+/// It steps **a whole character at a time** rather than probing `offset + 1`.
+/// The probe was the original design on the reasoning that [`is_word_byte`]
+/// treats any byte `>= 0x80` as content, so walking through the interior of a
+/// multi-byte character would still classify it correctly — that reasoning is
+/// false, because a one-byte read inside a multi-byte character is not
+/// readable at all, so the interior could never be classified. Worse, the
+/// final `.unwrap_or(cursor)` then had nowhere to advance to on the last
+/// character of a document, which is a spin.
 pub fn word_end<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize {
     let end = source.len_bytes();
     let mut cursor = clamp_offset(source, offset);
@@ -251,19 +255,33 @@ pub fn word_end<S: TextSource + ?Sized>(source: &S, offset: usize) -> usize {
             return buffer_content_end(source);
         }
     }
-    while cursor < end.saturating_sub(1) && is_word_byte(source.byte_at(cursor + 1).unwrap_or(0)) {
-        cursor = next_char_boundary(source, cursor).unwrap_or(cursor);
+    while let Some(next) = next_char_boundary(source, cursor) {
+        match source.byte_at(next) {
+            Some(byte) if is_word_byte(byte) => cursor = next,
+            _ => break,
+        }
     }
     cursor
 }
 
 /// Move `offset` by `delta` lines, preserving the display column as closely
 /// as the target line allows.
-pub fn move_vertical<S: TextSource + ?Sized>(source: &S, offset: usize, delta: isize) -> usize {
+///
+/// `desired_column` is the column a vertical run should aim for, which is what
+/// makes `j` onto a short line and back up return to the original column
+/// instead of the short line's. `None` means "no run in progress", so the
+/// current cursor column is used and becomes the target.
+pub fn move_vertical<S: TextSource + ?Sized>(
+    source: &S,
+    offset: usize,
+    delta: isize,
+    desired_column: Option<usize>,
+) -> usize {
     let offset = clamp_offset(source, offset);
     let last_line = source.len_lines().saturating_sub(1);
     let current = cursor_line(source, offset);
-    let column = offset.saturating_sub(source.line_start(current).unwrap_or(0));
+    let column = desired_column
+        .unwrap_or_else(|| offset.saturating_sub(source.line_start(current).unwrap_or(0)));
     let target = if delta.is_negative() {
         current.saturating_sub(delta.unsigned_abs())
     } else {
@@ -305,6 +323,27 @@ impl TextSource for DocumentSnapshot {
         self.byte_to_position(offset)
             .map(|position| position.line)
             .unwrap_or_else(|_| self.len_lines().saturating_sub(1))
+    }
+
+    /// The **first** byte of the character at `offset`, not the byte at
+    /// `offset`.
+    ///
+    /// `read_bytes(offset, offset + 1)` needs a character boundary at *both*
+    /// ends, so it is `Err` for the first byte of a multi-byte character as
+    /// much as for its interior. Reading it that way classified every
+    /// non-ASCII character as a separator, and a scan walked straight past
+    /// every one of them: on `日本語 text`, `w` from byte 0 landed on the end
+    /// of the document instead of on `text`. Reading the whole character and
+    /// taking its first byte classifies it as word content, which is what
+    /// `is_word_byte`'s `>= 0x80` clause is for.
+    fn byte_at(&self, offset: usize) -> Option<u8> {
+        if !self.is_byte_boundary(offset) {
+            return None;
+        }
+        let end = next_char_boundary(self, offset).unwrap_or(self.len_bytes());
+        self.read_bytes(offset, end)
+            .ok()
+            .and_then(|text| text.as_bytes().first().copied())
     }
 }
 
@@ -367,6 +406,14 @@ impl TextSource for str {
     }
 
     fn byte_at(&self, offset: usize) -> Option<u8> {
+        // The byte at `offset`, but only when `offset` is on a character
+        // boundary — the same rule the `DocumentSnapshot` adapter follows,
+        // because a one-byte read *inside* a multi-byte character is not
+        // readable at all. The two surfaces have to classify the same
+        // offsets the same way, or "where is a word" gets two answers.
+        if !str::is_char_boundary(self, offset) {
+            return None;
+        }
         self.as_bytes().get(offset).copied()
     }
 }
@@ -401,6 +448,57 @@ mod tests {
                 "word_end disagreed at offset {offset}"
             );
         }
+    }
+
+    /// The same agreement, on text that is **not** ASCII.
+    ///
+    /// The one-byte read is `Err` for the first byte of a multi-byte character
+    /// as much as for its interior, so a scanner that read one byte at a time
+    /// classified every non-ASCII character as a separator and walked straight
+    /// past it. ASCII single-byte characters are the only kind that reads
+    /// back, so the case was invisible to every test that existed.
+    #[test]
+    fn a_string_and_a_snapshot_agree_on_word_boundaries_in_non_ascii_text() {
+        let text = "日本語 text café naïve";
+        let buffer = codegg_document::DocumentBuffer::new(text);
+        let snapshot = buffer.snapshot();
+
+        for offset in 0..=text.len() {
+            assert_eq!(
+                word_forward(text, offset),
+                word_forward(&snapshot, offset),
+                "word_forward disagreed at offset {offset}"
+            );
+            assert_eq!(
+                word_backward(text, offset),
+                word_backward(&snapshot, offset),
+                "word_backward disagreed at offset {offset}"
+            );
+            assert_eq!(
+                word_end(text, offset),
+                word_end(&snapshot, offset),
+                "word_end disagreed at offset {offset}"
+            );
+        }
+    }
+
+    /// A multi-byte character is **word content**, not a separator.
+    ///
+    /// `w` from the start of `日本語 text` must land on `text`, not on the end
+    /// of the document: the classifier reads the character's *first* byte,
+    /// which is `>= 0x80` and therefore word content.
+    #[test]
+    fn a_multi_byte_character_is_a_word_and_not_a_separator() {
+        let text = "日本語 text";
+        // The three CJK characters are nine bytes and the space is the tenth,
+        // so `text` starts at byte 10 — which is where `w` from byte 0 must
+        // land. Before the fix it landed on the end of the document.
+        assert_eq!(word_forward(text, 0), 10);
+        assert_eq!(&text[word_forward(text, 0)..], "text");
+        // And the same answer from the editor's replica.
+        let buffer = codegg_document::DocumentBuffer::new(text);
+        let snapshot = buffer.snapshot();
+        assert_eq!(word_forward(&snapshot, 0), 10);
     }
 
     #[test]
@@ -470,11 +568,11 @@ mod tests {
     fn vertical_movement_keeps_the_column_where_it_can() {
         let text = "abcdef\nghijkl\nmnopqr";
         // Down one line, keeping the column.
-        assert_eq!(move_vertical(text, 2, 1), 9);
+        assert_eq!(move_vertical(text, 2, 1, None), 9);
         // Up one line, keeping the column again.
-        assert_eq!(move_vertical(text, 9, -1), 2);
+        assert_eq!(move_vertical(text, 9, -1, None), 2);
         // And on to the third line.
-        assert_eq!(move_vertical(text, 9, 1), 16);
+        assert_eq!(move_vertical(text, 9, 1, None), 16);
     }
 
     #[test]
@@ -483,7 +581,18 @@ mod tests {
         // The first line is 14 bytes, so the second starts at 15 and holds a
         // single character. Column 5 does not exist there, so the caret lands
         // at that line's end — byte 16 — instead of past it.
-        assert_eq!(move_vertical(text, 5, 1), 16);
+        assert_eq!(move_vertical(text, 5, 1, None), 16);
+    }
+
+    #[test]
+    fn a_desired_column_overrides_the_cursors_own_column() {
+        let text = "abcdef\nghijkl\nmnopqr";
+        // The caret is at column 0 of the first line, but a run in progress
+        // wants column 3 — so the target is column 3 of the second line (which
+        // starts at byte 7), and coming back lands on column 3 of the first
+        // rather than on column 0.
+        assert_eq!(move_vertical(text, 0, 1, Some(3)), 10);
+        assert_eq!(move_vertical(text, 10, -1, Some(3)), 3);
     }
 
     #[test]

@@ -9,6 +9,186 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The editor's language-server features now work in an ordinary
+  workspace.** Two things had been blocking every one of them. Diagnostics were
+  never collected — the code that publishes them existed but nothing ever ran
+  it — so every read came back "not ready" forever, which is indistinguishable
+  from a broken integration. And in a workspace with **two** language servers
+  running (say `rust-analyzer` and `gopls` in one repository), the editor gave
+  up and reported "not ready" rather than answering. If you have more than one
+  server in a project, F2–F7 and the new Helix keys will now actually answer
+  instead of reporting a server that was running the whole time.
+- **When several servers are running, the editor names them.** It asks you to
+  pick rather than guessing — an answer from the wrong language server is worse
+  than an honest question. Each suggestion opens the corresponding result.
+- **New read-only language-server features in `NOR`.** `gd` (definition), `gi`
+  (implementation), `space k` (hover), `space h` and `gr` (references), `space
+  s` (document symbols), `space S` (workspace symbols) and `space d`
+  (diagnostics). The existing F2–F7 keys do the same jobs and are unchanged.
+- **Two keys now explain themselves instead of doing nothing.** `gy` (type
+  definition) and `space F` (file picker) report that the underlying capability
+  is not available, so you can tell a missing feature from a keypress that was
+  dropped.
+- **`]d` and `[d` step between diagnostics** and move the cursor there, wrapping
+  at either end of the list.
+- **A language server that does not support a feature now says so.** Previously
+  this was reported as "not ready", which sent you looking for a server that was
+  already running and had already answered. The panel names the missing
+  capability.
+- **Rename and format are previewed, and a preview you can apply is offered
+  for review.** `space r` asks the language server what renaming the symbol
+  under the cursor would touch, and `=` asks what formatting would change.
+  When the whole change is known, the preview opens the **change review**:
+  the diff you see is the change that would be written, `[a]pply` writes it
+  through the daemon's checked apply path — the same one `/lsp-preview-apply`
+  uses — and `Esc` rejects it. A preview that cannot be applied (a truncated
+  change, one with no edits, one too large) stays a preview and says so.
+  `space r` collects the new name on the `:` line — the same line the editor's
+  other argument-taking commands use — and refuses an empty or over-long name
+  without spending a request on it.
+- **`space a` now asks the language server what code actions it would offer
+  at the cursor.** It used to say that there was no code-action request to
+  make; there is one now, and the editor asks **once** and works out each
+  action's own diff locally — so the action you pick is the action that was
+  previewed, and the server is not asked twice about a list that may have
+  changed. A code action is a *choice*, so the panel is the picker: `j`/`k`
+  move, and `Enter` opens the change review on the action you selected.
+  An action the server attached a **command** to is never applied here — the
+  LSP specification applies an action's edit *and then* its command, and
+  applying half of an action is not applying it — and the panel says so
+  rather than hiding the action.
+- **Helix's insert-mode chords are available in `INS`.** `Ctrl+h` and `Ctrl+d`
+  delete one character backward and forward, `Ctrl+j` inserts a newline, `Ctrl+k`
+  and `Ctrl+u` delete to the end and the start of the line, `Ctrl+w` and
+  `Alt+Backspace` delete the previous word, `Alt+d` and `Alt+Delete` delete the
+  next word, and `Ctrl+x` opens the completion popup without leaving `INS`. The
+  two word deletions stop at the line boundary, so `Ctrl+w` in column zero
+  deletes nothing rather than reaching into the line above.
+- **Everything you type in one go is one undo step.** Leaving `INS` closes the
+  burst, so a single `u` takes back the whole run instead of its last
+  keystroke. A run ends early if you delete something or move the cursor and
+  type somewhere else, because those are separate edits. A reload throws an
+  unfinished burst away with the rest of the local draft.
+- **Two new history gestures in `NOR`.** `Alt+u` and `Alt+U` walk the edit
+  history one entry back and one entry forward — Helix's `earlier` and
+  `later` — and they **say so** when there is nothing to move to: "no earlier
+  change" and "no later change" appear in the status row. `u` and `U` still
+  do nothing at their boundaries, silently, as they always have.
+- **The editor now shows where you are in your own history.** While the
+  history cursor is not at the newest change, the status row says
+  `history 1/3`; at the newest change it says nothing, so the ordinary case
+  is unchanged.
+- **Helix's match mode is available in `NOR`.** `m m` jumps to the mate of
+  the bracket under the cursor; `m s`/`m d`/`m r` surround, unsurround and
+  re-surround the selection; and `m a`/`m i` select a text object — a word,
+  a WORD, a paragraph, a bracket pair or the innermost pair around the
+  cursor. The status row shows which half of the grammar you are in, so
+  `m r (` tells you that the first character of the replacement pair has
+  already been taken.
+- **A bracket match that cannot land now says which of the two things went
+  wrong.** "No bracket under the cursor" and "no matching bracket" are
+  different answers — one means *move the cursor*, the other means *the code
+  is unbalanced* — and both appear in the status row instead of leaving the
+  key looking dropped.
+- **The surround gestures keep their selection.** `m s` leaves the
+  surrounded text selected so you can go on to delete or replace it as one
+  thing, and each surround is a single undo step.
+- **The space menu is now a real menu.** `space f` opens the workspace file
+  browser, `space ?` opens the editor's own command palette — the `:` list,
+  filtered as you type — and `space p`, `space P`, `space R` and `space Y`
+  complete the clipboard family in the place a Helix user looks for it.
+  `space Y` copies **only** the main selection, where `space y` copies every
+  region you are holding; with nothing selected it says "Nothing to yank"
+  rather than putting an empty string on the clipboard.
+- **Seven space keys now explain themselves instead of doing nothing.**
+  `space F`, `space b`, `space j`, `space D`, `space c`, `space C` and
+  `space '` each report the reason they cannot run — one workspace root, one
+  attached document, no visited-position history, no workspace-diagnostics
+  capability, no comment syntax for the buffer you are editing, and no fuzzy
+  picker to recall.
+- **New `scripts/check_tui_editor_leaf_authority.py` fails the build when a
+  leaf table is wrong.** A duplicated glyph inside one table, a glyph that is
+  not printable ASCII, one glyph claimed by two tables of the same prefix, a
+  leaf behind a chord the dispatch already claims, and a table no prefix
+  binds are all failures — each of which compiles cleanly and leaves a key
+  that does nothing.
+
+### Changed
+
+- **The rename and format previews are now reachable from the keyboard.**
+  Until now they existed only inside the language-server protocol: the daemon
+  could answer them and the editor could display them, but no key asked for
+  them. `space r` and `=` close that gap. They stay **previews** — a preview
+  shows what would change and applies nothing — and when they grow the step
+  that turns a preview into a reviewed edit, these two keys become the apply
+  step instead. That change is registered here now, while the preview is what
+  you learn, so it arrives as a documented upgrade rather than a surprise.
+  **That step has since arrived** — see the next bullet.
+- **`=` and `space r` now lead to the change review, and the review can
+  write.** This is the change of meaning the previous bullet registered in
+  advance. A preview that is complete enough now carries the material the
+  apply path consumes — the patches, the base each was computed against, and
+  the digest that binds them — so the chord opens the **change review** on it:
+  the diff on screen is the change that would be written, `[a]pply` sends it
+  through the daemon's checked apply path (the same path `/lsp-preview-apply`
+  uses, with the same revalidation of the file it was computed against), and
+  `Esc` rejects it. Nothing is written until you accept, and the daemon still
+  refuses an apply over unsaved edits or over a file that changed since the
+  preview was built. A preview that cannot be applied — a truncated change, one
+  with no edits, one too large — stays a preview and says so. **The keys do
+  not move**: they were "show me" before and they are "review and apply" now,
+  which is why the change is called out here.
+- **`space f` now opens the file browser instead of reading this document's
+  symbols.** It was a second name for `space s`, so the file browser was
+  unreachable from the editor and the symbols panel had two keys for one
+  request. The browser names the workspace root it is browsing, and when the
+  active tab has no workspace root — or no canonical project/workspace
+  binding, which is what the daemon resolves the listing from — the editor
+  says so rather than opening a browser with nothing in it.
+
+- **The undo history is one list with a cursor in it, not two stacks.** Undo
+  and redo are now the same movement in opposite directions, so an entry can
+  never end up described one way and replayed the other. A redo restores the
+  position the entry records, which is the same position an undo restores.
+- **The editor keeps at most one history's worth of memory.** The bounds
+  (256 entries and 4 MiB) were enforced once per stack, so the worst case was
+  twice what the documentation promised. They are now a single cap over the
+  history as a whole, and the code matches what the documentation says.
+
+### Fixed
+
+- **`o` and `O` open a line again.** Both keys were bound and both took the
+  keyboard, and neither opened anything: the code that opens the line was
+  written, tested, and unreachable from the key path, so the keys silently
+  dropped you into `INS` on the line you were already on. The documentation
+  had been describing the working behaviour the whole time. `o` now opens a
+  line below the cursor's line and `O` one above, with the cursor on the line
+  they opened — the cursor used to land on the line *after* it, which put your
+  typing in the wrong place. A read-only buffer refuses both and says so,
+  rather than the `o` landing in the composer.
+- **A word typed into a line `o` opened is one undo step again.** The open-line
+  edit was being folded into the typing run it cannot continue, so the first
+  keystroke broke the run and the word was split across two steps. The line
+  and the word are now two steps — `u` takes back the word, a second `u` takes
+  back the line — and the word is one step however many letters it took.
+- **The completion popup and the diagnostics panel no longer eat your typing.**
+  Both used to claim bare characters and `Enter` whether or not you were in
+  `INS`, so typing into a file with a panel open lost the character to a panel
+  that had no claim on it. In `INS` the popup's `Enter` is a newline, its `↑`/`↓`
+  move the cursor, and its `Tab`/`Shift+Tab` move the candidate selection; the
+  panel's `j`/`k`/`r` are Normal-mode gestures.
+- **Diagnostics are now collected automatically.** The editor refreshes the
+  diagnostic set on its own instead of only when you asked.
+- **Language-server requests in a multi-project workspace no longer leak across
+  projects.** Diagnostics were tracked by file name alone, so `src/lib.rs` and
+  `tests/lib.rs` collided and a second open project recorded files it had never
+  touched.
+- **Capital-letter bindings (`space S`) now work on every terminal.** Some
+  terminals report a capital directly and some report it as a shifted
+  lower-case letter; only the first worked, so `space S` was dead on the others.
+
+### Added
+
 - **Helix's character-finding motions (`f`, `F`, `t`, `T`, and `Alt` + `.`) are
   available in `NOR`.** Each of the first four arms the shared pending-prefix
   grammar and waits for a character; the status row shows which one is armed,
@@ -25,7 +205,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grammar.** Pressing `[` or `]` in `NOR` arms the prefix and shows it in the
   status row; any following key disarms it and is then resolved normally, so
   `[` followed by a letter still reaches the composer instead of being eaten.
-  The leaves themselves (`[d`, `]d`, `[p`, …) are not bound yet.
+  The leaves are being filled in by the later milestones: `[p`/`]p` and
+  `[Space`/`]Space` arrived with unimpaired navigation, and `[d`/`]d` with LSP
+  diagnostic delivery.
 - **A pending `space` prefix is now visible.** `space y` previously armed a
   `bool` with nowhere to render to, so pressing `space` looked like nothing
   had happened. Every pending prefix now renders a distinct label in the status

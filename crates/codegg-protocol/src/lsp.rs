@@ -16,6 +16,12 @@
 //!   the complete current set for one file plus a monotonic `sequence` and a
 //!   content `digest`, so a client that missed envelopes can detect the gap
 //!   and re-pull rather than trusting a partial view.
+//!
+//! Three facts are kept apart rather than collapsed, because each one needs a
+//! different response from a client: [`LspReadStatus::NotReady`] (no server —
+//! start one), [`LspReadStatus::Ambiguous`] (several — name one), and
+//! [`LspReadStatus::Unsupported`] (a live server that does not do this — none
+//! of the above will help).
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +37,22 @@ pub const MAX_LSP_SYMBOLS: usize = 300;
 pub const MAX_LSP_SEMANTIC_TOKENS: usize = 1000;
 /// Maximum diagnostic entries returned or published for one file.
 pub const MAX_LSP_DIAGNOSTICS_PER_FILE: usize = 100;
+/// Maximum document highlights returned for one position.
+pub const MAX_LSP_HIGHLIGHTS: usize = 200;
+/// Maximum signatures returned by a signature-help read.
+pub const MAX_LSP_SIGNATURES: usize = 50;
+/// Maximum characters of a signature label or its documentation.
+pub const MAX_LSP_SIGNATURE_CHARS: usize = 2000;
+/// Maximum characters of a format-preview diff.
+pub const MAX_LSP_FORMAT_DIFF_CHARS: usize = 64 * 1024;
+/// Maximum files reported by a rename preview.
+pub const MAX_LSP_RENAME_FILES: usize = 100;
+/// Maximum edits reported across a rename preview.
+pub const MAX_LSP_RENAME_EDITS: usize = 1000;
+/// Maximum warnings carried by a rename preview.
+pub const MAX_LSP_PREVIEW_WARNINGS: usize = 16;
+/// Maximum bytes of a proposed rename target.
+pub const MAX_LSP_NEW_NAME_BYTES: usize = 200;
 
 /// One already-normalized text patch in a reviewed LSP preview.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,40 +92,322 @@ pub struct LspPreviewApplyResultDto {
     pub synchronization_errors: Vec<String>,
 }
 
+/// Maximum patches in one reviewable candidate.
+///
+/// Mirrors the apply path's own bound: a candidate with more patches than this
+/// could not be applied, so it is not minted.
+pub const MAX_LSP_PREVIEW_CANDIDATE_PATCHES: usize = 100;
+
+/// Maximum bytes in one patch of a reviewable candidate.
+///
+/// Mirrors the apply path's per-patch bound for the same reason.
+pub const MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES: usize = 50_000;
+
+/// Maximum total patch bytes in one reviewable candidate.
+///
+/// A read result travels over the wire, so the candidate it carries is
+/// bounded. A preview whose patches exceed this is still a preview; it is
+/// simply not a candidate.
+pub const MAX_LSP_PREVIEW_CANDIDATE_BYTES: usize = 1024 * 1024;
+
+/// Maximum bytes in one of the candidate's identifying strings.
+///
+/// Mirrors the apply path's own metadata bound, so a candidate that passes
+/// validation is one the daemon will not refuse for its shape alone.
+pub const MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES: usize = 4_096;
+
+/// The preview kinds the apply path accepts.
+///
+/// These are the kinds ADR-0008's apply path can check and apply. A candidate
+/// of any other kind is refused rather than passed through.
+pub const LSP_PREVIEW_KINDS: [&str; 3] = ["rename", "code_action", "formatting"];
+
+/// Maximum total patch bytes across every candidate in one read result.
+///
+/// One read result may carry several candidates — a code-action read carries
+/// one per action — so the per-candidate bound is not enough on its own. The
+/// daemon stops minting when this is reached and says so, rather than
+/// silently offering fewer.
+pub const MAX_LSP_READ_CANDIDATE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Maximum code actions returned for one code-action read.
+///
+/// The server's own list is bounded by what it chose to send; this is the
+/// ceiling on what the daemon carries, and a list that reached it says so.
+pub const MAX_LSP_CODE_ACTIONS: usize = 50;
+
+/// Why a reviewable candidate was refused.
+///
+/// Every variant names the bound it broke, because the reader of a refusal
+/// needs to know what to change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LspPreviewCandidateInvalid {
+    /// The candidate has no identity.
+    MissingIdentity,
+    /// The candidate's revision is zero, which the apply path rejects.
+    InvalidRevision,
+    /// The candidate's digest is not a SHA-256 hex digest.
+    InvalidDigest,
+    /// The candidate's kind is not one the apply path accepts.
+    UnsupportedKind(String),
+    /// The candidate carries no patches.
+    NoPatches,
+    /// The candidate carries more patches than the apply path accepts.
+    TooManyPatches(usize),
+    /// One patch is malformed.
+    MalformedPatch(String),
+    /// One of the candidate's identifying strings is too long.
+    OversizedMetadata(String),
+    /// The candidate's patches exceed the total byte bound.
+    TooLarge(usize),
+}
+
+impl LspPreviewCandidateInvalid {
+    /// Why the candidate was refused, in one line.
+    ///
+    /// The reader of a refusal needs to know what to change, so every variant
+    /// names the bound it broke rather than saying "invalid".
+    pub fn message(&self) -> String {
+        match self {
+            LspPreviewCandidateInvalid::MissingIdentity => {
+                "the candidate has no preview id".to_string()
+            }
+            LspPreviewCandidateInvalid::InvalidRevision => {
+                "the candidate's revision is zero, which the apply path rejects".to_string()
+            }
+            LspPreviewCandidateInvalid::InvalidDigest => {
+                "the candidate's digest is not a SHA-256 digest".to_string()
+            }
+            LspPreviewCandidateInvalid::UnsupportedKind(kind) => {
+                format!("the apply path does not implement the \"{kind}\" preview kind")
+            }
+            LspPreviewCandidateInvalid::NoPatches => "the candidate carries no patches".to_string(),
+            LspPreviewCandidateInvalid::TooManyPatches(count) => {
+                format!("the candidate carries {count} patches, more than the apply path accepts")
+            }
+            LspPreviewCandidateInvalid::MalformedPatch(detail) => {
+                format!("a patch is malformed: {detail}")
+            }
+            LspPreviewCandidateInvalid::OversizedMetadata(detail) => {
+                format!("the candidate's metadata is too long: {detail}")
+            }
+            LspPreviewCandidateInvalid::TooLarge(bytes) => {
+                format!("the candidate's patches total {bytes} bytes, more than the limit")
+            }
+        }
+    }
+}
+
+/// One reviewable candidate, ready for the apply path.
+///
+/// This is the **bridge** between a preview and an apply. A preview says what
+/// *would* change; a candidate carries the material the apply needs — the
+/// patches, the base each patch was computed against, and the identity the
+/// apply path binds its request to.
+///
+/// The daemon mints it, because the daemon owns the language server. It
+/// travels in the read result, and **nothing is registered**: the apply path
+/// verifies a digest recomputed over the request's *own* patches rather than
+/// resolving an id in a registry, so a candidate that has been altered in
+/// transit fails the check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspPreviewCandidateDto {
+    /// The candidate's identity. Opaque to the client.
+    pub preview_id: String,
+    /// The candidate's revision. Must be non-zero.
+    pub preview_revision: u64,
+    /// The digest binding the request to this exact candidate.
+    pub preview_digest: String,
+    /// One of [`LSP_PREVIEW_KINDS`].
+    pub kind: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Where the candidate came from.
+    pub provenance: String,
+    /// The patches, in the order the apply path will apply them.
+    pub patches: Vec<LspPreviewPatchDto>,
+}
+
+impl LspPreviewCandidateDto {
+    /// Whether this candidate can be handed to the apply path.
+    ///
+    /// The bounds are the apply path's own, so a candidate that passes here
+    /// is one the daemon can at least *shape* into a request. The daemon still
+    /// decides whether the change may be applied.
+    pub fn validate(&self) -> Result<(), LspPreviewCandidateInvalid> {
+        if self.preview_id.trim().is_empty() {
+            return Err(LspPreviewCandidateInvalid::MissingIdentity);
+        }
+        if self.preview_revision == 0 {
+            return Err(LspPreviewCandidateInvalid::InvalidRevision);
+        }
+        if self.preview_digest.len() != 64 {
+            return Err(LspPreviewCandidateInvalid::InvalidDigest);
+        }
+        if !LSP_PREVIEW_KINDS.contains(&self.kind.as_str()) {
+            return Err(LspPreviewCandidateInvalid::UnsupportedKind(
+                self.kind.clone(),
+            ));
+        }
+        for (label, value) in [
+            ("the preview id", &self.preview_id),
+            ("the title", &self.title),
+            ("the provenance", &self.provenance),
+        ] {
+            if value.len() > MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES {
+                return Err(LspPreviewCandidateInvalid::OversizedMetadata(format!(
+                    "{label} is longer than the {MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES}-byte limit"
+                )));
+            }
+        }
+        if self.patches.is_empty() {
+            return Err(LspPreviewCandidateInvalid::NoPatches);
+        }
+        if self.patches.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCHES {
+            return Err(LspPreviewCandidateInvalid::TooManyPatches(
+                self.patches.len(),
+            ));
+        }
+        let mut total = 0usize;
+        for patch in &self.patches {
+            if patch.path.trim().is_empty() {
+                return Err(LspPreviewCandidateInvalid::MalformedPatch(
+                    "a patch has no path".to_string(),
+                ));
+            }
+            if patch.path.len() > MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES {
+                return Err(LspPreviewCandidateInvalid::OversizedMetadata(format!(
+                    "{}: the path is longer than the {MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES}-byte limit",
+                    patch.path
+                )));
+            }
+            if patch.patch.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES {
+                return Err(LspPreviewCandidateInvalid::MalformedPatch(format!(
+                    "{}: the patch is longer than the {}-byte limit",
+                    patch.path, MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES
+                )));
+            }
+            if patch.original_hash.len() != 64 {
+                return Err(LspPreviewCandidateInvalid::MalformedPatch(format!(
+                    "{}: the base hash is not a SHA-256 digest",
+                    patch.path
+                )));
+            }
+            total += patch.patch.len();
+        }
+        if total > MAX_LSP_PREVIEW_CANDIDATE_BYTES {
+            return Err(LspPreviewCandidateInvalid::TooLarge(total));
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // M006-B read surface
 // ---------------------------------------------------------------------------
 
-/// The read operations ADR-0012 exposes in its first slice.
+/// The read operations ADR-0012 exposes.
 ///
 /// `TypeDefinition` is intentionally absent: egglsp does not implement it, so
 /// offering it here would be a promise the daemon cannot keep.
+///
+/// The **raw** `CodeAction` is absent for a stronger reason — its answers are
+/// edits, and this family is read-only by construction (see
+/// [`LspReadPayloadDto`]). The *preview* of a code action is not absent: a
+/// preview's payload is a diff, exactly as the format and rename previews'
+/// are, so [`Self::CodeActionPreview`] answers with what each action *would*
+/// change and never writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LspReadOperation {
     Hover,
     Definition,
+    Declaration,
+    Implementation,
     References,
+    DocumentHighlight,
     DocumentSymbols,
     WorkspaceSymbols,
     SemanticTokens,
+    SignatureHelp,
+    /// Preview of `textDocument/formatting`. A **preview**: it returns a diff
+    /// and never writes. Applying a format needs an accepted ADR for LSP write
+    /// authorization, which does not exist.
+    FormatPreview,
+    /// Preview of `textDocument/rename`. A **preview** for the same reason, and
+    /// it needs a `new_name` to ask about at all.
+    RenamePreview,
+    /// Preview of `textDocument/codeAction`. A **preview** for the same reason.
+    ///
+    /// A code action is about a position, so this is a point operation. It
+    /// answers with the actions the server would offer there, each carrying
+    /// the diff of its own edit — and never the edit itself as a write.
+    CodeActionPreview,
 }
 
 impl LspReadOperation {
     /// Whether this operation is anchored to a position in a file.
     ///
-    /// Point operations carry `line`/`column` and never `query`; workspace
-    /// symbols carry `query` and no position. Keeping the two shapes distinct
-    /// is what stops a malformed request from being silently reinterpreted.
+    /// Point operations carry `path` plus `line`/`column`. File-scoped
+    /// operations carry `path` and no position; workspace symbols carry
+    /// `query` and no path. Keeping the three shapes distinct is what stops a
+    /// malformed request from being silently reinterpreted.
     pub fn is_point(&self) -> bool {
         matches!(
             self,
             Self::Hover
                 | Self::Definition
+                | Self::Declaration
+                | Self::Implementation
                 | Self::References
-                | Self::DocumentSymbols
-                | Self::SemanticTokens
+                | Self::DocumentHighlight
+                | Self::SignatureHelp
+                | Self::RenamePreview
+                | Self::CodeActionPreview
         )
+    }
+
+    /// Whether this operation names a file but no position within it.
+    ///
+    /// Split out from [`Self::is_point`] rather than left as an exception to
+    /// it. Document symbols and semantic tokens are file-scoped, and a format
+    /// preview is the whole document — none of them takes a cursor position,
+    /// so requiring one would have made the request incoherent.
+    pub fn is_file_scoped(&self) -> bool {
+        matches!(
+            self,
+            Self::DocumentSymbols | Self::SemanticTokens | Self::FormatPreview
+        )
+    }
+
+    /// Whether this operation is answered by a query rather than a target.
+    pub fn is_workspace(&self) -> bool {
+        matches!(self, Self::WorkspaceSymbols)
+    }
+
+    /// The LSP server capability key this operation depends on.
+    ///
+    /// Carried so an [`LspReadStatus::Unsupported`] result can name what the
+    /// server lacks instead of saying only "unsupported". These are the real
+    /// `ServerCapabilities` field names, not a protocol-invented taxonomy:
+    /// a client that wants to explain the gap to a user can point at the
+    /// server's own documentation for the same key.
+    pub fn capability(&self) -> &'static str {
+        match self {
+            Self::Hover => "hoverProvider",
+            Self::Definition => "definitionProvider",
+            Self::Declaration => "declarationProvider",
+            Self::Implementation => "implementationProvider",
+            Self::References => "referencesProvider",
+            Self::DocumentHighlight => "documentHighlightProvider",
+            Self::DocumentSymbols => "documentSymbolProvider",
+            Self::WorkspaceSymbols => "workspaceSymbolProvider",
+            Self::SemanticTokens => "semanticTokensProvider",
+            Self::SignatureHelp => "signatureHelpProvider",
+            Self::FormatPreview => "documentFormattingProvider",
+            Self::RenamePreview => "renameProvider",
+            Self::CodeActionPreview => "codeActionProvider",
+        }
     }
 }
 
@@ -112,11 +416,30 @@ impl LspReadOperation {
 /// `NotReady` is not an error. ADR-0012 §3 requires that a read against a
 /// cold server report this rather than launch a server, and requires it to be
 /// distinguishable from an empty result.
+///
+/// `Ambiguous` exists because "no server" and "several servers" are different
+/// facts. Reporting the second as the first makes a perfectly healthy
+/// polyglot workspace indistinguishable from a cold one — and the client has
+/// no way to tell the user which is wrong. It is **not** a readiness state and
+/// must not be treated as one: retrying will not make the ambiguity go away.
+///
+/// `Unsupported` exists because a warm server that lacks a capability has
+/// still answered. It is the same distinction the completion family draws with
+/// `LspCompletionStatus::Unsupported`, and it is deliberately not folded into
+/// `NotReady`: "start a server" cannot fix a server that never advertised this
+/// in the first place, so a client that retried would retry forever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LspReadStatus {
     Ready,
     NotReady,
+    /// More than one warm client is rooted at the session's workspace and
+    /// neither an explicit `server_id` nor the target's extension selected
+    /// one. The payload names the candidates.
+    Ambiguous,
+    /// The resolved warm client does not advertise
+    /// [`LspReadOperation::capability`]. The payload names it.
+    Unsupported,
 }
 
 /// A rejected read request.
@@ -134,6 +457,10 @@ pub enum LspReadInvalid {
     /// completion read shares the read family's rejection taxonomy rather
     /// than inventing a parallel one.
     InvalidAttachment,
+    /// A rename preview arrived without the `new_name` it is defined by.
+    MissingNewName,
+    /// The proposed rename exceeded [`MAX_LSP_NEW_NAME_BYTES`].
+    NewNameTooLong,
 }
 
 /// Authorized request for one bounded LSP read.
@@ -156,6 +483,31 @@ pub struct LspReadRequestDto {
     /// Free-text query, required for and only for workspace symbols.
     #[serde(default)]
     pub query: Option<String>,
+    /// Optional server id to select among the warm clients rooted at this
+    /// session's workspace.
+    ///
+    /// Absent (or empty) means "let the daemon resolve it". The daemon tries
+    /// an extension/language match against the target first and falls back to
+    /// the single warm client; when neither is unambiguous it answers
+    /// [`LspReadStatus::Ambiguous`] rather than guessing. An id that is
+    /// present but not warm is [`LspReadStatus::NotReady`]: no server for
+    /// what was asked for.
+    ///
+    /// Additive and `#[serde(default)]`, so an older daemon ignores it and an
+    /// older client omits it. It grants nothing: it only picks *which*
+    /// already-warm server answers, and never authorizes a read that would
+    /// otherwise be refused.
+    #[serde(default)]
+    pub server_id: Option<String>,
+    /// The proposed identifier, required for and only for
+    /// [`LspReadOperation::RenamePreview`].
+    ///
+    /// A rename preview has nothing to ask about without one: the whole point
+    /// is to show what this *specific* new name would touch. The request stays
+    /// read-only — the name is only ever sent to the server in a
+    /// `textDocument/rename` whose result is rendered, never applied.
+    #[serde(default)]
+    pub new_name: Option<String>,
 }
 
 impl LspReadRequestDto {
@@ -164,18 +516,11 @@ impl LspReadRequestDto {
     /// Validation happens before any service call so a malformed request can
     /// never reach a language server.
     pub fn validate(&self) -> Result<(), LspReadInvalid> {
-        if self.operation.is_point() {
-            if self.path.is_empty() {
-                return Err(LspReadInvalid::InvalidPath);
-            }
-            if self.query.is_some() {
-                return Err(LspReadInvalid::IncoherentFields);
-            }
-            if self.operation != LspReadOperation::DocumentSymbols && self.line.is_none() {
-                return Err(LspReadInvalid::IncoherentFields);
-            }
-        } else {
+        if self.operation.is_workspace() {
             if self.line.is_some() || self.column.is_some() || !self.path.is_empty() {
+                return Err(LspReadInvalid::IncoherentFields);
+            }
+            if self.new_name.is_some() {
                 return Err(LspReadInvalid::IncoherentFields);
             }
             let query = self.query.as_deref().unwrap_or_default();
@@ -185,7 +530,40 @@ impl LspReadRequestDto {
             if query.len() > MAX_LSP_SYMBOL_QUERY_BYTES {
                 return Err(LspReadInvalid::QueryTooLong);
             }
+            return Ok(());
         }
+
+        if self.path.is_empty() {
+            return Err(LspReadInvalid::InvalidPath);
+        }
+        if self.query.is_some() {
+            return Err(LspReadInvalid::IncoherentFields);
+        }
+
+        if self.operation.is_point() && self.line.is_none() {
+            return Err(LspReadInvalid::IncoherentFields);
+        }
+
+        match self.operation {
+            LspReadOperation::RenamePreview => {
+                let Some(new_name) = self.new_name.as_deref() else {
+                    return Err(LspReadInvalid::MissingNewName);
+                };
+                if new_name.is_empty() {
+                    return Err(LspReadInvalid::MissingNewName);
+                }
+                if new_name.len() > MAX_LSP_NEW_NAME_BYTES {
+                    return Err(LspReadInvalid::NewNameTooLong);
+                }
+            }
+            // `new_name` belongs to rename alone. Accepting it elsewhere would
+            // let a rename name ride along on an unrelated read, where nothing
+            // would ever consume it and its absence elsewhere would look like
+            // an oversight rather than a rule.
+            _ if self.new_name.is_some() => return Err(LspReadInvalid::IncoherentFields),
+            _ => {}
+        }
+
         Ok(())
     }
 }
@@ -233,6 +611,177 @@ pub struct LspSemanticTokenDto {
     pub modifiers: Vec<String>,
 }
 
+/// One `textDocument/documentHighlight` entry.
+///
+/// `kind` is the LSP `DocumentHighlightKind` as an integer (1 = text,
+/// 2 = read, 3 = write), absent when the server reports no kind. Carried
+/// verbatim for the same reason as [`LspSymbolDto::kind`]: the protocol does
+/// not own a highlight taxonomy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspHighlightDto {
+    pub range: LspRangeDto,
+    #[serde(default)]
+    pub kind: Option<u32>,
+}
+
+/// One signature in a signature-help answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspSignatureDto {
+    /// Bounded by [`MAX_LSP_SIGNATURE_CHARS`].
+    pub label: String,
+    #[serde(default)]
+    pub documentation: Option<String>,
+    #[serde(default)]
+    pub parameters: Vec<LspSignatureParameterDto>,
+}
+
+/// One parameter of one signature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspSignatureParameterDto {
+    /// Already resolved to a substring of the signature label.
+    pub label: String,
+    #[serde(default)]
+    pub documentation: Option<String>,
+}
+
+/// A previewed document-formatting result.
+///
+/// `diff` is what *would* change and `before_hash`/`after_hash` let a client
+/// prove the base it was computed against. Nothing here has been written.
+///
+/// `candidate` is the material ADR-0008's apply path needs, and it is present
+/// only when the preview is complete enough to become one. Its absence is not
+/// a failure: a truncated preview, a preview with no edits, and a preview
+/// whose diff is too large to apply are all still previews.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspFormatPreviewDto {
+    /// Workspace-relative path, derived by the daemon after containment.
+    pub path: String,
+    pub edit_count: usize,
+    pub before_hash: String,
+    pub after_hash: String,
+    /// Bounded by [`MAX_LSP_FORMAT_DIFF_CHARS`].
+    pub diff: String,
+    pub truncated: bool,
+    /// The file changed on disk while the preview was being built, so this
+    /// preview may no longer describe what is on disk.
+    pub base_stale: bool,
+    /// The reviewable candidate, when this preview can become one.
+    #[serde(default)]
+    pub candidate: Option<LspPreviewCandidateDto>,
+}
+
+/// One file a rename preview would touch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspRenameFileDto {
+    /// Workspace-relative path, empty when the file is outside the session's
+    /// workspace and was therefore dropped by containment.
+    pub path: String,
+    pub edit_count: usize,
+}
+
+/// A previewed rename result.
+///
+/// `new_name` echoes the request so a client never has to correlate a preview
+/// with the input that produced it, and `old_name` is `None` when the server
+/// advertised no `prepareRename` — fabricating a placeholder there would be a
+/// guess about what the user is renaming.
+///
+/// `candidate` is the material ADR-0008's apply path needs, and it is present
+/// only when every file's patch is complete. A rename whose preview was
+/// truncated, or one of whose files had its patch omitted, stays a preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspRenamePreviewDto {
+    #[serde(default)]
+    pub old_name: Option<String>,
+    pub new_name: String,
+    /// Bounded by [`MAX_LSP_RENAME_FILES`].
+    pub files: Vec<LspRenameFileDto>,
+    pub edit_count: usize,
+    /// Bounded by [`MAX_LSP_PREVIEW_WARNINGS`].
+    pub warnings: Vec<String>,
+    pub truncated: bool,
+    pub base_stale: bool,
+    /// The reviewable candidate, when this preview can become one.
+    #[serde(default)]
+    pub candidate: Option<LspPreviewCandidateDto>,
+}
+
+/// Why a code action cannot be reviewed and applied.
+///
+/// Present exactly when the action carries no candidate. Every variant names a
+/// cause the daemon observed; none of them is a guess about what the server
+/// meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspCodeActionUnavailable {
+    /// The action carries no edit: the server sent an action with nothing in
+    /// it, and there is nothing to preview.
+    NoEdit,
+    /// The action carries a `Command` payload.
+    ///
+    /// This surface never runs commands, and the LSP specification has the
+    /// client apply an action's edit *and then* its command. Applying the
+    /// edit of a mixed action would apply half of what the action means, so
+    /// an action that carries a command is never applied here — not even one
+    /// that also carries an edit.
+    Command,
+    /// The server marked the action disabled, and said why.
+    Disabled,
+    /// The action's edit could not be previewed completely: a truncated
+    /// preview, a file whose patch was omitted, or a file outside the
+    /// workspace.
+    IncompletePreview,
+    /// The action's edit is larger than the apply path accepts, so it cannot
+    /// become a candidate however much room the result has.
+    TooLarge,
+    /// The read result reached its total candidate bound, so this action's
+    /// candidate was not minted.
+    BoundReached,
+}
+
+/// One code action the server would offer at the requested position.
+///
+/// The action is the server's own: its title, its kind and its disabled
+/// reason are carried verbatim rather than re-worded, so what the panel says
+/// can be matched against what the server said.
+///
+/// `candidate` is present only when the action can become one — that is, when
+/// it carries an editable edit, carries no command, is not disabled, and the
+/// result had room for it. `unavailable` is present exactly when `candidate`
+/// is not, and says which of the reasons applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspCodeActionDto {
+    /// The action's title, as the server wrote it.
+    pub title: String,
+    /// The LSP `CodeActionKind`, when the server gave one.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Whether the server marked this action preferred.
+    #[serde(default)]
+    pub preferred: bool,
+    /// The server's own reason, when it marked the action disabled.
+    #[serde(default)]
+    pub disabled_reason: Option<String>,
+    /// Whether the action carried a `WorkspaceEdit` payload.
+    #[serde(default)]
+    pub has_edit: bool,
+    /// Whether the action carried a `Command` payload.
+    ///
+    /// Carried so the panel can say *why* an action cannot be applied, rather
+    /// than only that it cannot.
+    #[serde(default)]
+    pub has_command: bool,
+    /// The reviewable candidate, when this action can become one.
+    #[serde(default)]
+    pub candidate: Option<LspPreviewCandidateDto>,
+    /// Why this action cannot be reviewed and applied.
+    ///
+    /// `None` exactly when the action carries a candidate.
+    #[serde(default)]
+    pub unavailable: Option<LspCodeActionUnavailable>,
+}
+
 /// The payload of a successful read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -254,12 +803,63 @@ pub enum LspReadPayloadDto {
         tokens: Vec<LspSemanticTokenDto>,
         truncated: bool,
     },
+    /// The warm clients a read could have used, when the daemon would not
+    /// guess between them.
+    ///
+    /// This carries **no answer** — only the candidate server ids to choose
+    /// from. It appears solely alongside [`LspReadStatus::Ambiguous`], so a
+    /// client that renders candidates cannot accidentally render them as
+    /// results.
+    AmbiguousClients { candidates: Vec<String> },
+    /// Highlights within the requested file, with the server's own read/write
+    /// classification preserved.
+    Highlights {
+        highlights: Vec<LspHighlightDto>,
+        truncated: bool,
+    },
+    /// One or more call signatures at the requested position.
+    ///
+    /// Absent `active_*` fields mean the server named no active item, which is
+    /// different from zero — index 0 is a real answer.
+    SignatureHelp {
+        signatures: Vec<LspSignatureDto>,
+        #[serde(default)]
+        active_signature: Option<u32>,
+        #[serde(default)]
+        active_parameter: Option<u32>,
+    },
+    /// What formatting this document would receive. Never applied.
+    FormatPreview(LspFormatPreviewDto),
+    /// What this rename would touch. Never applied.
+    RenamePreview(LspRenamePreviewDto),
+    /// The code actions the server would offer at the requested position.
+    ///
+    /// A **preview**: every candidate is a diff, and nothing here has been
+    /// written. Several actions can carry candidates at once, which is why
+    /// this is a list and not a single preview.
+    CodeActions {
+        actions: Vec<LspCodeActionDto>,
+        /// True when the action list itself was capped, so a client knows it
+        /// is not the whole set the server offered.
+        #[serde(default)]
+        truncated: bool,
+    },
+    /// The capability the resolved server does not advertise.
+    ///
+    /// Carries no answer — like [`Self::AmbiguousClients`], it exists so a
+    /// client can explain the refusal, and it appears only alongside
+    /// [`LspReadStatus::Unsupported`].
+    UnsupportedCapability {
+        /// The [`LspReadOperation::capability`] key that is missing.
+        capability: String,
+    },
 }
 
 /// Result of one LSP read.
 ///
 /// `status` is authoritative and comes first in meaning: a caller must check
 /// it before reading `payload`, and a `NotReady` result never carries one.
+/// An `Ambiguous` result carries only its candidates, never an answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspReadResultDto {
     pub operation: LspReadOperation,
@@ -278,6 +878,43 @@ impl LspReadResultDto {
             operation,
             status: LspReadStatus::NotReady,
             payload: None,
+        }
+    }
+
+    /// A read that could not be answered because the daemon would not choose
+    /// between warm servers on the caller's behalf.
+    ///
+    /// Constructed only through this function, so the invariant — an
+    /// ambiguity always names its candidates and never carries an answer —
+    /// holds for every `Ambiguous` result on the wire. An empty candidate
+    /// list is not representable; a caller that cannot enumerate them has a
+    /// cold root, not an ambiguous one.
+    pub fn ambiguous(operation: LspReadOperation, candidates: Vec<String>) -> Self {
+        debug_assert!(
+            !candidates.is_empty(),
+            "an ambiguous read must name at least one candidate"
+        );
+        Self {
+            operation,
+            status: LspReadStatus::Ambiguous,
+            payload: Some(LspReadPayloadDto::AmbiguousClients { candidates }),
+        }
+    }
+
+    /// A read the resolved warm server cannot answer because it does not
+    /// advertise the capability.
+    ///
+    /// Constructed only through this function, from the operation's own
+    /// [`LspReadOperation::capability`] key rather than a caller-supplied
+    /// string, so the name on the wire always matches the operation that
+    /// produced it.
+    pub fn unsupported(operation: LspReadOperation) -> Self {
+        Self {
+            operation,
+            status: LspReadStatus::Unsupported,
+            payload: Some(LspReadPayloadDto::UnsupportedCapability {
+                capability: operation.capability().to_string(),
+            }),
         }
     }
 
@@ -702,6 +1339,8 @@ mod tests {
             line: Some(3),
             column: Some(7),
             query: None,
+            server_id: None,
+            new_name: None,
         }
     }
 
@@ -763,6 +1402,8 @@ mod tests {
             line: Some(1),
             column: Some(1),
             query: Some("Foo".to_string()),
+            server_id: None,
+            new_name: None,
         };
         assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
     }
@@ -776,6 +1417,8 @@ mod tests {
             line: None,
             column: None,
             query: Some(String::new()),
+            server_id: None,
+            new_name: None,
         };
         assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
     }
@@ -789,6 +1432,8 @@ mod tests {
             line: None,
             column: None,
             query: Some("x".repeat(MAX_LSP_SYMBOL_QUERY_BYTES + 1)),
+            server_id: None,
+            new_name: None,
         };
         assert_eq!(request.validate(), Err(LspReadInvalid::QueryTooLong));
     }
@@ -991,5 +1636,544 @@ mod tests {
             file: file.clone(),
         };
         assert_eq!(projection.file, file);
+    }
+
+    #[test]
+    fn a_request_from_an_older_client_without_a_server_id_still_validates() {
+        // `server_id` is additive. A client that predates it must keep
+        // working against a daemon that understands it, so the field defaults
+        // to absent rather than becoming mandatory.
+        let request: LspReadRequestDto = serde_json::from_str(
+            r#"{"operation":"hover","session_id":"session-1","path":"src/lib.rs","line":3,"column":7}"#,
+        )
+        .expect("an older client's request remains deserializable");
+        assert_eq!(request.server_id, None);
+        assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_ambiguous_result_names_its_candidates_and_carries_no_answer() {
+        let result = LspReadResultDto::ambiguous(
+            LspReadOperation::Hover,
+            vec!["gopls".to_string(), "rust-analyzer".to_string()],
+        );
+        assert_eq!(result.status, LspReadStatus::Ambiguous);
+        assert_eq!(
+            result.payload,
+            Some(LspReadPayloadDto::AmbiguousClients {
+                candidates: vec!["gopls".to_string(), "rust-analyzer".to_string()],
+            })
+        );
+        assert!(
+            result.status != LspReadStatus::NotReady,
+            "several servers and no server are different facts and must not \
+             collapse into one status"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_result_round_trips_over_the_wire() {
+        let result = LspReadResultDto::ambiguous(
+            LspReadOperation::WorkspaceSymbols,
+            vec!["typescript-language-server".to_string()],
+        );
+        let json = serde_json::to_string(&result).expect("an ambiguity serializes");
+        assert!(
+            json.contains(r#""status":"ambiguous""#),
+            "the wire form names the state, so a client can tell it from a \
+             cold server without knowing the daemon's type names: {json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            result
+        );
+    }
+
+    #[test]
+    fn a_not_ready_result_still_never_carries_a_payload() {
+        let result = LspReadResultDto::not_ready(LspReadOperation::Hover);
+        assert_eq!(result.status, LspReadStatus::NotReady);
+        assert_eq!(result.payload, None);
+    }
+
+    // ── M013 W3: the read operations the editor could not reach ──────
+
+    #[test]
+    fn a_format_preview_names_a_file_but_takes_no_position() {
+        // Formatting is a whole-document operation. Requiring a cursor would
+        // have forced a caller to invent a position the server never uses.
+        let mut request = point(LspReadOperation::FormatPreview);
+        assert!(!request.operation.is_point());
+        assert!(request.operation.is_file_scoped());
+        request.line = None;
+        request.column = None;
+        assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
+    fn document_symbols_are_file_scoped_rather_than_point_anchored() {
+        // This used to ride on `is_point()` with a line exemption bolted on,
+        // so `is_point()` meant two different things at once.
+        let mut request = point(LspReadOperation::DocumentSymbols);
+        assert!(!request.operation.is_point());
+        assert!(request.operation.is_file_scoped());
+        request.line = None;
+        request.column = None;
+        assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
+    fn every_new_point_read_is_anchored_to_a_position() {
+        for operation in [
+            LspReadOperation::Implementation,
+            LspReadOperation::Declaration,
+            LspReadOperation::DocumentHighlight,
+            LspReadOperation::SignatureHelp,
+            LspReadOperation::RenamePreview,
+        ] {
+            assert!(operation.is_point(), "{operation:?} must be point-anchored");
+            assert!(
+                !operation.is_file_scoped(),
+                "{operation:?} must not be file-scoped"
+            );
+            assert!(
+                !operation.is_workspace(),
+                "{operation:?} must not be workspace-scoped"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rename_preview_without_a_new_name_is_rejected() {
+        let mut request = point(LspReadOperation::RenamePreview);
+        request.new_name = None;
+        assert_eq!(request.validate(), Err(LspReadInvalid::MissingNewName));
+
+        request.new_name = Some(String::new());
+        assert_eq!(request.validate(), Err(LspReadInvalid::MissingNewName));
+    }
+
+    #[test]
+    fn an_oversized_rename_target_is_rejected() {
+        let mut request = point(LspReadOperation::RenamePreview);
+        request.new_name = Some("x".repeat(MAX_LSP_NEW_NAME_BYTES + 1));
+        assert_eq!(request.validate(), Err(LspReadInvalid::NewNameTooLong));
+    }
+
+    #[test]
+    fn a_rename_target_is_refused_on_any_other_operation() {
+        // Otherwise a rename name could ride along on an unrelated read,
+        // where nothing would ever consume it.
+        let mut request = point(LspReadOperation::Hover);
+        request.new_name = Some("renamed".to_string());
+        assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
+    }
+
+    #[test]
+    fn a_valid_rename_preview_request_is_accepted() {
+        let mut request = point(LspReadOperation::RenamePreview);
+        request.new_name = Some("renamed".to_string());
+        assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_unsupported_result_names_the_operations_own_capability() {
+        let result = LspReadResultDto::unsupported(LspReadOperation::RenamePreview);
+        assert_eq!(result.status, LspReadStatus::Unsupported);
+        assert_eq!(
+            result.payload,
+            Some(LspReadPayloadDto::UnsupportedCapability {
+                capability: "renameProvider".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_is_not_a_readiness_state() {
+        // Retrying cannot conjure a capability, so a client that treated this
+        // as `NotReady` would poll forever against a server that answered.
+        let result = LspReadResultDto::unsupported(LspReadOperation::SignatureHelp);
+        assert_ne!(result.status, LspReadStatus::NotReady);
+        assert_ne!(result.status, LspReadStatus::Ready);
+    }
+
+    #[test]
+    fn an_unsupported_result_round_trips_and_carries_no_answer() {
+        let result = LspReadResultDto::unsupported(LspReadOperation::FormatPreview);
+        let json = serde_json::to_string(&result).expect("an unsupported result serializes");
+        assert!(json.contains(r#""status":"unsupported""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            result
+        );
+    }
+
+    #[test]
+    fn every_operation_names_a_distinct_lsp_capability_key() {
+        let all = [
+            LspReadOperation::Hover,
+            LspReadOperation::Definition,
+            LspReadOperation::Declaration,
+            LspReadOperation::Implementation,
+            LspReadOperation::References,
+            LspReadOperation::DocumentHighlight,
+            LspReadOperation::DocumentSymbols,
+            LspReadOperation::WorkspaceSymbols,
+            LspReadOperation::SemanticTokens,
+            LspReadOperation::SignatureHelp,
+            LspReadOperation::FormatPreview,
+            LspReadOperation::RenamePreview,
+        ];
+        for operation in all {
+            assert!(
+                operation.capability().ends_with("Provider"),
+                "{operation:?} names a capability that is not a ServerCapabilities key: {}",
+                operation.capability()
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        for operation in all {
+            assert!(
+                seen.insert(operation.capability()),
+                "{operation:?} reuses another operation's capability key"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preview_payload_round_trips_without_claiming_to_be_applied() {
+        let result = LspReadResultDto::ready(
+            LspReadOperation::RenamePreview,
+            LspReadPayloadDto::RenamePreview(LspRenamePreviewDto {
+                old_name: Some("old".to_string()),
+                new_name: "new".to_string(),
+                files: vec![LspRenameFileDto {
+                    path: "src/lib.rs".to_string(),
+                    edit_count: 2,
+                }],
+                edit_count: 2,
+                warnings: vec!["resource operations present".to_string()],
+                truncated: false,
+                base_stale: false,
+                candidate: None,
+            }),
+        );
+        let json = serde_json::to_string(&result).expect("a rename preview serializes");
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            result
+        );
+    }
+
+    /// The bridge's protocol half.
+    ///
+    /// A candidate is the material the apply path consumes, so the fields it
+    /// carries are the fields the apply path binds: an identity, a non-zero
+    /// revision, a digest, a kind the apply path accepts, and the patches
+    /// with the base each was computed against. A candidate missing any of
+    /// them is refused here, before a request is ever built.
+    #[test]
+    fn a_candidate_carries_the_material_the_apply_path_binds() {
+        let candidate = LspPreviewCandidateDto {
+            preview_id: "editor-preview-7".to_string(),
+            preview_revision: 7,
+            preview_digest: "a".repeat(64),
+            kind: "rename".to_string(),
+            title: "Rename old to new".to_string(),
+            provenance: "editor:rename:old->new".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                original_hash: "b".repeat(64),
+            }],
+        };
+        assert_eq!(candidate.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_candidate_is_refused_when_it_cannot_be_applied() {
+        let base = LspPreviewCandidateDto {
+            preview_id: "editor-preview-1".to_string(),
+            preview_revision: 1,
+            preview_digest: "a".repeat(64),
+            kind: "formatting".to_string(),
+            title: "Format src/lib.rs".to_string(),
+            provenance: "editor:format:src/lib.rs".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                original_hash: "b".repeat(64),
+            }],
+        };
+
+        let mut candidate = base.clone();
+        candidate.preview_id = "  ".to_string();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::MissingIdentity),
+            "a candidate with no identity could not be applied"
+        );
+
+        let mut candidate = base.clone();
+        candidate.preview_revision = 0;
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::InvalidRevision),
+            "the apply path rejects a zero revision"
+        );
+
+        let mut candidate = base.clone();
+        candidate.preview_digest = "short".to_string();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::InvalidDigest),
+            "the digest is what binds the request to this candidate"
+        );
+
+        let mut candidate = base.clone();
+        candidate.kind = "delete_everything".to_string();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::UnsupportedKind(
+                "delete_everything".to_string()
+            )),
+            "a kind the apply path does not implement must not travel"
+        );
+
+        let mut candidate = base.clone();
+        candidate.patches.clear();
+        assert_eq!(
+            candidate.validate(),
+            Err(LspPreviewCandidateInvalid::NoPatches),
+            "a candidate with no patches changes nothing"
+        );
+
+        let mut candidate = base.clone();
+        candidate.patches[0].original_hash = "not-a-digest".to_string();
+        assert!(
+            matches!(
+                candidate.validate(),
+                Err(LspPreviewCandidateInvalid::MalformedPatch(_))
+            ),
+            "a patch without a base hash could not be revalidated"
+        );
+
+        let mut candidate = base.clone();
+        candidate.patches[0].patch = "x".repeat(MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES + 1);
+        assert!(
+            matches!(
+                candidate.validate(),
+                Err(LspPreviewCandidateInvalid::MalformedPatch(_))
+            ),
+            "a patch the apply path would refuse must not travel"
+        );
+    }
+
+    #[test]
+    fn a_preview_without_a_candidate_is_still_a_preview() {
+        // The candidate is additive: a preview that cannot become one — a
+        // truncated rename, a preview with no edits — carries no candidate,
+        // and an older client that never heard of the field still reads it.
+        let json = r#"{
+            "operation": "format_preview",
+            "status": "ready",
+            "payload": {
+                "kind": "format_preview",
+                "path": "src/lib.rs",
+                "edit_count": 0,
+                "before_hash": "b",
+                "after_hash": "b",
+                "diff": "",
+                "truncated": true,
+                "base_stale": false
+            }
+        }"#;
+        let result: LspReadResultDto =
+            serde_json::from_str(json).expect("an older daemon preview is understood");
+        let Some(LspReadPayloadDto::FormatPreview(preview)) = result.payload else {
+            panic!("expected the format preview payload");
+        };
+        assert_eq!(preview.candidate, None);
+    }
+
+    #[test]
+    fn a_signature_help_and_highlights_payload_round_trip() {
+        let signatures = LspReadResultDto::ready(
+            LspReadOperation::SignatureHelp,
+            LspReadPayloadDto::SignatureHelp {
+                signatures: vec![LspSignatureDto {
+                    label: "fn parse(input: &str) -> Result<T, E>".to_string(),
+                    documentation: None,
+                    parameters: vec![LspSignatureParameterDto {
+                        label: "input: &str".to_string(),
+                        documentation: None,
+                    }],
+                }],
+                active_signature: Some(0),
+                active_parameter: Some(0),
+            },
+        );
+        let json = serde_json::to_string(&signatures).expect("signature help serializes");
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            signatures
+        );
+
+        let highlights = LspReadResultDto::ready(
+            LspReadOperation::DocumentHighlight,
+            LspReadPayloadDto::Highlights {
+                highlights: vec![LspHighlightDto {
+                    range: LspRangeDto {
+                        path: "src/lib.rs".to_string(),
+                        workspace_relative_path: Some("src/lib.rs".to_string()),
+                        start_line: 3,
+                        start_column: 7,
+                        end_line: 3,
+                        end_column: 11,
+                    },
+                    kind: Some(3),
+                }],
+                truncated: false,
+            },
+        );
+        let json = serde_json::to_string(&highlights).expect("highlights serialize");
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            highlights
+        );
+    }
+
+    #[test]
+    fn a_format_preview_payload_round_trips_and_states_its_staleness() {
+        let result = LspReadResultDto::ready(
+            LspReadOperation::FormatPreview,
+            LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "aaa".to_string(),
+                after_hash: "bbb".to_string(),
+                diff: "-a\n+b\n".to_string(),
+                truncated: false,
+                base_stale: true,
+                candidate: None,
+            }),
+        );
+        let json = serde_json::to_string(&result).expect("a format preview serializes");
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            result
+        );
+    }
+
+    #[test]
+    fn a_request_from_an_older_client_without_a_new_name_still_validates() {
+        // `new_name` is additive alongside `server_id`: an older client omits
+        // both, and every read it can express must still validate.
+        let json = r#"{
+            "operation": "hover",
+            "session_id": "session-1",
+            "path": "src/lib.rs",
+            "line": 3,
+            "column": 7
+        }"#;
+        let request: LspReadRequestDto =
+            serde_json::from_str(json).expect("an older client is understood");
+        assert_eq!(request.server_id, None);
+        assert_eq!(request.new_name, None);
+        assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_code_action_operation_is_a_point_operation() {
+        // A code action is about a position: the request carries the cursor's
+        // line and column, and the operation refuses to be asked without one.
+        assert!(LspReadOperation::CodeActionPreview.is_point());
+        assert!(!LspReadOperation::CodeActionPreview.is_file_scoped());
+        assert!(!LspReadOperation::CodeActionPreview.is_workspace());
+        assert_eq!(
+            LspReadOperation::CodeActionPreview.capability(),
+            "codeActionProvider"
+        );
+        assert_eq!(
+            point(LspReadOperation::CodeActionPreview).validate(),
+            Ok(())
+        );
+        let mut without_a_position = point(LspReadOperation::CodeActionPreview);
+        without_a_position.line = None;
+        assert_eq!(
+            without_a_position.validate(),
+            Err(LspReadInvalid::IncoherentFields)
+        );
+    }
+
+    #[test]
+    fn the_code_actions_payload_round_trips() {
+        let result = LspReadResultDto::ready(
+            LspReadOperation::CodeActionPreview,
+            LspReadPayloadDto::CodeActions {
+                actions: vec![LspCodeActionDto {
+                    title: "Add missing import".to_string(),
+                    kind: Some("quickfix".to_string()),
+                    preferred: true,
+                    disabled_reason: None,
+                    has_edit: true,
+                    has_command: false,
+                    candidate: None,
+                    unavailable: None,
+                }],
+                truncated: false,
+            },
+        );
+        let json = serde_json::to_string(&result).expect("a code-action read serializes");
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            result
+        );
+    }
+
+    #[test]
+    fn a_command_only_action_carries_no_candidate_and_says_why() {
+        // The action is listed — the reader must see what the server offered
+        // — and it carries the reason it cannot be applied, so the panel and
+        // the `Enter` handler say the same thing.
+        let action = LspCodeActionDto {
+            title: "Run the test suite".to_string(),
+            kind: None,
+            preferred: false,
+            disabled_reason: None,
+            has_edit: false,
+            has_command: true,
+            candidate: None,
+            unavailable: Some(LspCodeActionUnavailable::Command),
+        };
+        assert!(action.candidate.is_none());
+        let json = serde_json::to_string(&action).expect("a code action serializes");
+        let round_tripped: LspCodeActionDto = serde_json::from_str(&json).expect("and round-trips");
+        assert_eq!(round_tripped, action);
+        assert_eq!(
+            round_tripped.unavailable,
+            Some(LspCodeActionUnavailable::Command)
+        );
+    }
+
+    #[test]
+    fn one_candidate_always_fits_in_one_read_result() {
+        // The result-wide bound has to be at least the per-candidate bound,
+        // or a candidate that passes its own bound could never be minted in
+        // a result — the result would refuse what the candidate allows.
+        //
+        // The constants are read through `black_box` so the comparison is a
+        // *runtime* check: a bare comparison of two constants is folded away
+        // by the compiler, and a test that the compiler already guarantees is
+        // not a test.
+        let total = std::hint::black_box(MAX_LSP_READ_CANDIDATE_BYTES);
+        let per_candidate = std::hint::black_box(MAX_LSP_PREVIEW_CANDIDATE_BYTES);
+        assert!(
+            total >= per_candidate,
+            "the result-wide bound ({total}) must be at least the per-candidate \
+             bound ({per_candidate}), or a candidate that passes its own bound \
+             could never be minted in a result"
+        );
+        assert!(std::hint::black_box(MAX_LSP_CODE_ACTIONS) > 0);
     }
 }

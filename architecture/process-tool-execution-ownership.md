@@ -32,6 +32,48 @@ retaining a bounded final result. `EnvironmentPolicy::sanitized()` is the
 default for machine/tool execution; `inherited()` is reserved for human shell
 semantics and still strips known unsafe Git environment variables.
 
+Model-owned processes with a canonical session identity receive a persistent,
+private session scratch directory under the per-user CodeGG cache root
+(`dirs::cache_dir()/codegg`). It stays separate from the daemon data root,
+which is a credential-denied root under macOS Seatbelt. Cache contents are
+disposable and may be removed by host cache maintenance. Its directory
+name is a SHA-256 digest of the host session identity; allocation is lazy,
+idempotent across reconnect/restart, refuses symlinked path components, and
+uses mode 0700 on Unix. Windows inherits the per-user cache-root ACL and is
+not claimed as a native scratch-isolation guarantee. The broker-projected session identity is
+the authority; command arguments and ambient temp variables cannot select a
+scratch directory. `ManagedProcessService` applies `CODEGG_SCRATCH_DIR`,
+`TMPDIR`, `TMP`, and `TEMP` after rebuilding the child environment. Under a
+Required sandbox it adds session scratch alongside the separate per-launch
+staging directory. Human-shell launches have no model session identity and do
+not receive this resource. M001 cleanup is conservative: directories are
+retained pending the later lease and retention qualification.
+
+Durable delegated runs use a distinct persistent private root keyed by the
+host-owned `AgentRunId`. An accepted run may also carry opaque shared scratch
+grants owned by its direct parent. The worker validates those grants against
+the durable run store before constructing the scope. `CODEGG_SCRATCH_DIR` and
+all standard temporary-directory variables point to the private run root;
+each explicitly granted shared root is exposed under a sanitized
+`CODEGG_SHARED_SCRATCH_<ALIAS>` variable. Required sandbox launches add only
+those validated roots alongside the private per-launch staging directory.
+The scheduler attempt holds leases for these resources until the child run
+returns; revocation blocks future child admission and leaves active attempts
+intact. A revoked shared directory is removed after the last admitted lease
+releases; run-private cache directories remain available for host cache
+maintenance.
+
+The delegated-grant containment of that model — the run-private root and the
+explicitly granted shared roots writable, and every other scratch root, the
+scratch parent, unrelated host temporary directories, and cross-boundary
+links refused — is now qualified on a native Linux host with Landlock
+ABI >= 3 by `tests/linux_native_scratch_containment.rs`. The fixture drives
+the real admission, scheduler and managed-process path and asserts the
+obtained backend status; see
+`plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`.
+Windows remains unclaimed, because the Required backend there is still
+absent.
+
 Durable or background work is admitted by `JobSubmissionService` and runs
 through a scheduler executor. The process service executes an accepted
 attempt; it is not a second scheduler or job authority.

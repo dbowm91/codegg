@@ -172,6 +172,84 @@ pub fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf,
     Ok(normalized)
 }
 
+/// Return a normalized path beneath a known host temporary root. This is
+/// advisory for structured-tool recovery only and grants no path authority.
+pub fn relative_to_known_temp_root(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let normalized = lexically_normalize(path);
+    let mut roots = vec![std::env::temp_dir()];
+    #[cfg(unix)]
+    roots.extend([
+        PathBuf::from("/tmp"),
+        PathBuf::from("/var/tmp"),
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/private/var/tmp"),
+    ]);
+    #[cfg(windows)]
+    if let Some(temp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMP")) {
+        roots.push(PathBuf::from(temp));
+    }
+
+    roots.into_iter().find_map(|root| {
+        let root = lexically_normalize(&root);
+        let relative = normalized.strip_prefix(root).ok()?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        Some(relative.to_path_buf())
+    })
+}
+
+/// The non-authoritative redirect offer for a structured mutation of a
+/// recognized host temporary root that is not an authorized root.
+///
+/// The offer names a *suggested* path under the caller's own private scratch
+/// root. It grants nothing, rewrites nothing, and the caller must still
+/// refuse the original target: the human remains the only authority for that
+/// location. It returns `None` when the target is not under a known host
+/// temporary root, or when the private scratch root does not exist.
+///
+/// The wording lives here so the permission layer and the write tool cannot
+/// drift apart: the same refusal is shown whether the model is answered
+/// before the human is asked, or the tool refuses the path itself.
+pub fn temp_root_redirect_message(path: &Path, private_scratch: Option<&Path>) -> Option<String> {
+    let relative = relative_to_known_temp_root(path)?;
+    let scratch_root = private_scratch?.canonicalize().ok()?;
+    let suggestion = scratch_root.join(relative);
+    Some(format!(
+        "temporary path is outside the authorized workspace; retry at '{}' or request access to the original location through the normal permission flow",
+        suggestion.display()
+    ))
+}
+
+/// The canonical form of a target that may not exist yet: the deepest
+/// existing ancestor is canonicalized and the remaining components are
+/// appended. Returns `None` when the path has no existing ancestor.
+///
+/// This is the same walk [`validate_target_path`] performs, minus the
+/// containment test, so a caller can compare a not-yet-created target
+/// against roots and path rules without creating it first.
+pub fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        let component = existing.file_name()?.to_os_string();
+        suffix.push(component);
+        existing = existing.parent()?.to_path_buf();
+    }
+    let mut normalized = existing.canonicalize().ok()?;
+    for component in suffix.iter().rev() {
+        normalized.push(component);
+    }
+    Some(normalized)
+}
+
 /// Resolve a caller-supplied working directory against the workspace root.
 ///
 /// Delegates to [`validate_target_path`] rather than repeating its containment
@@ -434,6 +512,20 @@ mod tests {
             validate_path(Path::new("src/http/missing.rs"), root.path()).is_err(),
             "a genuinely missing file is still an error"
         );
+    }
+
+    #[test]
+    fn temp_guidance_uses_path_components_and_rejects_traversal() {
+        let root = std::env::temp_dir();
+        let request = root.join("codegg-temp-guidance").join("artifact.txt");
+        assert_eq!(
+            relative_to_known_temp_root(&request),
+            Some(PathBuf::from("codegg-temp-guidance/artifact.txt"))
+        );
+        assert!(relative_to_known_temp_root(&root).is_none());
+        assert!(relative_to_known_temp_root(&root.join("../outside.txt")).is_none());
+        #[cfg(unix)]
+        assert!(relative_to_known_temp_root(Path::new("/tmp-prefix/secret")).is_none());
     }
 
     /// The error must name what the caller sent, not the derived absolute

@@ -37,6 +37,16 @@ name = "scenario_engine"
 path = "tests/scenario_engine.rs"
 required-features = ["lsp-test-support"]
 
+# The warm-client code-action preview drives the fake LSP harness, which
+# spawns the `egglsp-test-server` binary above -- a target whose own
+# `required-features` leaves it unbuilt in a feature-less sweep. This target
+# must carry the same gate as its four siblings, or a feature-less CI run
+# builds it and then fails on a spawn of a file that does not exist.
+[[test]]
+name = "code_action_preview"
+path = "tests/code_action_preview.rs"
+required-features = ["lsp-test-support"]
+
 [[test]]
 name = "real_server_smoke"
 path = "tests/real_server_smoke.rs"

@@ -3111,11 +3111,28 @@ impl CoreDaemon {
             | CoreRequest::EditCheckpointReapply { session_id, .. }
             | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => Some(session_id),
             CoreRequest::LspPreviewApply { request } => Some(request.session_id.as_str()),
+            // M013: the M006-B read surface resolves its session exactly like
+            // the completion read and the preview-apply write.
+            //
+            // This arm did not exist. `LspReadGet` is `ViaSession + FileRead`,
+            // so with no locator the daemon resolved no project, and every
+            // read from a team principal failed closed with
+            // `authorization_scope_required` — before the request ever reached
+            // the warm-client resolver. The whole M006-B editor read surface
+            // was unreachable from a socket-connected client, which is a team
+            // principal, and the failure was indistinguishable from "you may
+            // not read this". It was invisible because M006-B's own tests
+            // called the daemon as LocalOwner, which bypasses scope
+            // resolution entirely.
+            //
+            // Deliberately *not* widened beyond `ViaSession`: the project is
+            // still resolved server-side from the session row, so a caller
+            // cannot name a project it has no claim on.
+            CoreRequest::LspReadGet { request } => Some(request.session_id.as_str()),
             // M003: the completion read resolves its session exactly like the
             // preview-apply write, so a team principal with `file.read` on
             // the session's project passes and one without is denied — never
-            // `NotReady`, never `MissingScope` for a bound session. The M006-B
-            // reads are deliberately untouched here.
+            // `NotReady`, never `MissingScope` for a bound session.
             CoreRequest::LspCompletionGet { request } => Some(request.session_id.as_str()),
             CoreRequest::SessionSelectionUpdate { request } => Some(request.session_id.as_str()),
             CoreRequest::GoalSet { session_id, .. }
@@ -4677,7 +4694,9 @@ mod tests {
                 max_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_READ_BYTES,
             },
         };
-        for _ in 0..30 {
+        // The standalone process is intentionally asynchronous; give slow
+        // CI hosts time to start and publish its first bounded output chunk.
+        for _ in 0..500 {
             let response = daemon
                 .handle_request(crate::core::new_request(
                     "standalone-shell-read".into(),
@@ -5009,12 +5028,19 @@ mod tests {
     #[tokio::test]
     async fn session_create_through_daemon() {
         let daemon = test_daemon().await;
-        let (project_id, workspace_id) =
-            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
+        // A real temp directory, like every other caller of `seed_test_context`.
+        // This used to hardcode `/tmp`, which is a symlink to `/private/tmp` on
+        // macOS: the workspace registry rejects a root whose canonical form
+        // differs from the one it was given, so the fixture failed at
+        // registration with `InvalidRootPath("/tmp")` and the test never reached
+        // the behaviour it is about.
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().to_string_lossy().into_owned();
+        let (project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".into(),
+                directory,
                 title: Some("Test".into()),
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
@@ -5132,12 +5158,16 @@ mod tests {
     #[tokio::test]
     async fn turn_submit_rejects_when_active() {
         let daemon = test_daemon().await;
-        let (project_id, workspace_id) =
-            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
+        // A real temp directory, for the same reason as
+        // `session_create_through_daemon`: a hardcoded `/tmp` is a symlink on
+        // macOS and the fixture failed at workspace registration.
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().to_string_lossy().into_owned();
+        let (project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp".into(),
+                directory,
                 title: None,
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
@@ -6010,14 +6040,21 @@ mod tests {
     impl PromptSubmitCredentialHome {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("temporary credential home");
-            let config_home = dir.path().join("config");
+            // `tempfile` may return a path below macOS's symlinked `/var`.
+            // Scratch intentionally refuses symlinked roots, so use the real
+            // path as HOME for dirs::cache_dir() and credential storage.
+            let home = dir.path().canonicalize().expect("canonical temporary home");
+            let config_home = home.join("config");
             std::fs::create_dir_all(&config_home).expect("create temporary config home");
+            // macOS resolves dirs::cache_dir() below HOME/Library/Caches.
+            std::fs::create_dir_all(home.join("Library/Caches"))
+                .expect("create temporary cache home");
             let names = ["HOME", "XDG_CONFIG_HOME", "APPDATA"];
             let previous = names
                 .into_iter()
                 .map(|name| (name, std::env::var_os(name)))
                 .collect();
-            std::env::set_var("HOME", dir.path());
+            std::env::set_var("HOME", &home);
             std::env::set_var("XDG_CONFIG_HOME", &config_home);
             std::env::set_var("APPDATA", &config_home);
             Self {

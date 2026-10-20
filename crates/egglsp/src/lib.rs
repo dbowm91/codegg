@@ -112,9 +112,9 @@ pub use operations::LspOperations;
 pub use operations::SourceActionPreviewKind;
 pub use operations::COMPLETION_DETAIL_MAX_CHARS;
 pub use operations::{
-    CodeActionPreview, CodeActionSummary, FormattingPreview, PrepareRenameResult, RenamePreview,
-    VersionedFileEvidence, CODE_ACTION_SUMMARY_DEFAULT_MAX, FORMATTING_PREVIEW_MAX_DIFF_BYTES,
-    RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES,
+    CodeActionEntry, CodeActionPreview, CodeActionSummary, FormattingPreview, PrepareRenameResult,
+    RenamePreview, VersionedFileEvidence, CODE_ACTION_SUMMARY_DEFAULT_MAX,
+    FORMATTING_PREVIEW_MAX_DIFF_BYTES, RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES,
 };
 pub use security_context::{
     build_security_evidence_summary, build_security_lsp_context_request, SecurityEvidenceSummary,

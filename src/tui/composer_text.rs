@@ -429,14 +429,14 @@ impl ComposerText {
     /// the target line, so `j` on the last line is a no-op rather than an
     /// error.
     pub fn move_line_down(&mut self) {
-        let target = text_geometry::move_vertical(self.text.as_str(), self.caret(), 1);
+        let target = text_geometry::move_vertical(self.text.as_str(), self.caret(), 1, None);
         self.move_caret(target);
     }
 
     /// Move the caret one line up, keeping the column where the target line
     /// allows.
     pub fn move_line_up(&mut self) {
-        let target = text_geometry::move_vertical(self.text.as_str(), self.caret(), -1);
+        let target = text_geometry::move_vertical(self.text.as_str(), self.caret(), -1, None);
         self.move_caret(target);
     }
 
@@ -1031,14 +1031,14 @@ mod tests {
             buffer.move_line_down();
             assert_eq!(
                 buffer.caret(),
-                text_geometry::move_vertical(text, offset, 1),
+                text_geometry::move_vertical(text, offset, 1, None),
                 "`j` disagreed with the shared geometry at offset {offset}"
             );
             buffer.set_caret(offset);
             buffer.move_line_up();
             assert_eq!(
                 buffer.caret(),
-                text_geometry::move_vertical(text, offset, -1),
+                text_geometry::move_vertical(text, offset, -1, None),
                 "`k` disagreed with the shared geometry at offset {offset}"
             );
         }

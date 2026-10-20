@@ -103,6 +103,8 @@ fn a_malformed_request_is_rejected_before_any_service_call() {
         line: Some(3),
         column: Some(7),
         query: Some("Foo".to_string()),
+        server_id: None,
+        new_name: None,
     };
     assert_eq!(incoherent.validate(), Err(LspReadInvalid::IncoherentFields));
 
@@ -113,6 +115,8 @@ fn a_malformed_request_is_rejected_before_any_service_call() {
         line: Some(1),
         column: Some(1),
         query: None,
+        server_id: None,
+        new_name: None,
     };
     // The DTO check is lexical; containment is the daemon's
     // `validate_target_path`, which is the same primitive the preview-apply
@@ -328,6 +332,8 @@ fn the_point_reads_are_gated_at_file_read_too() {
                 line: Some(1),
                 column: Some(1),
                 query: None,
+                server_id: None,
+                new_name: None,
             },
         },
         CoreRequest::LspDiagnosticsGet {

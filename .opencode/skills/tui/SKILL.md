@@ -459,6 +459,169 @@ model to the wrong connection.
   inserted newlines, so every navigation key was an edit key until `Esc`, a
   chord nothing on screen named. `open_document` and `:new` both call
   `enter_editor_normal`; nothing puts a fresh document in `Insert`.
+- **Insert mode has its own chords, and its table is a tuple match.**
+  `handle_insert_key` dispatches on `(key.modifiers, key.code)`, because every
+  Helix insert-mode chord is a *modified* key: `Ctrl+h`, `Ctrl+d`, `Ctrl+j`,
+  `Ctrl+k`, `Ctrl+u`, `Ctrl+w`, `Alt+Backspace`, `Alt+d`, `Alt+Delete`, plus
+  `Ctrl+x` for the completion popup. A chord may mean one thing in `Normal` and
+  another in `Insert` (`Ctrl+d` pages in one and deletes a character in the
+  other) — each still has exactly one owner, and the owner is the stage that
+  claims it. **The catch-all character arm is last**, so an unmodified
+  character chord added later sits above it rather than under it. Teach
+  `scripts/check_tui_editor_key_authority.py` any new dispatch shape *before*
+  the shape lands: it reads the tuple table and the legacy `match key.code`
+  table, treats an arm it cannot resolve as an **error** and never as a pass,
+  and its `--self-test` runs synthetic tables through the same analysis the
+  real check uses.
+- **A typing burst is one undo step.**
+  `TuiDocumentPresentation::insert_session` accumulates the edits of one `INS`
+  burst and commits them as a single `EditorUndoEntry` when insert mode ends,
+  so one `u` takes back the whole run rather than its last keystroke. A run is
+  one *contiguous insertion*: a deletion, a replacement, or an insertion away
+  from the end of the run ends it, because those are separate edits. The
+  session keeps bounded `TextTransaction`s and never a copy of the text. A
+  reconciliation **discards** an open session rather than committing it — the
+  text it described is the pre-reload text.
+- **The first edit of a run is asked the same question as every later one.**
+  `absorb_insert_edit` asks whether an insertion continues the run; the first
+  edit must clear the same bar, and `submit_edit` asks it through
+  `typing_run_continues`: the cursor must end where the inserted text ends. A
+  run whose text does not end where the cursor is cannot be continued. The
+  open-line verbs are why — `o` inserts its newline at the **end** of the line
+  it opens and leaves the cursor at its **start**, so the text the reader
+  types goes in before the newline, and the open-line edit is its own undo step
+  rather than the first keystroke of a run.
+- **`o` and `O` open a line, through the shared edit funnel.**
+  `editor_open_line` shares `editor_editing_command`'s read-only gate, its
+  snapshot and its `resolve_edit`; it differs only in what it returns. A verb
+  that **writes** claims its key and reports the refusal
+  (`BufferKey::Consumed` plus a notice), so `o`/`O` behave like `d`/`D`/`x`; a
+  verb that only **moves the cursor** (`i`/`a`/`I`/`A`) leaves the key
+  unclaimed and lets the status row's "read-only" be the report. The open-line
+  cursor is the **start of the opened line** — the two cases reach it by
+  different arithmetic, and getting it wrong puts the reader's typing on the
+  line after the one that was opened.
+- **The history is one list with a cursor in it.**
+  `TuiDocumentPresentation` holds `history`, `history_bytes` and
+  `history_cursor` — not an undo stack and a redo stack. `history_cursor` is
+  the number of *applied* entries, so undo and redo are the same movement in
+  opposite directions and an entry never moves between containers. The cursor
+  moves **only after** the apply is accepted: a refused apply leaves the
+  document, the history and the cursor exactly where they were.
+  `MAX_EDITOR_UNDO_DEPTH` (256) and `MAX_EDITOR_UNDO_BYTES` (4 MiB) are **one
+  cap over the history as a whole** — the two-stack model enforced them
+  twice, so its worst case was twice the documented bound.
+  `Alt+u` and `Alt+U` (Helix's `earlier`/`later`) are the explicit history
+  gestures and **report** their boundary ("no earlier change" / "no later
+  change" in the status row); `u` and `U` stay silent there, as they always
+  have — a CodeGG convention, not a Helix behaviour. The position is
+  observable: while the cursor is not at the tip the banner row says
+  `history <at>/<of>`, and at the tip it says nothing.
+- **A modifier is an exact bitmask, and a capital has two spellings.**
+  An arm's modifier predicate is read as the set of **exact** bitmasks it
+  admits: `m == alt || m == alt_shift` admits exactly `ALT` and exactly
+  `ALT | SHIFT`, not their combination, and the key-authority guard compares
+  those bitmasks rather than modifier *names* — `ALT` and `ALT | SHIFT` are
+  disjoint, exactly as Rust's `==` on the bitflags says they are. Write a
+  multi-modifier arm as a `let alt_shift = KeyModifiers::ALT |
+  KeyModifiers::SHIFT;` binding, never as the or-pattern `m == alt | m ==
+  shift`, which is not a bitmask at all. And a terminal may report a capital
+  as the shifted glyph (`Char('U')`) or as the plain glyph plus `SHIFT`
+  (`Char('u')` with `SHIFT`): an arm that claims a capital accepts both
+  spellings, because a chord live on one terminal and dead on the next is a
+  binding that does not exist. When the two spellings differ in the *key
+  code* — `Alt+U` is `Char('U')` with `ALT` **or** `Char('u')` with
+  `ALT | SHIFT` — they need two arms, and the guard counts arms.
+- **The `m` grammar is two levels, and the sub-state rides in the variant.**
+  `EditorPrefix::Match` is the first level and `EditorPrefix::MatchArg(arg)`
+  is the second, with `MatchArg` naming the argument being waited for — so
+  the presentation still has **one** pending-prefix field and
+  `scripts/check_tui_editor_prefix_state.py` stays green. A second
+  `pending_*` field is exactly what that guard exists to prevent.
+  The leaf table does not carry a **verb**: the two-level commands' leaves
+  all carry `PrefixAction::Capture(MatchArg)`, whose payload is a `Copy`
+  enum, and the verb is produced when the *capture* resolves — which is what
+  keeps `PrefixAction` and `PrefixLeaf` `Copy` and the leaf tables `const`.
+  `EditorPrefix::display()` returns a `Cow` so the two halves of `m r` do
+  not render alike: the second half shows the character already captured
+  (`m r (`).
+- **A bracket match that cannot land says which of the two things went
+  wrong.** `m m` on no delimiter and `m m` on a delimiter with no mate are
+  different answers — one means *move the cursor*, the other means *the code
+  is unbalanced* — and both are reported. The disclosure lives on
+  `TuiDocumentPresentation::match_note`, beside the find and paragraph
+  notes, and `lift_motion_notes` lifts it into the notice immediately after
+  the motion, so it describes exactly one keystroke.
+- **A surround edits, and then holds a selection.** `submit_edit` clears
+  every selection on success, so a verb that means to leave one behind says
+  which one: `HelixVerbOutcome::EditAndSelect` carries the members, and the
+  command layer applies them **after** the submission. The members are in
+  **post-edit** coordinates, and they are **computed** rather than read — a
+  post-edit offset past the old end of the document cannot be read from the
+  pre-edit snapshot, because `clamp_offset` pulls it back to the old end.
+- **A text object follows the motion, not a private rule.** `m i w` uses
+  `is_word_byte` and `m i W` uses `is_long_word_byte`, so each object agrees
+  with the `w`/`W` the reader just used to get there. A WORD is everything
+  up to whitespace, punctuation included — on `a.b` the two objects differ.
+- **The space menu is a table, and a leaf names a request, not an action.**
+  `SPACE_LEAVES` holds one row per Helix space gesture, and every row names
+  what it wants: `PrefixAction::Effect(EditorPendingEffect)`. The effect enum
+  is **editor-level** (`src/tui/editor_effect.rs`), not LSP-level — a file
+  picker and a clipboard verb are not language-server facts, and
+  `EditorLspState` is reset wholesale on a scope change, which is the wrong
+  fate for them. The leaf parks the effect on `EditorState::pending_effect`
+  and `handle_editor_key` drains it on the very next statement: one hop, not
+  a queue, so a leaf can never leave a request armed.
+- **`space f` is a request for a root, not a walk.** The listing is
+  daemon-owned (ADR-0022, C005): it is resolved from the active tab's
+  canonical project/workspace binding, and the TUI never walks its own
+  filesystem. So the editor checks that binding **before** it opens anything —
+  with no workspace root, or with a root that has no canonical ids, it says
+  so and opens nothing, because a browser that opens empty is a key that
+  appears to do nothing. `App::open_file_picker` is the one place that knows
+  how to seed the browser, so `/files` and `space f` cannot disagree about
+  what it shows, and the browser's title names the root it is browsing.
+- **A space key that cannot run says why.** `EditorPendingEffect::Unavailable`
+  carries the reason, and it renders as a **status row**, not a toast: a
+  toast disappears, a status line stays and can be read. Every Helix space
+  glyph is bound, bound to a statement, or documented as out of scope — there
+  is no dead key in the menu.
+- **A preview is a read, and a complete one can become an edit.** `space r` and `=`
+  show what a rename or a format *would* change. `space r` collects the new
+  name on the `:` command line — the mechanism M008 established, not a second
+  input mode — so the leaf arms the prompt and the read follows it. Since M016
+  a preview that is complete enough carries the material the apply path
+  consumes, and the chord opens the **change review** on it: the diff on
+  screen is the change that would be written, `[a]pply` sends it through the
+  daemon's checked apply path, and `Esc` rejects it. A preview that cannot be
+  applied stays a preview and says which it was. Since M017 `space a` is a
+  preview too — the **code-action read** — and it is a *choice*: the LSP panel
+  is the picker, `j`/`k` move and `Enter` opens the review on the selected
+  action. Do not open the review on the first action: the reader has not
+  chosen one. The write path is **not** missing — ADR-0008 owns it, and the
+  editor reaches it by carrying the candidate to the one builder,
+  `build_apply_request`. There is no registry and no second apply path.
+- **A Normal-mode chord that needs the App layer reports what it wants.**
+  `=` is a Normal chord, not a prefix leaf, and `pending_effect` is
+  documented as *a prefix leaf's* effect — so `=` returns
+  `BufferKey::LspRead(LspReadOperation)`, the same shape the other
+  Normal-mode verbs use: the buffer decides **what** was asked for, and the
+  App layer — which holds the core client — does **how**.
+- **A leaf table is policed by its own guard.**
+  `scripts/check_tui_editor_leaf_authority.py` rejects a duplicated glyph
+  inside one table, a glyph that is not printable ASCII, one glyph claimed by
+  two tables of the same prefix, a leaf behind a guard-block chord, and a
+  table no prefix binds. It reads the guard-block chords through the
+  key-authority guard rather than re-parsing the dispatch chain, because two
+  parsers for one shape is two models of it. A leaf is consulted only while
+  its prefix is armed, and the resolver disarms before consulting it, so a
+  leaf **cannot** shadow a directly-bound chord — the earlier rule that said
+  otherwise was demonstrably false on the shipped tree.
+- **A panel never claims a key that means text.** In `INS` a printable is
+  text. The completion popup and the LSP diagnostics panel are mode-aware:
+  their `j`/`k`/`r`/`Enter` claims are Normal-mode claims, and in `INS` the
+  popup's `Enter` is a newline, its `↑`/`↓` move the cursor, and its
+  `Tab`/`Shift+Tab` move the candidate selection.
 - **`/` searches the document, not the command catalog.** On this route the
   composer arms bare text with `:`, so an unclaimed `/` became `:/` and
   resolved to no command — a key that looks like it should do something and
@@ -1396,14 +1559,23 @@ model to the wrong connection.
 
 ## Static Guards
 
-Both guards fail `verify.sh quick` and the CI `verify` job. Read them before
-adding TUI code - they are the executable form of the invariants above.
+Every guard in the table below fails `verify.sh quick` and the CI `verify` job.
+Read them before adding TUI code - they are the executable form of the
+invariants above.
 
 | Script | Enforces |
 |---|---|
 | `python3 scripts/check_tui_project_authority.py` | Scans `tui/app/state/**`, `tui/app/mod.rs`, `tui/commands/**`, `tui/runtime/**`, `tui/command.rs`, and `tui/components/dialogs/command.rs`; rejects `session_state.project_dir` and `std::env::current_dir()` as project authority. Only clearly marked bootstrap boundaries and test fixtures are exempt. |
 | `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
 | `python3 scripts/check_tui_composer_key_authority.py` | Reads the composer's claim table (`src/tui/composer_claims.rs`) and the two binding maps, and fails when a letter is claimed twice, when a claimed letter can still reach an app-level action, when a re-spelled chord is missing from a map, when a re-spelled action has no chord to reach it by or still answers to a claimed key, when a capital claim misses an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only` entry. Carries a `--self-test` that injects each violation class. |
+| `python3 scripts/check_tui_editor_key_authority.py` | Scans the editor's dispatch stages and rejects a chord claimed twice, a chord claimed by a later stage after an earlier one took it, and a shadowed arm. The conflict model is the **exact modifier bitmask**, so `ALT` and `ALT \| SHIFT` are disjoint. `--self-test` runs ten cases, including one the guard cannot resolve — that must be an error, not a pass. |
+| `python3 scripts/check_tui_editor_prefix_state.py` | Rejects a second pending-prefix mechanism: the presentation must hold exactly one, typed `EditorPrefix`. A grammar that wants a second level puts it in the **variant** (`EditorPrefix::MatchArg`), not in a second field. |
+| `python3 scripts/check_tui_editor_leaf_authority.py` | Polices the editor's **leaf tables**: no duplicated glyph inside one table, every glyph printable ASCII, one glyph per prefix across that prefix's tables, no leaf behind a guard-block chord, and no table no prefix binds. Reads the guard-block chords through the key-authority guard. `--self-test` runs nine synthetic cases through the same analysis the real check uses. |
+| `python3 scripts/check_tui_editor_apply_path.py` | Polices the **preview-apply path**: one builder (`build_apply_request`) and one `CoreRequest::LspPreviewApply` construction, and a carried candidate that is never registered. Reads ADR-0008's contract. |
+| `python3 scripts/check_tui_editor_completion_authority.py` | Polices the **completion popup's triggers**: `F8` claimed exactly once, `Ctrl-x` claimed exactly once, no trigger shadowing the guard block's `Ctrl+s`/`Ctrl+r`, and `Ctrl-x` in Insert mode only. Tells the triggers from the popup's own keys **structurally** — the arms before the popup-open check — and reads the guard-block chords through the key-authority guard. |
+| `python3 scripts/check_tui_editor_doc_drift.py` | Polices the **binding set against `docs/tui.md`**: every leaf gesture and every claimed chord the code owns is documented, every key the document declares unbound is unbound, and the document carries an unbound declaration at all. Reads the chords and the leaf tables through the key- and leaf-authority guards, so there is one parser per dispatch shape. `--self-test` runs eight synthetic cases, one of which is the clean tree. |
+| `python3 scripts/check_tui_transport_authority.py` | Polices **transport selection**: `AppMode::RemoteCore` names two different frontends — the WebSocket attach path (which owns `remote_send_tx`) and the socket-daemon path (which does not) — so a remote send may only be gated on `App::is_ws_attach_transport()`. Sending on the mode alone drops the message into an absent channel, which has hung a turn twice. |
+| `python3 scripts/check_tui_subagent_name_pool_isolation.py` | Polices **subagent descriptor provenance**: the TUI may not resolve a subagent's descriptor against the curated name pool. The descriptor is drawn once, at spawn, by the only code holding the name lease, and every surface downstream reads what the projection carried. A display name is not a stable key, so a local lookup reintroduces the attribution defect C001 recorded once. |
 
 ## Testing
 

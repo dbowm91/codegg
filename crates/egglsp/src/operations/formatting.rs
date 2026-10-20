@@ -163,8 +163,20 @@ impl LspOperations {
     }
 
     /// Request raw formatting edits from the server without truncation.
-    async fn request_formatting_edits(&self, file_path: &Path) -> Result<Vec<TextEdit>, LspError> {
-        let (key, _uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+    ///
+    /// Key-addressed so the preview pipeline can stay warm-only: the file-path
+    /// form reached `ensure_file_open_from_disk`, which resolves a client and
+    /// can therefore start a language server as a side effect of a preview
+    /// that is only ever a read.
+    async fn request_formatting_edits_for_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+    ) -> Result<Vec<TextEdit>, LspError> {
+        let _uri_str = self
+            .service
+            .ensure_file_open_from_disk_for_key(key, file_path)
+            .await?;
         let uri =
             crate::client::url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
                 LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
@@ -185,7 +197,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/formatting", params)
+            .send_request(key, "textDocument/formatting", params)
             .await?;
 
         if resp.is_null() {
@@ -212,10 +224,39 @@ impl LspOperations {
         file_path: &Path,
         allowed_root: Option<&Path>,
     ) -> Result<FormattingPreview, LspError> {
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.format_preview_with_key(&key, file_path, allowed_root)
+            .await
+    }
+
+    /// [`format_preview_typed`](Self::format_preview_typed) against an
+    /// already-warm client key.
+    ///
+    /// Warm-only by construction: the caller resolved `key` itself, and every
+    /// step below — the capability gate, the document sync, the generation
+    /// stamp — is taken against that same key. Re-resolving anywhere down the
+    /// chain would both break the warm-only invariant and let the preview
+    /// answer about a different server than the one it just asked.
+    pub async fn format_preview_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        allowed_root: Option<&Path>,
+    ) -> Result<FormattingPreview, LspError> {
+        self.format_preview_with_key(key, file_path, allowed_root)
+            .await
+    }
+
+    async fn format_preview_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        allowed_root: Option<&Path>,
+    ) -> Result<FormattingPreview, LspError> {
         use crate::capability::LspSemanticOperation;
 
         // Fail-closed capability gate.
-        self.require_capability(file_path, LspSemanticOperation::DocumentFormatting)
+        self.require_capability_for_key(key, LspSemanticOperation::DocumentFormatting)
             .await?;
 
         // Validate path against allowed root before any server request.
@@ -230,7 +271,9 @@ impl LspOperations {
         })?;
         let before_hash = sha256_hex(before_content.as_bytes());
 
-        let raw_edits = self.request_formatting_edits(file_path).await?;
+        let raw_edits = self
+            .request_formatting_edits_for_key(key, file_path)
+            .await?;
         if raw_edits.is_empty() {
             let final_disk_bytes = tokio::fs::read(file_path).await.map_err(|e| {
                 LspError::RequestFailed(format!(
@@ -241,8 +284,7 @@ impl LspOperations {
             })?;
             let final_disk_hash = sha256_hex(&final_disk_bytes);
             let base_stale = final_disk_hash != before_hash;
-            let (key, _root) = self.service.get_or_create_client(file_path).await?;
-            let server_generation = self.service.generation_for_key(&key).await;
+            let server_generation = self.service.generation_for_key(key).await;
             return Ok(FormattingPreview {
                 file: file_path.to_path_buf(),
                 edit_count: 0,
@@ -272,8 +314,7 @@ impl LspOperations {
         let final_disk_hash = sha256_hex(&final_disk_bytes);
         let base_stale = final_disk_hash != before_hash;
 
-        let (key, _root) = self.service.get_or_create_client(file_path).await?;
-        let server_generation = self.service.generation_for_key(&key).await;
+        let server_generation = self.service.generation_for_key(key).await;
 
         Ok(FormattingPreview {
             file: file_path.to_path_buf(),
