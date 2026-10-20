@@ -51,14 +51,30 @@ Optional:
     .to_string()
 }
 
+#[derive(Debug)]
 struct Args {
     values: HashMap<String, String>,
 }
 
+/// Flags that carry no value.
+///
+/// The usage text above documents `--telemetry-provider` as a switch while
+/// every other option shows a `<value>`. The parser reads a value for
+/// every flag, so without this list the switch consumed the next argument
+/// — or, as the last argument, failed with "missing value". The switch is
+/// checked with `contains_key`, so its value is never read.
+const BOOLEAN_FLAGS: &[&str] = &["telemetry-provider"];
+
 impl Args {
     fn parse() -> Result<Self, String> {
+        Self::parse_from(std::env::args().skip(1))
+    }
+
+    /// Parse from an explicit argument sequence, so the contract is
+    /// testable without spawning the binary.
+    fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Result<Self, String> {
         let mut values = HashMap::new();
-        let mut raw = std::env::args().skip(1).peekable();
+        let mut raw = args.into_iter().peekable();
         while let Some(arg) = raw.next() {
             if arg == "--help" || arg == "-h" {
                 return Err(usage());
@@ -66,6 +82,10 @@ impl Args {
             let Some(key) = arg.strip_prefix("--") else {
                 return Err(format!("expected --flag, got '{arg}'\n{}", usage()));
             };
+            if BOOLEAN_FLAGS.contains(&key) {
+                values.insert(key.to_string(), "true".to_string());
+                continue;
+            }
             let Some(value) = raw.next() else {
                 return Err(format!("missing value for --{key}\n{}", usage()));
             };
@@ -254,4 +274,70 @@ async fn main() {
     // child on completion (`kill_on_drop` guarantees cleanup on panic).
     let _ = tokio::signal::ctrl_c().await;
     server.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        Args::parse_from(args.iter().map(|s| (*s).to_string()))
+    }
+
+    /// The usage text documents `--telemetry-provider` as a switch while
+    /// every other option shows a `<value>`. A parser that reads a value
+    /// for every flag therefore rejected it — and, because the live
+    /// harness passes it last, rejected it with "missing value", so the
+    /// fixture exited before it ever reached `READY`.
+    #[test]
+    fn the_telemetry_provider_switch_takes_no_value() {
+        let args = parse(&[
+            "--node-id",
+            "node-1",
+            "--telemetry-provider",
+            "--exec-root",
+            "/tmp/exec",
+        ])
+        .expect("the switch must parse");
+        assert!(args.values.contains_key("telemetry-provider"));
+        assert_eq!(
+            args.values.get("node-id").map(String::as_str),
+            Some("node-1")
+        );
+        assert_eq!(
+            args.values.get("exec-root").map(String::as_str),
+            Some("/tmp/exec")
+        );
+    }
+
+    /// The switch must also work as the last argument, which is how the
+    /// live harness passes it.
+    #[test]
+    fn the_telemetry_provider_switch_may_be_last() {
+        let args = parse(&["--node-id", "node-1", "--telemetry-provider"])
+            .expect("a trailing switch must parse");
+        assert!(args.values.contains_key("telemetry-provider"));
+        assert_eq!(
+            args.values.get("node-id").map(String::as_str),
+            Some("node-1")
+        );
+    }
+
+    /// A switch that is absent stays absent — the default-off shape the
+    /// node's telemetry configuration depends on.
+    #[test]
+    fn an_absent_switch_is_absent() {
+        let args = parse(&["--node-id", "node-1"]).expect("parse");
+        assert!(!args.values.contains_key("telemetry-provider"));
+    }
+
+    /// A valued flag that is missing its value is still an error.
+    #[test]
+    fn a_valued_flag_without_its_value_is_refused() {
+        let error = parse(&["--node-id"]).expect_err("a valued flag needs a value");
+        assert!(
+            error.contains("missing value for --node-id"),
+            "unexpected error: {error}"
+        );
+    }
 }
