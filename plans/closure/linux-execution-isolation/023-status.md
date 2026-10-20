@@ -49,7 +49,7 @@ reports that it cannot know.
 | The policy snapshot's summary never contradicts its own network field | `SandboxEnforcementDto::summary_for` + `with_network`; unit test `the_enforcement_summary_never_contradicts_its_fields` | pass |
 | The legacy Landlock route still reports truthfully | it reports `Unrestricted` — Landlock scopes the filesystem and has no network dimension | pass |
 | The C007 publication suite still passes end to end | `cargo test -p codegg --locked --test git_index_publication` → 22 passed | pass |
-| On a qualified host the hosted C007 proof reports the receipt stating `enforced` | hosted run `39351065569` (commit `d58ce82d`): `test production_private_index_publisher_stages_and_publishes_under_containment ... ok` in the isolated C007 step and again in the 17-test M004/M005 suite, with the test asserting `ObtainedNetworkBoundary::Enforced { backend: "bubblewrap-netns" }` | pass |
+| On a qualified host the hosted C007 proof reports the receipt stating `enforced` | hosted run `39356728579` (commit `862ddd14`, the delivered source): `test production_private_index_publisher_stages_and_publishes_under_containment ... ok` in the isolated C007 step and again in the 17-test M004/M005 suite, with the test asserting `ObtainedNetworkBoundary::Enforced { backend: "bubblewrap-netns" }` | pass |
 
 ## 3. Production implementation evidence
 
@@ -203,21 +203,21 @@ Quick verification passed.
 
 ### The hosted run at the branch's final source
 
-Run `39351065569` (2026-10-20, push, commit `d58ce82d`) is a **success** for
-both qualification jobs. Its log is the evidence, not the badge:
+Run `39356728579` (2026-10-20, push, commit `862ddd14`) is a **success** for
+both qualification jobs, and it is the run that covers the delivered source.
+Its log is the evidence, not the badge:
 
 ```text
 process-ipc  C007 private-index publication under containment
   running 1 test
   test production_private_index_publisher_stages_and_publishes_under_containment ... ok
-  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.21s
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.70s
 
 process-ipc  M004 managed-process host PID and IPC denial probes
   running 17 tests
   test managed_process_owner_applies_authenticated_offline_network_intent ... ok
   test production_private_index_publisher_stages_and_publishes_under_containment ... ok
-  test required_process_tier_fails_closed_when_user_namespaces_are_restricted ... ok
-  test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 547.37s
+  test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 625.48s
 
 restricted-userns-fails-closed
   test required_process_tier_fails_closed_when_user_namespaces_are_restricted ... ok
@@ -237,26 +237,21 @@ exports `CODEGG_RUN_M005_OFFLINE_NATIVE=1`, so the gate was open, and the
 literal skip marker `skipped: set CODEGG_RUN_M005_OFFLINE_NATIVE=1` appears
 **zero** times in the `process-ipc` log. The only `skipped:` lines belong to
 two different gates — the restricted-userns probe and the C006 Bubblewrap
-qualification. `process-ipc` took 29m06s of its 45-minute budget and
-`restricted-userns-fails-closed` took 11m02s of its 35.
+qualification. `process-ipc` took 34m25s of its 45-minute budget and
+`restricted-userns-fails-closed` took 15m06s of its 35.
 
-### The earlier hosted run, and why it was cancelled
+### The earlier hosted runs
 
-Run `39349642026` (commit `b52e51df`) was the first run against this source.
-Its **C007 step completed and passed** —
+Run `39351065569` (commit `d58ce82d`) was the first run against the obtained-
+facts work and is also a **success** for both jobs, with the same C007 step
+passing and the same `17 passed; 0 failed` suite.
 
-```text
-running 1 test
-test production_private_index_publisher_stages_and_publishes_under_containment ... ok
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.25s
-```
-
-— which is where the receipt's `enforced` boundary was first observed on a
-qualified host. The run itself is recorded as **cancelled**, and it is not
-read as a pass: the workflow sets `cancel-in-progress: true`, so pushing the
-next commit (`d58ce82d`) cancelled the in-progress run, and the 17-test suite
-was cut short. The cancelled run therefore contributes its C007 step's result
-and nothing else.
+Run `39349642026` (commit `b52e51df`) is recorded as **cancelled**, and it is
+not read as a pass: the workflow sets `cancel-in-progress: true`, so pushing
+the next commit cancelled the in-progress run, and the 17-test suite was cut
+short. Its C007 step had already completed and passed — that is where the
+receipt's `enforced` boundary was first observed on a qualified host — so the
+run contributes its C007 step's result and nothing else.
 
 ## 6. What remains open
 
@@ -269,8 +264,8 @@ and nothing else.
    actually obtained. It does **not** accept the ADR, and it does not touch
    the live-read consistency model that C006 reviewed.
 3. **C010 no-admission and M003 blocked status are unchanged.**
-4. **The hosted proof has run and passed.** Run `39351065569` (commit
-   `d58ce82d`) shows the C007 receipt stating the boundary its staging child
+4. **The hosted proof has run and passed.** Run `39356728579` (commit
+   `862ddd14`) shows the C007 receipt stating the boundary its staging child
    obtained, on a qualified host (§4). The M005 skip marker is absent, so the
    test genuinely ran under the M005 gate rather than taking its own skip
    path.
