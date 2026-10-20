@@ -438,6 +438,7 @@ impl BrokerCallback for BrokerAdapter {
             return Err(InterpreterError::Cancelled);
         }
         let ctx = BrokerInvocationContext {
+            writer_fence: None,
             caller: crate::tool::contract::ToolCaller::Program {
                 program_id: self.program_id.clone(),
             },

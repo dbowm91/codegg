@@ -99,6 +99,13 @@ pub(super) struct AgentLoopServices {
     pub(super) runtime_asset_pin:
         Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     pub(super) tool_broker: Arc<crate::tool::ToolBroker>,
+    /// M005 C003: the checkout writer fence for this loop.
+    ///
+    /// The loop hands this to every tool execution context it builds, so a
+    /// native writer can ask the daemon whether it may touch the checkout.
+    /// `None` means the loop has no resolved scope — a headless or CLI path
+    /// — and the native writers keep their pre-M005 behaviour.
+    pub(super) writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
     pub(super) notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
     pub(super) job_notification_service:

@@ -1506,6 +1506,13 @@ async fn execute_agent_task(
         .workspace_root
         .clone()
         .ok_or_else(|| "subagent execution requires an explicit workspace root".to_string())?;
+    // M005 C003: a delegated run executes inside the managed checkout the
+    // scheduler leased for it, so that checkout is the scope its native
+    // writers are contained to.
+    let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> =
+        Some(std::sync::Arc::new(
+            crate::tool::writer_fence::WorkspaceWriterFence::new(workspace_root.clone()),
+        ));
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
         provider,
@@ -1517,6 +1524,7 @@ async fn execute_agent_task(
         std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
         workspace_root,
         subagent_session_id,
+        writer_fence,
     );
     if let Some(run_id) = request.run_id.as_ref() {
         let runs = subagent_pool

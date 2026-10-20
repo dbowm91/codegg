@@ -73,6 +73,14 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     // (`merge_rulesets` lets the later ruleset win a tie).
     .with_agent_rules(active_agent_rules(&input.agents))
     .with_active_mode(&input.config);
+    // M005 C003: the daemon turn's checkout scope. A top-level turn holds
+    // no managed worktree, so the fence can contain the effect inside the
+    // session's workspace but can never mint a checkout permit.
+    let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> = Some(
+        std::sync::Arc::new(crate::tool::writer_fence::WorkspaceWriterFence::new(
+            input.execution.workspace_root.clone(),
+        )),
+    );
     let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
         input.agents,
         input.provider,
@@ -84,6 +92,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.artifact_store,
         input.execution.workspace_root.clone(),
         input.session_id,
+        writer_fence,
     );
     agent_loop.set_turn_id(input.turn_id);
     agent_loop.set_provider_registry(input.provider_registry);

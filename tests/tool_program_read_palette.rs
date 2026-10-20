@@ -277,6 +277,7 @@ fn make_broker() -> ToolBroker {
 fn program_ctx(program_id: &str) -> BrokerInvocationContext {
     let registry = make_registry();
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: program_id.to_string(),
         },
@@ -309,6 +310,7 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
 
 fn agent_ctx() -> BrokerInvocationContext {
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: PathBuf::from("."),
         session_id: None,

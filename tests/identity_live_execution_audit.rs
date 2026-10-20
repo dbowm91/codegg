@@ -461,6 +461,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
     });
     let broker = ToolBroker::new(&tool_registry);
     let broker_ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: tmp_ws.path().to_path_buf(),
         session_id: Some(session.to_owned()),
@@ -711,6 +712,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
     let before = events_for_correlation(&pool, correlation).await.len();
     // Replay the broker command with the same submission key.
     let replay_ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: tmp_ws.path().to_path_buf(),
         session_id: Some(session.to_owned()),
@@ -908,6 +910,7 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
     let broker = ToolBroker::new(&tool_registry);
     let secret = "ghp_m004secretvalue123456";
     let broker_ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: PathBuf::from("."),
         session_id: Some("session-m004-secret".to_owned()),

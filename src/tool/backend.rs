@@ -155,6 +155,17 @@ pub struct ToolExecutionContext {
     /// This immutable value is threaded through the broker and every retry;
     /// tools must not reconstruct authority from model input or live mode.
     pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+    /// M005 C003: the checkout writer fence for this execution.
+    ///
+    /// The fence is the daemon's authority over the run's checkout: it
+    /// contains the effect inside the run's own scope and, when the
+    /// checkout is shared by more than one run, holds the checkout's writer
+    /// permit across the effect.
+    ///
+    /// `None` means no scope was resolved for this execution — a legacy or
+    /// test path. Such a path performs no containment and mints no permit,
+    /// which is exactly the pre-M005 behavior.
+    pub writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
 }
 
 impl ToolExecutionContext {
@@ -202,6 +213,7 @@ impl ToolExecutionContext {
             execution_authorization: None,
             execution_audit: None,
             audit_emitter: None,
+            writer_fence: None,
         }
     }
 

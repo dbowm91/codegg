@@ -68,6 +68,7 @@ async fn harness() -> (
 
 fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecutionContext {
     ToolExecutionContext {
+        writer_fence: None,
         backend: codegg::tool::backend::ToolBackendKind::Native,
         session_id: Some(session.to_string()),
         cwd: std::path::PathBuf::from("/tmp"),

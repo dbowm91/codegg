@@ -80,6 +80,7 @@ pub mod websearch;
 pub mod work_order;
 pub mod work_plan;
 pub mod write;
+pub mod writer_fence;
 
 use async_trait::async_trait;
 use codegg_core::decision::DecisionEngine as _;

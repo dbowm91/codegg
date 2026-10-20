@@ -187,7 +187,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Collaboration | Project-scoped channels, threads, mentions, edits, retention | [collaboration.md](collaboration.md) |
 | Presence | Ephemeral project-scoped presence — leases, heartbeat, expiry | [presence.md](presence.md) |
 | Workstream Claims | Durable group-scoped task/path/interface claims and prerequisite edges; intent only | [workstream_claims.md](workstream_claims.md) |
-| Checkout Writer Permit | Durable, generation-fenced per-checkout writer token; state machine, CAS, quarantine, bounded waiter; enables no writer yet | [writer_permit.md](writer_permit.md) |
+| Checkout Writer Permit | Durable, generation-fenced per-checkout writer token; state machine, CAS, quarantine, bounded waiter; C003 routes the native file and typed Git writers through the fence and enables no shared mutation | [writer_permit.md](writer_permit.md) |
 | Build Admission | Counted, workspace-scoped build quota; configuration-owned limit; coarse authorized group status | [build_admission.md](build_admission.md) |
 | Session Launch | Durable, idempotent session launch into an isolated managed checkout; stage machine, saga, binding | [session_launch.md](session_launch.md) |
 | Server | Axum HTTP/WS server (feature `server`) — remote TUI, REST, SSE, token auth | [server.md](server.md) |

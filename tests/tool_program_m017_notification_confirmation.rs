@@ -118,6 +118,7 @@ fn accepted_context(
     let contract_json = canonical_contract_json(&contracts).unwrap();
     let contract_digest = canonical_contract_digest(&contracts).unwrap();
     let direct = ToolExecutionContext {
+        writer_fence: None,
         backend: ToolBackendKind::Native,
         session_id: Some(format!("session-{program_id}")),
         cwd: PathBuf::from("."),

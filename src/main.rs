@@ -3084,6 +3084,13 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         .map(|tool| tool.name().to_string())
         .collect();
     available_tools.sort();
+    let cli_workspace_root = std::path::PathBuf::from(&project_dir);
+    // M005 C003: the CLI holds no managed checkout, so the fence contains
+    // native writers inside the project directory and mints no permit.
+    let writer_fence: Option<codegg::tool::writer_fence::SharedWriterFence> =
+        Some(std::sync::Arc::new(
+            codegg::tool::writer_fence::WorkspaceWriterFence::new(cli_workspace_root.clone()),
+        ));
     let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
         agents.clone(),
         provider,
@@ -3093,8 +3100,9 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         mcp_service,
         None,
         std::sync::Arc::new(codegg::context::InMemoryArtifactStore::new()),
-        std::path::PathBuf::from(&project_dir),
+        cli_workspace_root,
         uuid::Uuid::new_v4().to_string(),
+        writer_fence,
     );
     agent_loop.set_agent(&safe_agent.name)?;
 

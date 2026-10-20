@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective C003 — Native File and Git Writer Interposition (Q2)
 
-Status: ready — both upstream gates met (C002 closed, ADR-0042 option B accepted 2026-10-19); not started
+Status: closed — C003 shipped the checkout writer fence; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/003-status.md`
 Primary class: invariant / capability foundation
 Planning baseline: plan/agent-workstream-m005-writer-audit audit 2026-10-19; recheck current source before implementation.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C003

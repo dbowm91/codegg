@@ -170,6 +170,16 @@ impl ExecMode {
             .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
             .as_str()
             .to_owned();
+        let exec_workspace_root = project_root.clone().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!("exec mode requires a workspace root"))
+        })?;
+        // M005 C003: exec mode has no managed checkout, so the fence
+        // contains native writers inside the project root and mints no
+        // permit.
+        let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> =
+            Some(std::sync::Arc::new(
+                crate::tool::writer_fence::WorkspaceWriterFence::new(exec_workspace_root.clone()),
+            ));
         let mut loop_instance = AgentLoop::new(
             all_agents,
             provider.clone_box(),
@@ -179,10 +189,9 @@ impl ExecMode {
             mcp_service,
             None,
             std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
-            project_root.clone().ok_or_else(|| {
-                AppError::Other(anyhow::anyhow!("exec mode requires a workspace root"))
-            })?,
+            exec_workspace_root,
             invocation_session_id.clone(),
+            writer_fence,
         );
         loop_instance.setup_question_channel_for_exec();
         if let Some(policy) = &self.policy {

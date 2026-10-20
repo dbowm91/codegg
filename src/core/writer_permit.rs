@@ -639,6 +639,32 @@ impl WorktreePermitAuthority {
         })
     }
 
+    /// Whether two runs share a live group, which is what makes a checkout
+    /// shared rather than private to its lease owner.
+    async fn shares_live_group(
+        &self,
+        requesting: &codegg_core::identity::AgentRunId,
+        owner: Option<&codegg_core::identity::AgentRunId>,
+    ) -> Result<bool, WriterPermitAuthorityError> {
+        let (Some(groups), Some(owner)) = (self.groups.as_ref(), owner) else {
+            return Ok(false);
+        };
+        let member_groups = groups
+            .groups_for_member(requesting)
+            .await
+            .map_err(|error| WriterPermitAuthorityError::Lookup(error.to_string()))?;
+        let owner_groups = groups
+            .groups_for_member(owner)
+            .await
+            .map_err(|error| WriterPermitAuthorityError::Lookup(error.to_string()))?;
+        Ok(member_groups.iter().any(|member_group| {
+            !codegg_core::agent_run_group::RunGroupStatus::is_terminal(member_group.status)
+                && owner_groups
+                    .iter()
+                    .any(|owner_group| owner_group.group_id == member_group.group_id)
+        }))
+    }
+
     pub fn with_groups(
         self: Arc<Self>,
         groups: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
@@ -698,7 +724,19 @@ impl WriterPermitAuthority for WorktreePermitAuthority {
             return Err(WriterPermitAuthorityError::NotLeaseOwner);
         };
         if record.owner_run_id.as_ref() != Some(requesting_run) {
-            return Err(WriterPermitAuthorityError::NotLeaseOwner);
+            // A checkout may be shared by a group of runs under a bounded
+            // reservation: the lease owner is one writer, and a run that
+            // shares a *live* group with the owner is the other. The permit
+            // still records the individual run and the lease generation, so
+            // this widens *who* may write a shared checkout, never *what* a
+            // writer may do. Without the live group there is no
+            // reservation, and the lease owner is the only writer.
+            if !self
+                .shares_live_group(requesting_run, record.owner_run_id.as_ref())
+                .await?
+            {
+                return Err(WriterPermitAuthorityError::NotLeaseOwner);
+            }
         }
 
         // The group reservation must still be live. A group that has finished

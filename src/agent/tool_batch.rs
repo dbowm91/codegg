@@ -431,6 +431,10 @@ impl AgentLoop {
             .as_ref()
             .map(|lease| lease.path_policy().authority_fingerprint());
         crate::tool::backend::ToolExecutionContext {
+            // M005 C003: the loop's checkout writer fence travels with every
+            // execution context, so a native writer can ask the daemon
+            // whether it may touch the checkout.
+            writer_fence: self.services.writer_fence.clone(),
             backend,
             session_id: Some(self.session_id.clone()),
             // The workspace root is captured during construction and is the
@@ -1946,6 +1950,7 @@ impl AgentLoop {
                                     ..grant
                                 };
                                 let broker_ctx = crate::tool::broker::BrokerInvocationContext {
+            writer_fence: exec_ctx.writer_fence.clone(),
                                     caller: crate::tool::contract::ToolCaller::Agent,
                                     cwd: exec_ctx.cwd.clone(),
                                     session_id: exec_ctx.session_id.clone(),

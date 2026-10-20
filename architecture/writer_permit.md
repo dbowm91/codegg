@@ -1,4 +1,4 @@
-# Checkout Writer Permit — the durable, generation-fenced writer token (M005 corrective C002)
+# Checkout Writer Permit — the durable, generation-fenced writer token (M005 corrective C002, C003)
 
 ## Purpose
 
@@ -52,12 +52,22 @@ src/core/writer_permit.rs                      # the daemon adapter: authority r
 crates/codegg-core/src/session/schema.rs        # migrate_v84: the writer_permit table
 src/core/runtime_deps.rs                       # the daemon owns exactly one permit service
 src/core/daemon_construct.rs                   # startup reconciliation of orphaned permits
+src/tool/writer_fence.rs                       # the tool-facing fence contract (C003): the scope,
+                                              # the effect classes, the typed refusals
+src/core/writer_fence.rs                       # the daemon's fence adapter (C003): authoritative
+                                              # scope resolution, containment, the permit-backed
+                                              # shared-checkout profile
 ```
 
 `codegg-core` holds the domain types and the store. It has no dependency on the
 TUI, the server, the tools, or the scheduler. The daemon adapter above it
 supplies authorization, does the waiting, and owns the holder's release
 contract. The split is enforced by `scripts/check-core-boundary.sh`.
+
+The fence contract is the one place where the tool layer and the daemon meet,
+and it meets them without a dependency: `src/tool/` never imports `crate::core`.
+The tool layer holds a `dyn CheckoutWriterFence`; the daemon supplies the
+implementation.
 
 ## The state machine
 
@@ -217,15 +227,99 @@ It never carries the possession token, a path, a command, or any other free
 text. The operation is a closed enum, so the permit cannot become a channel
 for user content.
 
+## The checkout writer fence (C003)
+
+C002 built a permit that nothing consulted. C003 puts the fence in the writer
+path, at the **final native effect** — the `fs::write`, the `fs::rename`, the
+Git index and ref mutation — so the permit is taken *after* approval and
+*before* the first effect, held across the write and any rollback, and
+released only with evidence.
+
+### Two rules, two different jobs
+
+**Containment.** Every effect target must resolve inside the run's own
+checkout. The comparison is on canonical paths, so a symlink pointing out of
+the checkout buys nothing, and a *new* file cannot escape by naming a
+directory that does not exist (the path is resolved through its nearest
+existing ancestor). The roots the daemon granted alongside the checkout — the
+run's private scratch root and its shared scratch roots — are part of the
+scope: a scratch write is a legitimate write that is not a checkout write, and
+the model never names those roots.
+
+This is what closes the hole the `git` tool's model-supplied `workdir` used to
+open. Before C003 a model could point the tool at any directory on the
+machine and stage, commit or reset a repository the run did not own.
+
+**Mutual exclusion.** A checkout shared by more than one run admits one writer
+at a time. The share is not asserted by a caller: it is derived from the
+durable group record. Two runs share a checkout when they are members of the
+same *live* group and the lease belongs to one of them. The group is the
+bounded reservation; the lease still fences the generation, and the permit
+still records the individual run — a group is not a bearer token.
+
+### Where the fence is consulted
+
+| Surface | Class | Fenced at C003? |
+|---|---|---|
+| `write`, `edit`, `replace`, `apply_patch` | `FileWrite` | yes — before the first filesystem mutation |
+| `git` typed mutations | `GitMutation` | yes — before the first index/worktree/ref effect |
+| `git` raw argv fallback | `Unknown` | routed through the fence so it fails closed on a shared checkout |
+| `git` read-only actions | — | no: a read is not a write, and readers overlap freely |
+| process writers | `ProcessSpawn` | refused on a shared checkout; C005 owns the contract |
+| non-broker sinks | — | C004 |
+
+The broker *carries* the fence but never acquires from it. A tool that never
+reaches an effect — a read, a denied call, a job submission — holds no permit
+and writes nothing. That is also what keeps a nested dispatch from acquiring
+the same checkout twice.
+
+### Two profiles
+
+An **isolated** checkout — the default placement, one run, its own managed
+worktree — takes no permit. There is no second writer to exclude, so the
+default placement pays no durable write and behaves exactly as it did before
+C003, apart from the containment check.
+
+A **shared** checkout takes the permit. On that profile an effect class with
+no qualified profile is refused: there is no raw fallback and no best effort.
+A shared write with no bound actor is refused too — mutual exclusion without
+an attributed writer is an anonymous writer.
+
+### Where it is not yet
+
+The **containment** rule is live today. Every agent loop — the daemon turn,
+the delegated-run worker, `codegg exec` and the CLI — builds a
+`WorkspaceWriterFence` over the run's own workspace and hands it to every
+tool execution context, so a native writer whose target resolves outside that
+scope is refused before the effect.
+
+The **permit-backed shared profile** is not live yet: `DaemonWriterFence` has
+no production caller, because nothing in production places two runs on one
+checkout. That is the milestone's boundary rather than an oversight — C006 is
+what creates the shared placement, and wiring the profile in earlier would
+enable shared mutation before C004 and C005 have qualified it.
+
+So the shared profile is a **capability**, not a product path. Nothing in
+production places two runs on one checkout: the work-order `shared`/`serialized`
+placement is still refused, and the scheduler still gives every delegated run
+its own isolated worktree. C004 (non-broker sinks) and C005 (process denial)
+must complete the profile, and C006 must produce the real production path and
+the native Q1–Q5 evidence, before any shared mutation exists.
+
 ## What This Does Not Claim
 
 - **Not a filesystem exclusion.** The permit coordinates CodeGG's own writers.
   An unrelated process running as the same user is outside its guarantee.
 - **Not a sandbox.** Nothing here contains a process.
-- **Not an enablement.** No writer consults the permit yet. C002 ships the
-  authority; C003 and C004 ship the routing.
+- **Not an enablement.** C003 routes the native file writers and the typed Git
+  mutations through the fence, and it closes the model-supplied `workdir`
+  hole. It does **not** enable shared mutation: no production path places two
+  runs on one checkout, and the shared profile refuses every effect class
+  C004 and C005 have not yet qualified. C004, C005 and C006 own the rest.
 - **Not a claim of mediation.** A permit existing does not mean any particular
-  writer went through it.
+  writer went through it. C003's own evidence is in
+  `tests/writer_fence_c003.rs`, and it constructs the shared case directly
+  rather than waiting for a product path to exist.
 
 ## Verification
 
@@ -251,6 +345,17 @@ waiting on each other, a dropped guard quarantining rather than freeing,
 unproven quiescence parking the permit, the operator inspect and release
 surface, the operator release needing proven quiescence, and startup
 reconciliation parking a permit left live.
+
+`tests/writer_fence_c003.rs` (9 tests) covers the fence: a write outside the
+run's checkout refused with no filesystem effect, a write inside it allowed, a
+daemon-granted scratch root inside the scope, the real `write` tool refusing
+an out-of-scope target without creating the file, two runs on one checkout
+never overlapping their mutating effects (the second writer is refused while
+the first holds the checkout and takes it only after the first settles), a run
+outside the live group refused, an unclassified effect and a process effect
+refused on a shared checkout, a shared write with no bound actor refused, an
+out-of-scope write refused before the permit is taken (so a refused write
+never holds the checkout), and an isolated checkout taking no permit at all.
 
 The `BEGIN IMMEDIATE` primitive the store depends on is shared with the
 user-prompt queue store and is guarded by

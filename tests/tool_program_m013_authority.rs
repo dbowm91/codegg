@@ -343,6 +343,7 @@ fn c06_session_mismatch_fails_scope() {
 
     // Context uses a different session
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "tp-session".into(),
         },
@@ -402,6 +403,7 @@ fn c06_permission_mode_mismatch_fails_scope() {
 
     // Context uses a different permission mode
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "tp-pm".into(),
         },

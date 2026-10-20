@@ -129,6 +129,14 @@ pub struct BrokerInvocationContext {
     pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
     /// Accepted authorization context, preserved unchanged across retries.
     pub execution_authorization: Option<super::authorization::ExecutionAuthorizationContext>,
+    /// M005 C003: the checkout writer fence for this invocation.
+    ///
+    /// The broker carries the fence but never acquires from it: the fence is
+    /// consulted at the *final native effect*, so a tool that never reaches
+    /// an effect — a read, a denied call, a job submission — holds no permit
+    /// and writes nothing. That is what keeps a nested dispatch from
+    /// acquiring the same checkout twice.
+    pub writer_fence: Option<super::writer_fence::SharedWriterFence>,
 }
 
 impl BrokerInvocationContext {
@@ -180,6 +188,7 @@ pub enum BrokerAuthority {
 impl From<ToolExecutionContext> for BrokerInvocationContext {
     fn from(ctx: ToolExecutionContext) -> Self {
         Self {
+            writer_fence: ctx.writer_fence.clone(),
             caller: ToolCaller::Agent,
             cwd: ctx.cwd,
             session_id: ctx.session_id,
@@ -1385,6 +1394,7 @@ fn execution_context_for_attempt(
         execution_authorization: ctx.execution_authorization.clone(),
         execution_audit: None,
         audit_emitter: None,
+        writer_fence: ctx.writer_fence.clone(),
     };
     if let Some(audit) = ctx.execution_audit.clone() {
         exec_ctx.apply_execution_audit(&audit);
@@ -1526,6 +1536,7 @@ mod tests {
             }
         };
         BrokerInvocationContext {
+            writer_fence: None,
             caller: ToolCaller::Agent,
             cwd: PathBuf::from("."),
             session_id: None,

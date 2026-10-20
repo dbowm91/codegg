@@ -295,6 +295,7 @@ mod real_build_tool_definitions_tests {
             Arc::new(codegg::context::InMemoryArtifactStore::new()),
             std::env::current_dir().expect("test workspace root"),
             "search-backend-test".to_string(),
+            None,
         )
     }
 

@@ -917,6 +917,7 @@ mod live_request_preparation_active {
             Arc::new(InMemoryArtifactStore::new()),
             std::env::current_dir().expect("test workspace root"),
             session_id.to_string(),
+            None,
         )
     }
 

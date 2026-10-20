@@ -785,6 +785,7 @@ async fn build_test_agent_loop(
         Arc::new(InMemoryArtifactStore::new()),
         workspace_root.clone(),
         "test-session".to_string(),
+        None,
     );
     attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
     agent_loop
@@ -834,6 +835,7 @@ async fn build_test_agent_loop_with_permissions(
         Arc::new(InMemoryArtifactStore::new()),
         workspace_root.clone(),
         "test-session".to_string(),
+        None,
     );
     attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
     agent_loop
@@ -1008,6 +1010,7 @@ async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
             Arc::new(InMemoryArtifactStore::new()),
             root.to_path_buf(),
             session_id.to_string(),
+            None,
         );
         attach_test_workspace_authority(&mut agent_loop, root).await;
         agent_loop
@@ -1208,6 +1211,7 @@ async fn verify_and_two_explicit_in_progress_todos_reach_the_model_through_agent
         Arc::new(InMemoryArtifactStore::new()),
         root.path().to_path_buf(),
         "c007-verify-todo-session".into(),
+        None,
     );
     attach_test_workspace_authority(&mut agent_loop, root.path()).await;
     agent_loop
@@ -1296,6 +1300,7 @@ async fn build_test_agent_loop_with_config(
         Arc::new(InMemoryArtifactStore::new()),
         workspace_root.clone(),
         "test-session".to_string(),
+        None,
     );
     attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
     agent_loop
@@ -3575,6 +3580,7 @@ fn build_agent_loop_with_error_config(
         Arc::new(InMemoryArtifactStore::new()),
         std::env::current_dir().expect("test workspace root"),
         "test-session".to_string(),
+        None,
     )
 }
 
@@ -4592,6 +4598,7 @@ async fn parent_and_subagent_batches_keep_independent_permit_owners() {
             Arc::new(InMemoryArtifactStore::new()),
             root.clone(),
             format!("{name}-session"),
+            None,
         )
     };
     let mut parent = make_loop(
@@ -4990,6 +4997,7 @@ async fn test_task_tool_integration_with_subagent() {
         Arc::new(InMemoryArtifactStore::new()),
         workspace_root.clone(),
         "test-session-123".to_string(),
+        None,
     );
     attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
 
@@ -5417,6 +5425,7 @@ async fn tool_program_foreground_and_background_run_through_agent_broker_and_sch
         Arc::new(InMemoryArtifactStore::new()),
         root.path().to_path_buf(),
         "tool-program-session".into(),
+        None,
     );
     agent.set_workspace_id(workspace.id.clone());
     agent.set_workspace_services_lease(workspace_lease);
@@ -5562,6 +5571,7 @@ async fn tool_program_foreground_and_background_run_through_agent_broker_and_sch
         Arc::new(InMemoryArtifactStore::new()),
         root.path().to_path_buf(),
         "tool-program-denied-session".into(),
+        None,
     );
     denied_agent.set_workspace_id(workspace.id.clone());
     denied_agent.set_workspace_services_lease(
@@ -5835,6 +5845,7 @@ async fn test_task_tool_denied_tools_passthrough() {
         Arc::new(InMemoryArtifactStore::new()),
         workspace_root.clone(),
         "test-session-denied".to_string(),
+        None,
     );
     attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
 
