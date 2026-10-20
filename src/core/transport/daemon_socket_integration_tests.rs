@@ -602,10 +602,12 @@ async fn projection_daemon() -> Arc<CoreDaemon> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
+async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
     use crate::agent::worker::SubAgentPool;
     use crate::agent::{Agent, AgentMode};
     use crate::config::schema::{Config, SubagentConfig};
+    use crate::core::transport::SocketCoreClient;
+    use crate::core::CoreClient;
     use crate::provider::{
         ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, ProviderError, ProviderRegistry,
         TokenUsage,
@@ -716,13 +718,29 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
         )
         .await
         .expect("project");
-    daemon.sessions.get_or_create(
-        "m006-parent-session",
-        workspace.id.clone(),
-        root.path().to_path_buf(),
-        project.project_id.as_str().to_owned(),
-        root.path().to_path_buf(),
+    let (socket_path, socket_dir, server, shutdown) =
+        spawn_daemon_with_shutdown(Arc::clone(&daemon)).await;
+    let client = Arc::new(
+        SocketCoreClient::connect(&format!("unix://{socket_path}"))
+            .await
+            .expect("connect late-attaching TUI client"),
     );
+    let session = match client
+        .request(crate::core::new_request(
+            "m006-create-worker-session".into(),
+            crate::protocol::core::CoreRequest::SessionCreate {
+                directory: root.path().to_string_lossy().into_owned(),
+                title: Some("M006 held worker session".into()),
+                project_id: Some(project.project_id.as_str().into()),
+                workspace_id: Some(workspace.id.as_str().into()),
+            },
+        ))
+        .await
+        .expect("create real socket session")
+    {
+        crate::protocol::core::CoreResponse::Session { session } => session,
+        other => panic!("session creation failed: {other:?}"),
+    };
     let submission = daemon
         .deps
         .submission
@@ -733,7 +751,7 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
             None,
             NewJob {
                 workspace_id: workspace.id.clone(),
-                session_id: Some("m006-parent-session".into()),
+                session_id: Some(session.id.clone()),
                 turn_id: Some("m006-parent-turn".into()),
                 kind: JobKind::Subagent,
                 source: JobSource::Interactive,
@@ -742,7 +760,7 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
                     prompt: "wait for the test latch".into(),
                     agent: "held-worker".into(),
                     model: Some("held/model".into()),
-                    parent_id: Some("m006-parent-session".into()),
+                    parent_id: Some(session.id.clone()),
                     denied_tools: Vec::new(),
                     allowed_paths: vec![root.path().to_string_lossy().into_owned()],
                     max_tool_calls: Some(4),
@@ -770,9 +788,62 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
     tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
         .expect("worker reaches provider latch");
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(64);
+    let mut app = crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    app.tui_cmd_tx = Some(command_tx);
+    app.attach_core_client(client.clone());
+    app.set_session(
+        crate::protocol_conversions::dto_to_session(session.clone())
+            .expect("session DTO conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("late TUI attaches to the live worker projection");
+    let (_, tui_snapshot) = app
+        .projection_client
+        .active_snapshot()
+        .expect("late TUI receives an authoritative worker snapshot");
+    assert_eq!(
+        tui_snapshot.subagents.len(),
+        1,
+        "late socket-attached TUI contains the running real child"
+    );
+    assert_eq!(
+        tui_snapshot.subagents[0].originating_turn_id.as_deref(),
+        Some("m006-parent-turn")
+    );
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Subagent { .. }))
+            .count(),
+        1,
+        "late-attached TUI derives the running child row from its socket snapshot"
+    );
+    app.open_dialog(crate::tui::Dialog::Session);
+    let painted_session_dialog = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            |dialog| dialog.clone(),
+        )
+        .expect("painted sessions dialog with real running child");
+    assert_eq!(painted_session_dialog.subagent_rows().len(), 1);
     let snapshot = daemon
         .projection_snapshot_for_session(
-            "m006-parent-session",
+            &session.id,
             project.project_id.as_str(),
             workspace.id.as_str(),
         )
@@ -794,7 +865,7 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
     daemon
         .event_log
         .publish(
-            Some("m006-parent-session".into()),
+            Some(session.id.clone()),
             Some("m006-parent-turn".into()),
             crate::protocol::core::CoreEvent::TurnCompleted {
                 input_tokens: None,
@@ -802,7 +873,7 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
                 cached_tokens: None,
                 reasoning_tokens: None,
                 context_limit: None,
-                session_id: "m006-parent-session".into(),
+                session_id: session.id.clone(),
                 turn_id: "m006-parent-turn".into(),
                 stop_reason: "completed while child remains held".into(),
             },
@@ -810,15 +881,18 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
         .await;
     let after_parent_completion = daemon
         .projection_snapshot_for_session(
-            "m006-parent-session",
+            &session.id,
             project.project_id.as_str(),
             workspace.id.as_str(),
         )
         .await;
-    assert_eq!(after_parent_completion.subagents[0].status, child.status);
+    assert_eq!(
+        after_parent_completion.subagents[0].status,
+        crate::protocol::projection::dto::AgentTreeStatus::Running
+    );
 
-    let cancel = daemon
-        .handle_request(crate::core::new_request(
+    let cancel = client
+        .request(crate::core::new_request(
             "m006-owner-cancel-running-child".into(),
             crate::protocol::core::CoreRequest::JobCancel {
                 job_id: job.job_id.as_str().into(),
@@ -826,7 +900,7 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
             },
         ))
         .await
-        .expect("owner can cancel the running worker");
+        .expect("send owner cancellation over socket");
     assert!(
         matches!(
             cancel,
@@ -852,6 +926,30 @@ async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
     })
     .await
     .expect("real worker reaches terminal scheduler state");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = daemon
+                .projection_snapshot_for_session(
+                    &session.id,
+                    project.project_id.as_str(),
+                    workspace.id.as_str(),
+                )
+                .await;
+            if snapshot.subagents.iter().any(|child| {
+                child.status != crate::protocol::projection::dto::AgentTreeStatus::Running
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("real child lifecycle reaches a projected terminal state");
+    drop(app);
+    drop(client);
+    shutdown.cancel();
+    abort_server(server).await;
+    drop(socket_dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

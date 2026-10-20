@@ -1,6 +1,6 @@
 # TUI Live Work Visibility — Runtime Integration Corrective Roadmap
 
-Status: conditionally closed (2026-10-19; M001–M005 closed, M006 conditionally closed pending full runtime/operator qualification)
+Status: conditionally closed (2026-10-20; M001–M005 closed, M006 conditionally closed pending multi-worker timeout/restart and operator qualification)
 
 Repository review baseline: `ea5dab90424ba95312310ac7b1072be0f1323742` on `main` (2026-10-20). Originating user reproduction: real sessions with waiting jobs and subagents show neither in `/sessions` nor `Ctrl+T` after commit `8fab1ba7d48d794b397ce4a0a207d5ae547ff976`.
 
@@ -66,7 +66,7 @@ M001 and M002 are closed. ADR-0043 Option A was accepted and M003 is closed. M00
 | M003 | invariant | **closed** | Session-owned bounded child lifecycle and generation-safe identity; ADR-0043 Option A accepted. Closure: `plans/closure/tui-live-work-visibility-corrective/003-status.md`. |
 | M004 | capability | **closed** | One ID-based session-work selector feeds `/sessions`, `Ctrl+T`, and sidebar; socket/event publication reaches both painted work surfaces. Closure: `plans/closure/tui-live-work-visibility-corrective/004-status.md`. |
 | M005 | capability | **closed** | Identity-keyed job detail and daemon-authorized cancel; observer cancel disabled; parent-mediated child interaction preserved. Closure: `plans/closure/tui-live-work-visibility-corrective/005-status.md`. |
-| M006 | capability | **conditionally closed** | Socket-to-painted-TUI and job cancel slice passes. Real worker concurrency, late attach/restart, complete denial matrix, and manual terminal receipt remain required for full acceptance. Closure: `plans/closure/tui-live-work-visibility-corrective/006-status.md`. |
+| M006 | capability | **conditionally closed** | Socket-to-painted-TUI/job cancel slice passes, including one real held worker on a late socket-attached TUI. Two-worker concurrency, actual parent timeout/stop, in-flight restart, complete denial matrix, and manual terminal receipt remain required for full acceptance. Closure: `plans/closure/tui-live-work-visibility-corrective/006-status.md`. |
 
 Plans: `plans/implementation/tui-live-work-visibility-corrective/001-...` through `006-...`. Each milestone has a self-contained implementation plan; open only one primary milestone per agent.
 

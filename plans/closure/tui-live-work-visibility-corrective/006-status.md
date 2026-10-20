@@ -1,6 +1,6 @@
 # TUI Live Work Visibility Corrective M006 — Conditional Closure
 
-Status: **conditionally closed — held-worker socket/UI recovery receipt outstanding**
+Status: **conditionally closed — multi-worker timeout/restart and manual receipt outstanding**
 Date: 2026-10-20 (follow-up evidence)
 Class: **capability**
 Source implementation plan: `plans/implementation/tui-live-work-visibility-corrective/006-real-daemon-to-tui-acceptance-and-recovery.md`
@@ -20,24 +20,27 @@ two jobs are visible under the subscribed session and that job inspection and
 cancel remain identity-keyed.
 
 The follow-up adds a deterministic held provider behind the real
-`SubagentJobExecutor` and `SubAgentPool`. It checks a late daemon snapshot while
-the worker is running, immutable parent-turn identity, parent completion while
-the child remains live, and owner cancellation through the daemon job-control
-request. This is worker and daemon evidence, but the worker is not yet held
-through the socket-attached painted TUI path, nor across a daemon restart. This
-environment did not provide an interactive development terminal, so no manual
-terminal receipt is claimed. M006 remains conditionally closed under its
-explicit stop rule; these results do not qualify full release acceptance.
+`SubagentJobExecutor` and `SubAgentPool`. A late ordinary TUI attaches over the
+Unix socket after the real worker reaches the provider latch. Its authorized
+snapshot, task rows, and painted `/sessions` dialog contain the same child ID
+and originating turn. Parent completion is published while the worker remains
+held; the child stays Running. Owner cancellation then travels back through the
+socket and both the durable job and projected child reach terminal state. This
+qualifies one held worker through the socket/UI path. It does not qualify two
+concurrent real workers, an actual parent timeout/stop controller path, or
+restart with in-flight durable work. This environment did not provide an
+interactive development terminal, so no manual receipt is claimed. M006
+remains conditionally closed under its explicit stop rule.
 
 ## Scenario disposition
 
 | Scenario | Result | Evidence / residual |
 |---|---|---|
-| A. Same attached session shows two children and separate jobs in both surfaces; inspect and supported cancel | **Partial pass** | `default_tui_socket_path_installs_authorized_session_snapshot_and_live_job`: real socket job submissions plus deterministic `AppEvent::SubagentStarted` publications through the global bus and daemon event bridge; exact IDs are applied and painted. Job inspection/cancel goes through TUI requests and the daemon store. Child starts do not come from real worker executions. |
-| B. Late attach, simultaneous clients, and cross-session child isolation | **Partial pass** | The same socket/TUI test now attaches a second ordinary TUI after the two child events and jobs are published, verifies all four identities in its initial authorized snapshot, then binds another TUI to a second session in the same project and verifies its child/job snapshot is empty. This covers late snapshot reconstruction and session isolation for deterministic child events. Both TUI clients are not held concurrently through live worker transitions, and no worker latch is involved. |
-| C. Parent completion/timeout, queued cancellation, new-turn reuse, eventual worker terminal | **Partial pass** | `real_scheduled_subagent_is_recoverable_while_provider_is_held` runs a real scheduled worker behind a provider latch, observes its live child snapshot and originating turn, publishes parent completion while the child remains Running, then cancels the owner job and waits for durable terminal state. Parent timeout, queued-before-dequeue cancellation, two-worker generation reuse, and this lifecycle through a socket-attached TUI remain unqualified. |
+| A. Same attached session shows two children and separate jobs in both surfaces; inspect and supported cancel | **Partial pass** | `default_tui_socket_path_installs_authorized_session_snapshot_and_live_job` exercises real socket job submissions plus deterministic child events through the daemon bridge, paints exact IDs, and verifies job inspect/cancel. `late_socket_tui_attaches_to_held_real_scheduled_subagent` adds one real worker: the late TUI's snapshot, task rows, and painted `/sessions` dialog contain its running child. Two concurrent real children with independent jobs are not yet covered. |
+| B. Late attach, simultaneous clients, and cross-session child isolation | **Partial pass** | Deterministic socket/TUI coverage attaches a second ordinary TUI after two child events and jobs, verifies all four IDs in its initial snapshot, and verifies a second session in the same project is empty. The new held-worker test attaches an ordinary TUI over the socket after a real worker is at its provider latch and finds the live child in the initial snapshot and `/sessions` dialog. Concurrent convergence of two clients during worker transitions and unauthorized subscription are still unqualified. |
+| C. Parent completion/timeout, queued cancellation, new-turn reuse, eventual worker terminal | **Partial pass** | `late_socket_tui_attaches_to_held_real_scheduled_subagent` holds a real scheduled worker, publishes parent completion while it remains Running, sends owner `JobCancel` through the socket, and waits for durable job and projected child terminal states. Actual parent timeout/stop controller behavior, queued-before-dequeue cancellation, two-worker generation reuse, and restart recovery remain unqualified. |
 | D. Disconnect gap, daemon restart, ephemeral child reconciliation, duplicate terminal | **Partial component evidence** | Fresh snapshot/reconnect and cold runtime registry behavior have focused tests; no combined real-worker restart trace or cursor-gap TUI test was run. |
-| E. Modal refresh, exact job activation, cancel, observer control | **Partial pass** | Existing row removal/generation races and socket job detail/cancel tests remain. The held-worker test verifies owner cancellation reaches a real worker; `observer_cannot_steer_cancel_or_mutate_through_daemon` now includes opaque `JobCancel` denial before lookup. Foreign-session details and the full socket observer denial matrix remain unqualified. |
+| E. Modal refresh, exact job activation, cancel, observer control | **Partial pass** | Existing row removal/generation races and socket job detail/cancel tests remain. The held-worker test verifies owner cancellation reaches a real worker over socket; `observer_cannot_steer_cancel_or_mutate_through_daemon` includes opaque `JobCancel` denial before lookup. Foreign-session details and the full socket observer denial matrix remain unqualified. |
 | F. Unavailable versus empty, bounded overflow | **Pass at component level** | M001/session dialog tests distinguish unavailable/loading/empty; projection caps and omission counts are covered. No forced socket outage painted in the same end-to-end run. |
 | Manual operator receipt | **Not available** | No interactive terminal and no real provider-backed delegated work were available in this coding session. Receipt was not fabricated. |
 
