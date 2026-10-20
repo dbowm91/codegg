@@ -873,9 +873,7 @@ impl CoreDaemon {
     pub async fn reconcile_git_index_publications(
         &self,
     ) -> Option<crate::git_publication::GitIndexPublicationReconciliationReport> {
-        let Some(pool) = self.pool.as_ref() else {
-            return None;
-        };
+        let pool = self.pool.as_ref()?;
         let store = codegg_core::git_publication::GitIndexPublicationStore::new(pool.clone());
         let scratch = crate::git_publication::default_publication_scratch_root();
         let report = crate::git_publication::reconcile_git_index_publications_at_startup(

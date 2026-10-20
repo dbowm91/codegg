@@ -413,7 +413,7 @@ impl JobExecutor for ManagedArgvExecutor {
                     ),
                 );
             };
-            let spec = match config.launch_spec(target, &args.to_vec(), Some(&cwd)) {
+            let spec = match config.launch_spec(target, args, Some(&cwd)) {
                 Ok(spec) => spec,
                 Err(error) => {
                     return failure_completion(

@@ -460,8 +460,7 @@ impl GitIndexPublisher {
                 },
             ));
         }
-        let observed =
-            fingerprint_index(gitdir).map_err(|error| PublishFailure::Fatal(error.into()))?;
+        let observed = fingerprint_index(gitdir).map_err(PublishFailure::Fatal)?;
         if observed != expected {
             let _ = fs::remove_file(&lock);
             return Err(PublishFailure::Conflict(

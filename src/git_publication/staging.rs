@@ -54,6 +54,10 @@ pub struct GitIndexStagingRequest {
 }
 
 /// Produce a private index for a set of paths.
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait GitIndexStaging: Send + Sync {
     /// Stage the requested paths into the private index.
