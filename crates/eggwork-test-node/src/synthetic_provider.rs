@@ -197,3 +197,57 @@ async fn write_response(
     stream.write_all(body).await?;
     stream.flush().await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The node validates the provider's payload before it normalizes it,
+    /// so a payload the provider's own protocol would reject never becomes
+    /// a ready observation. This test names the offending field instead of
+    /// leaving it to be discovered by a live fixture run.
+    #[test]
+    fn the_synthetic_payload_satisfies_the_provider_protocol() {
+        if let Err(violations) = payload().validate() {
+            let described: Vec<String> = violations
+                .iter()
+                .map(|v| format!("{} at {}", v.kind, v.field))
+                .collect();
+            panic!("the synthetic provider payload violates the protocol: {described:?}");
+        }
+    }
+
+    /// The whole provider contract, end to end, without the node: the
+    /// upstream client fetches from the synthetic provider and must come
+    /// back with a validated observation.
+    ///
+    /// This is the seam the node's polling owner uses. A defect here makes
+    /// the node report no observation at all, which the live qualification
+    /// can only show as "the node must report a ready observation" — it
+    /// cannot say which side of the contract broke.
+    #[tokio::test]
+    async fn the_upstream_client_reads_an_observation_from_the_synthetic_provider() {
+        use eggwork_server::telemetry::{
+            GreggTelemetryProvider, HostTelemetryConfig, HostTelemetryProvider, ProviderOutcome,
+        };
+
+        let provider = start().await.expect("start the synthetic provider");
+        let endpoint = format!("http://127.0.0.1:{}/v2/status", provider.port);
+        let config = HostTelemetryConfig::new(&endpoint, 1, 5).expect("a valid endpoint");
+        let client = GreggTelemetryProvider::new(&config);
+
+        match client.observe().await {
+            Ok(ProviderOutcome::Observed(observation)) => {
+                // The observation carries the provider's own timestamp, so a
+                // non-zero value means the payload survived the round trip
+                // through the client's decode and the node's translation.
+                assert!(
+                    observation.observed_at_unix_ms > 0,
+                    "the observation lost its timestamp"
+                );
+            }
+            Ok(ProviderOutcome::Warming) => panic!("the provider answered with a health envelope"),
+            Err(error) => panic!("the provider was not read: {error:?}"),
+        }
+    }
+}

@@ -1362,18 +1362,27 @@ async fn live_node_serves_its_provider_host_telemetry() {
 
     // The node's telemetry owner polls the provider on its own schedule; the
     // first read may race that first poll, so the read is retried briefly
-    // rather than asserted on a cold cache.
+    // rather than asserted on a cold cache. CodeGG's own read cache holds a
+    // failed probe for a few seconds, so the window covers several real
+    // upstream reads rather than several reads of one cached answer.
     let mut snapshot = None;
-    for _ in 0..50 {
+    let mut last_seen = String::from("(no read completed)");
+    for _ in 0..150 {
         let snapshots = service.snapshots(None).await.expect("telemetry read");
         let candidate = snapshots.into_iter().next().expect("one node");
+        last_seen = format!(
+            "state={:?} diagnostic={:?} age_ms={:?}",
+            candidate.state, candidate.diagnostic, candidate.age_ms
+        );
         if candidate.state == codegg::scheduler::eggwork_telemetry::NodeTelemetryState::Ready {
             snapshot = Some(candidate);
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let snapshot = snapshot.expect("the node must report a ready observation");
+    let snapshot = snapshot.unwrap_or_else(|| {
+        panic!("the node must report a ready observation; last read: {last_seen}")
+    });
 
     assert_eq!(snapshot.node_id, "live-node-1");
     assert!(

@@ -165,7 +165,14 @@ async fn run() -> Result<NodeServer, String> {
     )]));
     // Authorize exactly the fixed-target executor operation set. Any future
     // server operation fails closed here at compile time (no wildcard arm).
-    let authorizer = Arc::new(|_: &NodePrincipal, operation: Operation| {
+    //
+    // Eggwork M002: the host-telemetry read is granted only when the
+    // fixture was started with `--telemetry-provider`, because that is the
+    // only case in which the node has a provider to read from. Without the
+    // flag the node has no provider at all and the route stays forbidden,
+    // so this fixture's default posture is unchanged.
+    let telemetry_provider = args.values.contains_key("telemetry-provider");
+    let authorizer = Arc::new(move |_: &NodePrincipal, operation: Operation| {
         matches!(
             operation,
             Operation::Capabilities
@@ -179,7 +186,7 @@ async fn run() -> Result<NodeServer, String> {
                 | Operation::BlobWrite
                 | Operation::WorkspaceCreate
                 | Operation::ArtifactRead
-        )
+        ) || (telemetry_provider && operation == Operation::Telemetry)
     });
 
     let lease_ttl = Duration::from_secs(
@@ -215,7 +222,7 @@ async fn run() -> Result<NodeServer, String> {
     // With `--telemetry-provider` the fixture stands up a synthetic loopback
     // Gregg provider and points the node at it; without the flag the node
     // has no provider at all, which is the honest "no telemetry" shape.
-    let host_telemetry = if args.values.contains_key("telemetry-provider") {
+    let host_telemetry = if telemetry_provider {
         let provider = synthetic_provider::start().await?;
         let endpoint = format!("http://127.0.0.1:{}/v2/status", provider.port);
         Some(
