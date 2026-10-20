@@ -9,11 +9,14 @@ use crate::core::instance::{connect_or_start_daemon, ConnectOrStartOptions};
 use crate::core::transport::SocketCoreClient;
 use crate::core::{new_request, CoreClient};
 use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse, EventEnvelope};
-use crate::protocol::dto::{ContentPart, ProviderMessage};
+use crate::protocol::dto::{ContentPart, ProjectRegisterRequestDto, ProviderMessage};
+use crate::protocol::projection::dto::ToolArgumentProjection;
 use crate::protocol::projection::event::ProjectionEvent;
 use crate::protocol::projection::replay::{ProjectionStreamKind, ProjectionSubscriptionRequest};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -38,6 +41,9 @@ struct ActivePrompt {
     request_id: Value,
     session_id: String,
     submission_event_floor: u64,
+    projection_event_floor: u64,
+    projection_subscription_id:
+        Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
     turn_id: Option<String>,
     cancel_requested: bool,
     close_requested: bool,
@@ -72,11 +78,17 @@ impl ActivePrompt {
 #[derive(Debug, Clone)]
 struct SessionBinding {
     subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
+    cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
     root: Option<PathBuf>,
 }
 
-pub async fn run() -> Result<(), crate::error::AppError> {
+pub async fn run(
+    policy: Option<crate::policy_surface::CliPolicyOverride>,
+) -> Result<(), crate::error::AppError> {
     let mut client: Option<Arc<SocketCoreClient>> = None;
+    let mut policy_applied = false;
+    let mut policy_lease: Option<AcpPolicyLease> = None;
+    let mut policy_snapshot: Option<crate::protocol::core::ExecutionPolicySnapshotDto> = None;
     let (_event_sink, mut events) = mpsc::channel::<EventEnvelope<CoreEvent>>(256);
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -123,7 +135,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                         }
                     }
                     "session/new" if initialized => {
-                        let client = match ensure_client(&mut client, &mut events).await {
+                        let client = match ensure_client(&mut client, &mut events, policy, &mut policy_applied, &mut policy_lease, &mut policy_snapshot).await {
                             Ok(client) => client,
                             Err(error) => { write_error(&stdout, request.id.unwrap_or(Value::Null), -32001, &error.to_string()).await?; continue; }
                         };
@@ -132,29 +144,80 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                             Err(message) => { write_error(&stdout, request.id.unwrap_or(Value::Null), -32602, &message).await?; continue; }
                         };
                         let title = request.params.get("title").and_then(Value::as_str).map(str::to_owned);
+                        let workspace = client.request(new_request(
+                            uuid::Uuid::new_v4().to_string(),
+                            CoreRequest::WorkspaceRegister {
+                                root: cwd.to_string_lossy().into_owned(),
+                            },
+                        )).await?;
+                        let workspace_id = match workspace {
+                            CoreResponse::WorkspaceSnapshot { workspace } => workspace.workspace_id,
+                            other => {
+                                write_core_error(&stdout, request.id.unwrap_or(Value::Null), other).await?;
+                                continue;
+                            }
+                        };
+                        let display_name = cwd.file_name().map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| cwd.to_string_lossy().into_owned());
+                        let project = client.request(new_request(
+                            uuid::Uuid::new_v4().to_string(),
+                            CoreRequest::ProjectRegister {
+                                request: ProjectRegisterRequestDto {
+                                    workspace_id: workspace_id.clone(),
+                                    display_name,
+                                    description: None,
+                                    tags: Vec::new(),
+                                    repository_id: None,
+                                    source: "acp".to_string(),
+                                },
+                            },
+                        )).await?;
+                        let project_id = match project {
+                            CoreResponse::ProjectRegistered { project } => project.project_id,
+                            other => {
+                                write_core_error(&stdout, request.id.unwrap_or(Value::Null), other).await?;
+                                continue;
+                            }
+                        };
                         let response = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::SessionCreate {
-                            directory: cwd.to_string_lossy().into_owned(), title, project_id: None, workspace_id: None,
+                            directory: cwd.to_string_lossy().into_owned(), title, project_id: Some(project_id), workspace_id: Some(workspace_id),
                         })).await?;
                         match response {
                             CoreResponse::Session { session } => {
                                 let id = session.id.clone();
+                                client.subscribe_session_events(id.clone(), None).await?;
                         let subscription = subscribe(&client, &id, None).await?;
-                                sessions.insert(id.clone(), SessionBinding { subscription_id: subscription.1, root: Some(cwd) });
-                                write_result(&stdout, request.id.unwrap_or(Value::Null), json!({"sessionId": id, "modes": {"currentModeId": "default", "availableModes": [{"id":"default", "name":"CodeGG", "description":"CodeGG standard agent"}]}})).await?;
+                                sessions.insert(id.clone(), SessionBinding { subscription_id: subscription.1, cursor: subscription.0, root: Some(cwd) });
+                                let mut result = json!({"sessionId": id, "modes": {"currentModeId": "default", "availableModes": [{"id":"default", "name":"CodeGG", "description":"CodeGG standard agent"}]}});
+                                if let (Some(requested), Some(snapshot)) = (policy, policy_snapshot.as_ref()) {
+                                    result["codeggPolicy"] = json!({
+                                        "requested": {
+                                            "approvalMode": requested.approval_mode.map(|value| value.as_str()),
+                                            "sandbox": requested.sandbox_profile.map(|value| value.as_str()),
+                                        },
+                                        "effective": {
+                                            "approvalMode": snapshot.approval_mode.as_str(),
+                                            "sandbox": snapshot.sandbox_profile.as_str(),
+                                            "revision": snapshot.policy_revision,
+                                        },
+                                    });
+                                }
+                                write_result(&stdout, request.id.unwrap_or(Value::Null), result).await?;
                             }
                             other => write_core_error(&stdout, request.id.unwrap_or(Value::Null), other).await?,
                         }
                     }
                     "session/load" | "session/resume" if initialized => {
-                        let client = match ensure_client(&mut client, &mut events).await {
+                        let client = match ensure_client(&mut client, &mut events, policy, &mut policy_applied, &mut policy_lease, &mut policy_snapshot).await {
                             Ok(client) => client,
                             Err(error) => { write_error(&stdout, request.id.unwrap_or(Value::Null), -32001, &error.to_string()).await?; continue; }
                         };
                         let sid = session_id(&request.params)?;
                         let response = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::SessionLoad { session_id: sid.clone() })).await?;
                         if matches!(response, CoreResponse::Session { .. }) {
+                            client.subscribe_session_events(sid.clone(), None).await?;
                             let subscription = subscribe(&client, &sid, None).await?;
-                            sessions.insert(sid.clone(), SessionBinding { subscription_id: subscription.1, root: None });
+                            sessions.insert(sid.clone(), SessionBinding { subscription_id: subscription.1, cursor: subscription.0, root: None });
                             if request.method == "session/load" {
                                 replay_snapshot(&stdout, request.id.clone().unwrap_or(Value::Null), &sid, subscription.2).await?;
                             } else {
@@ -163,7 +226,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                         } else { write_core_error(&stdout, request.id.unwrap_or(Value::Null), response).await?; }
                     }
                     "session/prompt" if initialized => {
-                        let client = match ensure_client(&mut client, &mut events).await {
+                        let client = match ensure_client(&mut client, &mut events, policy, &mut policy_applied, &mut policy_lease, &mut policy_snapshot).await {
                             Ok(client) => client,
                             Err(error) => { write_error(&stdout, request.id.unwrap_or(Value::Null), -32001, &error.to_string()).await?; continue; }
                         };
@@ -171,10 +234,33 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                         let sid = session_id(&request.params)?;
                         let text = prompt_text(&request.params)?;
                         let agents = native_agents(&sid, sessions.get(&sid).and_then(|b| b.root.as_deref()))?;
-                        let model = request.params.get("model").and_then(Value::as_str).unwrap_or(agent::EMERGENCY_DEFAULT_MODEL).to_owned();
+                        let requested_model = request.params.get("model").and_then(Value::as_str);
+                        let requested_agent = request.params.get("codeggAgent").and_then(Value::as_str);
+                        if policy.is_some() && (requested_model.is_none() || requested_agent.is_none()) {
+                            write_error(&stdout, request.id.unwrap_or(Value::Null), -32602, "unattended ACP trials require explicit model and codeggAgent fields").await?;
+                            continue;
+                        }
+                        let model = requested_model.unwrap_or(agent::EMERGENCY_DEFAULT_MODEL).to_owned();
+                        let projection_event_floor = sessions.get(&sid)
+                            .and_then(|binding| binding.cursor.as_ref())
+                            .map(|cursor| cursor.event_seq)
+                            .unwrap_or(0);
+                        let projection_subscription_id = sessions.get(&sid)
+                            .and_then(|binding| binding.subscription_id.clone());
+                        let current_agent_idx = match requested_agent {
+                            Some(name) => match agents.iter().position(|agent| agent.name == name) {
+                                Some(index) => index,
+                                None => {
+                                    write_error(&stdout, request.id.unwrap_or(Value::Null), -32602, "requested CodeGG agent is unavailable").await?;
+                                    continue;
+                                }
+                            },
+                            None => 0,
+                        };
+                        tracing::info!(model = %model, agent = %agents.get(current_agent_idx).map(|agent| agent.name.as_str()).unwrap_or("unknown"), "selected ACP turn identity");
                         let submission_event_floor = drain_event_floor(&mut events);
                         let response = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TurnSubmit {
-                            session_id: sid.clone(), text: text.clone(), plan_mode: false, model, agents, current_agent_idx: 0,
+                            session_id: sid.clone(), text: text.clone(), plan_mode: false, model, agents, current_agent_idx,
                             messages: vec![ProviderMessage::User { content: vec![ContentPart::Text { text }] }],
                             reasoning: None,
                             human_shell_promotion_ids: Vec::new(),
@@ -184,6 +270,8 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                                 request_id: request.id.unwrap_or(Value::Null),
                                 session_id: sid,
                                 submission_event_floor,
+                                projection_event_floor,
+                                projection_subscription_id,
                                 turn_id: None,
                                 cancel_requested: false,
                                 close_requested: false,
@@ -196,6 +284,8 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                                     request_id: request.id.unwrap_or(Value::Null),
                                     session_id: sid,
                                     submission_event_floor,
+                                    projection_event_floor,
+                                    projection_subscription_id,
                                     turn_id: Some(receipt.turn_id),
                                     cancel_requested: false,
                                     close_requested: false,
@@ -265,11 +355,37 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                         cancel_if_ready(client.as_ref(), prompt).await;
                     }
                 }
+                if active.as_ref().is_some_and(|prompt| event_is_permission_pending(&event, prompt)) {
+                    let mut prompt = active.take().expect("permission event matched active prompt");
+                    prompt.cancel(false);
+                    cancel_if_ready(client.as_ref(), &mut prompt).await;
+                    write_error_with_data(
+                        &stdout,
+                        prompt.request_id,
+                        -32011,
+                        "headless ACP turn reached an unanswered permission request",
+                        json!({"kind":"permission_pending", "sessionId":prompt.session_id, "turnId":prompt.turn_id}),
+                    ).await?;
+                    continue;
+                }
                 if let Some(prompt) = active.as_ref() {
                     if event_is_terminal(&event, prompt) {
                         let prompt = active.take().unwrap();
-                        let reason = if prompt.cancel_requested || prompt.close_requested { "cancelled" } else { terminal_reason(&event) };
-                        write_result(&stdout, prompt.request_id, json!({"stopReason": reason})).await?;
+                        match terminal_stop_reason(&event) {
+                            Some(completed_reason) => {
+                                write_result(&stdout, prompt.request_id, json!({"stopReason": completed_reason,
+                                    "codeggUsage": terminal_usage(&event)})).await?;
+                            }
+                            None => {
+                                write_error_with_data(
+                                    &stdout,
+                                    prompt.request_id,
+                                    -32010,
+                                    "native turn failed",
+                                    json!({"kind":"turn_failed", "sessionId":prompt.session_id, "turnId":prompt.turn_id}),
+                                ).await?;
+                            }
+                        }
                     }
                 }
             }
@@ -325,17 +441,156 @@ async fn cancel_if_ready(client: Option<&Arc<SocketCoreClient>>, prompt: &mut Ac
 async fn ensure_client(
     client: &mut Option<Arc<SocketCoreClient>>,
     events: &mut mpsc::Receiver<EventEnvelope<CoreEvent>>,
+    policy: Option<crate::policy_surface::CliPolicyOverride>,
+    policy_applied: &mut bool,
+    policy_lease: &mut Option<AcpPolicyLease>,
+    policy_snapshot: &mut Option<crate::protocol::core::ExecutionPolicySnapshotDto>,
 ) -> Result<Arc<SocketCoreClient>, crate::error::AppError> {
     if let Some(client) = client {
         return Ok(Arc::clone(client));
+    }
+    if policy.is_some() && !*policy_applied {
+        *policy_lease = Some(acquire_policy_lease()?);
     }
     let outcome = connect_or_start_daemon(ConnectOrStartOptions::for_default_paths())
         .await
         .map_err(|e| crate::error::AppError::Other(anyhow::anyhow!(e.to_string())))?;
     let connected = Arc::new(outcome.client);
     *events = connected.subscribe();
+    if let Some(policy) = policy {
+        if !*policy_applied {
+            *policy_snapshot = Some(apply_and_verify_policy(&connected, policy).await?);
+            *policy_applied = true;
+        }
+    }
     *client = Some(Arc::clone(&connected));
     Ok(connected)
+}
+
+#[derive(Debug)]
+struct AcpPolicyLease {
+    _file: File,
+}
+
+fn acquire_policy_lease() -> Result<AcpPolicyLease, crate::error::AppError> {
+    let root = std::env::var_os("CODEGG_DAEMON_HOME").ok_or_else(|| {
+        crate::error::AppError::Other(anyhow::anyhow!(
+            "explicit ACP policy overrides require a private CODEGG_DAEMON_HOME; refusing to mutate the default user daemon"
+        ))
+    })?;
+    let root = PathBuf::from(root);
+    std::fs::create_dir_all(&root)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("acp-policy-lease.lock"))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(crate::error::AppError::Other(anyhow::anyhow!(
+                "another ACP policy trial is already active for this daemon root"
+            )));
+        }
+        Err(std::fs::TryLockError::Error(error)) => {
+            return Err(crate::error::AppError::Other(anyhow::anyhow!(
+                "could not lock ACP policy trial admission: {error}"
+            )));
+        }
+    }
+    Ok(AcpPolicyLease { _file: file })
+}
+
+async fn apply_and_verify_policy(
+    client: &Arc<SocketCoreClient>,
+    policy: crate::policy_surface::CliPolicyOverride,
+) -> Result<crate::protocol::core::ExecutionPolicySnapshotDto, crate::error::AppError> {
+    use crate::protocol::core::{ApprovalModeDto, SandboxProfileDto};
+    let (Some(approval_mode), Some(sandbox_profile)) =
+        (policy.approval_mode, policy.sandbox_profile)
+    else {
+        return Err(crate::error::AppError::Other(anyhow::anyhow!(
+            "ACP unattended policy requires both --approval-mode yolo and --sandbox full-host|workspace-write"
+        )));
+    };
+    if approval_mode != codegg_core::approval::ApprovalMode::Yolo
+        || !matches!(
+            sandbox_profile,
+            codegg_core::approval::SandboxProfile::FullHost
+                | codegg_core::approval::SandboxProfile::WorkspaceWrite
+        )
+    {
+        return Err(crate::error::AppError::Other(anyhow::anyhow!(
+            "ACP unattended policy requires yolo with full-host or workspace-write"
+        )));
+    }
+    let current_preference = client
+        .request(new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::ApprovalPreferenceGet,
+        ))
+        .await?;
+    let expected_revision = match current_preference {
+        CoreResponse::ApprovalPreference { preference } => Some(preference.revision),
+        CoreResponse::Error { code, .. } if code == "preference_unavailable" => None,
+        _ => {
+            return Err(crate::error::AppError::Other(anyhow::anyhow!(
+                "daemon could not read the current ACP policy revision"
+            )));
+        }
+    };
+    let set = client
+        .request(new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::RuntimePolicySet {
+                approval_mode: Some(approval_mode.as_str().to_string()),
+                sandbox_profile: Some(sandbox_profile.as_str().to_string()),
+                expected_revision,
+            },
+        ))
+        .await?;
+    if !matches!(set, CoreResponse::ApprovalPreference { .. }) {
+        return Err(crate::error::AppError::Other(anyhow::anyhow!(
+            "daemon rejected explicit ACP runtime policy"
+        )));
+    }
+    let effective = client
+        .request(new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::ExecutionPolicyGet { session_id: None },
+        ))
+        .await?;
+    let CoreResponse::ExecutionPolicy { snapshot } = effective else {
+        return Err(crate::error::AppError::Other(anyhow::anyhow!(
+            "daemon did not return an effective ACP policy snapshot"
+        )));
+    };
+    let expected_mode = match approval_mode {
+        codegg_core::approval::ApprovalMode::Interactive => ApprovalModeDto::Interactive,
+        codegg_core::approval::ApprovalMode::Automatic => ApprovalModeDto::Automatic,
+        codegg_core::approval::ApprovalMode::Yolo => ApprovalModeDto::Yolo,
+    };
+    let expected_profile = match sandbox_profile {
+        codegg_core::approval::SandboxProfile::ReadOnly => SandboxProfileDto::ReadOnly,
+        codegg_core::approval::SandboxProfile::WorkspaceWrite => SandboxProfileDto::WorkspaceWrite,
+        codegg_core::approval::SandboxProfile::FullHost => SandboxProfileDto::FullHost,
+    };
+    if snapshot.approval_mode != expected_mode || snapshot.sandbox_profile != expected_profile {
+        return Err(crate::error::AppError::Other(anyhow::anyhow!(
+            "daemon narrowed explicit ACP policy (requested approval={} sandbox={}, effective approval={} sandbox={}); refusing the trial",
+            expected_mode.as_str(), expected_profile.as_str(), snapshot.approval_mode.as_str(), snapshot.sandbox_profile.as_str()
+        )));
+    }
+    tracing::info!(
+        requested_approval = expected_mode.as_str(),
+        effective_approval = snapshot.approval_mode.as_str(),
+        requested_sandbox = expected_profile.as_str(),
+        effective_sandbox = snapshot.sandbox_profile.as_str(),
+        policy_revision = ?snapshot.policy_revision,
+        "verified daemon ACP policy"
+    );
+    Ok(snapshot)
 }
 
 fn absolute_cwd(params: &Value) -> Result<PathBuf, String> {
@@ -493,13 +748,15 @@ async fn handle_event(
     prompt: &mut ActivePrompt,
     event: &EventEnvelope<CoreEvent>,
 ) -> Result<bool, crate::error::AppError> {
-    if !prompt.can_accept(event) {
+    let is_projection = matches!(event.payload, CoreEvent::ProjectionStreamEvent { .. });
+    if is_projection {
+        if !projection_event_matches(event, prompt) {
+            return Ok(false);
+        }
+    } else if !prompt.can_accept(event) {
         return Ok(false);
     }
     if let CoreEvent::ProjectionStreamEvent { envelope, .. } = &event.payload {
-        if envelope.session_id.as_deref() != Some(prompt.session_id.as_str()) {
-            return Ok(false);
-        }
         let Some(turn_id) = envelope.turn_id.as_deref() else {
             return Ok(false);
         };
@@ -511,7 +768,7 @@ async fn handle_event(
         }
         match &envelope.payload {
             ProjectionEvent::MessageAppended { message } if message.visibility == crate::protocol::projection::dto::VisibilityClass::Public => update(stdout, &prompt.session_id, json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":message.text}})).await?,
-            ProjectionEvent::ToolStarted { tool } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call","toolCallId":tool.tool_id,"title":tool.tool_name,"status":"in_progress"})).await?,
+            ProjectionEvent::ToolStarted { tool } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call","toolCallId":tool.tool_id,"title":tool.tool_name,"status":"in_progress","codeggArgumentsSha256":tool_arguments_sha256(&tool.arguments)})).await?,
             ProjectionEvent::ToolCompleted { tool_id, output, success, .. } => update(stdout, &prompt.session_id, json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id,"status":if *success {"completed"} else {"failed"},"rawOutput":format!("{output:?}")})).await?,
             _ => {}
         }
@@ -524,24 +781,25 @@ async fn handle_event(
 }
 
 fn event_is_terminal(event: &EventEnvelope<CoreEvent>, prompt: &ActivePrompt) -> bool {
-    if !prompt.can_accept(event) || event.session_id.as_deref() != Some(prompt.session_id.as_str())
-    {
-        return false;
-    }
-    let Some(turn) = prompt.turn_id.as_deref() else {
-        return false;
-    };
     match &event.payload {
-        CoreEvent::TurnCompleted { turn_id, .. } => turn == turn_id,
-        CoreEvent::TurnFailed { turn_id, .. } => turn_id.as_deref() == Some(turn),
+        CoreEvent::TurnCompleted { turn_id, .. } => {
+            prompt.can_accept(event)
+                && event.session_id.as_deref() == Some(prompt.session_id.as_str())
+                && prompt.turn_id.as_deref() == Some(turn_id.as_str())
+        }
+        CoreEvent::TurnFailed { turn_id, .. } => {
+            prompt.can_accept(event)
+                && event.session_id.as_deref() == Some(prompt.session_id.as_str())
+                && turn_id.as_deref() == prompt.turn_id.as_deref()
+        }
         CoreEvent::ProjectionStreamEvent { envelope, .. } => match (
-            envelope.session_id.as_deref(),
+            projection_event_matches(event, prompt),
             envelope.turn_id.as_deref(),
             &envelope.payload,
         ) {
-            (Some(session), Some(event_turn), ProjectionEvent::TurnCompleted { turn_id, .. })
-            | (Some(session), Some(event_turn), ProjectionEvent::TurnFailed { turn_id, .. }) => {
-                session == prompt.session_id && event_turn == turn && turn_id == turn
+            (true, Some(event_turn), ProjectionEvent::TurnCompleted { turn_id, .. })
+            | (true, Some(event_turn), ProjectionEvent::TurnFailed { turn_id, .. }) => {
+                prompt.turn_id.as_deref() == Some(event_turn) && turn_id == event_turn
             }
             _ => false,
         },
@@ -549,15 +807,129 @@ fn event_is_terminal(event: &EventEnvelope<CoreEvent>, prompt: &ActivePrompt) ->
     }
 }
 
-fn terminal_reason(event: &EventEnvelope<CoreEvent>) -> &'static str {
+fn projection_event_matches(event: &EventEnvelope<CoreEvent>, prompt: &ActivePrompt) -> bool {
+    let CoreEvent::ProjectionStreamEvent {
+        subscription_id,
+        envelope,
+        ..
+    } = &event.payload
+    else {
+        return false;
+    };
+    let Some(expected_subscription) = prompt.projection_subscription_id.as_ref() else {
+        return false;
+    };
+    subscription_id == expected_subscription
+        && envelope.session_id.as_deref() == Some(prompt.session_id.as_str())
+        && envelope.event_seq > prompt.projection_event_floor
+        && envelope.turn_id.as_deref().is_some_and(|turn| {
+            prompt
+                .turn_id
+                .as_deref()
+                .is_none_or(|expected| expected == turn)
+        })
+}
+
+fn event_is_permission_pending(event: &EventEnvelope<CoreEvent>, prompt: &ActivePrompt) -> bool {
+    if !prompt.can_accept(event) || event.session_id.as_deref() != Some(prompt.session_id.as_str())
+    {
+        return false;
+    }
     match &event.payload {
-        CoreEvent::TurnCompleted { .. } => "end_turn",
-        CoreEvent::TurnFailed { .. } => "cancelled",
-        CoreEvent::ProjectionStreamEvent { envelope, .. } => match envelope.payload {
-            ProjectionEvent::TurnCompleted { .. } => "end_turn",
-            ProjectionEvent::TurnFailed { .. } => "cancelled",
-            _ => "end_turn",
+        CoreEvent::PermissionPending {
+            session_id,
+            turn_id: Some(turn_id),
+            ..
+        } => {
+            session_id == &prompt.session_id && prompt.turn_id.as_deref() == Some(turn_id.as_str())
+        }
+        _ => false,
+    }
+}
+
+fn terminal_stop_reason(event: &EventEnvelope<CoreEvent>) -> Option<&'static str> {
+    match &event.payload {
+        CoreEvent::TurnCompleted { stop_reason, .. } => Some(map_acp_stop_reason(stop_reason)),
+        CoreEvent::TurnFailed { .. } => None,
+        CoreEvent::ProjectionStreamEvent { envelope, .. } => match &envelope.payload {
+            ProjectionEvent::TurnCompleted { stop_reason, .. } => {
+                Some(map_acp_stop_reason(stop_reason))
+            }
+            ProjectionEvent::TurnFailed { .. } => None,
+            _ => None,
         },
+        _ => None,
+    }
+}
+
+fn terminal_usage(event: &EventEnvelope<CoreEvent>) -> Value {
+    let usage = match &event.payload {
+        CoreEvent::TurnCompleted {
+            turn_id,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            context_limit,
+            ..
+        } => Some((
+            turn_id.as_str(),
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            context_limit,
+        )),
+        CoreEvent::ProjectionStreamEvent { envelope, .. } => match &envelope.payload {
+            ProjectionEvent::TurnCompleted {
+                turn_id,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                context_limit,
+                ..
+            } => Some((
+                turn_id.as_str(),
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                context_limit,
+            )),
+            _ => None,
+        },
+        _ => None,
+    };
+    match usage {
+        Some((turn_id, input, output, cached, reasoning, context)) => json!({
+            "turnId": turn_id,
+            "inputTokens": input,
+            "outputTokens": output,
+            "cachedTokens": cached,
+            "reasoningTokens": reasoning,
+            "contextLimit": context,
+        }),
+        None => Value::Null,
+    }
+}
+
+fn tool_arguments_sha256(arguments: &ToolArgumentProjection) -> Option<String> {
+    let text = match arguments {
+        ToolArgumentProjection::Inline { arguments } => arguments,
+        ToolArgumentProjection::Summary { summary } => summary,
+        ToolArgumentProjection::TruncatedArguments { preview, .. } => preview,
+        ToolArgumentProjection::Handle { .. } => return None,
+    };
+    Some(format!("{:x}", Sha256::digest(text.as_bytes())))
+}
+
+fn map_acp_stop_reason(native: &str) -> &'static str {
+    match native {
+        "cancelled" | "canceled" => "cancelled",
+        "max_tokens" => "max_tokens",
+        "max_turn_requests" => "max_turn_requests",
+        "refusal" => "refusal",
         _ => "end_turn",
     }
 }
@@ -587,9 +959,19 @@ async fn write_error(
     code: i64,
     message: &str,
 ) -> Result<(), crate::error::AppError> {
+    write_error_with_data(stdout, id, code, message, Value::Null).await
+}
+
+async fn write_error_with_data(
+    stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    id: Value,
+    code: i64,
+    message: &str,
+    data: Value,
+) -> Result<(), crate::error::AppError> {
     write_frame(
         stdout,
-        json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}),
+        json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message,"data":data}}),
     )
     .await
 }
@@ -628,6 +1010,10 @@ mod tests {
             request_id: json!(1),
             session_id: "session-1".into(),
             submission_event_floor: 10,
+            projection_event_floor: 10,
+            projection_subscription_id: Some(
+                crate::protocol::projection::replay::ProjectionSubscriptionId("sub-1".into()),
+            ),
             turn_id: None,
             cancel_requested: false,
             close_requested: false,
@@ -644,6 +1030,132 @@ mod tests {
             turn_id: None,
             payload,
         }
+    }
+
+    fn projection_event(
+        seq: u64,
+        subscription: &str,
+        session: &str,
+        turn: &str,
+        payload: ProjectionEvent,
+    ) -> EventEnvelope<CoreEvent> {
+        EventEnvelope {
+            protocol_version: 1,
+            event_seq: 0,
+            timestamp_ms: 0,
+            session_id: None,
+            turn_id: None,
+            payload: CoreEvent::ProjectionStreamEvent {
+                subscription_id: crate::protocol::projection::replay::ProjectionSubscriptionId(
+                    subscription.into(),
+                ),
+                stream_id: crate::protocol::projection::replay::ProjectionStreamId(
+                    "stream-1".into(),
+                ),
+                envelope: crate::protocol::projection::event::ProjectionEnvelope {
+                    protocol_version: 1,
+                    event_seq: seq,
+                    timestamp_ms: 0,
+                    session_id: Some(session.into()),
+                    turn_id: Some(turn.into()),
+                    scope: crate::protocol::projection::event::ProjectionStreamScope::Session,
+                    payload,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn projection_stream_uses_nested_session_turn_subscription_and_cursor() {
+        let mut active = prompt();
+        active.turn_id = Some("turn-1".into());
+        let terminal = projection_event(
+            11,
+            "sub-1",
+            "session-1",
+            "turn-1",
+            ProjectionEvent::TurnCompleted {
+                turn_id: "turn-1".into(),
+                stop_reason: "stop".into(),
+                completed_at: 0,
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
+                context_limit: None,
+            },
+        );
+        assert!(projection_event_matches(&terminal, &active));
+        assert!(event_is_terminal(&terminal, &active));
+        assert!(!projection_event_matches(
+            &projection_event(
+                10,
+                "sub-1",
+                "session-1",
+                "turn-1",
+                ProjectionEvent::TurnCompleted {
+                    turn_id: "turn-1".into(),
+                    stop_reason: "stop".into(),
+                    completed_at: 0,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cached_tokens: None,
+                    reasoning_tokens: None,
+                    context_limit: None,
+                }
+            ),
+            &active
+        ));
+        assert!(!projection_event_matches(
+            &projection_event(
+                11,
+                "other-sub",
+                "session-1",
+                "turn-1",
+                ProjectionEvent::TurnCompleted {
+                    turn_id: "turn-1".into(),
+                    stop_reason: "stop".into(),
+                    completed_at: 0,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cached_tokens: None,
+                    reasoning_tokens: None,
+                    context_limit: None,
+                }
+            ),
+            &active
+        ));
+    }
+
+    #[test]
+    fn acp_harness_extensions_expose_turn_usage_and_argument_fingerprint() {
+        let completed = event(
+            13,
+            "session-1",
+            CoreEvent::TurnCompleted {
+                session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+                stop_reason: "end_turn".into(),
+                input_tokens: Some(120),
+                output_tokens: Some(35),
+                cached_tokens: Some(20),
+                reasoning_tokens: Some(8),
+                context_limit: Some(8192),
+            },
+        );
+        assert_eq!(terminal_usage(&completed)["inputTokens"], 120);
+        assert_eq!(terminal_usage(&completed)["outputTokens"], 35);
+        assert!(tool_arguments_sha256(&ToolArgumentProjection::Inline {
+            arguments: "{\"path\":\"src/lib.rs\"}".into(),
+        })
+        .is_some());
+        assert_eq!(
+            tool_arguments_sha256(&ToolArgumentProjection::Handle {
+                handle: "private".into(),
+                byte_length: 10,
+            }),
+            None
+        );
     }
 
     #[test]
@@ -729,6 +1241,78 @@ mod tests {
         active.cancel_sent = true;
         active.cancel(true);
         assert!(active.cancel_sent);
+    }
+
+    #[test]
+    fn permission_pending_is_correlated_to_the_active_session_and_turn() {
+        let mut active = prompt();
+        active.bind_turn("turn-1");
+        let pending = event(
+            11,
+            "session-1",
+            CoreEvent::PermissionPending {
+                id: "permission-1".into(),
+                session_id: "session-1".into(),
+                turn_id: Some("turn-1".into()),
+                tool: "bash".into(),
+                path: None,
+            },
+        );
+        assert!(event_is_permission_pending(&pending, &active));
+        let stale = event(
+            12,
+            "session-1",
+            CoreEvent::PermissionPending {
+                id: "permission-2".into(),
+                session_id: "session-1".into(),
+                turn_id: Some("turn-2".into()),
+                tool: "bash".into(),
+                path: None,
+            },
+        );
+        assert!(!event_is_permission_pending(&stale, &active));
+    }
+
+    #[test]
+    fn terminal_outcome_does_not_mislabel_failure_as_cancellation() {
+        let failed = event(
+            11,
+            "session-1",
+            CoreEvent::TurnFailed {
+                session_id: "session-1".into(),
+                turn_id: Some("turn-1".into()),
+                message: "provider unavailable".into(),
+            },
+        );
+        assert_eq!(terminal_stop_reason(&failed), None);
+
+        let completed = event(
+            12,
+            "session-1",
+            CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
+                context_limit: None,
+                session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+                stop_reason: "end_turn".into(),
+            },
+        );
+        assert_eq!(terminal_stop_reason(&completed), Some("end_turn"));
+    }
+
+    #[test]
+    fn acp_maps_only_known_standard_stop_reasons() {
+        assert_eq!(map_acp_stop_reason("max_tokens"), "max_tokens");
+        assert_eq!(
+            map_acp_stop_reason("max_turn_requests"),
+            "max_turn_requests"
+        );
+        assert_eq!(map_acp_stop_reason("refusal"), "refusal");
+        assert_eq!(map_acp_stop_reason("cancelled"), "cancelled");
+        assert_eq!(map_acp_stop_reason("vendor_specific"), "end_turn");
     }
 }
 
