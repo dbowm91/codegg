@@ -54,7 +54,7 @@ each value. Most of that drift is `main`-side; the attribution is in §3.1.
 The merged tree is green on every step that is not one of the pre-existing
 load-sensitive failures: `cargo fmt --all -- --check`, `cargo clippy
 --workspace --all-targets --locked -- -D warnings`, the `codegg` protocol and
-`egglsp` suites, every focused editor suite, all nine TUI guard scripts and
+`egglsp` suites, every focused editor suite, every TUI guard script and
 their self-tests, and `bash scripts/verify.sh quick` ("Quick verification
 passed."). The whole-`codegg`-lib step reports **5 failures**, all of them in
 `tui::commands::interactive_terminal::tests::`, and the module passes **94 /
@@ -71,7 +71,7 @@ resolved without weakening an editor invariant:
 | Conflict | Resolution |
 |---|---|
 | `src/core/daemon.rs` | Both sides independently replaced a hardcoded `/tmp` fixture with `tempfile::tempdir()` — the same fix, for the same reason (a symlinked `/tmp` fails workspace registration with `InvalidRootPath("/tmp")`). This branch's recorded reason is kept; `main`'s non-cloning binding (`directory` rather than `directory.clone()`) is kept with it, because `directory` is not read again in that function. |
-| `.opencode/skills/tui/SKILL.md` | The Static Guards table grew on both sides. It now carries **all nine** guards: `main`'s composer key-authority guard beside the text-authority guard, then the seven editor guards. The section's "Both guards" sentence is corrected in §3.3. |
+| `.opencode/skills/tui/SKILL.md` | The Static Guards table grew on both sides. It now carries **all eleven** TUI guards in `verify.sh quick` — `main`'s composer key-authority guard beside the text-authority guard, then the seven editor guards, then the transport-authority and subagent-name-pool guards that were on disk but in no version of the table. The section's "Both guards" sentence is corrected in §3.3. |
 | `architecture/overview.md` | The Verified-counts rows are remeasured against their listed `Source` in the merged tree; sixteen had drifted, and four methods were pinned rather than guessed (§3.1). |
 | `plans/registry.md` | Four tables, resolved by union with the side that owns the milestone: the roadmap-status table keeps `main`'s composer row beside this branch's closed editor row; the closed and eligible tables keep both sides' milestone rows, with `main`'s rows widened to the five-column form this branch adopted; the blocked table keeps `main`'s user-prompt-queue row and this branch's ADR-0034 row, and drops `main`'s M009 row, which this branch closed. |
 
@@ -204,7 +204,7 @@ Every number below is from the sweep against the **merged** tree
 | `cargo test -p codegg --lib --locked core::daemon_lsp::` | **17 passed / 0 failed** |
 | `cargo test -p codegg --locked --test change_review_trajectory` | **7 passed / 0 failed** |
 | `lsp_read_delivery_m013` + `lsp_read_surface_trajectory` + `lsp_completion_trajectory` | **12 + 7 + 14 = 33 passed / 0 failed** |
-| the nine TUI guard scripts, and the four that carry `--self-test` | pass |
+| the TUI guard scripts, and the four that carry `--self-test` | pass — the sweep ran nine of them explicitly; `verify.sh quick` ran all eleven |
 | `bash scripts/verify.sh quick` | **"Quick verification passed."** |
 
 ### 4.1 The five whole-lib failures
