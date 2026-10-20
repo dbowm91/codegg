@@ -229,7 +229,7 @@ impl GitIndexPublisher {
             }
         };
 
-        if let Err(reason) = self
+        let network_boundary = match self
             .staging
             .stage(&GitIndexStagingRequest {
                 private_gitdir: private.gitdir.clone(),
@@ -243,14 +243,17 @@ impl GitIndexPublisher {
             })
             .await
         {
-            // A failed staging must leave the repository byte-identical, and
-            // the private artifact is discarded rather than left to be
-            // reconciled.
-            let _ = fs::remove_dir_all(&scratch);
-            return Err(GitIndexPublicationError::Refused(
-                GitIndexPublicationRefusal::StagingFailed { reason },
-            ));
-        }
+            Ok(boundary) => boundary,
+            Err(reason) => {
+                // A failed staging must leave the repository byte-identical, and
+                // the private artifact is discarded rather than left to be
+                // reconciled.
+                let _ = fs::remove_dir_all(&scratch);
+                return Err(GitIndexPublicationError::Refused(
+                    GitIndexPublicationRefusal::StagingFailed { reason },
+                ));
+            }
+        };
 
         // The staging child must not have touched the repository. The mount
         // view makes the repository's Git metadata read-only to the child, so
@@ -285,6 +288,7 @@ impl GitIndexPublisher {
             published_index_fingerprint: published,
             gitdir_dev: dev,
             gitdir_ino: ino,
+            network_boundary,
         })
     }
 
@@ -356,10 +360,12 @@ impl GitIndexPublisher {
                         published_index_fingerprint: published,
                         staged_paths: paths.to_vec(),
                         imported_objects: imported,
-                        // The obtained network fact is not reported anywhere in
-                        // the system, so the receipt says so explicitly rather
-                        // than staying silent about the network.
-                        network_boundary: ObtainedNetworkBoundary::NotReported,
+                        // The boundary is copied from what the staging step
+                        // observed. The receipt therefore states the network
+                        // it actually ran under rather than staying silent
+                        // about the network, and it never claims a boundary
+                        // the staging did not obtain.
+                        network_boundary: prepared.network_boundary.clone(),
                         published_at_ms: now_ms(),
                     },
                 ))
@@ -541,6 +547,11 @@ pub struct PreparedPrivateIndex {
     pub gitdir_dev: u64,
     /// The inode identity of the gitdir the staging observed.
     pub gitdir_ino: u64,
+    /// The network boundary the staging step obtained, stated truthfully.
+    ///
+    /// It is copied verbatim into the publication receipt, so the receipt
+    /// can never claim a boundary the staging did not obtain.
+    pub network_boundary: ObtainedNetworkBoundary,
 }
 
 /// How a publication attempt ended before it could commit.

@@ -113,22 +113,33 @@ impl PublishedResourceScope {
 
 /// The network boundary a publication obtained, stated truthfully.
 ///
-/// The obtained network fact is **not reported** anywhere in the system: the
-/// M005 netns is obtained in reality, but `NetworkEnforcement::Enforced` has
-/// no producer, so no surface can read the fact it obtained. That makes the
-/// only truthful answer available today "not reported" — and it has to be
-/// *stated*, not merely omitted. A receipt that said nothing about the
-/// network would leave a caller unable to tell "there was no boundary" from
-/// "the boundary was not surfaced", and a receipt that claimed "offline"
-/// would be claiming something the system cannot see.
+/// The boundary is **stated**, never implied. A receipt that said nothing
+/// about the network would leave a caller unable to tell "there was no
+/// boundary" from "the boundary was not surfaced" — and a receipt that
+/// claimed a boundary the system did not obtain would be worse than either.
 ///
-/// This type has one variant because one answer has a producer. When the
-/// obtained-facts contract lands, the reported case is added **with** its
-/// producer, not as a claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Each variant has a producer:
+///
+/// * `Enforced` — the publication's staging child was observed inside a
+///   private network namespace. The producer is the launch itself: the
+///   Bubblewrap setup receipt proves the namespace setup completed, and the
+///   launch reports the boundary it obtained on
+///   `SandboxExecutionOutcome::Enforced::network`.
+/// * `Unrestricted` — the publication's staging child ran and obtained no
+///   network namespace.
+/// * `NotReported` — the staging step does not run a contained child, so
+///   there is no launch whose obtained boundary could be read. This is the
+///   truthful answer for a test-supplied staging, and it is a *statement*,
+///   not an omission.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObtainedNetworkBoundary {
-    /// The system does not report the network boundary it obtained.
+    /// The staging step did not run a contained child, so the system does
+    /// not report the network boundary it obtained.
     NotReported,
+    /// The staging child was observed inside a private network namespace.
+    Enforced { backend: String },
+    /// The staging child ran without a network namespace.
+    Unrestricted,
 }
 
 impl ObtainedNetworkBoundary {
@@ -136,6 +147,29 @@ impl ObtainedNetworkBoundary {
     pub fn as_str(&self) -> &'static str {
         match self {
             ObtainedNetworkBoundary::NotReported => "not_reported",
+            ObtainedNetworkBoundary::Enforced { .. } => "enforced",
+            ObtainedNetworkBoundary::Unrestricted => "unrestricted",
+        }
+    }
+
+    /// Read the obtained boundary off a launch outcome.
+    ///
+    /// This is the only place the receipt's reported case is produced. It
+    /// reads the launch's own obtained fact; it never reads the *request*,
+    /// so a receipt can never claim a boundary the launch did not obtain.
+    pub fn from_launch(outcome: &crate::managed_process::SandboxExecutionOutcome) -> Self {
+        use codegg_core::approval::NetworkEnforcement;
+        match outcome {
+            crate::managed_process::SandboxExecutionOutcome::Enforced {
+                network: NetworkEnforcement::Enforced { backend },
+                ..
+            } => ObtainedNetworkBoundary::Enforced {
+                backend: backend.clone(),
+            },
+            crate::managed_process::SandboxExecutionOutcome::Enforced { .. } => {
+                ObtainedNetworkBoundary::Unrestricted
+            }
+            _ => ObtainedNetworkBoundary::NotReported,
         }
     }
 }
@@ -407,4 +441,78 @@ pub struct GitIndexPublicationReconciliationReport {
     /// Entries the pass could not resolve. They stay unresolved and are
     /// picked up by the next start.
     pub unresolved: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The receipt's boundary is read off the launch's own obtained fact.
+    ///
+    /// A launch that obtained a network namespace reports it; a launch that
+    /// did not reports unrestricted; a launch that never ran reports that the
+    /// system does not report a boundary. The receipt never claims a
+    /// boundary the launch did not obtain.
+    #[test]
+    fn the_receipt_boundary_is_read_off_the_launch() {
+        use crate::managed_process::SandboxExecutionOutcome;
+        use codegg_core::approval::NetworkEnforcement;
+
+        let enforced = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Enforced {
+                backend: "bubblewrap-netns".into(),
+            },
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(
+            ObtainedNetworkBoundary::from_launch(&enforced),
+            ObtainedNetworkBoundary::Enforced {
+                backend: "bubblewrap-netns".into()
+            }
+        );
+
+        // The anti-overclaim case: the launch obtained no network
+        // namespace, so the receipt must not claim one.
+        let unrestricted = SandboxExecutionOutcome::Enforced {
+            backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+            abi: None,
+            network: NetworkEnforcement::Unrestricted,
+            guarantees: vec![],
+            limits: vec![],
+        };
+        assert_eq!(
+            ObtainedNetworkBoundary::from_launch(&unrestricted),
+            ObtainedNetworkBoundary::Unrestricted
+        );
+
+        // A launch that never ran has no obtained boundary to report.
+        assert_eq!(
+            ObtainedNetworkBoundary::from_launch(&SandboxExecutionOutcome::Disabled),
+            ObtainedNetworkBoundary::NotReported
+        );
+    }
+
+    /// Every boundary has a name, so a receipt states its boundary rather
+    /// than leaving a caller to infer an omission.
+    #[test]
+    fn every_boundary_states_itself() {
+        assert_eq!(
+            ObtainedNetworkBoundary::NotReported.as_str(),
+            "not_reported"
+        );
+        assert_eq!(
+            ObtainedNetworkBoundary::Enforced {
+                backend: "bubblewrap-netns".into()
+            }
+            .as_str(),
+            "enforced"
+        );
+        assert_eq!(
+            ObtainedNetworkBoundary::Unrestricted.as_str(),
+            "unrestricted"
+        );
+    }
 }

@@ -256,6 +256,14 @@ still sets `network: NetworkEnforcement::Unrestricted`, and
 audit record understates what was obtained, and ADR-0044 clause 2's M005
 precondition is vacuous until a corrective owns the obtained-facts contract.
 
+> **Update 2026-10-19.** This gap is closed by
+> `plans/implementation/linux-execution-isolation/023-m005-obtained-network-fact-contract.md`
+> (closure `plans/closure/linux-execution-isolation/023-status.md`):
+> `NetworkEnforcement::Enforced` now has a producer, derived from the observed
+> sandbox setup receipt together with the requested dimension, and the C007
+> publication receipt states the boundary its staging obtained. The section
+> above is preserved as the corrective's own scope statement.
+
 ### 5.2 The tool-program child-job route is not qualified
 
 `src/scheduler/tool_program_executor.rs` builds `ManagedArgv` and `Test`

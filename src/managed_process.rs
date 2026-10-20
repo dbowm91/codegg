@@ -536,11 +536,14 @@ pub enum SandboxExecutionOutcome {
     Disabled,
     /// OS containment is in force. `backend` names the mechanism that
     /// applied it and `abi` is that backend's reported version (`None` for
-    /// mechanisms without one). `guarantees`/`limits` carry the obtained
-    /// facts so an audit record never reads stronger than reality.
+    /// mechanisms without one). `network` is the **obtained** network
+    /// boundary for this launch — the fact, never the request.
+    /// `guarantees`/`limits` carry the obtained facts so an audit record
+    /// never reads stronger than reality.
     Enforced {
         backend: crate::security::sandbox::BackendId,
         abi: Option<u32>,
+        network: codegg_core::approval::NetworkEnforcement,
         guarantees: Vec<String>,
         limits: Vec<String>,
     },
@@ -2097,9 +2100,9 @@ async fn await_bubblewrap_ready(
             break;
         }
     }
-    let has_exit = decode_bubblewrap_json_status(&line)
+    let observed = decode_bubblewrap_json_status(&line)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if has_exit {
+    if observed.exit_code_reported {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Bubblewrap reported target exit before the setup acknowledgment",
@@ -2139,8 +2142,8 @@ async fn read_bubblewrap_terminal_status(
     if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
         return Err("Bubblewrap terminal status exceeds 16 KiB".into());
     }
-    let has_exit = decode_bubblewrap_json_status(&bytes)?;
-    if !has_exit {
+    let observed = decode_bubblewrap_json_status(&bytes)?;
+    if !observed.exit_code_reported {
         return Err("Bubblewrap closed without a terminal child status".into());
     }
     Ok(())
@@ -2450,6 +2453,10 @@ fn interpret_sandbox_status_for_termination(
         } => Ok(SandboxExecutionOutcome::Enforced {
             backend,
             abi,
+            // The legacy Landlock route has no network dimension: it scopes
+            // the filesystem and nothing else, so the obtained network
+            // boundary is truthfully unrestricted.
+            network: codegg_core::approval::NetworkEnforcement::Unrestricted,
             guarantees,
             limits,
         }),
@@ -2477,19 +2484,20 @@ fn interpret_bubblewrap_status(
     spec: &SandboxLaunchSpec,
     termination: TerminationReason,
 ) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
-    if status
+    let observed = if status
         .iter()
         .copied()
         .find(|byte| !byte.is_ascii_whitespace())
         == Some(b'{')
     {
-        let has_exit_status =
+        let observed =
             decode_bubblewrap_json_status(status).map_err(ManagedProcessError::SandboxFailed)?;
-        if !has_exit_status && termination == TerminationReason::Exited {
+        if !observed.exit_code_reported && termination == TerminationReason::Exited {
             return Err(ManagedProcessError::SandboxFailed(
                 "Bubblewrap exited without confirming successful target execution".into(),
             ));
         }
+        observed
     } else {
         match decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)? {
             SandboxLaunchOutcome::Unavailable { reason }
@@ -2504,8 +2512,9 @@ fn interpret_bubblewrap_status(
                 )));
             }
         }
-    }
+    };
 
+    let network = obtained_network_enforcement(spec, observed.child_pid);
     let mut guarantees = crate::security::sandbox::linux_mount_view::enforcement_scope(spec)
         .map_err(ManagedProcessError::SandboxFailed)?;
     guarantees.insert(
@@ -2514,7 +2523,8 @@ fn interpret_bubblewrap_status(
     );
     if spec.linux_offline_network {
         guarantees.push(
-            "private network namespace has no host interfaces or routes (OfflineRequired)".into(),
+            "private network namespace obtained: no host interfaces or routes (OfflineRequired)"
+                .into(),
         );
     }
     let limits = if spec.linux_process_isolation {
@@ -2545,13 +2555,68 @@ fn interpret_bubblewrap_status(
     Ok(SandboxExecutionOutcome::Enforced {
         backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
         abi: None,
+        network,
         guarantees,
         limits,
     })
 }
 
+/// The network boundary a Bubblewrap launch **obtained**.
+///
+/// `child_pid` is the sandbox child Bubblewrap reported in its status
+/// stream. Bubblewrap emits that record only after its namespace and mount
+/// setup has completed and the child has been forked, so reaching this
+/// function with a live child pid means the setup *happened* — a requested
+/// namespace that could not be created aborts the launch before the child
+/// exists, and the status stream then carries no child pid at all.
+///
+/// The observed receipt and the requested dimension are therefore jointly the
+/// obtained fact: the receipt proves the setup completed, and `spec` says
+/// which namespaces that setup was asked to create. Neither alone is enough:
+/// the request alone would be a hope, and the receipt alone would not say
+/// which dimensions were created.
+///
+/// The claim is deliberately narrow. It is about the network namespace the
+/// child was placed in. It says nothing about transports that do not use the
+/// network, and M004's seccomp filter denies the child from creating or
+/// joining a namespace of its own, so the child cannot widen it.
 #[cfg(target_os = "linux")]
-fn decode_bubblewrap_json_status(bytes: &[u8]) -> Result<bool, String> {
+fn obtained_network_enforcement(
+    spec: &SandboxLaunchSpec,
+    child_pid: u32,
+) -> codegg_core::approval::NetworkEnforcement {
+    debug_assert!(
+        child_pid != 0,
+        "the observed setup receipt carries a live child pid"
+    );
+    if spec.linux_offline_network {
+        codegg_core::approval::NetworkEnforcement::Enforced {
+            backend: "bubblewrap-netns".into(),
+        }
+    } else {
+        codegg_core::approval::NetworkEnforcement::Unrestricted
+    }
+}
+
+/// What Bubblewrap's status stream was observed to report.
+///
+/// Bubblewrap writes a `child-pid` record once its namespace and mount setup
+/// has completed and the sandbox child has been forked, and an `exit-code`
+/// record when that child has finished. The presence of the child record is
+/// therefore the **observation** that the setup completed: a requested
+/// namespace that could not be created aborts the launch before the child
+/// exists, and the status stream then carries no `child-pid`.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BubblewrapObservedStatus {
+    /// The sandbox child Bubblewrap forked and identified.
+    child_pid: u32,
+    /// The child's exit status was reported.
+    exit_code_reported: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn decode_bubblewrap_json_status(bytes: &[u8]) -> Result<BubblewrapObservedStatus, String> {
     if bytes.is_empty() {
         return Err("Bubblewrap produced no JSON status".into());
     }
@@ -2559,7 +2624,7 @@ fn decode_bubblewrap_json_status(bytes: &[u8]) -> Result<bool, String> {
         return Err("Bubblewrap status stream exceeds 16 KiB".into());
     }
 
-    let mut child_pid_seen = false;
+    let mut child_pid_seen: Option<u32> = None;
     let mut exit_code_seen = false;
     for line in bytes
         .split(|byte| *byte == b'\n')
@@ -2571,28 +2636,116 @@ fn decode_bubblewrap_json_status(bytes: &[u8]) -> Result<bool, String> {
             .as_object()
             .ok_or_else(|| "Bubblewrap status record is not a JSON object".to_string())?;
         if let Some(pid) = object.get("child-pid") {
-            if child_pid_seen || exit_code_seen || pid.as_u64().is_none_or(|pid| pid == 0) {
+            if child_pid_seen.is_some() || exit_code_seen || pid.as_u64().is_none_or(|pid| pid == 0)
+            {
                 return Err("Bubblewrap child PID status is invalid or duplicated".into());
             }
-            child_pid_seen = true;
+            child_pid_seen = pid.as_u64().and_then(|pid| u32::try_from(pid).ok());
         }
         if let Some(exit_code) = object.get("exit-code") {
-            if !child_pid_seen || exit_code_seen || exit_code.as_i64().is_none() {
+            if child_pid_seen.is_none() || exit_code_seen || exit_code.as_i64().is_none() {
                 return Err("Bubblewrap exit status is invalid or out of order".into());
             }
             exit_code_seen = true;
         }
     }
-    if !child_pid_seen {
+    let Some(child_pid) = child_pid_seen else {
         return Err("Bubblewrap did not report its sandbox child".into());
-    }
-    Ok(exit_code_seen)
+    };
+    Ok(BubblewrapObservedStatus {
+        child_pid,
+        exit_code_reported: exit_code_seen,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    /// A launch spec carrying only the dimensions the network producer reads.
+    fn spec_with(offline_network: bool, process_isolation: bool) -> SandboxLaunchSpec {
+        SandboxLaunchSpec {
+            target: PathBuf::from("/bin/true"),
+            args: vec![],
+            env: vec![],
+            read_paths: vec![],
+            write_paths: vec![],
+            deny_paths: vec![],
+            linux_protected_mount_view: false,
+            linux_process_isolation: process_isolation,
+            linux_offline_network: offline_network,
+            protected_readonly_paths: vec![],
+            path_identities: vec![],
+        }
+    }
+
+    /// The obtained network boundary must follow the *observed* setup, not
+    /// the request alone.
+    ///
+    /// A request without the receipt is a hope; the receipt without the
+    /// request says nothing about which namespace was created. Both together
+    /// are the obtained fact.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_obtained_network_boundary_needs_both_the_receipt_and_the_request() {
+        use codegg_core::approval::NetworkEnforcement;
+
+        let spec = spec_with(true, true);
+        assert_eq!(
+            obtained_network_enforcement(&spec, 4242),
+            NetworkEnforcement::Enforced {
+                backend: "bubblewrap-netns".into()
+            }
+        );
+
+        // The same receipt, without the network namespace being requested,
+        // is truthfully unrestricted: the child is in the host's namespace.
+        let spec = spec_with(false, true);
+        assert_eq!(
+            obtained_network_enforcement(&spec, 4242),
+            NetworkEnforcement::Unrestricted
+        );
+    }
+
+    /// The anti-overclaim case: a launch that did not request a network
+    /// namespace must never report one, however the filesystem was obtained.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_that_did_not_request_the_namespace_never_reports_it() {
+        use codegg_core::approval::NetworkEnforcement;
+
+        let spec = spec_with(false, true);
+        let obtained = obtained_network_enforcement(&spec, 99);
+        assert_eq!(obtained, NetworkEnforcement::Unrestricted);
+        assert!(!obtained.is_enforced());
+        assert_eq!(obtained.as_str(), "unrestricted");
+        assert_eq!(obtained.backend(), None);
+    }
+
+    /// A status stream that reports no child is not a setup receipt, so it
+    /// cannot support an obtained claim.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_status_stream_without_a_child_is_not_a_setup_receipt() {
+        assert!(decode_bubblewrap_json_status(b"").is_err());
+        assert!(decode_bubblewrap_json_status(b"{\"exit-code\":0}\n").is_err());
+        assert!(decode_bubblewrap_json_status(b"{\"child-pid\":0}\n").is_err());
+    }
+
+    /// A status stream that reports a child is the observed setup.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_status_stream_with_a_child_is_the_observed_setup() {
+        let observed = decode_bubblewrap_json_status(b"{\"child-pid\":4242}\n").expect("receipt");
+        assert_eq!(observed.child_pid, 4242);
+        assert!(!observed.exit_code_reported);
+
+        let observed = decode_bubblewrap_json_status(b"{\"child-pid\":4242}\n{\"exit-code\":0}\n")
+            .expect("receipt");
+        assert_eq!(observed.child_pid, 4242);
+        assert!(observed.exit_code_reported);
+    }
 
     fn request(script: &str) -> ManagedProcessRequest {
         ManagedProcessRequest::new(

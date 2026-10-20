@@ -993,37 +993,81 @@ impl SandboxEnforcementDto {
                         ),
                     }
                 };
-                // No OS network-isolation backend exists.
+                // A policy snapshot cannot report an obtained network
+                // boundary: that fact belongs to a launch, not to a profile.
+                // The snapshot therefore states the profile's network posture
+                // and the daemon reports the obtained boundary per launch.
                 let _ = constrained;
                 (filesystem, NetworkEnforcementDto::Unrestricted)
             }
         };
-        let summary = match &filesystem {
-            FilesystemEnforcementDto::Enforced { backend, abi } => match abi {
-                Some(abi) => format!(
-                    "{} requested; filesystem enforced ({backend} abi {abi}); network unrestricted (no OS isolation)",
-                    requested.as_str()
-                ),
-                None => format!(
-                    "{} requested; filesystem enforced ({backend}); network unrestricted (no OS isolation)",
-                    requested.as_str()
-                ),
-            },
-            FilesystemEnforcementDto::Unavailable { reason } => format!(
-                "{} requested; filesystem unavailable ({reason}); network unrestricted (no OS isolation)",
-                requested.as_str()
-            ),
-            FilesystemEnforcementDto::FullHost => format!(
-                "{} requested; no CodeGG filesystem containment (explicit FullHost); network unrestricted (no OS isolation)",
-                requested.as_str()
-            ),
-        };
+        let summary = Self::summary_for(requested, &filesystem, &network);
         Self {
             requested,
             filesystem,
             network,
             summary,
         }
+    }
+
+    /// Replace the reported network fact and rebuild the summary from it.
+    ///
+    /// The summary is derived from the fields it describes, so it cannot
+    /// contradict them. A summary that still read "network unrestricted"
+    /// beside an `Unavailable` network field would read as a weaker
+    /// boundary than the snapshot actually asserts.
+    pub fn with_network(&self, network: NetworkEnforcementDto) -> Self {
+        Self {
+            requested: self.requested,
+            filesystem: self.filesystem.clone(),
+            summary: Self::summary_for(self.requested, &self.filesystem, &network),
+            network,
+        }
+    }
+
+    /// The summary clause describing the obtained filesystem fact.
+    fn filesystem_clause(filesystem: &FilesystemEnforcementDto) -> String {
+        match filesystem {
+            FilesystemEnforcementDto::Enforced { backend, abi } => match abi {
+                Some(abi) => format!("filesystem enforced ({backend} abi {abi})"),
+                None => format!("filesystem enforced ({backend})"),
+            },
+            FilesystemEnforcementDto::Unavailable { reason } => {
+                format!("filesystem unavailable ({reason})")
+            }
+            FilesystemEnforcementDto::FullHost => {
+                "no CodeGG filesystem containment (explicit FullHost)".to_string()
+            }
+        }
+    }
+
+    /// The summary clause describing the reported network fact.
+    fn network_clause(network: &NetworkEnforcementDto) -> String {
+        match network {
+            NetworkEnforcementDto::Enforced { backend } => {
+                format!("network enforced ({backend})")
+            }
+            NetworkEnforcementDto::Unrestricted => {
+                "network unrestricted (no OS isolation)".to_string()
+            }
+            NetworkEnforcementDto::Unavailable { reason } => {
+                format!("network not established at the policy snapshot ({reason})")
+            }
+        }
+    }
+
+    /// Build the summary from the facts it describes.
+    fn summary_for(
+        requested: SandboxProfileDto,
+        filesystem: &FilesystemEnforcementDto,
+        network: &NetworkEnforcementDto,
+    ) -> String {
+        format!(
+            "{} requested; {}; {}",
+            requested.as_str(),
+            Self::filesystem_clause(filesystem),
+            Self::network_clause(network)
+        )
     }
 }
 
@@ -4592,6 +4636,44 @@ mod tests {
     #[test]
     fn protocol_version_is_set() {
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    /// The summary is derived from the facts it describes, so it can never
+    /// contradict the field it summarises.
+    ///
+    /// The defect this guards against is a snapshot whose summary said
+    /// "network unrestricted" while its network field said the boundary was
+    /// not established at the snapshot — a reader could not tell which was
+    /// the fact.
+    #[test]
+    fn the_enforcement_summary_never_contradicts_its_fields() {
+        let enforced = SandboxEnforcementDto::for_profile_on_host(
+            SandboxProfileDto::WorkspaceWrite,
+            true,
+            None,
+        );
+        assert!(enforced
+            .summary
+            .contains("network unrestricted (no OS isolation)"));
+
+        // Replacing the network fact rebuilds the summary from it.
+        let replaced = enforced.with_network(NetworkEnforcementDto::Unavailable {
+            reason: "verified per child launch".into(),
+        });
+        assert!(!replaced.summary.contains("network unrestricted"));
+        assert!(replaced
+            .summary
+            .contains("network not established at the policy snapshot"));
+        assert!(replaced.summary.contains("filesystem enforced (landlock)"));
+
+        // The same holds for a reported enforcement.
+        let replaced = enforced.with_network(NetworkEnforcementDto::Enforced {
+            backend: "bubblewrap-netns".into(),
+        });
+        assert!(replaced
+            .summary
+            .contains("network enforced (bubblewrap-netns)"));
+        assert!(!replaced.summary.contains("network unrestricted"));
     }
 
     #[test]

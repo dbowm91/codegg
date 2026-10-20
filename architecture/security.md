@@ -310,9 +310,40 @@ resolver rebinding, and inherited connected sockets, but the new authenticated
 preference-to-owner path still needs hosted evidence on supported hosts and
 refusal evidence under restricted user namespaces. Until that evidence is
 recorded, Linux M005 remains active and no broad supported-host admission is
-claimed. `NetworkEnforcement::Enforced` is reported only from an actually
-obtained managed-process result; a requested policy or namespace flag alone is
-not evidence.
+claimed.
+
+**The obtained network fact.** `NetworkEnforcement::Enforced` is reported only
+from an actually obtained managed-process result; a requested policy or
+namespace flag alone is not evidence. That rule is now implemented rather than
+stated:
+
+- `SandboxExecutionOutcome::Enforced` carries a typed `network:
+  NetworkEnforcement` — the boundary the launch **obtained**, never the one it
+  requested. The legacy Landlock route reports `Unrestricted`, which is
+  truthful: Landlock scopes the filesystem and has no network dimension.
+- The Bubblewrap route derives the boundary in
+  `obtained_network_enforcement()` from the **observed** setup receipt
+  (`decode_bubblewrap_json_status` → `BubblewrapObservedStatus::child_pid`)
+  *and* the requested dimension. Bubblewrap writes its `child-pid` status
+  record only after the namespace and mount setup completed and the sandbox
+  child was forked, so a requested namespace that could not be created aborts
+  the launch before that child exists and no receipt is produced. Neither half
+  is sufficient alone: the request alone is a hope, and the receipt alone does
+  not say which namespaces were created.
+- The claim is deliberately narrow. It is about the network namespace the
+  child was placed in. It says nothing about transports that do not use the
+  network, and M004's seccomp filter denies the child from creating or joining
+  a namespace of its own, so the child cannot widen it.
+
+**Policy snapshot versus per-launch fact.** `SandboxEnforcementDto` describes a
+*profile* on a *host*, which is not a launch. Its summary is therefore derived
+from its own fields (`summary_for`), and `with_network()` rebuilds the summary
+when the network fact changes, so the summary can never contradict the field
+it summarises. A snapshot with an `OfflineRequired` intent reports its network
+as `Unavailable` — "verified per child launch, not by the policy snapshot" —
+rather than claiming an unrestricted network next to a boundary it does not
+establish. The obtained boundary reaches the caller that launched the child,
+on the launch result.
 
 **Scheduler-owned Tool Program binding:** `ToolProgramExecutor` is registered
 during `CoreDaemon` construction, which routinely happens before any frontend

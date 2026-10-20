@@ -1,6 +1,6 @@
 # Linux Trusted Git Cost Corrective C007 — Closure Status
 
-Status: closed — the production publisher, the durable journal, the crash reconciler, and the contained staging step under M004/M005 are all proven; the obtained network fact remains unreported and is owned by C014
+Status: closed — the production publisher, the durable journal, the crash reconciler, and the contained staging step under M004/M005 are all proven; the receipt's network boundary is reported per launch by C023
 
 Source implementation plan:
 
@@ -30,13 +30,17 @@ M004/M005 suite — first on run `39318206124`, and then again on run
 `39339024314` at the branch's final commit `78359fd3`, which is the run that
 qualifies the delivered source (§4).
 
-One thing remains **not** established, and it is not waived:
+One thing remains **not** established by this closure, and it is not waived:
 
-- The **obtained network fact** is still not reported anywhere in the system.
-  C014's open item stands. This closure makes no M005 production claim, and
-  the receipt says so by construction: the receipt states the published
-  resource, and it states the network boundary explicitly as `not_reported`,
-  because the system cannot report what it obtained.
+- The **obtained network fact** was not reported anywhere in the system when
+  this vertical was closed. C014's open item stood, and the receipt said so by
+  construction: it stated the published resource and the network boundary
+  explicitly as `not_reported`, because the system could not report what it
+  obtained. That gap is closed separately by C023
+  (`plans/closure/linux-execution-isolation/023-status.md`), which gives
+  `NetworkEnforcement::Enforced` a producer and makes the receipt state the
+  boundary its staging actually obtained. This closure's own hosted evidence
+  predates that change and is therefore not re-interpreted here.
 The publication half — the journal, the compare-and-swap, the lock, the
 object import, the atomic replacement, and the recovery — is proven on this
 workstation, because the staging step is behind a trait and the proof
@@ -313,18 +317,20 @@ cargo fmt --all -- --check
 
 ## 8. Open items
 
-1. **The obtained network fact is not reported.** C014's open item stands.
-   The receipt deliberately does not claim an M005 boundary; it states the
-   boundary as `not_reported`, which is the truthful answer while the system
-   cannot report what it obtained.
+1. **The obtained network fact — closed by C023, outside this vertical.** It
+   was not reported when this closure was written, and the receipt stated the
+   boundary as `not_reported`, which was the truthful answer at the time.
+   `plans/closure/linux-execution-isolation/023-status.md` gives
+   `NetworkEnforcement::Enforced` a producer and makes the receipt state the
+   boundary its staging actually obtained.
 2. **`stage_all` and `stage_tracked` still use the legacy in-place route.**
    They stage arbitrary paths, including deletions and whole-tree `-A`
    semantics, which the path-scoped publisher does not model. They are
    outside this vertical and were left unchanged; the inconsistency is
    recorded here rather than papered over.
-3. **C005 remains blocked** on accepted ADR-0044, the M005 obtained-facts
-   contract, and the supported-host policy. This vertical's own hosted
-   qualification is done; C005's remaining gates are not C007's.
+3. **C005 remains blocked** on accepted ADR-0044 and the supported-host
+   policy. The M005 obtained-facts contract is closed by C023. This vertical's
+   own hosted qualification is done; C005's remaining gates are not C007's.
 
 ## 9. Next steps
 

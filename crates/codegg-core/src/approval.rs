@@ -221,19 +221,27 @@ impl FilesystemEnforcement {
 
 /// Obtained network containment for one execution context (M005).
 ///
-/// CodeGG has no OS network-isolation backend: normal shell execution
-/// under `ReadOnly`/`WorkspaceWrite`/`FullHost` reports
-/// [`NetworkEnforcement::Unrestricted`]. Permission/security policy may
-/// still classify network commands, but that is not OS isolation and
-/// must never be rendered as "sandboxed network".
+/// A network boundary is only ever reported when it was **obtained**.
+///
+/// The legacy Landlock route provides no network dimension, so a constrained
+/// launch on that route truthfully reports
+/// [`NetworkEnforcement::Unrestricted`]. The Bubblewrap route can place the
+/// child in a private network namespace, and when it does, the launch reports
+/// [`NetworkEnforcement::Enforced`] — the M005 offline-network candidate.
+///
+/// The distinction matters because "filesystem success never implies network
+/// isolation": the two dimensions are obtained separately and are reported
+/// separately. Permission/security policy may still classify network
+/// commands, but that is not OS isolation and must never be rendered as
+/// "sandboxed network".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkEnforcement {
-    /// OS network containment is active (no current backend produces this
-    /// for normal shell; reserved for a future measured backend).
+    /// OS network containment is active. Produced by a launch that observed
+    /// its own sandbox setup completing with the network namespace requested.
     Enforced { backend: String },
-    /// No OS network isolation. The truthful state for all shell paths
-    /// until a network backend exists.
+    /// No OS network isolation. The truthful state for a launch that did not
+    /// obtain a network namespace.
     Unrestricted,
     /// Network state could not be determined.
     Unavailable { reason: String },
@@ -242,6 +250,26 @@ pub enum NetworkEnforcement {
 impl NetworkEnforcement {
     pub const fn is_enforced(&self) -> bool {
         matches!(self, Self::Enforced { .. })
+    }
+
+    /// A stable, human-readable name for the obtained boundary.
+    ///
+    /// The name states the *fact*, never the request: `unrestricted` means no
+    /// network namespace was obtained, not that none was asked for.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Enforced { .. } => "enforced",
+            Self::Unrestricted => "unrestricted",
+            Self::Unavailable { .. } => "unavailable",
+        }
+    }
+
+    /// The mechanism that obtained the boundary, when one did.
+    pub fn backend(&self) -> Option<&str> {
+        match self {
+            Self::Enforced { backend } => Some(backend.as_str()),
+            _ => None,
+        }
     }
 }
 

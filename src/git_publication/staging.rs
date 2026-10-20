@@ -61,7 +61,16 @@ pub trait GitIndexStaging: Send + Sync {
     /// The implementation must leave the repository's index and object
     /// database byte-identical. The publisher verifies that independently
     /// and refuses the publication if it does not hold.
-    async fn stage(&self, request: &GitIndexStagingRequest) -> Result<(), String>;
+    ///
+    /// The returned boundary is the network boundary this staging step
+    /// **obtained**. A step that does not run a contained child reports
+    /// `NotReported`; a step that runs one reports what the launch observed.
+    /// The publisher copies it into the receipt verbatim, so a receipt can
+    /// never state a boundary the staging did not obtain.
+    async fn stage(
+        &self,
+        request: &GitIndexStagingRequest,
+    ) -> Result<crate::git_publication::ObtainedNetworkBoundary, String>;
 }
 
 /// The production staging step.
@@ -88,7 +97,10 @@ impl ContainedGitIndexStaging {
 
 #[async_trait]
 impl GitIndexStaging for ContainedGitIndexStaging {
-    async fn stage(&self, request: &GitIndexStagingRequest) -> Result<(), String> {
+    async fn stage(
+        &self,
+        request: &GitIndexStagingRequest,
+    ) -> Result<crate::git_publication::ObtainedNetworkBoundary, String> {
         let root = &request.repository_root;
         let gitdir = &request.repository_gitdir;
         let mut args = vec![
@@ -167,6 +179,8 @@ impl GitIndexStaging for ContainedGitIndexStaging {
                 String::from_utf8_lossy(&result.stderr.head).trim()
             ));
         }
-        Ok(())
+        // The boundary is read off the launch's own obtained fact, so the
+        // receipt states what the child actually ran with.
+        Ok(crate::git_publication::ObtainedNetworkBoundary::from_launch(&result.sandbox))
     }
 }

@@ -3233,6 +3233,22 @@ async fn production_private_index_publisher_stages_and_publishes_under_containme
         objects_before + 1,
         "exactly the staged object was imported"
     );
+    // The receipt states the network boundary the staging child actually
+    // obtained. On this qualified host the staging child ran inside a
+    // private network namespace, so the receipt says so — with the
+    // mechanism that obtained it, and not the bare word "offline".
+    //
+    // This is the obtained-facts contract's end-to-end proof: the boundary
+    // is read off the launch's own observed setup, so it cannot be a
+    // request echoed back as a fact.
+    assert_eq!(
+        receipt.network_boundary,
+        codegg::git_publication::ObtainedNetworkBoundary::Enforced {
+            backend: "bubblewrap-netns".into()
+        },
+        "the receipt must state the network boundary the staging child obtained"
+    );
+    assert_eq!(receipt.network_boundary.as_str(), "enforced");
     // The journal recorded the commitment.
     let stored = codegg_core::git_publication::GitIndexPublicationStore::new(pool)
         .get("c007-hosted-publication")

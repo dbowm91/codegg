@@ -80,7 +80,10 @@ struct LocalGitStaging;
 
 #[async_trait]
 impl GitIndexStaging for LocalGitStaging {
-    async fn stage(&self, request: &GitIndexStagingRequest) -> Result<(), String> {
+    async fn stage(
+        &self,
+        request: &GitIndexStagingRequest,
+    ) -> Result<ObtainedNetworkBoundary, String> {
         let mut args = vec![
             format!("--git-dir={}", request.private_gitdir.display()),
             format!("--work-tree={}", request.repository_root.display()),
@@ -104,7 +107,11 @@ impl GitIndexStaging for LocalGitStaging {
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-        Ok(())
+        // This staging runs the Git child directly, without the containment
+        // tier, so there is no launch whose obtained network boundary could
+        // be read. `NotReported` is the truthful answer — it is a statement,
+        // not an omission.
+        Ok(ObtainedNetworkBoundary::NotReported)
     }
 }
 
@@ -550,7 +557,10 @@ async fn a_failed_staging_leaves_the_repository_byte_identical() {
     struct FailingStaging;
     #[async_trait]
     impl GitIndexStaging for FailingStaging {
-        async fn stage(&self, _request: &GitIndexStagingRequest) -> Result<(), String> {
+        async fn stage(
+            &self,
+            _request: &GitIndexStagingRequest,
+        ) -> Result<ObtainedNetworkBoundary, String> {
             Err("the staging child failed".into())
         }
     }

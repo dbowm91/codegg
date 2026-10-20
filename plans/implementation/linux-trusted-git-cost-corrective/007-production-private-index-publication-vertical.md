@@ -61,6 +61,15 @@ network boundary it actually obtained, and must not claim an M005
 recorded finding applies here: the obtained network fact is not reported
 anywhere, so the publisher's receipt has to say so rather than imply it.
 
+> **Update 2026-10-19.** The obtained-facts gap this plan was written against is
+> closed by
+> `plans/implementation/linux-execution-isolation/023-m005-obtained-network-fact-contract.md`
+> (closure `plans/closure/linux-execution-isolation/023-status.md`):
+> `NetworkEnforcement::Enforced` now has a producer, and the publisher's receipt
+> states the boundary its staging actually obtained, read off the launch rather
+> than off the request. The passage above is preserved as the plan's own
+> constraint at the time it was written.
+
 ## 2. What already exists
 
 | Component | Location | State |

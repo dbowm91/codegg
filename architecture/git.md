@@ -188,11 +188,21 @@ reset, clean, fetch, push, and pull are out of scope.
 
 The receipt states the **obtained** network boundary explicitly
 (`ObtainedNetworkBoundary`), rather than leaving the caller to infer an omission.
-It currently reports `not_reported`: the system still cannot report the network
-fact it obtained, because `NetworkEnforcement::Enforced` has no producer. The
-type therefore carries exactly one variant — one answer, one producer — and the
-reported case is added with the producer that makes it true, never as a claim.
-A receipt that cannot name its boundary says so; it does not imply one.
+The boundary is copied verbatim from the staging step's own launch, so it states
+what the publication actually ran under:
+
+- `Enforced { backend }` — the staging child was observed inside a private
+  network namespace. On a qualified host the contained staging runs under
+  M004/M005, so the receipt states `enforced (bubblewrap-netns)`.
+- `Unrestricted` — the staging child ran and obtained no network namespace.
+- `NotReported` — the staging step does not run a contained child, so there is
+  no launch whose obtained boundary could be read. This is the truthful answer
+  for a test-supplied staging, and it is a *statement*, not an omission.
+
+The boundary is read off the launch's obtained fact
+(`ObtainedNetworkBoundary::from_launch`), never off the request, so a receipt
+cannot claim a boundary the staging did not obtain. See
+`architecture/security.md` for how the launch derives it.
 
 `Add` is **refused** when no publisher is configured
 (`GitMutationError::PublicationRefused`) rather than downgraded to the
@@ -514,13 +524,13 @@ the canonical `git` surface.
     alone.
 
 18. **A receipt states its boundary, including "not reported".** The
-    publication receipt carries `ObtainedNetworkBoundary`, currently the
-    single variant `NotReported`, because the system still cannot report the
-    network fact it obtained (`NetworkEnforcement::Enforced` has no producer).
-    A receipt that names no boundary and a receipt that names a boundary it
-    did not obtain are both wrong; the first is silent, the second is a
-    claim. The reported variant is added together with the producer that
-    makes it true.
+    publication receipt carries `ObtainedNetworkBoundary`, with a producer for
+    every variant: `Enforced` from a launch that observed its own sandbox
+    setup completing with the network namespace requested, `Unrestricted` from
+    a launch that obtained no network namespace, and `NotReported` from a
+    staging step that runs no contained child. A receipt that names no
+    boundary and a receipt that names a boundary it did not obtain are both
+    wrong; the first is silent, the second is a claim.
 
 ## Testing
 

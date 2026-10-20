@@ -912,13 +912,25 @@ impl GitMutationExecutor {
 fn publication_receipt_summary(
     receipt: &crate::git_publication::GitIndexPublicationReceipt,
 ) -> String {
+    use crate::git_publication::ObtainedNetworkBoundary;
+    // The boundary is named with the mechanism that obtained it, so the
+    // summary states the fact rather than a bare word.
+    let boundary = match &receipt.network_boundary {
+        ObtainedNetworkBoundary::Enforced { backend } => {
+            format!("enforced ({backend})")
+        }
+        ObtainedNetworkBoundary::Unrestricted => "unrestricted (no OS network isolation)".into(),
+        ObtainedNetworkBoundary::NotReported => {
+            "not reported (the staging step does not run a contained child)".into()
+        }
+    };
     format!(
         "staged {} path(s) into the repository index (published resource: {}; \
          imported objects: {}; network boundary: {})",
         receipt.staged_paths.len(),
         receipt.scope.as_str(),
         receipt.imported_objects.len(),
-        receipt.network_boundary.as_str()
+        boundary
     )
 }
 

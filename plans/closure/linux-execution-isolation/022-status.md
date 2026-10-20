@@ -30,14 +30,14 @@ owner-path unit tests and the missing native restricted-userns proof are added;
 the hosted job's path triggers are extended to the M005 owner surface; and a
 guard now protects the wiring.
 
-M005 is **not** closed by this record. The obtained network fact is still never
-reported, the tool-program child-job route is still unqualified, and there is
-still no machine-readable supported-host policy. The **hosted exact-source run
-has now executed and passed** (runs `39318206124` and, at the branch's final
-source, `39339024314`, §4): the native restricted-userns proof and the M005
-netns owner proof both report `ok` against this branch's source. No production
-`NetworkEnforcement::Enforced` claim is authorized, and C010 no-admission and
-M003 blocked status are unchanged.
+M005 is **not** closed by this record. The obtained network fact was never
+reported at the time (it is closed separately, by C023 — §5 item 1), the
+tool-program child-job route is still unqualified, and there is still no
+machine-readable supported-host policy. The **hosted exact-source run has now
+executed and passed** (runs `39318206124` and, at the branch's final source,
+`39339024314`, §4): the native restricted-userns proof and the M005 netns owner
+proof both report `ok` against this branch's source. No host is admitted by
+this record, and C010 no-admission and M003 blocked status are unchanged.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -54,7 +54,7 @@ M003 blocked status are unchanged.
 | The M005 netns owner proof runs on a qualified host | `managed_process_owner_applies_authenticated_offline_network_intent` in `tests/linux_m004_process_ipc.rs` | pass — hosted run `39339024314` (commit `78359fd3`) reports `test managed_process_owner_applies_authenticated_offline_network_intent ... ok` inside the 17-test suite that reports `17 passed; 0 failed` |
 | The hosted qualification job can see the M005 owner surface | `.github/workflows/linux-m004-native.yml` path triggers | pass — the intent type, the payloads, and every consuming owner are now trigger paths |
 | The wiring cannot be dropped silently | `check_network_intent_owner_wiring` in `scripts/check_sandbox_policy_wiring.py` | pass — proven non-vacuous by injecting a widening and observing the failure |
-| The obtained network fact is reported | `SandboxEnforcement::for_constrained_enforced`; `LinuxObtainedEnforcement` | **not run — open.** `network` is only ever `ObtainedState::NotRequested`, `SandboxEnforcement.network` is always `NetworkEnforcement::Unrestricted`, and no code path constructs `NetworkEnforcement::Enforced` |
+| The obtained network fact is reported | `SandboxExecutionOutcome::Enforced::network`; `obtained_network_enforcement`; `ObtainedNetworkBoundary::from_launch` | pass — **closed by C023** (`plans/closure/linux-execution-isolation/023-status.md`). `network` is no longer only ever `ObtainedState::NotRequested`, `SandboxEnforcement.network` is no longer always `Unrestricted`, and `NetworkEnforcement::Enforced` now has a producer: the Bubblewrap launch's observed setup receipt together with the requested dimension. The legacy Landlock route truthfully reports `Unrestricted`. |
 | The tool-program child-job route carries the intent | `src/scheduler/tool_program_executor.rs`; `ChildJobRequest` | **not run — open.** `ChildJobRequest` carries no intent and no ceiling; those payloads bypass the daemon stamp |
 | A machine-readable supported-host policy exists | host capability probe | **not run — open.** The refusal is a runtime probe, not a declared capability set |
 | Hosted exact-source M005 owner qualification | `process-ipc` job of `.github/workflows/linux-m004-native.yml` | pass — hosted run `39318206124` (2026-10-19, commit `d024a838`) reports `test managed_process_owner_applies_authenticated_offline_network_intent ... ok` inside the 17-test suite that reports `17 passed; 0 failed`, and `restricted-userns-fails-closed` is a **success** with all three refusal probes reporting `ok`. Re-confirmed at the branch's final source by run `39339024314` (commit `78359fd3`), §4. |
@@ -354,14 +354,26 @@ reason it is allowed, so the allowlist cannot grow silently.
 
 ## 5. Open items carried forward
 
-1. **The obtained network fact is never reported.** The M005 netns is obtained
-   in reality; nothing reports it. `SandboxEnforcement::for_constrained_enforced`
-   still sets `network: NetworkEnforcement::Unrestricted`, and
-   `NetworkEnforcement::Enforced` still has no producer. The audit record
-   therefore understates what was obtained. This is deliberately not changed
-   here: the M005 plan defers the production `Enforced` claim, and emitting one
-   belongs to the corrective that owns the obtained-facts contract. It also
-   makes ADR-0044 clause 2's M005 precondition vacuous until then.
+1. **The obtained network fact is now reported — closed by C023.** The M005
+   netns was obtained in reality while nothing reported it:
+   `SandboxEnforcement::for_constrained_enforced` set
+   `network: NetworkEnforcement::Unrestricted`, `SandboxExecutionOutcome`
+   carried no network field at all, and `NetworkEnforcement::Enforced` had no
+   producer in the tree. The audit record therefore understated what was
+   obtained, and ADR-0044 clause 2's M005 precondition was vacuous.
+
+   This is **closed** by
+   `plans/implementation/linux-execution-isolation/023-m005-obtained-network-fact-contract.md`
+   (closure `plans/closure/linux-execution-isolation/023-status.md`):
+   `SandboxExecutionOutcome::Enforced` carries a typed obtained
+   `network: NetworkEnforcement`; the Bubblewrap route derives it from the
+   **observed** setup receipt together with the requested dimension; the legacy
+   Landlock route truthfully reports `Unrestricted`; and the C007 publication
+   receipt states the boundary its staging actually obtained.
+
+   It was deliberately not changed *here*: emitting an `Enforced` claim
+   belongs to the corrective that owns the obtained-facts contract, and it is
+   issued there with its producer rather than as a claim.
 2. **The tool-program child-job route is unqualified.**
    `ChildJobRequest` carries no network intent and no profile ceiling, so
    those payloads default to unrestricted and bypass the daemon stamp.
@@ -406,8 +418,8 @@ reason it is allowed, so the allowlist cannot grow silently.
 5. **The M005 netns proof has run.** The hosted `process-ipc` job has now
    executed `managed_process_owner_applies_authenticated_offline_network_intent`
    against this branch's source and it reports `ok`. This item is closed as
-   an *evidence* item; the M005 milestone itself stays open on items 1, 2,
-   and 3, and the obtained network fact still has no producer.
+   an *evidence* item; the M005 milestone itself stays open on items 2 and 3.
+   The obtained network fact is closed separately, by C023 (item 1).
 
 ## 6. Downstream effect
 

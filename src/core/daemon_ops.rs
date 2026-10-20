@@ -772,13 +772,17 @@ fn execution_snapshot_to_dto(
             reason,
         );
         if snapshot.network_intent() == codegg_core::approval::NetworkIntent::OfflineRequired {
-            enforcement.network = crate::protocol::core::NetworkEnforcementDto::Unavailable {
-                reason: "OfflineRequired is verified per child launch, not by the policy snapshot"
-                    .into(),
-            };
-            enforcement.summary.push_str(
-                "; OfflineRequired requested (obtained enforcement is reported per launch)",
-            );
+            // The snapshot cannot report an obtained network boundary — that
+            // fact belongs to a launch. It says so rather than implying one,
+            // and the summary is rebuilt from the field so the two cannot
+            // contradict each other.
+            enforcement =
+                enforcement
+                    .with_network(crate::protocol::core::NetworkEnforcementDto::Unavailable {
+                    reason:
+                        "OfflineRequired is verified per child launch, not by the policy snapshot"
+                            .into(),
+                });
         }
         enforcement
     };

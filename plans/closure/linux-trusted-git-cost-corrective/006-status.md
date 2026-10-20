@@ -114,3 +114,27 @@ git grep -n "LiveRead\|Consistency" -- 'crates/*/src/*.rs'   # no consistency ty
 ```
 
 No source file was modified for this review, and no new authority is granted by it. The C004 implementation plan, its closure record, and the C005 blocked state are unchanged by this record.
+
+## 8. Addendum — status of the blocking items since this review
+
+The findings above are the review's findings **at the reviewed baseline**
+(`6efd5ebd`). This addendum records which of them have since been addressed, so
+the list is not read as a statement about the current tree.
+
+| Blocking item | Status |
+|---|---|
+| No typed consistency class exists in any DTO or result type | **still unsatisfied.** ADR-0044 clause 1 remains un-implemented. |
+| No production live-ODB read route exists; the pilot is dev-only | **still unsatisfied.** No live route was added. |
+| `NetworkEnforcement::Enforced` has no producer, so the clause 2 M005 precondition is vacuous | **now satisfied** by C023 (`plans/closure/linux-execution-isolation/023-status.md`): the obtained network fact is reported per launch, derived from the observed sandbox setup receipt together with the requested dimension. The legacy Landlock route truthfully reports `Unrestricted`. The precondition is no longer vacuous — it has a producer and a reportable fact to verify against. |
+| `filter.*` and `include.path` are not mediated, so the clause 1 driver list is not met | **partially addressed, and only on the C007 publication path.** The publisher's private gitdir is authored by the daemon and contains no `filter.*` section (`core.attributesFile = /dev/null`), so a repository-controlled clean/smudge filter has no command to run inside the publisher — proven empirically by the hosted C007 probe. `include.path` is still not mediated, and the mediation is **not** general: it is a property of the publisher's private gitdir, not of a live read of the repository's own configuration. The live-read driver list is therefore still unmet. |
+| No consumer-side admissibility fence exists for generation-consistent consumers | **still unsatisfied.** |
+| ADR-0044's own gate requires an independent security review that this record is the first pass of, not the last | **still unsatisfied.** |
+
+**ADR-0044 remains proposed and is NOT accepted.** Two of the review's
+recommended next steps have since landed — the M005 production owner
+qualification (C014, hosted runs `39318206124` and `39339024314`) and the C004
+production vertical on the immutable route (C007, same runs) — and the
+obtained-facts gap that made clause 2 vacuous is closed by C023. The remaining
+steps are the typed consistency class, the live route behind it, the
+admissibility check, and the `include.path` mediation. Clause 1's driver list
+is still unmet for a live read of the repository's own configuration.
