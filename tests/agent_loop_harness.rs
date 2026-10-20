@@ -7421,3 +7421,125 @@ async fn test_approval_yolo_explicit_deny_remains_denied() {
         .expect("expected a request containing the denial outcome");
     assert_tool_result_with_id(&with_result.messages, "call_yolo_deny", Some("denied"));
 }
+
+// =============================================================================
+// M005: the temp-root redirect offer answers the model before the human
+// =============================================================================
+
+/// A structured write of a recognized host temporary root that is not an
+/// authorized root is answered by the *model* first: the actionable scratch
+/// path is offered, so a model that follows the suggestion never involves a
+/// human at all. A model that repeats the same restricted path is not
+/// offered again and reaches the human exactly as before.
+#[tokio::test]
+async fn temp_root_write_offers_a_redirect_before_asking_the_human() {
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
+
+    let target = format!("/tmp/codegg-m005-redirect-probe-{}.txt", std::process::id());
+    let _ = std::fs::remove_file(&target);
+    let scratch_root = tempfile::tempdir().expect("private scratch root");
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+
+    let tool_call = |id: &str| {
+        (
+            ChatEvent::ToolCall(ToolCall {
+                id: id.to_string().into(),
+                name: "write".to_string().into(),
+                arguments: serde_json::json!({"path": target, "content": "probe"}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        )
+    };
+    let (first_call, first_finish) = tool_call("call_m005_first");
+    let (insist_call, insist_finish) = tool_call("call_m005_insist");
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![
+        vec![first_call, first_finish],
+        vec![insist_call, insist_finish],
+        vec![
+            ChatEvent::TextDelta("done".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        codegg::tool::write::WriteTool::default().with_allowed_root(workspace_root.clone()),
+    );
+
+    // The default policy: nothing is configured, so a write outside every
+    // authorized root is the implicit `Ask`.
+    let permission_checker = PermissionChecker::new(None, None);
+    let mut agent_loop = build_test_agent_loop_with_config(
+        scripted_provider.clone(),
+        registry,
+        permission_checker,
+        Config::default(),
+    )
+    .await;
+    let session_id = "m005-redirect-session";
+    agent_loop.set_session_id(session_id);
+    agent_loop.set_scratch_scope(codegg::scratch::AgentScratchScope {
+        session_id: session_id.to_string(),
+        run_id: codegg_core::identity::AgentRunId::new(),
+        private_root: scratch_root.path().to_path_buf(),
+        shared: Vec::new(),
+    });
+
+    let perm_id = "call_m005_insist-write".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+    let request = make_chat_request("Write a probe under /tmp");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+
+    // The second, identical attempt is the model insisting: it reaches the
+    // human, and only then.
+    wait_for_permission_pending(&perm_id, &mut rx, std::time::Duration::from_secs(20))
+        .await
+        .expect("the insisting attempt must reach the human approval path");
+
+    let responded =
+        PermissionRegistry::respond_scoped(session_id, &perm_id, PermissionDecision::AllowOnce);
+    assert!(responded, "the human prompt must be answerable");
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+        .await
+        .expect("the loop must finish once the human answered")
+        .unwrap();
+    assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
+
+    let requests = scripted_provider.get_requests().await;
+    let first_result = requests
+        .iter()
+        .find(|request| {
+            request.messages.iter().any(|message| {
+                matches!(message, Message::Tool { tool_call_id, .. }
+                    if tool_call_id.as_ref() == "call_m005_first")
+            })
+        })
+        .expect("the first attempt must have produced a tool result for the model");
+    assert_tool_result_with_id(
+        &first_result.messages,
+        "call_m005_first",
+        Some("temporary path is outside the authorized workspace; retry at"),
+    );
+    assert_tool_result_with_id(
+        &first_result.messages,
+        "call_m005_first",
+        Some(scratch_root.path().to_string_lossy().as_ref()),
+    );
+
+    // The offer is not a grant and it is not a rewrite: the restricted path
+    // was never written.
+    assert!(
+        !std::path::Path::new(&target).exists(),
+        "the restricted temp path must never be written"
+    );
+}

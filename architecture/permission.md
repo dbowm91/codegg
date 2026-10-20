@@ -145,12 +145,39 @@ If a structured `write` reaches the path boundary with an absolute target under
 a recognized host temporary root, but that root is not authorized, the tool
 returns a non-authoritative recovery hint to retry under the current private
 scratch path. It does not rewrite the target or add a grant. The hint is shown
-only when the host scratch directory exists. A required original location must
-still use the normal permission path; an explicit Deny is resolved before the
-tool runs and is never converted into a scratch write. Structured reads and
-shell commands keep their existing path and execution semantics. This hint
-does not intercept shell writes: an unsandboxed FullHost process can address
-the real host temp directory, and shell syntax inspection is not containment.
+only when the host scratch directory exists. An explicit Deny is resolved
+before the tool runs and is never converted into a scratch write. Structured
+reads and shell commands keep their existing path and execution semantics.
+This hint does not intercept shell writes: an unsandboxed FullHost process can
+address the real host temp directory, and shell syntax inspection is not
+containment.
+
+### The temp-root redirect offer
+
+The hint above lives inside the write tool, so it is only reachable once the
+permission layer has already said Allow. Under the default policy a write
+outside every authorized root is the implicit `Ask`, so the human was asked
+first and the model never received the suggestion.
+
+The redirect offer closes that gap without moving any authority. When the
+pending decision is the *implicit default* `Ask`, and the target is a
+structured `write` of a recognized host temporary root that is outside every
+authorized root, the agent loop answers the **model** first: the call is
+refused with the same actionable message, naming the caller's own private
+scratch root, and the turn continues. A model that retries at the suggested
+path succeeds with no human involved. A model that repeats the same restricted
+path is not offered again and reaches the normal human approval path, which is
+unchanged.
+
+The offer grants nothing and rewrites nothing: the restricted path is still
+refused, and the human is still the only authority for it. It is issued only
+for the implicit default — an operator tool rule, an operator path rule, a
+stored decision, or a hard deny keeps its authority, and the human is asked
+directly. The offer is scoped to the structured `write` tool, because the
+edit family is rooted at the workspace and cannot write into a scratch root;
+offering a scratch path there would be a broken promise. The offer state is
+in-memory and per session: a daemon restart clears it, so the next attempt is
+offered again.
 
 `check_with_args()` adds a destructive-pattern fallback for
 `ShellExec` tools. If the user's ruleset would allow the command but
