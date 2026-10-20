@@ -455,6 +455,12 @@ async fn trigger_sends_a_bound_request_and_opens_loading() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ready_answer_applies_one_undo_unit_with_redo() {
+    // Normal mode. With the popup open, `Enter` accepts the candidate in
+    // Normal mode and inserts a newline in Insert mode — the M011 contract
+    // (the plan's §6.3). Acceptance lives in Normal mode, so this
+    // trajectory runs there;
+    // `enter_is_a_newline_in_insert_mode_and_never_applies_the_candidate`
+    // pins the other half.
     let candidates = vec![
         applicable("println!", (1, 4), (1, 8), "println!"),
         non_applicable("snip", LspCompletionUnsupportedReason::Snippet),
@@ -470,7 +476,7 @@ async fn ready_answer_applies_one_undo_unit_with_redo() {
         true,
         vec![ready(candidates, false, false)],
         20,
-        EditorMode::Insert,
+        EditorMode::Normal,
     )
     .await;
 
@@ -524,10 +530,8 @@ async fn ready_answer_applies_one_undo_unit_with_redo() {
         .len();
     assert_eq!(undo_len, 1, "one accept is one undo unit");
 
-    // Undo restores the exact prior text: Esc leaves Insert for Normal
-    // (the popup is already gone, so Esc reaches the buffer), then `u`
-    // undoes the one accepted transaction.
-    app.on_key(key(KeyCode::Esc));
+    // Undo restores the exact prior text: `u` in Normal mode undoes the one
+    // accepted transaction.
     app.on_key(plain('u'));
     assert_eq!(controller_text(&controller), LIB_RS);
     // Redo replays the intended forward text exactly. The recorded redo
@@ -628,6 +632,8 @@ async fn stale_scope_and_generation_answers_drop() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identity_mismatch_is_an_error_not_a_suggestion() {
+    // Normal mode: `Enter` is the accept key, and it accepts only in Normal
+    // mode (the M011 contract).
     let mut wrong = LspCompletionResultDto::ready(
         "doc-OTHER".to_string(),
         0,
@@ -647,7 +653,7 @@ async fn identity_mismatch_is_an_error_not_a_suggestion() {
         true,
         vec![FakeReply::Result(wrong)],
         20,
-        EditorMode::Insert,
+        EditorMode::Normal,
     )
     .await;
 
@@ -712,6 +718,8 @@ async fn colon_is_text_in_insert_mode() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn not_ready_and_error_states_refuse_with_words() {
+    // Normal mode: `Enter` is the accept key, and it accepts only in Normal
+    // mode (the M011 contract).
     let not_ready = LspCompletionResultDto::not_ready("doc-1".to_string());
     let Harness {
         mut app,
@@ -726,7 +734,7 @@ async fn not_ready_and_error_states_refuse_with_words() {
             FakeReply::Error("daemon exploded".to_string()),
         ],
         20,
-        EditorMode::Insert,
+        EditorMode::Normal,
     )
     .await;
 
@@ -822,6 +830,8 @@ async fn hundred_plus_one_candidates_truncate_defensively() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lost_writer_lease_refuses_without_side_effects() {
+    // Normal mode: `Enter` is the accept key, and it accepts only in Normal
+    // mode (the M011 contract).
     let candidates = vec![applicable("println!", (1, 4), (1, 8), "println!")];
     let Harness {
         mut app,
@@ -833,7 +843,7 @@ async fn lost_writer_lease_refuses_without_side_effects() {
         false,
         vec![ready(candidates, false, false)],
         20,
-        EditorMode::Insert,
+        EditorMode::Normal,
     )
     .await;
 
@@ -998,6 +1008,10 @@ async fn switch_tab_and_reconnect_clear_the_popup() {
 async fn emoji_cursor_binds_and_applies_exactly() {
     // "a😀b" is 4 UTF-16 units (a=1, emoji=2, b=1): byte 6 is column 4 and
     // the server replaces "b", columns 3..4.
+    //
+    // Normal mode: the accept is `Enter`, and `Enter` accepts only in
+    // Normal mode — in Insert mode it is a newline (the M011 contract, the
+    // plan's §6.3). The column binding under test is the same either way.
     let text = "a😀b\n";
     let candidates = vec![applicable("B", (0, 3), (0, 4), "B")];
     let Harness {
@@ -1011,7 +1025,7 @@ async fn emoji_cursor_binds_and_applies_exactly() {
         true,
         vec![ready(candidates, false, false)],
         6,
-        EditorMode::Insert,
+        EditorMode::Normal,
     )
     .await;
 
@@ -1021,6 +1035,52 @@ async fn emoji_cursor_binds_and_applies_exactly() {
     assert_eq!((seen[0].line, seen[0].character), (0, 4));
     app.on_key(key(KeyCode::Enter));
     assert_eq!(controller_text(&controller), "a😀B\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enter_is_a_newline_in_insert_mode_and_never_applies_the_candidate() {
+    // The other half of the M011 contract (the plan's §6.3): with the popup
+    // open, `Enter` is a newline in Insert mode and the candidate is never
+    // applied. The acceptance trajectories above run in Normal mode because
+    // that is where acceptance lives; this one proves the Insert-mode half
+    // through a real answer rather than a synthetic popup.
+    let candidates = vec![applicable("println!", (1, 4), (1, 8), "println!")];
+    let Harness {
+        mut app,
+        mut rx,
+        controller,
+        ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![ready(candidates, false, false)],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(key(KeyCode::F(8)));
+    apply_finished(&mut app, &recv_completion(&mut rx).await);
+    assert!(
+        app.editor_state.completion.is_open(),
+        "the popup must be open for this to mean anything"
+    );
+    assert_eq!(app.editor_state.completion.candidates.len(), 1);
+
+    app.on_key(key(KeyCode::Enter));
+    assert!(
+        !app.editor_state.completion.is_open(),
+        "`Enter` dismisses the popup rather than leaving it open over a moved cursor"
+    );
+    assert_eq!(
+        controller_text(&controller),
+        "fn main() {\n    prin\n\n}\n",
+        "`Enter` is a newline in insert mode, never an accept"
+    );
+    assert!(
+        !controller_text(&controller).contains("println!"),
+        "the candidate is not applied"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
