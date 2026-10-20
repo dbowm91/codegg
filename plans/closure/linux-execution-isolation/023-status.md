@@ -140,7 +140,9 @@ explicitly.
 cargo test -p codegg --locked --test git_index_publication -- --test-threads=1
 #   -> 22 passed; 0 failed
 cargo nextest run --workspace --locked --profile ci --no-fail-fast
-#   -> 14877 run: 14873 passed, 4 timed out (load-related baseline, all pass in isolation), 7 skipped
+#   -> 14877 run: 14874 passed, 3 timed out (load-related LSP baseline, pass in isolation), 7 skipped
+#      (the authoritative quiescent sweep; an earlier one failed 14 tests that do not
+#       reproduce -- recorded in §5, not hidden)
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 scripts/verify.sh quick
@@ -155,24 +157,26 @@ See §5.
 
 ```text
 cargo nextest run --workspace --locked --profile ci --no-fail-fast
-Summary [ 676.915s] 14877 tests run: 14873 passed (1 slow), 4 timed out, 7 skipped
+Summary [ 552.455s] 14877 tests run: 14874 passed (1 slow), 3 timed out, 7 skipped
 ```
+
+This is the **authoritative** sweep: it ran against a quiescent tree, with
+nothing else touching the worktree or the shared repository while it executed.
 
 The count moved from the previous sweep's 14,869 by exactly the **+8** tests this
 corrective adds (4 in `src/managed_process.rs`, 2 in `src/git_publication/mod.rs`,
 1 in `crates/codegg-protocol/src/core.rs`, and 1 in `src/tool/bash.rs`).
 
-The four timeouts are **timeouts, not assertion failures**, and none is in a
+The three timeouts are **timeouts, not assertion failures**, and none is in a
 file this corrective touches:
 
 ```text
-TIMEOUT [ 120.859s] codegg tool::lsp::tests::security_context_call_expansion_truncated_limit_field_present
-TIMEOUT [ 123.699s] codegg tool::lsp::tests::security_context_call_expansion_scenarios_share_one_service
-TIMEOUT [ 123.607s] codegg tool::lsp::tests::security_context_preset_scenarios_share_one_service
-TIMEOUT [ 120.006s] codegg-providers eggpool::tests::cancellation_and_overall_timeout_are_bounded
+TIMEOUT [ 122.974s] codegg tool::lsp::tests::security_context_call_expansion_scenarios_share_one_service
+TIMEOUT [ 125.663s] codegg tool::lsp::tests::security_context_preset_scenarios_share_one_service
+TIMEOUT [ 125.713s] codegg tool::lsp::tests::security_context_call_expansion_truncated_limit_field_present
 ```
 
-Re-run in isolation, all four **pass**:
+Re-run in isolation, all three **pass**:
 
 ```text
 cargo nextest run --workspace --locked --profile ci --no-fail-fast \
@@ -186,6 +190,52 @@ load-related baseline recorded in the previous sweep, where two of the three
 timed out. The `eggpool` timeout is the same class: it takes **0.273 s** in
 isolation and 120 s under contention. None of the four is in a file this
 corrective changes, and none is an assertion failure.
+
+### An earlier sweep failed 14 tests that do not reproduce — recorded, not hidden
+
+One earlier sweep on the same tree failed **14** tests that the authoritative
+sweep passes:
+
+```text
+codegg tool::bash::tests::active_mode_routes_git_to_native_tool
+codegg tool::bash::tests::route_mode_alias_uses_active_git_route_with_accepted_authority
+codegg::command_routing_execution_ownership active_git_readonly_routes_to_git_caller_owned
+codegg::command_routing_execution_ownership one_logical_execution_produces_exactly_one_record
+codegg security::workflow::report::tests::security_review_*   (10 tests)
+```
+
+The git-routing four failed with a typed refusal
+(`git execution policy outcome: Git backend unavailable for [RepositoryAlias]`,
+the classification for an unrecognised Git subcommand) and the security-review
+ten with `assertion failed: result.is_ok()`. **All fourteen share one
+requirement: a working Git repository at the process cwd** — the routing tests
+run `git status` against the repository, and the security-review command runs a
+Git diff against `HEAD` in the same repository.
+
+Reproduction attempts, each negative:
+
+- in isolation, 4/4 pass — and across **six further loop iterations, 24/24**
+  pass;
+- under concurrent writes into the worktree, 4/4 pass;
+- in the quiescent sweep, 0 failures.
+
+The cause was **not established**. What is known: the repository is a *shared*
+one — this worktree is a linked worktree of `/home/sugarwookie/projects/codegg`,
+which has 17 linked worktrees and is operated on by other agents — so a
+transient Git failure in the shared repository would surface exactly this way.
+That is a hypothesis, not a finding, and it is not offered as one.
+
+What *is* established: the path these tests exercise (command-intent
+classification → Git service policy → the security-review workflow) is **not
+modified** by this corrective, whose changed files are `src/managed_process.rs`,
+`src/git_publication/**`, `src/git_mutations.rs` (the `Add` arm and the receipt
+summary), `src/tool/bash.rs` (the audit label), `src/core/daemon_ops.rs`,
+`crates/codegg-core/src/approval.rs`, and `crates/codegg-protocol/src/core.rs`.
+The failure signature `BackendUnavailable[RepositoryAlias]` is also a
+**documented historical failure mode** in this repository — C005's plan names
+`git_execution_origin_matrix` row-3 `BackendUnavailable[RepositoryAlias]`
+among the historical Git mutation failures to freeze. It is recorded here
+rather than waived, and it is not reported as a pass.
 
 ### The narrow C007 suite
 
