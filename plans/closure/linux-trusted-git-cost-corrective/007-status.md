@@ -66,8 +66,8 @@ Linux host is admitted.
 | An unconfigured backend refuses rather than downgrades | `an_unconfigured_backend_refuses_the_add_mutation` | pass | No silent fallback to the in-place `git add` route. |
 | A path outside the repository is refused before any child runs | `a_path_outside_the_repository_is_refused_before_any_child_runs` | pass | Nothing is recorded in the journal. |
 | The publisher executes no hook, filter, helper or worktree-controlled code | `PRIVATE_GITDIR_CONFIG`; the private gitdir is authored by the daemon and contains no `filter.*` section; `core.attributesFile = /dev/null`; the staging child's configuration is pinned by the daemon (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM=1`); the hosted probe `production_private_index_publisher_stages_and_publishes_under_containment` | pass | The staging child's configuration is pinned by the daemon, so a repository-controlled clean/smudge filter has no command to run. The hosted probe is **empirical**, not a design claim: it writes `tracked.txt filter=probe` into the source repository's `.gitattributes` and configures `filter.probe.clean` in the **source repository's own config** to a script that would create a `source-filter-ran` marker, then asserts the marker does not exist. The worktree `.gitattributes` *is* read by the child — that is why the probe is meaningful; what the child cannot obtain is a **command** to run for it. |
-| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | pass | Hosted run `39339024314` (2026-10-19, commit `78359fd3`, the branch's final source): the isolated C007 step reports `running 1 test` / `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out`, and the same test is among the 17 that passed in the full M004/M005 suite. The whole production path ran under containment on a qualified host. The first hosted attempt (`39313802793`) was cancelled by the job's time budget and produced no evidence either way; the budget defect was corrected rather than the evidence inferred (§4). |
-| The receipt states the obtained network boundary truthfully | `GitIndexPublicationReceipt::network_boundary`; `ObtainedNetworkBoundary::NotReported` | pass | The receipt states the boundary **explicitly** as `not_reported` rather than staying silent about the network, so a caller never has to infer an omission. The type carries one variant because one answer has a producer: the system still cannot report the fact it obtained (C014's open item), and the reported case will be added with its producer, not as a claim. |
+| The contained staging step under M004/M005 | `ContainedGitIndexStaging`; `production_private_index_publisher_stages_and_publishes_under_containment` in `tests/linux_m004_process_ipc.rs`; hosted `process-ipc` job | pass | Hosted run `39339024314` (2026-10-19, commit `78359fd3`): the isolated C007 step reports `running 1 test` / `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out`, and the same test is among the 17 that passed in the full M004/M005 suite. Re-proved at the branch's final source by run `39351065569` (commit `d58ce82d`), which also asserts the receipt states the boundary it obtained (§4). The whole production path ran under containment on a qualified host. The first hosted attempt (`39313802793`) was cancelled by the job's time budget and produced no evidence either way; the budget defect was corrected rather than the evidence inferred (§4). |
+| The receipt states the obtained network boundary truthfully | `GitIndexPublicationReceipt::network_boundary`; `ObtainedNetworkBoundary` | pass | The receipt states the boundary **explicitly** rather than staying silent about the network, so a caller never has to infer an omission. The type now carries three variants, each with a producer: `Enforced { backend }` from a launch that observed its own sandbox setup completing with the network namespace requested, `Unrestricted` from a launch that obtained no network namespace, and `NotReported` from a staging step that runs no contained child. The boundary is read off the launch (`ObtainedNetworkBoundary::from_launch`), never off the request, so the receipt cannot claim a boundary the staging did not obtain — see C023, which added the reported case with its producer. |
 | A non-`Add` mutation is never published | `a_non_add_mutation_is_never_published`; the `Add` arm of `GitMutationExecutor::execute` | pass | A non-`Add` mutation keeps the legacy route, the branch is created, and the publication journal records **no** intent — the publisher never sees it, so a caller cannot route around the publisher's preflight by choosing a different mutation. |
 | The `Add` arm runs the **same** preflight every other mutation runs | `execute_add_publication`'s `env_policy.apply` gate in `src/git_mutations.rs`; `stage_paths_returns_paths_in_delta`, `stage_all_marks_changes_staged`, `git_stage_and_branch_mutation_emit_once_each` | pass | The `Add` arm renders the operation and applies the environment policy **before** the publisher is consulted, so a request the policy refuses is refused with the policy's typed outcome, not with a publication error. The workspace sweep found the arm short-circuiting this gate; see §4. |
 
@@ -265,6 +265,29 @@ cargo fmt --all -- --check
   This run is the one that covers the two sweep-found defects fixed in
   `78359fd3` — the `Add` arm's own preflight and the bash route's publisher —
   because it executed that commit's exact source.
+- **The qualification was re-proved once more, at the branch's final source.**
+  Run `39351065569` (2026-10-20, commit `d58ce82d`) is a **success** for both
+  qualification jobs, and it is the run that covers the delivered source. Its
+  log is the evidence:
+  - the isolated C007 step: `running 1 test` →
+    `test production_private_index_publisher_stages_and_publishes_under_containment ... ok`
+    → `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.21s`;
+  - the full M004/M005 suite: `running 17 tests` → `test result: ok. 17 passed;
+    0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 547.37s`, with
+    `test managed_process_owner_applies_authenticated_offline_network_intent ... ok`
+    and the C007 publication test again;
+  - the `restricted-userns-fails-closed` job: **success**, all three refusal
+    probes reporting `ok`.
+
+  The C007 test in this run also asserts the receipt's obtained boundary
+  (`ObtainedNetworkBoundary::Enforced { backend: "bubblewrap-netns" }`), which
+  is C023's work; see `plans/closure/linux-execution-isolation/023-status.md`.
+
+  An earlier run against the same work, `39349642026` (commit `b52e51df`),
+  is recorded as **cancelled** — the workflow sets `cancel-in-progress: true`,
+  so the next push cancelled it. Its C007 step had already completed and
+  passed, but the run as a whole is not read as a pass, and its 17-test suite
+  was cut short.
 
 ## 5. Invariant review
 

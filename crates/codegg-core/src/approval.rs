@@ -297,6 +297,12 @@ impl SandboxEnforcement {
     }
 
     /// Constrained request with active OS containment.
+    ///
+    /// This is the **profile** on the host, not a launch. Its network field
+    /// is the profile's network posture: filesystem success never implies
+    /// network isolation. An *obtained* network boundary belongs to a
+    /// launch, which reports it on its own outcome — see
+    /// `NetworkEnforcement`.
     pub fn for_constrained_enforced(
         requested: SandboxProfile,
         backend: impl Into<String>,
@@ -306,8 +312,6 @@ impl SandboxEnforcement {
         Self {
             requested,
             filesystem: FilesystemEnforcement::enforced(backend, abi),
-            // No network backend exists; filesystem success never implies
-            // network isolation.
             network: NetworkEnforcement::Unrestricted,
         }
     }

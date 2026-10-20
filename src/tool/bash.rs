@@ -300,9 +300,14 @@ impl BashTool {
     /// Truthful enforcement for the current config/host (M005).
     ///
     /// `requested` is the daemon-resolved profile. Filesystem enforcement
-    /// reflects host Landlock availability; network is always
-    /// `Unrestricted` for shell (no OS backend). Approval mode never
-    /// alters this value.
+    /// reflects host Landlock availability. Approval mode never alters this
+    /// value.
+    ///
+    /// This is the **profile on the host**, not a launch. Its network field
+    /// is the profile's network posture, because an obtained network
+    /// boundary belongs to a launch: the launch reports it on its outcome,
+    /// and the audit record states it from there. A snapshot cannot report
+    /// an obtained boundary, so it does not claim one.
     pub fn sandbox_enforcement(
         &self,
         requested: codegg_core::approval::SandboxProfile,

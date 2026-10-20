@@ -1,7 +1,9 @@
 # C023 — M005 Obtained Network Fact Contract
 
-Status: implemented on branch; the per-launch obtained fact is reported; the
-C007 receipt now states the boundary it ran under
+Status: implemented on branch; the per-launch obtained fact is reported, the
+C007 receipt states the boundary it ran under, and the audit record no longer
+asserts a boundary nobody observed. M005 remains **active** on its remaining
+gates, ADR-0044 remains **proposed**, and no host is admitted.
 
 Source subsystem roadmap:
 

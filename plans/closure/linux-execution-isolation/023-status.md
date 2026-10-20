@@ -1,8 +1,9 @@
 # C023 — M005 Obtained Network Fact Contract — Status
 
-Status: implemented on branch; the per-launch obtained fact is reported and the
-C007 receipt states the boundary it ran under. M005 remains **active** on its
-remaining gates, ADR-0044 remains **proposed**, and no host is admitted.
+Status: closed — the per-launch obtained network fact is reported, the C007
+receipt states the boundary it ran under, and the audit record no longer
+asserts a boundary nobody observed. M005 remains **active** on its remaining
+gates, ADR-0044 remains **proposed**, and no host is admitted.
 
 Plan:
 
@@ -48,7 +49,7 @@ reports that it cannot know.
 | The policy snapshot's summary never contradicts its own network field | `SandboxEnforcementDto::summary_for` + `with_network`; unit test `the_enforcement_summary_never_contradicts_its_fields` | pass |
 | The legacy Landlock route still reports truthfully | it reports `Unrestricted` — Landlock scopes the filesystem and has no network dimension | pass |
 | The C007 publication suite still passes end to end | `cargo test -p codegg --locked --test git_index_publication` → 22 passed | pass |
-| On a qualified host the hosted C007 proof reports the receipt stating `enforced` | `tests/linux_m004_process_ipc.rs::production_private_index_publisher_stages_and_publishes_under_containment` asserts `ObtainedNetworkBoundary::Enforced { backend: "bubblewrap-netns" }` | **pending the hosted run** |
+| On a qualified host the hosted C007 proof reports the receipt stating `enforced` | hosted run `39351065569` (commit `d58ce82d`): `test production_private_index_publisher_stages_and_publishes_under_containment ... ok` in the isolated C007 step and again in the 17-test M004/M005 suite, with the test asserting `ObtainedNetworkBoundary::Enforced { backend: "bubblewrap-netns" }` | pass |
 
 ## 3. Production implementation evidence
 
@@ -100,6 +101,37 @@ The staging trait is the C007 trust boundary: the production implementation
 runs the contained child and reports what the launch observed; the test
 implementation reports `NotReported`, which is a *statement*, not an omission.
 
+### 3.5 The audit record asserted a boundary nobody observed
+
+The obtained fact was not only missing from the receipt — the audit record
+**asserted** one. `BashTool::emit_command_audit` passed this for the audit's
+network field:
+
+```rust
+ctx.execution_authorization.as_ref().map(|_| "unrestricted")
+```
+
+so every authorized command was recorded as `execution.network =
+"unrestricted"`. That was wrong in both directions: it understated a launch
+that obtained a network namespace, and it asserted a fact for the paths that
+never launched anything at all — the scheduler-background submission, the
+executor dispatch, and the two timeout events.
+
+The audit record already had a separate `execution.network` metadata slot and
+nothing filled it. It is now filled from the launch's own obtained fact:
+
+- the completed dispatch records `enforced:<backend>` when the launch obtained
+  one, `unrestricted` when it did not, and `unavailable` when it could not be
+  determined. `unavailable` is deliberately **not** `unrestricted`: reporting
+  "no isolation" for a boundary nobody observed would be a claim, and a claim
+  in an audit record is worse than an absence;
+- the paths with no observed launch record nothing — the field is omitted
+  rather than filled with an assumption.
+
+The hard-coded assertion is now structurally impossible: `emit_command_audit`
+takes the network field as a parameter, so every call site states it
+explicitly.
+
 ## 4. Verification executed
 
 ### Commands run
@@ -108,7 +140,7 @@ implementation reports `NotReported`, which is a *statement*, not an omission.
 cargo test -p codegg --locked --test git_index_publication -- --test-threads=1
 #   -> 22 passed; 0 failed
 cargo nextest run --workspace --locked --profile ci --no-fail-fast
-#   -> 14876 run: 14873 passed, 3 timed out (load-related LSP baseline, pass in isolation), 7 skipped
+#   -> 14877 run: 14873 passed, 4 timed out (load-related baseline, all pass in isolation), 7 skipped
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 scripts/verify.sh quick
@@ -123,35 +155,37 @@ See §5.
 
 ```text
 cargo nextest run --workspace --locked --profile ci --no-fail-fast
-Summary [ 562.384s] 14876 tests run: 14873 passed (1 slow), 3 timed out, 7 skipped
+Summary [ 676.915s] 14877 tests run: 14873 passed (1 slow), 4 timed out, 7 skipped
 ```
 
-The count moved from the previous sweep's 14,869 by exactly the **+7** tests this
+The count moved from the previous sweep's 14,869 by exactly the **+8** tests this
 corrective adds (4 in `src/managed_process.rs`, 2 in `src/git_publication/mod.rs`,
-1 in `crates/codegg-protocol/src/core.rs`).
+1 in `crates/codegg-protocol/src/core.rs`, and 1 in `src/tool/bash.rs`).
 
-The three timeouts are all in `src/tool/lsp.rs` — a file this corrective does not
-touch:
-
-```text
-TIMEOUT [ 120.273s] codegg tool::lsp::tests::security_context_call_expansion_scenarios_share_one_service
-TIMEOUT [ 120.892s] codegg tool::lsp::tests::security_context_call_expansion_truncated_limit_field_present
-TIMEOUT [ 120.889s] codegg tool::lsp::tests::security_context_preset_scenarios_share_one_service
-```
-
-Re-run in isolation, all three **pass**, and each takes ~95 s:
+The four timeouts are **timeouts, not assertion failures**, and none is in a
+file this corrective touches:
 
 ```text
-cargo nextest run -p codegg --locked --profile ci --no-fail-fast \
-  -E 'test(security_context_call_expansion_scenarios_share_one_service) or test(security_context_call_expansion_truncated_limit_field_present) or test(security_context_preset_scenarios_share_one_service)'
-Summary [  96.109s] 3 tests run: 3 passed (3 slow), 11470 skipped
+TIMEOUT [ 120.859s] codegg tool::lsp::tests::security_context_call_expansion_truncated_limit_field_present
+TIMEOUT [ 123.699s] codegg tool::lsp::tests::security_context_call_expansion_scenarios_share_one_service
+TIMEOUT [ 123.607s] codegg tool::lsp::tests::security_context_preset_scenarios_share_one_service
+TIMEOUT [ 120.006s] codegg-providers eggpool::tests::cancellation_and_overall_timeout_are_bounded
 ```
 
-Each is roughly 95 s of work against a 120 s limit, so they time out when the
-workstation is contended and pass when it is not. This is the same
-load-related baseline recorded in the previous sweep — where two of these
-three timed out — and it is **not** a regression: the module is untouched, and
-the failures are timeouts, not assertions.
+Re-run in isolation, all four **pass**:
+
+```text
+cargo nextest run --workspace --locked --profile ci --no-fail-fast \
+  -E 'test(security_context_call_expansion_scenarios_share_one_service) or test(security_context_call_expansion_truncated_limit_field_present) or test(security_context_preset_scenarios_share_one_service) or test(cancellation_and_overall_timeout_are_bounded)'
+Summary [ 106.536s] 4 tests run: 4 passed (3 slow), 14880 skipped
+```
+
+The three LSP tests each take ~102–107 s against a 120 s limit, so they time
+out when the workstation is contended and pass when it is not — the same
+load-related baseline recorded in the previous sweep, where two of the three
+timed out. The `eggpool` timeout is the same class: it takes **0.273 s** in
+isolation and 120 s under contention. None of the four is in a file this
+corrective changes, and none is an assertion failure.
 
 ### The narrow C007 suite
 
@@ -167,6 +201,63 @@ scripts/verify.sh quick
 Quick verification passed.
 ```
 
+### The hosted run at the branch's final source
+
+Run `39351065569` (2026-10-20, push, commit `d58ce82d`) is a **success** for
+both qualification jobs. Its log is the evidence, not the badge:
+
+```text
+process-ipc  C007 private-index publication under containment
+  running 1 test
+  test production_private_index_publisher_stages_and_publishes_under_containment ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.21s
+
+process-ipc  M004 managed-process host PID and IPC denial probes
+  running 17 tests
+  test managed_process_owner_applies_authenticated_offline_network_intent ... ok
+  test production_private_index_publisher_stages_and_publishes_under_containment ... ok
+  test required_process_tier_fails_closed_when_user_namespaces_are_restricted ... ok
+  test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 547.37s
+
+restricted-userns-fails-closed
+  test required_process_tier_fails_closed_when_user_namespaces_are_restricted ... ok
+  test m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted ... ok
+  test lsp::m004::tests::constrained_lsp_launch_fails_before_target_when_userns_are_restricted ... ok
+```
+
+**This is the obtained fact proven end to end.** The C007 test asserts that the
+publication receipt states
+`ObtainedNetworkBoundary::Enforced { backend: "bubblewrap-netns" }` — read off
+the staging child's own launch. It passed on a qualified host, so the receipt
+states a boundary the system really obtained, with the mechanism that obtained
+it.
+
+The non-vacuity check is repeated rather than carried over: the workflow
+exports `CODEGG_RUN_M005_OFFLINE_NATIVE=1`, so the gate was open, and the
+literal skip marker `skipped: set CODEGG_RUN_M005_OFFLINE_NATIVE=1` appears
+**zero** times in the `process-ipc` log. The only `skipped:` lines belong to
+two different gates — the restricted-userns probe and the C006 Bubblewrap
+qualification. `process-ipc` took 29m06s of its 45-minute budget and
+`restricted-userns-fails-closed` took 11m02s of its 35.
+
+### The earlier hosted run, and why it was cancelled
+
+Run `39349642026` (commit `b52e51df`) was the first run against this source.
+Its **C007 step completed and passed** —
+
+```text
+running 1 test
+test production_private_index_publisher_stages_and_publishes_under_containment ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.25s
+```
+
+— which is where the receipt's `enforced` boundary was first observed on a
+qualified host. The run itself is recorded as **cancelled**, and it is not
+read as a pass: the workflow sets `cancel-in-progress: true`, so pushing the
+next commit (`d58ce82d`) cancelled the in-progress run, and the 17-test suite
+was cut short. The cancelled run therefore contributes its C007 step's result
+and nothing else.
+
 ## 6. What remains open
 
 1. **M005 stays active.** The obtained network fact is reported now, but the
@@ -178,10 +269,11 @@ Quick verification passed.
    actually obtained. It does **not** accept the ADR, and it does not touch
    the live-read consistency model that C006 reviewed.
 3. **C010 no-admission and M003 blocked status are unchanged.**
-4. **The hosted C007 proof must re-run** on this source to show the receipt
-   stating `enforced` end to end. The assertion is in
-   `tests/linux_m004_process_ipc.rs` and runs in the `process-ipc` job's
-   isolated C007 step.
+4. **The hosted proof has run and passed.** Run `39351065569` (commit
+   `d58ce82d`) shows the C007 receipt stating the boundary its staging child
+   obtained, on a qualified host (§4). The M005 skip marker is absent, so the
+   test genuinely ran under the M005 gate rather than taking its own skip
+   path.
 
 ## 7. Stop conditions
 
