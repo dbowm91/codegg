@@ -44,6 +44,37 @@ pub fn default_tui_state_root() -> std::path::PathBuf {
     std::path::PathBuf::from(".codegg/tui")
 }
 
+/// Join `parts` with `separator`, dropping whole parts that do not fit.
+///
+/// A part is never split. A row that ends in the middle of a key names a key
+/// that does not exist, and a user who presses it gets nothing — so the row
+/// drops whole parts from the end instead of cutting one in half.
+///
+/// A `budget` of `0` means unbounded: every part is kept.
+fn fit_parts(parts: &[&str], separator: &str, budget: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let separator_width = UnicodeWidthStr::width(separator);
+    let mut out = String::new();
+    let mut used = 0usize;
+    for part in parts {
+        let part_width = UnicodeWidthStr::width(*part);
+        let extra = if out.is_empty() {
+            part_width
+        } else {
+            separator_width + part_width
+        };
+        if budget > 0 && used + extra > budget {
+            break;
+        }
+        if !out.is_empty() {
+            out.push_str(separator);
+        }
+        out.push_str(part);
+        used += extra;
+    }
+    out
+}
+
 pub mod state;
 pub use state::session::GitSidebarInfo;
 pub use state::*;
@@ -52,6 +83,7 @@ use super::components::component::DialogType;
 use super::components::dialogs::agent::AgentDialog;
 use super::components::dialogs::command::CommandPalette;
 use super::components::dialogs::confirm::ConfirmDialog;
+use super::components::dialogs::help::HelpRoute;
 use super::components::dialogs::mcp::BrowseMode;
 use super::components::dialogs::model::ModelDialog;
 use super::components::dialogs::permission::PermissionDialog;
@@ -830,7 +862,7 @@ impl App {
             })
             .collect();
         let vim_mode = cfg.and_then(|c| c.vim_mode).unwrap_or(false);
-        let help_lines = build_help_lines(vim_mode, HelpMode::Insert);
+        let help_lines = build_help_lines(vim_mode, HelpMode::Insert, HelpRoute::Command);
         let keybinds = cfg.and_then(|c| c.keybinds.as_ref()).map(|raw| {
             let mut bindings: HashMap<String, crate::tui::input::ActionKey> = HashMap::new();
             for (k, v) in raw {
@@ -1521,7 +1553,7 @@ impl App {
                 kind: CompletionItemKind::File,
             })
             .collect();
-        let help_lines = build_help_lines(false, HelpMode::Insert);
+        let help_lines = build_help_lines(false, HelpMode::Insert, HelpRoute::Command);
         let bindings = super::input::build_bindings(None, false);
         let theme = Arc::new(Theme::dark());
         let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
@@ -5572,7 +5604,10 @@ impl App {
             }
             B::Help => {
                 self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Help);
+                // The app's help, not the composer's chord: this box lists the
+                // keys and never copies. See
+                // `crate::tui::components::dialogs::help::HelpRoute`.
+                self.open_dialog(Dialog::Help(HelpRoute::Command));
             }
             B::Tree => {
                 self.ui_state.command_mode = false;
@@ -11480,6 +11515,44 @@ impl App {
         let _ = crate::util::clipboard::copy_to_clipboard(&text);
     }
 
+    /// Copy the composer's held selection to the system clipboard.
+    ///
+    /// ADR-0042 part 7: the gesture is `space` and then `y` in the help box
+    /// the chord opened. The box **returns** the message and the app performs
+    /// the copy, because the focused component is a clone of the dialog and a
+    /// clone cannot reach the composer.
+    ///
+    /// The outcome is always reported. A silent no-op would teach the user
+    /// that the key is dead, which is the failure the claim table exists to
+    /// prevent.
+    ///
+    /// The report names the **size** of the selection rather than its text.
+    /// Toasts are retained for `/logs`, and a preview of the composer's
+    /// contents in a retained log is a copy of the user's text in a place
+    /// they did not ask for it to be.
+    ///
+    /// The selection survives the copy: it is a read, and a user who copies
+    /// and then deletes wants the same range both times.
+    fn copy_composer_selection(&mut self) {
+        let Some(text) = self.prompt_state.prompt.selected_text() else {
+            self.messages_state
+                .toasts
+                .info("Nothing to copy — the composer has no selection");
+            return;
+        };
+        let characters = text.chars().count();
+        match crate::util::clipboard::copy_to_clipboard(&text) {
+            Ok(()) => self
+                .messages_state
+                .toasts
+                .success(&format!("Copied {characters} characters")),
+            Err(error) => self
+                .messages_state
+                .toasts
+                .error(&format!("Could not copy: {error}")),
+        }
+    }
+
     fn cycle_model_forward(&mut self) {
         if self.agent_state.models.is_empty() {
             return;
@@ -12799,34 +12872,137 @@ impl App {
     /// it must not become an unrelated app action while its verb is pending.
     /// The consumption is the behaviour.
     ///
-    /// The one live verb is `i` (Helix insert-before-caret), and it is the
-    /// app's **existing** transition — the gesture that used to live in the
-    /// `None` arm of the key chain — moved into the table so that the table
-    /// is the one place that says who owns the key. It has to be live rather
-    /// than reserved: `i` is the app's only route back to Insert mode, so a
-    /// reserved `i` would strand the user in Normal mode with no way to type.
+    /// The live verbs are the composer's motions (`w`, `b`, `e`, `j`, `k`) and
+    /// `i` (Helix insert-before-caret), and `i` is the app's **existing**
+    /// transition — the gesture that used to live in the `None` arm of the key
+    /// chain — moved into the table so that the table is the one place that says
+    /// who owns the key. It has to be live rather than reserved: `i` is the
+    /// app's only route back to Insert mode, so a reserved `i` would strand the
+    /// user in Normal mode with no way to type.
     /// See `crate::tui::composer_claims` for the full argument.
     fn run_composer_claim(&mut self, claim: &crate::tui::composer_claims::ComposerClaim) {
         use crate::tui::composer_claims::{ClaimStatus, ComposerVerb};
         match claim.status {
             ClaimStatus::Live => {
-                if let ComposerVerb::InsertBefore = claim.verb {
-                    // Helix `i`: insert before the caret. The caret does not
-                    // move — the next character is typed at it — which is
-                    // exactly what the old gesture did.
-                    self.ui_state.input_mode = InputMode::Insert;
-                    debug_log!("composer claim: insert before the caret");
-                    return;
+                match claim.verb {
+                    ComposerVerb::InsertBefore => {
+                        // Helix `i`: insert before the caret. The caret does not
+                        // move — the next character is typed at it — which is
+                        // exactly what the old gesture did.
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: insert before the caret");
+                    }
+                    ComposerVerb::InsertAfter => {
+                        // Helix `a`: insert after the caret. The caret moves one
+                        // character forward and the next keystroke lands
+                        // there, so the model only places the caret and the app
+                        // switches to Insert mode.
+                        self.prompt_state.prompt.insert_after();
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: insert after the caret");
+                    }
+                    ComposerVerb::OpenLineBelow => {
+                        // Helix `o`: open the line below and type in it. The
+                        // new line is an ordinary edit, so it is undoable.
+                        self.prompt_state.prompt.open_line_below();
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: open line below");
+                    }
+                    ComposerVerb::Undo => {
+                        // The verb reports in **both** branches. A silent
+                        // no-op would teach the user that the key is dead,
+                        // and "nothing to undo" is a different fact from
+                        // "nothing happened".
+                        if self.prompt_state.prompt.undo() {
+                            self.messages_state.toasts.info("Undid the last edit");
+                            debug_log!("composer claim: undo");
+                        } else {
+                            self.messages_state.toasts.warning("Nothing to undo");
+                            debug_log!("composer claim: undo with nothing to undo");
+                        }
+                    }
+                    ComposerVerb::Redo => {
+                        if self.prompt_state.prompt.redo() {
+                            self.messages_state.toasts.info("Redid the last edit");
+                            debug_log!("composer claim: redo");
+                        } else {
+                            self.messages_state.toasts.warning("Nothing to redo");
+                            debug_log!("composer claim: redo with nothing to redo");
+                        }
+                    }
+                    ComposerVerb::WordForward => {
+                        self.prompt_state.prompt.cursor_word_forward();
+                        debug_log!("composer claim: word forward");
+                    }
+                    ComposerVerb::WordBack => {
+                        self.prompt_state.prompt.cursor_word_backward();
+                        debug_log!("composer claim: word backward");
+                    }
+                    ComposerVerb::WordEnd => {
+                        self.prompt_state.prompt.cursor_word_end();
+                        debug_log!("composer claim: word end");
+                    }
+                    ComposerVerb::LineDown => {
+                        self.prompt_state.prompt.cursor_line_down();
+                        debug_log!("composer claim: line down");
+                    }
+                    ComposerVerb::LineUp => {
+                        self.prompt_state.prompt.cursor_line_up();
+                        debug_log!("composer claim: line up");
+                    }
+                    ComposerVerb::SelectChars => {
+                        self.prompt_state.prompt.toggle_select_chars();
+                        debug_log!("composer claim: select characters");
+                    }
+                    ComposerVerb::SelectLine => {
+                        self.prompt_state.prompt.select_line();
+                        debug_log!("composer claim: select line");
+                    }
+                    ComposerVerb::DeleteSelection => {
+                        // Deleting with nothing selected is a no-op that still
+                        // consumes the key: the letter is the composer's, so
+                        // it must not become an unrelated app action.
+                        // Deleting with nothing selected is a no-op that still
+                        // consumes the key: the letter is the composer's, so
+                        // it must not become an unrelated app action.
+                        self.prompt_state.prompt.delete_selection();
+                        debug_log!("composer claim: delete selection");
+                    }
+                    ComposerVerb::Paste => {
+                        // The clipboard is best-effort, and the verb always
+                        // reports what it did. A silent no-op would teach the
+                        // user that the key is dead, and the report is also
+                        // the only evidence of *what* was pasted — the
+                        // pasted text is not echoed back, because the
+                        // composer can hold a secret.
+                        match crate::util::clipboard::read_from_clipboard() {
+                            Some(text) if !text.is_empty() => {
+                                let characters = text.chars().count();
+                                self.prompt_state.prompt.paste(text);
+                                self.messages_state
+                                    .toasts
+                                    .info(&format!("Pasted {characters} characters"));
+                                debug_log!("composer claim: paste");
+                            }
+                            _ => {
+                                self.messages_state
+                                    .toasts
+                                    .warning("Nothing to paste — the clipboard is empty");
+                                debug_log!("composer claim: paste with nothing to paste");
+                            }
+                        }
+                    } // There is deliberately **no catch-all arm**. M006 closed
+                      // the claim table, so every verb has a behaviour, and an
+                      // exhaustive match turns "the table and the runner
+                      // disagree" from a runtime warning into a **compile
+                      // error**: a verb added to `ComposerVerb` without an arm
+                      // here does not build.
+                      //
+                      // The warning that used to live in this arm said that a
+                      // live verb with no behaviour is a dead key — the defect
+                      // the table exists to prevent. Making it unbuildable is
+                      // stronger than saying so loudly at runtime.
                 }
-                // A live verb with no behaviour is a table/runner
-                // disagreement, and it is a programming error rather than a
-                // user error. The key is consumed, and a consumed key with
-                // no behaviour is a dead key — the defect this table exists
-                // to prevent. Say so loudly rather than swallow it.
-                tracing::warn!(
-                    verb = ?claim.verb,
-                    "a live composer verb has no behaviour; the claim table and the runner disagree"
-                );
             }
             ClaimStatus::Reserved => {
                 // The key is consumed and nothing happens. That is the
@@ -12923,6 +13099,15 @@ impl App {
     /// `None` when no panel is focused and nothing is armed — the row is not
     /// reserved at all in that case, so the prompt keeps its height.
     pub fn composer_hint_text(&mut self) -> Option<String> {
+        self.composer_hint_text_bounded(0)
+    }
+
+    /// The contextual key line, bounded to `budget` display columns.
+    ///
+    /// A budget of `0` means unbounded. The bound matters for the composer's
+    /// own row: it is a list of keys, and a key cut in half names a key that
+    /// does not exist, so the row drops whole keys instead.
+    pub fn composer_hint_text_bounded(&mut self, budget: usize) -> Option<String> {
         // Resize mode owns the frame, so it outranks every surface hint: the
         // keys that just changed meaning are `h/j/k/l`, and a reader who sees
         // "j/k scroll" while resize mode is armed has been told something
@@ -12963,6 +13148,21 @@ impl App {
         // move`) at a user who was typing into a shell. One answer, both
         // surfaces, and they cannot disagree again.
         let input_mode = self.composer_input_mode();
+        // The composer's own verbs take the row when the composer holds the
+        // keyboard and no turn has the floor.
+        //
+        // A turn's keys are the *louder* claim on the row — stopping a run is
+        // actionable now, and the working strip's own status row names the
+        // same key. The composer's verbs are the idle surface's claim, and
+        // the composer's row is where they are finally visible outside the
+        // help box.
+        //
+        // The presence is gated on the **keyboard**, never on the mode: the
+        // row is present in Normal and in Insert alike, so `Esc` does not
+        // reflow the transcript. The mode changes the row's *text*.
+        if agent_keys.is_none() && self.composer_holds_keyboard() {
+            return Some(self.composer_hint_row(input_mode, budget));
+        }
         let panel = self
             .panel_host
             .composer_hints(self.chat_panel_project.as_deref(), input_mode);
@@ -12972,6 +13172,44 @@ impl App {
             (None, Some(panel)) => Some(panel),
             (None, None) => None,
         }
+    }
+
+    /// The composer's own hint row: the verbs available **right now**.
+    ///
+    /// The row names the composer's **keys**, not their descriptions. The
+    /// descriptions live in the help, one keypress away, and a row that
+    /// spelled out fourteen verbs would not fit a terminal: measured at eighty
+    /// columns, the grouped form runs to ninety-four characters and loses the
+    /// line motions to the truncation. The keys fit, they are what a user
+    /// actually presses, and the row's job — "which letters are mine right
+    /// now" — is answered by the keys alone.
+    ///
+    /// The keys are **derived** from the claim table, so the row cannot name a
+    /// verb another surface holds. A conditional verb is listed only while its
+    /// condition holds: on a single-line composer buffer `j` and `k` are the
+    /// transcript's, and the row must not claim them.
+    ///
+    /// The row is **bounded**: a part is never split, because a row that ends
+    /// mid-key names a key that does not exist. Parts are dropped whole, from
+    /// the end, in the claim table's order.
+    fn composer_hint_row(&self, input_mode: InputMode, budget: usize) -> String {
+        let separator = " · ";
+        if input_mode == InputMode::Insert {
+            // In Insert the composer's own verbs are not available — the
+            // letters are text — so the row must not list them.
+            return fit_parts(&["COMP", "INS", "type", "Esc normal"], separator, budget);
+        }
+        let lines = self.prompt_state.prompt.line_count();
+        let mut parts: Vec<&str> = vec!["COMP", "NOR"];
+        for entry in crate::tui::composer_claims::composer_verb_entries() {
+            if entry.condition.holds(lines) {
+                parts.push(entry.key_text);
+            }
+        }
+        // The `space` chord opens the composer's help, where every verb is
+        // described. The row points at it rather than repeating it.
+        parts.push("space help");
+        fit_parts(&parts, separator, budget)
     }
 
     /// The stop/resume keys for the main buffer, or `None` when idle.

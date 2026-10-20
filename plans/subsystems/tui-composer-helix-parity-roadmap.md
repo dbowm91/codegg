@@ -141,6 +141,12 @@ Repository evidence at baseline `61cbe9222`.
 and scroll offsets. It supports multi-line text. It has no selection, no undo history, and no
 yank register. Its public surface is insert, delete, move, and paste.
 
+> **Superseded by M003 (2026-10-19).** The composer has a model now:
+> `src/tui/composer_text.rs` holds the buffer, the caret, the selection state and a bounded
+> undo history, and `src/tui/text_geometry.rs` holds the word and line geometry the editor
+> shares with it. `PromptWidget` keeps its public surface — insert, delete, move and paste —
+> and renders the model. The paragraph above describes the baseline, not the current state.
+
 **The `focused` flag is not wired to anything.** `PromptWidget::blur()` has exactly one caller in
 the tree, and it is a test. No production path clears the flag, so the composer cannot currently
 express "I am not focused". Any milestone that must show no cursor when another surface holds the
@@ -164,6 +170,16 @@ the composer caret (through the app's `Left` / `Right` actions), so those two ar
 But `x` is the turn stop/resume action, `d` is open-diff in the vim map, `space` is help in both
 maps, `j` and `k` are transcript navigation, `g` is go-to-top, and `i` is focus-prompt. `e`, `b`,
 `v`, `o`, `u`, `U`, `p`, and `w` are unclaimed.
+
+> **Correction (C001, `plans/subsystems/tui-composer-helix-parity-corrective-addendum.md`).**
+> The paragraph above was wrong about the *default* map. `h` and `l` were bound in the vim map
+> and in no other, and `vim_mode` defaults to false — so the premise this survey rests on ("the
+> existing action already moves the composer caret") held in one configuration only, and the
+> composer drew a caret that no letter could move in the other. C001 binds both letters in the
+> default map and adds guard rule G9, which fails if the two maps ever disagree about a caret
+> motion. The survey's own text was careful about the keymap difference for `d` — "*in the vim
+> map*" — and simply did not apply that care to `h` and `l`. The corrected fact is now true in
+> both maps; the baseline it describes was not.
 
 `space` is the one that changed its standing. Help keeps `space` — ADR-0042's amendment
 rejected re-spelling it — and the copy gesture became the **second step** of that chord rather
@@ -330,6 +346,12 @@ the one exception recorded below.
   cannot take them back.
 - `h` and `l` still move the composer caret, and `j`/`k` still scroll the transcript while the
   composer buffer is a single line.
+  > **Correction (C001).** This exit condition was **not met** when M002 closed: `h` and `l`
+  > moved the composer caret in the vim map only, and `vim_mode` defaults to false, so the
+  > default configuration had a caret no letter could move. M002's closure matrix had no
+  > acceptance-criterion row for this condition, which is why it closed green. C001 binds both
+  > letters in the default map and makes the two maps' agreement a guarded invariant (rule G9).
+  > The condition now holds in every configuration the app can be configured with.
 - A claimed uppercase letter is reachable in both the shifted and the unshifted encoding.
 - Every letter in the claim set is still typed as text in Insert mode, in both keymaps.
 
@@ -341,6 +363,11 @@ the one exception recorded below.
 that is shared with the editor rather than reimplemented.
 
 **Dependencies.** None hard. Soft on M001.
+
+**Status.** **Closed** 2026-10-19 — `plans/closure/tui-composer-helix-parity/003-status.md`. The
+composer has a model (`src/tui/composer_text.rs`), the word geometry is shared with the editor
+(`src/tui/text_geometry.rs`), and the shared selection rules now run against the composer's
+point type as well as the terminal's.
 
 **Deliverable boundary.** A composer point type satisfying the shared selection trait; the
 composer's selection state; a bounded undo/redo edit log; word and line geometry expressed against
@@ -368,6 +395,16 @@ word.
 
 **Dependencies.** M002 closed; M003 closed.
 
+**Status.** **Closed** 2026-10-19 — closure record
+`plans/closure/tui-composer-helix-parity/004-status.md`.
+The five verbs are `w`, `b`, `e`, `j` and `k`: the five letters ADR-0042 already gave the composer
+and the claim set already holds (§3 fixes it), so this milestone **added no claim and claimed no
+key** — it flipped five `Reserved` statuses to `Live` and implemented five verbs. `h` and `l` are not
+in it: ADR-0042 part 4 records them as no conflict, C001 bound them in both maps, and they reach
+the caret through the app-level `Left`/`Right` actions the composer keeps. The targets were built
+in M003 and were already computed; what was missing was the step that moves the caret onto them.
+Line start/end is **not** in this milestone — see **D7** in §10.
+
 **Deliverable boundary.** The motion verbs and their key claim entries. No selection verbs, no
 undo, no insert transitions.
 
@@ -387,6 +424,17 @@ undo, no insert transitions.
 it, yank it, and paste it back.
 
 **Dependencies.** M004 closed; M003 closed.
+
+**Status.** **Closed** 2026-10-19 — closure record
+`plans/closure/tui-composer-helix-parity/005-status.md`.
+M003 supplied the selection machine, the composer's model and the deletion semantics; what was
+left was the rendering, the four composer verbs, the paste verb, and the copy gesture. **The copy
+gesture is why this milestone needed ADR-0042 part 7**: `y` belongs to the help box the
+`space` chord opens, and the box has to know **how it was opened** — the mode cannot decide it,
+because a `/help` box reaches Normal mode with `Esc` and a `space` box reaches Insert with
+`Enter`. The route therefore travels in the open request (`Dialog::Help(HelpRoute)`), and the
+copy is a `TuiMsg` the app performs, because the focused component is a clone of the dialog.
+Open decision **D5** (the paste scope) was owned here and is now **discharged** — see §10.
 
 **Deliverable boundary.** Character selection, line selection, delete-selection, the yank
 capability, paste from the clipboard, and the selection rendering. The yank's **key** is not a
@@ -415,6 +463,46 @@ this milestone.
 the caret, or on a new line, from Normal mode.
 
 **Dependencies.** M005 closed; M003 closed.
+
+**Status.** **Closed** — implementation plan
+`plans/implementation/tui-composer-helix-parity/006-composer-undo-redo-and-insert-transitions.md`;
+closure record `plans/closure/tui-composer-helix-parity/006-status.md`.
+
+Two decisions are settled at planning time and are recorded here rather than left open: **D4** (the
+undo scope) resolves to **the composer's own text**, because the composer has exactly one buffer —
+a slash command and a staged shell projection are typed into that same buffer, and the two
+wholesale-replacement paths (`prompt.clear()` on submit, `prompt.set_text(include_text)` for a
+staged projection) both drop the history, so the wider composer state is outside the undo scope by
+construction and needs no rule of its own; and **D6** (the `a` conflict) resolves to **deleting one
+binding**, not inventing a chord — the vim map binds bare `a` to `FocusSidebar`, but `FocusSidebar`
+is **already** bound to `Ctrl+Alt+S` in **both** maps, so the bare letter is an extra spelling of
+an action that already has one and no capability is lost by removing it. ADR-0042 part 4's
+conflict table does not list `a`; that is a **gap in an accepted ADR**, and because an accepted ADR
+is immutable the resolution is recorded here and in the closure record rather than by editing the
+ADR. The claim table therefore grows from **13 rows to 14** — `a` is one of the letters §3 names,
+so this completes the fixed set rather than extending it. Two defects in the existing model are in
+scope, because this is the milestone that makes undo reachable: `UndoHistory::evict` removes the
+**oldest** entry while either bound is exceeded, so a single edit larger than the byte bound (a
+paste) is evicted immediately and becomes **not undoable** — the exit condition below requires the
+bound to be enforced "without losing the ability to undo the most recent edit"; and
+`ComposerText::replace_range` leaves a held selection in place across a length-changing edit, whose
+byte coordinates then describe the pre-edit text, so the milestone introduces one rule — **an edit
+that changes the buffer's length drops the held selection** — enforced in one place.
+
+**What the milestone landed.** All four verbs are live and the claim table is **closed**: every
+letter the composer owns now has a behaviour, and the runner's match on the verbs is **exhaustive**,
+so a verb added to `ComposerVerb` without an arm in `run_composer_claim` does not compile — the
+table/runner disagreement that used to be a runtime warning is now a build error. The eviction
+never drops the last remaining entry, so an oversized paste is undoable; the selection rule lives in
+`replace_range`, the one place every edit passes through; `u` and `U` report in **both** branches,
+so a verb's silence is never ambiguous. The bare `a` is gone from the vim map and from the help.
+The claim table's own tests pin the key set to ADR-0042 part 4's closed set, so a future addition
+outside the ADR's set fails a test.
+
+**One deviation, recorded.** M006's plan asked for hand-written help rows; M007's plan asks for the
+composer section to be **derived** from the claim table. Because both milestones are delivered
+together, the section is derived, and M006's criterion is met as a **superset** of what it asked
+for. The derivation is M007's deliverable and is recorded in its closure record.
 
 **Deliverable boundary.** Undo, redo, insert-before, insert-after, and open-line-below, plus the
 mode transitions they cause. No new text model.
@@ -447,6 +535,42 @@ transition implies, and undo/redo. M002's closure records the deviation.
 gaps between the composer, the editor, and the terminal panel.
 
 **Dependencies.** M004, M005, M006 closed.
+
+**Status.** **Closed** — implementation plan
+`plans/implementation/tui-composer-helix-parity/007-keymap-consistency-and-guard-coverage.md`;
+closure record `plans/closure/tui-composer-helix-parity/007-status.md`.
+
+The dependency was substantive rather than procedural: M007's deliverable is **derived from the
+claim table**, and M006 takes the `a` key, so a hint row or a help section written against the
+13-row table would have been rewritten by M006. The plan names the two audits the exit conditions
+below require: **G10**, the help audit (the help must list every live composer verb, list no
+reserved verb, and not advertise a claimed key for a different action), and **G11**, the
+modifier-chord audit (a re-spelled action must be listed under a chord, never under its old bare
+letter). It also names the sweep's divergence: the composer and the editor share
+`src/tui/text_geometry.rs`, and the **terminal panel does not** — its `e`/`b` use a row-scoped rule
+of their own.
+
+**What the milestone landed.** `composer_verb_entries`
+(`src/tui/composer_claims.rs`) is a **read-only view** over the claim table, and **three** surfaces
+read it with no copy of their own: the composer's **hint row**
+(`App::composer_hint_row`), the **help**'s composer section (`composer_help_entries`), and the
+**guard**. The hint row names the composer's **keys** — measured, not preferred: at eighty columns
+the grouped form runs to ninety-four characters and loses the line motions to the truncation, while
+the keys fit in fifty-three — and its **presence** is gated on the keyboard rather than the mode,
+so `Esc` does not reflow the transcript. Because the composer holds the keyboard in the main
+buffer, the row is now **present** there, where it used to be absent: it costs one row of
+transcript, and it buys a frame that does not move when a panel takes or loses focus. The
+**help**'s composer section is **derived**, so a verb that
+lands in the table lands in the help without anyone touching the help. The **route**, not the mode,
+decides whether the copy gesture is listed: `HelpRoute` moved to `src/tui/input.rs` beside the
+content it selects, and `HelpDialog::with_route` rebuilds that content, because the route selects
+content as well as behaviour. The two audits are in the guard, with a **twenty-six-case**
+self-test.
+
+**The sweep's divergence was recorded, not fixed.** The terminal panel's `e`/`b` are a row-scoped
+reader's motion over a PTY's screen, not a buffer motion, and §3 protects that surface's keymap.
+The full table — three agreements, two deliberate divergences, two known differences — is in
+`architecture/tui.md` and in the closure record.
 
 **Deliverable boundary.** The composer hint row, the user documentation, the architecture
 documentation, the TUI skill update, and the consistency sweep across the three Helix surfaces.
@@ -561,9 +685,11 @@ for clippy and the workspace suite. No `--all-features` sweep: it drags in the r
 |---|---|---|
 | D1 — Does the app's single `InputMode` axis become the composer's navigation mode, or does the composer get its own axis? | Decided in ADR-0042 (Option A), **accepted 2026-10-19** | Maintainers |
 | D2 — Which app-level chords are re-spelled, and to what? | ADR-0042 sets the rule and the conflict list; the implementing milestone owns the exact chords. Help is **not** re-spelled — the amendment keeps `space`. **Settled in M002**: `Ctrl+Alt+X` (stop/resume), `Ctrl+Alt+D` (open-diff), `Ctrl+Alt+E` (focus-prompt), in both maps. `Ctrl+Alt+I` is not deliverable — crossterm reports `ESC` + `0x09` as `Tab`+ALT — and the default map's bare `/` for focus-prompt was removed with the rest. | Maintainers, in M002 |
-| D3 — Is the blinking cursor the terminal's own cursor or an app-driven cadence? | Open. Constrained by I7 and the single-cadence rule. Recommended: the terminal's own cursor. | Maintainers, in M001 |
-| D4 — Is the composer's undo scoped to the prompt text, or to the wider composer state including slash commands and staged shell input? | Open. Recommended: prompt text only, matching the composer's existing buffer boundary. | Maintainers, in M003 |
-| D5 — Does the composer introduce a paste verb alone, or do the editor and terminal panel gain it too? | Open. Recommended: composer alone in this workstream, with a recorded follow-up for the other two, because the composer is a different buffer with a different boundary. | Maintainers, in M005 |
+| D3 — Is the blinking cursor the terminal's own cursor or an app-driven cadence? | **Settled in M001**, by invariant I7 rather than by a fresh choice: the terminal's own cursor. The M001 plan states the resolution ("The open decision D3 (blink source) is resolved by the constraint, not by the plan"), and the composer positions the terminal's cursor in Insert mode and paints a solid block in Normal mode. **Corrected in C001**, which found this row still open and owned by a milestone that had closed. Not reopened: an app-driven blink would need a second cadence, which I7 forbids, and the app does not redraw while idle, so a painted caret would freeze. | Maintainers, in M001 |
+| D4 — Is the composer's undo scoped to the prompt text, or to the wider composer state including slash commands and staged shell input? | **Closed in M006.** M003's closure record states that the decision "stays open and is owned by M006", which owns the undo verbs; the owner cell below was stale until this correction. M003 built the history over the prompt text, which is the recommended shape. **The resolution is settled in M006's plan and measured at this baseline:** the composer's undo is scoped to **the composer's own text**. The composer has exactly one buffer — a slash command and a staged shell projection are typed into *that same buffer* — and the two wholesale-replacement paths (`prompt.clear()` on submit, `prompt.set_text(include_text)` for a staged projection) both drop the history, so the wider composer state is outside the undo scope **by construction** and needs no rule of its own. A **pending** slash command is ordinary buffer text and is undoable while pending; once dispatched, the submit clears the buffer and the history. **Closed in M006.** The closure record accepts the resolution and the implementation matches it: the undo scope is the composer's own text, the two wholesale-replacement paths drop the history, and a pending slash command is ordinary buffer text while it is pending. Recorded in `plans/closure/tui-composer-helix-parity/006-status.md` §5.3. | Closed in M006 |
+| D5 — Does the composer introduce a paste verb alone, or do the editor and terminal panel gain it too? | **Closed, in M005.** The composer gained a paste verb alone, as recommended. The **editor** was never an open question: its own roadmap already carries an M004 for `p`/`P` paste, so the editor gains a paste verb either way, and M005 did not touch it. The only surface genuinely undecided was the **terminal panel**, which has a yank and no paste; M005 left it alone, so the follow-up is the panel's own. Recorded in `plans/closure/tui-composer-helix-parity/005-status.md` §11. | Closed in M005 |
+| D6 — `a` is Helix insert-after, and §3 lists it as a target verb for this workstream — but the **vim map** binds bare `a` to `InputAction::FocusSidebar`, and ADR-0042 part 4's conflict table does not list it. | **Closed in M006.** The conflict table is stated to be "explicit and exhaustive", so this is a **gap** in it rather than a resolution, and the ADR's *decision* is untouched: one key has one owner, and a conflicting letter is re-spelled to a chord that is not a bare letter. Recorded here so M006 does not discover it mid-flight. **The resolution is settled in M006's plan and measured at this baseline, and it is cheaper than the shape this row originally assumed.** The row said M006 "will need the same re-spelling M002 applied to `x`, `d` and `i` — `FocusSidebar` moves to a chord in **both** maps". Measured: `FocusSidebar` is **already** bound to `Ctrl+Alt+S` in **both** maps, so the bare `a` is an *extra* spelling of an action that already has one. The resolution is therefore to **delete the bare `a` binding**, not to move the action — and no capability is lost, because the chord was already there. The ADR's rule still holds; it was applied before the fact. **Closed in M006.** The closure record accepts the resolution and the implementation matches it: the vim map's bare `a` is deleted, `FocusSidebar` keeps `Ctrl+Alt+S` in both maps, the help's false row is deleted with the binding, and the guard's `RESPELLED_ACTIONS` now carries `FocusSidebar` so the property is checked. ADR-0042 part 4's conflict table still omits `a` — a gap in an accepted ADR, which is recorded here and in the closure record rather than by editing the ADR. Recorded in `plans/closure/tui-composer-helix-parity/006-status.md` §5.4. | Closed in M006 |
+| D7 — Does the composer get a **line** start/end motion, distinct from the buffer start/end that `Home`/`End` already reach? | **Open, and deliberately out of M004.** The claim set is fixed (§3), so `0`/`$` cannot be claimed without a decision that changes ADR-0042 part 2's shape; and re-pointing the app-level `Home`/`End` from the buffer's start/end to the line's would change a key the composer does **not** claim, which M004's own exit condition forbids. For the ordinary single-line composer the two are the same thing, so the gap is invisible until the buffer is multi-line. Recommended: settle it with the next ADR that touches the claim set, and leave `Home`/`End` alone until then. **Still open after M007**, which closed the workstream: M007's sweep recorded it and left the recommendation unchanged, because the decision needs an ADR that touches the claim set and this workstream does not have one. Recorded in `plans/closure/tui-composer-helix-parity/007-status.md` §7. | Maintainers |
 
 ### Risks
 
@@ -624,11 +750,11 @@ This workstream is complete when all of the following hold.
 |---|---|---|---|---|
 | M001 | **closed** | `plans/implementation/tui-composer-helix-parity/001-composer-keyboard-ownership-and-cursor-presence.md` | `plans/closure/tui-composer-helix-parity/001-status.md` | none |
 | M002 | **closed** | `plans/implementation/tui-composer-helix-parity/002-normal-mode-key-ownership-contract.md` | `plans/closure/tui-composer-helix-parity/002-status.md` | none |
-| M003 | **eligible for fresh planning** | — | — | none |
-| M004 | **not started** | — | — | M002, M003 |
-| M005 | **not started** | — | — | M004, M003 |
-| M006 | **not started** | — | — | M005, M003 |
-| M007 | **not started** | — | — | M004, M005, M006 |
+| M003 | **closed** | `plans/implementation/tui-composer-helix-parity/003-composer-text-model.md` | `plans/closure/tui-composer-helix-parity/003-status.md` | none |
+| M004 | **closed** | `plans/implementation/tui-composer-helix-parity/004-composer-motions.md` | `plans/closure/tui-composer-helix-parity/004-status.md` | none |
+| M005 | **closed** | `plans/implementation/tui-composer-helix-parity/005-composer-selection-and-clipboard.md` | `plans/closure/tui-composer-helix-parity/005-status.md` | none |
+| M006 | **closed** | `plans/implementation/tui-composer-helix-parity/006-composer-undo-redo-and-insert-transitions.md` | `plans/closure/tui-composer-helix-parity/006-status.md` | none — D4 and D6 are closed here |
+| M007 | **closed** | `plans/implementation/tui-composer-helix-parity/007-keymap-consistency-and-guard-coverage.md` | `plans/closure/tui-composer-helix-parity/007-status.md` | none — D7 is recorded as still open, with its recommendation |
 
 **Reading this table.** `closed` means a closure record was accepted. `ready` means the
 implementation plan is written and its dependencies are discharged. `blocked` means a named
@@ -636,7 +762,9 @@ dependency — a decision or an unclosed milestone — prevents progress. `eligi
 means the milestone has no outstanding dependency and needs a planning pass before an implementation
 plan can be written. `not started` means the milestone is sequenced behind milestones that have not
 closed, and no implementation plan has been written for it; it does **not** mean the milestone is
-blocked by an external condition. M003 is eligible for fresh planning and may be taken at any time.
+blocked by an external condition. **M001 through M007 are all closed**: every milestone in this
+workstream has a closure record, and §11's completion definition is checked item by item in
+`plans/closure/tui-composer-helix-parity/007-status.md` §4.
 
 **M002's one scoping deviation, carried forward.** M002's plan put "no insert transition" out of
 scope and said "do not add verbs here". The `i` claim's verb is **live** in M002, because `i` is
@@ -647,7 +775,8 @@ claim table so the table is the one place that says who owns the key. M006 still
 transitions *beyond* `i` (`a`, `o`) and the caret placement they imply; this is a phasing
 deviation, recorded in `plans/closure/tui-composer-helix-parity/002-status.md` §1.1.
 
-Status labels here must match `plans/registry.md`. The registry carries M001 and M002 under
-**Dependency-ready implementation plans** (both `closed`, each with its closure record), and M003
-under **Milestones eligible for fresh planning**; M004–M007 are registered in the registry only
-through this table, because they have no implementation plan and are not yet dependency-ready.
+Status labels here must match `plans/registry.md`. The registry carries M001 through M007 under
+**Dependency-ready implementation plans** (all `closed`, each with its closure record), and the
+workstream's own row under **Active subsystem roadmaps** carries the closed status. **D7** is the
+one decision this workstream leaves open; it is recorded in §10 with its recommendation, and it is
+not a milestone.

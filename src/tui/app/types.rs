@@ -1,10 +1,19 @@
+use crate::tui::components::dialogs::help::HelpRoute;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dialog {
     None,
     Model,
     Agent,
     Session,
-    Help,
+    /// The help box, with the route it was opened by.
+    ///
+    /// The route is part of the **request** rather than a separate argument,
+    /// so a call site cannot open the help box without saying which help box
+    /// it is: the composer's chord (which owns the copy gesture) or the app's
+    /// `/help` (which does not). See
+    /// [`crate::tui::components::dialogs::help::HelpRoute`].
+    Help(HelpRoute),
     Tree,
     Files,
     Theme,
@@ -86,7 +95,7 @@ impl Dialog {
             Self::Model
                 | Self::Agent
                 | Self::Session
-                | Self::Help
+                | Self::Help(_)
                 | Self::Tree
                 | Self::Files
                 | Self::Theme
@@ -152,6 +161,14 @@ pub enum TuiMsg {
     OpenAgentDialog,
     OpenSessionDialog,
     OpenHelpDialog,
+    /// Copy the composer's held selection to the system clipboard.
+    ///
+    /// ADR-0042 part 7: the copy gesture is the help box's, reached through
+    /// the `space` chord. The help box **returns** this message rather than
+    /// copying, because the focused component is a clone of the dialog and a
+    /// clone cannot reach the app's composer. The app performs the copy and
+    /// reports the outcome.
+    CopyComposerSelection,
     OpenTreeDialog,
     OpenThemeDialog,
     OpenShareDialog,

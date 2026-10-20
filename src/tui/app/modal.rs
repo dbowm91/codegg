@@ -346,13 +346,14 @@ impl App {
                 self.focus_manager
                     .push(Box::new(self.dialog_state.agent_dialog.clone()));
             }
-            Dialog::Help => {
+            Dialog::Help(route) => {
                 // Always recreate to reflect current input mode
                 let help_dialog = crate::tui::components::dialogs::help::HelpDialog::new_with_mode(
                     Arc::clone(&self.ui_state.theme),
                     self.ui_state.vim_mode,
                     self.ui_state.input_mode,
-                );
+                )
+                .with_route(route);
                 self.dialog_state.help_dialog = Some(help_dialog);
                 if let Some(ref mut help_dialog) = self.dialog_state.help_dialog {
                     self.focus_manager.push(Box::new(help_dialog.clone()));

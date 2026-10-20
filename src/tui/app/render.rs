@@ -1892,10 +1892,13 @@ impl App {
         if area.width < 4 || area.height == 0 {
             return;
         }
-        let Some(text) = self.composer_hint_text() else {
+        let budget = usize::from(area.width).saturating_sub(4);
+        // The row is built to fit the budget, not merely truncated to it: the
+        // composer's own row is a list of keys, and a key cut in half names a
+        // key that does not exist.
+        let Some(text) = self.composer_hint_text_bounded(budget) else {
             return;
         };
-        let budget = usize::from(area.width).saturating_sub(4);
         let theme = &self.ui_state.theme;
         let line = Line::from(vec![
             Span::styled(
