@@ -1419,6 +1419,11 @@ mod tests {
     fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
         use BuiltinSlashAction as B;
         vec![
+            // Eggwork M002: `/nodes`. The variant was added to the enum and
+            // to the registry but omitted here, so the "no surplus" arm of
+            // `every_builtin_action_is_referenced_by_a_canonical_command`
+            // failed with 159 registry variants against 158 listed ones.
+            B::Nodes,
             // M004: `/queue`. The variant was added to the enum and to the
             // registry but omitted here, so this test failed to notice it.
             B::Queue,

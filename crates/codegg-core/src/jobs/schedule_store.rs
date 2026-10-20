@@ -66,7 +66,14 @@ enum OccurrenceOutcome {
     Skipped,
     /// The materializer refused it. It is not recorded, so it stays
     /// retryable.
-    Failed,
+    Failed {
+        /// A stable, secret-free reason code.
+        ///
+        /// The operator surface is a log line, so this is the only part
+        /// of the refusal that reaches one. It carries no message, no
+        /// endpoint, and no policy detail.
+        code: String,
+    },
 }
 
 /// The tick's results for one schedule.
@@ -86,7 +93,7 @@ impl ScheduleOutcome {
         self.decided
             .iter()
             .rev()
-            .find(|(_, outcome)| !matches!(outcome, OccurrenceOutcome::Failed))
+            .find(|(_, outcome)| !matches!(outcome, OccurrenceOutcome::Failed { .. }))
             .map(|(at, _)| *at)
     }
 
@@ -94,7 +101,7 @@ impl ScheduleOutcome {
     fn first_failed(&self) -> Option<DateTime<Utc>> {
         self.decided
             .iter()
-            .find(|(_, outcome)| matches!(outcome, OccurrenceOutcome::Failed))
+            .find(|(_, outcome)| matches!(outcome, OccurrenceOutcome::Failed { .. }))
             .map(|(at, _)| *at)
     }
 }
@@ -122,7 +129,7 @@ async fn materialize_plan(
                 decided.push((target, OccurrenceOutcome::Queued(job_id)));
                 running += 1;
             }
-            Err(_) => {
+            Err(error) => {
                 // The occurrence was refused. It is deliberately **not**
                 // recorded: the occurrence row is the durable "this
                 // already happened" marker, and its
@@ -132,7 +139,12 @@ async fn materialize_plan(
                 //
                 // The remaining occurrences of this schedule are not
                 // processed, so they stay due and are retried in order.
-                decided.push((target, OccurrenceOutcome::Failed));
+                decided.push((
+                    target,
+                    OccurrenceOutcome::Failed {
+                        code: error.code().to_owned(),
+                    },
+                ));
                 break;
             }
         }
@@ -452,6 +464,7 @@ impl InMemoryScheduleStore {
             let first_failed = outcome.first_failed();
 
             for (target, decision) in &outcome.decided {
+                let mut failure_code: Option<String> = None;
                 let (job_id, status) = match decision {
                     OccurrenceOutcome::Queued(job_id) => {
                         (Some(job_id.clone()), OccurrenceStatus::Queued)
@@ -459,9 +472,12 @@ impl InMemoryScheduleStore {
                     OccurrenceOutcome::Skipped => (None, OccurrenceStatus::Skipped),
                     // A refused occurrence is not recorded, so the retry
                     // is not turned into a no-op by the primary key.
-                    OccurrenceOutcome::Failed => (None, OccurrenceStatus::Failed),
+                    OccurrenceOutcome::Failed { code } => {
+                        failure_code = Some(code.clone());
+                        (None, OccurrenceStatus::Failed)
+                    }
                 };
-                if !matches!(decision, OccurrenceOutcome::Failed) {
+                if !matches!(decision, OccurrenceOutcome::Failed { .. }) {
                     let key = (outcome.schedule_id.as_str().to_owned(), target.timestamp());
                     let row = OccurrenceRow {
                         schedule_id: outcome.schedule_id.clone(),
@@ -477,6 +493,7 @@ impl InMemoryScheduleStore {
                     scheduled_for: *target,
                     job_id,
                     status,
+                    failure_code,
                 });
             }
 
@@ -775,6 +792,7 @@ impl SqliteScheduleStore {
             let sid = outcome.schedule_id.clone();
 
             for (target, decision) in &outcome.decided {
+                let mut failure_code: Option<String> = None;
                 let (job_id, status) = match decision {
                     OccurrenceOutcome::Queued(job_id) => {
                         (Some(job_id.clone()), OccurrenceStatus::Queued)
@@ -782,9 +800,12 @@ impl SqliteScheduleStore {
                     OccurrenceOutcome::Skipped => (None, OccurrenceStatus::Skipped),
                     // A refused occurrence is not recorded, so the retry
                     // is not turned into a no-op by the primary key.
-                    OccurrenceOutcome::Failed => (None, OccurrenceStatus::Failed),
+                    OccurrenceOutcome::Failed { code } => {
+                        failure_code = Some(code.clone());
+                        (None, OccurrenceStatus::Failed)
+                    }
                 };
-                if !matches!(decision, OccurrenceOutcome::Failed) {
+                if !matches!(decision, OccurrenceOutcome::Failed { .. }) {
                     sqlx::query(
                         r#"
                         INSERT OR IGNORE INTO schedule_occurrence
@@ -806,6 +827,7 @@ impl SqliteScheduleStore {
                     scheduled_for: *target,
                     job_id,
                     status,
+                    failure_code,
                 });
             }
 

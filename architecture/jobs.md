@@ -577,6 +577,14 @@ retryable. The consequences are all deliberate:
 - `OccurrenceStatus::Failed` and `ClaimedOccurrence::job_id: Option<JobId>`
   report the outcome. An occurrence that produced no job says `None`,
   never a synthetic id.
+- `ClaimedOccurrence::failure_code` carries the refusal's stable,
+  secret-free reason code — `remote_target_not_approved`, `invalid_template`,
+  `job_store_error` — so the operator's log says *why* a schedule did not
+  fire, without any message, endpoint, or policy detail.
+
+The code is a log-line fact, not a durable one: a refused occurrence is
+not recorded, so the schedule's own durable state cannot answer "why did
+my schedule not run?". That remains an open operability gap.
 
 The cursor advances to the **occurrence**, not to the tick time. An
 interval schedule anchored at `T0` therefore keeps its own grid instead

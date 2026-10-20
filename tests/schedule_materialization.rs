@@ -331,6 +331,11 @@ async fn a_refused_occurrence_is_not_recorded_and_stays_due() {
         "a refused occurrence never claims a job"
     );
     assert_eq!(
+        claimed[0].failure_code.as_deref(),
+        Some("test_refused"),
+        "the refusal carries a stable, secret-free reason code"
+    );
+    assert_eq!(
         harness.occurrence_count().await,
         0,
         "a refused occurrence is not recorded, so the retry is not a no-op"
@@ -619,4 +624,87 @@ async fn the_job_store_treats_a_replayed_occurrence_as_the_same_job() {
         .expect("replayed create returns the same job");
     assert_eq!(second.job_id, expected_id);
     assert_eq!(harness.job_count().await, 1);
+}
+
+/// The daemon wiring, end to end.
+///
+/// The other tests exercise the store, the materializer and the driver
+/// directly. This one proves the part only a daemon can prove: that
+/// `CoreDaemon::with_deps` installs the materialization driver, that a
+/// schedule created through the daemon's own request surface is claimed by
+/// that driver, and that the job it produces is a real durable job carrying
+/// the schedule it came from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_daemon_fires_a_schedule_it_created() {
+    use codegg::core::daemon::CoreDaemon;
+    use codegg::core::new_request;
+    use codegg::core::runtime_deps::CoreRuntimeDeps;
+    use codegg::protocol::core::{CoreRequest, CoreResponse};
+    use codegg_protocol::dto::ScheduleCreateDto;
+
+    let pool = common::pool::isolated_pool().await;
+    let daemon = CoreDaemon::with_deps(CoreRuntimeDeps::with_jobs(pool.clone(), None, None));
+
+    let dir = tempfile::tempdir().expect("temp workspace");
+    let workspace = daemon
+        .workspaces
+        .get_or_register(dir.path())
+        .await
+        .expect("register workspace");
+
+    let spec = ScheduleCreateDto {
+        workspace_id: workspace.id.as_str().to_owned(),
+        session_id: None,
+        kind: serde_json::to_value(ScheduleKind::OneShot {
+            run_at: Utc::now() - chrono::Duration::seconds(1),
+        })
+        .expect("schedule kind"),
+        job_template: serde_json::to_value(local_template()).expect("job template"),
+        overlap_policy: "allow".to_owned(),
+        missed_run_policy: serde_json::to_value(MissedRunPolicy::RunOnceNow)
+            .expect("missed run policy"),
+        labels: HashMap::new(),
+    };
+
+    let response = daemon
+        .handle_request(new_request(
+            "req-schedule-materialization".to_owned(),
+            CoreRequest::ScheduleCreate { spec },
+        ))
+        .await
+        .expect("schedule create request");
+    let CoreResponse::ScheduleCreated { schedule_id } = response else {
+        panic!("expected ScheduleCreated, got {response:?}");
+    };
+
+    // The daemon-owned driver claims the due occurrence on its own.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let rows: Vec<(String, Option<String>)> = loop {
+        let rows = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT id, schedule_id FROM job ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("job rows");
+        if !rows.is_empty() {
+            break rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon never fired the schedule it created"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
+
+    assert_eq!(rows.len(), 1, "one occurrence owns one job");
+    assert_eq!(
+        rows[0].1.as_deref(),
+        Some(schedule_id.as_str()),
+        "the job records the schedule it came from"
+    );
+    assert!(
+        rows[0].0.starts_with("occ-"),
+        "the job id is the occurrence's derived identity, got {}",
+        rows[0].0
+    );
 }

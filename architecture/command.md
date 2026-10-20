@@ -166,7 +166,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (158 variants, `src/tui/command.rs:112`).
+built-in executable operation (159 variants, `src/tui/command.rs:112`).
 Adding a new built-in command requires touching this one typed
 registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
@@ -430,7 +430,7 @@ both count-guard tests pass — `built_in_command_count_matches_release_docs`
 plus `[Cc]ount is (\d+)` match in this document resolves to 167 (the three
 former's matches are on lines 15, 23, and 256; the latter's on line 394).
 Also verified the 167 built-in registry length, `BuiltinSlashAction`
-(158 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
+(159 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:309`), the TUI `Command` struct fields
@@ -455,6 +455,21 @@ before C007, 158 after) and no guard saw any of them:
 `command_docs_count_matches_registry` matches only `(\d+)\s+(hardcoded|built-in|total)`
 and `[Cc]ount is (\d+)`, so a `N variants` claim is invisible to it.
 `command_docs_enum_variant_counts_match_source` now covers it.
+
+The **159** is the fourth distinct figure these pins have carried, and the
+158 was not merely stale: Eggwork M002 added `/nodes` to the
+`BuiltinSlashAction` enum and to the registry, but omitted it from
+`all_builtin_variants()`. The registry therefore referenced 159 distinct
+builtin actions while the exhaustive list held 158, and the "no surplus"
+arm of `every_builtin_action_is_referenced_by_a_canonical_command` failed.
+The M002 closure recorded that both count-guard tests passed; they did
+not, and the `N variants` claim stayed invisible to
+`command_docs_count_matches_registry` because the registry-length guard
+does not read it. Corrected on 2026-10-20 while closing Eggwork M004:
+`BuiltinSlashAction::Nodes` was added to `all_builtin_variants()`, and the
+two `N variants` claims in this document were corrected to 159 against the
+enum. The lesson repeats the one above — a count that is only asserted
+against a *different* count is not a count that is checked.
 
 Corrected this pass: the paragraph above previously carried three mutually
 inconsistent figures ("asserts 157", "resolves to 157", "150 variants")

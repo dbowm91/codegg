@@ -379,6 +379,16 @@ pub struct ClaimedOccurrence {
     /// materialized occurrence always carries one.
     pub job_id: Option<JobId>,
     pub status: OccurrenceStatus,
+    /// Why the occurrence produced no job.
+    ///
+    /// A stable, secret-free reason code — for example
+    /// `remote_target_not_approved`. It is `None` for an occurrence that
+    /// produced a job or was skipped by the overlap policy.
+    ///
+    /// The code reaches a log line and nothing else. A refused occurrence
+    /// is **not** recorded durably, so the code is not a durable record
+    /// of the refusal — it is what the tick could report at the time.
+    pub failure_code: Option<String>,
 }
 
 /// Materializes a job for a single fired occurrence. The schedule

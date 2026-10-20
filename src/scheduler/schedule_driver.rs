@@ -119,6 +119,7 @@ impl ScheduleDriver {
                         ),
                         OccurrenceStatus::Failed => tracing::warn!(
                             schedule_id = %occurrence.schedule_id.as_str(),
+                            reason = occurrence.failure_code.as_deref().unwrap_or("unknown"),
                             "schedule occurrence refused; it stays due and will be retried"
                         ),
                         _ => {}
