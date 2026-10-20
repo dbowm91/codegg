@@ -27,7 +27,8 @@ here by subject rather than by hash deliberately: a record that lives inside
 the commit it names cannot cite that commit's own hash and stay true after an
 amend.
 
-Implementation pull request: this PR, against `main`.
+Implementation pull request: **PR #135**
+(`https://github.com/dbowm91/codegg/pull/135`), against `main`.
 
 ## 1. Executive finding
 
