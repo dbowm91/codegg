@@ -1,6 +1,6 @@
 # Eggwork Worker Targeting and Host Telemetry — Subsystem Roadmap
 
-Status: active planning; M001 closed, M002 blocked on Eggwork telemetry API closure, M003 closed
+Status: active planning; M001 closed, M002 ready for handoff (upstream telemetry M002 closed), M003 closed
 Primary class: scheduler / infrastructure
 Authority: `plans/000-long-term-specification.md`, `plans/001-terminology-and-domain-model.md`, `plans/002-long-term-roadmap.md`, `plans/003-planning-process.md`.
 Related existing subsystem: `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` (M001+C001+M002+M002a+M003 **closed**, its M004 whole-AgentRun remains **deferred**).
@@ -32,16 +32,16 @@ Make current CodeGG fixed-target Eggwork execution **usable through the ordinary
 
 ```text
 CodeGG M001 DTO + schedule explicit target [closed] -------> M003 remote limits/admission [closed]
-Eggwork M001 local Gregg adapter [ready] -> Eggwork M002 mTLS telemetry API [blocked]
+Eggwork M001 local Gregg adapter [closed] -> Eggwork M002 mTLS telemetry API [closed]
                                              |
                                              v
-                               CodeGG M002 telemetry projection [blocked]
+                               CodeGG M002 telemetry projection [ready for handoff]
                                              |
                                              v
          future cross-node resource-aware placement [deferred, not in this batch]
 ```
 
-M003 closed on the M001 closure: the explicit target boundary (host-boundary admission, `Capability::NodeTarget`, `[eggwork.allowed_target_nodes]`, schedule target preservation) in `plans/closure/eggwork-worker-telemetry-and-targeting/001-status.md` gave M003 a real target contract to define limits against. M003 landed the operator's per-node resource ceiling with required/best-effort enforcement, the unit-safe conversion into the node's cgroup requirements, the capability-gated fail-closed preflight, the node-scoped scheduler reservation that keeps remote compute off the local CPU/memory budget, and typed remote outcomes with a bounded same-node wait (`plans/closure/eggwork-worker-telemetry-and-targeting/003-status.md`). M002 becomes dependency-ready only with upstream Eggwork M002 closure and a pinned client/API revision.
+M003 closed on the M001 closure: the explicit target boundary (host-boundary admission, `Capability::NodeTarget`, `[eggwork.allowed_target_nodes]`, schedule target preservation) in `plans/closure/eggwork-worker-telemetry-and-targeting/001-status.md` gave M003 a real target contract to define limits against. M003 landed the operator's per-node resource ceiling with required/best-effort enforcement, the unit-safe conversion into the node's cgroup requirements, the capability-gated fail-closed preflight, the node-scoped scheduler reservation that keeps remote compute off the local CPU/memory budget, and typed remote outcomes with a bounded same-node wait (`plans/closure/eggwork-worker-telemetry-and-targeting/003-status.md`). M002 became dependency-ready on 2026-10-20: upstream Eggwork closed optional Gregg telemetry M001 (`ac55985`) and M002 (`5ccb1e6`) on 2026-10-19, merged to upstream `main` as `81f34e0`, and the reviewed client/core pin review is recorded in the M002 plan §3.A.
 
 ## Milestones
 
@@ -50,8 +50,9 @@ Plan: `plans/implementation/eggwork-worker-telemetry-and-targeting/001-explicit-
 Closure: `plans/closure/eggwork-worker-telemetry-and-targeting/001-status.md`.
 User-visible exit: a user/agent with appropriate permission submits and schedules a finite supported job to a named Eggwork node; read/list/status/cancel/restart remain durable; old local requests behave identically.
 
-**M002 — Consume authenticated Eggwork host telemetry (blocked: upstream Eggwork M002).**
+**M002 — Consume authenticated Eggwork host telemetry (ready for handoff: upstream Eggwork M002 closed 2026-10-19).**
 Plan: `plans/implementation/eggwork-worker-telemetry-and-targeting/002-remote-node-telemetry-projection.md`.
+Upstream contract: `eggwork_core::NodeTelemetry` schema version 1 over `GET /v1/node/telemetry`, behind the separate narrow `Operation::Telemetry` grant, read through `NodeClient::telemetry()` / `telemetry_for(&NodeId)`; upstream M001 `ac55985`, M002 `5ccb1e6`, upstream `main` `81f34e0`.
 User-visible exit: CodeGG's existing scheduler/operator read API exposes per-node sanitized CPU/memory/disk/network (where supported), timestamp/freshness, reachability/drain/slot separation and diagnostics; no Gregg network route, client poll multiplication or admission coupling.
 
 **M003 — Explicit-target remote resource-policy convergence (closed).**
