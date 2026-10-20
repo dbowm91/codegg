@@ -49,7 +49,7 @@ plan or closure records, and not any of the seven editor guard scripts — so
 the four conflicts were resolved by keeping both sides' semantics rather than
 by negotiating the editor's behaviour.
 
-The reconciliation nonetheless found and fixed **five defects**. Three are
+The reconciliation nonetheless found and fixed **six defects**. Three are
 documentation defects, surfaced by the merge rather than caused by it: each
 was correct, or nearly so, on the tree that last wrote it, and the merge put
 the two trees' claims side by side. The load-bearing one is described in
@@ -59,8 +59,8 @@ behind them were ambiguous until they were pinned against the commits that
 originally recorded each value. Most of that drift is `main`-side; the
 attribution is in §3.1.
 
-The fourth and the fifth are **this branch's own code**, and both were found
-by the hosted CI runs rather than by the merge.
+The fourth, the fifth and the sixth are **this branch's own code**, and all
+three were found by the hosted CI runs rather than by the merge.
 
 The fourth is §3.3: the M013 LSP read-delivery test target was missing the
 `required-features` gate its three sibling fake-LSP tests carry, so a
@@ -78,6 +78,15 @@ failure. All five are fixed, a sixth test pins the Insert-mode half of the
 contract through a real answer, and the whole-workspace sweep is now part of
 the qualification evidence.
 
+The sixth is §3.6: the same missing-gate class again, this time on the
+branch's own `egglsp` code-action preview, which had **no** gate at all — not
+the manifest declaration and not the in-file `#![cfg(feature = …)]` its
+directory-mate uses. It survived even a feature-less *local* sweep, because a
+stale feature-enabled `egglsp-test-server` was still on disk and satisfied the
+spawn. It is fixed with the same remedy as §3.3, both directions are checked,
+and §3.6 also names the guard that would have caught both instances and is
+not in this pull request.
+
 The merged tree is green on every step that is not one of the pre-existing
 load-sensitive failures: `cargo fmt --all -- --check`, `cargo clippy
 --workspace --all-targets --locked -- -D warnings`, the `codegg` protocol and
@@ -85,15 +94,17 @@ load-sensitive failures: `cargo fmt --all -- --check`, `cargo clippy
 their self-tests, and `bash scripts/verify.sh quick` ("Quick verification
 passed."). The **whole workspace** — CI's own `Workspace tests` command with
 `--no-fail-fast` added, so that nothing hides behind the first failure —
-reports **15246 passed / 1 timed out / 7 skipped** of 15247; the one timeout
-is a contention artifact of the local runner and is green on CI at the same
-position in the run (§4.3). The whole-`codegg`-lib step reports **1
-failure**, in `tui::commands::interactive_terminal::tests::`, and the module
-passes **94 / 0** when it is run alone — the same load-sensitive class this
-workstream's earlier sweeps recorded. An earlier sweep of the same tree failed
-**five** members of that file and an earlier sweep of the pre-merge tree
-failed two or three; which members fail varies between runs, and that variance
-is the class's signature.
+reports **15243 passed / 1 failed / 1 timed out / 7 skipped** of 15245; the
+failure is this workstream's known load-sensitive `interactive_terminal` class
+(green on the hosted run) and the timeout is a contention artifact of the
+local runner (also green on the hosted run, at the same position in the run)
+(§4.1, §4.3). The whole-`codegg`-lib step reports **1 failure**, in
+`tui::commands::interactive_terminal::tests::`, and the same file passes
+**94 / 0** on a re-run — it fails one member on roughly one run in three,
+with a *different* member each time. An earlier sweep of the same tree
+failed **five** members of that file and an earlier sweep of the pre-merge
+tree failed two or three; which members fail varies between runs, and that
+variance is the class's signature.
 
 ## 2. Reconciliation inventory
 
@@ -327,6 +338,74 @@ synthetic popup: in Insert mode `Enter` inserts a newline, dismisses the popup,
 and never applies the candidate. The file therefore proves the whole rule —
 accept in Normal, newline in Insert — instead of only the half that was failing.
 
+### 3.6 The egglsp code-action preview was missing its gate too — the second instance of §3.3 (this branch's own code)
+
+The third hosted CI run of this branch failed at the `Workspace tests` step, in
+`crates/egglsp/tests/code_action_preview.rs`:
+
+```
+thread 'a_mixed_action_carries_a_command_and_gets_no_preview' panicked at crates/egglsp/tests/code_action_preview.rs:335:10:
+the client starts: LaunchFailed("failed to spawn
+  '/home/runner/work/codegg/codegg/target/debug/egglsp-test-server []")
+```
+
+**This is the second instance of the §3.3 class**, and it is this branch's
+code: the file is new here, added by the code-action-read milestone
+(`8df5dbb3`), and `git log --diff-filter=A` shows it is not on `main` at all.
+
+The shape is the one §3.3 describes. `egglsp-test-server` is a `[[bin]]` with
+`required-features = ["lsp-test-support"]`, and the package's manifest already
+declares **four** sibling test targets with the same gate
+(`production_protocol_stdio`, `production_semantic_stdio`,
+`production_service_stdio`, `scenario_engine`). `code_action_preview` had
+**no gate at all** — neither a `[[test]]` declaration with `required-features`
+nor the in-file `#![cfg(feature = "lsp-test-support")]` idiom that
+`empty_diagnostics_readiness.rs` in the same directory uses. Cargo therefore
+auto-discovered it, built it during the feature-less CI sweep, and ran it
+against a binary `required-features` had left unbuilt.
+
+**Why even the feature-less local sweep missed it.** The local sweep ran this
+target *without* the feature and it **passed** — because
+`target/debug/egglsp-test-server` was on disk, left over from an earlier
+feature-enabled build. The harness resolves the binary by path
+(`option_env!("CARGO_BIN_EXE_egglsp-test-server")`, which Cargo sets at compile
+time whether or not the binary was built), so on a developer machine a
+**stale artifact** satisfies the spawn, and on a clean CI runner the same code
+fails. A local run proves nothing here in either direction: with the feature
+the binary exists, and without it the binary may still exist from yesterday.
+
+**The fix** is §3.3's fix, in the manifest that owns the target:
+
+```toml
+[[test]]
+name = "code_action_preview"
+path = "tests/code_action_preview.rs"
+required-features = ["lsp-test-support"]
+```
+
+Both directions are checked: without the feature Cargo refuses the target
+(`error: target 'code_action_preview' in package 'egglsp' requires the
+features: 'lsp-test-support'`), and with it the suite passes **2 / 0**. The
+package's ten test targets are now audited in one place — every target that
+can reach the fake-server spawn carries a gate (six by the manifest
+declaration, one by the in-file `#![cfg]`), and the two that cannot reach it
+(`lsp_cache_benchmark`, `phase6_regression`) reference neither the binary nor
+the harness.
+
+**The same bargain §3.3 takes applies to lints.** CI's clippy step runs
+without the feature, so a gated target is not linted there; it is covered by
+`cargo clippy -p egglsp --features lsp-test-support --all-targets --locked
+-- -D warnings`, which this tree passes.
+
+**What is not in place.** A mechanical guard for this class would have to
+decide, for each test target, whether it *can reach* a feature-gated binary —
+through a `mod` tree, not a literal string — and it would have to accept
+**either** gate idiom (the manifest declaration or the in-file
+`#![cfg(feature = …)]`). That is a real guard, it is not hard, and **it is not
+in this pull request**: this record states the limit rather than pretending a
+handful of one-off fixes is a check. The class has now bitten twice here, so
+the guard is the right follow-up.
+
 ## 4. Qualification evidence
 
 Every number below is from the sweep against the **merged** tree — both
@@ -353,22 +432,18 @@ merges applied, the `Cargo.toml` gate and the completion-contract fix included
 | `cargo test -p codegg --lib --locked core::daemon_lsp::` | **17 passed / 0 failed** |
 | `cargo test -p codegg --locked --test change_review_trajectory` | **7 passed / 0 failed** |
 | `lsp_read_delivery_m013` + `lsp_read_surface_trajectory` + `lsp_completion_trajectory` | **12 + 7 + 14 = 33 passed / 0 failed** |
-| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` (the whole workspace, 294 binaries) | **15246 passed / 1 timed out / 7 skipped** of 15247 — see §4.3 |
+| `cargo nextest run --workspace --locked --profile ci --no-fail-fast` (the whole workspace, 292 binaries) | **15243 passed / 1 failed / 1 timed out / 7 skipped** of 15245 — see §4.1 and §4.3 |
 | the TUI guard scripts, and the four that carry `--self-test` | pass — the sweep ran nine of them explicitly; `verify.sh quick` ran all eleven |
 | `bash scripts/verify.sh quick` | **"Quick verification passed."** |
 
-### 4.1 The one whole-lib failure
+### 4.1 The load-sensitive `interactive_terminal` class
 
 One member of `tui::commands::interactive_terminal::tests::` failed:
-`a_hidden_terminal_surface_does_not_arm_the_loop`. Run as a module, the same
-file passes **94 / 0**.
-
-**The nextest sweep does not reproduce this class.** `cargo nextest` runs each
-test in its own process, so the shared-process load that trips those members
-is not there — and `main`'s own whole-workspace nextest CI is green
-(`e52695b9`, the PR #134 merge). The failure belongs to the shared-process
-`cargo test` sweep, which is why the two sweeps are reported separately here
-rather than as one number.
+`a_hidden_terminal_surface_does_not_arm_the_loop`. The same file, run alone
+by the `interactive_terminal` filter (94 tests across two modules), passes
+**94 / 0** on a re-run — and fails one member on roughly one run in three,
+with a *different* member failing each time. Three consecutive runs of that
+one command on this tree gave **93 / 1**, **94 / 0**, **94 / 0**.
 
 An earlier sweep of the same merged tree — before `main`'s second batch
 landed — failed **five** members of the same file, and an earlier sweep of
@@ -376,6 +451,15 @@ the pre-merge tree failed **two** or **three**. *Which* members fail varies
 between runs; the variance is the class's signature, not a new defect. This
 workstream's closure records each prove it and record it as low severity
 (the list is in the paragraph below).
+
+**It is not one runner's fault.** The whole-workspace nextest sweep in §4
+reproduced it once — one member, in the second of the two sweeps — while the
+first sweep of the same tree did not. The hosted run is green for it: this
+branch's CI log shows `PASS … a_hidden_terminal_surface_does_not_arm_the_loop`
+in **0.060 s** at position 5562, and `main`'s own whole-workspace nextest CI
+is green (`e52695b9`, the PR #134 merge). It is a property of the tests, not
+of a runner, and it is why the two sweeps are reported separately here rather
+than as one number.
 
 These are **recorded, not repaired**: repairing them is not this
 reconciliation's work. The class is a known one — this workstream's own
@@ -464,13 +548,15 @@ The whole-workspace sweep — CI's own `Workspace tests` command, with
 reports:
 
 ```
-Summary [ 582.955s] 15247 tests run: 15246 passed (1 leaky), 1 timed out, 7 skipped
-TIMEOUT [ 300.006s] (  19/15247) codegg agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication
+Summary [ 584.722s] 15245 tests run: 15243 passed (2 leaky), 1 failed, 1 timed out, 7 skipped
+TIMEOUT [ 300.004s] (  19/15245) codegg agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication
+FAIL    [   0.113s] ( 5548/15245) codegg tui::commands::interactive_terminal::tests::a_hidden_terminal_surface_does_not_arm_the_loop
 ```
 
-**Every other test in the workspace passed**, including all twenty-three in
-the repaired `tui_completion_trajectory` binary. The one timeout is not a
-defect of this tree:
+The one **failure** is the load-sensitive class of §4.1 — the same member the
+shared-process sweep fails, and green on the hosted run.
+
+The one **timeout** is not a defect of this tree:
 
 - This branch changes **nothing** under `src/agent/` —
   `git log --no-merges 6c348f03..HEAD -- src/agent/` is empty.
@@ -496,6 +582,12 @@ is recorded, not repaired: the condition the profile's own comment names is
 contention, the hosted run is green at the same position in the run, and the
 branch does not touch the code the test exercises.
 
+**And the sweep is not a clean-room feature-less run.** It is a feature-less
+run *on a machine that has built the feature at least once* — which is how
+§3.6's target passed here and failed on the hosted runner. The fix in §3.6
+removes the dependency on that accident: the target is now skipped outright
+in a feature-less sweep, exactly as its four siblings are.
+
 ## 5. Known limits and non-claims
 
 - This record does **not** claim that `main` was green before the merge. The
@@ -516,8 +608,17 @@ branch does not touch the code the test exercises.
 - This record does **not** claim that the earlier local sweeps were
   representative of the workspace. They ran the **library** unit tests and a
   handful of named integration targets; the `tests/` integration suite was not
-  run in full on this branch, and that gap is what let §3.5 through. The
-  whole-workspace sweep in §4 is the evidence that replaces them.
+  run in full on this branch, and that gap is what let §3.5 through. Worse,
+  a sweep that *did* run a feature-dependent target feature-less (§3.6) still
+  passed it, because a stale feature-enabled binary on disk satisfied the
+  spawn. The whole-workspace sweep in §4 is the evidence that replaces them,
+  and even it is not a clean-room feature-less run: it is a feature-less run
+  **on a machine that has built the feature at least once**.
+- **No mechanical guard for the missing-gate class is in this pull request.**
+  §3.3 and §3.6 are the same class, fixed by hand twice. §3.6 describes what
+  such a guard would have to decide — reachability through a `mod` tree, and
+  acceptance of either gate idiom — and says plainly that the guard is not
+  here.
 - The whole-lib step's load-sensitive `interactive_terminal` failure is
   **not** claimed to be fixed by this merge, and is not claimed to be a new
   defect: the same class is proven in this workstream's earlier closure
