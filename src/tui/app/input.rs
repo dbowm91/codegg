@@ -18,7 +18,11 @@ impl App {
             TuiMsg::OpenModelDialog => self.open_dialog(Dialog::Model),
             TuiMsg::OpenAgentDialog => self.open_dialog(Dialog::Agent),
             TuiMsg::OpenSessionDialog => self.open_dialog(Dialog::Session),
-            TuiMsg::OpenHelpDialog => self.open_dialog(Dialog::Help),
+            // The composer's help chord. ADR-0042 part 7: the box this opens
+            // owns the copy gesture, and the route is what says so — the mode
+            // cannot, because `Esc` and `Enter` move a box between modes.
+            TuiMsg::OpenHelpDialog => self.open_dialog(Dialog::Help(HelpRoute::Chord)),
+            TuiMsg::CopyComposerSelection => self.copy_composer_selection(),
             TuiMsg::OpenTreeDialog => {
                 self.enqueue_tui_command(TuiCommand::OpenTreeDialog);
             }

@@ -292,7 +292,7 @@ after reconciling the search-backend retirement with current `main`.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 266 | `tests/*.rs` |
+| Integration test files | 268 | `tests/*.rs` |
 | CI guard scripts | 58 | `scripts/check_*` |
 
 ## Feature gates
@@ -591,7 +591,7 @@ Full `check_*` inventory lives in `scripts/` (58 guards) and additionally covers
 
 The full count audit on **2026-10-13** remeasured each row directly against its listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, event/request/response variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, database tables, storage-layout version, Git operation/risk counts, workspace members, integration test files, and guard scripts). After merging current `main` on **2026-10-15**, tool source files (78), integration test files (244), and guard scripts (49) were rechecked and updated.
 
-The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **266** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is two test files (`tests/tui_composer_cursor.rs` from M001, `tests/tui_composer_claims.rs` from M002) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
+The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **268** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is four test files (`tests/tui_composer_cursor.rs` from M001, `tests/tui_composer_claims.rs` from M002, `tests/tui_composer_motions.rs` from M004, `tests/tui_composer_selection.rs` from M005) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 

@@ -22,21 +22,23 @@
 //! selection. The composer takes the same answer, and takes it **before** any
 //! verb exists.
 //!
-//! # Why almost every entry is reserved
+//! # Why the table is all live
 //!
-//! No verb in this table is *new* behaviour today. M002 establishes ownership,
-//! not behaviour: the verbs land with M004 (motion), M005 (selection and
-//! clipboard) and M006 (undo, redo and insert transitions). A reserved entry
-//! is still **consumed** — that is the whole point — so a claimed letter can
-//! never leak to the app-level action while its verb is pending.
+//! A reserved claim still **owns** the key — the fallthrough rule is the whole
+//! point — so a reserved `d` cannot quietly become `OpenDiff` while
+//! delete-selection is pending. What is pending is the *behaviour*.
 //!
-//! The one exception is `i`, and it is an exception for a hard reason rather
-//! than a convenience one: `i` is the app's **only** route back to Insert
-//! mode, so a reserved `i` would consume the key, do nothing, and strand the
-//! user in Normal mode with no way to type at all. Its verb is therefore
-//! **live**, and what it runs is the app's *existing* transition — the gesture
-//! that used to live in the `None` arm of the key chain — moved into the
-//! table so that the table is the one place that says who owns the key.
+//! The verbs landed in three milestones: M004 (motion), M005 (selection and
+//! clipboard) and M006 (undo, redo and the insert transitions). All three are
+//! done, so every claim in the table is **live**: there is no letter the
+//! composer swallows and does nothing with.
+//!
+//! `i` was live from the start for a hard reason rather than a convenient one: it
+//! is the app's **only** route back to Insert mode, so a reserved `i` would
+//! consume the key, do nothing, and strand the user in Normal mode with no way
+//! to type at all. What it runs is the app's *existing* transition — the gesture
+//! that used to live in the `None` arm of the key chain — moved into the table
+//! so that the table is the one place that says who owns the key.
 //!
 //! # Scope
 //!
@@ -90,6 +92,8 @@ pub enum ComposerVerb {
     Redo,
     /// Helix `i` — enter insert mode before the caret.
     InsertBefore,
+    /// Helix `a` — enter insert mode after the caret.
+    InsertAfter,
     /// Helix `o` — open a line below the caret and enter insert mode.
     OpenLineBelow,
 }
@@ -111,6 +115,7 @@ impl ComposerVerb {
             Self::Undo => 'u',
             Self::Redo => 'U',
             Self::InsertBefore => 'i',
+            Self::InsertAfter => 'a',
             Self::OpenLineBelow => 'o',
         }
     }
@@ -186,6 +191,116 @@ pub enum ClaimCondition {
     /// The claim is live only when the composer buffer has more than one
     /// line.
     MultiLineBuffer,
+}
+
+impl ComposerVerb {
+    /// The verb's human label — the words the help and the hint row use.
+    ///
+    /// The enum documents what each verb *means*; this is what it is
+    /// *called*. One label per verb, in one place, so the help and the hint
+    /// row cannot describe the same verb two ways.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::WordForward => "Move to the start of the next word",
+            Self::WordBack => "Move to the start of the previous word",
+            Self::WordEnd => "Move to the end of the word",
+            Self::LineDown => "Move down one line",
+            Self::LineUp => "Move up one line",
+            Self::SelectChars => "Select characters",
+            Self::SelectLine => "Select the line",
+            Self::DeleteSelection => "Delete the selection",
+            Self::Paste => "Paste",
+            Self::Undo => "Undo the last edit",
+            Self::Redo => "Redo the last edit",
+            Self::InsertBefore => "Insert before the caret (enters insert mode)",
+            Self::InsertAfter => "Insert after the caret (enters insert mode)",
+            Self::OpenLineBelow => "Open a line below (enters insert mode)",
+        }
+    }
+}
+
+impl ClaimCondition {
+    /// The condition in the words the help and the hint row use.
+    ///
+    /// `None` for an unconditional claim: the verb is available whenever the
+    /// composer holds the keyboard.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Always => None,
+            Self::MultiLineBuffer => Some("multi-line composer buffer"),
+        }
+    }
+}
+
+/// One entry of the derived verb list: what the composer can do, rendered.
+///
+/// This is a **read-only view** over [`COMPOSER_CLAIMS`]. It adds no claim and
+/// changes no table; it is the one place that says what the composer can do,
+/// so the hint row and the help are two renderings of the same answer rather
+/// than two answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComposerVerbEntry {
+    /// The claimed key.
+    pub key: char,
+    /// The key's spelling, the way the help spells a key.
+    pub key_text: &'static str,
+    /// The verb's human label.
+    pub label: &'static str,
+    /// The condition the claim carries.
+    ///
+    /// The **enum**, not its label: the help needs the words
+    /// ([`ClaimCondition::label`]) and the hint row needs the *verdict*
+    /// ([`ClaimCondition::holds`]), and a label alone cannot answer "is this
+    /// verb available right now?".
+    pub condition: ClaimCondition,
+}
+
+/// The static spelling of one ASCII letter.
+///
+/// The help's rows carry `&'static str` keys while a claim's key is a `char`,
+/// so something has to convert between the two. This is that something, and it
+/// is a mechanical bijection: the table indexes the letters, so it cannot
+/// spell a key differently from the character it stands for. A claim table
+/// that grows a key outside the alphabet gets no spelling at all — the
+/// derived list then has no entry for it, which the guard and the tests both
+/// notice.
+fn key_label(key: char) -> Option<&'static str> {
+    const LETTERS: [&str; 52] = [
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+        "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
+        "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+    ];
+    let index = match key {
+        'a'..='z' => key as usize - 'a' as usize,
+        'A'..='Z' => key as usize - 'A' as usize + 26,
+        _ => return None,
+    };
+    LETTERS.get(index).copied()
+}
+
+/// The live claims, rendered: the derived verb list.
+///
+/// A **reserved** claim is not here. It owns its key — that is the
+/// fallthrough rule — but there is no behaviour to describe, so advertising it
+/// would teach a gesture that does nothing.
+///
+/// The derivation respects the claim's **condition**, so a consumer can decide
+/// whether the verb is available *now*. That is what makes `j` and `k` correct
+/// on a single-line buffer: there they are the transcript's, and the row must
+/// not claim them.
+pub fn composer_verb_entries() -> Vec<ComposerVerbEntry> {
+    COMPOSER_CLAIMS
+        .iter()
+        .filter(|claim| claim.status == ClaimStatus::Live)
+        .filter_map(|claim| {
+            Some(ComposerVerbEntry {
+                key: claim.key,
+                key_text: key_label(claim.key)?,
+                label: claim.verb.label(),
+                condition: claim.condition,
+            })
+        })
+        .collect()
 }
 
 impl ClaimCondition {
@@ -264,32 +379,64 @@ impl ComposerClaim {
 /// composer buffer has more than one line; on a single-line buffer they fall
 /// through to transcript scroll, which is why their app-level binding
 /// survives.
+///
+/// ## Which claims are live
+///
+/// A claim is **live** when the composer owns the key *and* the verb does
+/// something. A **reserved** claim still owns the key — that is the
+/// fallthrough rule, and it is why a reserved `d` cannot quietly become
+/// `OpenDiff` — but the verb itself is pending.
+///
+/// The live set grew in M004, when the motion verbs landed — `w`, `b`, `e`,
+/// `j` and `k` joined `i` — and again in M005, when the selection verbs
+/// landed: `v`, `x`, `d` and `p`. M006 closed the table: `u`, `U`, `a` and `o`
+/// joined them, and every claim is live. The status column stays because the
+/// distinction is what lets the guard tell "claimed and not yet live" apart
+/// from "not claimed" — and the next milestone that adds a verb will use it
+/// again.
 pub const COMPOSER_CLAIMS: &[ComposerClaim] = &[
+    ComposerClaim {
+        key: 'a',
+        verb: ComposerVerb::InsertAfter,
+        // **Live**, and the reason the vim map's bare `a` is gone.
+        //
+        // ADR-0042 part 4 lists `a` among the letters the composer owns, but
+        // its conflict table does not mention it — a gap in an accepted ADR,
+        // recorded in the roadmap rather than papered over by editing it.
+        //
+        // The measured facts settled it: `FocusSidebar` already answers to
+        // `Ctrl+Alt+S` in **both** maps, so the bare `a` was a second spelling
+        // of an action that already had one. Deleting that spelling loses no
+        // capability, and the letter joins the composer's fixed set.
+        status: ClaimStatus::Live,
+        encodings: ClaimEncodings::Bare,
+        condition: ClaimCondition::Always,
+    },
     ComposerClaim {
         key: 'b',
         verb: ComposerVerb::WordBack,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'd',
         verb: ComposerVerb::DeleteSelection,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'e',
         verb: ComposerVerb::WordEnd,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'i',
         verb: ComposerVerb::InsertBefore,
-        // **Live**, and the only live claim in the table.
+        // **Live**, and the app's only route back to Insert mode.
         //
         // `i` is the app's *only* route back to Insert mode: the Normal-mode
         // gesture that switches the composer from Normal to Insert is not a
@@ -311,63 +458,63 @@ pub const COMPOSER_CLAIMS: &[ComposerClaim] = &[
     ComposerClaim {
         key: 'j',
         verb: ComposerVerb::LineDown,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::MultiLineBuffer,
     },
     ComposerClaim {
         key: 'k',
         verb: ComposerVerb::LineUp,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::MultiLineBuffer,
     },
     ComposerClaim {
         key: 'o',
         verb: ComposerVerb::OpenLineBelow,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'p',
         verb: ComposerVerb::Paste,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'u',
         verb: ComposerVerb::Undo,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'U',
         verb: ComposerVerb::Redo,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::CapitalBoth,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'v',
         verb: ComposerVerb::SelectChars,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'w',
         verb: ComposerVerb::WordForward,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
     ComposerClaim {
         key: 'x',
         verb: ComposerVerb::SelectLine,
-        status: ClaimStatus::Reserved,
+        status: ClaimStatus::Live,
         encodings: ClaimEncodings::Bare,
         condition: ClaimCondition::Always,
     },
@@ -499,22 +646,94 @@ mod tests {
     }
 
     #[test]
-    fn exactly_one_verb_is_live_and_it_is_the_insert_transition() {
-        // `i` is the app's only route back to Insert mode, so its verb is
-        // live even though the milestone adds no text-manipulation behaviour.
-        // Every other verb is reserved: the key is consumed and nothing
-        // happens, which is what makes the fallthrough rule hold while the
-        // table grows.
+    fn every_claim_is_live() {
+        // M006 was the milestone that made the table whole: the motions
+        // (M004), the selection verbs (M005), and the undo/redo and insert
+        // transitions (M006) all landed, so no claim is left reserved.
+        //
+        // A reserved claim is not a harmless placeholder — it is a key the
+        // composer swallows and does nothing with. The table having no
+        // reserved row left is the point.
+        let reserved: Vec<char> = COMPOSER_CLAIMS
+            .iter()
+            .filter(|claim| claim.status == ClaimStatus::Reserved)
+            .map(|claim| claim.key)
+            .collect();
+        assert!(
+            reserved.is_empty(),
+            "these claims are still reserved: {reserved:?}"
+        );
+    }
+
+    #[test]
+    fn the_table_is_the_adrs_fixed_letter_set() {
+        // ADR-0042 part 4 gives the composer a closed set of Normal-mode
+        // letters. M006 completed the set with `a`; the table must not grow
+        // past it, and must not quietly drop one.
+        let keys: Vec<char> = COMPOSER_CLAIMS.iter().map(|claim| claim.key).collect();
+        assert_eq!(
+            keys,
+            vec!['a', 'b', 'd', 'e', 'i', 'j', 'k', 'o', 'p', 'u', 'U', 'v', 'w', 'x']
+        );
+    }
+
+    #[test]
+    fn the_derived_list_has_one_entry_per_live_claim() {
+        let entries = composer_verb_entries();
         let live: Vec<char> = COMPOSER_CLAIMS
             .iter()
             .filter(|claim| claim.status == ClaimStatus::Live)
             .map(|claim| claim.key)
             .collect();
+        let derived: Vec<char> = entries.iter().map(|entry| entry.key).collect();
         assert_eq!(
-            live,
-            vec!['i'],
-            "the only live verb is `i` (insert before the caret)"
+            derived, live,
+            "the derived list and the claim table disagree about which verbs are live"
         );
+    }
+
+    #[test]
+    fn the_derived_list_carries_every_claims_condition() {
+        for entry in composer_verb_entries() {
+            let claim = COMPOSER_CLAIMS
+                .iter()
+                .find(|claim| claim.key == entry.key)
+                .expect("a derived entry with no claim");
+            assert_eq!(
+                entry.condition, claim.condition,
+                "the derived entry for {:?} lost its condition",
+                entry.key
+            );
+        }
+    }
+
+    #[test]
+    fn the_conditional_verbs_are_the_ones_the_condition_gates() {
+        let conditional: Vec<(char, ClaimCondition)> = composer_verb_entries()
+            .iter()
+            .filter(|entry| entry.condition != ClaimCondition::Always)
+            .map(|entry| (entry.key, entry.condition))
+            .collect();
+        assert_eq!(
+            conditional,
+            vec![
+                ('j', ClaimCondition::MultiLineBuffer),
+                ('k', ClaimCondition::MultiLineBuffer)
+            ],
+            "only the line motions are conditional; the rest are available whenever \
+             the composer holds the keyboard"
+        );
+    }
+
+    #[test]
+    fn every_live_claim_has_a_label() {
+        for entry in composer_verb_entries() {
+            assert!(
+                !entry.label.is_empty(),
+                "the verb for {:?} has no label; the help could not describe it",
+                entry.key
+            );
+        }
     }
 
     #[test]

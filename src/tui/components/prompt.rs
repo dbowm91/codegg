@@ -167,6 +167,31 @@ impl PromptWidget {
         self.buffer.insert_newline();
     }
 
+    /// Move the caret after the character it sits on, for insert-after.
+    pub fn insert_after(&mut self) {
+        self.buffer.insert_after();
+    }
+
+    /// Open an empty line below the caret's line.
+    pub fn open_line_below(&mut self) {
+        self.buffer.open_line_below();
+    }
+
+    /// The composer's line count — an empty buffer is one line.
+    pub fn line_count(&self) -> usize {
+        self.buffer.line_count()
+    }
+
+    /// Undo the newest edit. Returns whether anything was undone.
+    pub fn undo(&mut self) -> bool {
+        self.buffer.undo()
+    }
+
+    /// Redo the newest undone edit. Returns whether anything was redone.
+    pub fn redo(&mut self) -> bool {
+        self.buffer.redo()
+    }
+
     pub fn backspace(&mut self) {
         self.buffer.backspace();
     }
@@ -189,6 +214,61 @@ impl PromptWidget {
 
     pub fn cursor_end(&mut self) {
         self.buffer.move_end();
+    }
+
+    /// Move the caret to the start of the next word.
+    pub fn cursor_word_forward(&mut self) {
+        self.buffer.move_word_forward();
+    }
+
+    /// Move the caret to the start of the previous word.
+    pub fn cursor_word_backward(&mut self) {
+        self.buffer.move_word_backward();
+    }
+
+    /// Move the caret to the last character of the word at the caret.
+    pub fn cursor_word_end(&mut self) {
+        self.buffer.move_word_end();
+    }
+
+    /// Move the caret one line down.
+    pub fn cursor_line_down(&mut self) {
+        self.buffer.move_line_down();
+    }
+
+    /// Move the caret one line up.
+    pub fn cursor_line_up(&mut self) {
+        self.buffer.move_line_up();
+    }
+
+    /// Arm a character selection at the caret, or discard the held one.
+    pub fn toggle_select_chars(&mut self) {
+        self.buffer.toggle_select_chars();
+    }
+
+    /// Select the caret's line, or extend the held line selection by one line.
+    pub fn select_line(&mut self) {
+        self.buffer.select_line();
+    }
+
+    /// Delete the held selection, if there is one.
+    ///
+    /// Returns whether anything was deleted.
+    pub fn delete_selection(&mut self) -> bool {
+        self.buffer.delete_selection()
+    }
+
+    /// The byte range the held selection covers, if there is one.
+    ///
+    /// The same range the delete verb removes and the renderer paints, so
+    /// "the selection" is one thing rather than three.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.buffer.selection_range()
+    }
+
+    /// The text the held selection covers, if there is one.
+    pub fn selected_text(&self) -> Option<String> {
+        self.buffer.selected_text()
     }
 
     pub fn paste(&mut self, text: String) {
@@ -336,6 +416,53 @@ impl PromptWidget {
     pub fn paints_block_cursor(&self) -> bool {
         self.cursor_style == ComposerCursor::Block
     }
+
+    /// The spans for one line of the buffer, with the selected bytes painted.
+    ///
+    /// The unselected bytes render exactly as they always did — one span in
+    /// the theme's foreground — so a composer with no selection is
+    /// byte-identical to the composer before the selection existed.
+    ///
+    /// The selected part is painted as a **background**: `theme.selection` is
+    /// a fill, and the theme's `selection_text` is the token derived to read
+    /// on that fill. Painting the selection colour as a foreground instead is
+    /// the dark-on-dark defect the other selected surfaces in the TUI record.
+    ///
+    /// The offsets are byte offsets into the whole buffer, so they are
+    /// translated into this line's own coordinates before they slice it. They
+    /// are character boundaries — the model's range method guarantees that —
+    /// so the slices cannot split a code point.
+    fn line_spans(
+        &self,
+        line: &str,
+        line_start: usize,
+        selection: Option<(usize, usize)>,
+    ) -> Vec<Span<'static>> {
+        let base = Style::default().fg(self.theme.foreground);
+        let Some((sel_start, sel_end)) = selection else {
+            return vec![Span::styled(line.to_string(), base)];
+        };
+        let line_end = line_start + line.len();
+        let sel_lo = sel_start.max(line_start);
+        let sel_hi = sel_end.min(line_end);
+        if sel_lo >= sel_hi {
+            return vec![Span::styled(line.to_string(), base)];
+        }
+        let mut spans = Vec::new();
+        if sel_lo > line_start {
+            spans.push(Span::styled(line[..sel_lo - line_start].to_string(), base));
+        }
+        spans.push(Span::styled(
+            line[sel_lo - line_start..sel_hi - line_start].to_string(),
+            Style::default()
+                .fg(self.theme.selection_text)
+                .bg(self.theme.selection),
+        ));
+        if sel_hi < line_end {
+            spans.push(Span::styled(line[sel_hi - line_start..].to_string(), base));
+        }
+        spans
+    }
 }
 
 impl Default for PromptWidget {
@@ -375,12 +502,21 @@ impl Widget for &PromptWidget {
             } else {
                 self.buffer.text()
             };
+            // The selection is a range in the **buffer**, so it means nothing
+            // against the placeholder. An empty composer has no selection
+            // either, and the placeholder path renders exactly as it always
+            // did.
+            let selection = if self.buffer.text().is_empty() {
+                None
+            } else {
+                self.buffer.selection_range()
+            };
+            let mut line_start = 0usize;
             text.split('\n')
-                .map(|l| {
-                    Line::from(Span::styled(
-                        l.to_string(),
-                        Style::default().fg(self.theme.foreground),
-                    ))
+                .map(|line| {
+                    let spans = self.line_spans(line, line_start, selection);
+                    line_start += line.len() + 1;
+                    Line::from(spans)
                 })
                 .collect()
         };
@@ -424,5 +560,131 @@ impl Widget for &PromptWidget {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+
+    /// Render the composer into a buffer.
+    ///
+    /// The composer's first row is the mode/prefix row, so the text starts
+    /// on row 1 — the tests below read the text from there.
+    fn render(widget: &PromptWidget, width: u16, height: u16) -> Buffer {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        widget.render(area, &mut buffer);
+        buffer
+    }
+
+    fn composer(text: &str) -> PromptWidget {
+        let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
+        widget.set_text(text.to_string());
+        widget
+    }
+
+    /// An unselected composer renders exactly as it always did: the text in
+    /// the theme's foreground, with no background of its own.
+    #[test]
+    fn an_unselected_composer_renders_as_before() {
+        let widget = composer("hello");
+        let buffer = render(&widget, 20, 4);
+
+        let cell = &buffer[(0, 1)];
+        assert_eq!(cell.symbol(), "h");
+        assert_eq!(cell.fg, widget.theme.foreground);
+        assert_eq!(cell.bg, Color::Reset, "no selection, no background");
+    }
+
+    /// A held selection is painted with the theme's selection colours.
+    #[test]
+    fn a_selected_range_is_painted_with_the_selection_colours() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+        widget.cursor_right();
+
+        let buffer = render(&widget, 20, 4);
+
+        // The selection is inclusive of the head character, so "he" is
+        // painted.
+        for column in 0..2 {
+            let cell = &buffer[(column, 1)];
+            assert_eq!(cell.bg, widget.theme.selection, "column {column}");
+            assert_eq!(cell.fg, widget.theme.selection_text, "column {column}");
+        }
+        let cell = &buffer[(2, 1)];
+        assert_eq!(cell.symbol(), "l");
+        assert_eq!(cell.bg, Color::Reset, "the text after the selection");
+        assert_eq!(cell.fg, widget.theme.foreground);
+    }
+
+    /// A selection that spans a newline is painted on both lines.
+    #[test]
+    fn a_selection_spanning_a_newline_is_painted_on_both_lines() {
+        let mut widget = composer("one\ntwo");
+        widget.set_cursor(2);
+        widget.toggle_select_chars();
+        // Move onto the second line: the head follows, and the selection
+        // covers the newline between them.
+        widget.cursor_right();
+        widget.cursor_right();
+
+        let buffer = render(&widget, 20, 4);
+
+        assert_eq!(
+            buffer[(2, 1)].bg,
+            widget.theme.selection,
+            "the first line's tail is selected"
+        );
+        assert_eq!(
+            buffer[(0, 2)].bg,
+            widget.theme.selection,
+            "the second line's head is selected"
+        );
+    }
+
+    /// The placeholder path is unaffected: an empty composer has no
+    /// selection, and its placeholder renders in the muted colour.
+    #[test]
+    fn the_placeholder_path_is_unaffected() {
+        let widget = PromptWidget::new(Arc::new(Theme::dark()));
+        let buffer = render(&widget, 30, 4);
+
+        assert_eq!(buffer[(0, 1)].symbol(), "A");
+        assert_eq!(buffer[(0, 1)].bg, Color::Reset);
+    }
+
+    /// The selection's range is the same one the delete verb removes.
+    #[test]
+    fn the_widget_reports_the_selection_the_delete_verb_removes() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+        widget.cursor_right();
+
+        assert_eq!(widget.selection_range(), Some((0, 2)));
+        assert_eq!(widget.selected_text().as_deref(), Some("he"));
+        assert!(widget.delete_selection());
+        assert_eq!(widget.get_text(), "llo world");
+    }
+
+    /// A paste inserts the given text at the caret.
+    ///
+    /// The **text** is a parameter here, and that is the point: the clipboard
+    /// itself is the system clipboard, which is global state that parallel
+    /// tests would race on. The verb's input is therefore tested here, and
+    /// the app's wiring — read the clipboard, hand the text over — is the
+    /// same system boundary every other clipboard call in the app shares.
+    #[test]
+    fn a_paste_inserts_the_text_at_the_caret() {
+        let mut widget = composer("hello");
+        widget.set_cursor(5);
+        widget.paste(" world".to_string());
+        assert_eq!(widget.get_text(), "hello world");
+        assert_eq!(widget.cursor_pos(), 11, "the caret follows the paste");
     }
 }

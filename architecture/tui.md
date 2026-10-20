@@ -1732,14 +1732,17 @@ The panel's answer is to claim `d` unconditionally, even with an empty
 selection. The composer takes the same answer, and takes it **before any verb
 exists**.
 
-Every verb in the table is **reserved** today, with one exception. M004
-(motion), M005 (selection and clipboard) and M006 (undo, redo, insert
-transitions) land the behaviour. A reserved claim is still consumed, so a
-claimed letter cannot leak to an app-level action while its verb is pending.
-That is why the table is established *before* the verbs: the leak is cheapest
-to prevent now and most expensive to discover later.
+**Every verb is live now.** M004 (motion), M005 (selection and clipboard) and M006
+(undo, redo and the insert transitions) have all landed their behaviour, so the
+table has no reserved row left. A reserved claim is still consumed, so a claimed
+letter cannot leak to an app-level action while its verb is pending — that is
+why the table was established *before* the verbs: the leak is cheapest to
+prevent then and most expensive to discover later. Now that the table is whole,
+the runner's match on the verbs is **exhaustive**, so a verb added to
+`ComposerVerb` without an arm in `run_composer_claim` does not compile. The
+table and the runner cannot disagree, and the compiler is what says so.
 
-**`i` is the exception, and it is live.** `i` is the app's **only** route back
+**`i` was the first exception, and it is live.** `i` is the app's **only** route back
 to Insert mode: the transition is not a binding at all, it is the `None` arm
 of the key chain, reached when a key resolves to no action. Claiming `i` and
 leaving the verb reserved would consume the key, do nothing, and strand the
@@ -1753,21 +1756,22 @@ unfocused, a focused panel, the Workspace view's chat pane).
 
 | Letter | Verb | Condition | Lands with |
 |---|---|---|---|
-| `b` | word back | always | M004 |
-| `d` | delete selection | always | M005 |
-| `e` | word end | always | M004 |
+| `a` | insert after the caret | always | **live** — M006 |
+| `b` | word back | always | **live** — M004 |
+| `d` | delete selection | always | **live** — M005 |
+| `e` | word end | always | **live** — M004 |
 | `i` | insert before the caret | always | **live** — the app's existing transition |
-| `j` | line down | **composer buffer has more than one line** | M004 |
-| `k` | line up | **composer buffer has more than one line** | M004 |
-| `o` | open line below | always | M006 |
-| `p` | paste | always | M005 |
-| `u` | undo | always | M006 |
-| `U` | redo | always (both encodings) | M006 |
-| `v` | select characters | always | M005 |
-| `w` | word forward | always | M004 |
-| `x` | select line | always | M005 |
+| `j` | line down | **composer buffer has more than one line** | **live** — M004 |
+| `k` | line up | **composer buffer has more than one line** | **live** — M004 |
+| `o` | open line below | always | **live** — M006 |
+| `p` | paste | always | **live** — M005 |
+| `u` | undo | always | **live** — M006 |
+| `U` | redo | always (both encodings) | **live** — M006 |
+| `v` | select characters | always | **live** — M005 |
+| `w` | word forward | always | **live** — M004 |
+| `x` | select line | always | **live** — M005 |
 
-Three letters are **not** in the table, and each absence is deliberate.
+Four letters are **not** in the table, and each absence is deliberate.
 `space` keeps opening the help menu — ADR-0042's amendment puts the Helix
 copy gesture in the box that chord opens, so the composer claims neither
 `space` nor `y`, and one gesture has one owner. `g` keeps `GoToTop`; if a
@@ -1811,8 +1815,8 @@ and silently do nothing on another. A lowercase claim is the bare key only:
 the shifted spelling of a lowercase letter is a *different* character, and it
 is not the composer's.
 
-**Three app-level chords moved, and the capabilities did not.** The composer
-claimed the letters `x`, `d` and `i`, so the actions that owned them moved to
+**Four app-level chords moved, and the capabilities did not.** The composer
+claimed the letters `x`, `d`, `i` and `a`, so the actions that owned them moved to
 chords that are not letters:
 
 | Action | Was | Is |
@@ -1820,6 +1824,15 @@ chords that are not letters:
 | stop / resume the turn | `x` | `Ctrl+Alt+X` |
 | open diff | `d` (vim map) | `Ctrl+Alt+D` |
 | focus prompt | `i` (vim map) | `Ctrl+Alt+E` |
+| focus sidebar | `a` (vim map) | `Ctrl+Alt+S` |
+
+The `a` re-spelling is the one that **deleted** a binding rather than moving
+one. `FocusSidebar` already answered to `Ctrl+Alt+S` in **both** maps, so the
+vim map's bare `a` was a second spelling of an action that already had one; the
+bare spelling was the composer's to take, and nothing was lost with it. ADR-0042
+part 4's conflict table does not mention `a` — a gap in an accepted ADR, which
+is recorded in the roadmap's D6 row rather than papered over by editing the
+ADR.
 
 `Ctrl+Alt+<letter>` is the app's legacy-safe chord family: the terminal
 delivers `ESC` + the control byte, which crossterm reports as the letter with
@@ -1920,6 +1933,49 @@ eviction can never strand a redo entry whose undo counterpart was thrown away.
 Replacing the composer's text or submitting it clears the history outright, so
 an undo cannot resurrect text the user has already sent.
 
+**The eviction never drops the last remaining entry.** The byte bound exists to
+cap how much history the composer holds, not to decide which edits are worth
+keeping. Evicting the *newest* edit because it is large would remove the very
+edit the user is most likely to want to undo: a large paste was unundoable the
+moment it was made, because the eviction removed it and left the history empty.
+So the bound is enforced by dropping **older** entries, and an edit that is on
+its own over the bound stays. The history is then over its bound by exactly that
+one edit, which is the price of "the last thing I did is always undoable".
+
+**The undo scope is the composer's own text (roadmap D4).** The composer has
+exactly one buffer, so the scope is not a choice about *which* state to keep —
+it is what the buffer's history already is. Two paths replace the whole buffer
+rather than editing it: a submit (`prompt.clear()`) and a staged projection
+(`prompt.set_text(include_text)`). Both **drop the history**, so an undo can
+never bring back text the user has already sent, and neither is itself
+undoable. A *pending* slash command is ordinary buffer text and is undoable
+while it is pending; what is not undoable is the replacement of the buffer
+around it.
+
+**An edit that changes the buffer's length drops the held selection.** The
+selection's points are byte offsets into the text that the edit replaces, so
+carrying them across would make the selection cover different characters — or
+reach past the end of the buffer. The rule lives in `replace_range`, the one
+place every edit passes through, rather than in each caller's judgement.
+`undo` and `redo` change the length too, so they drop the selection the same
+way. This is the discipline `delete_selection` already followed.
+
+**The composer's undo, redo and insert transitions are M006's verbs.** `u` and
+`U` are the undo and redo, and they **report in both branches** — "Nothing to
+undo" against "Undid the last edit" — mirroring the paste verb's rule, so a
+verb's silence is never ambiguous and a no-op cannot be mistaken for a success.
+
+`a` and `o` are the two insert transitions, and they differ in one way that
+matters. `a` is a **movement**: the caret moves one character forward, clamped
+to the end of its own line, and the buffer's text does not change — so there is
+nothing to undo. The move goes through `move_caret`, the deliberate-movement
+path, because that is the path that extends a held character selection; a
+re-anchored caret would throw the selection away. `o` is an **edit**: it opens
+an empty line below the caret's line, the buffer gains a line, and `u` takes it
+back. The caret placement for both lives in the **model**
+(`ComposerText::insert_after`, `ComposerText::open_line_below`), not in the app,
+so the rule is one rule rather than two implementations of it.
+
 **The shared selection rules are checked against every surface that uses them.**
 `helix_selection.rs`'s test module holds the rules once, generic over a point
 type, and runs them against the terminal's viewport cell **and** the
@@ -1927,6 +1983,155 @@ composer's point. A surface that claims to use the shared machine has to
 satisfy the same rules, and the cheapest way to prove that is to run the same
 rules against it rather than to write a second set of tests that says the same
 thing in different words.
+
+**The hint row above the composer is derived from the claim table.**
+`composer_verb_entries` (`src/tui/composer_claims.rs`) is a read-only view over
+`COMPOSER_CLAIMS`: the live claims, each with its key, its human label, and the
+condition it carries. Three surfaces read it, and none of them keeps a copy:
+
+- The **hint row** (`App::composer_hint_row`, `src/tui/app/mod.rs`) names the
+  composer's **keys** — not their descriptions. The descriptions live in the
+  help, one keypress away, and a row that spelled out fourteen verbs would not
+  fit a terminal: measured at eighty columns the grouped form runs to
+  ninety-four characters and loses the line motions to the truncation. The keys
+  fit, and the row's job — "which letters are mine right now" — is answered by
+  the keys alone.
+- The **help**'s composer section (`composer_help_entries`,
+  `src/tui/input.rs`) is one row per live claim, with the verb's label as the
+  action and the claim's condition as the row's condition.
+- The **guard** (below) reads the same table and the same labels.
+
+The row's **presence** is gated on the composer holding the keyboard, never on
+the mode: the row is present in Normal and in Insert alike, so `Esc` does not
+reflow the transcript, and only its *text* changes. That is the interactive
+terminal panel's shape (`src/tui/panels/terminal.rs:416`): focus gates the
+row, the mode changes it.
+
+The row is **bounded**. A part is never split, because a row that ends in the
+middle of a key names a key that does not exist; parts are dropped whole, from
+the end, in the claim table's order. `fit_parts` measures in display columns
+rather than bytes, so the `·` separator is counted as one column.
+
+**The composer's verbs are documentation, and the copy gesture is not.** The
+composer's own rows appear in **both** help routes: a user who opens `/help`
+is exactly the user who needs to know what `w` does. The copy gesture is
+different — it is the second step of the `space` chord, and only the box the
+`space` chord opens *performs* it. The `/help` box is opened to type a query,
+and `y` there is a filter character, so listing the gesture there would teach
+one that does nothing.
+
+That is why the content builders take a **route**
+(`build_help_lines(vim_mode, active_mode, route)` and
+`searchable_help_rows(vim_mode, active_mode, route)`), and why `HelpRoute` now
+lives in `src/tui/input.rs` beside the content it selects: the route selects
+content as well as behaviour. `HelpDialog::with_route` **rebuilds** the
+content, because relabelling the box without rebuilding it would leave the
+chord route teaching a gesture it does not have. The default route is
+`HelpRoute::Command` — the one that cannot copy — so a box opened without a
+route is inert rather than armed.
+
+**Two guard rules police the help.** They are separate rules because they read
+different tables and catch different classes, and one rule doing both would be
+a rule nobody could read:
+
+- **G10 — the help against the claim table.** The help's composer section is
+  derived, so its rows are not in the source and the guard cannot read them
+  there. What it reads is the app's *own* rows, which are exactly the rows
+  that could contradict the table. G10 requires the composer section to be
+  derived at all, every live verb to have a label, **no** app row to advertise
+  a claimed key for a different action, and **no** app row to advertise a
+  reserved claim. The one documented exception is a *conditional* claim's
+  fall-through row — the `j`/`k` row, which says what the pair does on a
+  single-line composer buffer — and it earns the exception by carrying its
+  condition. The rules are scoped to the **Normal-mode** section, because that
+  is the surface the composer's claims live on; the Dialog and Command
+  sections describe other surfaces, where the same letters mean something else.
+- **G11 — the app's re-spelled verbs.** Every action in `RESPELLED_ACTIONS` must
+  be documented under a **modifier chord**, and must **not** be documented
+  under its old bare letter. The chord spelling is derived from the binding
+  maps, so the guard and the help agree on what the chord is called.
+
+**The three surfaces' known differences.** The sweep that closed the workstream
+found one divergence and three differences that are deliberate. They are
+recorded here so a reader does not have to re-derive them:
+
+| Dimension | Composer | Editor | Terminal panel | Verdict |
+|---|---|---|---|---|
+| Character selection includes the head character | `ComposerText::selection_range` | the editor's | the shared machine | **agree** — one machine, generic over the point type |
+| Line selection spans whole lines, one line per press | `ComposerText::select_line` | the editor's | `toggle_line_selection` | **agree** — one machine |
+| A deliberate movement extends a character selection and disarms line growth | `move_caret` → `move_to` | the editor's | `view.nav.move_to` | **agree** — one machine |
+| Word boundary rule | `text_geometry::word_forward` / `word_backward` / `word_end` | the same, via `src/tui/editor.rs` | **its own**: `next_word_end` / `previous_word_start` over the current row | **diverge, deliberately** — the terminal's `e`/`b` are a *row-scoped reader's* motion over a PTY's screen, not a buffer motion |
+| Vertical motion keeps the column the target line allows | `text_geometry::move_vertical` | the same | the terminal's `move_cursor` scrolls at the edges | **diverge by design** — the terminal is a viewport |
+| Paste | M005 | the editor's own roadmap | none | **known difference** (roadmap D5) |
+| Undo / redo | M006 | the editor's own | none | **known difference** — the terminal's scrollback is read-only |
+
+The word-geometry divergence is **recorded, not fixed**. The terminal panel's
+`e` and `b` move over the row a reader is looking at; the composer's and the
+editor's move over a buffer. Changing the terminal's behaviour is a decision,
+not an implementation detail, and the milestone's non-goals forbid it without
+one.
+
+**The composer's motions move the caret through the shared machine, not around
+it.** M004 made `w`, `b`, `e`, `j` and `k` live. Two properties of that
+implementation are load-bearing.
+
+The **targets** come from `text_geometry`, not from a second opinion: the
+word motions call `word_forward` / `word_backward` / `word_end` and the
+vertical motion calls `move_vertical`, so the composer and the editor land on
+the same offset for the same text. The composer's test walks every offset of
+a text and asserts equality with the shared functions, which is the same
+agreement the model already asserts for words.
+
+The **movement** goes through `move_caret` and not `set_caret`. The
+difference is invisible until a selection exists, and then it is the whole
+story: `move_caret` moves the machine's cursor, so in character mode the
+selection's head follows it and the selection **grows** with the motion. A
+motion that set the caret directly would re-anchor the selection on every
+press, and "select some text, then walk the caret over it" would be
+impossible — which is the interaction the selection verbs are for.
+
+`j` and `k` keep the table's one **conditional**: they are claimed only when
+the composer buffer has more than one line, and on a single-line buffer they
+fall through to transcript scroll unchanged. The condition is evaluated at the
+claim gate, before the binding map, so a single-line composer scrolls exactly
+as it did before M004.
+
+**The composer's selection is one range, and the copy gesture belongs to the
+help box.** M005 made `v`, `x`, `d` and `p` live.
+
+There is **one** selection range, and it has three consumers: the delete verb
+removes it, the copy verb copies it, and the renderer paints it.
+`ComposerText::selection_range` is the editor's `selection_range`, term for
+term — a character selection is inclusive of the head character, a line
+selection spans whole lines including their terminators, and both endpoints
+are clamped into the buffer and onto character boundaries. A selection that
+each consumer computed for itself would be three answers to one question, and
+"copy" and "delete" would stop meaning the same thing.
+
+The **copy gesture** is `space` and then `y` in the help box the chord
+opened, and that box is the only surface that owns it. The composer does not
+claim `y`; the help box does, and only in the box the chord opened.
+
+The **route** decides, and the mode cannot. A `/help` box starts in Insert
+and `Esc` moves it to Normal, so a mode-only rule would make `y` copy in a
+box that must not copy; a `space`-opened box can be switched to Insert with
+`Enter`, where `y` must stay a filter character. So the route travels **with
+the open request** — `Dialog::Help(HelpRoute)` — and a call site cannot open
+the help box without saying which help box it is. The `HelpRoute::Command`
+default is the one that cannot copy, so a box opened without a route is inert
+rather than armed.
+
+The copy is a **`TuiMsg`**, not a dialog-side mutation. `open_dialog` pushes
+a *clone* of the dialog onto the focus manager, and the clone is what receives
+the keys; a clone cannot reach the app's composer. So the box returns
+`TuiMsg::CopyComposerSelection` and the app performs the copy — the same
+pattern `q` already uses to close a box.
+
+The clipboard is the **system** clipboard, and the report names the **size**
+of what was copied rather than its text: toasts are retained for `/logs`, and
+a preview of the composer's contents in a retained log is a copy of the
+user's text in a place they did not ask for it to be. The paste verb reports
+either way — a silent no-op would teach the user that the key is dead.
 
 **The VT screen retains a bounded history, and the viewport is a controller
 concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to
@@ -2910,11 +3115,12 @@ arriving while the user is pinned moves them with it.
 
 **Contextual keys above the input.** `SidePanel::composer_hints` returns the
 verbs the active panel owns; `App::composer_hint_text` prefers an armed seed
-(`↵ send reply · Esc cancel reply`) over panel hints, and `render.rs` reserves
-one row for the line directly above the composer — inside the prompt
-allocation, so focusing a panel cannot shrink the input. Panels advertise
-their keys once, next to the input those keys modify, rather than growing
-per-panel footers.
+(`↵ send reply · Esc cancel reply`) over panel hints, and falls back to the
+**composer's own verbs** when the composer holds the keyboard and no panel
+does. `render.rs` reserves one row for the line directly above the composer —
+inside the prompt allocation, so focusing a panel cannot shrink the input.
+Panels advertise their keys once, next to the input those keys modify, rather
+than growing per-panel footers.
 
 **A docked panel advertises itself before you go in — but only a *hosted* one.**
 The host used to return `None` for any unfocused panel, so a docked `/files`
@@ -2952,6 +3158,17 @@ Two things follow, and both are the point rather than a side effect:
 - **The working strip's reserved row 0 is untouched.** It is reserved
   unconditionally, and `Min(10)` for the transcript holds either way — the hint
   row is a separate row carved from the prompt chunk.
+
+**The row is not vacated when a panel lets go — the composer takes it.** The
+composer's own verbs (see *The hint row above the composer is derived from the
+claim table*) are what the row is for, so a panel releasing the keyboard hands
+the row to the composer rather than removing it. The carved region therefore
+keeps its height, and the working strip above it does not move at all. This is
+*stronger* than the property above, and it is the one the frame actually
+carries: the row's **content** changes with the keyboard, its **presence** does
+not, so neither the composer nor the transcript moves when a panel takes or
+loses focus. The row is absent only when nobody holds the keyboard in the main
+buffer — the timeline is open, or the editor's buffer owns it.
 
 What each panel does when it does *not* have the keyboard is the panel's own
 decision, and the split is deliberate. The session, chat, help and agents

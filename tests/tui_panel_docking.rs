@@ -1648,8 +1648,10 @@ fn frame_rows(app: &mut App) -> Vec<String> {
 /// The reported defect: `TERM · focus to scroll, select and type` stayed on
 /// screen above the composer after `Shift+←` handed the keyboard back, so the
 /// row described the terminal's verbs at a user who was typing into the LLM
-/// buffer. The row exists to name whoever holds the keyboard, and it must
-/// leave with it — and come back when the panel takes it again.
+/// buffer. The row names whoever holds the keyboard, so the terminal's verbs
+/// must leave with it — and come back when the panel takes it again. The row
+/// itself stays: the composer takes it over, because the composer's own verbs
+/// are what the row is for.
 #[tokio::test(flavor = "current_thread")]
 async fn the_terminal_hint_row_only_exists_while_the_panel_holds_the_keyboard() {
     let mut app = test_app();
@@ -1679,8 +1681,7 @@ async fn the_terminal_hint_row_only_exists_while_the_panel_holds_the_keyboard() 
     // The row the hint occupied is not the input box's. `session_layout` gives
     // the prompt chunk a fixed, bottom-anchored height and the working strip,
     // hint line and todo strip are carved off its **top** in that order, so
-    // removing one row shrinks the carved region and gives the row to the
-    // transcript (`Min(10)`) without moving the input by a single row.
+    // the composer below it stays on its row whatever the carved region does.
     //
     // That is the property worth pinning, and it is not the one that is easy to
     // assume: a hint row that appeared or vanished and dragged the composer with
@@ -1692,11 +1693,21 @@ async fn the_terminal_hint_row_only_exists_while_the_panel_holds_the_keyboard() 
         focused_prompt,
         "the input box must not move when the hint row is added or removed"
     );
+    // The row is not *vacated* when the panel lets go — the composer takes it,
+    // because the composer's own verbs are what the row is for. The carved
+    // region therefore keeps its height, and the working strip above it stays
+    // exactly where it was. Before the composer's verbs were named here, the
+    // row was absent in this state and the working strip moved up into it.
     assert_eq!(
-        unfocused[focused_prompt - 1],
+        unfocused[focused_prompt - 2],
         focused[focused_prompt - 2],
-        "the working strip is carved off the prompt chunk's top edge, so it moves down into \
-         the vacated row while the composer below it stays put"
+        "the working strip is carved off the prompt chunk's top edge and the hint row \
+         is never vacated, so the strip does not move when the panel lets go"
+    );
+    assert!(
+        unfocused[focused_prompt - 1].contains("COMP"),
+        "the row the panel vacated now names the composer's own verbs, got {}",
+        unfocused[focused_prompt - 1]
     );
 
     app.ui_state.input_mode = InputMode::Normal;

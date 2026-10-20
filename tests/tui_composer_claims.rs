@@ -30,7 +30,7 @@
 use codegg::tui::app::state::WorkspaceDashboardState;
 use codegg::tui::app::{App, Dialog, SessionStatus, TuiCommand};
 use codegg::tui::components::component::DialogType;
-use codegg::tui::components::dialogs::help::HelpDialog;
+use codegg::tui::components::dialogs::help::{HelpDialog, HelpRoute};
 use codegg::tui::composer_claims::{self, COMPOSER_CLAIMS};
 use codegg::tui::input::{build_bindings, InputAction, InputMode};
 use codegg::tui::route::Route;
@@ -57,7 +57,7 @@ fn bind(app: &mut App, modifiers: KeyModifiers, code: KeyCode, action: InputActi
 }
 
 fn help_is_open(app: &App) -> bool {
-    matches!(app.ui_state.dialog, Dialog::Help)
+    matches!(app.ui_state.dialog, Dialog::Help(_))
 }
 
 /// The composer's text.
@@ -677,7 +677,7 @@ fn every_claim_table_letter_is_typed_as_text_in_insert_mode() {
 fn with_a_dialog_open_a_claimed_letter_reaches_the_dialog() {
     let mut app = test_app();
     normal_mode(&mut app);
-    app.open_dialog(Dialog::Help);
+    app.open_dialog(Dialog::Help(HelpRoute::Command));
 
     // `i` is a claimed letter, and it is also the help box's own gesture.
     press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);

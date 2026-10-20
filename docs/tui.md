@@ -328,14 +328,142 @@ motions are the way to move it:
 `h` and `l` work in **both** layouts — the default one and the vim one — so
 they are there whichever you use.
 
-The word motions (`w`, `b`, `e`) are the composer's own and arrive with a
-later milestone. Until then they are **spoken for**: pressing `w` in `[NOR]`
-mode does nothing, deliberately, rather than quietly doing something else.
+The word motions move it by word instead of by character:
 
-### Three keys moved to chords
+| Key | What it does |
+|---|---|
+| `w` | Move to the start of the next word |
+| `b` | Move to the start of the previous word |
+| `e` | Move to the last character of the word at the caret |
+| `j` / `k` | Move down / up a line, keeping the column |
+
+`j` and `k` only move the caret when your prompt spans **more than one
+line**. On a single line they scroll the conversation instead, which is what
+they have always done.
+
+### The composer's own keymap in `[NOR]` mode
+
+This is the whole of the `[NOR]`-mode keymap, in one table. It is generated
+from the same source as the row above the composer and as the help box, so the
+three cannot disagree:
+
+| Key | What it does |
+|---|---|
+| `w` | Move to the start of the next word |
+| `b` | Move to the start of the previous word |
+| `e` | Move to the last character of the word at the caret |
+| `j` / `k` | Move down / up a line — only when the prompt spans more than one line |
+| `v` | Start selecting characters; a caret motion then extends the selection |
+| `x` | Select the whole line, and grow the selection a line at a time |
+| `d` | Delete the selection |
+| `p` | Paste the clipboard at the caret |
+| `u` | Undo the last edit |
+| `U` | Redo the last edit |
+| `i` | Start typing before the caret |
+| `a` | Start typing after the character under the caret |
+| `o` | Open an empty line below and type in it |
+
+Two rules cover the edges of that table:
+
+- **`j` and `k` need more than one line.** On a single-line prompt they are
+  the conversation's, and scroll it.
+- **An edit that changes the length of the text drops the selection.** The
+  selection remembers *positions* in the text, so once the text moves the
+  selection would point at the wrong characters. Editing, undoing and
+  redoing all drop it.
+
+### The row above the composer
+
+The one-line row above the composer names whoever holds the keyboard and what
+their keys do. When the composer has it, the row is the composer's:
+
+```
+COMP · NOR · a · b · d · e · i · j · k · o · p · u · U · v · w · x · space help
+```
+
+- The letters are the composer's own keys, and they are the ones available
+  **right now** — `j` and `k` are absent while your prompt is one line long,
+  because there they scroll the conversation.
+- `space help` opens the help box, where every key above is described in
+  full.
+- In `[INS]` mode the row says `COMP · INS · type · Esc normal` instead: the
+  composer's keys are not available while you are typing — the letters are
+  text.
+- The row is **present** in both modes, so `Esc` does not move the composer
+  up or down. Only its text changes.
+
+When a **panel** has the keyboard, the row names that panel's keys instead.
+
+### Undoing, and the two insert transitions
+
+`[NOR]` mode can undo what you typed, and redo it:
+
+| Key | What it does |
+|---|---|
+| `u` | Undo the last edit |
+| `U` | Redo the last edit |
+
+Both say what they did, in both directions: "Undid the last edit" when there was
+one, and "Nothing to undo" when there was not. A key that does nothing is never
+a mystery.
+
+The undo covers **the composer's own text**. Sending the prompt empties the
+composer and clears the history, so an undo can never bring back something you
+have already sent. A command you are still typing is ordinary text, and it is
+undoable while you are typing it.
+
+A large paste is still undoable. The history is bounded so it cannot grow
+without limit, and the bound drops *older* edits — never the newest one, which
+is the one you are most likely to want back.
+
+Two keys put the caret somewhere new and start you typing:
+
+| Key | What it does |
+|---|---|
+| `i` | Start typing **before** the caret, where it already is |
+| `a` | Start typing **after** the character under the caret |
+| `o` | Open an empty line below and type in it |
+
+`a` moves the caret one character forward — never past the end of its own line
+— and `o` opens a new line below the one you are on. `o` is an edit, so `u`
+takes the new line back; `a` only moves the caret, so there is nothing to undo.
+
+While a character selection is held, `a` **extends** it, like the other caret
+motions do.
+
+### Selecting and the clipboard in `[NOR]` mode
+
+`[NOR]` mode can select text in the composer, and the selection is what the
+delete and copy verbs work on:
+
+| Key | What it does |
+|---|---|
+| `v` | Start selecting characters at the caret; press it again to stop |
+| `x` | Select the caret's line; press it again to take the next line too |
+| `d` | Delete what is selected |
+| `p` | Paste the clipboard's contents at the caret |
+
+While a character selection is held, the caret motions **extend** it — move
+with `w`, `b`, `e`, `h` or `l` and the selection grows with you. A line
+selection does not: `x` takes one line, and a second `x` takes the next.
+
+To **copy** the selection, press `Space` and then `y`. That is the whole
+gesture: `Space` opens the help menu, and `y` in that menu copies what you
+have selected to the system clipboard. The `/help` command's menu does not
+copy — it is a menu you open to type a query in, so `y` there filters the
+list, and so does `y` in the `Space` menu once you have switched it to
+filtering with `Enter`.
+
+Every one of these says what it did: the composer tells you how many
+characters it copied or pasted, and it says so rather than failing quietly,
+so a key that does nothing is never a mystery. The text itself is not
+echoed back, because your prompt may hold something you would rather not
+see in the log.
+
+### Four keys moved to chords
 
 In `[NOR]` mode the composer now owns a set of letters for its own Helix-style
-editing, and three app-level actions that used to live on a letter moved to a
+editing, and four app-level actions that used to live on a letter moved to a
 chord. The capabilities are unchanged — only the spelling moved:
 
 | What it does | Was | Is now |
@@ -343,22 +471,33 @@ chord. The capabilities are unchanged — only the spelling moved:
 | Stop or resume the running turn | `x` | `Ctrl+Alt+X` |
 | Open the diff view | `d` (vim layout) | `Ctrl+Alt+D` |
 | Open the command palette from Normal mode | `i` (vim layout) | `Ctrl+Alt+E` |
+| Focus the sidebar | `a` (vim layout) | `Ctrl+Alt+S` |
 
-All three chords work in both layouts, so you do not have to know which one is
-active. The keys `x`, `d` and `i` still type normally in `[INS]` mode — they
-are only spoken for in `[NOR]` mode.
+All four chords work in both layouts, so you do not have to know which one is
+active. The keys `x`, `d`, `i` and `a` still type normally in `[INS]` mode —
+they are only spoken for in `[NOR]` mode.
+
+`a` was the one that lost a spelling rather than a capability: the sidebar was
+already reachable on `Ctrl+Alt+S` in both layouts, so the vim layout's bare `a`
+was a second way to do something you could already do. It is now the composer's
+insert-after key.
 
 `i` still takes you from `[NOR]` back to typing. That was already true in the
 default layout; in the vim layout it is now the same gesture instead of the
-command palette, which moved to `Ctrl+Alt+E`. The rest of the Helix editing
-verbs — motions, selection, undo — arrive with the next milestones.
+command palette, which moved to `Ctrl+Alt+E`. The Helix editing verbs above —
+motions, selection, delete and paste, undo and redo — are all in place.
 
 The slash command is unaffected: typing `/` at the start of the composer still
 opens the command palette, exactly as before, in both layouts.
 
 Help is unaffected too: `Space` still opens the help menu, and `?` still does
-as well.
+as well. That menu is also where the copy gesture lives — `Space`, then `y`.
 
+The copy gesture belongs to **that** box and to no other one. The box `/help`
+opens is a different box: it is opened to type a search, so `y` there is a
+letter you type into the filter, and it is not listed as a verb in it. Both
+boxes list the composer's own keys — those are documentation, and a reader who
+opens `/help` is exactly the reader who needs to know what `w` does.
 ### Typing while the agent is already working
 
 You can keep typing during a turn, and pressing Enter does not throw the text

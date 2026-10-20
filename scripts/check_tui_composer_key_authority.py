@@ -14,18 +14,21 @@ The failure this guard exists to prevent is the one the interactive terminal
 panel already records: *"a focused panel is consulted before Normal-mode
 actions, so an unclaimed `d` would silently become `OpenDiff` and never delete
 anything."* The composer is the third surface with that problem, and the
-first whose verbs arrive later than its claims — every entry in the table but
-one is reserved today, so every one of those entries is currently a no-op that
-must still swallow its key. The exception is ``i``, whose verb is live: it is
-the app's only route back to Insert mode, so a reserved ``i`` would swallow
-the key and leave the user with no way to type.
+first whose verbs arrive later than its claims — for most of the table's life
+every entry but one was reserved, so every one of those entries was a no-op
+that must still swallow its key. The exception was ``i``, whose verb is live:
+it is the app's only route back to Insert mode, so a reserved ``i`` would
+swallow the key and leave the user with no way to type. M006 closed the
+table, so every claim is live and the fallthrough rule is now carried by
+behaviour rather than by consumption.
 
 The guard reads two files:
 
 * ``src/tui/composer_claims.rs`` — the claim table itself. It is the single
   source of truth for what the composer owns; there is deliberately no second
   copy of it anywhere, so this file is the only place the table is read.
-* ``src/tui/input.rs`` — the two binding maps and ``is_normal_only``.
+* ``src/tui/input.rs`` — the two binding maps, ``is_normal_only``, and the
+  help's own rows.
 
 It fails when:
 
@@ -37,12 +40,31 @@ It fails when:
 * a re-spelled app-level chord is missing from either binding map;
 * a re-spelled app-level action has no chord to reach it by, or still answers
   to a key the composer can claim — which is how the old letter keeps reaching
-  it, since all three old letters are claimed;
+  it, since all four old letters are claimed;
 * a claimed capital letter is not reachable under both the shifted and the
   unshifted encoding;
 * a claimed key is bound under a modifier that Insert mode does not skip,
   without its action being listed in ``is_normal_only`` — the capital-letter
-  text guarantee.
+  text guarantee;
+* the two maps disagree on a caret motion, so the composer would have a
+  capability in one keymap and not in the other;
+* **the help's composer section is not derived from the claim table** — a
+  hand-written list is a second copy of the table, and a second copy is the
+  drift the claim table exists to prevent;
+* **a live verb has no label**, so the derived row could not describe it;
+* **the help advertises a claimed key for a different action** — the class
+  M006 hit with the ``a`` → "Focus sidebar" row, where the key was claimed by
+  the composer while the help still taught it as the sidebar's. The one
+  documented exception is a *conditional* claim's fall-through row, which
+  carries its condition;
+* **the help advertises a reserved claim**, which would teach a gesture that
+  does nothing;
+* **a re-spelled action is not documented under a modifier chord**, or is
+  documented under its old bare letter.
+
+The two help rules are separate on purpose. One asks "does the help describe
+the composer's verbs?"; the other asks "does the help describe the *app's*
+re-spelled verbs?". They read different tables and catch different classes.
 
 The guard is scoped to the composer. It does not police the editor's or the
 terminal panel's keys, and it does not touch their guards.
@@ -83,6 +105,7 @@ RESPELLED_ACTIONS = {
     "ToggleAgentRun": "x",
     "OpenDiff": "d",
     "FocusPrompt": "i",
+    "FocusSidebar": "a",
 }
 
 # The actions that move the composer caret.
@@ -174,6 +197,12 @@ class Parsed:
     default_map: list[Binding] = field(default_factory=list)
     vim_map: list[Binding] = field(default_factory=list)
     normal_only: set[str] = field(default_factory=set)
+    help_entries: list[HelpEntry] = field(default_factory=list)
+    verb_labels: dict[str, str] = field(default_factory=dict)
+    #: Whether the help's composer section is built from the claim table's
+    #: derived verb list. The guard reads the *call*, because the rows
+    #: themselves are computed at runtime and are not in the source.
+    help_is_derived: bool = False
     problems: list[str] = field(default_factory=list)
 
 
@@ -526,6 +555,18 @@ NORMAL_ONLY_BLOCK = re.compile(
 )
 NORMAL_ONLY_ENTRY = re.compile(r"InputAction::(\w+)")
 
+# The verb labels, from `ComposerVerb::label`.
+#
+# The return type is part of the pattern on purpose: `ClaimCondition::label`
+# returns an `Option`, and matching it here would read the *condition* labels
+# as if they were the verb labels.
+VERB_LABEL_BLOCK = re.compile(
+    r"pub fn label\(self\) -> &'static str \{(?P<body>.*?)\n    \}", re.DOTALL
+)
+VERB_LABEL_ARM = re.compile(
+    r'Self::(?P<verb>\w+)\s*=>\s*"(?P<label>(?:[^"\\]|\\.)*)"'
+)
+
 
 def parse_normal_only(source: str) -> set[str]:
     """The actions listed in `is_normal_only`."""
@@ -533,6 +574,141 @@ def parse_normal_only(source: str) -> set[str]:
     if not match:
         return set()
     return set(NORMAL_ONLY_ENTRY.findall(match.group(1)))
+
+
+# ── The help ────────────────────────────────────────────────────────────
+#
+# The help's **composer section** is derived from the claim table, so it is
+# not a literal list in the source and the guard cannot read it there. What
+# the guard *can* read is the app's own rows — the literal `HelpEntry`s — and
+# those are exactly the rows that could contradict the claim table: a row
+# that teaches a claimed key as something else is the class of defect the
+# claim table exists to prevent, arriving through the documentation instead
+# of the dispatch.
+
+HELP_ENTRY_BLOCK = re.compile(
+    r"(?<!struct\s)HelpEntry\s*\{"
+    r"(?P<body>(?:[^{}]|\"(?:[^\"\\]|\\.)*\")*)"
+    r"\}",
+    re.DOTALL,
+)
+HELP_MODE = re.compile(r"\bmode:\s*HelpMode::(?P<value>\w+)")
+HELP_KEY = re.compile(r'\bkey:\s*"(?P<value>(?:[^"\\]|\\.)*)"')
+HELP_KEY_FIELD = re.compile(r"\bkey\s*:")
+HELP_ACTION = re.compile(r'\baction:\s*"(?P<value>(?:[^"\\]|\\.)*)"')
+HELP_CONDITION = re.compile(
+    r'\bcondition:\s*(?:None|Some\("(?P<value>(?:[^"\\]|\\.)*)"\))'
+)
+
+# A letter that a help row's key text names.
+#
+# The letter must stand **alone**: a chord's components are not the letters
+# the composer owns, so `Ctrl+Alt+X` does not advertise the bare `x`, and
+# neither does `Ctrl+D/U` — the modifier governs the whole group it heads.
+# The rule is the same shape as the claim table's — a claimed key is a *key*,
+# not a character that happens to appear in a label.
+BARE_LETTER = re.compile(r"(?<![A-Za-z0-9+])(?P<letter>[A-Za-z])")
+
+# A modifier prefix. A key spelled with one is a chord, and every letter in
+# it is a chord component.
+MODIFIER_PREFIX = re.compile(r"\b(?:Ctrl|Alt|Shift)\+", re.IGNORECASE)
+
+# The help's spelling of a modifier.
+MODIFIER_LABELS = {"CONTROL": "Ctrl", "ALT": "Alt", "SHIFT": "Shift"}
+
+
+@dataclass(frozen=True)
+class HelpEntry:
+    """One literal help row."""
+
+    mode: str
+    key: str
+    action: str
+    condition: str | None
+    line_no: int = 0
+
+    def named_letters(self) -> set[str]:
+        """The standalone letters this row's key names.
+
+        A key spelled with a modifier is a **chord**, and every letter in it
+        is a chord component rather than a bare key: `Ctrl+D/U` is two
+        chords, and neither of them is the bare `d` the composer claims.
+        """
+        if MODIFIER_PREFIX.search(self.key):
+            return set()
+        return {m.group("letter") for m in BARE_LETTER.finditer(self.key)}
+
+
+def parse_help_entries(source: str) -> list[HelpEntry]:
+    """The **literal** help rows in the source.
+
+    A row whose key is not a string literal is a *derived* row — the help's
+    composer section computes its keys from the claim table — so it is not an
+    app row and the rule does not audit it. The derived rows are correct by
+    construction; what the rule needs to see is the app's own rows.
+    """
+    entries: list[HelpEntry] = []
+    for block in HELP_ENTRY_BLOCK.finditer(source):
+        body = block.group("body")
+        key = HELP_KEY.search(body)
+        if key is None:
+            if HELP_KEY_FIELD.search(body):
+                # A derived row: the key is computed, not written down.
+                continue
+            entries.append(
+                HelpEntry(
+                    mode="?",
+                    key="",
+                    action="",
+                    condition=None,
+                    line_no=_line_of(source, block.start()),
+                )
+            )
+            continue
+        action = HELP_ACTION.search(body)
+        mode = HELP_MODE.search(body)
+        condition = HELP_CONDITION.search(body)
+        entries.append(
+            HelpEntry(
+                mode=mode.group("value") if mode else "?",
+                key=key.group("value"),
+                action=action.group("value") if action else "",
+                condition=condition.group("value") if condition else None,
+                line_no=_line_of(source, block.start()),
+            )
+        )
+    return entries
+
+
+def chord_label(binding: Binding) -> str:
+    """The help's spelling of a chord binding: `Ctrl+Alt+X`."""
+    if binding.char is None:
+        return ""
+    modifiers = "+".join(
+        MODIFIER_LABELS.get(modifier, modifier.capitalize())
+        for modifier in binding.modifiers
+    )
+    if not modifiers:
+        return binding.char.upper()
+    return f"{modifiers}+{binding.char.upper()}"
+
+
+# The claim table's derived verb list — the function the help's composer
+# section is built from. The guard reads its **name** out of the source, so
+# the two cannot drift: renaming the function breaks the check that the help
+# uses it, and the check names the function it looked for.
+DERIVATION_CALL = re.compile(r"\b(?P<fn>\w*verb_entries)\s*\(")
+
+
+def parse_verb_labels(source: str) -> dict[str, str]:
+    """The verb labels, from `ComposerVerb::label`."""
+    match = VERB_LABEL_BLOCK.search(source)
+    if not match:
+        return {}
+    return {
+        arm.group("verb"): arm.group("label")
+        for arm in VERB_LABEL_ARM.finditer(match.group("body"))
+    }
 
 
 def parse_tree() -> Parsed:
@@ -548,6 +724,15 @@ def parse_tree() -> Parsed:
     parsed.vim_map, problems = parse_map(input_source, "vim_bindings_internal", True)
     parsed.problems.extend(problems)
     parsed.normal_only = parse_normal_only(input_source)
+    parsed.help_entries = parse_help_entries(input_source)
+    parsed.verb_labels = parse_verb_labels(claims_source)
+    # The help's composer section is **derived**: the rows are computed from
+    # the claim table at runtime, so the source carries the *call* rather than
+    # the rows. The call is what the guard checks.
+    derivation = DERIVATION_CALL.search(claims_source)
+    parsed.help_is_derived = derivation is not None and (
+        f"{derivation.group('fn')}(" in input_source
+    )
     return parsed
 
 
@@ -769,10 +954,151 @@ def check(parsed: Parsed) -> list[str]:
                     f"on a caret motion"
                 )
 
+    # G10 and G11 — the help against the claim table.
+    findings.extend(check_help(parsed))
+
     return findings
 
 
-# ── Self-test ──────────────────────────────────────────────────────────
+def check_help(parsed: Parsed) -> list[str]:
+    """G10 and G11 — the help against the claim table.
+
+    The help's **composer section** is derived from the claim table, so it is
+    not a literal list in the source and this rule cannot read its rows there.
+    What it *can* read is the app's own rows, and those are exactly the rows
+    that could contradict the claim table.
+    """
+    findings: list[str] = []
+    claims = parsed.claims
+    live = [claim for claim in claims if claim.status == "Live"]
+    reserved = [claim for claim in claims if claim.status != "Live"]
+    claimed_by_key: dict[str, Claim] = {claim.key: claim for claim in claims}
+
+    # G10.1 — the help's composer section is built from the claim table's
+    # derived verb list.
+    #
+    # The rows are computed at runtime, so the source carries the *call*
+    # rather than the rows. This is the one part of the check that cannot be
+    # an observation: it proves the derivation is wired, and the derivation is
+    # what makes the rows complete.
+    if not parsed.help_is_derived:
+        findings.append(
+            "the help's composer section is not built from the claim table's derived "
+            "verb list; a hand-written list is a second copy of the table, and a "
+            "second copy is the drift the claim table exists to prevent"
+        )
+
+    # G10.2 — every live claim's verb has a label, so the derived row can
+    # describe it. A verb with no label is a claim the help cannot say
+    # anything about.
+    for claim in live:
+        label = parsed.verb_labels.get(claim.verb)
+        if label is None:
+            findings.append(
+                f"the verb {claim.verb} (composer_claims.rs:{claim.line_no}) has no "
+                f"label; the help could not describe the claim on {claim.key!r}"
+            )
+        elif not label.strip():
+            findings.append(
+                f"the verb {claim.verb} (composer_claims.rs:{claim.line_no}) has an "
+                f"empty label; the help could not describe the claim on {claim.key!r}"
+            )
+
+    # G10.3 — no app-level row may advertise a **claimed** key for a
+    # different action.
+    #
+    # The rule is scoped to the **Normal-mode** section, because that is the
+    # surface the composer's claims live on: the composer owns those letters
+    # in the main buffer's Normal mode, and the help's Normal section is that
+    # surface's keymap. The Dialog and Command sections describe *other*
+    # surfaces — the command palette's own keys — where the same letters mean
+    # something else and are not the composer's to own.
+    #
+    # The one documented exception is a *conditional* claim's fall-through
+    # row: the `j`/`k` row says what the pair does on a single-line composer
+    # buffer, where the composer does not have them. Such a row carries the
+    # condition, and the condition is what makes it honest rather than
+    # contradictory.
+    #
+    # The `a` → "Focus sidebar" row is the class this catches: the key was
+    # claimed by the composer while the help still taught it as the sidebar's.
+    for entry in parsed.help_entries:
+        if not entry.key:
+            findings.append(
+                f"input.rs:{entry.line_no}: a help row has no readable key; the "
+                f"guard cannot audit it"
+            )
+            continue
+        if entry.mode != "Normal":
+            continue
+        for letter in sorted(entry.named_letters()):
+            claim = claimed_by_key.get(letter)
+            if claim is None:
+                continue
+            if claim.status != "Live":
+                continue
+            if claim.is_conditional and entry.condition:
+                # The fall-through row for a conditional claim.
+                continue
+            findings.append(
+                f"the help advertises {letter!r} for {entry.action!r} "
+                f"(input.rs:{entry.line_no}), but the composer claims {letter!r} "
+                f"(composer_claims.rs:{claim.line_no}); a claimed key has one owner"
+            )
+
+    # G10.4 — a **reserved** claim is not advertised. The key is consumed
+    # while its verb is pending, so a row teaching it would teach a gesture
+    # that does nothing.
+    for claim in reserved:
+        for entry in parsed.help_entries:
+            if entry.mode != "Normal":
+                continue
+            if claim.key in entry.named_letters():
+                findings.append(
+                    f"the help advertises {claim.key!r} for {entry.action!r} "
+                    f"(input.rs:{entry.line_no}), but that claim is not live "
+                    f"(composer_claims.rs:{claim.line_no}); a reserved claim has "
+                    f"no behaviour to advertise"
+                )
+
+    # G11 — the re-spelled actions.
+    #
+    # G11.1: each one must be documented under a **modifier chord**. A chord
+    # carries a modifier, so it cannot be confused with the bare letter the
+    # composer now owns.
+    #
+    # G11.2: none of them may be documented under its **old bare letter**.
+    # That is the pre-M002 spelling, and it is a gesture that no longer
+    # reaches the action.
+    for action, old_letter in RESPELLED_ACTIONS.items():
+        chords = {
+            chord_label(binding)
+            for binding in parsed.default_map + parsed.vim_map
+            if binding.action == action and not binding.is_bare_char and binding.char
+        }
+        documented = {
+            chord
+            for chord in chords
+            if any(chord in entry.key for entry in parsed.help_entries)
+        }
+        if not documented:
+            findings.append(
+                f"the re-spelled action {action} is not documented under a modifier "
+                f"chord in the help; the chords it is bound to are "
+                f"{sorted(chords) or ['none']}"
+            )
+        for entry in parsed.help_entries:
+            if entry.mode != "Normal":
+                continue
+            if old_letter in entry.named_letters():
+                findings.append(
+                    f"the help advertises {action} under its old bare letter "
+                    f"{old_letter!r} ({entry.action!r}, input.rs:{entry.line_no}); "
+                    f"the action moved to a chord and the bare letter belongs to "
+                    f"the composer"
+                )
+
+    return findings
 
 
 def _claim(key: str, **overrides) -> Claim:
@@ -794,22 +1120,49 @@ def _binding(
     return Binding(modifiers=mods, char=char, action=action, line_no=1, code=code)
 
 
+def _chords() -> list[Binding]:
+    """The chord spelling every re-spelled action must have.
+
+    Each re-spelled action is reachable by a `Ctrl+Alt+<letter>` chord in both
+    maps. The letters themselves are the ones the composer claims, so a
+    synthetic tree that bound them bare would be violating the rule it is
+    meant to test.
+    """
+    return [
+        _binding(("CONTROL", "ALT"), "x", "ToggleAgentRun"),
+        _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
+        _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
+        _binding(("CONTROL", "ALT"), "s", "FocusSidebar"),
+    ]
+
+
 def _baseline(**overrides) -> Parsed:
     """A synthetic tree that satisfies every check.
 
     The re-spelled actions are bound in both maps by chords, so a test case
-    that injects one violation is not drowned in the others.
+    that injects one violation is not drowned in the others. The synthetic
+    help carries the matching chord rows, because the help audit reads the
+    app's own rows: a chord row is the only spelling a re-spelled action may
+    keep.
     """
-    chords = [
-        _binding(("CONTROL", "ALT"), "x", "ToggleAgentRun"),
-        _binding(("CONTROL", "ALT"), "d", "OpenDiff"),
-        _binding(("CONTROL", "ALT"), "e", "FocusPrompt"),
-    ]
+    chords = _chords()
     parsed = Parsed(
-        claims=[_claim("q", verb="WordForward")],
+        claims=[_claim("q", verb="SomeVerb", status="Live")],
         default_map=list(chords),
         vim_map=list(chords),
         normal_only=set(),
+        help_entries=[
+            HelpEntry(
+                mode="Normal",
+                key=chord_label(chord),
+                action=f"the {chord.action} action",
+                condition=None,
+                line_no=1,
+            )
+            for chord in chords
+        ],
+        verb_labels={"SomeVerb": "the verb"},
+        help_is_derived=True,
     )
     for name, value in overrides.items():
         setattr(parsed, name, value)
@@ -844,6 +1197,126 @@ def self_test() -> int:
             print(f"  ok    allows {label}")
 
     expect_clean("a claim nothing else owns", _baseline())
+
+    def _chord_rows() -> list[HelpEntry]:
+        """The chord rows a re-spelled action is documented under."""
+        return [
+            HelpEntry(
+                mode="Normal",
+                key=chord_label(chord),
+                action=f"the {chord.action} action",
+                condition=None,
+                line_no=1,
+            )
+            for chord in _chords()
+        ]
+
+    # G10.1 — a help whose composer section is hand-written.
+    #
+    # This is the class the milestone exists to remove: a second copy of the
+    # claim table, which drifts the moment a verb lands.
+    expect(
+        "a help whose composer section is not derived from the claim table",
+        _baseline(help_is_derived=False),
+        "is not built from the claim table's derived verb list",
+    )
+
+    # G10.2 — a live verb with no label.
+    expect(
+        "a live verb with no label",
+        _baseline(verb_labels={}),
+        "has no label",
+    )
+
+    # G10.3 — a help that advertises a claimed key for a different action.
+    #
+    # The class M006 hit with the `a` → "Focus sidebar" row: the key was
+    # claimed by the composer while the help still taught it as the
+    # sidebar's.
+    expect(
+        "a help that advertises a claimed key for a different action",
+        _baseline(
+            claims=[_claim("a", verb="InsertAfter", status="Live")],
+            help_entries=[
+                HelpEntry(
+                    mode="Normal",
+                    key="a",
+                    action="Focus sidebar (agent tree)",
+                    condition=None,
+                    line_no=1,
+                )
+            ],
+        ),
+        "a claimed key has one owner",
+    )
+
+    # G10.3 — the fall-through row for a **conditional** claim is the one
+    # documented exception, and it must carry its condition.
+    expect_clean(
+        "a conditional claim's fall-through row",
+        _baseline(
+            claims=[_claim("j", verb="LineDown", status="Live", condition="MultiLineBuffer")],
+            verb_labels={"LineDown": "line down"},
+            help_entries=_chord_rows()
+            + [
+                HelpEntry(
+                    mode="Normal",
+                    key="j/k",
+                    action="Navigate up/down",
+                    condition="single-line composer buffer",
+                    line_no=1,
+                )
+            ],
+        ),
+    )
+
+    # G10.4 — a reserved claim advertised.
+    expect(
+        "a help that advertises a reserved claim",
+        _baseline(
+            claims=[_claim("z", verb="SomeVerb", status="Reserved")],
+            help_entries=[
+                HelpEntry(
+                    mode="Normal",
+                    key="z",
+                    action="a verb that does nothing",
+                    condition=None,
+                    line_no=1,
+                )
+            ],
+        ),
+        "a reserved claim has no behaviour to advertise",
+    )
+
+    # G11 — the re-spelled actions.
+    #
+    # A help that teaches the old bare letter is the pre-M002 spelling, and a
+    # gesture that no longer reaches the action.
+    expect(
+        "a help that lists `x` as the stop key",
+        _baseline(
+            help_entries=_chord_rows()
+            + [
+                HelpEntry(
+                    mode="Normal",
+                    key="x",
+                    action="Stop / resume agent",
+                    condition=None,
+                    line_no=1,
+                )
+            ]
+        ),
+        "its old bare letter",
+    )
+    expect_clean(
+        "a help that lists the stop key only as a chord",
+        _baseline(help_entries=_chord_rows()),
+    )
+    expect(
+        "a help that omits a re-spelled action's chord",
+        _baseline(help_entries=[]),
+        "is not documented under a modifier chord",
+    )
 
     # G1 — a letter claimed twice.
     expect(
@@ -883,6 +1356,39 @@ def self_test() -> int:
         "a re-spelled action missing from the vim map",
         _baseline(vim_map=[]),
         "missing from the vim map",
+    )
+
+    # G4 — the `FocusSidebar` half of the M006 re-spelling: the action has to
+    # stay reachable in **both** maps. Deleting the bare `a` must not take
+    # the sidebar's chord with it.
+    expect(
+        "a FocusSidebar missing from one map",
+        _baseline(
+            default_map=_chords(),
+            vim_map=[b for b in _chords() if b.action != "FocusSidebar"],
+        ),
+        "missing from the vim map",
+    )
+
+    # G2 — the claim on `a` and the vim map's bare `a` → `FocusSidebar`. This is
+    # the exact defect M006 fixed: the composer claimed the letter and the
+    # app-level action still owned it, so the key had two owners.
+    expect(
+        "a claimed `a` still reaching FocusSidebar in the vim map",
+        _baseline(
+            claims=[_claim("a", verb="InsertAfter", status="Live")],
+            vim_map=_chords() + [_binding(("NONE",), "a", "FocusSidebar")],
+        ),
+        "must not fall through",
+    )
+
+    # G5 — a re-spelled action may not keep a **bare letter** spelling. The
+    # re-spelling is the point: the bare letter belongs to the composer now,
+    # so an app-level action that still answers to it has two owners.
+    expect(
+        "a FocusSidebar spelling that is a bare letter",
+        _baseline(default_map=_chords() + [_binding(("NONE",), "a", "FocusSidebar")]),
+        "the old letter 'a' still reaches FocusSidebar",
     )
 
     # G5 — the old bare letter still reaching the re-spelled action.
