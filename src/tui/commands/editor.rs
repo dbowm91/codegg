@@ -1561,13 +1561,35 @@ fn describe_error(error: &DocumentControllerError) -> String {
 
 // ── Local edits ──────────────────────────────────────────────────────────────
 
+/// Whether an edit leaves the cursor at the end of the text it inserted.
+///
+/// This is what makes an edit the **start of a typing run**: the next
+/// keystroke continues at the end of the run so far, so a run whose text does
+/// not end where the cursor is cannot be continued.
+///
+/// A deletion or a replacement never qualifies — their ranges are not empty,
+/// and a run is one contiguous insertion by construction.
+fn typing_run_continues(forward: &codegg_document::TextTransaction, cursor_after: usize) -> bool {
+    if forward.edits.len() != 1 {
+        return false;
+    }
+    let edit = &forward.edits[0];
+    edit.range.start == edit.range.end && cursor_after == edit.range.start + edit.insert.len()
+}
+
 /// Submit one resolved edit through the controller and adopt the result.
 ///
 /// The undo entry is recorded **only** after the controller accepts the
 /// transaction, so a rejected edit never leaves a phantom inverse in
 /// history. The pre-edit cursor and selection are captured before the
 /// apply so undo restores the position the user actually left.
-fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
+///
+/// Returns whether the controller **accepted** the transaction. That is the
+/// only honest answer to "did the document take this edit?", and the
+/// open-line verbs need it: a mode transition decided on a rejected
+/// transaction would leave the editor in Insert mode over an unchanged
+/// document, which is a worse state than the one they are repairing.
+fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) -> bool {
     let editor::EditorEdit {
         transaction,
         inverse,
@@ -1597,7 +1619,7 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
     // bounded by the same depth/byte caps.
     let forward = transaction.clone();
     let Some(session) = state.session.as_ref() else {
-        return;
+        return false;
     };
     let controller = session.controller();
     let cursor_before = session.presentation().cursor_byte;
@@ -1606,7 +1628,7 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
             // Clamp against the post-edit text, not the pre-edit snapshot.
             let after = controller.try_snapshot().map(|(snapshot, _)| snapshot);
             let Some(session) = state.session.as_mut() else {
-                return;
+                return false;
             };
             let presentation = session.presentation_mut();
             match &after {
@@ -1630,11 +1652,11 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
             // with nothing on screen to explain it.
             presentation.desired_column = None;
             if stay_insert {
-                // Safe by construction, not by convention: `stay_insert` is
-                // only ever true for an edit resolved while the model was
-                // already inserting, and the route only enters Insert through
-                // `BufferKey::EnterInsert`. So this write agrees with
-                // `App::ui_state.input_mode` instead of racing it.
+                // The document took the keyboard, so the editor is in Insert
+                // mode from here on. The App's own `input_mode` is set by the
+                // `BufferKey::EnterInsert` the caller returns, and the caller
+                // returns it **only** when this transaction was accepted — so
+                // the two modes agree by construction, not by convention.
                 presentation.mode = EditorMode::Insert;
             }
             // A typing burst is **one** undo step, not one per keystroke.
@@ -1642,8 +1664,22 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
             // as a single entry; the edit that does not fit the run — a
             // deletion, a replacement, an insertion anywhere but the end of
             // the run — ends the session and is pushed on its own.
+            //
+            // An edit only **starts** a run when the cursor ends where the
+            // text it inserted ends: the next keystroke continues at the end
+            // of the run so far, so a run whose text does not end where the
+            // cursor is cannot be continued.
+            //
+            // The open-line verbs are why this is a separate check. `o`
+            // inserts its newline at the **end** of the opened line and
+            // leaves the cursor at its **start**, so the text the reader
+            // types goes in before the newline. A run is one contiguous
+            // insertion by construction, so the open-line edit is not part of
+            // a run: it is its own undo step, and the typing that follows
+            // opens the run.
             let in_insert = presentation.mode == EditorMode::Insert;
             if in_insert
+                && typing_run_continues(&forward, presentation.cursor_byte)
                 && editor::absorb_insert_edit(
                     presentation,
                     &forward,
@@ -1677,12 +1713,14 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
             }
             state.status = EditorStatus::DirtyLocal;
             state.clear_notice();
+            true
         }
         Err(error) => {
             // A destructive phase in flight and a full queue are both
             // expected conditions. Neither disturbs the local text nor the
             // history, and the editor never retries internally.
             state.set_notice(EditorNotice::from_error(&error));
+            false
         }
     }
 }
@@ -2402,7 +2440,9 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
                 return true;
             };
             match editor::delete_ranges(&snapshot, ranges) {
-                editor::RangeSetEdit::Edit(edit, _) => submit_edit(&mut app.editor_state, edit),
+                editor::RangeSetEdit::Edit(edit, _) => {
+                    submit_edit(&mut app.editor_state, edit);
+                }
                 editor::RangeSetEdit::Empty => {}
                 // Refused, not truncated. A partial multi-cursor delete is
                 // exactly the state neither `u` nor redo can describe, so the
@@ -4289,9 +4329,16 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
         (m, KeyCode::Char('A')) if m == none || m == shift => {
             enter_insert(state, EditorCommand::InsertLineEnd)
         }
-        (m, KeyCode::Char('o')) if m == none => enter_insert(state, EditorCommand::OpenLineBelow),
+        // `o` and `O` are the two verbs that **write** and then change mode:
+        // Helix's `open_below` / `open_above` insert a line and put the cursor
+        // on it in Insert mode. They go through the shared edit funnel, so the
+        // line they open is one undo step and a read-only attachment refuses
+        // them the way it refuses every other writing verb.
+        (m, KeyCode::Char('o')) if m == none => {
+            editor_open_line(state, EditorCommand::OpenLineBelow)
+        }
         (m, KeyCode::Char('O')) if m == none || m == shift => {
-            enter_insert(state, EditorCommand::OpenLineAbove)
+            editor_open_line(state, EditorCommand::OpenLineAbove)
         }
         // `:` opens the command line. Normal mode only: in Insert the colon is
         // document text, and swallowing it would make it impossible to type a
@@ -4636,9 +4683,14 @@ fn yank_editor_ranges(app: &mut App, ranges: Vec<std::ops::Range<usize>>) {
 ///
 /// Returns [`BufferKey::EnterInsert`] when the document actually took the
 /// keyboard, and `Unhandled` when it refused. A read-only attachment refuses
-/// on purpose — and refusing *silently* would leave the user pressing `i` in
+/// on purpose, and refusing *silently* would leave the user pressing `i` in
 /// what still looks like Normal mode with no way to tell why nothing happened,
-/// so the refusal is reported rather than swallowed.
+/// so the refusal is reported rather than swallowed: the status row reads
+/// "read-only", and the key stays unclaimed so a reader who meant to type
+/// `i` into the agent's box still gets to.
+///
+/// The writing counterpart is [`editor_open_line`], which claims the key and
+/// reports the refusal as a notice, because it writes.
 fn enter_insert(state: &mut EditorState, command: EditorCommand) -> BufferKey {
     if !editable(state) {
         return BufferKey::Unhandled;
@@ -4674,6 +4726,49 @@ fn enter_insert(state: &mut EditorState, command: EditorCommand) -> BufferKey {
     // nothing by the time Normal mode comes back.
     presentation.desired_column = None;
     presentation.mode = EditorMode::Insert;
+    BufferKey::EnterInsert
+}
+
+/// Open a line and hand the keyboard to the document.
+///
+/// `o` and `O` are the one pair of Normal-mode verbs that **write** and then
+/// change mode: Helix's `open_below` / `open_above` insert a line and put the
+/// cursor on it in Insert mode. The insertion is [`editor::resolve_edit`]'s
+/// job — the same one `]Space` uses, differing only in `stay_insert` — so
+/// this function routes through the shared edit funnel rather than computing
+/// a cursor position of its own.
+///
+/// The difference from [`enter_insert`] is the whole point. A mode transition
+/// moves the cursor and hands over the keyboard, and an attachment that cannot
+/// be written simply does not take the key. An open-line verb **writes**, so
+/// a refusal has to be reported the way every writing verb reports it: the
+/// key is claimed and the reason is shown. Returning `Unhandled` instead would
+/// put the `o` in the composer, which reads as the editor ignoring a verb it
+/// owns.
+fn editor_open_line(state: &mut EditorState, command: EditorCommand) -> BufferKey {
+    if !editable(state) {
+        state.set_notice(EditorNotice::from_error(&DocumentControllerError::ReadOnly));
+        return BufferKey::Consumed;
+    }
+    let Some(session) = state.session.as_ref() else {
+        return BufferKey::Consumed;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return BufferKey::Consumed;
+    };
+    let Some(edit) = editor::resolve_edit(&snapshot, session.presentation(), command) else {
+        return BufferKey::Consumed;
+    };
+    if !submit_edit(state, edit) {
+        // The controller refused the transaction. `submit_edit` has already
+        // reported why, so the key is claimed and nothing else happens: the
+        // document did not change, and the keyboard stays where it was.
+        return BufferKey::Consumed;
+    }
+    // The document took the keyboard. The App adopts Insert mode on this
+    // return value, which is what keeps `App::ui_state.input_mode` and the
+    // presentation's own mode in agreement — `submit_edit` wrote the
+    // presentation's side of it inside the accepted branch.
     BufferKey::EnterInsert
 }
 
@@ -6166,6 +6261,14 @@ mod tests {
     /// Every insertion entry reports `EnterInsert` so the App layer can adopt
     /// the mode — except on a read-only buffer, where claiming the keyboard
     /// would strand the user in a mode that cannot be typed into.
+    ///
+    /// The two families differ in what they do with the key, and the
+    /// difference is the point. `i`/`a`/`I`/`A` only *move the cursor*, so
+    /// they leave the key unclaimed and the status row's "read-only" is the
+    /// report. `o`/`O` **write**, so they claim the key and report the
+    /// refusal as a notice, exactly as `d`/`D`/`x` do — an unclaimed `o`
+    /// would drop the letter into the composer, which reads as the editor
+    /// ignoring a verb it owns.
     #[tokio::test]
     async fn every_insertion_entry_is_reachable_through_dispatch() {
         let (mut state, _daemon) = opened_writer(&numbered_lines(4)).await;
@@ -6181,15 +6284,33 @@ mod tests {
         }
 
         let (mut reader, _daemon) = opened_reader("base").await;
-        for (label, k) in [
-            ("i", KeyCode::Char('i')),
-            ("o", KeyCode::Char('o')),
-            ("A", KeyCode::Char('A')),
-        ] {
+        for (label, k) in [("i", KeyCode::Char('i')), ("A", KeyCode::Char('A'))] {
             assert_eq!(
                 normal(&mut reader, k),
                 BufferKey::Unhandled,
                 "{label} must not hand over a read-only buffer"
+            );
+            assert_ne!(
+                reader.mode(),
+                EditorMode::Insert,
+                "{label} kept the keyboard"
+            );
+        }
+        for (label, k) in [("o", KeyCode::Char('o')), ("O", KeyCode::Char('O'))] {
+            assert_eq!(
+                normal(&mut reader, k),
+                BufferKey::Consumed,
+                "{label} writes, so it claims the key and reports the refusal"
+            );
+            assert_ne!(
+                reader.mode(),
+                EditorMode::Insert,
+                "{label} kept the keyboard"
+            );
+            let notice = notice_of(&reader).expect("{label} reports the refusal");
+            assert!(
+                notice.contains("Read-only"),
+                "expected the read-only reason for {label}, got {notice:?}"
             );
         }
     }
@@ -9442,12 +9563,8 @@ mod tests {
         // The whole reason `AddNewlineBelow` is not `OpenLineBelow`: the same
         // insertion, and the difference is whether the keyboard is taken.
         //
-        // Only the *mode* is asserted here. `o` does not insert its line
-        // through the key — `enter_insert` maps `OpenLineBelow` to the cursor,
-        // so `resolve_edit`'s open-line arms are reached only by their own unit
-        // test. That gap predates M006 and is recorded as a closure finding
-        // rather than fixed here, because changing `o` is not this milestone's
-        // to decide.
+        // The *text* each verb produces is asserted by the M019 tests below;
+        // this one owns the half that is about the keyboard.
         let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
         assert_eq!(
             normal(&mut state, KeyCode::Char('o')),
@@ -9468,6 +9585,153 @@ mod tests {
             "`]Space` inserts the line and leaves the keyboard alone"
         );
         assert_eq!(editor_text(&state), "one\n\ntwo\n");
+    }
+
+    // ── M019: the open-line verbs ────────────────────────────────────
+
+    /// `o` opens a line **below** the cursor's line and hands over the
+    /// keyboard.
+    ///
+    /// The assertion that matters is the *text*: `o` used to enter Insert mode
+    /// without opening anything, and every test of `resolve_edit` passed while
+    /// the key path did nothing. So this is driven through `editor_buffer_key`
+    /// and reads the controller's own snapshot, not a helper's return value.
+    #[tokio::test]
+    async fn o_opens_a_line_below_the_cursor_and_takes_the_keyboard() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('o')),
+            BufferKey::EnterInsert,
+            "`o` reports the mode it is handing over"
+        );
+        assert_eq!(
+            editor_text(&state),
+            "one\n\ntwo\n",
+            "`o` opened a line below the cursor's line"
+        );
+        assert_eq!(
+            cursor(&state),
+            4,
+            "and put the cursor on the line it opened, not on the line after it"
+        );
+        assert_eq!(state.mode(), EditorMode::Insert);
+    }
+
+    /// `O` opens a line **above** the cursor's line.
+    ///
+    /// The two verbs are one implementation with two arguments, so the test
+    /// that only covers one of them covers half the contract.
+    #[tokio::test]
+    async fn capital_o_opens_a_line_above_the_cursor_and_takes_the_keyboard() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        assert_eq!(
+            press(&mut state, KeyCode::Char('O'), KeyModifiers::SHIFT),
+            BufferKey::EnterInsert
+        );
+        assert_eq!(
+            editor_text(&state),
+            "\none\ntwo\n",
+            "`O` opened a line above the cursor's line"
+        );
+        assert_eq!(
+            cursor(&state),
+            0,
+            "and put the cursor on the line it opened"
+        );
+        assert_eq!(state.mode(), EditorMode::Insert);
+    }
+
+    /// A read-only attachment refuses `o`, and says so.
+    ///
+    /// The key is **claimed**: `o` writes, so it behaves like every other
+    /// writing verb, and an unclaimed key would drop the `o` into the composer
+    /// — which reads as the editor ignoring a verb it owns.
+    #[tokio::test]
+    async fn o_on_a_read_only_attachment_is_refused_visibly() {
+        let (mut state, _daemon) = opened_reader("one\ntwo\n").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('o')),
+            BufferKey::Consumed,
+            "the verb is claimed, so the `o` does not fall into the composer"
+        );
+        assert_eq!(
+            editor_text(&state),
+            "one\ntwo\n",
+            "and the document is untouched"
+        );
+        assert_ne!(state.mode(), EditorMode::Insert, "the keyboard stayed put");
+        let notice = notice_of(&state).expect("the refusal is reported");
+        assert!(
+            notice.contains("Read-only"),
+            "expected the read-only reason, got {notice:?}"
+        );
+    }
+
+    /// The line `o` opens is **one** undo step, and the typing that follows
+    /// it is another.
+    ///
+    /// The insert session is a *typing* run: M012's model is that everything
+    /// typed in one go in `INS` is one entry, and the `o` is not typed — it is
+    /// an edit made in `NOR` that then hands the keyboard over. So `u` takes
+    /// back the word, and a second `u` takes back the line `o` opened.
+    ///
+    /// The geometry is why the two cannot be one entry. The open-line edit
+    /// inserts its newline at the **end** of the opened line while the cursor
+    /// sits at the **start** of it, so the typing goes in before the newline.
+    /// A run is one contiguous insertion by construction, and these two are
+    /// not: folding them together would make the merged entry describe a
+    /// text the reader never had.
+    #[tokio::test]
+    async fn the_opened_line_and_the_typing_that_follows_are_two_undo_steps() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\n").await;
+        normal(&mut state, KeyCode::Char('o'));
+        insert(&mut state, KeyCode::Char('x'));
+        insert(&mut state, KeyCode::Char('y'));
+        assert_eq!(
+            editor_text(&state),
+            "one\nxy\ntwo\n",
+            "the word landed on the line `o` opened"
+        );
+        leave_insert_mode(&mut state);
+        assert_eq!(undo_depth(&state), 2, "the line and the word are two steps");
+        editor_undo(&mut state);
+        assert_eq!(
+            editor_text(&state),
+            "one\n\ntwo\n",
+            "the first `u` takes back the word"
+        );
+        editor_undo(&mut state);
+        assert_eq!(
+            editor_text(&state),
+            "one\ntwo\n",
+            "the second takes back the line `o` opened"
+        );
+    }
+
+    /// The last line of a buffer with no terminator still opens a line.
+    ///
+    /// This is the shape the "split the terminator" rule cannot split: there
+    /// is no terminator to split, so the open-line edit appends a full blank
+    /// line instead. The verb must still open a line and take the keyboard —
+    /// the shape of the document is the pre-existing rule's business, not this
+    /// milestone's.
+    #[tokio::test]
+    async fn o_on_a_last_line_without_a_terminator_still_opens_a_line() {
+        let (mut state, _daemon) = opened_writer("one").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('o')),
+            BufferKey::EnterInsert
+        );
+        let text = editor_text(&state);
+        assert!(
+            text.starts_with("one\n"),
+            "the line was opened below the last line, got {text:?}"
+        );
+        assert!(
+            text.len() > "one\n".len(),
+            "and a line was actually opened, got {text:?}"
+        );
+        assert_eq!(state.mode(), EditorMode::Insert);
     }
 
     #[tokio::test]

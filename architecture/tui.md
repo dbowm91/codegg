@@ -1450,6 +1450,28 @@ enter Insert. What they share is the transaction, so they share one
 implementation — `stay_insert` is the only difference and it belongs to the
 caller that changes mode.
 
+**`o` and `O` reach that implementation through the shared edit funnel.**
+`editor_open_line` is not a second funnel: it shares `editor_editing_command`'s
+read-only gate, its snapshot and its `resolve_edit`, and differs only in what
+it returns. It returns `BufferKey::EnterInsert` when the controller **accepted**
+the transaction, and `BufferKey::Consumed` when the attachment refused — a
+verb that writes claims its key and reports the refusal, exactly as `d`/`D`/`x`
+do, while `i`/`a`/`I`/`A` are mode transitions that leave the key unclaimed
+and let the status row's "read-only" be the report. The acceptance check is
+what keeps the presentation's mode and the App's `input_mode` in agreement:
+`submit_edit` writes the presentation's side of it inside the accepted branch,
+and the caller returns the value the App reads.
+
+**The open-line cursor is the start of the opened line, and the two cases
+reach it by different arithmetic.** With a terminator to split, the insertion
+is one newline at the start of the *next* line and that newline is the one
+that ends the opened line, so the opened line starts where the insertion did.
+With no terminator to split, the insertion is a full blank line — two
+newlines — and the first ends the current line while the second ends the
+opened one, so the opened line starts one byte further on. Getting this wrong
+is invisible until the reader types: the cursor lands on the line *after* the
+opened one, and the text they type goes there.
+
 **A paragraph motion is resolved in `apply_motion`, not `apply_motion_inner`,
 for the same reason a find is.** `]p` at the last paragraph is a no-op that has
 to be able to say so, and "the cursor did not move" is not an answer. So it is
@@ -3253,6 +3275,22 @@ insertion anywhere but the end of the run ends it, and the parts become
 separate steps, because they are separate edits. The session keeps the
 individual `TextTransaction`s it was given and never a copy of the text they
 produced; the merged insertion is built once, at commit time.
+
+**The first edit of a run is asked the same question as every later one.**
+`absorb_insert_edit` asks whether an insertion continues the run by comparing
+its start with the end of the run so far. The *first* edit had no such
+question asked of it — it opened the run wherever it landed — and the
+open-line verbs are the first edit to need one. `o` inserts its newline at the
+**end** of the line it opens and leaves the cursor at its **start**, so the
+text the reader types goes in *before* the newline. A run whose text does not
+end where the cursor is cannot be continued, so `submit_edit` now asks
+`typing_run_continues` before folding an edit into a run: the cursor must end
+where the inserted text ends. The open-line edit is therefore not a typing
+edit — it is its own undo step, and the typing that follows opens the run. The
+question is on the **cursor**, not on the mode: a mode check would also have
+excluded the open-line edit, but it would have excluded the literal insertion
+as well, and the literal insertion is how the model's own burst test drives a
+run.
 
 A reconciliation **discards** an open session rather than committing it. The
 text the session described is the pre-reload text, and committing it would

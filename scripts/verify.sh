@@ -97,6 +97,9 @@ run_quick() {
     echo "==> python3 scripts/check_tui_editor_prefix_state.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py)
 
+    echo "==> python3 scripts/check_tui_editor_doc_drift.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py)
+
     echo "==> python3 scripts/check_tui_transport_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_transport_authority.py)
 

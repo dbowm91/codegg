@@ -419,6 +419,25 @@ model to the wrong connection.
   session keeps bounded `TextTransaction`s and never a copy of the text. A
   reconciliation **discards** an open session rather than committing it — the
   text it described is the pre-reload text.
+- **The first edit of a run is asked the same question as every later one.**
+  `absorb_insert_edit` asks whether an insertion continues the run; the first
+  edit must clear the same bar, and `submit_edit` asks it through
+  `typing_run_continues`: the cursor must end where the inserted text ends. A
+  run whose text does not end where the cursor is cannot be continued. The
+  open-line verbs are why — `o` inserts its newline at the **end** of the line
+  it opens and leaves the cursor at its **start**, so the text the reader
+  types goes in before the newline, and the open-line edit is its own undo step
+  rather than the first keystroke of a run.
+- **`o` and `O` open a line, through the shared edit funnel.**
+  `editor_open_line` shares `editor_editing_command`'s read-only gate, its
+  snapshot and its `resolve_edit`; it differs only in what it returns. A verb
+  that **writes** claims its key and reports the refusal
+  (`BufferKey::Consumed` plus a notice), so `o`/`O` behave like `d`/`D`/`x`; a
+  verb that only **moves the cursor** (`i`/`a`/`I`/`A`) leaves the key
+  unclaimed and lets the status row's "read-only" be the report. The open-line
+  cursor is the **start of the opened line** — the two cases reach it by
+  different arithmetic, and getting it wrong puts the reader's typing on the
+  line after the one that was opened.
 - **The history is one list with a cursor in it.**
   `TuiDocumentPresentation` holds `history`, `history_bytes` and
   `history_cursor` — not an undo stack and a redo stack. `history_cursor` is
@@ -1300,6 +1319,9 @@ adding TUI code - they are the executable form of the invariants above.
 | `python3 scripts/check_tui_editor_key_authority.py` | Scans the editor's dispatch stages and rejects a chord claimed twice, a chord claimed by a later stage after an earlier one took it, and a shadowed arm. The conflict model is the **exact modifier bitmask**, so `ALT` and `ALT \| SHIFT` are disjoint. `--self-test` runs ten cases, including one the guard cannot resolve — that must be an error, not a pass. |
 | `python3 scripts/check_tui_editor_prefix_state.py` | Rejects a second pending-prefix mechanism: the presentation must hold exactly one, typed `EditorPrefix`. A grammar that wants a second level puts it in the **variant** (`EditorPrefix::MatchArg`), not in a second field. |
 | `python3 scripts/check_tui_editor_leaf_authority.py` | Polices the editor's **leaf tables**: no duplicated glyph inside one table, every glyph printable ASCII, one glyph per prefix across that prefix's tables, no leaf behind a guard-block chord, and no table no prefix binds. Reads the guard-block chords through the key-authority guard. `--self-test` runs nine synthetic cases through the same analysis the real check uses. |
+| `python3 scripts/check_tui_editor_apply_path.py` | Polices the **preview-apply path**: one builder (`build_apply_request`) and one `CoreRequest::LspPreviewApply` construction, and a carried candidate that is never registered. Reads ADR-0008's contract. |
+| `python3 scripts/check_tui_editor_completion_authority.py` | Polices the **completion popup's triggers**: `F8` claimed exactly once, `Ctrl-x` claimed exactly once, no trigger shadowing the guard block's `Ctrl+s`/`Ctrl+r`, and `Ctrl-x` in Insert mode only. Tells the triggers from the popup's own keys **structurally** — the arms before the popup-open check — and reads the guard-block chords through the key-authority guard. |
+| `python3 scripts/check_tui_editor_doc_drift.py` | Polices the **binding set against `docs/tui.md`**: every leaf gesture and every claimed chord the code owns is documented, every key the document declares unbound is unbound, and the document carries an unbound declaration at all. Reads the chords and the leaf tables through the key- and leaf-authority guards, so there is one parser per dispatch shape. `--self-test` runs eight synthetic cases, one of which is the clean tree. |
 
 ## Testing
 

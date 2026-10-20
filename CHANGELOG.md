@@ -157,6 +157,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`o` and `O` open a line again.** Both keys were bound and both took the
+  keyboard, and neither opened anything: the code that opens the line was
+  written, tested, and unreachable from the key path, so the keys silently
+  dropped you into `INS` on the line you were already on. The documentation
+  had been describing the working behaviour the whole time. `o` now opens a
+  line below the cursor's line and `O` one above, with the cursor on the line
+  they opened — the cursor used to land on the line *after* it, which put your
+  typing in the wrong place. A read-only buffer refuses both and says so,
+  rather than the `o` landing in the composer.
+- **A word typed into a line `o` opened is one undo step again.** The open-line
+  edit was being folded into the typing run it cannot continue, so the first
+  keystroke broke the run and the word was split across two steps. The line
+  and the word are now two steps — `u` takes back the word, a second `u` takes
+  back the line — and the word is one step however many letters it took.
 - **The completion popup and the diagnostics panel no longer eat your typing.**
   Both used to claim bare characters and `Enter` whether or not you were in
   `INS`, so typing into a file with a panel open lost the character to a panel

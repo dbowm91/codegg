@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M013, M015, M016 and M017 closed; M018 ready; M014 blocked on ADR-0034)
+Status: closed (M001–M013 and M015–M020 closed; M014 blocked on ADR-0034 acceptance — the named exception, and not a precondition for closing; ADR-0034 proposed)
 
 Long-term references:
 
@@ -1677,6 +1677,93 @@ surface above its chain. A guard for the popup's own keys.
 
 Plan: `plans/implementation/tui-editor-helix-parity/018-completion-trigger-guard.md`
 
+### M019 — The open-line verbs: `o` and `O`
+
+**Class.** Capability.
+
+**Objective.** Make `o` and `O` open a line. Both keys are bound and both
+enter Insert mode, and neither opens anything: the code that would open the
+line is written, tested, and unreachable from the key path.
+
+**Dependencies.** None hard. M001's key authority and M004's change verbs are
+closed; the milestone changes no chord.
+
+**Deliverable boundary.** The two arms, the shared edit funnel they use, the
+open-line cursor, the dispatch-path tests, and the documents that describe the
+verb.
+
+**Exit conditions.** `o` opens a line below the cursor's line and `O` above,
+both through the key path; the cursor lands on the line that was opened; a
+read-only attachment refuses both and says so; `]Space` is unchanged; the key
+guard's counts do not move.
+
+> **Amendment A1 (2026-10-20) — M019 is `ready`, and the defect is stated in
+> four facts.**
+>
+> 1. The keys are bound (`src/tui/commands/editor.rs`, the `o`/`O` arms of
+>    `handle_normal_key`).
+> 2. The route drops the edit: `enter_insert` maps the command to a cursor
+>    position through a match whose only arms are the four insertion-entry
+>    commands, so `OpenLineBelow` and `OpenLineAbove` fall to `_ => cursor`.
+> 3. The correct implementation is written and unit-tested
+>    (`editor::resolve_edit`'s open-line arms), but those tests call
+>    `resolve_edit` **directly**, so they never touch the key path — the same
+>    helper-path-only shape §9 prohibits for a binding.
+> 4. **The documentation already claims the fixed behaviour.**
+>    `docs/tui.md` says *"`o` opens the line **and** hands you the keyboard,
+>    while `]Space` inserts the line and leaves the cursor exactly where it
+>    was"*. The code does not open the line, so the document and the
+>    implementation disagree today.
+>
+> `EditorEdit::stay_insert` is documented as *"Whether the controller
+> accepting this edit should keep the editor in insert mode (**open-line
+> commands**, insertion entry)"* — the flag was designed for exactly this verb
+> and has never been used by it.
+
+Plan: `plans/implementation/tui-editor-helix-parity/019-open-line-verbs.md`
+
+### M020 — The binding-set coherence guard
+
+**Class.** Infrastructure.
+
+**Objective.** Make §11's binding bullet **checkable**, and check it. The
+bullet names three surfaces; one is dead code, one is a command registry
+rather than a keymap, and the third is hand-maintained prose that nothing in
+the repository compares to the code.
+
+**Dependencies.** None hard. The key guard and the leaf guard are closed and
+are the two parsers this guard reads.
+
+**Deliverable boundary.** One guard script, two markers in `docs/tui.md`, a
+dated amendment to §11, and the self-test and injection proof.
+
+**Exit conditions.** The guard passes on the tree it is written for; its
+self-test proves a clean tree is not mistaken for a clean *check*; the
+injection proof shows it failing on an injected defect and the tree restored
+byte-identically; the guard is in the routine verification set; the key
+guard's and the leaf guard's counts do not move.
+
+> **Amendment A1 (2026-10-20) — M020 is `ready`, and §11's binding bullet is
+> amended.**
+>
+> The bullet as written cannot be true:
+>
+> - the **help overlay** it names — `src/tui/components/help_overlay.rs` — is
+>   **unreferenced dead code**, with no `mod` declaration and no reference
+>   anywhere in `src/`. The live help is
+>   `src/tui/components/dialogs/help.rs`, and it carries no editor chords.
+> - the **`:` palette** is `EditorCommandName::ALL`, a *command registry*
+>   (`w`, `q`, `wq`, `q!`, `e`, `wa`, `new`, `open`, `complete`), not the
+>   keymap. It was never the same set.
+> - **`docs/tui.md`** is hand-maintained prose, and no guard script
+>   references it: `grep` over `scripts/` for `docs/tui` returns no matches.
+>
+> So the bullet could not be true — and could not be *false* either, because
+> no check existed to say so. §11 carries the amendment, and this milestone
+> is the check.
+
+Plan: `plans/implementation/tui-editor-helix-parity/020-binding-set-coherence-guard.md`
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -1784,15 +1871,65 @@ This roadmap closes when:
   ADR-0034, and the completion definition below already says the
   ADR-0034-gated slices remain owned elsewhere. M014 closing is not a
   precondition for this roadmap closing.
-- The normal-mode keymap, the `:` palette, the help overlay, and
-  `docs/tui.md` describe one identical set of bindings, and that set is
-  derived from the binding table rather than hand-maintained beside it.
 - No declared binding is unreachable, and the reachability guard is in the
   routine verification set.
 - The Insert-mode printable-character sweep passes non-vacuously across both
   keymaps.
 - Terminal-panel selection/navigation parity is verified or an exemption is
   recorded with rationale.
+
+> **Amendment A1 (2026-10-20) — the second bullet is amended, because it named
+> three surfaces and two of them do not exist in the form it describes.**
+>
+> **The bullet as written:**
+>
+> > The normal-mode keymap, the `:` palette, the help overlay, and
+> > `docs/tui.md` describe one identical set of bindings, and that set is
+> > derived from the binding table rather than hand-maintained beside it.
+>
+> **The finding.** The **help overlay** it names —
+> `src/tui/components/help_overlay.rs` — is unreferenced dead code: no `mod`
+> declaration in `src/tui/components/mod.rs` and no reference anywhere in
+> `src/`. The live help is `src/tui/components/dialogs/help.rs`, and it
+> carries no editor chords at all. The **`:` palette** is
+> `EditorCommandName::ALL`, a *command registry* (`w`, `q`, `wq`, `q!`, `e`,
+> `wa`, `new`, `open`, `complete`), not the keymap — it was never the same
+> set. And **`docs/tui.md`** is hand-maintained prose that nothing in the
+> repository compares to the code: `grep` over `scripts/` for `docs/tui`
+> returns no matches, and no test reads the file.
+>
+> So the bullet could not be true — and, worse, it could not be **false**
+> either, because no check existed to say so. A completion definition that
+> cannot be checked is an aspiration.
+>
+> **The amended bullet:**
+>
+> > The bindings the code owns and the bindings the documentation describes are
+> > one set: every leaf gesture and every Normal-mode chord the code claims is
+> > documented in `docs/tui.md`, every key the documentation declares unbound
+> > is unbound, and the check is mechanical — a guard script in the routine
+> > verification set. The `:` palette and the dead help overlay are named
+> > exceptions, recorded as such.
+>
+> **What the amendment does and does not claim.** It narrows the bullet to the
+> two surfaces that exist and can be compared, and it names the two that do
+> not. It does not claim the document is prose-complete: the guard checks the
+> *binding set*, not the explanations, and the document's prose advertising a
+> key that does not exist — outside the "unbound" lists, where the document
+> makes an explicit, structured claim — is a recorded residual. The reason is
+> measured, not assumed: a reverse check over every code span in the document
+> reports fifty defects that are not defects, among them the bracketed
+> identifiers `[INS]`, `[NOR]` and `[human_shell]`, the JSON path
+> `[theme].name`, and the *negative* example `m z` is not a gesture. A guard
+> that reports defects that are not defects is disabled by the next person who
+> hits one.
+>
+> **What makes the amended bullet true.** M020's guard,
+> `scripts/check_tui_editor_doc_drift.py`, reads the key guard's and the leaf
+> guard's **models** — one parser per dispatch shape, not two — and compares
+> them with `docs/tui.md`. It is registered in `scripts/verify.sh quick` and in
+> the CI `verify` job, so a binding that is not documented fails the ordinary
+> sweep.
 
 Roadmap closure does **not** require full Helix parity. The deferred list in
 §3 and the ADR-0034-gated slices remain explicitly owned elsewhere.
@@ -1819,6 +1956,8 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M016 | **closed** | `plans/implementation/tui-editor-helix-parity/016-preview-apply-bridge.md` | `plans/closure/tui-editor-helix-parity/016-status.md` | M015 closed (hard); ADR-0008 accepted, so no new ADR. The bridge the M015 closure named: the editor's preview becomes a **reviewable artifact**, the chords lead to the change review, and the review is the apply step (Amendment A1). Closed 2026-10-19: the **candidate is carried, not registered** — `LspReadGet` registers nothing, no protocol request exports a preview, and the frontend's own registry is `None` in socket mode (`src/main.rs:3454`) and empty in production, so the read result carries the candidate and the TUI relays it. The apply path needs no registry either: `apply_preview` recomputes the digest over the request's own patches, so a candidate altered in transit fails the check. `build_apply_request` takes a *source* — the registry or a carried candidate — and is still the single place a `CoreRequest::LspPreviewApply` is constructed, which `scripts/check_tui_editor_apply_path.py` now enforces structurally. The chord and leaf counts did not move: **2 / 71 / 8** and **5 / 44 / 12** |
 | M017 | **closed** | `plans/implementation/tui-editor-helix-parity/017-code-action-read.md` | `plans/closure/tui-editor-helix-parity/017-status.md` | M016 closed (hard — the candidate and the bridge are its machinery); ADR-0012's read family, whose "read-only by construction" note is corrected in place. The code-action read: one request, many local previews, the panel as the picker (Amendment A1). Closed 2026-10-19 (Amendment A2): the one-request shape is **measured** — the egglsp integration test reads the fake server's own transcript and asserts it saw exactly one `textDocument/codeAction`; the bound is **per action** (`LspCodeActionUnavailable`), because a result-wide flag cannot say which action the bound cut; a **command-bearing** action is refused whole, edit or not, because the LSP specification applies an action's edit *and then* its command; and the review opens on the **selected** action, so it does not open on the first entry before the reader has chosen one. The chord and leaf counts did not move: **2 / 71 / 8** and **5 / 44 / 12** |
 | M018 | **closed** | `plans/implementation/tui-editor-helix-parity/018-completion-trigger-guard.md` | `plans/closure/tui-editor-helix-parity/018-status.md` | None — this milestone changes no behaviour. The completion-trigger guard: a **separate** guard, for the same reason M010's leaf guard is (the popup is a surface above the chain, with a modality the key guard's model does not have). It reads the key guard's **model** for the guard-block chords, and it tells the triggers from the popup's own keys **structurally** — the arms before the popup-open check (Amendment A1). Closed 2026-10-19 (Amendment A2): `scripts/check_tui_editor_completion_authority.py` polices four invariants — the `F8` trigger exactly once, the `Ctrl-x` trigger exactly once, no trigger shadowing the guard block's `Ctrl+s`/`Ctrl+r`, and `Ctrl-x` in Insert mode only — with a nine-case self-test and an injection proof on the real tree. **No behaviour changed**: the key guard's counts are untouched at **2 / 71 / 8** and the leaf tables at **5 / 44 / 12** |
+| M019 | **closed** | `plans/implementation/tui-editor-helix-parity/019-open-line-verbs.md` | `plans/closure/tui-editor-helix-parity/019-status.md` | None hard — M001 and M004 are closed and the milestone moves no chord. The open-line verbs: `o` and `O` were **bound and inert** — the code that opens the line was written, tested, and unreachable from the key path, while `docs/tui.md` already claimed the fixed behaviour (Amendment A1). Closed 2026-10-20 (Amendment A2): the two arms go through the **shared edit funnel**, so the line they open is a real document edit; the open-line cursor was **one byte past** the line it opened, which put the reader's typing on the *next* line, and is now the start of the opened line; `o`/`O` claim the key on a read-only attachment and report the refusal, while `i`/`a`/`I`/`A` leave it unclaimed, because a verb that writes and a verb that only moves the cursor are not the same kind of verb; and a typing run now starts only where the cursor ends, so the line `o` opened and the word typed into it are **two** undo steps and the word is one step however many keystrokes it took. The chord and leaf counts did not move: **2 / 71 / 8** and **5 / 44 / 12** |
+| M020 | **closed** | `plans/implementation/tui-editor-helix-parity/020-binding-set-coherence-guard.md` | `plans/closure/tui-editor-helix-parity/020-status.md` | None hard — the key guard and the leaf guard are closed, and this guard reads their **models** rather than re-parsing the dispatch. The binding-set coherence guard, and §11's amendment (Amendment A1). Closed 2026-10-20 (Amendment A2): `scripts/check_tui_editor_doc_drift.py` compares the code's **44 leaf gestures** and **80 claimed chords** with `docs/tui.md`, and checks the document's own "unbound" declarations in the other direction — a key the document says is not bound must not be bound. §11's binding bullet is **amended**: it named a dead help overlay and a command registry, and it could not be false because nothing checked it. The document's two "unbound" lists gained a marker so the claim is checkable in both directions. **No behaviour changed**: the key guard's counts are untouched at **2 / 71 / 8** and the leaf tables at **5 / 44 / 12** |
 
 **M013 is closed** (`plans/closure/tui-editor-helix-parity/013-status.md`).
 It discharges **M010**'s last dependency edge, and it found **six** further
@@ -2206,3 +2345,50 @@ a decision that is not the implementation's to make.
 **The `Ctrl-s` / `Ctrl+r` Insert-mode conflict stays out of it too.** M011
 decided it — both keep their mode-independent meaning — and it is not a
 residual of this wave.
+
+### 13.7 The closing wave (2026-10-20) — and the roadmap's closing
+
+The third wave closed with M018. What remained after it was not another wave
+of **capability** but the two things the roadmap's own §11 asked for and could
+not have:
+
+| # | What was left | Why it was not a capability | Milestone |
+|---|---|---|---|
+| 1 | `o` and `O` opened no line | a **defect**, not a feature: the keys were bound, the code was written and tested, and the key path never reached it | **M019** |
+| 2 | §11's binding bullet could not be true, and could not be false | there was **no check** — not even a wrong one | **M020** |
+
+**M019 is closed** (2026-10-20): `o` and `O` open a line, through the shared
+edit funnel, with the cursor on the line they opened. Two further defects
+surfaced from the milestone's own dispatch-path tests — the cursor was one
+byte past the line it opened, and the open-line edit was being folded into the
+typing run it cannot continue — and both are fixed. The chord and leaf counts
+did not move: **2 / 71 / 8** and **5 / 44 / 12**.
+
+**M020 is closed** (2026-10-20): §11 carries a dated **Amendment A1** that
+narrows the binding bullet to the surfaces that exist and names the two that
+do not, and `scripts/check_tui_editor_doc_drift.py` makes the amended bullet
+**mechanical** — the code's 44 leaf gestures and 80 claimed chords against
+`docs/tui.md`, and the document's own "unbound" declarations checked in the
+other direction. The chord and leaf counts did not move: **2 / 71 / 8** and
+**5 / 44 / 12**.
+
+**The roadmap closes here.** Every bullet of §11 is met, and the one that had
+to be amended is now *enforced* rather than asserted:
+
+| §11 bullet | Status |
+|---|---|
+| every milestone through M015 closed with a closure record, or the roadmap superseded | **met** — M001–M013 and M015–M020 all closed; M014 is the **named** exception |
+| the binding surfaces describe one set, derived from the binding table | **met, as amended** (Amendment A1) and **mechanically enforced** by M020's guard |
+| no declared binding is unreachable, and the reachability guard is in the routine set | **met** — six editor guards in `verify.sh quick` and in CI |
+| the Insert-mode printable-character sweep passes non-vacuously across both keymaps | **met** (M011) |
+| terminal-panel parity verified or an exemption recorded | **met** (M006/M007/M008) |
+
+**The remainder is owned elsewhere, explicitly.** The §3 deferred list, the
+ADR-0034-gated slices (M014 stays `blocked` on an ADR that records *"no
+option is selected by this record"*), the change quartet's missing data
+source, the dirty-buffer merge, and the residuals M019 and M020 registered in
+their own closure records — all of them are in `plans/registry.md`'s deferred
+section, with the reason each is deferred.
+
+**A closure is not a claim that nothing is left.** It is a claim that what is
+left is *named*, and that this roadmap is not the thing that owns it.

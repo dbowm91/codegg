@@ -293,7 +293,7 @@ after reconciling the search-backend retirement with current `main`.
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
 | Integration test files | 244 | `tests/*.rs` |
-| CI guard scripts | 53 | `scripts/check_*` |
+| CI guard scripts | 58 | `scripts/check_*` — re-measured 2026-10-20; the count was 53 on the 2026-10-15 pass and had gone stale by four |
 
 ## Feature gates
 

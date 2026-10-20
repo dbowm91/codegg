@@ -825,9 +825,22 @@ one piece of text, so the order you see on screen is the order you get.
 
 A buffer you cannot write refuses to **grow** a selection: `v` and `x` report
 that they were refused instead of arming a highlight you cannot do anything
-with. It also refuses the verbs that would rewrite text — `&`, `Alt-(`, `Alt-)`.
-Moving the cursor still works, as do `v`, `x`, `C` and the merge keys: you can
-always read and select in a read-only file, you just cannot change it.
+with. It also refuses the verbs that would rewrite text — `&`, `Alt-(`, `Alt-)`,
+`o` and `O`. Moving the cursor still works, as do `v`, `x`, `C` and the merge
+keys: you can always read and select in a read-only file, you just cannot change
+it.
+
+`o` opens a line **below** the cursor's line and `O` opens one **above**, and
+both hand you the keyboard: you are typing into the line they opened, with the
+cursor on it. The line is a real document edit, so a read-only buffer refuses
+both and says so.
+
+The line `o` opens and the word you type into it are **two** undo steps: `u`
+takes back the word, and a second `u` takes back the line. The newline that
+ends the opened line sits *after* the text you type, so the two are not one
+contiguous change and cannot be one step. Everything you type in one go in
+`INS` is still **one** step — see
+[Insert-mode chords](#insert-mode-chords).
 
 `~` flips per character, so `~` on `abC` gives `Abc` and a second `~` gives
 back `abC`. `` ` `` and `` Alt-` `` **set** rather than flip: `` ` `` on `Abc`
@@ -1047,12 +1060,20 @@ difference this surface can show.
 
 Not bound, on purpose rather than by omission:
 
+<!-- unbound: the keys below are deliberately not bound -->
+
 - `gf`, `ga`, `gm`, `gn`, `gp` — files and alternate buffers. One document is
   open at a time.
 - `gt`, `gc`, `gb` — top, middle and bottom **of the screen**. These need the
   real viewport height, and motions currently resolve against a fixed guess at
   it, so binding them today would land on a line that is not the top of your
   screen.
+
+A list like this is **checked**. The build compares the keys declared here
+against the editor's own tables, so a key that gets implemented without leaving
+this list is a defect the build reports. It cannot go stale in the direction
+that matters — a document that says a key does not work is worse than one that
+omits it.
 
 The language-server jumps are bound, through the space and `g` menus:
 
@@ -1202,6 +1223,8 @@ place. On a read-only buffer the two `Space` keys are refused — they are the
 only unimpaired keys here that write — while `]p` and `[p` still work.
 
 Not bound, because nothing in this codebase can answer them yet:
+
+<!-- unbound: the keys below are deliberately not bound -->
 
 - `[q`, `[Q`, `[F`, `[f`, `[n`, `[%`, `[i`, `[c`, `[s`, `[t`, `[b` —
   unimpaired's find family: definitions, type definitions, workspace search,

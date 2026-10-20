@@ -4651,15 +4651,30 @@ pub fn move_cursor_to(
 /// Split the existing line terminator: the new line inherits it and the
 /// current line gets a fresh one. With no terminator to split (last line of
 /// the buffer), append a full blank line.
+///
+/// The cursor goes to the **start of the opened line**, and the two cases
+/// reach it by different arithmetic, because the opened line is bounded by
+/// different newlines:
+///
+/// - With a terminator to split, the insertion is one newline at the start of
+///   the *next* line, and that newline is the one that ends the opened line.
+///   The opened line therefore starts where the insertion did.
+/// - With no terminator to split, the insertion is a full blank line — two
+///   newlines — and the first ends the current line while the second ends the
+///   opened one. The opened line therefore starts one byte further on.
+///
+/// Getting this wrong is invisible until the reader types: the cursor lands
+/// on the line *after* the opened one, so the text they type goes there.
 fn open_line_below(snapshot: &DocumentSnapshot, line: usize) -> Option<EditorEdit> {
     let end = line_content_end(snapshot, line).unwrap_or_default();
     let insert_at = next_char_boundary(snapshot, end).unwrap_or(end);
     let has_terminator = insert_at > end;
     let text = if has_terminator { "\n" } else { "\n\n" };
+    let cursor = insert_at + usize::from(!has_terminator);
     build_edit(
         snapshot,
         TextTransaction::new(vec![TextEdit::new(insert_at..insert_at, text.to_string())]),
-        insert_at + 1,
+        cursor,
         true,
     )
 }
@@ -10230,7 +10245,11 @@ mod tests {
         // leaves the cursor on the line it opened.
         assert!(open.stay_insert, "`o` enters Insert");
         assert!(!add.stay_insert, "`]Space` does not");
-        assert_eq!(open.cursor_after, 5, "on the line `o` opened");
+        // Byte 4 is the start of the opened line: `one\n` is bytes 0..4, the
+        // opened line is the empty one between the two terminators, and `two`
+        // starts at byte 5. A cursor at 5 would be on `two` — the line after
+        // the one `o` opened — and the reader's typing would go there.
+        assert_eq!(open.cursor_after, 4, "on the line `o` opened");
         assert_eq!(add.cursor_after, 0, "wherever the cursor already was");
     }
 }

@@ -132,6 +132,9 @@ jobs:
       - name: TUI editor prefix-state guard
         run: python3 scripts/check_tui_editor_prefix_state.py
 
+      - name: TUI editor doc-drift guard
+        run: python3 scripts/check_tui_editor_doc_drift.py
+
       - name: TUI transport-authority guard
         run: python3 scripts/check_tui_transport_authority.py
 
