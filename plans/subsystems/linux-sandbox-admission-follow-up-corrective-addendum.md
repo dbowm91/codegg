@@ -4,7 +4,7 @@ Status: active planning; C001–C003 **ready for bounded handoff**; no productio
 Planning baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` at `d251b11cd7fa5b89ca008e45d80a28a4ac3aea9f` (2026-10-20).
 Primary owner: Linux execution-isolation roadmap. This is a corrective **coordination addendum**, not a competing implementation of existing Linux M003/M004/M005 or trusted-Git C005.
 
-Canonical sources: `plans/000-long-term-specification.md` ``4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` `8; `plans/003-planning-process.md` ``4–10; accepted ADR-0004/0016/0042/0043; **proposed (unaccepted) ADR-0044**. Refer to `plans/subsystems/linux-execution-isolation-roadmap.md` and `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`.
+Canonical sources: `plans/000-long-term-specification.md` §§4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md` §§4–10; accepted ADR-0004/0016/0042/0043; **proposed (unaccepted) ADR-0044**. Refer to `plans/subsystems/linux-execution-isolation-roadmap.md` and `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`.
 
 ## 1. Purpose and ownership
 
