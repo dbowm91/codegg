@@ -200,13 +200,12 @@ impl Tool for WriteTool {
 }
 
 fn temp_path_recovery_error(path: &Path, private_scratch: Option<&Path>) -> Option<ToolError> {
-    let relative = crate::tool::util::relative_to_known_temp_root(path)?;
-    let scratch_root = private_scratch?.canonicalize().ok()?;
-    let suggestion = scratch_root.join(relative);
-    Some(ToolError::Permission(format!(
-        "temporary path is outside the authorized workspace; retry at '{}' or request access to the original location through the normal permission flow",
-        suggestion.display()
-    )))
+    // The wording is shared with the permission layer, which may answer the
+    // model with the same offer before the human is asked. One message, one
+    // contract: it names a suggestion and grants nothing.
+    Some(ToolError::Permission(
+        crate::tool::util::temp_root_redirect_message(path, private_scratch)?,
+    ))
 }
 
 impl Default for WriteTool {

@@ -298,7 +298,10 @@ If a structured write targets a known host temp directory outside the
 authorized workspace and scratch roots, CodeGG suggests the corresponding
 path under the run's private scratch directory. The suggestion is not an
 authorization or a rewrite: the original path is left untouched, and any
-explicit permission Deny remains final. Structured reads and shell commands
+explicit permission Deny remains final. Under the default permission policy
+the suggestion reaches the model first, so a model that follows it never needs
+a human; a model that repeats the same restricted path is asked about it
+instead. Structured reads and shell commands
 are not redirected. FullHost shell processes retain access to the real host
 temp directory unless their selected native sandbox constrains it. Revoking a
 shared resource stops new child admission; active attempt leases keep it alive.

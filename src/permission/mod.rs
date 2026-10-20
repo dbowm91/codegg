@@ -8,7 +8,7 @@ use globset::Glob;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -234,6 +234,29 @@ fn permission_result_for_level(
             args: None,
         }),
     }
+}
+
+/// The only tool that can honor a temp-root redirect offer today.
+const TEMP_ROOT_REDIRECT_TOOL: &str = "write";
+
+/// Whether a tool-rule name pattern covers `tool`.
+fn tool_rule_name_matches(pattern: &str, tool: &str) -> bool {
+    if pattern == "*" || pattern == tool {
+        return true;
+    }
+    if let Ok(glob) = Glob::new(pattern) {
+        return glob.compile_matcher().is_match(tool);
+    }
+    false
+}
+
+/// A stable key for the offer state: the canonical target, or the lexical
+/// form when the target cannot be canonicalized.
+fn canonical_target_key(requested: &Path) -> String {
+    crate::tool::util::canonicalize_with_missing_tail(requested)
+        .unwrap_or_else(|| requested.to_path_buf())
+        .to_string_lossy()
+        .to_string()
 }
 
 /// The ephemeral receipt produced when the permission boundary accepts a call.
@@ -1023,6 +1046,11 @@ pub struct PermissionChecker {
     canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
     legacy_exec_mode: bool,
     path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>,
+    /// The (tool, canonical target) pairs already answered with a temp-root
+    /// redirect offer in this session. Session-scoped and in-memory: a daemon
+    /// restart clears it, so the next attempt is offered again — the
+    /// conservative direction.
+    temp_root_offers: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl PermissionChecker {
@@ -1047,6 +1075,7 @@ impl PermissionChecker {
             canonicalized_agent_tool_rules: Vec::new(),
             legacy_exec_mode: false,
             path_cache: Arc::new(RwLock::new(HashMap::new())),
+            temp_root_offers: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
 
@@ -1320,6 +1349,133 @@ impl PermissionChecker {
             }
         }
         PermissionResult::Allow
+    }
+
+    /// The non-authoritative redirect offer for a structured write of a
+    /// recognized host temporary root that is not an authorized root.
+    ///
+    /// The offer exists so the model can be answered *before* the human is
+    /// asked. The model is told the actionable scratch path; a model that
+    /// follows it never involves a human at all. A model that insists on the
+    /// same restricted path is not offered again, so the normal human
+    /// approval path then runs exactly as before.
+    ///
+    /// It is issued only when the pending `Ask` came from the implicit
+    /// default. An operator tool rule, an operator path rule, a stored
+    /// decision, or a hard deny keeps its authority and the human is asked
+    /// directly. The offer grants nothing and rewrites nothing: the
+    /// restricted path is still refused, and the human is still the only
+    /// authority for it.
+    pub async fn temp_root_redirect_offer(
+        &self,
+        tool: &str,
+        path: &str,
+        allowed_roots: &[&Path],
+        private_scratch: Option<&Path>,
+        session_id: Option<&str>,
+    ) -> Option<String> {
+        // Only the structured `write` tool can honor the suggestion today:
+        // the edit family is rooted at the workspace and cannot write into a
+        // scratch root, so offering it there would be a broken promise.
+        if tool != TEMP_ROOT_REDIRECT_TOOL {
+            return None;
+        }
+        let requested = Path::new(path);
+        // The target must be an absolute path under a known host temp root.
+        crate::tool::util::relative_to_known_temp_root(requested)?;
+        // It must be outside every authorized root. A target inside one is
+        // already allowed by the trusted-root relaxation and needs no offer.
+        if self.is_under_any_root(requested, allowed_roots) {
+            return None;
+        }
+        // The suggestion must be actionable, and the operator must not have
+        // spoken about this tool or this path.
+        let message = crate::tool::util::temp_root_redirect_message(requested, private_scratch)?;
+        if self.operator_spoke_about(tool, requested, session_id).await {
+            return None;
+        }
+        // One offer per (session, tool, canonical target). The second
+        // identical attempt is the model insisting, and it reaches the human.
+        let key = format!(
+            "{}\u{1f}{tool}\u{1f}{}",
+            session_id.unwrap_or_default(),
+            canonical_target_key(requested)
+        );
+        {
+            // A poisoned lock is not a reason to skip the offer; it is a
+            // reason to let the human decide.
+            let Ok(mut offered) = self.temp_root_offers.lock() else {
+                return None;
+            };
+            if !offered.insert(key) {
+                return None;
+            }
+        }
+        Some(message)
+    }
+
+    /// True when the target resolves under one of the authorized roots.
+    fn is_under_any_root(&self, requested: &Path, allowed_roots: &[&Path]) -> bool {
+        allowed_roots.iter().any(|root| {
+            let Ok(candidate) = crate::tool::util::validate_target_path(requested, root) else {
+                return false;
+            };
+            let Ok(canonical_root) = root.canonicalize() else {
+                return false;
+            };
+            candidate.starts_with(&canonical_root)
+        })
+    }
+
+    /// True when an operator decision already speaks about this call.
+    ///
+    /// The built-in default ruleset pre-populates a `write` rule, so it does
+    /// not count here: only the operator's own statements, the agent's and
+    /// the session's rules, a stored decision, and an operator path rule
+    /// make the pending `Ask` an explicit one.
+    async fn operator_spoke_about(
+        &self,
+        tool: &str,
+        requested: &Path,
+        session_id: Option<&str>,
+    ) -> bool {
+        let path_text = requested.to_string_lossy().to_string();
+        if self
+            .store
+            .read()
+            .await
+            .get_decision(tool, Some(path_text.as_str()), session_id)
+            .is_some()
+        {
+            return true;
+        }
+        if self
+            .canonicalized_explicit_config_tool_rules
+            .iter()
+            .any(|rule| tool_rule_name_matches(&rule.tool, tool))
+        {
+            return true;
+        }
+        for rules in [&self.agent_rules, &self.session_rules] {
+            if rules
+                .tool_rules
+                .iter()
+                .any(|rule| tool_rule_name_matches(&rule.tool, tool))
+            {
+                return true;
+            }
+        }
+        if let Some(canonical) = crate::tool::util::canonicalize_with_missing_tail(requested) {
+            let canonical_string = canonical.to_string_lossy();
+            if self
+                .compiled_globs
+                .iter()
+                .any(|(matcher, _)| matcher.is_match(canonical_string.as_ref()))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub async fn check_bash(
@@ -2708,7 +2864,6 @@ mod tests {
                 .await,
             PermissionResult::Ask(_)
         ));
-
         for (tool, level, expected) in [
             ("write", "ask", PermissionLevel::Ask),
             ("edit", "ask", PermissionLevel::Ask),
@@ -2741,6 +2896,221 @@ mod tests {
                 PermissionLevel::Allow => unreachable!(),
             }
         }
+    }
+
+    /// M005: the redirect offer exists so the model can be answered before the
+    /// human is asked. It is issued once per (session, tool, target): the
+    /// second identical attempt is the model insisting, and it reaches the
+    /// human.
+    #[tokio::test]
+    async fn temp_root_redirect_offer_answers_the_model_before_the_human() {
+        let scratch = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let checker = PermissionChecker::new(None, None);
+        let target = std::env::temp_dir().join(format!(
+            "codegg-m005-offer-probe-{}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&target);
+        let target_text = target.to_str().unwrap().to_string();
+
+        let offer = checker
+            .temp_root_redirect_offer(
+                "write",
+                &target_text,
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("offer-session"),
+            )
+            .await
+            .expect("the first attempt must be offered a redirect");
+        assert!(offer.contains("retry at"), "offer: {offer}");
+        assert!(
+            offer.contains(scratch.path().to_string_lossy().as_ref()),
+            "the offer must name the caller's own private scratch root: {offer}"
+        );
+
+        // The same path in the same session is not offered twice: the model
+        // insisting reaches the human.
+        assert!(checker
+            .temp_root_redirect_offer(
+                "write",
+                &target_text,
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("offer-session"),
+            )
+            .await
+            .is_none());
+
+        // Another session is offered again: the offer is per session.
+        assert!(checker
+            .temp_root_redirect_offer(
+                "write",
+                &target_text,
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("other-session"),
+            )
+            .await
+            .is_some());
+    }
+
+    /// M005: the offer replaces the *implicit default* `Ask` only. An
+    /// operator decision keeps its authority and the human is asked directly.
+    #[tokio::test]
+    async fn temp_root_redirect_offer_requires_the_implicit_default() {
+        let scratch = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let target =
+            std::env::temp_dir().join(format!("codegg-m005-gate-probe-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&target);
+        let target_text = target.to_str().unwrap().to_string();
+
+        // An operator tool rule for `write` is an explicit decision.
+        let tool_rule_config = crate::config::schema::Config {
+            permission: Some(crate::config::schema::PermissionConfig {
+                tools: Some(HashMap::from([("write".to_string(), "ask".to_string())])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(PermissionChecker::new(Some(&tool_rule_config), None)
+            .temp_root_redirect_offer(
+                "write",
+                &target_text,
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("gate-session"),
+            )
+            .await
+            .is_none());
+
+        // An operator path rule that matches the target is an explicit decision.
+        let canonical_target =
+            crate::tool::util::canonicalize_with_missing_tail(&target).expect("canonical target");
+        let pattern = format!("{}/*", canonical_target.parent().unwrap().to_string_lossy());
+        let path_rule_config = crate::config::schema::Config {
+            permission: Some(crate::config::schema::PermissionConfig {
+                default: Some("ask".to_string()),
+                paths: Some(vec![pattern]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(PermissionChecker::new(Some(&path_rule_config), None)
+            .temp_root_redirect_offer(
+                "write",
+                &target_text,
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("gate-session"),
+            )
+            .await
+            .is_none());
+
+        // A stored decision is an explicit decision.
+        let store_path = tempfile::tempdir().unwrap().path().join("permissions.json");
+        let mut store = PermissionStore::new(Some(store_path.clone()));
+        store.add_decision(
+            "write",
+            Some(target_text.as_str()),
+            PermissionLevel::Deny,
+            Some("gate-session"),
+        );
+        assert!(PermissionChecker::new(None, Some(store_path))
+            .temp_root_redirect_offer(
+                "write",
+                &target_text,
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("gate-session"),
+            )
+            .await
+            .is_none());
+    }
+
+    /// M005: the offer covers exactly one shape — a structured write of a
+    /// recognized host temp root that is outside every authorized root.
+    #[tokio::test]
+    async fn temp_root_redirect_offer_only_covers_an_unauthorized_temp_root() {
+        let scratch = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let checker = PermissionChecker::new(None, None);
+
+        // Inside an authorized root: the call is already allowed, so there is
+        // nothing to offer.
+        let inside = workspace.path().join("artifact.txt");
+        assert!(checker
+            .temp_root_redirect_offer(
+                "write",
+                inside.to_str().unwrap(),
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("scope-session"),
+            )
+            .await
+            .is_none());
+
+        // Inside the private scratch root: same.
+        let in_scratch = scratch.path().join("artifact.txt");
+        assert!(checker
+            .temp_root_redirect_offer(
+                "write",
+                in_scratch.to_str().unwrap(),
+                &[workspace.path(), scratch.path()],
+                Some(scratch.path()),
+                Some("scope-session"),
+            )
+            .await
+            .is_none());
+
+        // Not a known host temp root: the human decides.
+        let not_temp =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("codegg-m005-probe.txt");
+        assert!(checker
+            .temp_root_redirect_offer(
+                "write",
+                not_temp.to_str().unwrap(),
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("scope-session"),
+            )
+            .await
+            .is_none());
+
+        let target = std::env::temp_dir().join(format!(
+            "codegg-m005-scope-probe-{}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&target);
+        let target_text = target.to_str().unwrap().to_string();
+
+        // The suggestion is not actionable without a private scratch root.
+        assert!(checker
+            .temp_root_redirect_offer(
+                "write",
+                &target_text,
+                &[workspace.path()],
+                None,
+                Some("scope-session"),
+            )
+            .await
+            .is_none());
+
+        // Only the structured `write` tool is offered: the edit family cannot
+        // write into a scratch root, so a scratch suggestion there would be a
+        // broken promise.
+        assert!(checker
+            .temp_root_redirect_offer(
+                "edit",
+                &target_text,
+                &[workspace.path()],
+                Some(scratch.path()),
+                Some("scope-session"),
+            )
+            .await
+            .is_none());
     }
 
     #[tokio::test]

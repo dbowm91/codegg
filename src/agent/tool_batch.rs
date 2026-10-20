@@ -602,6 +602,28 @@ impl AgentLoop {
         let bash_command = extract_bash_command(tc);
         let git_subcommand = extract_git_subcommand(tc);
 
+        // The trusted roots for this call: the session workspace, the
+        // session's private scratch, and any granted shared scratch. The
+        // permission check and the temp-root redirect offer must see exactly
+        // the same roots, so they are resolved once, here.
+        let session_scratch = if self.scratch_scope.is_none() {
+            crate::scratch::session_scratch_dir(&self.session_id).ok()
+        } else {
+            None
+        };
+        let mut trusted_roots = vec![self.workspace_root.as_path()];
+        let private_scratch_root: Option<&std::path::Path> =
+            if let Some(scope) = &self.scratch_scope {
+                trusted_roots.push(scope.private_root.as_path());
+                trusted_roots.extend(scope.shared.iter().map(|root| root.path.as_path()));
+                Some(scope.private_root.as_path())
+            } else if let Some(root) = session_scratch.as_deref() {
+                trusted_roots.push(root);
+                Some(root)
+            } else {
+                None
+            };
+
         let perm_result = if bash_command.is_some() {
             self.services
                 .permission_checker
@@ -625,24 +647,12 @@ impl AgentLoop {
             "write" | "edit" | "apply_patch" | "replace"
         ) {
             if let Some(path) = path.as_deref() {
-                let session_scratch = if self.scratch_scope.is_none() {
-                    crate::scratch::session_scratch_dir(&self.session_id).ok()
-                } else {
-                    None
-                };
-                let mut allowed_roots = vec![self.workspace_root.as_path()];
-                if let Some(scope) = &self.scratch_scope {
-                    allowed_roots.push(scope.private_root.as_path());
-                    allowed_roots.extend(scope.shared.iter().map(|root| root.path.as_path()));
-                } else if let Some(root) = session_scratch.as_deref() {
-                    allowed_roots.push(root);
-                }
                 self.services
                     .permission_checker
                     .check_trusted_root_mutation(
                         tc.name.as_str(),
                         path,
-                        &allowed_roots,
+                        &trusted_roots,
                         Some(&self.session_id),
                     )
                     .await
@@ -803,6 +813,32 @@ impl AgentLoop {
                     );
                     DeterministicVerdict::Escalate { request }
                 } else if let PermissionResult::Ask(req) = perm_result {
+                    // A structured write of a recognized host temp root that
+                    // is not authorized is answered by the *model* first: it
+                    // is told the actionable scratch path, so a model that
+                    // follows the suggestion never needs a human. The offer
+                    // grants nothing and rewrites nothing — the restricted
+                    // path is still refused. A model that insists on the
+                    // same path is not offered again and reaches the human
+                    // below.
+                    if let Some(guidance) = self
+                        .services
+                        .permission_checker
+                        .temp_root_redirect_offer(
+                            tc.name.as_str(),
+                            req.path.as_deref().unwrap_or_default(),
+                            &trusted_roots,
+                            private_scratch_root,
+                            Some(&self.session_id),
+                        )
+                        .await
+                    {
+                        return ToolPermissionOutcome::Denied {
+                            tool_id: tc.id.to_string(),
+                            message: guidance,
+                        }
+                        .with_command_preflight(command_preflight.clone());
+                    }
                     let dialog_args = req.args.clone();
                     let request = ApprovalRequest::new(
                         req.tool.clone(),
