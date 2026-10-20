@@ -125,3 +125,10 @@ Met. C001 closed with native Linux evidence and C002 closed as blocked at its wo
 |---|---|---|---|---|
 | C001 | closed | `plans/implementation/managed-agent-scratch-native-qualification-corrective/001-linux-native-scratch-containment-qualification.md` | `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md` | — (discharged: native Linux Landlock ABI>=3 evidence, CI run `39298041771` at `2407eb66`) |
 | C002 | blocked (stop condition reached; closure recorded) | `plans/implementation/managed-agent-scratch-native-qualification-corrective/002-windows-required-scratch-native-proof.md` | `plans/closure/managed-agent-scratch-native-qualification-corrective/002-status.md` | hard: independently qualified Windows Required filesystem sandbox backend |
+
+**Supplemental record.** The merge reconciliation of this workstream with
+`main` — PR #128, merged into `main` as `a5d88eb7` — is recorded in
+`plans/closure/managed-agent-scratch-native-qualification-corrective/003-merge-reconciliation-status.md`.
+It is **not** a new milestone and it opens none: it adds the reconciled-tree
+qualification and the defect history to the evidence, and it leaves C001 and
+C002, the frozen M003 receipt, and the Windows blocker exactly as recorded.
