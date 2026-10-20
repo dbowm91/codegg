@@ -768,6 +768,7 @@ fn focus_session(app: &mut codegg::tui::app::App) {
 
 fn sidebar_subagent(task_id: &str, name: &str, agent: &str, status: &str) -> SidebarSubagent {
     SidebarSubagent {
+        child_instance_id: Some(task_id.to_string()),
         task_id: task_id.to_string(),
         name: name.to_string(),
         agent: agent.to_string(),
@@ -794,6 +795,7 @@ fn seed_subagent(
     app.sidebar
         .set_subagents(vec![sidebar_subagent(task_id, name, agent, status)]);
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        child_instance_id: Some(task_id.to_string()),
         task_id: task_id.to_string(),
         run_id: None,
         display_name: Some(name.to_string()),

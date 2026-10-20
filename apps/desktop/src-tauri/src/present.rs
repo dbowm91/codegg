@@ -687,6 +687,8 @@ mod tests {
             .agent_tree
             .extend(
                 (0..(MAX_VISIBLE_SUBAGENTS + 3)).map(|index| AgentTreeNodeProjection {
+                    child_instance_id: format!("child-{index}"),
+                    originating_turn_id: Some("turn-1".into()),
                     task_id: index as u64,
                     agent: "worker".into(),
                     description: "work".into(),
@@ -696,6 +698,8 @@ mod tests {
                     completed_at: None,
                     result_summary: None,
                     display_name: None,
+                    profile: None,
+                    usefulness: None,
                     run_id: None,
                 }),
             );

@@ -197,7 +197,9 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 `default_construction_defers_registry_building`.
 
 **Platform outcomes:**
-- Linux with Landlock ABI: `Enforced { backend: landlock, abi: Some(v) }`
+- Linux with Landlock ABI >= 3: `Enforced { backend: landlock, abi: Some(v) }` — the
+  delegated-scratch grant path is qualified natively; see "Native Linux scratch
+  containment" below
 - macOS: `Enforced { backend: seatbelt, abi: None, .. }`
 - Windows: managed finite processes receive Job Object lifecycle
   supervision, but no filesystem or network enforcement backend is registered;
@@ -285,11 +287,69 @@ missing denied child is preserved relative to its nearest existing parent.
 On Seatbelt, credential read/write denials are emitted after workspace write
 re-allow rules because SBPL evaluation is order-sensitive.
 
-Persistent writes are restricted to approved workspace roots and stateless
-device nodes. Each constrained managed process receives a collision-resistant
-0700 `TMPDIR`, added as its own read/write root and removed after the process
-tree is reaped. Python's temporary script is held in its own private run
-directory. Shared `/tmp` and global HOME caches are not writable grants.
+Persistent writes are restricted to approved workspace roots, authorized
+session scratch roots, and stateless device nodes. A model process with a
+trusted session identity receives an owner-private directory under the
+per-user CodeGG cache root (`dirs::cache_dir()/codegg`) as
+`CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. This is kept outside the
+macOS credential-denied daemon data root; scratch contents are disposable and
+may be removed by host cache maintenance. The Required launch adds the exact
+path as a read/write root. Durable child runs receive a separate owner-private
+root keyed by `AgentRunId`; parent-created shared roots enter that run's scope
+only through an immutable direct-child grant validated in `AgentRunStore`.
+Shared roots are explicit sandbox/tool roots and never replace the child's
+private temp variables. Scheduler attempt leases preserve admitted access
+through child completion; revocation blocks later admission. Unix session and
+run roots use mode 0700; Windows inherits
+the per-user cache-root ACL and has no native isolation claim while Required
+launches remain unavailable. Constrained
+launches also retain a separate collision-resistant 0700 per-launch staging directory,
+which is reaped with the process tree. Python's temporary script is held in
+its own private run directory. Shared `/tmp` and global HOME caches are not
+writable grants. Revoked shared directories are removed after the last attempt lease releases.
+Terminal delegated-run private roots are reclaimed only after the supervised
+child returns. A soft-deleted session's scratch tree is reclaimed only after
+durable runs and jobs become terminal; active work defers cleanup, and
+restoring the session prevents deletion. Cleanup rechecks the deleted-session
+row under the SQLite writer lock before claiming the tree. Startup keyset-scans
+deleted sessions and re-arms cleanup after daemon restart. Transcripts,
+durable run results, and managed Git worktrees are outside the scratch tree.
+
+**Native Linux scratch containment (qualified).** The delegated-grant path is
+qualified on a native Linux host with Landlock ABI >= 3 by
+`tests/linux_native_scratch_containment.rs`. The fixture admits a delegated
+run through the real `TaskTool` → `JobSubmissionService` → `JobScheduler`
+path, rebuilds the effective scope from the durable `AgentRunRecord` exactly
+as the delegated worker does, and launches it through the real
+`ManagedProcessService` and the real `codegg-sandbox-helper`. The launch spec
+it hands over names only the workspace: every scratch write root is added by
+the production owner from the authorization scope, so the observed result
+proves the owner composed the grant rather than the test writing one. The
+child may write its run-private root and its explicitly granted shared root,
+and the kernel refuses an ungranted sibling, another session's run-private
+root, the scratch parent, an unrelated host temporary directory, a
+pre-existing file outside the granted roots, a cross-boundary hard link or
+rename, and a symlink planted inside the workspace that points out of it. The
+obtained status is asserted as Landlock with ABI >= 3 and `no_new_privs`; a
+host that cannot obtain Landlock **fails** the fixture rather than skipping
+it, so an unavailable qualification can never be counted as a satisfied one.
+The fixture also carries a defect-injection control: an artificially broad
+grant makes the same ungranted sibling writable, which is what makes the
+denials above non-vacuous. This qualifies the **filesystem** dimension only.
+It makes no claim about process, IPC, or network isolation, and it says
+nothing about a Windows host, where the Required backend is still absent.
+Closure: `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`.
+On Unix and Windows, shared-resource reclamation first atomically renames the
+managed directory to an opaque tombstone, validates its owner marker, and walks
+entries without following links. Unix quarantines symlinks, non-regular
+entries, and multiply-linked regular files. Windows checks the stable reparse
+attribute and quarantines reparse points; hardlinks are file names rather than
+recursive edges, so deleting a link under the tombstone only removes that link
+and leaves the outside file intact. Windows recursive removal uses the Rust
+standard library's handle-based implementation. A later retry recovers an
+orphaned tombstone after daemon interruption, and concurrent reclamation is
+serialized. Other platforms remain fail-closed. Session and run lifecycle
+reclaimers use this same owner-validated tombstone path.
 Existing denied regular files with hardlink aliases cause the required launch
 to fail because path-based backends cannot distinguish the aliases. As before,
 paths are canonicalized so Seatbelt matches resolved paths such as

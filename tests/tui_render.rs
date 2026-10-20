@@ -14,6 +14,7 @@ use codegg::tui::components::completion_overlay::{
     CompletionItem, CompletionItemKind, CompletionType as OverlayCompletionType,
 };
 use codegg::tui::components::component::Component;
+use codegg::tui::components::dialogs::help::HelpRoute;
 use codegg::tui::components::dialogs::info::{InfoDialog, InfoType};
 use codegg::tui::components::messages::SearchMatch;
 use codegg::tui::route::Route;
@@ -313,7 +314,7 @@ fn app_with_toasts() -> App {
 /// Create a test app with the help dialog open.
 fn app_with_help_dialog() -> App {
     let mut app = test_app();
-    app.ui_state.dialog = Dialog::Help;
+    app.ui_state.dialog = Dialog::Help(HelpRoute::Command);
     app
 }
 
@@ -615,7 +616,7 @@ fn render_session_dialog_all_sizes() {
 #[test]
 fn render_all_dialog_variants_small_and_normal() {
     let dialogs = [
-        Dialog::Help,
+        Dialog::Help(HelpRoute::Command),
         Dialog::Model,
         Dialog::Agent,
         Dialog::Session,
@@ -928,7 +929,7 @@ fn render_sidebar_with_messages_and_toasts() {
 fn render_dialog_with_messages_and_sidebar() {
     let mut app = app_with_messages();
     app.ui_state.sidebar_visible = true;
-    app.ui_state.dialog = Dialog::Help;
+    app.ui_state.dialog = Dialog::Help(HelpRoute::Command);
     let buf = assert_render_ok(&mut app, 100, 32);
     assert!(
         !buffer_contains(&buf, "Rendering Error"),
@@ -971,7 +972,7 @@ fn render_normal_state_does_not_record_component_panics() {
 #[test]
 fn render_with_dialog_does_not_record_component_panics() {
     let mut app = test_app();
-    app.ui_state.dialog = Dialog::Help;
+    app.ui_state.dialog = Dialog::Help(HelpRoute::Command);
     let initial = app.ui_state.diagnostics.component_render_panic_count;
     assert_render_ok(&mut app, 80, 24);
     assert_eq!(
@@ -1357,7 +1358,7 @@ fn panic_injection_sidebar_increments_diagnostics_and_shows_fallback() {
 #[test]
 fn panic_injection_dialog_closes_dialog() {
     let mut app = test_app();
-    app.open_dialog(Dialog::Help);
+    app.open_dialog(Dialog::Help(HelpRoute::Command));
     app.render_panic_injection.dialog = true;
     let initial = app.ui_state.diagnostics.component_render_panic_count;
     assert_render_ok(&mut app, 100, 32);
@@ -1415,7 +1416,7 @@ fn panic_injection_timeline_hides_timeline() {
 #[test]
 fn panic_injection_multiple_components_in_single_render() {
     let mut app = app_with_sidebar();
-    app.open_dialog(Dialog::Help);
+    app.open_dialog(Dialog::Help(HelpRoute::Command));
     app.prompt_state.show_completions = true;
     app.ui_state.timeline_visible = true;
     app.render_panic_injection.messages = true;
@@ -1686,7 +1687,7 @@ fn render_tool_only_messages_no_user_messages() {
 fn render_streaming_with_dialog_and_sidebar_and_toasts() {
     let mut app = app_streaming();
     app.ui_state.sidebar_visible = true;
-    app.ui_state.dialog = Dialog::Help;
+    app.ui_state.dialog = Dialog::Help(HelpRoute::Command);
     app.messages_state.toasts.info("Streaming started");
     let buf = assert_render_ok(&mut app, 100, 32);
     assert!(
@@ -1699,7 +1700,7 @@ fn render_streaming_with_dialog_and_sidebar_and_toasts() {
 fn render_pathological_content_with_sidebar_and_dialog() {
     let mut app = app_pathological_content();
     app.ui_state.sidebar_visible = true;
-    app.ui_state.dialog = Dialog::Help;
+    app.ui_state.dialog = Dialog::Help(HelpRoute::Command);
     let buf = assert_render_ok(&mut app, 100, 32);
     assert!(
         !buffer_contains(&buf, "Rendering Error"),
@@ -1722,7 +1723,7 @@ fn render_long_prompt_with_completions_and_sidebar() {
 #[test]
 fn render_multiple_dialogs_sequentially() {
     let dialogs = [
-        Dialog::Help,
+        Dialog::Help(HelpRoute::Command),
         Dialog::Model,
         Dialog::Tree,
         Dialog::Session,

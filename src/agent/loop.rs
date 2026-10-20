@@ -46,9 +46,8 @@ pub(super) use super::loop_output::redact_local_paths;
 pub use super::loop_output::AgentLoopTerminalOutput;
 pub(super) use super::tool_inspect::{
     extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_file_modifying_tool, is_path_within_workspace, is_soft_stop_reason, is_test_command,
-    is_workspace_file_mutation, parse_mcp_tool_name, tool_outcome_is_success,
-    truncate_test_event_preview, ToolPermissionOutcome, ToolTimeoutConfig,
+    is_file_modifying_tool, is_soft_stop_reason, is_test_command, parse_mcp_tool_name,
+    tool_outcome_is_success, truncate_test_event_preview, ToolPermissionOutcome, ToolTimeoutConfig,
 };
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
@@ -110,6 +109,15 @@ pub struct AgentLoop {
     /// lock table while this loop is still executing.
     pub(super) workspace_service_lease:
         Option<codegg_core::workspace_services::WorkspaceServicesLease>,
+    /// The workspace path policy this loop's tool calls are authorized under.
+    ///
+    /// A parent turn takes this from its workspace services lease. A
+    /// delegated child loop has no lease of its own, so it installs the
+    /// policy for the root the executor bound it to. Without it every tool
+    /// call fails closed with "verified tool authority is missing workspace
+    /// path policy".
+    pub(super) workspace_path_policy:
+        Option<Arc<codegg_core::workspace_services::WorkspacePathPolicy>>,
     pub(super) checkpoint_batch_seq: u64,
     pub(super) recent_findings: Vec<crate::security::finding::SecurityFinding>,
     /// M006: equivalent-denial backstop counts keyed by
@@ -130,6 +138,7 @@ pub struct AgentLoop {
     pub(super) local_paths: (Option<String>, Option<String>),
     pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
     pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
+    pub(super) scratch_scope: Option<crate::scratch::AgentScratchScope>,
     /// Push hints only; idle runs are never woken by peer observations.
     pub(super) peer_observation_rx:
         Option<tokio::sync::broadcast::Receiver<crate::bus::events::AppEvent>>,
@@ -430,6 +439,7 @@ impl AgentLoop {
             workspace_id: None,
             workspace_locks: None,
             workspace_service_lease: None,
+            workspace_path_policy: None,
             recent_findings: Vec::new(),
             original_user_prompt: None,
             current_user_prompt: None,
@@ -446,6 +456,7 @@ impl AgentLoop {
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             run_id: None,
+            scratch_scope: None,
             peer_observation_rx: None,
             peer_observation_session_id: None,
             peer_group_members: HashMap::new(),
@@ -715,7 +726,24 @@ impl AgentLoop {
         lease: codegg_core::workspace_services::WorkspaceServicesLease,
     ) {
         self.workspace_locks = Some(lease.locks());
+        self.workspace_path_policy = Some(lease.path_policy().clone());
         self.workspace_service_lease = Some(lease);
+    }
+
+    /// Install the workspace path policy this loop's tool calls are
+    /// authorized under.
+    ///
+    /// A delegated child loop holds no workspace services lease of its own,
+    /// so it installs the policy for the root its executor bound it to. The
+    /// policy must be present: the broker refuses a call whose execution
+    /// context carries no path policy, and that refusal denies the child
+    /// every tool — including the ones that write into its own scratch
+    /// space.
+    pub fn set_workspace_path_policy(
+        &mut self,
+        policy: Arc<codegg_core::workspace_services::WorkspacePathPolicy>,
+    ) {
+        self.workspace_path_policy = Some(policy);
     }
 
     /// Install a shared workspace lock table for a child loop whose owning
@@ -844,6 +872,11 @@ impl AgentLoop {
         self.run_id = Some(run_id);
         self.peer_observation_rx = Some(crate::bus::global::GlobalEventBus::subscribe());
         self.peer_observation_gap = true;
+    }
+
+    pub fn set_scratch_scope(&mut self, scope: crate::scratch::AgentScratchScope) {
+        self.run_id = Some(scope.run_id.clone());
+        self.scratch_scope = Some(scope);
     }
 
     pub fn set_peer_group_memberships(&mut self, groups: Vec<(String, Vec<String>)>) {

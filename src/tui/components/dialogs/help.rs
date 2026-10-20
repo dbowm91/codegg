@@ -1,3 +1,23 @@
+//! The help box.
+//!
+//! # The route, and why it is not the mode
+//!
+//! ADR-0042 part 7 gives the copy gesture to this box: `space` opens the
+//! composer's help, and `y` in that box copies the composer's selection to
+//! the system clipboard. The `/help` command's box does **not** carry the
+//! verb — it is opened to type a query, and `y` there is a filter character.
+//!
+//! The obvious discriminator is the **mode**, and it is not enough. A
+//! `/help` box starts in Insert and `Esc` moves it to Normal
+//! ([`HelpDialog::handle_key`]), so a mode-only rule would make `y` copy in a
+//! box that must not copy. A `space`-opened box can be switched to Insert
+//! with `Enter`, where `y` must stay a filter character. The mode is a
+//! *consequence* of the route, not a substitute for it.
+//!
+//! So the route is carried **into** the widget with the open request
+//! ([`HelpRoute`]), and the widget never infers it. One gesture, one owner:
+//! the copy verb belongs to the composer's help and to no other surface.
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -11,7 +31,7 @@ use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
-use crate::tui::input::{build_help_lines, help_entries_for_mode, HelpMode, InputMode};
+use crate::tui::input::{build_help_lines, help_entries_for_mode_and_route, HelpMode, InputMode};
 
 /// Rows moved by PageUp/PageDown.
 const PAGE_STEP: isize = 10;
@@ -20,6 +40,13 @@ use crate::tui::theme::Theme;
 /// Upper bound on the live filter query. Bounded so a held-down key cannot
 /// grow the dialog's state without limit.
 const MAX_QUERY_LEN: usize = 64;
+
+/// How the help box was opened.
+///
+/// Re-exported from [`crate::tui::input`], where the help's **content** lives:
+/// the route selects content as well as behaviour, so it belongs beside the
+/// rows it selects.
+pub use crate::tui::input::HelpRoute;
 
 /// One searchable help row: the key, what it does, and its gating condition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +101,23 @@ pub struct HelpDialog {
     /// the side panel — because in Insert mode `Shift+L` is the letter `L`
     /// and has to stay typeable so it can be searched for.
     mode: InputMode,
+    /// How this box was opened.
+    ///
+    /// Carried in with the open request, because the copy gesture belongs to
+    /// the composer's help and to no other box — and the mode cannot say
+    /// which box this is. See the module docs.
+    route: HelpRoute,
+    /// The configuration the content was built from.
+    ///
+    /// The route selects **content** as well as behaviour — the chord route's
+    /// box lists the copy gesture and the command route's box does not — so a
+    /// route change has to rebuild the content rather than only relabel it.
+    /// The two are kept so the rebuild uses the same configuration the first
+    /// build did.
+    vim_mode: bool,
+    /// The mode the content was built around: the section listed first, and
+    /// the mode the filter starts in.
+    active_mode: HelpMode,
 }
 
 impl Clone for HelpDialog {
@@ -85,6 +129,9 @@ impl Clone for HelpDialog {
             theme: Arc::clone(&self.theme),
             scroll: self.scroll,
             mode: self.mode,
+            route: self.route,
+            vim_mode: self.vim_mode,
+            active_mode: self.active_mode,
         }
     }
 }
@@ -100,6 +147,9 @@ impl HelpDialog {
             theme,
             scroll: 0,
             mode: InputMode::Insert,
+            route: HelpRoute::Command,
+            vim_mode: false,
+            active_mode: HelpMode::Insert,
         }
     }
 
@@ -117,8 +167,13 @@ impl HelpDialog {
             InputMode::Insert => HelpMode::Insert,
             InputMode::Normal => HelpMode::Normal,
         };
-        let help_lines = build_help_lines(vim_mode, active_mode);
-        let rows = searchable_help_rows(vim_mode, active_mode);
+        // The default route is the one that **cannot** copy, so a box built
+        // without a route — the pre-rendered constructor, the docked panel —
+        // is inert rather than armed. `with_route` rebuilds the content when
+        // the route does change.
+        let route = HelpRoute::Command;
+        let help_lines = build_help_lines(vim_mode, active_mode, route);
+        let rows = searchable_help_rows(vim_mode, active_mode, route);
         Self {
             help_lines,
             rows,
@@ -126,7 +181,33 @@ impl HelpDialog {
             theme,
             scroll: 0,
             mode: input_mode,
+            route,
+            vim_mode,
+            active_mode,
         }
+    }
+
+    /// Mark this box as the composer's help chord.
+    ///
+    /// The builder exists because the route is a property of the *open
+    /// request*, and the request is what carries it: the app's
+    /// `open_dialog(Dialog::Help(route))` has to name a route, so a call
+    /// site cannot forget one. The docked help panel and the pre-rendered
+    /// constructor are the app's help and keep the default route.
+    pub fn with_route(mut self, route: HelpRoute) -> Self {
+        self.route = route;
+        // The route selects **content** as well as behaviour: the chord
+        // route's box lists the copy gesture and the command route's box does
+        // not. Relabelling the box without rebuilding its content would leave
+        // the chord route teaching a gesture it does not have.
+        self.help_lines = build_help_lines(self.vim_mode, self.active_mode, self.route);
+        self.rows = searchable_help_rows(self.vim_mode, self.active_mode, self.route);
+        self
+    }
+
+    /// How this box was opened.
+    pub fn route(&self) -> HelpRoute {
+        self.route
     }
 
     /// Rows matching the current query, or every row when the query is empty.
@@ -245,8 +326,8 @@ impl HelpDialog {
 /// Mirrors the filter `build_help_lines` applies: an entry whose condition
 /// mentions vim mode is hidden when vim mode is off. Filtering must not surface
 /// an entry that the unfiltered view hides.
-fn help_rows_for_mode(vim_mode: bool, mode: HelpMode) -> Vec<HelpRow> {
-    help_entries_for_mode(mode)
+fn help_rows_for_mode(vim_mode: bool, mode: HelpMode, route: HelpRoute) -> Vec<HelpRow> {
+    help_entries_for_mode_and_route(mode, route)
         .into_iter()
         .filter(|e| {
             if !vim_mode {
@@ -272,7 +353,7 @@ fn help_rows_for_mode(vim_mode: bool, mode: HelpMode) -> Vec<HelpRow> {
 /// labels. The active mode is listed first: that ordering is what
 /// `build_help_lines` already does, and preserving it keeps the unscrolled view
 /// byte-identical to the pre-filter dialog.
-fn searchable_help_rows(vim_mode: bool, active_mode: HelpMode) -> Vec<HelpRow> {
+fn searchable_help_rows(vim_mode: bool, active_mode: HelpMode, route: HelpRoute) -> Vec<HelpRow> {
     let mut order = Vec::with_capacity(4);
     order.push(active_mode);
     for mode in [
@@ -294,7 +375,7 @@ fn searchable_help_rows(vim_mode: bool, active_mode: HelpMode) -> Vec<HelpRow> {
             HelpMode::Command => "Command Mode",
             HelpMode::Dialog => "Dialog Mode",
         };
-        for entry in help_rows_for_mode(vim_mode, mode) {
+        for entry in help_rows_for_mode(vim_mode, mode, route) {
             out.push(HelpRow {
                 key: entry.key,
                 action: entry.action,
@@ -358,6 +439,21 @@ impl Component for HelpDialog {
             }
             KeyCode::Char('i') | KeyCode::Char('a') if self.mode == InputMode::Normal => {
                 self.mode = InputMode::Insert;
+            }
+            // The copy gesture. ADR-0042 part 7: `y` in the box the `space`
+            // chord opened copies the composer's selection to the system
+            // clipboard.
+            //
+            // The **route** decides, not the mode. A `/help` box reaches
+            // Normal with `Esc` — where a mode-only rule would make `y` copy
+            // in a box that must not copy — and a `space` box reaches Insert
+            // with `Enter`, where `y` must stay a filter character.
+            //
+            // It **returns** the message rather than copying. The focused
+            // component is a clone of the dialog, and a clone cannot reach
+            // the app's composer; the app performs the copy.
+            KeyCode::Char('y') if self.mode == InputMode::Normal && self.route.owns_copy() => {
+                return Some(TuiMsg::CopyComposerSelection);
             }
             // `j`/`k` are navigation *only* in Normal. While Insert is live
             // they have to be typeable so `help` itself can be searched for.
@@ -906,6 +1002,69 @@ mod tests {
         let mut d = dialog();
         d.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
         assert_eq!(d.query(), "", "Ctrl+D must not be typed into the filter");
+    }
+
+    // ── The route, and the copy gesture ──────────────────────────────────
+
+    /// The composer's help chord, in Normal mode — where the copy verb lives.
+    fn chord_dialog(mode: InputMode) -> HelpDialog {
+        HelpDialog::new_with_mode(Arc::new(Theme::dark()), false, mode).with_route(HelpRoute::Chord)
+    }
+
+    /// The app's help — the `/help` command, and the docked panel.
+    fn command_dialog(mode: InputMode) -> HelpDialog {
+        HelpDialog::new_with_mode(Arc::new(Theme::dark()), false, mode)
+            .with_route(HelpRoute::Command)
+    }
+
+    #[test]
+    fn the_chord_route_copies_in_normal_mode() {
+        let mut d = chord_dialog(InputMode::Normal);
+        let msg = d.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(
+            matches!(msg, Some(TuiMsg::CopyComposerSelection)),
+            "the composer's help box must offer the copy gesture"
+        );
+    }
+
+    #[test]
+    fn the_command_route_never_copies_even_in_normal_mode() {
+        let mut d = command_dialog(InputMode::Normal);
+        let msg = d.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(msg.is_none(), "the `/help` box must not copy");
+    }
+
+    #[test]
+    fn a_command_route_box_that_esc_reaches_normal_still_does_not_copy() {
+        // The case the mode alone cannot answer: a `/help` box starts in
+        // Insert, and `Esc` moves it to Normal — where a mode-only rule
+        // would make `y` copy in a box that must not copy.
+        let mut d = command_dialog(InputMode::Insert);
+        d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(d.input_mode(), InputMode::Normal);
+
+        let msg = d.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(msg.is_none(), "a `/help` box must not copy");
+    }
+
+    #[test]
+    fn a_chord_route_box_in_insert_mode_filters_instead_of_copying() {
+        // The mirror image: a `space`-opened box can be switched to Insert
+        // with `Enter`, and `y` there is a filter character.
+        let mut d = chord_dialog(InputMode::Insert);
+        let msg = d.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(msg.is_none(), "Insert mode filters; it does not copy");
+        assert_eq!(d.query(), "y");
+    }
+
+    #[test]
+    fn the_default_route_never_copies() {
+        // A box built without a route — the pre-rendered constructor, or the
+        // docked panel — must not offer the copy gesture.
+        let mut d = HelpDialog::new(Arc::new(Theme::dark()), vec!["a".to_string()]);
+        assert_eq!(d.route(), HelpRoute::Command);
+        let msg = d.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(msg.is_none());
     }
 
     #[test]

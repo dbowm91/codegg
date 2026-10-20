@@ -44,6 +44,37 @@ pub fn default_tui_state_root() -> std::path::PathBuf {
     std::path::PathBuf::from(".codegg/tui")
 }
 
+/// Join `parts` with `separator`, dropping whole parts that do not fit.
+///
+/// A part is never split. A row that ends in the middle of a key names a key
+/// that does not exist, and a user who presses it gets nothing — so the row
+/// drops whole parts from the end instead of cutting one in half.
+///
+/// A `budget` of `0` means unbounded: every part is kept.
+fn fit_parts(parts: &[&str], separator: &str, budget: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let separator_width = UnicodeWidthStr::width(separator);
+    let mut out = String::new();
+    let mut used = 0usize;
+    for part in parts {
+        let part_width = UnicodeWidthStr::width(*part);
+        let extra = if out.is_empty() {
+            part_width
+        } else {
+            separator_width + part_width
+        };
+        if budget > 0 && used + extra > budget {
+            break;
+        }
+        if !out.is_empty() {
+            out.push_str(separator);
+        }
+        out.push_str(part);
+        used += extra;
+    }
+    out
+}
+
 pub mod state;
 pub use state::session::GitSidebarInfo;
 pub use state::*;
@@ -52,6 +83,7 @@ use super::components::component::DialogType;
 use super::components::dialogs::agent::AgentDialog;
 use super::components::dialogs::command::CommandPalette;
 use super::components::dialogs::confirm::ConfirmDialog;
+use super::components::dialogs::help::HelpRoute;
 use super::components::dialogs::mcp::BrowseMode;
 use super::components::dialogs::model::ModelDialog;
 use super::components::dialogs::permission::PermissionDialog;
@@ -90,7 +122,7 @@ use crate::util::fuzzy::fuzzy_score;
 use crate::util::truncate::{truncate_prefix, truncate_suffix};
 use crossterm::event::KeyEvent;
 use egglsp::{render_workflow_display, LspWorkflowInvocation, LspWorkflowRecipe};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -380,6 +412,9 @@ pub struct App {
     /// `task_rows()`, so the cursor can never point at a row that truncation
     /// removed — which would make `Enter` open a subagent the user cannot see.
     pub tasks_selected: Option<usize>,
+    /// Identity paired with the rendered index so live row removal cannot
+    /// retarget Enter onto a different job or child.
+    pub tasks_selected_key: Option<String>,
     /// Input mode to restore when the overlay closes, when opening it moved
     /// the app into [`InputMode::Normal`].
     ///
@@ -830,7 +865,7 @@ impl App {
             })
             .collect();
         let vim_mode = cfg.and_then(|c| c.vim_mode).unwrap_or(false);
-        let help_lines = build_help_lines(vim_mode, HelpMode::Insert);
+        let help_lines = build_help_lines(vim_mode, HelpMode::Insert, HelpRoute::Command);
         let keybinds = cfg.and_then(|c| c.keybinds.as_ref()).map(|raw| {
             let mut bindings: HashMap<String, crate::tui::input::ActionKey> = HashMap::new();
             for (k, v) in raw {
@@ -1058,6 +1093,8 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                job_detail_request: crate::tui::app::state::async_request::AsyncUiRequestState::new(
+                ),
                 project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
@@ -1170,6 +1207,7 @@ impl App {
             todo_revision: 0,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_selected_key: None,
             tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
@@ -1521,7 +1559,7 @@ impl App {
                 kind: CompletionItemKind::File,
             })
             .collect();
-        let help_lines = build_help_lines(false, HelpMode::Insert);
+        let help_lines = build_help_lines(false, HelpMode::Insert, HelpRoute::Command);
         let bindings = super::input::build_bindings(None, false);
         let theme = Arc::new(Theme::dark());
         let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
@@ -1644,6 +1682,8 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                job_detail_request: crate::tui::app::state::async_request::AsyncUiRequestState::new(
+                ),
                 project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
@@ -1756,6 +1796,7 @@ impl App {
             todo_revision: 0,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_selected_key: None,
             tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
@@ -2122,7 +2163,7 @@ impl App {
         match event {
             E::ProjectionStreamEvent {
                 subscription_id,
-                stream_id: _,
+                stream_id,
                 envelope,
             } => {
                 // The daemon forwards live projection envelopes on this
@@ -2130,12 +2171,53 @@ impl App {
                 // `_ => false` and was discarded: the projection controller
                 // only ever learned what happened before it attached, which
                 // is why subagent and job status never appeared live.
+                let subscription_known = self
+                    .projection_client
+                    .controller()
+                    .subscription(&subscription_id)
+                    .is_some();
+                if !subscription_known
+                    && matches!(
+                        self.projection_client.primary_status(),
+                        Some(crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading)
+                    )
+                {
+                    self.projection_client.buffer_pending_envelope(
+                        crate::tui::app::state::projection_client::PendingProjectionEnvelope {
+                            subscription_id,
+                            stream_id,
+                            envelope,
+                        },
+                    );
+                    return true;
+                }
+                let is_primary = self.projection_client.primary_subscription_id()
+                    == Some(&subscription_id)
+                    && self.projection_client.primary_stream_id() == Some(&stream_id);
+                if self.projection_client.primary_subscription_id() == Some(&subscription_id)
+                    && !is_primary
+                {
+                    tracing::warn!(%stream_id, "rejected primary projection event with mismatched stream id");
+                    return false;
+                }
                 let tab_id = self
                     .projection_client
                     .active_tab_id()
                     .unwrap_or(DEFAULT_PROJECTION_TAB)
                     .to_string();
-                let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                let outcome = self.apply_projection_envelope_on_stream(
+                    &subscription_id,
+                    &stream_id,
+                    &tab_id,
+                    envelope,
+                );
+                if is_primary {
+                    crate::tui::commands::primary_projection::after_event(
+                        self,
+                        &subscription_id,
+                        outcome,
+                    );
+                }
                 true
             }
             E::TurnStarted { turn_id, .. } => {
@@ -3635,7 +3717,7 @@ impl App {
             }
             Ok(RemoteTuiMessage::ProjectionEvent {
                 subscription_id,
-                stream_id: _,
+                stream_id,
                 envelope,
             }) => {
                 let tab_id = self
@@ -3643,7 +3725,16 @@ impl App {
                     .active_tab_id()
                     .unwrap_or(DEFAULT_PROJECTION_TAB)
                     .to_string();
-                let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                if let Some(stream_id) = stream_id {
+                    let _ = self.apply_projection_envelope_on_stream(
+                        &subscription_id,
+                        &stream_id,
+                        &tab_id,
+                        envelope,
+                    );
+                } else {
+                    let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                }
             }
             Ok(RemoteTuiMessage::ProjectionResync {
                 subscription_id,
@@ -3877,6 +3968,11 @@ impl App {
                 Some(InputAction::Send) => self.open_selected_task(),
                 _ => false,
             };
+            let consumed = if key.code == KeyCode::Char('i') {
+                self.inspect_selected_task()
+            } else {
+                consumed
+            };
             if consumed {
                 return;
             }
@@ -3931,10 +4027,7 @@ impl App {
         // docks it, Insert has to mean "type into the PTY". Without the
         // opt-in the keystrokes went to a composer the user was not looking
         // at, and the terminal appeared to be frozen.
-        let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
-            && self.panel_host.is_focused()
-            && (self.ui_state.input_mode == InputMode::Normal
-                || crate::tui::commands::panels::panel_claims_insert_keys(self));
+        let panel_active = self.panel_owns_keyboard();
         // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
         // ahead of the focused panel, and ahead of the binding map. It has to
         // be ahead of the panel because `h/j/k/l` are the panel's own cursor
@@ -4005,6 +4098,42 @@ impl App {
         ) && crate::tui::commands::editor::handle_editor_key(self, key)
         {
             return;
+        }
+        // M002: the composer's Normal-mode claim table. Consulted **before**
+        // the global binding map, because a claimed letter belongs to the
+        // composer and must never reach an app-level action — not even when
+        // the composer's own verb is not implemented yet. That is the
+        // fallthrough rule, and it is the whole point of the table: a
+        // reserved claim is consumed, so `d` cannot silently become
+        // `OpenDiff` while delete-selection is still pending.
+        //
+        // The step sits here, after the modal, panel, Workspace and editor
+        // branches, so a higher-priority surface still wins: with a dialog
+        // open, a claimed letter reaches the dialog, not the composer.
+        //
+        // The gate is the *resolved* mode and the derived ownership, never
+        // the raw `UiState::input_mode` field, which is forced to Normal
+        // whenever a side panel takes focus. The Workspace view is excluded
+        // for the same reason it owns its own Normal-mode keys: its
+        // dashboard filter is a different surface with a different composer,
+        // and a claimed letter there would stop the filter accepting it.
+        if !workspace_active
+            && self.composer_holds_keyboard()
+            && self.composer_input_mode() == InputMode::Normal
+        {
+            let line_count = self.prompt_state.prompt.num_lines();
+            if let Some(claim) = crate::tui::composer_claims::claim_for(key.modifiers, key.code) {
+                if claim.condition.holds(line_count) {
+                    // The claim is consumed here. A reserved verb does
+                    // nothing, and that is the point: the letter is the
+                    // composer's, so the app's action for it is not
+                    // reachable from the main buffer any more — not even
+                    // while the verb is pending. The one live verb runs
+                    // before the key is dropped.
+                    self.run_composer_claim(claim);
+                    return;
+                }
+            }
         }
         let action = handle_event_with_bindings_moded(
             crossterm::event::Event::Key(key),
@@ -4157,13 +4286,16 @@ impl App {
             Some(InputAction::CloseSession) => self.process_msg(TuiMsg::CloseSession),
             Some(InputAction::Help) => self.process_msg(TuiMsg::OpenHelpDialog),
             Some(InputAction::FocusPrompt) => {
+                // The composer's keyboard ownership is derived, not stored, so
+                // there is no "focus the prompt" flag to set. The only effect
+                // of this action is the command palette it opens at the start
+                // of the buffer.
                 if self.prompt_state.prompt.cursor_pos() == 0 {
                     self.ui_state.command_mode = true;
                     self.prompt_state.prompt.insert_char('/');
                     self.prompt_state.prompt.set_cursor(1);
                     self.dialog_state.command_palette.set_query("/");
                 }
-                self.process_msg(TuiMsg::FocusPrompt);
             }
             Some(InputAction::StashPrompt) => self.process_msg(TuiMsg::StashPrompt),
             Some(InputAction::RestorePrompt) => self.process_msg(TuiMsg::RestorePrompt),
@@ -4289,8 +4421,15 @@ impl App {
                 self.dialog_state.command_palette.set_query(":");
             }
             None => {
-                // In Normal mode, only 'i' switches to Insert mode
-                // All other keys pass through to their bindings (j/k for navigate, etc.)
+                // In Normal mode, only 'i' switches to Insert mode.
+                //
+                // In the main buffer this arm is no longer the route: the
+                // composer claims `i` and runs the transition itself (see
+                // `run_composer_claim`), so the gesture is reached only on
+                // the surfaces the composer does not own — the editor route
+                // with its buffer unfocused, a focused panel, the Workspace
+                // view's chat pane. All other keys pass through to their
+                // bindings (j/k for navigate, etc.).
                 if self.ui_state.input_mode == InputMode::Normal {
                     if let crossterm::event::KeyCode::Char('i') = key.code {
                         if key.modifiers == crossterm::event::KeyModifiers::NONE {
@@ -5529,7 +5668,10 @@ impl App {
             }
             B::Help => {
                 self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Help);
+                // The app's help, not the composer's chord: this box lists the
+                // keys and never copies. See
+                // `crate::tui::components::dialogs::help::HelpRoute`.
+                self.open_dialog(Dialog::Help(HelpRoute::Command));
             }
             B::Tree => {
                 self.ui_state.command_mode = false;
@@ -7367,8 +7509,10 @@ impl App {
                         // helper the review surface also calls, so the two
                         // paths cannot drift into two apply semantics.
                         let core_request =
-                            match crate::tui::commands::change_review::build_apply_request(self, id)
-                            {
+                            match crate::tui::commands::change_review::build_apply_request(
+                                self,
+                                crate::tui::commands::change_review::ApplySource::Registry(id),
+                            ) {
                                 Ok(request) => request,
                                 Err(refusal) => {
                                     self.messages_state.toasts.info(refusal.message());
@@ -9116,7 +9260,6 @@ impl App {
                     let line = rel_y.saturating_sub(1) + self.prompt_state.prompt.scroll;
                     let column = rel_x as usize + self.prompt_state.prompt.horizontal_scroll;
                     self.prompt_state.prompt.set_cursor_at_column(line, column);
-                    self.prompt_state.prompt.focus();
                 }
             }
             ClickTarget::Sidebar => {
@@ -9140,6 +9283,9 @@ impl App {
                     ) => {
                         self.process_msg(TuiMsg::OpenSubagentTab { task_id });
                     }
+                    crate::tui::components::sidebar::SidebarActivation::InspectJob(job_id) => {
+                        self.process_msg(TuiMsg::OpenJobDetail { job_id });
+                    }
                     crate::tui::components::sidebar::SidebarActivation::None => {}
                 }
             }
@@ -9149,7 +9295,7 @@ impl App {
                     let Some(row) = self.ui_state.subagents.rows.get(index).cloned() else {
                         return;
                     };
-                    let was_open = self.ui_state.subagents.has_tab(&row.task_id);
+                    let was_open = self.ui_state.subagents.has_tab(row.identity_key());
                     if self.ui_state.subagents.open(row.clone()) {
                         let label = row.label().to_string();
                         // Reopening an existing tab is a focus change, not a
@@ -9806,6 +9952,9 @@ impl App {
                 }
             }
             self.dialog_state.theme_picker = None;
+        }
+        if closing_dialog == Dialog::JobDetail {
+            self.dialog_state.job_detail_request.cancel();
         }
 
         // Cancel background tasks and async request state scoped to
@@ -11443,6 +11592,44 @@ impl App {
         let _ = crate::util::clipboard::copy_to_clipboard(&text);
     }
 
+    /// Copy the composer's held selection to the system clipboard.
+    ///
+    /// ADR-0042 part 7: the gesture is `space` and then `y` in the help box
+    /// the chord opened. The box **returns** the message and the app performs
+    /// the copy, because the focused component is a clone of the dialog and a
+    /// clone cannot reach the composer.
+    ///
+    /// The outcome is always reported. A silent no-op would teach the user
+    /// that the key is dead, which is the failure the claim table exists to
+    /// prevent.
+    ///
+    /// The report names the **size** of the selection rather than its text.
+    /// Toasts are retained for `/logs`, and a preview of the composer's
+    /// contents in a retained log is a copy of the user's text in a place
+    /// they did not ask for it to be.
+    ///
+    /// The selection survives the copy: it is a read, and a user who copies
+    /// and then deletes wants the same range both times.
+    fn copy_composer_selection(&mut self) {
+        let Some(text) = self.prompt_state.prompt.selected_text() else {
+            self.messages_state
+                .toasts
+                .info("Nothing to copy — the composer has no selection");
+            return;
+        };
+        let characters = text.chars().count();
+        match crate::util::clipboard::copy_to_clipboard(&text) {
+            Ok(()) => self
+                .messages_state
+                .toasts
+                .success(&format!("Copied {characters} characters")),
+            Err(error) => self
+                .messages_state
+                .toasts
+                .error(&format!("Could not copy: {error}")),
+        }
+    }
+
     fn cycle_model_forward(&mut self) {
         if self.agent_state.models.is_empty() {
             return;
@@ -12506,6 +12693,7 @@ impl App {
 
         // Milestone 4: persist the new session binding.
         self.schedule_manifest_save();
+        crate::tui::commands::primary_projection::bind_active_session(self);
     }
 
     // -----------------------------------------------------------------
@@ -12689,6 +12877,237 @@ impl App {
         self.ui_state.input_mode
     }
 
+    /// Whether the focused side panel owns the keyboard right now.
+    ///
+    /// This is the exact condition `App::on_key` uses to decide whether the
+    /// panel is consulted before the composer. It lives here so the key chain
+    /// and the composer's cursor rules read one derivation instead of two
+    /// copies of the same panel rule — a second copy is where a drift would
+    /// start.
+    pub(crate) fn panel_owns_keyboard(&mut self) -> bool {
+        self.panel_host.is_visible_at(self.panel_host.placement())
+            && self.panel_host.is_focused()
+            && (self.ui_state.input_mode == InputMode::Normal
+                || crate::tui::commands::panels::panel_claims_insert_keys(self))
+    }
+
+    /// Whether the composer currently holds the keyboard.
+    ///
+    /// A derived fact, in the same shape as [`Self::composer_input_mode`] and
+    /// read from the same seams. It is a function of app state, never a stored
+    /// flag: the composer's old `focused` flag was dead in production
+    /// (`PromptWidget::blur()`'s only caller was a test), and a stored copy of
+    /// this fact is exactly the drift class the mode resolution was written to
+    /// kill.
+    ///
+    /// The order mirrors `App::on_key`'s priority chain — the first surface
+    /// that would consume a key is the surface that owns the keyboard:
+    ///
+    /// 1. **A mounted modal.** `on_key` short-circuits to `handle_dialog_key`
+    ///    while the focus manager is non-empty, so a dialog owns the keyboard
+    ///    outright.
+    /// 2. **A focused side panel.** `on_key` consults the panel before the
+    ///    composer, so a selected panel owns it. This is the "another panel is
+    ///    selected" case, and it is the one the user named: the composer must
+    ///    show no cursor at all while a panel has the keyboard.
+    /// 3. **The timeline overlay.** `on_key` returns to the timeline before it
+    ///    reaches the composer, so the keystrokes are going to the
+    ///    jump-to-message picker and not to the composer.
+    /// 4. **The editor's buffer**, when it is explicitly focused — the editor
+    ///    route keeps the composer editable otherwise, and the composer owns
+    ///    the keyboard in that case.
+    /// 5. **Otherwise the composer owns it.**
+    ///
+    /// The terminal box needs no arm of its own: it is a modal, so arm 1
+    /// already covers it. The overlays that claim only *some* keys — the tasks
+    /// list, the completion popup, the change review — are deliberately not
+    /// here: they let everything they do not claim fall through to the
+    /// composer, so the composer is still where the text goes.
+    pub fn composer_holds_keyboard(&mut self) -> bool {
+        if !self.focus_manager.is_empty() {
+            return false;
+        }
+        if self.panel_owns_keyboard() {
+            return false;
+        }
+        if self.ui_state.timeline_visible {
+            return false;
+        }
+        if self.editor_buffer_owns_keyboard() {
+            return false;
+        }
+        true
+    }
+
+    /// Run a composer claim that the key chain has already matched.
+    ///
+    /// The caller has established that the composer holds the keyboard, that
+    /// the resolved mode is Normal, and that this key belongs to the claim
+    /// table. This method decides what the claim *does*.
+    ///
+    /// A **reserved** verb does nothing, and the key is still consumed. That
+    /// is the fallthrough rule: a claimed letter belongs to the composer, so
+    /// it must not become an unrelated app action while its verb is pending.
+    /// The consumption is the behaviour.
+    ///
+    /// The live verbs are the composer's motions (`w`, `b`, `e`, `j`, `k`) and
+    /// `i` (Helix insert-before-caret), and `i` is the app's **existing**
+    /// transition — the gesture that used to live in the `None` arm of the key
+    /// chain — moved into the table so that the table is the one place that says
+    /// who owns the key. It has to be live rather than reserved: `i` is the
+    /// app's only route back to Insert mode, so a reserved `i` would strand the
+    /// user in Normal mode with no way to type.
+    /// See `crate::tui::composer_claims` for the full argument.
+    fn run_composer_claim(&mut self, claim: &crate::tui::composer_claims::ComposerClaim) {
+        use crate::tui::composer_claims::{ClaimStatus, ComposerVerb};
+        match claim.status {
+            ClaimStatus::Live => {
+                match claim.verb {
+                    ComposerVerb::InsertBefore => {
+                        // Helix `i`: insert before the caret. The caret does not
+                        // move — the next character is typed at it — which is
+                        // exactly what the old gesture did.
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: insert before the caret");
+                    }
+                    ComposerVerb::InsertAfter => {
+                        // Helix `a`: insert after the caret. The caret moves one
+                        // character forward and the next keystroke lands
+                        // there, so the model only places the caret and the app
+                        // switches to Insert mode.
+                        self.prompt_state.prompt.insert_after();
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: insert after the caret");
+                    }
+                    ComposerVerb::OpenLineBelow => {
+                        // Helix `o`: open the line below and type in it. The
+                        // new line is an ordinary edit, so it is undoable.
+                        self.prompt_state.prompt.open_line_below();
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: open line below");
+                    }
+                    ComposerVerb::Undo => {
+                        // The verb reports in **both** branches. A silent
+                        // no-op would teach the user that the key is dead,
+                        // and "nothing to undo" is a different fact from
+                        // "nothing happened".
+                        if self.prompt_state.prompt.undo() {
+                            self.messages_state.toasts.info("Undid the last edit");
+                            debug_log!("composer claim: undo");
+                        } else {
+                            self.messages_state.toasts.warning("Nothing to undo");
+                            debug_log!("composer claim: undo with nothing to undo");
+                        }
+                    }
+                    ComposerVerb::Redo => {
+                        if self.prompt_state.prompt.redo() {
+                            self.messages_state.toasts.info("Redid the last edit");
+                            debug_log!("composer claim: redo");
+                        } else {
+                            self.messages_state.toasts.warning("Nothing to redo");
+                            debug_log!("composer claim: redo with nothing to redo");
+                        }
+                    }
+                    ComposerVerb::WordForward => {
+                        self.prompt_state.prompt.cursor_word_forward();
+                        debug_log!("composer claim: word forward");
+                    }
+                    ComposerVerb::WordBack => {
+                        self.prompt_state.prompt.cursor_word_backward();
+                        debug_log!("composer claim: word backward");
+                    }
+                    ComposerVerb::WordEnd => {
+                        self.prompt_state.prompt.cursor_word_end();
+                        debug_log!("composer claim: word end");
+                    }
+                    ComposerVerb::LineDown => {
+                        self.prompt_state.prompt.cursor_line_down();
+                        debug_log!("composer claim: line down");
+                    }
+                    ComposerVerb::LineUp => {
+                        self.prompt_state.prompt.cursor_line_up();
+                        debug_log!("composer claim: line up");
+                    }
+                    ComposerVerb::SelectChars => {
+                        self.prompt_state.prompt.toggle_select_chars();
+                        debug_log!("composer claim: select characters");
+                    }
+                    ComposerVerb::SelectLine => {
+                        self.prompt_state.prompt.select_line();
+                        debug_log!("composer claim: select line");
+                    }
+                    ComposerVerb::DeleteSelection => {
+                        // Deleting with nothing selected is a no-op that still
+                        // consumes the key: the letter is the composer's, so
+                        // it must not become an unrelated app action.
+                        // Deleting with nothing selected is a no-op that still
+                        // consumes the key: the letter is the composer's, so
+                        // it must not become an unrelated app action.
+                        self.prompt_state.prompt.delete_selection();
+                        debug_log!("composer claim: delete selection");
+                    }
+                    ComposerVerb::Paste => {
+                        // The clipboard is best-effort, and the verb always
+                        // reports what it did. A silent no-op would teach the
+                        // user that the key is dead, and the report is also
+                        // the only evidence of *what* was pasted — the
+                        // pasted text is not echoed back, because the
+                        // composer can hold a secret.
+                        match crate::util::clipboard::read_from_clipboard() {
+                            Some(text) if !text.is_empty() => {
+                                let characters = text.chars().count();
+                                self.prompt_state.prompt.paste(text);
+                                self.messages_state
+                                    .toasts
+                                    .info(&format!("Pasted {characters} characters"));
+                                debug_log!("composer claim: paste");
+                            }
+                            _ => {
+                                self.messages_state
+                                    .toasts
+                                    .warning("Nothing to paste — the clipboard is empty");
+                                debug_log!("composer claim: paste with nothing to paste");
+                            }
+                        }
+                    } // There is deliberately **no catch-all arm**. M006 closed
+                      // the claim table, so every verb has a behaviour, and an
+                      // exhaustive match turns "the table and the runner
+                      // disagree" from a runtime warning into a **compile
+                      // error**: a verb added to `ComposerVerb` without an arm
+                      // here does not build.
+                      //
+                      // The warning that used to live in this arm said that a
+                      // live verb with no behaviour is a dead key — the defect
+                      // the table exists to prevent. Making it unbuildable is
+                      // stronger than saying so loudly at runtime.
+                }
+            }
+            ClaimStatus::Reserved => {
+                // The key is consumed and nothing happens. That is the
+                // fallthrough rule: the letter is the composer's, so it
+                // must not become an unrelated app action while its verb
+                // is pending. The consumption is the behaviour.
+                debug_log!(
+                    "composer claim consumed with no live verb: {:?} ({:?})",
+                    claim.key,
+                    claim.verb
+                );
+            }
+        }
+    }
+
+    /// Whether the open editor buffer holds the keyboard.
+    ///
+    /// The editor route keeps the ordinary composer editable unless the user
+    /// explicitly focused the document, so "the editor is open" is not enough
+    /// — the buffer has to be the focused one.
+    fn editor_buffer_owns_keyboard(&self) -> bool {
+        matches!(
+            self.ui_state.routes.current(),
+            crate::tui::route::Route::Editor
+        ) && self.editor_state.buffer_focused(self.ui_state.input_mode)
+    }
+
     /// The side panel that can hold the currently open box, if any.
     ///
     /// The single place a box is associated with a panel, and the reason the
@@ -12758,6 +13177,15 @@ impl App {
     /// `None` when no panel is focused and nothing is armed — the row is not
     /// reserved at all in that case, so the prompt keeps its height.
     pub fn composer_hint_text(&mut self) -> Option<String> {
+        self.composer_hint_text_bounded(0)
+    }
+
+    /// The contextual key line, bounded to `budget` display columns.
+    ///
+    /// A budget of `0` means unbounded. The bound matters for the composer's
+    /// own row: it is a list of keys, and a key cut in half names a key that
+    /// does not exist, so the row drops whole keys instead.
+    pub fn composer_hint_text_bounded(&mut self, budget: usize) -> Option<String> {
         // Resize mode owns the frame, so it outranks every surface hint: the
         // keys that just changed meaning are `h/j/k/l`, and a reader who sees
         // "j/k scroll" while resize mode is armed has been told something
@@ -12798,6 +13226,21 @@ impl App {
         // move`) at a user who was typing into a shell. One answer, both
         // surfaces, and they cannot disagree again.
         let input_mode = self.composer_input_mode();
+        // The composer's own verbs take the row when the composer holds the
+        // keyboard and no turn has the floor.
+        //
+        // A turn's keys are the *louder* claim on the row — stopping a run is
+        // actionable now, and the working strip's own status row names the
+        // same key. The composer's verbs are the idle surface's claim, and
+        // the composer's row is where they are finally visible outside the
+        // help box.
+        //
+        // The presence is gated on the **keyboard**, never on the mode: the
+        // row is present in Normal and in Insert alike, so `Esc` does not
+        // reflow the transcript. The mode changes the row's *text*.
+        if agent_keys.is_none() && self.composer_holds_keyboard() {
+            return Some(self.composer_hint_row(input_mode, budget));
+        }
         let panel = self
             .panel_host
             .composer_hints(self.chat_panel_project.as_deref(), input_mode);
@@ -12807,6 +13250,44 @@ impl App {
             (None, Some(panel)) => Some(panel),
             (None, None) => None,
         }
+    }
+
+    /// The composer's own hint row: the verbs available **right now**.
+    ///
+    /// The row names the composer's **keys**, not their descriptions. The
+    /// descriptions live in the help, one keypress away, and a row that
+    /// spelled out fourteen verbs would not fit a terminal: measured at eighty
+    /// columns, the grouped form runs to ninety-four characters and loses the
+    /// line motions to the truncation. The keys fit, they are what a user
+    /// actually presses, and the row's job — "which letters are mine right
+    /// now" — is answered by the keys alone.
+    ///
+    /// The keys are **derived** from the claim table, so the row cannot name a
+    /// verb another surface holds. A conditional verb is listed only while its
+    /// condition holds: on a single-line composer buffer `j` and `k` are the
+    /// transcript's, and the row must not claim them.
+    ///
+    /// The row is **bounded**: a part is never split, because a row that ends
+    /// mid-key names a key that does not exist. Parts are dropped whole, from
+    /// the end, in the claim table's order.
+    fn composer_hint_row(&self, input_mode: InputMode, budget: usize) -> String {
+        let separator = " · ";
+        if input_mode == InputMode::Insert {
+            // In Insert the composer's own verbs are not available — the
+            // letters are text — so the row must not list them.
+            return fit_parts(&["COMP", "INS", "type", "Esc normal"], separator, budget);
+        }
+        let lines = self.prompt_state.prompt.line_count();
+        let mut parts: Vec<&str> = vec!["COMP", "NOR"];
+        for entry in crate::tui::composer_claims::composer_verb_entries() {
+            if entry.condition.holds(lines) {
+                parts.push(entry.key_text);
+            }
+        }
+        // The `space` chord opens the composer's help, where every verb is
+        // described. The row points at it rather than repeating it.
+        parts.push("space help");
+        fit_parts(&parts, separator, budget)
     }
 
     /// The stop/resume keys for the main buffer, or `None` when idle.
@@ -14423,6 +14904,7 @@ impl App {
         // whatever happens to sit there now — or nothing at all — the next
         // time the overlay opens. Reopening starts at the top.
         self.tasks_selected = None;
+        self.tasks_selected_key = None;
         if self.tasks_expanded {
             // Opening from Insert takes Normal mode with it, because the
             // overlay's own keys are Normal-mode gestures. Without this the
@@ -14466,10 +14948,18 @@ impl App {
         let selectable = selectable_indices(&self.bounded_task_rows());
         if selectable.is_empty() {
             self.tasks_selected = None;
+            self.tasks_selected_key = None;
             return false;
         }
+        let rows = self.bounded_task_rows();
         let current = self
-            .tasks_selected
+            .tasks_selected_key
+            .as_ref()
+            .and_then(|key| {
+                rows.iter()
+                    .position(|row| row.identity_key().as_ref() == Some(key))
+            })
+            .or(self.tasks_selected)
             .and_then(|index| selectable.iter().position(|row| *row == index));
         let next = match current {
             Some(position) => {
@@ -14485,7 +14975,20 @@ impl App {
             return false;
         }
         self.tasks_selected = Some(selectable[next]);
+        self.tasks_selected_key = rows[selectable[next]].identity_key();
         true
+    }
+
+    pub(crate) fn selected_task_row_index(
+        &self,
+        rows: &[crate::tui::app::state::tasks::TaskRow],
+    ) -> Option<usize> {
+        if let Some(key) = self.tasks_selected_key.as_ref() {
+            return rows
+                .iter()
+                .position(|row| row.identity_key().as_ref() == Some(key));
+        }
+        self.tasks_selected.filter(|index| *index < rows.len())
     }
 
     /// Open whatever the overlay's cursor is resting on.
@@ -14495,27 +14998,79 @@ impl App {
     /// does nothing: inventing a detail view for either would be a surface
     /// the projection does not actually back.
     pub fn open_selected_task(&mut self) -> bool {
-        use crate::tui::app::state::tasks::activatable_target;
+        use crate::tui::app::state::tasks::TaskRow;
         if !self.tasks_expanded {
             return false;
         }
         let rows = self.bounded_task_rows();
-        let Some(target) = self
-            .tasks_selected
+        let Some(selected) = self
+            .selected_task_row_index(&rows)
             .and_then(|index| rows.get(index))
-            .and_then(activatable_target)
-            .map(str::to_string)
         else {
             return false;
         };
-        if self.open_subagent_tab(&target) {
-            // Opening closes the overlay: the thing the user asked to look at
-            // now owns the main buffer, and leaving a selection cursor behind
-            // it would be a control they are no longer looking at. Closed
-            // through the toggle so the borrowed input mode is handed back.
-            self.toggle_tasks_list();
+        match selected {
+            TaskRow::Subagent {
+                task_id,
+                child_instance_id,
+                ..
+            } => {
+                let target = child_instance_id.as_deref().unwrap_or(task_id);
+                if self.open_subagent_tab(target) {
+                    self.toggle_tasks_list();
+                    true
+                } else {
+                    false
+                }
+            }
+            TaskRow::Job { job_id, .. } => {
+                self.process_msg(TuiMsg::OpenJobDetail {
+                    job_id: job_id.clone(),
+                });
+                true
+            }
+            TaskRow::Header { .. } | TaskRow::Todo { .. } => false,
         }
-        true
+    }
+
+    /// Open daemon-backed detail for the selected job or durable child
+    /// association while keeping Enter on a child dedicated to its transcript.
+    pub fn inspect_selected_task(&mut self) -> bool {
+        use crate::tui::app::state::tasks::TaskRow;
+        if !self.tasks_expanded {
+            return false;
+        }
+        let rows = self.bounded_task_rows();
+        let Some(selected) = self
+            .selected_task_row_index(&rows)
+            .and_then(|index| rows.get(index))
+        else {
+            return false;
+        };
+        let message = match selected {
+            TaskRow::Job { job_id, .. } => Some(TuiMsg::OpenJobDetail {
+                job_id: job_id.clone(),
+            }),
+            TaskRow::Subagent {
+                job_id: Some(job_id),
+                ..
+            } => Some(TuiMsg::OpenJobDetail {
+                job_id: job_id.clone(),
+            }),
+            TaskRow::Subagent {
+                run_id: Some(run_id),
+                ..
+            } => Some(TuiMsg::OpenRunDetail {
+                run_id: run_id.clone(),
+            }),
+            TaskRow::Header { .. } | TaskRow::Todo { .. } | TaskRow::Subagent { .. } => None,
+        };
+        if let Some(message) = message {
+            self.process_msg(message);
+            true
+        } else {
+            false
+        }
     }
 
     /// Completed todo count. `TodoStatus::Completed` is the only status that
@@ -14578,7 +15133,7 @@ impl App {
                 .subagents
                 .rows
                 .iter()
-                .any(|row| row.task_id == task_id)
+                .any(|row| row.identity_key() == task_id || row.task_id == task_id)
                 && self.ui_state.subagents.tabs.is_at_capacity()
             {
                 self.messages_state
@@ -14669,12 +15224,9 @@ impl App {
         self.bounded_task_rows().len().max(1) as u16
     }
 
-    /// Build the tasks overlay rows from the three projection-backed sources.
-    ///
-    /// Subagents come from the already-projected `SubagentState.rows` rather
-    /// than being re-read from the snapshot, and jobs come from
-    /// `snapshot.jobs`. Nothing here synthesizes a row or mints a name; this
-    /// only selects and formats what the projection already vouches for.
+    /// Build the tasks overlay rows from the canonical session-work selector.
+    /// Nothing here synthesizes a row or mints a name; this only selects and
+    /// formats what the authorized projection already vouches for.
     pub fn task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
         let todos: Vec<crate::tui::app::state::tasks::TodoLike> = self
             .todos
@@ -14684,24 +15236,48 @@ impl App {
                 content: todo.content.clone(),
             })
             .collect();
-        let jobs: Vec<crate::tui::app::state::tasks::JobLike> = self
+        let session_work = self
             .projection_client
             .active_snapshot()
             .map(|(_, snapshot)| {
-                snapshot
-                    .jobs
-                    .iter()
-                    .map(|job| crate::tui::app::state::tasks::JobLike {
-                        job_id: job.job_id.clone(),
-                        kind: job.kind.clone(),
-                        summary: job.summary.clone(),
-                        state: job.state.clone(),
-                        error_class: job.error_class.clone(),
-                    })
-                    .collect()
+                crate::tui::app::state::session_work::select_session_work(snapshot)
             })
             .unwrap_or_default();
-        crate::tui::app::state::tasks::build_task_rows(&todos, &self.ui_state.subagents.rows, &jobs)
+        let jobs: Vec<crate::tui::app::state::tasks::JobLike> = session_work
+            .iter()
+            .filter(|work| work.is_live())
+            .filter_map(|work| work.job.clone())
+            .collect();
+        let subagents: Vec<crate::tui::app::state::subagents::SubagentRow> = session_work
+            .iter()
+            .filter_map(|work| work.subagent.clone())
+            .collect();
+        let mut rows = crate::tui::app::state::tasks::build_task_rows(&todos, &subagents, &jobs);
+        for row in &mut rows {
+            if let crate::tui::app::state::tasks::TaskRow::Subagent {
+                child_instance_id,
+                task_id,
+                run_id,
+                job_id,
+                ..
+            } = row
+            {
+                *job_id = session_work
+                    .iter()
+                    .find(|work| {
+                        if let Some(child_id) = child_instance_id.as_deref() {
+                            work.child_instance_id.as_deref() == Some(child_id)
+                        } else {
+                            work.run_id.as_deref() == run_id.as_deref()
+                                || (run_id.is_none()
+                                    && work.child_instance_id.is_none()
+                                    && work.key == format!("task:{task_id}"))
+                        }
+                    })
+                    .and_then(|work| work.job_id.clone());
+            }
+        }
+        rows
     }
 
     /// The live subagents and jobs shown under the `/sessions` session list.
@@ -14711,7 +15287,8 @@ impl App {
     /// cannot disagree about which subagents or jobs exist. Headers and todos
     /// are dropped here because the dialog builds its own section headings and
     /// has no todo section; every other row is carried across whole, keeping
-    /// the identity (`task_id` / `job_id`) the row was created with.
+    /// both the child generation key and its task transcript address (or the
+    /// stable job identity) from the projected entity.
     ///
     /// The overlay's [`crate::tui::app::state::tasks::bounded`] cap is
     /// deliberately *not* applied. That cap exists because the overlay is
@@ -14727,12 +15304,31 @@ impl App {
         use crate::tui::app::state::tasks::TaskRow;
         use crate::tui::components::dialogs::session::{JobListRow, SubagentListRow};
 
+        let active_session_id = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| snapshot.primary_session_id.as_str())
+            .or_else(|| self.projection_client.primary_session_id());
+        if self
+            .dialog_state
+            .session_dialog
+            .selected_session()
+            .is_some_and(|selected| Some(selected.id.as_str()) != active_session_id)
+        {
+            // The available full projection belongs to the active session
+            // only. Never leave those rows under a different selected session.
+            return (Vec::new(), Vec::new());
+        }
+
         let mut subagents = Vec::new();
         let mut jobs = Vec::new();
         for row in self.task_rows() {
             match row {
                 TaskRow::Subagent {
                     task_id,
+                    child_instance_id,
+                    run_id,
+                    job_id,
                     label,
                     agent,
                     description,
@@ -14740,6 +15336,9 @@ impl App {
                     status,
                 } => subagents.push(SubagentListRow {
                     task_id,
+                    child_instance_id,
+                    run_id,
+                    job_id,
                     label,
                     agent,
                     description,
@@ -14765,6 +15364,46 @@ impl App {
         (subagents, jobs)
     }
 
+    /// Availability follows the session selected in `/sessions`. The active
+    /// subscription authorizes only its bound session; an empty row set for a
+    /// different selected session must read as unavailable, never as empty.
+    pub(crate) fn session_dialog_projection_status(
+        &self,
+    ) -> Option<crate::tui::app::state::projection_client::PrimaryProjectionStatus> {
+        let active_session_id = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| snapshot.primary_session_id.as_str())
+            .or_else(|| self.projection_client.primary_session_id());
+        let selected_session_id = self
+            .dialog_state
+            .session_dialog
+            .selected_session()
+            .map(|session| session.id.as_str());
+        if selected_session_id.is_some_and(|selected| Some(selected) != active_session_id) {
+            return Some(
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(
+                    "live work for the selected session is not loaded".into(),
+                ),
+            );
+        }
+        self.projection_client.primary_status().cloned().or_else(|| {
+            if self.projection_client.active_snapshot().is_some() {
+                Some(
+                    crate::tui::app::state::projection_client::PrimaryProjectionStatus::Authoritative,
+                )
+            } else if selected_session_id.is_some() {
+                Some(
+                    crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(
+                        "session work projection is unavailable".into(),
+                    ),
+                )
+            } else {
+                None
+            }
+        })
+    }
+
     /// Push the current live rows into the open `/sessions` dialog.
     ///
     /// A no-op unless the dialog is mounted. Like the session list itself, the
@@ -14778,8 +15417,10 @@ impl App {
             return;
         }
         let (subagents, jobs) = self.session_dialog_pending_rows();
+        let projection_status = self.session_dialog_projection_status();
         let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
             dialog.set_pending_rows(subagents.clone(), jobs.clone());
+            dialog.set_projection_status(projection_status.clone());
         };
         apply(&mut self.dialog_state.session_dialog);
         self.focus_manager

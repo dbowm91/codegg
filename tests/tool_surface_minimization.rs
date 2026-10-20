@@ -16,8 +16,23 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use codegg::tool::disclosure;
-use codegg::tool::{Tool, ToolRegistry};
+use codegg::tool::{Tool, ToolRegistry, ToolRegistryOptions};
 use serde_json::json;
+
+/// Construct the registry with the workspace context required by the full
+/// model-visible tool surface. `with_defaults()` is intentionally rootless,
+/// so workspace-scoped tools such as `research` are registered as unavailable
+/// and hidden from definitions in that mode.
+fn workspace_registry() -> ToolRegistry {
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace current directory")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    ToolRegistry::with_options(ToolRegistryOptions {
+        workspace_root: Some(workspace_root),
+        ..ToolRegistryOptions::default()
+    })
+}
 
 /// Partition registry definitions the way a deferral-capable provider
 /// path does: `defer_loading = true` entries are deferred, the rest are
@@ -40,7 +55,7 @@ fn partition_immediate_deferred(registry: &ToolRegistry) -> (Vec<String>, Vec<St
 
 #[test]
 fn deferred_specialists_remain_registered_but_deferred() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     // Representative M002 deferred set: research/evidence/specialist and
     // overlapping edit-loop variants. Canonical `repo_search` stays core.
     let deferred_expected = [
@@ -98,7 +113,7 @@ fn deferred_specialists_remain_registered_but_deferred() {
 
 #[test]
 fn ordinary_immediate_set_is_materially_smaller_without_capability_loss() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     let registered: BTreeSet<String> = registry
         .list()
         .iter()
@@ -146,7 +161,7 @@ fn ordinary_immediate_set_is_materially_smaller_without_capability_loss() {
 
 #[test]
 fn hidden_internal_tools_absent_from_definitions_and_discovery() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     assert!(
         registry.contains("invalid"),
         "invalid stays registered for diagnostics"
@@ -187,7 +202,7 @@ fn tokio_test_block_on(tool: codegg::tool::tool_search::ToolSearchTool, query: &
 
 #[test]
 fn deferred_tool_absent_initially_found_via_search_and_invocable() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     let (immediate, deferred) = partition_immediate_deferred(&registry);
     assert!(
         deferred.contains(&"security".to_string()),
@@ -263,7 +278,7 @@ fn deferred_tool_absent_initially_found_via_search_and_invocable() {
 
 #[test]
 fn discovery_does_not_widen_authority_for_denied_tools() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     let (immediate, deferred) = partition_immediate_deferred(&registry);
     // Simulate an agent that denies `security`: the loop's allow-list
     // omits it, so search must not reveal it.
@@ -300,7 +315,7 @@ fn discovery_does_not_widen_authority_for_denied_tools() {
 
 #[test]
 fn discovery_output_contains_no_secret_backend_configuration() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     let (immediate, deferred) = partition_immediate_deferred(&registry);
     let mut available = immediate;
     available.extend(deferred);
@@ -333,7 +348,7 @@ fn discovery_output_contains_no_secret_backend_configuration() {
 
 #[test]
 fn discovery_caps_broad_queries_and_rejects_empty_queries() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     let mut search =
         codegg::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
     // No allow-list: still bounded and hidden-filtered.
@@ -382,7 +397,7 @@ fn plan_mode_remains_read_only_with_discoverable_search() {
         );
     }
     // Resolved-surface parity: plan mode omits mutating tools.
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     let defs = registry.definitions();
     let surface = codegg::agent::tool_surface::ResolvedToolSurface::resolve(
         defs,
@@ -449,7 +464,7 @@ fn runtime_unavailable_tools_are_not_advertised_as_merely_deferred() {
         "disabled lsp must be unavailable, not deferred"
     );
     // Task without a functional spawner is NonCallable in the surface.
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     let defs = registry.definitions();
     let surface = codegg::agent::tool_surface::ResolvedToolSurface::resolve(
         defs,
@@ -474,7 +489,7 @@ fn runtime_unavailable_tools_are_not_advertised_as_merely_deferred() {
 
 #[test]
 fn tool_program_callability_follows_contracts_not_disclosure() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     // Read-only palette stays program-callable; deferred specialists that
     // are DirectOnly stay program-rejected. Disclosure must not change this.
     let read_contract = registry
@@ -508,8 +523,8 @@ fn tool_program_callability_follows_contracts_not_disclosure() {
 fn fresh_registries_produce_deterministic_classifications() {
     // No durable discovery state: rebuilds from the same config/profile
     // deterministically reproduce disclosure.
-    let first = ToolRegistry::with_defaults();
-    let second = ToolRegistry::with_defaults();
+    let first = workspace_registry();
+    let second = workspace_registry();
     let (first_immediate, first_deferred) = partition_immediate_deferred(&first);
     let (second_immediate, second_deferred) = partition_immediate_deferred(&second);
     assert_eq!(first_immediate, second_immediate);
@@ -526,7 +541,7 @@ fn fresh_registries_produce_deterministic_classifications() {
 fn m001_canonical_names_consumed_without_reopening_compat() {
     // `codesearch` remains the retained M001 alias delegating to the
     // canonical `repo_search` backend; M002 only changes advertisement.
-    let registry = ToolRegistry::with_defaults();
+    let registry = workspace_registry();
     assert!(registry.contains("repo_search"));
     assert!(registry.contains("codesearch"));
     let alias = registry.get("codesearch").unwrap();

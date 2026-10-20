@@ -21,6 +21,7 @@
 //!    every row below it up by one; a cursor held as an index lands on a
 //!    different entity and `Enter` opens the wrong tab.
 
+use codegg::session::Session;
 use codegg::tui::app::App;
 use codegg::tui::components::component::DialogType;
 use codegg::tui::components::dialogs::session::{SessionDialog, SessionDialogRow};
@@ -93,6 +94,8 @@ fn seed_projection_described(
                 _ => AgentTreeStatus::Running,
             };
             turn.agent_tree.push_back(AgentTreeNodeProjection {
+                child_instance_id: String::new(),
+                originating_turn_id: None,
                 task_id: task_id.parse().expect("a numeric task id"),
                 agent: "explore".into(),
                 description: "map the subsystem".into(),
@@ -212,6 +215,53 @@ fn the_painted_dialog_lists_the_live_subagents_and_jobs() {
     );
     assert_eq!(dialog.job_rows()[0].job_id, "job-1");
     assert_eq!(dialog.job_rows()[0].kind, "test");
+}
+
+#[test]
+fn selecting_another_session_clears_rows_and_marks_its_work_unavailable() {
+    let mut app = open_with_live_work();
+    let active_session_id = codegg::protocol::projection::fixtures::FIXTURE_SESSION_ID.to_string();
+    let sessions = vec![
+        Session {
+            id: active_session_id.clone(),
+            title: "active".into(),
+            ..Session::default()
+        },
+        Session {
+            id: "other-session".into(),
+            title: "other".into(),
+            ..Session::default()
+        },
+    ];
+    app.dialog_state
+        .session_dialog
+        .load_sessions(sessions.clone());
+    assert!(app
+        .dialog_state
+        .session_dialog
+        .select_session_id(&active_session_id));
+    app.focus_manager
+        .with_dialog_mut::<SessionDialog, _>(DialogType::Session, |dialog| {
+            dialog.load_sessions(sessions.clone());
+            dialog.select_session_id(&active_session_id);
+        });
+    app.refresh_sessions_dialog_pending_rows();
+    assert_eq!(painted(&app).subagent_rows().len(), 1);
+
+    assert!(app
+        .dialog_state
+        .session_dialog
+        .select_session_id("other-session"));
+    app.focus_manager
+        .with_dialog_mut::<SessionDialog, _>(DialogType::Session, |dialog| {
+            dialog.select_session_id("other-session");
+        });
+    app.refresh_sessions_dialog_pending_rows();
+    let painted_other = painted(&app);
+    assert!(painted_other.subagent_rows().is_empty());
+    assert!(painted_other.job_rows().is_empty());
+    let text = drawn_text(&mut app);
+    assert!(text.contains("live work: unavailable"), "{text}");
 }
 
 /// The regression for the historical empty-dialog bug, restated for the new

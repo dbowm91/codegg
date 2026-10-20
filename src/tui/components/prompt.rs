@@ -7,10 +7,40 @@ use unicode_width::UnicodeWidthStr;
 
 use super::super::theme::Theme;
 
+/// How the composer draws its caret.
+///
+/// `Block` is the solid block painted at the caret in Normal mode. `None` means
+/// the widget paints no caret at all — either because the app positions the
+/// terminal's own cursor at the caret (Insert mode, where the terminal blinks
+/// it), or because the composer does not hold the keyboard and must show
+/// nothing.
+///
+/// The two are not the same thing, but they look the same to the widget, and
+/// the widget does not need to tell them apart: the app decides which one is
+/// true, and it decides it from the same derived ownership fact that the
+/// `[INS]`/`[NOR]` badge reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ComposerCursor {
+    /// The widget paints no caret.
+    #[default]
+    None,
+    /// The widget paints a solid block at the caret.
+    Block,
+}
+
 pub struct PromptWidget {
-    pub text: String,
-    pub cursor: usize,
-    pub focused: bool,
+    /// The composer's text model: the buffer, the caret, the selection, and
+    /// the bounded undo history.
+    ///
+    /// The model owns the buffer so there is exactly one answer to "what is
+    /// in the composer" and "where is the caret". The widget owns the
+    /// *presentation* around it.
+    buffer: super::super::composer_text::ComposerText,
+    /// How the composer draws its caret. Set by the app's render layer from
+    /// the derived keyboard-ownership fact, never stored as an independent
+    /// "is focused" flag — a stored copy can disagree with the badge, which
+    /// is the defect class the mode resolution was written to kill.
+    pub cursor_style: ComposerCursor,
     pub theme: Arc<Theme>,
     pub prefix: Span<'static>,
     pub mode_indicator: Line<'static>,
@@ -26,9 +56,8 @@ pub struct PromptWidget {
 impl PromptWidget {
     pub fn new(theme: Arc<Theme>) -> Self {
         Self {
-            text: String::new(),
-            cursor: 0,
-            focused: true,
+            buffer: super::super::composer_text::ComposerText::new(),
+            cursor_style: ComposerCursor::None,
             theme,
             prefix: Span::raw("❯ "),
             mode_indicator: Line::default(),
@@ -72,182 +101,201 @@ impl PromptWidget {
         self.char_count = count;
     }
 
-    pub fn focus(&mut self) {
-        self.focused = true;
-    }
-
-    pub fn blur(&mut self) {
-        self.focused = false;
-    }
-
-    pub fn is_focused(&self) -> bool {
-        self.focused
+    /// Set how the composer draws its caret.
+    pub fn set_cursor_style(&mut self, style: ComposerCursor) {
+        self.cursor_style = style;
     }
 
     pub fn get_text(&self) -> String {
-        self.text.clone()
+        self.buffer.text().to_string()
     }
 
     pub fn set_text(&mut self, text: String) {
-        self.text = text;
-        self.cursor = self.text.len();
+        self.buffer.set_text(text);
         self.horizontal_scroll = 0;
     }
 
     pub fn set_cursor(&mut self, pos: usize) {
-        let pos = pos.min(self.text.len());
-        self.cursor = if self.text.is_char_boundary(pos) {
-            pos
-        } else {
-            self.text
-                .char_indices()
-                .map(|(boundary, _)| boundary)
-                .take_while(|&boundary| boundary < pos)
-                .last()
-                .unwrap_or(0)
-        };
+        self.buffer.set_caret(pos);
     }
 
     /// Place the cursor at a display column on a logical prompt line.
     ///
-    /// Mouse coordinates are cell-based while `cursor` is a UTF-8 byte
+    /// Mouse coordinates are cell-based while the caret is a UTF-8 byte
     /// offset. Converting here keeps wide and multibyte characters from
     /// leaving the cursor inside a code point and also makes multiline mouse
     /// placement behave like keyboard navigation.
     pub fn set_cursor_at_column(&mut self, line_index: usize, column: usize) {
+        let text = self.buffer.text();
         let mut line_start = 0;
-        for (current_line, line) in self.text.split('\n').enumerate() {
+        for (current_line, line) in text.split('\n').enumerate() {
             if current_line == line_index {
                 let mut display_column: usize = 0;
                 for (byte_offset, ch) in line.char_indices() {
                     let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
                     if column < display_column.saturating_add(width) {
-                        self.cursor = line_start + byte_offset;
+                        self.buffer.set_caret(line_start + byte_offset);
                         return;
                     }
                     display_column = display_column.saturating_add(width);
                 }
-                self.cursor = line_start + line.len();
+                self.buffer.set_caret(line_start + line.len());
                 return;
             }
             line_start += line.len() + 1;
         }
-        self.cursor = self.text.len();
+        self.buffer.set_caret(text.len());
     }
 
     pub fn cursor_pos(&self) -> usize {
-        self.cursor
+        self.buffer.caret()
     }
 
     pub fn clear(&mut self) {
-        self.text.clear();
-        self.cursor = 0;
+        self.buffer.clear();
         self.scroll = 0;
         self.horizontal_scroll = 0;
     }
 
     pub fn insert_char(&mut self, c: char) {
-        self.text.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
+        let mut encoded = [0u8; 4];
+        let text = c.encode_utf8(&mut encoded);
+        self.buffer.insert(text);
     }
 
     pub fn insert_newline(&mut self) {
-        self.text.insert(self.cursor, '\n');
-        self.cursor += 1;
+        self.buffer.insert_newline();
+    }
+
+    /// Move the caret after the character it sits on, for insert-after.
+    pub fn insert_after(&mut self) {
+        self.buffer.insert_after();
+    }
+
+    /// Open an empty line below the caret's line.
+    pub fn open_line_below(&mut self) {
+        self.buffer.open_line_below();
+    }
+
+    /// The composer's line count — an empty buffer is one line.
+    pub fn line_count(&self) -> usize {
+        self.buffer.line_count()
+    }
+
+    /// Undo the newest edit. Returns whether anything was undone.
+    pub fn undo(&mut self) -> bool {
+        self.buffer.undo()
+    }
+
+    /// Redo the newest undone edit. Returns whether anything was redone.
+    pub fn redo(&mut self) -> bool {
+        self.buffer.redo()
     }
 
     pub fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let before = &self.text[..self.cursor];
-        let ch_len = before
-            .chars()
-            .next_back()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        let new_cursor = self.cursor - ch_len;
-        self.text.drain(new_cursor..self.cursor);
-        self.cursor = new_cursor;
+        self.buffer.backspace();
     }
 
     pub fn delete(&mut self) {
-        if self.cursor >= self.text.len() {
-            return;
-        }
-        let ch_len = self.text[self.cursor..]
-            .chars()
-            .next()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        self.text.drain(self.cursor..self.cursor + ch_len);
+        self.buffer.delete_forward();
     }
 
     pub fn cursor_left(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let before = &self.text[..self.cursor];
-        let ch_len = before
-            .chars()
-            .next_back()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        self.cursor -= ch_len;
+        self.buffer.move_left();
     }
 
     pub fn cursor_right(&mut self) {
-        if self.cursor >= self.text.len() {
-            return;
-        }
-        let ch_len = self.text[self.cursor..]
-            .chars()
-            .next()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-        self.cursor += ch_len;
+        self.buffer.move_right();
     }
 
     pub fn cursor_home(&mut self) {
-        self.cursor = 0;
+        self.buffer.move_home();
     }
 
     pub fn cursor_end(&mut self) {
-        self.cursor = self.text.len();
+        self.buffer.move_end();
+    }
+
+    /// Move the caret to the start of the next word.
+    pub fn cursor_word_forward(&mut self) {
+        self.buffer.move_word_forward();
+    }
+
+    /// Move the caret to the start of the previous word.
+    pub fn cursor_word_backward(&mut self) {
+        self.buffer.move_word_backward();
+    }
+
+    /// Move the caret to the last character of the word at the caret.
+    pub fn cursor_word_end(&mut self) {
+        self.buffer.move_word_end();
+    }
+
+    /// Move the caret one line down.
+    pub fn cursor_line_down(&mut self) {
+        self.buffer.move_line_down();
+    }
+
+    /// Move the caret one line up.
+    pub fn cursor_line_up(&mut self) {
+        self.buffer.move_line_up();
+    }
+
+    /// Arm a character selection at the caret, or discard the held one.
+    pub fn toggle_select_chars(&mut self) {
+        self.buffer.toggle_select_chars();
+    }
+
+    /// Select the caret's line, or extend the held line selection by one line.
+    pub fn select_line(&mut self) {
+        self.buffer.select_line();
+    }
+
+    /// Delete the held selection, if there is one.
+    ///
+    /// Returns whether anything was deleted.
+    pub fn delete_selection(&mut self) -> bool {
+        self.buffer.delete_selection()
+    }
+
+    /// The byte range the held selection covers, if there is one.
+    ///
+    /// The same range the delete verb removes and the renderer paints, so
+    /// "the selection" is one thing rather than three.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.buffer.selection_range()
+    }
+
+    /// The text the held selection covers, if there is one.
+    pub fn selected_text(&self) -> Option<String> {
+        self.buffer.selected_text()
     }
 
     pub fn paste(&mut self, text: String) {
-        self.text.insert_str(self.cursor, &text);
-        self.cursor += text.len();
+        self.buffer.insert(&text);
     }
 
     pub fn num_lines(&self) -> usize {
-        if self.text.is_empty() {
-            1
-        } else {
-            let base_lines = self.text.lines().count();
-            if self.text.ends_with('\n') {
-                base_lines + 1
-            } else {
-                base_lines
-            }
-        }
+        self.buffer.text().split('\n').count()
     }
 
     pub fn cursor_line(&self) -> usize {
-        let before = &self.text[..self.cursor.min(self.text.len())];
-        before.chars().filter(|&c| c == '\n').count()
+        self.buffer.caret_line()
     }
 
     pub fn needed_height(&self, max_height: u16) -> u16 {
         let min_height: u16 = 3;
         let total_lines = self.num_lines() as u16;
-        let char_count_lines = if self.char_count.unwrap_or(self.text.len()) > 500 {
+        let char_count_lines = if self.char_count.unwrap_or(self.buffer.text().len()) > 500 {
             1
         } else {
             0
         };
-        let multiline_indicator = if self.text.contains('\n') { 1 } else { 0 };
+        let multiline_indicator = if self.buffer.text().contains('\n') {
+            1
+        } else {
+            0
+        };
         let total_needed = 1 + total_lines + char_count_lines + multiline_indicator;
         total_needed.clamp(min_height, max_height)
     }
@@ -309,7 +357,7 @@ impl PromptWidget {
             return;
         }
 
-        let before = &self.text[..self.cursor.min(self.text.len())];
+        let before = &self.buffer.text()[..self.buffer.caret().min(self.buffer.text().len())];
         let column = before
             .rsplit('\n')
             .next()
@@ -321,6 +369,99 @@ impl PromptWidget {
         } else if column >= self.horizontal_scroll.saturating_add(visible_width) {
             self.horizontal_scroll = column.saturating_sub(visible_width.saturating_sub(1));
         }
+    }
+
+    /// The caret's cell inside `area`, or `None` when it is not on screen.
+    ///
+    /// One computation for two consumers: the painted block and the terminal
+    /// cursor the app positions. They cannot disagree about where the caret is
+    /// if they read the same answer, and the block used to compute its own
+    /// position here.
+    ///
+    /// The composer's first row is the mode/prefix row, so the text starts one
+    /// row below it. The paragraph scrolls as a whole, so the text line the
+    /// caret is on sits at `area.y + 1 + (line - scroll)`, and a caret whose
+    /// line has scrolled off the top has no cell at all.
+    pub fn caret_cell(&self, area: Rect) -> Option<(u16, u16)> {
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+        let before = &self.buffer.text()[..self.buffer.caret().min(self.buffer.text().len())];
+        let line_idx = before.chars().filter(|&c| c == '\n').count();
+        if line_idx < self.scroll {
+            // The caret's line is above the visible window.
+            return None;
+        }
+        let visible_line_idx = u16::try_from(line_idx - self.scroll).ok()?;
+        let cursor_y = area.y.checked_add(1)?.checked_add(visible_line_idx)?;
+        if cursor_y >= area.bottom() {
+            return None;
+        }
+        let col = before
+            .rsplit('\n')
+            .next()
+            .map(UnicodeWidthStr::width)
+            .unwrap_or(0);
+        let col = col.saturating_sub(self.horizontal_scroll);
+        let cursor_x = area
+            .x
+            .checked_add(col.min(area.width.saturating_sub(1) as usize) as u16)?;
+        if cursor_x >= area.right() {
+            return None;
+        }
+        Some((cursor_x, cursor_y))
+    }
+
+    /// Whether the composer paints a solid block at the caret.
+    pub fn paints_block_cursor(&self) -> bool {
+        self.cursor_style == ComposerCursor::Block
+    }
+
+    /// The spans for one line of the buffer, with the selected bytes painted.
+    ///
+    /// The unselected bytes render exactly as they always did — one span in
+    /// the theme's foreground — so a composer with no selection is
+    /// byte-identical to the composer before the selection existed.
+    ///
+    /// The selected part is painted as a **background**: `theme.selection` is
+    /// a fill, and the theme's `selection_text` is the token derived to read
+    /// on that fill. Painting the selection colour as a foreground instead is
+    /// the dark-on-dark defect the other selected surfaces in the TUI record.
+    ///
+    /// The offsets are byte offsets into the whole buffer, so they are
+    /// translated into this line's own coordinates before they slice it. They
+    /// are character boundaries — the model's range method guarantees that —
+    /// so the slices cannot split a code point.
+    fn line_spans(
+        &self,
+        line: &str,
+        line_start: usize,
+        selection: Option<(usize, usize)>,
+    ) -> Vec<Span<'static>> {
+        let base = Style::default().fg(self.theme.foreground);
+        let Some((sel_start, sel_end)) = selection else {
+            return vec![Span::styled(line.to_string(), base)];
+        };
+        let line_end = line_start + line.len();
+        let sel_lo = sel_start.max(line_start);
+        let sel_hi = sel_end.min(line_end);
+        if sel_lo >= sel_hi {
+            return vec![Span::styled(line.to_string(), base)];
+        }
+        let mut spans = Vec::new();
+        if sel_lo > line_start {
+            spans.push(Span::styled(line[..sel_lo - line_start].to_string(), base));
+        }
+        spans.push(Span::styled(
+            line[sel_lo - line_start..sel_hi - line_start].to_string(),
+            Style::default()
+                .fg(self.theme.selection_text)
+                .bg(self.theme.selection),
+        ));
+        if sel_hi < line_end {
+            spans.push(Span::styled(line[sel_hi - line_start..].to_string(), base));
+        }
+        spans
     }
 }
 
@@ -355,29 +496,33 @@ impl Widget for &PromptWidget {
             .collect::<Vec<_>>(),
         ));
 
-        let text_lines = if self.text.is_empty() && !self.focused {
-            vec![Line::from(Span::styled(
-                &self.placeholder,
-                Style::default().fg(self.theme.muted),
-            ))]
-        } else {
-            let text = if self.text.is_empty() {
+        let text_lines: Vec<Line> = {
+            let text = if self.buffer.text().is_empty() {
                 &self.placeholder
             } else {
-                &self.text
+                self.buffer.text()
             };
+            // The selection is a range in the **buffer**, so it means nothing
+            // against the placeholder. An empty composer has no selection
+            // either, and the placeholder path renders exactly as it always
+            // did.
+            let selection = if self.buffer.text().is_empty() {
+                None
+            } else {
+                self.buffer.selection_range()
+            };
+            let mut line_start = 0usize;
             text.split('\n')
-                .map(|l| {
-                    Line::from(Span::styled(
-                        l.to_string(),
-                        Style::default().fg(self.theme.foreground),
-                    ))
+                .map(|line| {
+                    let spans = self.line_spans(line, line_start, selection);
+                    line_start += line.len() + 1;
+                    Line::from(spans)
                 })
                 .collect()
         };
         all_lines.extend(text_lines);
 
-        let char_count_to_show = self.char_count.unwrap_or(self.text.len());
+        let char_count_to_show = self.char_count.unwrap_or(self.buffer.text().len());
         if char_count_to_show > 500 {
             all_lines.push(Line::from(Span::styled(
                 format!("  [{char_count_to_show} chars]"),
@@ -385,7 +530,7 @@ impl Widget for &PromptWidget {
             )));
         }
 
-        if self.text.contains('\n') {
+        if self.buffer.text().contains('\n') {
             all_lines.push(Line::from(Span::styled(
                 "  (multiline)",
                 Style::default().fg(self.theme.muted),
@@ -398,21 +543,13 @@ impl Widget for &PromptWidget {
         ));
         paragraph.render(area, buf);
 
-        if self.focused && !self.text.is_empty() {
-            let before = &self.text[..self.cursor.min(self.text.len())];
-            let line_idx = before.chars().filter(|&c| c == '\n').count();
-            let col = before
-                .rsplit('\n')
-                .next()
-                .map(UnicodeWidthStr::width)
-                .unwrap_or(0);
-            let cursor_x = area.x
-                + col
-                    .saturating_sub(self.horizontal_scroll)
-                    .min(area.width.saturating_sub(1) as usize) as u16;
-            let visible_line_idx = line_idx.saturating_sub(self.scroll);
-            let cursor_y = area.y + 1 + visible_line_idx as u16;
-            if cursor_y < area.bottom() && cursor_x < area.right() {
+        // The solid block is the Normal-mode caret. In Insert mode the app
+        // positions the terminal's own cursor at the same cell instead, so
+        // the two are mutually exclusive by construction — painting both
+        // would show two carets, and painting neither in Insert mode would
+        // leave the user with no caret at all.
+        if self.paints_block_cursor() {
+            if let Some((cursor_x, cursor_y)) = self.caret_cell(area) {
                 if let Some(cell) = buf.cell_mut((cursor_x, cursor_y)) {
                     cell.set_style(
                         Style::default()
@@ -423,5 +560,131 @@ impl Widget for &PromptWidget {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+
+    /// Render the composer into a buffer.
+    ///
+    /// The composer's first row is the mode/prefix row, so the text starts
+    /// on row 1 — the tests below read the text from there.
+    fn render(widget: &PromptWidget, width: u16, height: u16) -> Buffer {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        widget.render(area, &mut buffer);
+        buffer
+    }
+
+    fn composer(text: &str) -> PromptWidget {
+        let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
+        widget.set_text(text.to_string());
+        widget
+    }
+
+    /// An unselected composer renders exactly as it always did: the text in
+    /// the theme's foreground, with no background of its own.
+    #[test]
+    fn an_unselected_composer_renders_as_before() {
+        let widget = composer("hello");
+        let buffer = render(&widget, 20, 4);
+
+        let cell = &buffer[(0, 1)];
+        assert_eq!(cell.symbol(), "h");
+        assert_eq!(cell.fg, widget.theme.foreground);
+        assert_eq!(cell.bg, Color::Reset, "no selection, no background");
+    }
+
+    /// A held selection is painted with the theme's selection colours.
+    #[test]
+    fn a_selected_range_is_painted_with_the_selection_colours() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+        widget.cursor_right();
+
+        let buffer = render(&widget, 20, 4);
+
+        // The selection is inclusive of the head character, so "he" is
+        // painted.
+        for column in 0..2 {
+            let cell = &buffer[(column, 1)];
+            assert_eq!(cell.bg, widget.theme.selection, "column {column}");
+            assert_eq!(cell.fg, widget.theme.selection_text, "column {column}");
+        }
+        let cell = &buffer[(2, 1)];
+        assert_eq!(cell.symbol(), "l");
+        assert_eq!(cell.bg, Color::Reset, "the text after the selection");
+        assert_eq!(cell.fg, widget.theme.foreground);
+    }
+
+    /// A selection that spans a newline is painted on both lines.
+    #[test]
+    fn a_selection_spanning_a_newline_is_painted_on_both_lines() {
+        let mut widget = composer("one\ntwo");
+        widget.set_cursor(2);
+        widget.toggle_select_chars();
+        // Move onto the second line: the head follows, and the selection
+        // covers the newline between them.
+        widget.cursor_right();
+        widget.cursor_right();
+
+        let buffer = render(&widget, 20, 4);
+
+        assert_eq!(
+            buffer[(2, 1)].bg,
+            widget.theme.selection,
+            "the first line's tail is selected"
+        );
+        assert_eq!(
+            buffer[(0, 2)].bg,
+            widget.theme.selection,
+            "the second line's head is selected"
+        );
+    }
+
+    /// The placeholder path is unaffected: an empty composer has no
+    /// selection, and its placeholder renders in the muted colour.
+    #[test]
+    fn the_placeholder_path_is_unaffected() {
+        let widget = PromptWidget::new(Arc::new(Theme::dark()));
+        let buffer = render(&widget, 30, 4);
+
+        assert_eq!(buffer[(0, 1)].symbol(), "A");
+        assert_eq!(buffer[(0, 1)].bg, Color::Reset);
+    }
+
+    /// The selection's range is the same one the delete verb removes.
+    #[test]
+    fn the_widget_reports_the_selection_the_delete_verb_removes() {
+        let mut widget = composer("hello world");
+        widget.set_cursor(0);
+        widget.toggle_select_chars();
+        widget.cursor_right();
+
+        assert_eq!(widget.selection_range(), Some((0, 2)));
+        assert_eq!(widget.selected_text().as_deref(), Some("he"));
+        assert!(widget.delete_selection());
+        assert_eq!(widget.get_text(), "llo world");
+    }
+
+    /// A paste inserts the given text at the caret.
+    ///
+    /// The **text** is a parameter here, and that is the point: the clipboard
+    /// itself is the system clipboard, which is global state that parallel
+    /// tests would race on. The verb's input is therefore tested here, and
+    /// the app's wiring — read the clipboard, hand the text over — is the
+    /// same system boundary every other clipboard call in the app shares.
+    #[test]
+    fn a_paste_inserts_the_text_at_the_caret() {
+        let mut widget = composer("hello");
+        widget.set_cursor(5);
+        widget.paste(" world".to_string());
+        assert_eq!(widget.get_text(), "hello world");
+        assert_eq!(widget.cursor_pos(), 11, "the caret follows the paste");
     }
 }

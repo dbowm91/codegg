@@ -95,6 +95,9 @@ impl SidePanel for SessionPanel {
                     SidebarActivation::InspectSubagent(task_id) => {
                         PanelKey::Intent(TuiMsg::OpenSubagentTab { task_id })
                     }
+                    SidebarActivation::InspectJob(job_id) => {
+                        PanelKey::Intent(TuiMsg::OpenJobDetail { job_id })
+                    }
                     SidebarActivation::None => PanelKey::Consumed,
                 };
             }

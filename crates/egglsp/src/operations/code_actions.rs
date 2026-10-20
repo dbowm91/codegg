@@ -97,6 +97,36 @@ pub struct CodeActionPreview {
     pub server_generation: u64,
 }
 
+/// One code action the server offered, with the preview of its edit when it
+/// has one.
+///
+/// The action's own facts — its title, its kind, whether it is preferred,
+/// whether it is disabled and why, whether it carried an edit, whether it
+/// carried a command — are carried through verbatim. Only the *edit* is
+/// transformed, and only into a preview: this surface never applies one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CodeActionEntry {
+    /// The action's title, as the server wrote it.
+    pub title: String,
+    /// The LSP `CodeActionKind` (e.g. `"quickfix"`), when the server gave
+    /// one. `None` for a raw `Command` action.
+    pub kind: Option<String>,
+    /// Whether the server marked this action preferred.
+    pub preferred: bool,
+    /// `disabled.reason` from the LSP `CodeAction.disabled` field.
+    pub disabled_reason: Option<String>,
+    /// True when the action carried a `WorkspaceEdit` payload.
+    pub has_edit: bool,
+    /// True when the action carried a `Command` payload.
+    pub has_command: bool,
+    /// The preview of the action's edit.
+    ///
+    /// `None` for a command-bearing action, a disabled action, an action
+    /// with no edit, and an action whose edit could not be previewed
+    /// completely.
+    pub preview: Option<CodeActionPreview>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceActionPreviewKind {
     OrganizeImports,
@@ -218,6 +248,66 @@ pub fn select_source_action_edit(
                 title.to_string(),
                 titles.join(", "),
             ))
+        }
+    }
+}
+
+/// Convert one raw action into an entry, previewing its edit locally.
+///
+/// Pure with respect to the network: the only I/O is the local file read
+/// inside [`preview_workspace_edit`].
+///
+/// A **command-bearing** action is never previewed, even one that also
+/// carries an edit. The LSP specification has the client apply an action's
+/// edit *and then* its command; this surface never runs commands, so
+/// previewing the edit of a mixed action would be previewing half of what
+/// the action means. The same rule the single-action
+/// [`LspOperations::preview_code_action`] already applies, kept here so the
+/// list and the single agree.
+fn code_action_entry(
+    action: &CodeActionOrCommand,
+    allowed_root: Option<&Path>,
+    server_generation: u64,
+) -> CodeActionEntry {
+    match action {
+        CodeActionOrCommand::Command(cmd) => CodeActionEntry {
+            title: cmd.title.clone(),
+            kind: None,
+            preferred: false,
+            disabled_reason: None,
+            has_edit: false,
+            has_command: true,
+            preview: None,
+        },
+        CodeActionOrCommand::CodeAction(ca) => {
+            let has_command = ca.command.is_some();
+            let has_edit = ca.edit.is_some();
+            let disabled = ca.disabled.is_some();
+            let preview = match (has_command, disabled, ca.edit.as_ref()) {
+                (false, false, Some(edit)) => {
+                    preview_workspace_edit(ca.title.clone(), edit.clone(), allowed_root)
+                        .ok()
+                        .map(|preview| CodeActionPreview {
+                            title: ca.title.clone(),
+                            kind: ca.kind.as_ref().map(|k| k.as_str().to_string()),
+                            affected_files: preview.files,
+                            edit_count: preview.total_edits,
+                            warnings: Vec::new(),
+                            truncated: preview.truncated,
+                            server_generation,
+                        })
+                }
+                _ => None,
+            };
+            CodeActionEntry {
+                title: ca.title.clone(),
+                kind: ca.kind.as_ref().map(|k| k.as_str().to_string()),
+                preferred: ca.is_preferred.unwrap_or(false),
+                disabled_reason: ca.disabled.as_ref().map(|d| d.reason.clone()),
+                has_edit,
+                has_command,
+                preview,
+            }
         }
     }
 }
@@ -423,6 +513,108 @@ impl LspOperations {
             truncated: preview.truncated,
             server_generation,
         })
+    }
+
+    /// The code actions a warm server would offer at a position, each with
+    /// the preview of its own edit.
+    ///
+    /// **One request.** The actions are fetched with a single
+    /// `textDocument/codeAction` and then previewed **locally**, one
+    /// `preview_workspace_edit` per action that carries an editable edit.
+    ///
+    /// The alternative — summaries first, then a second request naming the
+    /// chosen action — carries a hazard this method does not: an action's
+    /// *index* is only meaningful for the list the server returned in that
+    /// moment, and a second request may return a different list. The index
+    /// would then name a different action than the user picked. One request
+    /// removes the index entirely, and the candidate is computed from
+    /// exactly the action that will be shown.
+    ///
+    /// **Warm-only by construction:** the caller resolved `key` itself, and
+    /// every step below — the capability gate, the document sync, the
+    /// generation stamp — is taken against that same key. A file-path form
+    /// would resolve a client of its own, and `get_or_create_client` is the
+    /// one step that is allowed to start a language server.
+    ///
+    /// An action whose edit cannot be previewed completely yields an entry
+    /// with no preview rather than failing the whole read: one unusable
+    /// action must not hide the usable ones beside it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn code_action_previews_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        range: Range,
+        only: Option<Vec<CodeActionKind>>,
+        max_actions: usize,
+        allowed_root: Option<&Path>,
+    ) -> Result<Vec<CodeActionEntry>, LspError> {
+        use crate::capability::LspSemanticOperation;
+
+        if max_actions == 0 {
+            return Ok(Vec::new());
+        }
+        // Fail-closed capability gate, against the caller's own key.
+        self.require_capability_for_key(key, LspSemanticOperation::CodeAction)
+            .await?;
+
+        let actions = self
+            .code_actions_for_key(key, file_path, range, only)
+            .await?;
+        let server_generation = self.service.generation_for_key(key).await;
+
+        Ok(actions
+            .iter()
+            .take(max_actions)
+            .map(|action| code_action_entry(action, allowed_root, server_generation))
+            .collect())
+    }
+
+    /// The raw `textDocument/codeAction` answer for an already-warm key.
+    ///
+    /// The file-path form of this request resolves its own client; this one
+    /// takes the key it is given, so the whole code-action flow stays warm.
+    async fn code_actions_for_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        range: Range,
+        only: Option<Vec<CodeActionKind>>,
+    ) -> Result<Vec<CodeActionOrCommand>, LspError> {
+        let _uri_str = self
+            .service
+            .ensure_file_open_from_disk_for_key(key, file_path)
+            .await?;
+        let uri = url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?)?;
+
+        let params = serde_json::to_value(CodeActionParams {
+            text_document: TextDocumentIdentifier { uri },
+            range,
+            context: CodeActionContext {
+                // The editor's code-action read asks without a diagnostics
+                // context. A server that keys its quick fixes to the
+                // diagnostics it was told about will offer fewer of them
+                // here than it would with the context attached.
+                diagnostics: Vec::new(),
+                only,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(key, "textDocument/codeAction", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        Ok(serde_json::from_value(resp)?)
     }
 
     pub async fn source_action_preview(

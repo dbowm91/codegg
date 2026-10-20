@@ -86,8 +86,14 @@ impl DatePreset {
 /// is projection-derived; nothing here is minted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentListRow {
-    /// Canonical task identity. Keys the cursor; never the label.
+    /// Actual task identity used to open its transcript.
     pub task_id: String,
+    /// Generation-safe identity used to preserve row selection across refresh.
+    pub child_instance_id: Option<String>,
+    /// Durable execution identity linked to this child, when available.
+    pub run_id: Option<String>,
+    /// Scheduler job identity linked to this child, when available.
+    pub job_id: Option<String>,
     /// Display name, or the agent type when the node carried none.
     pub label: String,
     /// The agent type, shown beside the name.
@@ -171,6 +177,13 @@ pub struct SessionDialog {
     pub search_messages: bool,
     pub message_preview: HashMap<String, String>,
     pub loading: bool,
+    /// When refresh removes the selected entity, the nearest row may be
+    /// highlighted for navigation but cannot be activated until the user
+    /// chooses a row explicitly.
+    selection_invalidated: bool,
+    /// Availability of the active session's live projection. Session rows
+    /// remain usable when the projection is loading or unavailable.
+    projection_status: Option<crate::tui::app::state::projection_client::PrimaryProjectionStatus>,
     pub scroll: CenteredScroll,
     pub bulk_mode: bool,
     pub selected_ids: HashMap<String, bool>,
@@ -197,6 +210,8 @@ impl Clone for SessionDialog {
             search_messages: self.search_messages,
             message_preview: self.message_preview.clone(),
             loading: self.loading,
+            selection_invalidated: self.selection_invalidated,
+            projection_status: self.projection_status.clone(),
             scroll: self.scroll.clone(),
             bulk_mode: self.bulk_mode,
             selected_ids: self.selected_ids.clone(),
@@ -223,6 +238,8 @@ impl SessionDialog {
             search_messages: false,
             message_preview: HashMap::new(),
             loading: false,
+            selection_invalidated: false,
+            projection_status: None,
             scroll: CenteredScroll::new(),
             bulk_mode: false,
             selected_ids: HashMap::new(),
@@ -253,14 +270,38 @@ impl SessionDialog {
         self.loading = loading;
     }
 
+    pub fn set_projection_status(
+        &mut self,
+        status: Option<crate::tui::app::state::projection_client::PrimaryProjectionStatus>,
+    ) {
+        self.projection_status = status;
+    }
+
     pub fn load_sessions(&mut self, sessions: Vec<Session>) {
         self.sessions = sessions;
         self.selected = 0;
         self.filter.clear();
         self.message_counts.clear();
         self.loading = false;
+        self.selection_invalidated = false;
         self.scroll.reset();
         self.sorted_cache = RefCell::new(None);
+    }
+
+    /// Focus the listed session matching the active session when `/sessions`
+    /// first loads, so its work section is immediately bound to that session.
+    pub fn select_session_id(&mut self, session_id: &str) -> bool {
+        let Some(index) = self
+            .sorted_sessions()
+            .iter()
+            .position(|session| session.id == session_id)
+        else {
+            return false;
+        };
+        self.selected = index;
+        self.selection_invalidated = false;
+        self.sync_scroll(self.rows().len());
+        true
     }
 
     pub fn set_message_count(&mut self, session_id: &str, count: usize) {
@@ -308,6 +349,12 @@ impl SessionDialog {
         let previous = self.selected_identity();
         self.subagents = subagents;
         self.jobs = jobs;
+        self.selection_invalidated = previous.as_ref().is_some_and(|identity| {
+            !self
+                .rows()
+                .iter()
+                .any(|row| row_identity(row, &self.sorted_sessions()) == Some(identity.clone()))
+        });
         self.restore_identity(previous);
     }
 
@@ -431,11 +478,13 @@ impl SessionDialog {
         }
         if index < rows.len() {
             self.selected = index;
+            self.selection_invalidated = false;
         }
         self.sync_scroll(rows.len());
     }
 
     pub fn select_up(&mut self) {
+        let previous = self.selected;
         let rows = self.rows();
         // Normalise first: `self.selected` is a public field, so a caller (or
         // a stale index left by a shrink that did not go through
@@ -453,10 +502,14 @@ impl SessionDialog {
                 break;
             }
         }
+        if self.selected != previous {
+            self.selection_invalidated = false;
+        }
         self.sync_scroll(rows.len());
     }
 
     pub fn select_down(&mut self) {
+        let previous = self.selected;
         let rows = self.rows();
         self.selected = self.selected.min(rows.len().saturating_sub(1));
         let mut index = self.selected;
@@ -466,6 +519,9 @@ impl SessionDialog {
                 self.selected = index;
                 break;
             }
+        }
+        if self.selected != previous {
+            self.selection_invalidated = false;
         }
         self.sync_scroll(rows.len());
     }
@@ -494,10 +550,11 @@ impl SessionDialog {
     ///   the shared message rather than opening a tab from here is what makes
     ///   "the same tab every surface opens" true by construction instead of by
     ///   three call sites agreeing. It opens a view; it cancels nothing.
-    /// - **Job** → consumed. There is no job detail view to open, so inventing
-    ///   a destination here would be inventing a feature; the row is
-    ///   read-only and `Enter` on it does nothing at all.
+    /// - **Job** → fetches the daemon-owned record and attempts by stable id.
     pub fn activate_selected(&self) -> Option<TuiMsg> {
+        if self.selection_invalidated {
+            return None;
+        }
         match self.selected_row()? {
             SessionDialogRow::Session(index) => self
                 .sorted_sessions()
@@ -508,7 +565,7 @@ impl SessionDialog {
             SessionDialogRow::Subagent(row) => Some(TuiMsg::OpenSubagentTab {
                 task_id: row.task_id,
             }),
-            SessionDialogRow::Job(_) => None,
+            SessionDialogRow::Job(row) => Some(TuiMsg::OpenJobDetail { job_id: row.job_id }),
             SessionDialogRow::Header(_) => None,
         }
     }
@@ -684,7 +741,11 @@ fn row_identity(row: &SessionDialogRow, sorted: &[&Session]) -> Option<RowIdenti
         SessionDialogRow::Session(index) => sorted
             .get(*index)
             .map(|s| RowIdentity::Session(s.id.clone())),
-        SessionDialogRow::Subagent(row) => Some(RowIdentity::Subagent(row.task_id.clone())),
+        SessionDialogRow::Subagent(row) => Some(RowIdentity::Subagent(
+            row.child_instance_id
+                .clone()
+                .unwrap_or_else(|| row.task_id.clone()),
+        )),
         SessionDialogRow::Job(row) => Some(RowIdentity::Job(row.job_id.clone())),
         SessionDialogRow::Header(_) => None,
     }
@@ -772,6 +833,20 @@ impl Component for SessionDialog {
                     None
                 } else {
                     self.activate_selected()
+                }
+            }
+            crossterm::event::KeyCode::Char('i')
+                if !self.bulk_mode && self.filter.is_empty() && !self.selection_invalidated =>
+            {
+                match self.selected_row()? {
+                    SessionDialogRow::Subagent(row) => row
+                        .job_id
+                        .map(|job_id| TuiMsg::OpenJobDetail { job_id })
+                        .or_else(|| row.run_id.map(|run_id| TuiMsg::OpenRunDetail { run_id })),
+                    SessionDialogRow::Job(row) => {
+                        Some(TuiMsg::OpenJobDetail { job_id: row.job_id })
+                    }
+                    _ => None,
                 }
             }
             crossterm::event::KeyCode::Char('d') if !self.bulk_mode && self.filter.is_empty() => {
@@ -884,6 +959,25 @@ impl Component for SessionDialog {
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         )));
+        if let Some(status) = &self.projection_status {
+            let label = match status {
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Loading => {
+                    Some("live work: loading")
+                }
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Authoritative => {
+                    None
+                }
+                crate::tui::app::state::projection_client::PrimaryProjectionStatus::Unavailable(_) => {
+                    Some("live work: unavailable")
+                }
+            };
+            if let Some(label) = label {
+                lines.push(Line::from(Span::styled(
+                    label,
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        }
         lines.push(Line::from(""));
 
         if let Some(context) = &self.project_context {
@@ -1101,7 +1195,7 @@ impl Component for SessionDialog {
             // the user to look for something that is not there.
             if !self.subagents.is_empty() || !self.jobs.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "Enter opens the subagent transcript · jobs are read-only",
+                    "Enter opens child transcript · i inspects linked run/job",
                     Style::default().fg(theme.muted),
                 )));
             }
@@ -1244,6 +1338,9 @@ mod pending_section_tests {
     fn subagent(task_id: &str, label: &str) -> SubagentListRow {
         SubagentListRow {
             task_id: task_id.to_string(),
+            child_instance_id: None,
+            run_id: None,
+            job_id: None,
             label: label.to_string(),
             agent: "explore".to_string(),
             description: "look around".to_string(),
@@ -1266,6 +1363,17 @@ mod pending_section_tests {
         let mut d = dialog();
         d.load_sessions((0..count).map(|i| session(&format!("s{i}"))).collect());
         d
+    }
+
+    #[test]
+    fn active_session_can_be_selected_by_identity_after_list_load() {
+        let mut d = loaded(2);
+        assert!(d.select_session_id("s1"));
+        assert_eq!(
+            d.selected_session().map(|session| session.id.as_str()),
+            Some("s1")
+        );
+        assert!(!d.select_session_id("missing"));
     }
 
     fn headers(d: &SessionDialog) -> Vec<TaskGroup> {
@@ -1364,6 +1472,63 @@ mod pending_section_tests {
     }
 
     #[test]
+    fn a_removed_job_highlight_cannot_activate_the_job_that_slid_into_its_row() {
+        let mut d = loaded(1);
+        d.set_pending_rows(
+            Vec::new(),
+            vec![job("job-a", "test"), job("job-b", "build")],
+        );
+        d.select_down();
+        assert!(matches!(
+            d.selected_row(),
+            Some(SessionDialogRow::Job(ref row)) if row.job_id == "job-a"
+        ));
+
+        d.set_pending_rows(Vec::new(), vec![job("job-b", "build")]);
+        assert_eq!(d.handle_key(enter()), None);
+        assert_eq!(
+            d.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)),
+            None,
+            "inspection also stays disabled until focus is chosen again"
+        );
+
+        d.select_up();
+        d.select_down();
+        assert_eq!(
+            d.handle_key(enter()),
+            Some(TuiMsg::OpenJobDetail {
+                job_id: "job-b".into()
+            })
+        );
+    }
+
+    #[test]
+    fn child_generation_keys_selection_but_enter_uses_the_actual_task_id() {
+        let mut d = loaded(1);
+        let mut row = subagent("7", "Mira");
+        row.child_instance_id = Some("child-generation-a".into());
+        d.set_pending_rows(vec![row], vec![]);
+        d.handle_key(key('j'));
+
+        assert_eq!(
+            d.activate_selected(),
+            Some(TuiMsg::OpenSubagentTab {
+                task_id: "7".into()
+            }),
+            "the child generation is a refresh key, not a transcript address"
+        );
+
+        let mut next_generation = subagent("7", "Mira");
+        next_generation.child_instance_id = Some("child-generation-b".into());
+        d.set_pending_rows(vec![next_generation], vec![]);
+        assert_eq!(
+            d.activate_selected(),
+            None,
+            "a replacement generation cannot inherit the removed row's selection"
+        );
+    }
+
+    #[test]
     fn enter_on_a_subagent_row_opens_the_shared_tab_message() {
         let mut d = loaded(1);
         d.set_pending_rows(vec![subagent("t7", "Sally")], Vec::new());
@@ -1378,19 +1543,37 @@ mod pending_section_tests {
     }
 
     #[test]
-    fn enter_on_a_job_row_changes_nothing_and_closes_nothing() {
+    fn enter_on_a_job_row_opens_detail_by_job_identity() {
         let mut d = loaded(1);
         d.set_pending_rows(Vec::new(), vec![job("j9", "test")]);
         d.select_down();
 
         assert_eq!(
             d.handle_key(enter()),
-            None,
-            "a job row is read-only: Enter must not invent a destination"
+            Some(TuiMsg::OpenJobDetail {
+                job_id: "j9".into()
+            })
         );
         assert!(
             d.filter.is_empty(),
             "Enter must not leak into the filter buffer either"
+        );
+    }
+
+    #[test]
+    fn inspect_on_a_child_opens_its_linked_job_by_identity() {
+        let mut d = loaded(1);
+        let mut child = subagent("child-1", "Sally");
+        child.run_id = Some("run-1".into());
+        child.job_id = Some("job-linked-1".into());
+        d.set_pending_rows(vec![child], Vec::new());
+        d.select_down();
+
+        assert_eq!(
+            d.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)),
+            Some(TuiMsg::OpenJobDetail {
+                job_id: "job-linked-1".into()
+            })
         );
     }
 

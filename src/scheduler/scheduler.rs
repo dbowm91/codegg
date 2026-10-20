@@ -2037,6 +2037,13 @@ impl JobScheduler {
         // durable-state backstop tick.
         if matches!(result.state, codegg_core::jobs::CancelOutcome::Cancelled) {
             self.signal_job(job_id).await;
+            if let Some(terminal) = self.store.get_job(job_id).await? {
+                self.emit_event(SchedulerEvent::JobTerminal {
+                    job_id: job_id.as_str().to_string(),
+                    state: terminal.state,
+                })
+                .await;
+            }
         }
         // Remove from in-memory queue if present.
         let mut q = self.queue.lock().await;
@@ -2093,6 +2100,20 @@ impl JobScheduler {
         let Some(agent_runs) = self.agent_runs.lock().await.clone() else {
             return Ok(());
         };
+        match agent_runs.reconcile_scratch_attempt_leases().await {
+            Ok(reconciled) if reconciled > 0 => {
+                tracing::info!(
+                    reconciled,
+                    "stale managed scratch attempt leases reconciled"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // Retaining a stale lease only delays cache cleanup; deleting
+                // an ambiguous live lease could break an admitted process.
+                tracing::warn!(?error, "managed scratch lease recovery deferred");
+            }
+        }
         let jobs = self
             .store
             .list_job_records(codegg_core::jobs::store::JobStoreQuery {
@@ -2121,6 +2142,11 @@ impl JobScheduler {
                     )
                     .await;
             }
+            crate::scheduler::executors::reclaim_revoked_shared_for_run(
+                agent_runs.as_ref(),
+                &run_id,
+            )
+            .await;
         }
         Ok(())
     }

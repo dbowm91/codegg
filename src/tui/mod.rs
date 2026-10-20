@@ -108,6 +108,8 @@ pub mod chat_browser;
 pub mod command;
 pub mod commands;
 pub mod components;
+pub mod composer_claims;
+pub mod composer_text;
 pub mod file_diff;
 pub mod file_icons;
 pub mod helix_selection;
@@ -121,6 +123,7 @@ pub(crate) mod runtime;
 pub mod selection;
 pub mod task_lifecycle;
 pub mod terminal;
+pub mod text_geometry;
 pub mod theme;
 pub mod ui_builders;
 pub mod wrap;
@@ -2155,6 +2158,10 @@ mod async_cmd_tests {
         app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
             endpoint: "unix:///tmp/core.sock".into(),
         };
+        // Socket-daemon mode carries requests through CoreClient. Keep the
+        // client present even though this fixture has no event loop to execute
+        // the eventual async request.
+        app.set_core_client(std::sync::Arc::new(crate::core::InprocCoreClient::default()));
         let mut tab = crate::tui::app::state::ProjectTabState::empty(
             crate::tui::app::state::ProjectTabId::new(),
             "test".into(),
@@ -2937,8 +2944,10 @@ mod async_cmd_tests {
 pub mod document_session;
 pub mod editor;
 pub mod editor_completion;
+pub mod editor_effect;
 pub mod editor_highlight;
 pub mod editor_lsp;
+pub mod editor_match;
 pub mod file_tree;
 pub mod file_tree_coordinator;
 pub mod unified_diff;

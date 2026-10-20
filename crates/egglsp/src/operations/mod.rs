@@ -8,8 +8,8 @@ mod semantic_tokens;
 mod signature;
 
 pub use code_actions::{
-    select_source_action_edit, CodeActionPreview, CodeActionSummary, SourceActionPreviewKind,
-    CODE_ACTION_SUMMARY_DEFAULT_MAX,
+    select_source_action_edit, CodeActionEntry, CodeActionPreview, CodeActionSummary,
+    SourceActionPreviewKind, CODE_ACTION_SUMMARY_DEFAULT_MAX,
 };
 pub use completion::{
     classify_completion_items, completion_kind_to_string, ClassifiedCompletionItem,

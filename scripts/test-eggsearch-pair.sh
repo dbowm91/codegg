@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 EXPECTED_VERSION="0.4.4"
-EXPECTED_COMMIT="32f48bb57a43274d763c7f9ba919eab84d125edc"
+EXPECTED_COMMIT="13fcac0b7ac0125d38e4e9775ebe1d62028fda72"
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codegg-eggsearch-pair.XXXXXX")"
 SOURCE_ROOT=""
 cleanup() {

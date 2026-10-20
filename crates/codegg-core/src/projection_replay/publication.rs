@@ -183,6 +183,8 @@ pub fn projection_events_from_core(
         }
         CoreEvent::SubagentStarted {
             session_id,
+            child_instance_id,
+            originating_turn_id,
             task_id,
             agent,
             description,
@@ -193,6 +195,8 @@ pub fn projection_events_from_core(
         } => {
             let event = ProjectionEvent::SubagentStarted {
                 node: codegg_protocol::projection::dto::AgentTreeNodeProjection {
+                    child_instance_id: child_instance_id.clone(),
+                    originating_turn_id: originating_turn_id.clone(),
                     task_id: *task_id,
                     agent: agent.clone(),
                     description: description.clone(),
@@ -216,11 +220,13 @@ pub fn projection_events_from_core(
         }
         CoreEvent::SubagentCompleted {
             session_id,
+            child_instance_id,
             task_id,
             result_summary,
             ..
         } => {
             let event = ProjectionEvent::SubagentCompleted {
+                child_instance_id: child_instance_id.clone(),
                 task_id: *task_id,
                 result_summary: result_summary.clone(),
                 completed_at: envelope.timestamp_ms,
@@ -229,11 +235,13 @@ pub fn projection_events_from_core(
         }
         CoreEvent::SubagentFailed {
             session_id,
+            child_instance_id,
             task_id,
             error,
             ..
         } => {
             let event = ProjectionEvent::SubagentFailed {
+                child_instance_id: child_instance_id.clone(),
                 task_id: *task_id,
                 error: error.clone(),
                 failed_at: envelope.timestamp_ms,
@@ -416,6 +424,13 @@ pub fn projection_events_from_core(
             kind,
             ..
         } => {
+            let Some(owner_session_id) = session_id.clone().filter(|id| !id.is_empty()) else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping ownerless job creation from session projection"
+                );
+                return result;
+            };
             let event = ProjectionEvent::JobUpserted {
                 job: codegg_protocol::projection::dto::JobProjection {
                     job_id: job_id.clone(),
@@ -423,18 +438,26 @@ pub fn projection_events_from_core(
                     kind: kind.clone(),
                     state: "created".into(),
                     summary: String::new(),
-                    session_id: session_id.clone(),
+                    session_id: Some(owner_session_id.clone()),
                     turn_id: None,
                     active_attempt_id: None,
                     error_class: None,
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((session_id.clone().unwrap_or_default(), None, event))
+            Some((owner_session_id, envelope.turn_id.clone(), event))
         }
         CoreEvent::JobStarted {
             job_id, attempt_id, ..
         } => {
+            let Some(owner_session_id) = envelope.session_id.clone().filter(|id| !id.is_empty())
+            else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping job lifecycle event without a session owner"
+                );
+                return result;
+            };
             let event = ProjectionEvent::JobUpserted {
                 job: codegg_protocol::projection::dto::JobProjection {
                     job_id: job_id.clone(),
@@ -442,18 +465,26 @@ pub fn projection_events_from_core(
                     kind: String::new(),
                     state: "running".into(),
                     summary: String::new(),
-                    session_id: None,
+                    session_id: Some(owner_session_id.clone()),
                     turn_id: None,
                     active_attempt_id: Some(attempt_id.clone()),
                     error_class: None,
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((String::new(), None, event))
+            Some((owner_session_id, envelope.turn_id.clone(), event))
         }
         CoreEvent::JobCompleted {
             job_id, attempt_id, ..
         } => {
+            let Some(owner_session_id) = envelope.session_id.clone().filter(|id| !id.is_empty())
+            else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping job lifecycle event without a session owner"
+                );
+                return result;
+            };
             let event = ProjectionEvent::JobUpserted {
                 job: codegg_protocol::projection::dto::JobProjection {
                     job_id: job_id.clone(),
@@ -461,14 +492,14 @@ pub fn projection_events_from_core(
                     kind: String::new(),
                     state: "completed".into(),
                     summary: String::new(),
-                    session_id: None,
+                    session_id: Some(owner_session_id.clone()),
                     turn_id: None,
                     active_attempt_id: Some(attempt_id.clone()),
                     error_class: None,
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((String::new(), None, event))
+            Some((owner_session_id, envelope.turn_id.clone(), event))
         }
         CoreEvent::JobFailed {
             job_id,
@@ -476,6 +507,14 @@ pub fn projection_events_from_core(
             error_class,
             ..
         } => {
+            let Some(owner_session_id) = envelope.session_id.clone().filter(|id| !id.is_empty())
+            else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping job lifecycle event without a session owner"
+                );
+                return result;
+            };
             let event = ProjectionEvent::JobUpserted {
                 job: codegg_protocol::projection::dto::JobProjection {
                     job_id: job_id.clone(),
@@ -483,14 +522,132 @@ pub fn projection_events_from_core(
                     kind: String::new(),
                     state: "failed".into(),
                     summary: String::new(),
-                    session_id: None,
+                    session_id: Some(owner_session_id.clone()),
                     turn_id: None,
                     active_attempt_id: Some(attempt_id.clone()),
                     error_class: Some(error_class.clone()),
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((String::new(), None, event))
+            Some((owner_session_id, envelope.turn_id.clone(), event))
+        }
+        CoreEvent::JobCancelled { job_id, attempt_id } => {
+            let Some(owner_session_id) = envelope.session_id.clone().filter(|id| !id.is_empty())
+            else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping job lifecycle event without a session owner"
+                );
+                return result;
+            };
+            Some((
+                owner_session_id.clone(),
+                envelope.turn_id.clone(),
+                ProjectionEvent::JobUpserted {
+                    job: codegg_protocol::projection::dto::JobProjection {
+                        job_id: job_id.clone(),
+                        workspace_id: String::new(),
+                        kind: String::new(),
+                        state: "cancelled".into(),
+                        summary: String::new(),
+                        session_id: Some(owner_session_id),
+                        turn_id: None,
+                        active_attempt_id: Some(attempt_id.clone()),
+                        error_class: None,
+                        updated_at: envelope.timestamp_ms,
+                    },
+                },
+            ))
+        }
+        CoreEvent::JobTimedOut { job_id, attempt_id } => {
+            let Some(owner_session_id) = envelope.session_id.clone().filter(|id| !id.is_empty())
+            else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping job lifecycle event without a session owner"
+                );
+                return result;
+            };
+            Some((
+                owner_session_id.clone(),
+                envelope.turn_id.clone(),
+                ProjectionEvent::JobUpserted {
+                    job: codegg_protocol::projection::dto::JobProjection {
+                        job_id: job_id.clone(),
+                        workspace_id: String::new(),
+                        kind: String::new(),
+                        state: "timed_out".into(),
+                        summary: String::new(),
+                        session_id: Some(owner_session_id),
+                        turn_id: None,
+                        active_attempt_id: Some(attempt_id.clone()),
+                        error_class: None,
+                        updated_at: envelope.timestamp_ms,
+                    },
+                },
+            ))
+        }
+        CoreEvent::JobInterrupted {
+            job_id, attempt_id, ..
+        } => {
+            let Some(owner_session_id) = envelope.session_id.clone().filter(|id| !id.is_empty())
+            else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping job lifecycle event without a session owner"
+                );
+                return result;
+            };
+            Some((
+                owner_session_id.clone(),
+                envelope.turn_id.clone(),
+                ProjectionEvent::JobUpserted {
+                    job: codegg_protocol::projection::dto::JobProjection {
+                        job_id: job_id.clone(),
+                        workspace_id: String::new(),
+                        kind: String::new(),
+                        state: "interrupted".into(),
+                        summary: String::new(),
+                        session_id: Some(owner_session_id),
+                        turn_id: None,
+                        active_attempt_id: Some(attempt_id.clone()),
+                        error_class: None,
+                        updated_at: envelope.timestamp_ms,
+                    },
+                },
+            ))
+        }
+        CoreEvent::JobRetried {
+            job_id,
+            new_attempt_id,
+            ..
+        } => {
+            let Some(owner_session_id) = envelope.session_id.clone().filter(|id| !id.is_empty())
+            else {
+                tracing::warn!(
+                    event_seq = envelope.event_seq,
+                    "dropping job lifecycle event without a session owner"
+                );
+                return result;
+            };
+            Some((
+                owner_session_id.clone(),
+                envelope.turn_id.clone(),
+                ProjectionEvent::JobUpserted {
+                    job: codegg_protocol::projection::dto::JobProjection {
+                        job_id: job_id.clone(),
+                        workspace_id: String::new(),
+                        kind: String::new(),
+                        state: "queued".into(),
+                        summary: String::new(),
+                        session_id: Some(owner_session_id),
+                        turn_id: None,
+                        active_attempt_id: Some(new_attempt_id.clone()),
+                        error_class: None,
+                        updated_at: envelope.timestamp_ms,
+                    },
+                },
+            ))
         }
         // Idle-delivery completion (C004 fanout, ADR-0031): one
         // `BackgroundJobCompleted` per logical terminal adapts to the
@@ -671,6 +828,8 @@ mod tests {
             turn_id: None,
             payload: CoreEvent::SubagentStarted {
                 session_id: "s1".into(),
+                child_instance_id: String::new(),
+                originating_turn_id: None,
                 task_id: 42,
                 agent: "explore".into(),
                 description: "map the auth flow".into(),
@@ -704,6 +863,52 @@ mod tests {
     fn replay_preserves_the_recorded_display_name() {
         let node = started_node(&started_envelope(Some("Sally")));
         assert_eq!(node.display_name.as_deref(), Some("Sally"));
+    }
+
+    #[test]
+    fn job_lifecycle_projection_uses_the_trusted_event_envelope_owner() {
+        let envelope = EventEnvelope {
+            protocol_version: 1,
+            event_seq: 11,
+            timestamp_ms: 100,
+            session_id: Some("owner-session".into()),
+            turn_id: Some("turn-1".into()),
+            payload: CoreEvent::JobStarted {
+                job_id: "job-1".into(),
+                attempt_id: "attempt-1".into(),
+            },
+        };
+        let events = projection_events_from_core(&envelope);
+        assert_eq!(events.len(), 2);
+        for (stream, projected) in events {
+            assert_eq!(projected.session_id.as_deref(), Some("owner-session"));
+            assert_eq!(projected.turn_id.as_deref(), Some("turn-1"));
+            assert!(matches!(
+                stream,
+                ProjectionStreamKind::Session | ProjectionStreamKind::Project
+            ));
+            let ProjectionEvent::JobUpserted { job } = projected.payload else {
+                panic!("expected a job upsert");
+            };
+            assert_eq!(job.session_id.as_deref(), Some("owner-session"));
+            assert_eq!(job.state, "running");
+        }
+    }
+
+    #[test]
+    fn ownerless_job_lifecycle_is_dropped_instead_of_globalized() {
+        let envelope = EventEnvelope {
+            protocol_version: 1,
+            event_seq: 12,
+            timestamp_ms: 100,
+            session_id: None,
+            turn_id: None,
+            payload: CoreEvent::JobStarted {
+                job_id: "job-1".into(),
+                attempt_id: "attempt-1".into(),
+            },
+        };
+        assert!(projection_events_from_core(&envelope).is_empty());
     }
 
     #[test]

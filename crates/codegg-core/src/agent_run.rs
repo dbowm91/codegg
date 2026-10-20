@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-use crate::identity::{AgentRunId, AgentTaskId, NodeId, ProjectId, RepositoryId, WorktreeId};
+use crate::identity::{
+    AgentRunId, AgentTaskId, NodeId, ProjectId, RepositoryId, ScratchId, WorktreeId,
+};
 use crate::jobs::{AttemptId, JobId};
 use crate::run_result::AgentRunResult;
 use crate::workspace::WorkspaceId;
@@ -190,6 +192,9 @@ pub struct AgentRunRecord {
     pub model: String,
     pub authority_digest: String,
     pub budget: AgentRunBudget,
+    /// Immutable shared scratch resources accepted with this run's spawn.
+    #[serde(default)]
+    pub shared_scratch: Vec<SharedScratchGrant>,
     pub status: AgentRunStatus,
     pub terminal: Option<AgentRunTerminal>,
     pub result_ref: Option<String>,
@@ -218,6 +223,8 @@ pub struct DelegatedAgentExecutionContext {
     pub repository_id: Option<RepositoryId>,
     pub workspace_id: WorkspaceId,
     pub worktree_id: Option<WorktreeId>,
+    #[serde(default)]
+    pub shared_scratch: Vec<SharedScratchGrant>,
 }
 
 impl DelegatedAgentExecutionContext {
@@ -233,8 +240,38 @@ impl DelegatedAgentExecutionContext {
             repository_id: task.repository_id.clone(),
             workspace_id: task.workspace_id.clone(),
             worktree_id: run.worktree_id.clone(),
+            shared_scratch: run.shared_scratch.clone(),
         }
     }
+}
+
+/// A bounded child-visible alias for a parent-owned shared resource. The
+/// typed id is identity only; a caller never supplies its resolved path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedScratchGrant {
+    pub scratch_id: ScratchId,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedScratchResource {
+    pub scratch_id: ScratchId,
+    pub session_id: String,
+    pub owner_run_id: Option<AgentRunId>,
+    pub alias: String,
+    pub idempotency_key: String,
+    pub revoked: bool,
+    pub created_at: i64,
+}
+
+/// A durable lease held while a scheduler attempt can still use one scratch
+/// resource. The private run root uses its run id as the resource identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScratchAttemptLease {
+    pub scratch_id: ScratchId,
+    pub run_id: AgentRunId,
+    pub job_id: JobId,
+    pub attempt_id: AttemptId,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +302,7 @@ pub struct NewAgentRun {
     pub model: String,
     pub authority_digest: String,
     pub budget: AgentRunBudget,
+    pub shared_scratch: Vec<SharedScratchGrant>,
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +375,10 @@ pub enum AgentRunStoreError {
     AlreadyTerminal,
     #[error("serialization failure: {0}")]
     Serialization(String),
+    #[error("scratch resource '{0}' is unavailable")]
+    ScratchUnavailable(String),
+    #[error("scratch resource ownership is invalid: {0}")]
+    ScratchOwnership(String),
 }
 
 fn bound(value: impl AsRef<str>, max: usize) -> String {
@@ -502,6 +544,41 @@ pub trait AgentRunStore: Send + Sync {
         id: &AgentRunId,
     ) -> Result<Option<AgentRunResult>, AgentRunStoreError>;
     async fn request_cancel(&self, id: &AgentRunId) -> Result<AgentRunRecord, AgentRunStoreError>;
+    async fn create_scratch_resource(
+        &self,
+        session_id: &str,
+        owner_run_id: Option<&AgentRunId>,
+        alias: &str,
+        idempotency_key: &str,
+    ) -> Result<SharedScratchResource, AgentRunStoreError>;
+    async fn get_scratch_resource(
+        &self,
+        id: &ScratchId,
+    ) -> Result<Option<SharedScratchResource>, AgentRunStoreError>;
+    async fn revoke_scratch_resource(
+        &self,
+        id: &ScratchId,
+        session_id: &str,
+        owner_run_id: Option<&AgentRunId>,
+    ) -> Result<SharedScratchResource, AgentRunStoreError>;
+    async fn acquire_scratch_attempt_leases(
+        &self,
+        run_id: &AgentRunId,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+    ) -> Result<Vec<ScratchAttemptLease>, AgentRunStoreError>;
+    async fn release_scratch_attempt_leases(
+        &self,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+    ) -> Result<(), AgentRunStoreError>;
+    async fn has_scratch_attempt_lease(
+        &self,
+        scratch_id: &ScratchId,
+        run_id: &AgentRunId,
+    ) -> Result<bool, AgentRunStoreError>;
+    async fn has_scratch_leases(&self, scratch_id: &ScratchId) -> Result<bool, AgentRunStoreError>;
+    async fn reconcile_scratch_attempt_leases(&self) -> Result<u64, AgentRunStoreError>;
 }
 
 #[derive(Default)]
@@ -510,6 +587,9 @@ struct MemoryState {
     runs: HashMap<AgentRunId, AgentRunRecord>,
     delegation: HashMap<String, AgentTaskId>,
     results: HashMap<AgentRunId, AgentRunResult>,
+    scratch_resources: HashMap<ScratchId, SharedScratchResource>,
+    scratch_resource_keys: HashMap<(String, String), ScratchId>,
+    scratch_leases: HashMap<(ScratchId, JobId, AttemptId), AgentRunId>,
 }
 
 #[derive(Default)]
@@ -570,6 +650,7 @@ fn build_records(
         model: bound(run.model, 256),
         authority_digest: bound(run.authority_digest, 256),
         budget: run.budget,
+        shared_scratch: run.shared_scratch,
         status: AgentRunStatus::Created,
         terminal: None,
         result_ref: None,
@@ -582,6 +663,53 @@ fn build_records(
         updated_at: now,
     };
     (task_record, run_record)
+}
+
+fn valid_scratch_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias.len() <= 32
+        && alias
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+fn scratch_alias_env_key(alias: &str) -> String {
+    alias.to_ascii_uppercase().replace('-', "_")
+}
+
+fn validate_scratch_grants(
+    resources: &HashMap<ScratchId, SharedScratchResource>,
+    task: &NewAgentTask,
+    run: &NewAgentRun,
+) -> Result<(), AgentRunStoreError> {
+    let mut aliases = std::collections::HashSet::new();
+    let mut env_keys = std::collections::HashSet::new();
+    let mut resources_seen = std::collections::HashSet::new();
+    for grant in &run.shared_scratch {
+        if !valid_scratch_alias(&grant.alias)
+            || !aliases.insert(grant.alias.to_ascii_lowercase())
+            || !env_keys.insert(scratch_alias_env_key(&grant.alias))
+            || !resources_seen.insert(grant.scratch_id.clone())
+        {
+            return Err(AgentRunStoreError::ScratchOwnership(
+                "grant aliases and ids must be unique and aliases bounded".into(),
+            ));
+        }
+        let resource = resources
+            .get(&grant.scratch_id)
+            .ok_or_else(|| AgentRunStoreError::ScratchUnavailable(grant.scratch_id.to_string()))?;
+        if resource.revoked || resource.session_id != task.originating_session_id {
+            return Err(AgentRunStoreError::ScratchUnavailable(
+                grant.scratch_id.to_string(),
+            ));
+        }
+        if resource.owner_run_id != run.parent_run_id {
+            return Err(AgentRunStoreError::ScratchOwnership(
+                "only the direct owner may grant a shared resource".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn transition_task(
@@ -652,6 +780,7 @@ impl AgentRunStore for InMemoryAgentRunStore {
                 .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
             if task_record.workspace_id != task.workspace_id
                 || task_record.originating_session_id != task.originating_session_id
+                || run_record.shared_scratch != run.shared_scratch
                 || (!task_record.request_fingerprint.is_empty()
                     && !task.request_fingerprint.is_empty()
                     && task_record.request_fingerprint != task.request_fingerprint)
@@ -700,6 +829,7 @@ impl AgentRunStore for InMemoryAgentRunStore {
                 "top-level delegated runs must have depth 1".into(),
             ));
         }
+        validate_scratch_grants(&state.scratch_resources, &task, &run)?;
         let now = Utc::now().timestamp_millis();
         let (mut task_record, mut run_record) = build_records(task, run, now);
         if let Some(parent_id) = task_record.parent_task_id.as_ref() {
@@ -973,6 +1103,213 @@ impl AgentRunStore for InMemoryAgentRunStore {
         }
         Ok(run.clone())
     }
+
+    async fn create_scratch_resource(
+        &self,
+        session_id: &str,
+        owner_run_id: Option<&AgentRunId>,
+        alias: &str,
+        idempotency_key: &str,
+    ) -> Result<SharedScratchResource, AgentRunStoreError> {
+        if session_id.is_empty() || !valid_scratch_alias(alias) || idempotency_key.is_empty() {
+            return Err(AgentRunStoreError::ScratchOwnership(
+                "session, bounded alias, and idempotency key are required".into(),
+            ));
+        }
+        let mut state = self.state.lock().await;
+        if let Some(owner_run_id) = owner_run_id {
+            let owner = state
+                .runs
+                .get(owner_run_id)
+                .ok_or_else(|| AgentRunStoreError::RunNotFound(owner_run_id.to_string()))?;
+            let task = state
+                .tasks
+                .get(&owner.task_id)
+                .ok_or_else(|| AgentRunStoreError::TaskNotFound(owner.task_id.to_string()))?;
+            if task.originating_session_id != session_id {
+                return Err(AgentRunStoreError::ScratchOwnership(
+                    "owner run belongs to another session".into(),
+                ));
+            }
+        }
+        let key = format!(
+            "{}|{}",
+            owner_run_id.map_or("session", AgentRunId::as_str),
+            idempotency_key
+        );
+        if let Some(id) = state
+            .scratch_resource_keys
+            .get(&(session_id.to_owned(), key.clone()))
+        {
+            let existing = state
+                .scratch_resources
+                .get(id)
+                .cloned()
+                .ok_or_else(|| AgentRunStoreError::ScratchUnavailable(id.to_string()))?;
+            if existing.owner_run_id.as_ref() != owner_run_id || existing.alias != alias {
+                return Err(AgentRunStoreError::ScratchOwnership(
+                    "idempotency key was reused with a different scratch request".into(),
+                ));
+            }
+            if existing.revoked {
+                return Err(AgentRunStoreError::ScratchUnavailable(id.to_string()));
+            }
+            return Ok(existing);
+        }
+        if state.scratch_resources.values().any(|existing| {
+            existing.session_id == session_id
+                && existing.owner_run_id.as_ref() == owner_run_id
+                && existing.alias.eq_ignore_ascii_case(alias)
+        }) {
+            return Err(AgentRunStoreError::ScratchOwnership(
+                "scratch alias is already in use by this owner".into(),
+            ));
+        }
+        let resource = SharedScratchResource {
+            scratch_id: ScratchId::new(),
+            session_id: session_id.to_owned(),
+            owner_run_id: owner_run_id.cloned(),
+            alias: alias.to_owned(),
+            idempotency_key: key.clone(),
+            revoked: false,
+            created_at: Utc::now().timestamp_millis(),
+        };
+        state
+            .scratch_resource_keys
+            .insert((session_id.to_owned(), key), resource.scratch_id.clone());
+        state
+            .scratch_resources
+            .insert(resource.scratch_id.clone(), resource.clone());
+        Ok(resource)
+    }
+
+    async fn get_scratch_resource(
+        &self,
+        id: &ScratchId,
+    ) -> Result<Option<SharedScratchResource>, AgentRunStoreError> {
+        Ok(self.state.lock().await.scratch_resources.get(id).cloned())
+    }
+
+    async fn revoke_scratch_resource(
+        &self,
+        id: &ScratchId,
+        session_id: &str,
+        owner_run_id: Option<&AgentRunId>,
+    ) -> Result<SharedScratchResource, AgentRunStoreError> {
+        let mut state = self.state.lock().await;
+        let resource = state
+            .scratch_resources
+            .get_mut(id)
+            .ok_or_else(|| AgentRunStoreError::ScratchUnavailable(id.to_string()))?;
+        if resource.session_id != session_id || resource.owner_run_id.as_ref() != owner_run_id {
+            return Err(AgentRunStoreError::ScratchOwnership(
+                "only the resource owner may revoke it".into(),
+            ));
+        }
+        resource.revoked = true;
+        Ok(resource.clone())
+    }
+
+    async fn acquire_scratch_attempt_leases(
+        &self,
+        run_id: &AgentRunId,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+    ) -> Result<Vec<ScratchAttemptLease>, AgentRunStoreError> {
+        let mut state = self.state.lock().await;
+        let run = state
+            .runs
+            .get(run_id)
+            .cloned()
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(run_id.to_string()))?;
+        let task = state
+            .tasks
+            .get(&run.task_id)
+            .ok_or_else(|| AgentRunStoreError::TaskNotFound(run.task_id.to_string()))?;
+        for grant in &run.shared_scratch {
+            let resource = state
+                .scratch_resources
+                .get(&grant.scratch_id)
+                .ok_or_else(|| {
+                    AgentRunStoreError::ScratchUnavailable(grant.scratch_id.to_string())
+                })?;
+            if resource.revoked
+                || resource.session_id != task.originating_session_id
+                || resource.owner_run_id != run.parent_run_id
+            {
+                return Err(AgentRunStoreError::ScratchUnavailable(
+                    grant.scratch_id.to_string(),
+                ));
+            }
+        }
+        let mut ids = vec![ScratchId::parse(run_id.as_str()).map_err(storage_error)?];
+        ids.extend(run.shared_scratch.into_iter().map(|grant| grant.scratch_id));
+        let mut leases = Vec::with_capacity(ids.len());
+        for scratch_id in ids {
+            if let Some(existing) =
+                state
+                    .scratch_leases
+                    .get(&(scratch_id.clone(), job_id.clone(), attempt_id.clone()))
+            {
+                if existing != run_id {
+                    return Err(AgentRunStoreError::ScratchOwnership(
+                        "attempt lease is already owned by another run".into(),
+                    ));
+                }
+            }
+            let lease = ScratchAttemptLease {
+                scratch_id: scratch_id.clone(),
+                run_id: run_id.clone(),
+                job_id: job_id.clone(),
+                attempt_id: attempt_id.clone(),
+            };
+            state.scratch_leases.insert(
+                (scratch_id, job_id.clone(), attempt_id.clone()),
+                run_id.clone(),
+            );
+            leases.push(lease);
+        }
+        Ok(leases)
+    }
+
+    async fn release_scratch_attempt_leases(
+        &self,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+    ) -> Result<(), AgentRunStoreError> {
+        self.state
+            .lock()
+            .await
+            .scratch_leases
+            .retain(|(_, job, attempt), _| job != job_id || attempt != attempt_id);
+        Ok(())
+    }
+
+    async fn has_scratch_attempt_lease(
+        &self,
+        scratch_id: &ScratchId,
+        run_id: &AgentRunId,
+    ) -> Result<bool, AgentRunStoreError> {
+        Ok(self.state.lock().await.scratch_leases.iter().any(
+            |((leased_scratch, _, _), leased_run)| {
+                leased_scratch == scratch_id && leased_run == run_id
+            },
+        ))
+    }
+
+    async fn has_scratch_leases(&self, scratch_id: &ScratchId) -> Result<bool, AgentRunStoreError> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .scratch_leases
+            .keys()
+            .any(|(leased_scratch, _, _)| leased_scratch == scratch_id))
+    }
+
+    async fn reconcile_scratch_attempt_leases(&self) -> Result<u64, AgentRunStoreError> {
+        Ok(0)
+    }
 }
 
 pub struct SqliteAgentRunStore {
@@ -1040,7 +1377,7 @@ async fn load_run(
     pool: &SqlitePool,
     id: &AgentRunId,
 ) -> Result<Option<AgentRunRecord>, AgentRunStoreError> {
-    let row = sqlx::query("SELECT run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, worktree_id, node_id, job_id, attempt_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, status, terminal, result_ref, failure_class, failure_message, cancellation_requested, created_at, started_at, finished_at, updated_at FROM agent_run WHERE run_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
+    let row = sqlx::query("SELECT run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, worktree_id, node_id, job_id, attempt_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, shared_scratch_json, status, terminal, result_ref, failure_class, failure_message, cancellation_requested, created_at, started_at, finished_at, updated_at FROM agent_run WHERE run_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
     row.map(|r| {
         Ok(AgentRunRecord {
             run_id: parse_run(r.get("run_id"))?,
@@ -1071,6 +1408,10 @@ async fn load_run(
             authority_digest: r.get("authority_digest"),
             budget: serde_json::from_str(r.get::<String, _>("budget_json").as_str())
                 .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?,
+            shared_scratch: serde_json::from_str(
+                r.get::<String, _>("shared_scratch_json").as_str(),
+            )
+            .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?,
             status: AgentRunStatus::from_str(r.get::<String, _>("status").as_str()),
             terminal: r
                 .get::<Option<String>, _>("terminal")
@@ -1138,6 +1479,7 @@ impl AgentRunStore for SqliteAgentRunStore {
                 .ok_or_else(|| AgentRunStoreError::RunNotFound(run_id.to_string()))?;
             if task_record.workspace_id != task.workspace_id
                 || task_record.originating_session_id != task.originating_session_id
+                || existing_run.shared_scratch != run.shared_scratch
                 || (!task_record.request_fingerprint.is_empty()
                     && !task.request_fingerprint.is_empty()
                     && task_record.request_fingerprint != task.request_fingerprint)
@@ -1221,6 +1563,39 @@ impl AgentRunStore for SqliteAgentRunStore {
         }
         let budget = serde_json::to_string(&run_record.budget)
             .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?;
+        let mut aliases = std::collections::HashSet::new();
+        let mut env_keys = std::collections::HashSet::new();
+        let mut scratch_ids = std::collections::HashSet::new();
+        for grant in &run_record.shared_scratch {
+            if !valid_scratch_alias(&grant.alias)
+                || !aliases.insert(grant.alias.to_ascii_lowercase())
+                || !env_keys.insert(scratch_alias_env_key(&grant.alias))
+                || !scratch_ids.insert(grant.scratch_id.clone())
+            {
+                return Err(AgentRunStoreError::ScratchOwnership(
+                    "grant aliases and ids must be unique and aliases bounded".into(),
+                ));
+            }
+            let row = sqlx::query(
+                "SELECT session_id, owner_run_id, revoked FROM agent_scratch_resource WHERE scratch_id = ?",
+            )
+            .bind(grant.scratch_id.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .ok_or_else(|| AgentRunStoreError::ScratchUnavailable(grant.scratch_id.to_string()))?;
+            if row.get::<String, _>("session_id") != task_record.originating_session_id
+                || row.get::<Option<String>, _>("owner_run_id").as_deref()
+                    != run_record.parent_run_id.as_ref().map(AgentRunId::as_str)
+                || row.get::<i64, _>("revoked") != 0
+            {
+                return Err(AgentRunStoreError::ScratchOwnership(
+                    "shared resource is not owned by the direct parent".into(),
+                ));
+            }
+        }
+        let shared_scratch = serde_json::to_string(&run_record.shared_scratch)
+            .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?;
         let task_insert = sqlx::query("INSERT INTO agent_task (task_id, root_task_id, parent_task_id, session_id, turn_id, project_id, repository_id, workspace_id, requested_agent, delegation_key, request_fingerprint, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(task_record.task_id.as_str()).bind(task_record.root_task_id.as_str()).bind(task_record.parent_task_id.as_ref().map(AgentTaskId::as_str)).bind(&task_record.originating_session_id).bind(task_record.originating_turn_id.as_deref()).bind(task_record.project_id.as_str()).bind(task_record.repository_id.as_ref().map(RepositoryId::as_str)).bind(task_record.workspace_id.as_str()).bind(&task_record.requested_agent).bind(&task_record.delegation_key).bind(&task_record.request_fingerprint).bind(&task_record.description).bind(task_record.status.as_str()).bind(now).bind(now).execute(&mut *tx).await;
         if let Err(error) = task_insert {
@@ -1230,8 +1605,8 @@ impl AgentRunStore for SqliteAgentRunStore {
             }
             return Err(storage_error(error));
         }
-        sqlx::query("INSERT INTO agent_run (run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, status, cancellation_requested, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)")
-            .bind(run_record.run_id.as_str()).bind(run_record.task_id.as_str()).bind(run_record.root_run_id.as_str()).bind(run_record.parent_run_id.as_ref().map(AgentRunId::as_str)).bind(run_record.depth as i64).bind(run_record.workspace_id.as_str()).bind(&run_record.agent_name).bind(run_record.agent_digest.as_deref()).bind(&run_record.provider).bind(&run_record.model).bind(&run_record.authority_digest).bind(budget).bind(run_record.status.as_str()).bind(now).bind(now).execute(&mut *tx).await.map_err(storage_error)?;
+        sqlx::query("INSERT INTO agent_run (run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, shared_scratch_json, status, cancellation_requested, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)")
+            .bind(run_record.run_id.as_str()).bind(run_record.task_id.as_str()).bind(run_record.root_run_id.as_str()).bind(run_record.parent_run_id.as_ref().map(AgentRunId::as_str)).bind(run_record.depth as i64).bind(run_record.workspace_id.as_str()).bind(&run_record.agent_name).bind(run_record.agent_digest.as_deref()).bind(&run_record.provider).bind(&run_record.model).bind(&run_record.authority_digest).bind(budget).bind(shared_scratch).bind(run_record.status.as_str()).bind(now).bind(now).execute(&mut *tx).await.map_err(storage_error)?;
         tx.commit().await.map_err(storage_error)?;
         Ok(AgentRunSubmission {
             task: task_record,
@@ -1484,6 +1859,270 @@ impl AgentRunStore for SqliteAgentRunStore {
         update_run(&self.pool, &run).await?;
         Ok(run)
     }
+
+    async fn create_scratch_resource(
+        &self,
+        session_id: &str,
+        owner_run_id: Option<&AgentRunId>,
+        alias: &str,
+        idempotency_key: &str,
+    ) -> Result<SharedScratchResource, AgentRunStoreError> {
+        if session_id.is_empty()
+            || !valid_scratch_alias(alias)
+            || idempotency_key.is_empty()
+            || idempotency_key.len() > 512
+        {
+            return Err(AgentRunStoreError::ScratchOwnership(
+                "session, bounded alias, and bounded idempotency key are required".into(),
+            ));
+        }
+        let owner_key = owner_run_id.map_or("session", AgentRunId::as_str);
+        if let Some(owner_run_id) = owner_run_id {
+            let row = sqlx::query(
+                "SELECT t.session_id FROM agent_run r JOIN agent_task t ON t.task_id = r.task_id WHERE r.run_id = ?",
+            )
+            .bind(owner_run_id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(owner_run_id.to_string()))?;
+            if row.get::<String, _>("session_id") != session_id {
+                return Err(AgentRunStoreError::ScratchOwnership(
+                    "owner run belongs to another session".into(),
+                ));
+            }
+        }
+        if let Some(row) = sqlx::query(
+            "SELECT scratch_id, owner_run_id, alias, idempotency_key, revoked, created_at FROM agent_scratch_resource WHERE session_id = ? AND owner_key = ? AND idempotency_key = ?",
+        )
+        .bind(session_id)
+        .bind(owner_key)
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage_error)?
+        {
+            let raw_id: String = row.get("scratch_id");
+            let id = ScratchId::parse(&raw_id).map_err(storage_error)?;
+            let resource = SharedScratchResource {
+                scratch_id: id.clone(),
+                session_id: session_id.to_owned(),
+                owner_run_id: row
+                    .get::<Option<String>, _>("owner_run_id")
+                    .as_deref()
+                    .map(AgentRunId::parse)
+                    .transpose()
+                    .map_err(storage_error)?,
+                alias: row.get("alias"),
+                idempotency_key: row.get("idempotency_key"),
+                revoked: row.get::<i64, _>("revoked") != 0,
+                created_at: row.get("created_at"),
+            };
+            if resource.owner_run_id.as_ref() != owner_run_id || resource.alias != alias {
+                return Err(AgentRunStoreError::ScratchOwnership(
+                    "idempotency key was reused with a different scratch request".into(),
+                ));
+            }
+            if resource.revoked {
+                return Err(AgentRunStoreError::ScratchUnavailable(id.to_string()));
+            }
+            return Ok(resource);
+        }
+        let resource = SharedScratchResource {
+            scratch_id: ScratchId::new(),
+            session_id: session_id.to_owned(),
+            owner_run_id: owner_run_id.cloned(),
+            alias: alias.to_owned(),
+            idempotency_key: idempotency_key.to_owned(),
+            revoked: false,
+            created_at: Utc::now().timestamp_millis(),
+        };
+        sqlx::query("INSERT INTO agent_scratch_resource (scratch_id, session_id, owner_key, owner_run_id, alias, idempotency_key, revoked, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)")
+            .bind(resource.scratch_id.as_str())
+            .bind(&resource.session_id)
+            .bind(owner_key)
+            .bind(resource.owner_run_id.as_ref().map(AgentRunId::as_str))
+            .bind(&resource.alias)
+            .bind(&resource.idempotency_key)
+            .bind(resource.created_at)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        Ok(resource)
+    }
+
+    async fn get_scratch_resource(
+        &self,
+        id: &ScratchId,
+    ) -> Result<Option<SharedScratchResource>, AgentRunStoreError> {
+        let row = sqlx::query("SELECT scratch_id, session_id, owner_run_id, alias, idempotency_key, revoked, created_at FROM agent_scratch_resource WHERE scratch_id = ?")
+            .bind(id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        row.map(|row| {
+            Ok(SharedScratchResource {
+                scratch_id: id.clone(),
+                session_id: row.get("session_id"),
+                owner_run_id: row
+                    .get::<Option<String>, _>("owner_run_id")
+                    .as_deref()
+                    .map(AgentRunId::parse)
+                    .transpose()
+                    .map_err(storage_error)?,
+                alias: row.get("alias"),
+                idempotency_key: row.get("idempotency_key"),
+                revoked: row.get::<i64, _>("revoked") != 0,
+                created_at: row.get("created_at"),
+            })
+        })
+        .transpose()
+    }
+
+    async fn revoke_scratch_resource(
+        &self,
+        id: &ScratchId,
+        session_id: &str,
+        owner_run_id: Option<&AgentRunId>,
+    ) -> Result<SharedScratchResource, AgentRunStoreError> {
+        let owner_key = owner_run_id.map_or("session", AgentRunId::as_str);
+        let result = sqlx::query("UPDATE agent_scratch_resource SET revoked = 1 WHERE scratch_id = ? AND session_id = ? AND owner_key = ?")
+            .bind(id.as_str())
+            .bind(session_id)
+            .bind(owner_key)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        if result.rows_affected() == 0 {
+            return Err(AgentRunStoreError::ScratchOwnership(
+                "resource is missing or caller is not its owner".into(),
+            ));
+        }
+        self.get_scratch_resource(id)
+            .await?
+            .ok_or_else(|| AgentRunStoreError::ScratchUnavailable(id.to_string()))
+    }
+
+    async fn acquire_scratch_attempt_leases(
+        &self,
+        run_id: &AgentRunId,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+    ) -> Result<Vec<ScratchAttemptLease>, AgentRunStoreError> {
+        let run = self
+            .get_run(run_id)
+            .await?
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(run_id.to_string()))?;
+        let task = self
+            .get_task(&run.task_id)
+            .await?
+            .ok_or_else(|| AgentRunStoreError::TaskNotFound(run.task_id.to_string()))?;
+        // Read-then-write admission must take the SQLite writer reservation
+        // before inspecting the granted shared resources. This transaction
+        // reads `agent_scratch_resource` first and inserts the attempt leases
+        // afterwards, so a deferred transaction would hold a shared read lock
+        // and then have to upgrade it — and SQLite refuses that upgrade
+        // without calling the busy handler, so `busy_timeout` never applies
+        // and concurrent scratch admission can fail with SQLITE_BUSY_SNAPSHOT
+        // ("database is locked") instead of one caller waiting its turn. This
+        // is the same hazard `create_or_get` documents above, in the same
+        // file: take the write lock at BEGIN.
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
+        let mut resources = vec![(
+            ScratchId::parse(run_id.as_str()).map_err(storage_error)?,
+            "private_run",
+        )];
+        for grant in &run.shared_scratch {
+            let row = sqlx::query("SELECT session_id, owner_run_id, revoked FROM agent_scratch_resource WHERE scratch_id = ?")
+                .bind(grant.scratch_id.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage_error)?
+                .ok_or_else(|| AgentRunStoreError::ScratchUnavailable(grant.scratch_id.to_string()))?;
+            if row.get::<String, _>("session_id") != task.originating_session_id
+                || row.get::<Option<String>, _>("owner_run_id").as_deref()
+                    != run.parent_run_id.as_ref().map(AgentRunId::as_str)
+                || row.get::<i64, _>("revoked") != 0
+            {
+                return Err(AgentRunStoreError::ScratchUnavailable(
+                    grant.scratch_id.to_string(),
+                ));
+            }
+            resources.push((grant.scratch_id.clone(), "shared"));
+        }
+        let mut leases = Vec::with_capacity(resources.len());
+        for (scratch_id, kind) in resources {
+            sqlx::query("INSERT OR IGNORE INTO agent_scratch_attempt_lease (scratch_id, resource_kind, run_id, job_id, attempt_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(scratch_id.as_str())
+                .bind(kind)
+                .bind(run_id.as_str())
+                .bind(job_id.as_str())
+                .bind(attempt_id.as_str())
+                .bind(Utc::now().timestamp_millis())
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_error)?;
+            leases.push(ScratchAttemptLease {
+                scratch_id,
+                run_id: run_id.clone(),
+                job_id: job_id.clone(),
+                attempt_id: attempt_id.clone(),
+            });
+        }
+        tx.commit().await.map_err(storage_error)?;
+        Ok(leases)
+    }
+
+    async fn release_scratch_attempt_leases(
+        &self,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+    ) -> Result<(), AgentRunStoreError> {
+        sqlx::query("DELETE FROM agent_scratch_attempt_lease WHERE job_id = ? AND attempt_id = ?")
+            .bind(job_id.as_str())
+            .bind(attempt_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        Ok(())
+    }
+
+    async fn has_scratch_attempt_lease(
+        &self,
+        scratch_id: &ScratchId,
+        run_id: &AgentRunId,
+    ) -> Result<bool, AgentRunStoreError> {
+        let exists: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM agent_scratch_attempt_lease WHERE scratch_id = ? AND run_id = ?)")
+            .bind(scratch_id.as_str())
+            .bind(run_id.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        Ok(exists != 0)
+    }
+
+    async fn has_scratch_leases(&self, scratch_id: &ScratchId) -> Result<bool, AgentRunStoreError> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM agent_scratch_attempt_lease WHERE scratch_id = ?)",
+        )
+        .bind(scratch_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage_error)?;
+        Ok(exists != 0)
+    }
+
+    async fn reconcile_scratch_attempt_leases(&self) -> Result<u64, AgentRunStoreError> {
+        let result = sqlx::query("DELETE FROM agent_scratch_attempt_lease AS lease WHERE NOT EXISTS (SELECT 1 FROM job_attempt AS attempt WHERE attempt.id = lease.attempt_id AND attempt.job_id = lease.job_id AND attempt.state IN ('created','admitted','running'))")
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        Ok(result.rows_affected())
+    }
 }
 
 #[cfg(test)]
@@ -1520,6 +2159,7 @@ mod tests {
                 max_tool_calls: Some(10),
                 ..Default::default()
             },
+            shared_scratch: Vec::new(),
         }
     }
 
@@ -1636,6 +2276,105 @@ mod tests {
             .unwrap();
         assert_eq!(child.run.depth, 2);
         assert_eq!(child.run.root_run_id, parent.run.root_run_id);
+    }
+
+    #[tokio::test]
+    async fn shared_scratch_requires_direct_owner_grant_and_holds_attempt_lease() {
+        let store = InMemoryAgentRunStore::new();
+        let parent = store
+            .create_or_get(task("scratch-parent", None), run(None))
+            .await
+            .unwrap();
+        let resource = store
+            .create_scratch_resource(
+                "session",
+                Some(&parent.run.run_id),
+                "handoff",
+                "create-shared",
+            )
+            .await
+            .unwrap();
+        let mut child_run = run(Some(parent.run.run_id.clone()));
+        child_run.depth = 2;
+        child_run.shared_scratch = vec![SharedScratchGrant {
+            scratch_id: resource.scratch_id.clone(),
+            alias: "input".into(),
+        }];
+        let child = store
+            .create_or_get(
+                task("scratch-child", Some(parent.task.task_id.clone())),
+                child_run,
+            )
+            .await
+            .unwrap();
+        let job = JobId::new_unchecked("scratch-job");
+        let attempt = AttemptId::new_unchecked("scratch-attempt");
+        let leases = store
+            .acquire_scratch_attempt_leases(&child.run.run_id, &job, &attempt)
+            .await
+            .unwrap();
+        assert_eq!(leases.len(), 2); // private run plus explicit shared root
+        assert!(leases
+            .iter()
+            .any(|lease| lease.scratch_id == resource.scratch_id));
+
+        store
+            .revoke_scratch_resource(&resource.scratch_id, "session", Some(&parent.run.run_id))
+            .await
+            .unwrap();
+        assert!(store
+            .has_scratch_attempt_lease(&resource.scratch_id, &child.run.run_id)
+            .await
+            .unwrap());
+        assert!(matches!(
+            store
+                .acquire_scratch_attempt_leases(
+                    &child.run.run_id,
+                    &JobId::new_unchecked("other-scratch-job"),
+                    &AttemptId::new_unchecked("other-scratch-attempt"),
+                )
+                .await,
+            Err(AgentRunStoreError::ScratchUnavailable(_))
+        ));
+        store
+            .release_scratch_attempt_leases(&job, &attempt)
+            .await
+            .unwrap();
+        assert!(store.state.lock().await.scratch_leases.is_empty());
+        assert!(!store
+            .has_scratch_attempt_lease(&resource.scratch_id, &child.run.run_id)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn shared_scratch_rejects_alias_collision_and_non_owner_grant() {
+        let store = InMemoryAgentRunStore::new();
+        let parent = store
+            .create_or_get(task("scratch-collision-parent", None), run(None))
+            .await
+            .unwrap();
+        let resource = store
+            .create_scratch_resource("session", Some(&parent.run.run_id), "handoff", "alias-a")
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .create_scratch_resource("session", Some(&parent.run.run_id), "HANDOFF", "alias-b",)
+                .await,
+            Err(AgentRunStoreError::ScratchOwnership(_))
+        ));
+        let mut forged = run(None);
+        forged.shared_scratch = vec![SharedScratchGrant {
+            scratch_id: resource.scratch_id,
+            alias: "guess".into(),
+        }];
+        assert!(matches!(
+            store
+                .create_or_get(task("scratch-forged", None), forged)
+                .await,
+            Err(AgentRunStoreError::ScratchOwnership(_))
+        ));
     }
 
     #[tokio::test]
@@ -1799,6 +2538,77 @@ mod tests {
             .collect();
         assert_eq!(run_ids.len(), 1);
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_shared_scratch_grants_are_direct_and_attempt_leased() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        let store = SqliteAgentRunStore::new(pool);
+        let parent = store
+            .create_or_get(task("sqlite-scratch-parent", None), run(None))
+            .await
+            .unwrap();
+        let resource = store
+            .create_scratch_resource(
+                "session",
+                Some(&parent.run.run_id),
+                "handoff",
+                "sqlite-create-resource",
+            )
+            .await
+            .unwrap();
+        let mut child_run = run(Some(parent.run.run_id.clone()));
+        child_run.depth = 2;
+        child_run.shared_scratch = vec![SharedScratchGrant {
+            scratch_id: resource.scratch_id.clone(),
+            alias: "input".into(),
+        }];
+        let child = store
+            .create_or_get(
+                task("sqlite-scratch-child", Some(parent.task.task_id.clone())),
+                child_run,
+            )
+            .await
+            .unwrap();
+        assert_eq!(child.run.shared_scratch[0].scratch_id, resource.scratch_id);
+        let job = JobId::new_unchecked("sqlite-scratch-job");
+        let attempt = AttemptId::new_unchecked("sqlite-scratch-attempt");
+        let leases = store
+            .acquire_scratch_attempt_leases(&child.run.run_id, &job, &attempt)
+            .await
+            .unwrap();
+        assert_eq!(leases.len(), 2);
+        assert!(store
+            .has_scratch_attempt_lease(&resource.scratch_id, &child.run.run_id)
+            .await
+            .unwrap());
+        store
+            .revoke_scratch_resource(&resource.scratch_id, "session", Some(&parent.run.run_id))
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .acquire_scratch_attempt_leases(
+                    &child.run.run_id,
+                    &JobId::new_unchecked("sqlite-scratch-retry-job"),
+                    &AttemptId::new_unchecked("sqlite-scratch-retry-attempt"),
+                )
+                .await,
+            Err(AgentRunStoreError::ScratchUnavailable(_))
+        ));
+        store
+            .release_scratch_attempt_leases(&job, &attempt)
+            .await
+            .unwrap();
+        assert!(!store
+            .has_scratch_leases(&resource.scratch_id)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

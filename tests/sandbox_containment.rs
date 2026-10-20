@@ -1092,6 +1092,43 @@ fn scratch_space_is_writable_so_tooling_still_works() {
     );
 }
 
+#[test]
+fn delegated_shared_scratch_is_explicitly_granted_to_the_contained_child() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let private = tempfile::tempdir().expect("child private scratch");
+    let shared = tempfile::tempdir().expect("explicit shared scratch");
+    let sibling = tempfile::tempdir().expect("ungranted sibling scratch");
+    let private_file = private.path().join("private");
+    let shared_file = shared.path().join("handoff");
+    let sibling_file = sibling.path().join("forbidden");
+
+    let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
+    spec.write_paths.push(private.path().to_path_buf());
+    spec.write_paths.push(shared.path().to_path_buf());
+    spec.args = vec![
+        "-c".into(),
+        format!(
+            "echo private > {}; echo shared > {}; (echo forbidden > {}) && echo SIBLING-WRITABLE || echo SIBLING-DENIED",
+            sh_quote(&private_file),
+            sh_quote(&shared_file),
+            sh_quote(&sibling_file)
+        ),
+    ];
+    let run = run_helper(&spec);
+    assert!(run.success, "{}\n{}", run.stdout, run.stderr);
+    assert!(private_file.exists(), "child private root remains writable");
+    assert!(
+        shared_file.exists(),
+        "explicit shared grant remains writable"
+    );
+    assert!(
+        run.stdout.contains("SIBLING-DENIED") && !sibling_file.exists(),
+        "ungranted sibling scratch stays inaccessible: {}",
+        run.stdout
+    );
+}
+
 /// Seatbelt currently keeps broad read access for developer-tool compatibility.
 /// Exercise representative installed tools through the real helper without
 /// allowing any persistent writes or contacting external services.

@@ -34,6 +34,10 @@ use codegg_protocol::projection::replay::{
 };
 use codegg_protocol::projection::snapshot::SessionProjectionSnapshot;
 
+/// Bounds live events that can arrive between the wire subscribe response
+/// and installation of its snapshot completion on the UI loop.
+pub const MAX_PENDING_PROJECTION_ENVELOPES: usize = 256;
+
 /// Maximum number of inactive tab summaries retained.
 pub const MAX_TAB_PROJECTION_SUMMARIES: usize = 16;
 
@@ -51,6 +55,32 @@ pub const MAX_ARTIFACT_EXCERPT_BYTES: usize = 8 * 1024;
 
 /// Maximum number of artifact handle metadata entries cached per tab.
 pub const MAX_ARTIFACT_HANDLES_PER_TAB: usize = 32;
+
+/// Availability of the default session's authorized projection stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrimaryProjectionStatus {
+    Loading,
+    Authoritative,
+    Unavailable(String),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PrimaryProjectionBinding {
+    request_id: u64,
+    session_id: Option<String>,
+    project_id: Option<String>,
+    tab_id: Option<String>,
+    subscription_id: Option<ProjectionSubscriptionId>,
+    stream_id: Option<ProjectionStreamId>,
+    status: Option<PrimaryProjectionStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingProjectionEnvelope {
+    pub subscription_id: ProjectionSubscriptionId,
+    pub stream_id: ProjectionStreamId,
+    pub envelope: ProjectionEnvelope,
+}
 
 /// Bounded cache entry for a single artifact handle descriptor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +194,9 @@ pub struct ProjectionClientState {
     artifact_excerpts: HashMap<String, VecDeque<ArtifactExcerptCacheEntry>>,
     /// Counter incremented on every resync request surfaced to the UI.
     resync_requests: u64,
+    primary: PrimaryProjectionBinding,
+    pending_envelopes: VecDeque<PendingProjectionEnvelope>,
+    pending_envelopes_overflowed: bool,
 }
 
 impl ProjectionClientState {
@@ -188,6 +221,9 @@ impl ProjectionClientState {
             artifact_handles: HashMap::new(),
             artifact_excerpts: HashMap::new(),
             resync_requests: 0,
+            primary: PrimaryProjectionBinding::default(),
+            pending_envelopes: VecDeque::new(),
+            pending_envelopes_overflowed: false,
         }
     }
 
@@ -250,6 +286,15 @@ impl ProjectionClientState {
         self.artifact_excerpts.clear();
         self.artifact_reads.clear();
         self.active_tab_id = None;
+        self.primary.subscription_id = None;
+        self.primary.stream_id = None;
+        self.primary.status = self
+            .primary
+            .session_id
+            .as_ref()
+            .map(|_| PrimaryProjectionStatus::Loading);
+        self.pending_envelopes.clear();
+        self.pending_envelopes_overflowed = false;
     }
 
     /// Set the active tab id.
@@ -305,6 +350,27 @@ impl ProjectionClientState {
         let outcome = self
             .controller
             .apply_envelope(subscription_id, envelope.clone());
+        self.finish_envelope_apply(tab_id, outcome)
+    }
+
+    pub fn apply_envelope_on_stream(
+        &mut self,
+        subscription_id: &ProjectionSubscriptionId,
+        stream_id: &ProjectionStreamId,
+        tab_id: &str,
+        envelope: ProjectionEnvelope,
+    ) -> codegg_protocol::projection::controller::ControllerApplyOutcome {
+        let outcome =
+            self.controller
+                .apply_envelope_on_stream(subscription_id, stream_id, envelope.clone());
+        self.finish_envelope_apply(tab_id, outcome)
+    }
+
+    fn finish_envelope_apply(
+        &mut self,
+        tab_id: &str,
+        outcome: codegg_protocol::projection::controller::ControllerApplyOutcome,
+    ) -> codegg_protocol::projection::controller::ControllerApplyOutcome {
         if let codegg_protocol::projection::controller::ControllerApplyOutcome::ResyncRequested {
             ..
         } = &outcome
@@ -482,6 +548,17 @@ impl ProjectionClientState {
     /// snapshot for the active tab.
     pub fn active_snapshot(&self) -> Option<(ProjectionStreamId, &SessionProjectionSnapshot)> {
         let snaps = self.controller.snapshots();
+        if let Some(stream_id) = self.primary.stream_id.as_ref() {
+            return snaps
+                .get(stream_id)
+                .map(|snapshot| (stream_id.clone(), snapshot));
+        }
+        // A bound primary session without an installed stream is loading or
+        // unavailable. Never fall through to an observer or stale tab's
+        // snapshot while that authoritative subscription is absent.
+        if self.primary.session_id.is_some() {
+            return None;
+        }
         let Some(tab_id) = self.active_tab_id.as_deref() else {
             // The daemon-attached TUI has no project tab switch to key on:
             // its subscription is established per session, not per tab, so
@@ -498,13 +575,130 @@ impl ProjectionClientState {
                 _ => None,
             };
         };
-        for (stream_id, snap) in snaps {
-            if stream_id.as_str().ends_with(tab_id) {
-                return Some((stream_id.clone(), snap));
+        if let Some((stream_id, snapshot)) = snaps
+            .iter()
+            .find(|(stream_id, _)| stream_id.as_str().ends_with(tab_id))
+        {
+            return Some((stream_id.clone(), snapshot));
+        }
+        if snaps.len() == 1 {
+            return snaps.iter().next().map(|(id, snap)| (id.clone(), snap));
+        }
+        None
+    }
+
+    /// Begin a default-session subscription and return its generation token.
+    pub fn begin_primary_subscription(
+        &mut self,
+        project_id: String,
+        session_id: String,
+        tab_id: Option<String>,
+    ) -> u64 {
+        self.primary.request_id = self.primary.request_id.saturating_add(1);
+        self.primary.project_id = Some(project_id);
+        self.primary.session_id = Some(session_id);
+        self.primary.tab_id = tab_id;
+        self.primary.subscription_id = None;
+        self.primary.stream_id = None;
+        self.primary.status = Some(PrimaryProjectionStatus::Loading);
+        self.pending_envelopes.clear();
+        self.pending_envelopes_overflowed = false;
+        self.primary.request_id
+    }
+
+    pub fn primary_request_matches(
+        &self,
+        request_id: u64,
+        project_id: &str,
+        session_id: &str,
+        tab_id: Option<&str>,
+    ) -> bool {
+        self.primary.request_id == request_id
+            && self.primary.project_id.as_deref() == Some(project_id)
+            && self.primary.session_id.as_deref() == Some(session_id)
+            && self.primary.tab_id.as_deref() == tab_id
+    }
+
+    pub fn finish_primary_subscription(
+        &mut self,
+        request_id: u64,
+        subscription_id: Option<ProjectionSubscriptionId>,
+        stream_id: Option<ProjectionStreamId>,
+        error: Option<String>,
+    ) {
+        if self.primary.request_id != request_id {
+            return;
+        }
+        self.primary.subscription_id = subscription_id;
+        self.primary.stream_id = stream_id;
+        self.primary.status = Some(if error.is_some() {
+            PrimaryProjectionStatus::Unavailable(error.unwrap_or_default())
+        } else {
+            PrimaryProjectionStatus::Authoritative
+        });
+    }
+
+    pub fn primary_subscription_id(&self) -> Option<&ProjectionSubscriptionId> {
+        self.primary.subscription_id.as_ref()
+    }
+
+    pub fn primary_session_id(&self) -> Option<&str> {
+        self.primary.session_id.as_deref()
+    }
+
+    pub fn primary_stream_id(&self) -> Option<&ProjectionStreamId> {
+        self.primary.stream_id.as_ref()
+    }
+
+    pub fn primary_status(&self) -> Option<&PrimaryProjectionStatus> {
+        self.primary.status.as_ref()
+    }
+
+    pub fn clear_primary_binding(&mut self) -> Option<ProjectionSubscriptionId> {
+        self.primary.request_id = self.primary.request_id.saturating_add(1);
+        let subscription_id = self.primary.subscription_id.take();
+        if let Some(id) = subscription_id.as_ref() {
+            self.controller.unsubscribe(id);
+            self.pending_envelopes
+                .retain(|pending| &pending.subscription_id != id);
+        }
+        self.primary.session_id = None;
+        self.primary.project_id = None;
+        self.primary.tab_id = None;
+        self.primary.stream_id = None;
+        self.primary.status = None;
+        self.pending_envelopes.clear();
+        self.pending_envelopes_overflowed = false;
+        subscription_id
+    }
+
+    pub fn buffer_pending_envelope(&mut self, pending: PendingProjectionEnvelope) {
+        if self.pending_envelopes.len() >= MAX_PENDING_PROJECTION_ENVELOPES {
+            self.pending_envelopes.pop_front();
+            self.pending_envelopes_overflowed = true;
+        }
+        self.pending_envelopes.push_back(pending);
+    }
+
+    /// Remove the buffered envelopes for one installed stream, preserving
+    /// arrival order. Other in-flight subscriptions remain buffered.
+    pub fn take_pending_envelopes(
+        &mut self,
+        subscription_id: &ProjectionSubscriptionId,
+        stream_id: &ProjectionStreamId,
+    ) -> (Vec<ProjectionEnvelope>, bool) {
+        let mut matching = Vec::new();
+        let mut remaining = VecDeque::new();
+        while let Some(pending) = self.pending_envelopes.pop_front() {
+            if &pending.subscription_id == subscription_id && &pending.stream_id == stream_id {
+                matching.push(pending.envelope);
+            } else {
+                remaining.push_back(pending);
             }
         }
-        // Fallback: return any available snapshot.
-        snaps.iter().next().map(|(id, snap)| (id.clone(), snap))
+        self.pending_envelopes = remaining;
+        let overflowed = std::mem::take(&mut self.pending_envelopes_overflowed);
+        (matching, overflowed)
     }
 
     /// Whether the controller has been forced into unsupported mode.
@@ -564,6 +758,52 @@ mod tests {
         state.on_reconnect();
         assert!(state.tab_summary("default").is_none());
         assert!(state.active_tab_id().is_none());
+    }
+
+    #[test]
+    fn primary_subscription_is_generation_and_scope_bound() {
+        let mut state = ProjectionClientState::new();
+        let old = state.begin_primary_subscription(
+            "project-a".into(),
+            "session-a".into(),
+            Some("tab-a".into()),
+        );
+        let new = state.begin_primary_subscription(
+            "project-b".into(),
+            "session-b".into(),
+            Some("tab-b".into()),
+        );
+        assert!(!state.primary_request_matches(old, "project-a", "session-a", Some("tab-a")));
+        assert!(state.primary_request_matches(new, "project-b", "session-b", Some("tab-b")));
+        state.finish_primary_subscription(old, None, None, Some("stale".into()));
+        assert_eq!(
+            state.primary_status(),
+            Some(&PrimaryProjectionStatus::Loading)
+        );
+        state.finish_primary_subscription(new, None, None, Some("denied".into()));
+        assert_eq!(
+            state.primary_status(),
+            Some(&PrimaryProjectionStatus::Unavailable("denied".into()))
+        );
+    }
+
+    #[test]
+    fn clearing_primary_binding_invalidates_pending_completion() {
+        let mut state = ProjectionClientState::new();
+        let request_id = state.begin_primary_subscription(
+            "project-a".into(),
+            "session-a".into(),
+            Some("tab-a".into()),
+        );
+        state.clear_primary_binding();
+        state.finish_primary_subscription(request_id, None, None, None);
+        assert_eq!(state.primary_status(), None);
+        assert!(!state.primary_request_matches(
+            request_id,
+            "project-a",
+            "session-a",
+            Some("tab-a")
+        ));
     }
 
     #[test]
@@ -865,5 +1105,85 @@ mod tests {
             .active_snapshot()
             .expect("active tab resolves a stream");
         assert!(resolved.as_str().ends_with("beta"), "{resolved}");
+    }
+
+    #[test]
+    fn loading_primary_session_never_falls_back_to_an_old_snapshot() {
+        let mut state = ProjectionClientState::new();
+        state.controller_mut().install_subscription(
+            subscription("old"),
+            descriptor("old-tab"),
+            snapshot_for(),
+        );
+        state.set_active_tab(Some("new-tab".into()));
+        state.begin_primary_subscription(
+            "project-new".into(),
+            "session-new".into(),
+            Some("new-tab".into()),
+        );
+        assert!(state.active_snapshot().is_none());
+    }
+
+    #[test]
+    fn pending_subscribe_envelopes_are_buffered_in_bounded_arrival_order() {
+        let mut state = ProjectionClientState::new();
+        let id = subscription("pending");
+        let stream = stream_id("pending");
+        for seq in [3, 4] {
+            state.buffer_pending_envelope(PendingProjectionEnvelope {
+                subscription_id: id.clone(),
+                stream_id: stream.clone(),
+                envelope: ProjectionEnvelope {
+                    protocol_version: 1,
+                    event_seq: seq,
+                    timestamp_ms: 0,
+                    session_id: Some("sess".into()),
+                    turn_id: None,
+                    scope: codegg_protocol::projection::event::ProjectionStreamScope::Session,
+                    payload: ProjectionEvent::Diagnostic {
+                        code: "test".into(),
+                        message: "buffered".into(),
+                    },
+                },
+            });
+        }
+        let (events, overflowed) = state.take_pending_envelopes(&id, &stream);
+        assert!(!overflowed);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+    }
+
+    #[test]
+    fn pending_subscribe_buffer_reports_overflow() {
+        let mut state = ProjectionClientState::new();
+        let id = subscription("pending");
+        let stream = stream_id("pending");
+        for seq in 0..=MAX_PENDING_PROJECTION_ENVELOPES {
+            state.buffer_pending_envelope(PendingProjectionEnvelope {
+                subscription_id: id.clone(),
+                stream_id: stream.clone(),
+                envelope: ProjectionEnvelope {
+                    protocol_version: 1,
+                    event_seq: seq as u64,
+                    timestamp_ms: 0,
+                    session_id: Some("sess".into()),
+                    turn_id: None,
+                    scope: codegg_protocol::projection::event::ProjectionStreamScope::Session,
+                    payload: ProjectionEvent::Diagnostic {
+                        code: "test".into(),
+                        message: "buffered".into(),
+                    },
+                },
+            });
+        }
+        let (events, overflowed) = state.take_pending_envelopes(&id, &stream);
+        assert!(overflowed);
+        assert_eq!(events.len(), MAX_PENDING_PROJECTION_ENVELOPES);
+        assert_eq!(events[0].event_seq, 1);
     }
 }

@@ -304,11 +304,11 @@ impl SubagentTabs {
     /// which cannot key a tab, or the set is at capacity. Neither is an error
     /// — the caller decides whether a refusal is worth a toast.
     pub fn open_or_focus(&mut self, row: SubagentRow) -> Option<SubagentTabId> {
-        let task_id = row.task_id.trim();
-        if task_id.is_empty() {
+        let identity = row.identity_key().trim();
+        if identity.is_empty() {
             return None;
         }
-        let id = SubagentTabId::new(task_id.to_string());
+        let id = SubagentTabId::new(identity.to_string());
 
         if let Some(tab) = self.tabs.get_mut(&id) {
             tab.row = row;
@@ -373,7 +373,10 @@ impl SubagentTabs {
     /// not spoken — so the caller must not route that case here.
     pub fn sync_with_rows(&mut self, rows: &[SubagentRow]) {
         for tab in self.tabs.values_mut() {
-            match rows.iter().find(|row| row.task_id == tab.tab_id.as_str()) {
+            match rows
+                .iter()
+                .find(|row| row.identity_key() == tab.tab_id.as_str())
+            {
                 Some(row) => {
                     tab.row = row.clone();
                     tab.liveness = SubagentTabLiveness::Attached;
@@ -571,6 +574,7 @@ mod tests {
 
     fn row(task_id: &str, status: &str) -> SubagentRow {
         SubagentRow {
+            child_instance_id: Some(task_id.to_string()),
             task_id: task_id.into(),
             run_id: None,
             display_name: Some(format!("name-{task_id}")),
@@ -612,6 +616,19 @@ mod tests {
         tabs.open_or_focus(row("1", "running"));
         assert_eq!(tabs.len(), 2, "the subject already has a tab");
         assert_eq!(tabs.active().map(|tab| tab.tab_id.as_str()), Some("1"));
+    }
+
+    #[test]
+    fn reused_numeric_task_id_uses_distinct_child_generations() {
+        let mut tabs = SubagentTabs::new();
+        let mut first = row("7", "running");
+        first.child_instance_id = Some("generation-a".into());
+        let mut second = row("7", "running");
+        second.child_instance_id = Some("generation-b".into());
+        assert!(tabs.open_or_focus(first).is_some());
+        assert!(tabs.open_or_focus(second).is_some());
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.active().unwrap().tab_id.as_str(), "generation-b");
     }
 
     #[test]

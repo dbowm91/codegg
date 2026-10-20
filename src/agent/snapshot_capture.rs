@@ -161,6 +161,8 @@ impl AgentLoop {
         // test harness).
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             run_id: None,
             prompt,
             agent,
@@ -173,6 +175,7 @@ impl AgentLoop {
             max_tool_calls: None,
             parent_model,
             workspace_root: Some(self.workspace_root.clone()),
+            workspace_id: None,
             workspace_locks: self.workspace_locks.clone(),
             // M005: security-review fallback inherits the parent ceiling;
             // the worker narrows to the child profile.

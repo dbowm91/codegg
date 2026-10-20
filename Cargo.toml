@@ -385,6 +385,19 @@ name = "lsp_completion_trajectory"
 path = "tests/lsp_completion_trajectory.rs"
 required-features = ["lsp-test-support"]
 
+# M013's LSP read-delivery trajectory spawns the same fake stdio server as
+# the three above, so it carries the same `required-features` gate. Without
+# it the target is built by a feature-less `cargo nextest run --workspace`
+# while the `codegg-lsp-test-server` binary — which `required-features`
+# leaves unbuilt — is absent, and the suite fails on a spawn rather than on
+# a behaviour. The gate is what puts the test in `verify.sh full`'s
+# `--features server,plugins,lsp-test-support` pass, where the binary
+# exists.
+[[test]]
+name = "lsp_read_delivery_m013"
+path = "tests/lsp_read_delivery_m013.rs"
+required-features = ["lsp-test-support"]
+
 [[test]]
 name = "windows_acl_lease"
 path = "tests/windows_acl_lease.rs"

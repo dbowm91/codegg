@@ -291,8 +291,9 @@ fn install_observed_snapshot(
         &descriptor.project_id,
         &workspace_id,
     );
+    let stream_id = descriptor.stream_id.clone();
     let outcome = app.projection_client.controller_mut().install_replay(
-        subscription_id,
+        subscription_id.clone(),
         descriptor,
         Vec::new(),
         Some(bundle),
@@ -305,6 +306,22 @@ fn install_observed_snapshot(
         app.messages_state
             .toasts
             .error("Session projection snapshot could not be installed");
+        return;
+    }
+    let (pending, overflowed) = app
+        .projection_client
+        .take_pending_envelopes(&subscription_id, &stream_id);
+    for envelope in pending {
+        let _ = app.apply_projection_envelope_on_stream(
+            &subscription_id,
+            &stream_id,
+            "observe",
+            envelope,
+        );
+    }
+    if overflowed {
+        tracing::warn!(%session_id, "observer projection pre-install buffer overflowed; requesting authoritative replay");
+        resume_observe(app);
     }
 }
 

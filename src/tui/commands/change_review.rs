@@ -7,6 +7,12 @@
 //! structural fact about the code rather than a convention someone has to
 //! remember.
 //!
+//! Since M016 the editor's own previews reach the same path. A preview read
+//! can return a **candidate** — the patches, their base hashes, and the
+//! digest that binds a request to them — and the editor carries it to the
+//! review. The candidate is *resolved* in two ways (the frontend's registry,
+//! or the carried material), but the request is still built in one place.
+//!
 //! ## What this surface does not do
 //!
 //! It does not decide whether an apply is legal. The daemon does, and its
@@ -17,6 +23,7 @@
 
 use crate::tui::app::App;
 use crate::tui::unified_diff::parse_review;
+use codegg_protocol::lsp::{LspPreviewApplyRequestDto, LspPreviewCandidateDto};
 
 /// Why an apply could not even be attempted.
 ///
@@ -46,30 +53,73 @@ impl ApplyRefusal {
     }
 }
 
+/// Where an apply request's candidate comes from.
+///
+/// The **request** is built in one place. The *candidate* is resolved in two.
+/// The registry path resolves an id in the frontend's LSP tool — which exists
+/// only in local mode, and is empty in production — and the carried path
+/// resolves the material a preview read returned. Both produce the same
+/// request shape, bound by the same digest.
+#[derive(Debug, Clone, Copy)]
+pub enum ApplySource<'a> {
+    /// A candidate in the frontend LSP tool's registry.
+    Registry(&'a str),
+    /// A candidate the editor carried from a preview read.
+    Carried(&'a LspPreviewCandidateDto),
+}
+
 /// Build the apply request for a pending candidate.
 ///
 /// This is the single place a `CoreRequest::LspPreviewApply` is constructed.
-/// Both `/lsp-preview-apply` and the review surface call it, so the two paths
-/// cannot drift: same resolution, same digest binding, same request shape.
+/// `/lsp-preview-apply`, the review surface, and the editor's own preview
+/// chords all call it, so the paths cannot drift: same digest binding, same
+/// request shape, same daemon preconditions.
 pub fn build_apply_request(
     app: &App,
-    preview_id: &str,
+    source: ApplySource<'_>,
 ) -> Result<crate::protocol::core::CoreRequest, ApplyRefusal> {
-    let Some(lsp_tool) = app.lsp_tool.as_ref() else {
-        return Err(ApplyRefusal::CoreClientUnavailable);
-    };
     let Some(session_id) = app.active_session_id().map(str::to_string) else {
         return Err(ApplyRefusal::SessionUnavailable);
     };
     let Some(workspace_id) = app.active_workspace_id().map(str::to_string) else {
         return Err(ApplyRefusal::WorkspaceUnavailable);
     };
-    // `preview_apply_request` is the digest-bound export. It returns `None`
-    // for an unknown or already-applied candidate, which is the daemon-side
-    // freshness check the review surface relies on.
-    let Some(request) = lsp_tool.preview_apply_request(preview_id, workspace_id, session_id, None)
-    else {
-        return Err(ApplyRefusal::PreviewUnknown);
+    let request = match source {
+        ApplySource::Registry(preview_id) => {
+            let Some(lsp_tool) = app.lsp_tool.as_ref() else {
+                return Err(ApplyRefusal::CoreClientUnavailable);
+            };
+            // `preview_apply_request` is the digest-bound export. It returns
+            // `None` for an unknown or already-applied candidate, which is the
+            // daemon-side freshness check the review surface relies on.
+            let Some(request) =
+                lsp_tool.preview_apply_request(preview_id, workspace_id, session_id, None)
+            else {
+                return Err(ApplyRefusal::PreviewUnknown);
+            };
+            request
+        }
+        ApplySource::Carried(candidate) => {
+            // The candidate is the material the daemon minted, and its digest
+            // is the daemon's. Rebinding it to *this* session and workspace
+            // is all the frontend does with it: the daemon re-verifies the
+            // digest over the patches it receives, so a candidate altered in
+            // transit fails the check rather than being applied.
+            LspPreviewApplyRequestDto {
+                preview_id: candidate.preview_id.clone(),
+                preview_revision: candidate.preview_revision,
+                preview_digest: candidate.preview_digest.clone(),
+                kind: candidate.kind.clone(),
+                title: candidate.title.clone(),
+                provenance: candidate.provenance.clone(),
+                workspace_id,
+                session_id,
+                // A human-initiated apply has no turn. The registry path
+                // passes `None` for the same reason.
+                turn_id: None,
+                patches: candidate.patches.clone(),
+            }
+        }
     };
     Ok(crate::protocol::core::CoreRequest::LspPreviewApply { request })
 }
@@ -106,7 +156,7 @@ pub fn open(app: &mut App, preview_id: &str) {
     // Resolve the candidate through the one shared builder, purely to learn
     // the title/kind/provenance and to obtain its patches. Building the
     // request here does not send it.
-    let Ok(core_request) = build_apply_request(app, id) else {
+    let Ok(core_request) = build_apply_request(app, ApplySource::Registry(id)) else {
         app.messages_state
             .toasts
             .info(ApplyRefusal::PreviewUnknown.message());
@@ -122,6 +172,11 @@ pub fn open(app: &mut App, preview_id: &str) {
         .map(|patch| (patch.path.clone(), patch.patch.clone()))
         .collect();
     let parsed = parse_review(&patches);
+    let affected_paths = request
+        .patches
+        .iter()
+        .map(|patch| patch.path.clone())
+        .collect();
 
     app.change_review_state.open(
         request.preview_id.clone(),
@@ -130,11 +185,40 @@ pub fn open(app: &mut App, preview_id: &str) {
         request.provenance.clone(),
         is_stale,
         parsed,
+        affected_paths,
     );
     app.messages_state.toasts.info(&format!(
         "Reviewing \"{}\" — {} file(s). [a]pply or Esc to reject.",
         request.title,
         patches.len()
+    ));
+}
+
+/// Open a review on a candidate the editor carried. Applies nothing.
+///
+/// This is the editor's half of the bridge: a preview read returned the
+/// material the apply path needs, and the review is where the user decides
+/// whether it is written. The diff on screen is a parse of the request's own
+/// patch text, so what is reviewed is what would be applied.
+pub fn open_carried(app: &mut App, candidate: LspPreviewCandidateDto) {
+    if let Err(invalid) = candidate.validate() {
+        app.messages_state.toasts.warning(&format!(
+            "This preview cannot be applied — {}.",
+            invalid.message()
+        ));
+        return;
+    }
+    let patches: Vec<(String, String)> = candidate
+        .patches
+        .iter()
+        .map(|patch| (patch.path.clone(), patch.patch.clone()))
+        .collect();
+    let parsed = parse_review(&patches);
+    let title = candidate.title.clone();
+    let file_count = patches.len();
+    app.change_review_state.open_carried(candidate, parsed);
+    app.messages_state.toasts.info(&format!(
+        "Reviewing \"{title}\" — {file_count} file(s). [a]pply or Esc to reject."
     ));
 }
 
@@ -147,9 +231,16 @@ pub fn accept(app: &mut App) {
         return;
     }
     let preview_id = app.change_review_state.preview_id.clone();
+    let carried = app.change_review_state.carried.clone();
     let generation = app.change_review_state.generation;
     let request_id = app.change_review_state.request.request_id();
-    let request = match build_apply_request(app, &preview_id) {
+    let request = match build_apply_request(
+        app,
+        match carried.as_ref() {
+            Some(candidate) => ApplySource::Carried(candidate),
+            None => ApplySource::Registry(&preview_id),
+        },
+    ) {
         Ok(request) => request,
         Err(refusal) => {
             // A frontend refusal is recorded in the review rather than only
@@ -255,7 +346,37 @@ pub fn apply_completion(
         app.messages_state
             .toasts
             .warning("The daemon refused this change — see the review for details");
+    } else {
+        reload_editor_after_apply(app);
     }
+}
+
+/// Reload the editor's open document when the apply wrote it.
+///
+/// The apply changed the file on disk behind the editor's buffer, so a clean
+/// buffer is reloaded and the editor shows what is on disk.
+///
+/// A buffer with a draft is **not** reloaded. A reload discards the local
+/// draft, and the daemon's own dirty-document check is not the editor's:
+/// the editor is a replica, so the daemon can believe a document is clean
+/// while the replica holds edits it has not yet pushed. Discarding those
+/// edits would lose work to make the screen tidier, so the editor keeps the
+/// draft and says the file changed.
+fn reload_editor_after_apply(app: &mut App) {
+    let Some(path) = app.editor_state.path.clone() else {
+        return;
+    };
+    if !app.change_review_state.touches_path(&path) {
+        return;
+    }
+    if app.editor_state.status != crate::tui::app::state::editor::EditorStatus::Synced {
+        app.messages_state.toasts.warning(
+            "The applied file changed on disk and this buffer still has unsaved edits — \
+             save or reload before editing it further",
+        );
+        return;
+    }
+    crate::tui::commands::editor::reload_editor(app);
 }
 
 /// Handle one key while a review is open.
@@ -386,8 +507,8 @@ mod tests {
         let (mut app, _dir, preview_id, target) = app_with_pending_candidate();
 
         // The request the accept path will send.
-        let core_request =
-            build_apply_request(&app, &preview_id).expect("a pending candidate applies");
+        let core_request = build_apply_request(&app, ApplySource::Registry(&preview_id))
+            .expect("a pending candidate applies");
         let crate::protocol::core::CoreRequest::LspPreviewApply { request } = core_request else {
             panic!("expected the preview-apply variant");
         };
@@ -456,7 +577,7 @@ mod tests {
         use crate::tool::lsp::LspTool;
         use std::sync::Arc;
         let (mut app, _dir, preview_id, _target) = app_with_pending_candidate();
-        assert!(build_apply_request(&app, &preview_id).is_ok());
+        assert!(build_apply_request(&app, ApplySource::Registry(&preview_id)).is_ok());
 
         // The daemon marks a candidate applied once it has landed. A second
         // apply of the same id must fail closed, for both paths, because both
@@ -465,7 +586,7 @@ mod tests {
         tool.mark_preview_applied(&preview_id);
 
         assert_eq!(
-            build_apply_request(&app, &preview_id).unwrap_err(),
+            build_apply_request(&app, ApplySource::Registry(&preview_id)).unwrap_err(),
             ApplyRefusal::PreviewUnknown,
             "an already-applied candidate must not produce a second request"
         );
@@ -474,6 +595,159 @@ mod tests {
         assert!(
             !app.change_review_state.is_open(),
             "a spent candidate must not open a review that looks applyable"
+        );
+    }
+
+    /// The carried path's one-apply-path invariant.
+    ///
+    /// The candidate the editor carries is the material the daemon minted.
+    /// The review displays a parse of its patch text and the request carries
+    /// that same patch text, so what the user reviewed is what would be
+    /// written — and the digest on the request is the daemon's, so the
+    /// daemon's own recomputation still binds it to this exact candidate.
+    #[test]
+    fn a_carried_candidate_builds_the_request_the_review_displayed() {
+        use codegg_protocol::lsp::LspPreviewPatchDto;
+
+        let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().into_owned());
+        let tab = app
+            .project_tabs
+            .active_mut()
+            .expect("a fresh App has an active tab");
+        tab.session_id = Some("session-1".to_string());
+        tab.workspace_id = Some("workspace-1".to_string());
+
+        let candidate = LspPreviewCandidateDto {
+            preview_id: "editor-preview-7".to_string(),
+            preview_revision: 7,
+            preview_digest: "a".repeat(64),
+            kind: "rename".to_string(),
+            title: "Rename old to new".to_string(),
+            provenance: "editor:rename:old->new".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: PATCH.to_string(),
+                original_hash: base_hash(),
+            }],
+        };
+
+        open_carried(&mut app, candidate.clone());
+        assert!(
+            app.change_review_state.is_open(),
+            "a carried candidate must open for review"
+        );
+        assert_eq!(app.change_review_state.preview_id, candidate.preview_id);
+
+        let core_request = build_apply_request(&app, ApplySource::Carried(&candidate))
+            .expect("a carried candidate builds a request");
+        let crate::protocol::core::CoreRequest::LspPreviewApply { request } = core_request else {
+            panic!("expected the preview-apply variant");
+        };
+        assert_eq!(request.preview_id, candidate.preview_id);
+        assert_eq!(request.preview_digest, candidate.preview_digest);
+        assert_eq!(request.preview_revision, candidate.preview_revision);
+        assert_eq!(request.kind, candidate.kind);
+        assert_eq!(request.title, candidate.title);
+        assert_eq!(request.provenance, candidate.provenance);
+        assert_eq!(request.workspace_id, "workspace-1");
+        assert_eq!(request.session_id, "session-1");
+        assert_eq!(request.patches.len(), 1);
+        assert_eq!(request.patches[0].path, "src/lib.rs");
+        assert_eq!(request.patches[0].patch, PATCH);
+        assert_eq!(request.patches[0].original_hash, base_hash());
+
+        // And the diff on screen is a parse of that same patch text.
+        let reparsed = parse_review(&[(
+            request.patches[0].path.clone(),
+            request.patches[0].patch.clone(),
+        )]);
+        let shown = &app.change_review_state.review.patches[0];
+        assert_eq!(
+            shown.hunks.len(),
+            reparsed.patches[0].hunks.len(),
+            "the displayed diff must come from the applied patch"
+        );
+    }
+
+    /// The carried path needs no LSP tool.
+    ///
+    /// This is the whole reason the candidate is carried rather than
+    /// registered: `app.lsp_tool` is `None` in socket mode, so a path that
+    /// needed the frontend's registry could not reach the apply at all in the
+    /// transport a remote user is on.
+    #[test]
+    fn a_carried_candidate_needs_no_lsp_tool() {
+        use codegg_protocol::lsp::LspPreviewPatchDto;
+
+        let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().into_owned());
+        let tab = app
+            .project_tabs
+            .active_mut()
+            .expect("a fresh App has an active tab");
+        tab.session_id = Some("session-1".to_string());
+        tab.workspace_id = Some("workspace-1".to_string());
+        assert!(
+            app.lsp_tool.is_none(),
+            "this fixture must model the socket-mode frontend"
+        );
+
+        let candidate = LspPreviewCandidateDto {
+            preview_id: "editor-preview-8".to_string(),
+            preview_revision: 8,
+            preview_digest: "b".repeat(64),
+            kind: "formatting".to_string(),
+            title: "Format src/lib.rs".to_string(),
+            provenance: "editor:format:src/lib.rs".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: PATCH.to_string(),
+                original_hash: base_hash(),
+            }],
+        };
+
+        open_carried(&mut app, candidate.clone());
+        assert!(app.change_review_state.is_open());
+        assert!(
+            build_apply_request(&app, ApplySource::Carried(&candidate)).is_ok(),
+            "the carried path must not depend on the frontend's LSP tool"
+        );
+    }
+
+    /// A candidate that could never be applied is refused with its reason,
+    /// not silently opened as a review the user cannot finish.
+    #[test]
+    fn a_malformed_carried_candidate_is_refused_with_its_reason() {
+        use codegg_protocol::lsp::LspPreviewPatchDto;
+
+        let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().into_owned());
+        let candidate = LspPreviewCandidateDto {
+            preview_id: "editor-preview-9".to_string(),
+            preview_revision: 9,
+            preview_digest: "not-a-digest".to_string(),
+            kind: "formatting".to_string(),
+            title: "Format src/lib.rs".to_string(),
+            provenance: "editor:format:src/lib.rs".to_string(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".to_string(),
+                patch: PATCH.to_string(),
+                original_hash: base_hash(),
+            }],
+        };
+
+        open_carried(&mut app, candidate);
+        assert!(
+            !app.change_review_state.is_open(),
+            "a candidate the apply path would refuse must not open a review"
+        );
+        let messages: Vec<String> = app
+            .messages_state
+            .toasts
+            .history()
+            .map(|record| record.message.clone())
+            .collect();
+        assert!(
+            messages.iter().any(|message| message.contains("SHA-256")),
+            "the refusal must say what is wrong, got: {messages:?}"
         );
     }
 
@@ -529,7 +803,10 @@ mod tests {
         let app = crate::tui::app::App::new_for_testing(
             std::env::temp_dir().to_string_lossy().into_owned(),
         );
-        assert_output_type(build_apply_request(&app, "does-not-exist"));
+        assert_output_type(build_apply_request(
+            &app,
+            ApplySource::Registry("does-not-exist"),
+        ));
     }
 
     #[test]

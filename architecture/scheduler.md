@@ -156,6 +156,12 @@ Same key with same fingerprint → returns the original job. The
 in-memory idempotency index is scoped to one daemon generation; the
 durable job ID remains authoritative after restart.
 
+The daemon also attaches one bounded scheduler-event receiver for projection
+publication. `JobAdmitted`, resource-release, and queued-terminal events are
+resolved against the durable store before an owner-scoped session event is
+published. A failed owner lookup is logged and dropped; snapshot reconstruction
+from `JobStore` heals missed live publication for a later subscriber.
+
 #### AdmissionController (`admission.rs:99`)
 
 Atomic admission decision. All requested dimensions and exclusivity

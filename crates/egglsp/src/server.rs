@@ -394,8 +394,20 @@ pub fn find_server_for_language(lang: &str) -> Option<&'static LspServerDef> {
         .find(|s| s.languages.contains(&lang))
 }
 
-pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef> {
+/// Every server that claims `ext`, in definition order.
+///
+/// [`find_server_for_extension`] is exactly the first entry of this list, so
+/// the two cannot disagree about which server a lone match is. The whole list
+/// exists for callers that must not pick: when two warm servers both claim
+/// one extension, "the first" is a guess, and an LSP answer from the wrong
+/// server is worse than an honest "I cannot choose".
+pub fn servers_for_extension(ext: &str) -> Vec<&'static LspServerDef> {
     server_definitions()
         .iter()
-        .find(|s| s.extensions.contains(&ext))
+        .filter(|s| s.extensions.contains(&ext))
+        .collect()
+}
+
+pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef> {
+    servers_for_extension(ext).into_iter().next()
 }

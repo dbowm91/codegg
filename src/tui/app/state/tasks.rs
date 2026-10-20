@@ -69,6 +69,12 @@ pub enum TaskRow {
     },
     /// An in-flight subagent.
     Subagent {
+        /// Generation-safe child instance identity when available.
+        child_instance_id: Option<String>,
+        /// Durable run associated with the child, when present.
+        run_id: Option<String>,
+        /// Scheduler job associated with the same child, when present.
+        job_id: Option<String>,
         /// The projection's canonical task identity.
         ///
         /// Carried rather than re-derived so the overlay can address the
@@ -118,6 +124,21 @@ pub enum TaskRow {
 }
 
 impl TaskRow {
+    /// Stable key for a visible work row. A keyed selection can survive list
+    /// refreshes; a key that disappears must not slide onto the next entity.
+    pub fn identity_key(&self) -> Option<String> {
+        match self {
+            TaskRow::Subagent {
+                child_instance_id: Some(id),
+                ..
+            } => Some(format!("child:{id}")),
+            TaskRow::Subagent { task_id, .. } => Some(format!("task:{task_id}")),
+            TaskRow::Job { job_id, .. } => Some(format!("job:{job_id}")),
+            TaskRow::Todo { content, .. } => Some(format!("todo:{content}")),
+            TaskRow::Header { .. } => None,
+        }
+    }
+
     /// The group this row belongs to.
     pub fn group(&self) -> TaskGroup {
         match self {
@@ -182,6 +203,9 @@ pub fn build_task_rows(
             group: TaskGroup::Subagents,
         });
         rows.extend(live_subagents.into_iter().map(|row| TaskRow::Subagent {
+            child_instance_id: row.child_instance_id.clone(),
+            run_id: row.run_id.clone(),
+            job_id: None,
             task_id: row.task_id.clone(),
             label: row.label().to_string(),
             agent: row.agent.clone(),
@@ -392,6 +416,10 @@ pub fn selectable_indices(rows: &[TaskRow]) -> Vec<usize> {
 /// activatable, rather than being skipped and making navigation jump.
 pub fn activatable_target(row: &TaskRow) -> Option<&str> {
     match row {
+        TaskRow::Subagent {
+            child_instance_id: Some(id),
+            ..
+        } => Some(id.as_str()),
         TaskRow::Subagent { task_id, .. } => Some(task_id.as_str()),
         TaskRow::Header { .. } | TaskRow::Todo { .. } | TaskRow::Job { .. } => None,
     }
@@ -410,6 +438,7 @@ mod tests {
 
     fn subagent(agent: &str, status: &str) -> SubagentRow {
         SubagentRow {
+            child_instance_id: Some("child-1".into()),
             task_id: "1".into(),
             run_id: None,
             display_name: Some("Sally".into()),
@@ -505,7 +534,7 @@ mod tests {
             .iter()
             .find(|r| matches!(r, TaskRow::Subagent { .. }))
             .expect("a subagent row");
-        assert_eq!(activatable_target(body), Some("42"));
+        assert_eq!(activatable_target(body), Some("child-1"));
     }
 
     #[test]

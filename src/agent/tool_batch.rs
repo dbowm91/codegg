@@ -1,9 +1,9 @@
 //! Tool permission, execution-context, and batch execution ownership.
 
 use super::r#loop::{
-    extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_path_within_workspace, is_test_command, is_workspace_file_mutation, parse_mcp_tool_name,
-    truncate_test_event_preview, AgentLoop, ToolPermissionOutcome, ToolTimeoutConfig,
+    extract_bash_command, extract_git_subcommand, extract_path_from_tool_call, is_test_command,
+    parse_mcp_tool_name, truncate_test_event_preview, AgentLoop, ToolPermissionOutcome,
+    ToolTimeoutConfig,
 };
 use crate::agent::progress_recovery::ToolExecutionOutcome;
 use crate::bus::events::AppEvent;
@@ -127,14 +127,6 @@ async fn acquire_batch_permit(
     );
     Ok(permit)
 }
-
-/// Head start the broker's watchdog gets over the tool's own deadline.
-///
-/// The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
-/// around the tool invocation, so it must expire strictly after the tool's
-/// internal deadline or it preempts the tool before it can return the output it
-/// collected while being killed. Expressed in milliseconds because that is the
-/// unit `BrokerContext::timeout_ms` uses.
 
 /// Deadline handed to the broker watchdog for a tool whose own deadline is
 /// `tool_timeout_ms`.
@@ -429,9 +421,9 @@ impl AgentLoop {
             accepted_call_ordinal,
         );
         let path_policy_fingerprint = self
-            .workspace_service_lease
+            .workspace_path_policy
             .as_ref()
-            .map(|lease| lease.path_policy().authority_fingerprint());
+            .map(|policy| policy.authority_fingerprint());
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
@@ -449,6 +441,7 @@ impl AgentLoop {
                     snapshot: snapshot.clone(),
                     receipt: receipt.clone(),
                     command_preflight,
+                    scratch_scope: self.scratch_scope.clone(),
                 },
             ),
             timeout_ms,
@@ -609,6 +602,28 @@ impl AgentLoop {
         let bash_command = extract_bash_command(tc);
         let git_subcommand = extract_git_subcommand(tc);
 
+        // The trusted roots for this call: the session workspace, the
+        // session's private scratch, and any granted shared scratch. The
+        // permission check and the temp-root redirect offer must see exactly
+        // the same roots, so they are resolved once, here.
+        let session_scratch = if self.scratch_scope.is_none() {
+            crate::scratch::session_scratch_dir(&self.session_id).ok()
+        } else {
+            None
+        };
+        let mut trusted_roots = vec![self.workspace_root.as_path()];
+        let private_scratch_root: Option<&std::path::Path> =
+            if let Some(scope) = &self.scratch_scope {
+                trusted_roots.push(scope.private_root.as_path());
+                trusted_roots.extend(scope.shared.iter().map(|root| root.path.as_path()));
+                Some(scope.private_root.as_path())
+            } else if let Some(root) = session_scratch.as_deref() {
+                trusted_roots.push(root);
+                Some(root)
+            } else {
+                None
+            };
+
         let perm_result = if bash_command.is_some() {
             self.services
                 .permission_checker
@@ -627,6 +642,26 @@ impl AgentLoop {
                     Some(&self.session_id),
                 )
                 .await
+        } else if matches!(
+            tc.name.as_str(),
+            "write" | "edit" | "apply_patch" | "replace"
+        ) {
+            if let Some(path) = path.as_deref() {
+                self.services
+                    .permission_checker
+                    .check_trusted_root_mutation(
+                        tc.name.as_str(),
+                        path,
+                        &trusted_roots,
+                        Some(&self.session_id),
+                    )
+                    .await
+            } else {
+                self.services
+                    .permission_checker
+                    .check(&tc.name, None, Some(&self.session_id))
+                    .await
+            }
         } else {
             self.services
                 .permission_checker
@@ -778,23 +813,31 @@ impl AgentLoop {
                     );
                     DeterministicVerdict::Escalate { request }
                 } else if let PermissionResult::Ask(req) = perm_result {
-                    // Preserve the narrow local-file UX exception. External
-                    // MCP origin is never evidence that an unknown tool is
-                    // safe.
-                    if is_workspace_file_mutation(
-                        tc.name.as_str(),
-                        req.path.as_deref(),
-                        &self.workspace_root,
-                    ) && is_path_within_workspace(req.path.as_deref(), &self.workspace_root)
-                        && sensitive_match.is_none()
+                    // A structured write of a recognized host temp root that
+                    // is not authorized is answered by the *model* first: it
+                    // is told the actionable scratch path, so a model that
+                    // follows the suggestion never needs a human. The offer
+                    // grants nothing and rewrites nothing — the restricted
+                    // path is still refused. A model that insists on the
+                    // same path is not offered again and reaches the human
+                    // below.
+                    if let Some(guidance) = self
+                        .services
+                        .permission_checker
+                        .temp_root_redirect_offer(
+                            tc.name.as_str(),
+                            req.path.as_deref().unwrap_or_default(),
+                            &trusted_roots,
+                            private_scratch_root,
+                            Some(&self.session_id),
+                        )
+                        .await
                     {
-                        return ToolPermissionOutcome::Allowed {
-                            tool_call: tc.clone(),
-                            receipt: self.accepted_permission_receipt(
-                                approval_source::WORKSPACE_FILE_MUTATION,
-                            ),
-                            command_preflight: command_preflight.clone(),
-                        };
+                        return ToolPermissionOutcome::Denied {
+                            tool_id: tc.id.to_string(),
+                            message: guidance,
+                        }
+                        .with_command_preflight(command_preflight.clone());
                     }
                     let dialog_args = req.args.clone();
                     let request = ApprovalRequest::new(

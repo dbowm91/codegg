@@ -21,17 +21,59 @@ existing typed unsupported result instead of an unqualified request.
 
 For diagnostics, keep readiness separate from contents: `NotReady` is not an
 empty clean set. Preserve the last complete view until a `Ready` pull arrives.
-The current diagnostics change publisher has no production driver, so do not
-promise ongoing push updates or add implicit polling in a presentation-only
-change.
+M013 gave the change publisher a **daemon-owned** driver
+(`CoreDaemon::start_lsp_diagnostics_driver`), so push updates do arrive now. Do
+not add implicit polling in a presentation-only change, and do not move the
+cadence onto a frontend — a frontend-triggered poll would put the "may start a
+server" decision on whichever client happens to be open.
+
+Reads resolve **which** warm server answers in four steps: an explicit
+`server_id`, then an extension match (only when exactly one warm client claims
+it), then the single warm client, then an `Ambiguous` result naming the
+candidates. `Ambiguous` is not a readiness state — retrying cannot make it go
+away. Warm-only is structural, not a pre-gate check: every daemon read path
+goes through a `*_for_warm_client` entry point, and any new operation must have
+one, or it will resolve a client of its own and can start a server.
 
 The native TUI editor uses F2 for diagnostics, F3 for hover, F4 for
 definition, F5 for references, F6 for document symbols, and F7 for workspace
 symbol search. These are existing `LspDiagnosticsGet`/`LspReadGet` operations;
-bind results to the active editor identity and generation. Semantic tokens
-are only a presentation overlay for the exact controller revision that was
-queried; malformed UTF-16 ranges, overlap, unsupported types, or revision
-changes fall back to plain text.
+bind results to the active editor identity and generation. M013 added the
+Helix leaves on top: `space k` hover, `space s` document symbols, `space S`
+workspace symbols, `space d` diagnostics, `space h` and `gr` references,
+`gd` definition, `gi` implementation. A leaf that cannot run says so in the
+status row rather than doing nothing. M015 added the two **preview** leaves:
+`space r` previews renaming the symbol under the cursor — the new name is
+collected on the `:` line, the same line the editor's other argument-taking
+commands use — and `=` previews what formatting would change. M016 gave both
+previews a way to become an edit: a complete preview carries the material the
+apply path consumes, and the chord opens the **change review** on it, where
+`[a]pply` writes it and `Esc` rejects it. A preview that cannot be applied
+(truncated, empty, too large) stays a preview and says so. M017 added the third
+preview leaf, `space a`: it asks the server what code actions it would offer
+at the cursor, **once**, and works out each action's own diff locally. A code
+action is a *choice*, so the LSP panel is the picker — `j`/`k` move and `Enter`
+opens the change review on the selected action. An action the server attached
+a **command** to is never applied here, even one that also carries an edit:
+the LSP specification applies an action's edit *and then* its command, and
+applying half of an action is not applying it. The panel says which actions
+cannot be applied and why; the reason is per action, because one action in a
+list can be command-only while the one beside it is perfectly applicable.
+
+**The write path is the daemon's, and it is ADR-0008's.** ADR-0008 is accepted
+and owns it: `CoreRequest::LspPreviewApply` is authorized `via_session` +
+`file.modify` and applies a digest-bound candidate through the change-review
+surface or the model-facing preview-apply tool. The editor reaches it by
+**carrying** the candidate — the daemon mints it into the read result, the
+editor holds it, and the review's accept builds the request through
+`build_apply_request`, the single place a `CoreRequest::LspPreviewApply` is
+constructed (`scripts/check_tui_editor_apply_path.py` enforces that). Nothing
+is registered: `apply_preview` recomputes the digest over the request's own
+patches, so a candidate altered in transit fails the check. Do not describe
+this as a missing ADR, and do not add a second apply path.
+Semantic tokens are only a presentation overlay for the exact controller
+revision that was queried; malformed UTF-16 ranges, overlap, unsupported types,
+or revision changes fall back to plain text.
 
 For location DTOs, preserve display `path` separately from optional
 `workspace_relative_path`. Only the daemon derives this locator after

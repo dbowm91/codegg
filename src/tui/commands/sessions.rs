@@ -280,6 +280,11 @@ pub(crate) fn apply_sessions_reloaded(
         Default::default()
     });
     let counts: Vec<(String, usize)> = message_counts.into_iter().collect();
+    let active_session_id = app
+        .session_state
+        .session
+        .as_ref()
+        .map(|session| session.id.clone());
 
     // `open_dialog(Dialog::Session)` pushes a *clone* of
     // `dialog_state.session_dialog` onto the focus manager, and
@@ -290,6 +295,9 @@ pub(crate) fn apply_sessions_reloaded(
     // focus-manager instance as well.
     let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
         dialog.load_sessions(sessions.clone());
+        if let Some(session_id) = active_session_id.as_deref() {
+            dialog.select_session_id(session_id);
+        }
         for (id, count) in &counts {
             dialog.set_message_count(id, *count);
         }
@@ -300,6 +308,7 @@ pub(crate) fn apply_sessions_reloaded(
             crate::tui::components::component::DialogType::Session,
             apply,
         );
+    app.refresh_sessions_dialog_pending_rows();
 }
 
 pub(crate) fn next_session_mutation_id(app: &mut App) -> u64 {

@@ -37,6 +37,13 @@ const LEGACY_SAFE_CHORDS: &[(char, InputAction, &str)] = &[
     ('f', InputAction::ToggleFullscreen, "fullscreen"),
     ('n', InputAction::NextProjectTab, "next project tab"),
     ('b', InputAction::PreviousProjectTab, "previous project tab"),
+    // ADR-0042: the composer claimed the letters `x`, `d` and `i`, so the
+    // actions that owned them moved to chords that are not letters. Each one
+    // is in **both** maps, so the capability does not depend on which map is
+    // active.
+    ('x', InputAction::ToggleAgentRun, "stop / resume the turn"),
+    ('d', InputAction::OpenDiff, "open diff"),
+    ('e', InputAction::FocusPrompt, "focus prompt"),
 ];
 
 /// The bare-Ctrl action each chord must not be confused with. Legacy encoding
@@ -49,6 +56,8 @@ const BARE_CTRL_TWINS: &[(char, InputAction, &str)] = &[
     ('k', InputAction::ClearSession, "ClearSession"),
     ('s', InputAction::StashPrompt, "StashPrompt"),
     ('b', InputAction::ToggleSidebar, "ToggleSidebar"),
+    ('d', InputAction::PageDown, "PageDown"),
+    ('e', InputAction::ExternalEditor, "ExternalEditor"),
 ];
 
 #[test]

@@ -48,6 +48,122 @@ struct SeamProjectionSink {
     inner: Arc<codegg_core::projection_replay::seam::ProjectionPublicationSeam>,
 }
 
+fn install_job_lifecycle_projection(
+    scheduler: &Arc<crate::scheduler::JobScheduler>,
+    submission: &Arc<crate::scheduler::JobSubmissionService>,
+    job_store: Arc<dyn codegg_core::jobs::JobStore>,
+    event_log: Arc<super::event_log::EventLog>,
+) {
+    let (created_tx, mut created_rx) = tokio::sync::mpsc::channel(256);
+    submission.set_created_sink(created_tx);
+    let created_log = event_log.clone();
+    tokio::spawn(async move {
+        while let Some(job) = created_rx.recv().await {
+            created_log
+                .publish(
+                    job.session_id.clone(),
+                    job.turn_id.clone(),
+                    CoreEvent::JobCreated {
+                        job_id: job.job_id.as_str().to_string(),
+                        workspace_id: job.workspace_id.to_string(),
+                        kind: job.kind.as_str().to_string(),
+                        session_id: job.session_id.clone(),
+                        turn_id: job.turn_id.clone(),
+                    },
+                )
+                .await;
+        }
+    });
+
+    let (scheduler_tx, mut scheduler_rx) = tokio::sync::mpsc::channel(256);
+    if !scheduler.set_event_sink_blocking(scheduler_tx) {
+        tracing::error!("failed to attach scheduler lifecycle projection event sink");
+        return;
+    }
+    tokio::spawn(async move {
+        while let Some(event) = scheduler_rx.recv().await {
+            use crate::scheduler::events::SchedulerEvent;
+            let (job_id, attempt_id, started, terminal_state) = match event {
+                SchedulerEvent::JobAdmitted {
+                    job_id, attempt_id, ..
+                } => (job_id, attempt_id.to_string(), true, None),
+                SchedulerEvent::JobResourceReleased { job_id, attempt_id } => {
+                    (job_id, attempt_id.to_string(), false, None)
+                }
+                SchedulerEvent::JobTerminal { job_id, state } => {
+                    (job_id, String::new(), false, Some(state))
+                }
+                _ => continue,
+            };
+            let id = codegg_core::jobs::JobId::new_unchecked(&job_id);
+            let record = match job_store.get_job(&id).await {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    tracing::warn!(%job_id, "scheduler lifecycle event referenced a missing job");
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(%job_id, %error, "failed to resolve owner for scheduler lifecycle event");
+                    continue;
+                }
+            };
+            let payload = if started {
+                CoreEvent::JobStarted {
+                    job_id: job_id.clone(),
+                    attempt_id,
+                }
+            } else {
+                match terminal_state.unwrap_or(record.state) {
+                    codegg_core::jobs::JobState::Completed => CoreEvent::JobCompleted {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                    },
+                    codegg_core::jobs::JobState::Failed => CoreEvent::JobFailed {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                        error_class: "failed".into(),
+                        message: String::new(),
+                    },
+                    codegg_core::jobs::JobState::Cancelled => CoreEvent::JobCancelled {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                    },
+                    codegg_core::jobs::JobState::TimedOut => CoreEvent::JobTimedOut {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                    },
+                    codegg_core::jobs::JobState::Interrupted => {
+                        let attempt_id = codegg_core::jobs::AttemptId::new_unchecked(&attempt_id);
+                        let recovery_generation = match job_store.list_attempts(&id).await {
+                            Ok(attempts) => attempts
+                                .into_iter()
+                                .find(|attempt| attempt.attempt_id == attempt_id)
+                                .map(|attempt| attempt.daemon_generation.to_string()),
+                            Err(error) => {
+                                tracing::warn!(%job_id, %error, "failed to resolve interrupted job generation");
+                                None
+                            }
+                        };
+                        let Some(recovery_generation) = recovery_generation else {
+                            tracing::warn!(%job_id, attempt_id = %attempt_id, "interrupted job event has no durable attempt generation");
+                            continue;
+                        };
+                        CoreEvent::JobInterrupted {
+                            job_id: job_id.clone(),
+                            attempt_id: attempt_id.to_string(),
+                            recovery_generation,
+                        }
+                    }
+                    _ => continue,
+                }
+            };
+            event_log
+                .publish(record.session_id, record.turn_id, payload)
+                .await;
+        }
+    });
+}
+
 impl super::event_log::ProjectionSink for SeamProjectionSink {
     fn publish(
         &self,
@@ -357,9 +473,8 @@ impl CoreDaemon {
                     );
                 }
             }
-            // SchedulerEvent has no corresponding CoreEvent protocol variant.
-            // Leave the optional sink unset rather than attaching a sender whose
-            // receiver would be dropped and falsely reporting a live event path.
+            // The scheduler sink is installed with its daemon-owned lifecycle
+            // projector below, after the shared submission boundary exists.
             (scheduler_arc, true)
         } else {
             // Even when disabled, build a placeholder scheduler so
@@ -459,6 +574,12 @@ impl CoreDaemon {
             ),
         };
         deps.submission = Some(submission.clone());
+        install_job_lifecycle_projection(
+            &scheduler,
+            &submission,
+            deps.job_store.clone(),
+            event_log.clone(),
+        );
         // C001 daemon-scoped singletons: one notifier + one watcher for the
         // daemon lifetime, injected into every turn. Per-turn construction
         // remains only for legacy/test paths that never asked for the shared
