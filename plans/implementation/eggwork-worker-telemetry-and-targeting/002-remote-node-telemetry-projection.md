@@ -1,6 +1,6 @@
 # Eggwork Worker M002 — Consume Authorized Gregg-Backed Eggwork Telemetry
 
-Status: **ready for handoff** — upstream `eggstack/eggwork` optional Gregg telemetry M001+M002 closed on 2026-10-19; the frozen contract and the reviewed client pin are recorded in §3.A
+Status: **implemented** — implementation `968c9dfb`; closure `plans/closure/eggwork-worker-telemetry-and-targeting/002-status.md`. Upstream `eggstack/eggwork` optional Gregg telemetry M001+M002 closed on 2026-10-19; the frozen contract and the reviewed client pin are recorded in §3.A
 Class: protocol / observability
 Source: `plans/subsystems/eggwork-worker-telemetry-and-targeting-roadmap.md`
 Upstream interface authority: `eggstack/eggwork: plans/implementation/optional-gregg-host-telemetry/002-authenticated-node-telemetry.md` and upstream `ADR-0006-optional-gregg-host-telemetry.md` (an upstream document, not a CodeGG ADR). Upstream M001 closed at `2190818` (implementation `ac55985`); upstream M002 closed at `56880ee` (implementation `5ccb1e6`, closure `eggstack/eggwork: plans/closure/optional-gregg-host-telemetry/002-status.md`) on branch `planning/optional-gregg-telemetry-m001-m002`, merged into upstream `main` as `81f34e0`. Upstream's own registry records the CodeGG worker-telemetry consumer as unblocked.
