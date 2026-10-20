@@ -36,7 +36,7 @@ was available for the temporary key supplied in chat. No live model call was mad
 | ACP Rust integration coverage | `cargo test -p codegg --test acp_stdio` | pass | 1 passed. |
 | Rebased quick qualification | `scripts/verify.sh quick` | pass | Formatting, repository/schema/boundary/provider guards and `cargo check --workspace --all-targets --locked` passed. |
 | Frozen-baseline live coding pilot on LongCat 2.5 and Muse Spark 1.3 | OpenCode Go profile audit and execution environment | blocked | The shared profile lacks LongCat's exact route. No safe credential handoff is exposed by the runtime. A provider route was not guessed and the chat credential was not copied to command arguments, files or logs. |
-| Hosted CI evidence | pending exact-head run | pending | Updated after CI dispatch. |
+| Hosted CI evidence | `CI / verify` run `39470157041` | pass | Green on implementation commit `63bc46b2386fe47aa39f4345b1c3e93a6fadba90`; hosted run completed in 28m17s. The preceding run found the lock-file Clippy issue, which `63bc46b` fixes. |
 
 ## 3. Implementation and safety evidence
 
@@ -62,8 +62,15 @@ cargo fmt --all -- --check — passed as part of scripts/verify.sh quick
 cargo test -p codegg --lib acp — 11 passed
 cargo test -p codegg --test acp_stdio — 1 passed
 scripts/verify.sh quick — passed
-Hosted CI — pending
+Hosted CI — `39470157041` passed on implementation commit `63bc46b2386fe47aa39f4345b1c3e93a6fadba90`
 ```
+
+The hosted [`CI / verify` run 39470157041](https://github.com/dbowm91/codegg/actions/runs/39470157041)
+passed all guards, formatting, workspace Clippy, sandbox-helper build and workspace
+tests on `63bc46b2386fe47aa39f4345b1c3e93a6fadba90`. An earlier run on the initial
+implementation commit failed Clippy because the persistent lock file did not state
+its truncation behavior; `.truncate(false)` was added, local workspace Clippy passed,
+and the follow-up hosted run passed.
 
 Only completed runs will be marked as evidence here. The live provider pilot is
 separate from credential-free CI and remains unrun.
