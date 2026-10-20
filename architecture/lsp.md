@@ -572,7 +572,8 @@ crates/egglsp/src/operations/
 ├── navigation.rs       # declaration, implementation, document_highlights, require_capability
 ├── signature.rs        # signature_help_typed, lsp_units_to_byte_offset (UTF-16-aware)
 ├── completion.rs       # completion_bounded, CompletionCandidate construction
-├── code_actions.rs     # code_action_summaries, preview_code_action, CodeActionSummary
+├── code_actions.rs     # code_action_summaries, preview_code_action, CodeActionSummary,
+│                       #   code_action_previews_for_warm_client, CodeActionEntry
 ├── rename.rs           # prepare_rename_typed, rename_preview_typed, PrepareRenameResult, RenamePreview
 ├── formatting.rs       # format_preview_typed, FormattingPreview (with base_stale, final_disk_hash)
 ├── semantic_tokens.rs  # semantic_tokens, decode_semantic_tokens (checked arithmetic overflow)
@@ -615,6 +616,9 @@ impl LspOperations {
     pub async fn rename_preview_typed(&self, file_path: &Path, line: u32, column: u32, new_name: &str, allowed_root: Option<&Path>) -> Result<RenamePreview, LspError>
     pub async fn code_action_summaries(&self, file_path: &Path, start_line: u32, start_col: u32, end_line: u32, end_col: u32, diagnostics: Vec<Diagnostic>, only: Option<Vec<CodeActionKind>>, max_actions: usize) -> Result<Vec<CodeActionSummary>, LspError>
     pub async fn preview_code_action(&self, file_path: &Path, start_line: u32, start_col: u32, end_line: u32, end_col: u32, diagnostics: Vec<Diagnostic>, only: Option<Vec<CodeActionKind>>, action_index: usize, allowed_root: Option<&Path>) -> Result<CodeActionPreview, LspError>
+
+    // M017 — the warm-only code-action read. One request, many previews.
+    pub async fn code_action_previews_for_warm_client(&self, key: &str, file_path: &Path, range: Range, only: Option<Vec<CodeActionKind>>, max_actions: usize, allowed_root: Option<&Path>) -> Result<Vec<CodeActionEntry>, LspError>
     pub async fn format_preview_typed(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<FormattingPreview, LspError>
 }
 ```
@@ -861,24 +865,152 @@ structural, not incidental: `src/main.rs:2894` builds the frontend's
 `LspTool` only under `if !is_socket_mode`, so a daemon-connected client had
 **no LSP at all**.
 
-#### Two request variants, not seven
+#### Two request variants, not twelve
 
-`CoreRequest::LspReadGet` covers hover, definition, references, document
-symbols, workspace symbols, and semantic tokens through an
-`LspReadOperation` enum. All six share one authority (`file.read` via
-session), one handler, and one cost profile, so six variants would mean six
-arms of identical policy and six chances to drift.
+`CoreRequest::LspReadGet` covers hover, definition, declaration, implementation,
+references, document highlight, document symbols, workspace symbols, semantic
+tokens, signature help, formatting preview and rename preview through an
+`LspReadOperation` enum. All twelve share one authority (`file.read` via
+session), one handler, and one cost profile, so twelve variants would mean
+twelve arms of identical policy and twelve chances to drift.
 
 `CoreRequest::LspDiagnosticsGet` stays separate because its scope genuinely
 differs: `direct_project`, matching the project stream it backs.
 
+**The operations are split three ways, not two.** `is_point` (path + position),
+`is_file_scoped` (path, no position: document symbols, semantic tokens, format
+preview) and `is_workspace` (query, no path). Document symbols and semantic
+tokens used to ride inside `is_point` with a line exemption bolted on, so the
+predicate meant two different things at once and a whole-document format
+preview would have been told it needed a cursor it does not have.
+
+**Three facts, three statuses.** `NotReady` (no warm server — start one),
+`Ambiguous` (several — name one) and `Unsupported` (a live server that does not
+do this — neither will help) are never collapsed. `Unsupported` exists because
+a server that never advertised `renameProvider` has still *answered*; reporting
+it as `NotReady` would send a client into a retry loop that can never succeed.
+The result names the actual `ServerCapabilities` key via
+`LspReadOperation::capability`, so a client can point at the server's own
+documentation rather than at a protocol-invented label.
+
+**A preview is a read, and — when it is complete — it carries a candidate.**
+`FormatPreview` and `RenamePreview` return a diff and a file list. Neither
+applies anything: a read never writes. But a complete preview now carries the
+**material the apply path consumes** — the per-file patches, the base hash each
+was computed against, and the digest that binds a request to them — so the
+editor can offer the change for review instead of only describing it. A preview
+that could not become a candidate (a truncated one, one with no edits, one too
+large to apply) carries none, and says which it was. `=` reaches
+`FormatPreview` and `space r` reaches `RenamePreview`, so the two reads are on
+the wire and on screen. A rename preview additionally requires `new_name`: the
+whole question is what *that* name would touch, and inventing a placeholder
+when the server advertised no `prepareRename` would be a guess about what the
+user is renaming. `new_name` is rejected on every other operation, so a rename
+name cannot ride along on an unrelated read where nothing would consume it.
+
+**The apply path exists, and the editor's previews now reach it.** This
+document already describes ADR-0008's write path above: the transport
+`CoreRequest::LspPreviewApply` is authorized as `via_session` + `file.modify`,
+and it applies a digest-bound candidate through the change-review surface
+(`/lsp-preview-apply <id>`) or the model-facing `lsp_preview_apply` tool.
+
+The bridge is the **candidate**, and it travels in the read result rather than
+in a registry. That shape is forced by three facts:
+
+- `LspReadGet` registers nothing, and no protocol request lists or exports a
+  preview, so there is no registry for the editor's preview to land in;
+- the frontend's own registry — `app.lsp_tool`'s — is `None` in socket/remote
+  mode (`src/main.rs:3454`) and empty in production, because nothing in the
+  TUI calls a preview-producing operation on it. A path that needed it would
+  not reach the apply at all in the transport a remote user is on;
+- `apply_preview` never resolves a preview id. It recomputes the digest over
+  the request's **own** patches and revalidates every `original_hash` against
+  the file on disk (`src/lsp/mutation.rs:380-436`). A candidate that travelled
+  from the daemon and was altered in transit fails the check.
+
+So the daemon mints the candidate — the rename preview's per-file `patch` and
+`original_hash` were already computed by `egglsp` and **discarded** at
+`daemon_lsp.rs:664-667` — the editor carries it, and the review's accept
+builds the one request: `build_apply_request` in
+`src/tui/commands/change_review.rs`, the single place a
+`CoreRequest::LspPreviewApply` is constructed.
+`scripts/check_tui_editor_apply_path.py` makes that structural rather than
+conventional: the variant may appear in one file, with one construction,
+inside that one function.
+
+**The preview/apply transition landed, and it was registered before it did.**
+M015 recorded the change of meaning while the preview was still what a reader
+learned: *"When the bridge is built — when the editor's preview becomes a
+reviewable artifact the apply path can consume — `=` and `space r` stop showing
+what would change and start doing it."* M016 built the bridge, so `=` and
+`space r` now open the review on the candidate instead of only describing it.
+The chords do not move, so the change is invisible to anyone who did not learn
+the preview — which is why the roadmap, the closure record and the
+`CHANGELOG.md` record it, and why the preview panel says *ready to apply*
+rather than *not applied*.
+
+**A preview reaches the editor through a name the reader supplied.**
+`space r` cannot issue the read directly: the request needs a new name, and
+the name is not in the buffer — it is in the reader's head. So the editor's
+`:` command line collects it, exactly as M008's three regex verbs collect a
+pattern, and the read is issued when the line is submitted. The alternative —
+a second input mode for one more argument — would be a worse editor, and the
+`:` line already has the text handling, the bound, and the way out.
+
 #### Warm-only reads
 
-A read calls `find_existing_client_for_root_hint`, which resolves an existing
-client or errors and **never falls through to a create path**. A cold read
+A read resolves one warm client key through `resolve_warm_client` and hands *that
+key* to the query, which reaches the server through an `*_for_warm_client`
+entry point. Neither step can reach `get_or_create_client`, so a cold read
 returns `LspReadStatus::NotReady`, which carries no payload — so a caller
 cannot render a warming workspace as clean code by accident. This is
 structural rather than a check someone has to remember.
+
+M013 replaced a weaker version of this that only *looked* structural. The gate
+resolved a client, and the query then discarded it and re-resolved through
+`get_or_create_client`, which computes its own root from the target file and
+its own server id from the file's language. That second resolution could
+disagree with the root the gate checked, and could **start a language
+server**. Warm-only is now a property of the call graph.
+
+`workspace_symbols` was the worst case: it never took a path at all, and
+routed to whichever client `first_client_key()` returned, so in a polyglot
+workspace its answer depended on hash-map iteration order rather than on
+anything about the request.
+
+#### Resolving which server answers
+
+`resolve_warm_client` answers three situations with three outcomes:
+
+| Situation | Outcome | Status |
+|---|---|---|
+| No client for the root | `WarmClient::Cold` | `NotReady` |
+| Several clients, none selected | `WarmClient::Ambiguous { candidates }` | `Ambiguous` |
+| Exactly one, or one selected | `WarmClient::Resolved { key }` | `Ready` |
+
+The order is deliberate and every step can only narrow the choice:
+
+1. **Explicit `server_id`** from `LspReadRequestDto`. Additive and
+   `#[serde(default)]`, so an older client omits it and an older daemon
+   ignores it. A named-but-cold server is `Cold`, not `Ambiguous`: there is
+   genuinely no warm server for what was asked for, and "several" would be
+   false.
+2. **Extension match**, and only when *exactly one* warm client claims the
+   target's extension. `egglsp::server::servers_for_extension` returns every
+   claimant rather than the first, precisely so this step can see a second one;
+   two claimants is a polyglot answer, not a pick.
+3. **Exactly one warm client.**
+4. **Otherwise ambiguous**, naming the candidates.
+
+`Ambiguous` is not a readiness state and must not be treated as one: retrying
+does not make the ambiguity go away. It carries `AmbiguousClients`, which holds
+**no answer** — only the server ids to choose from — and is constructed only
+through `LspReadResultDto::ambiguous`, so an ambiguity always names its
+candidates and never carries a result.
+
+Before M013 every one of the resolver's errors was mapped to `NotReady`, so a
+polyglot workspace with two healthy servers was indistinguishable from a cold
+one: same status, same absent payload, same “nothing to see yet.”
 
 Denial is *not* `NotReady`. A precondition failure is an `CoreResponse::Error`
 with a non-enumerable message; `NotReady` means "no warm server". Conflating
@@ -974,10 +1106,33 @@ is `NotReady`; it must preserve the client's previous view and must never be
 rendered as “no diagnostics.” Older daemon responses that omit this additive
 field deserialize as `NotReady` for compatibility and safety.
 
-The change publisher currently has no production driver. The subscribe path
-provides its initial authoritative snapshot, but this implementation does not
-emit ongoing diagnostic changes. Consumers must use the pull result and must
-not claim live push updates until a separately qualified driver exists.
+The change publisher is driven by a daemon-owned cadence. M013 found
+`publish_changed_diagnostics` with **zero callers**: the store, the digest
+tracker, the resync authority and the publisher all existed, and nothing ever
+ran them, so `LspDiagnosticsUpdated` was never emitted and every client read
+the stream as permanently cold. `start_lsp_diagnostics_driver` spawns it in the
+serving daemon (`src/main.rs`), ticking every `DIAGNOSTICS_POLL_INTERVAL`.
+
+Three decisions inside the driver are load-bearing:
+
+- **The daemon owns the cadence, not a frontend.** ADR-0011 allows a process
+  with a workspace root to start a language server. A frontend-triggered poll
+  would put that decision on whichever client happened to be open, and
+  `NotReady` would then be indistinguishable from “this client never asked.”
+- **It enumerates `SessionRuntimeRegistry`, not the session table.** The
+  registry holds sessions this daemon has actually resolved, so a session from
+  a previous run — with a root that may since have been deleted — is not
+  walked every 750 ms forever.
+- **It holds a `Weak`**, so the task ends when the daemon does instead of
+  keeping it alive.
+
+The publisher is scoped to one workspace root. It used to walk *every* client
+in the process, so with two projects open each project's tracker recorded the
+other project's files. Diagnostic paths are resolved to full
+**workspace-relative** paths, not file names: the previous file-name-only key
+made `src/lib.rs` and `tests/lib.rs` the same entry, so the second silently
+overwrote the first and a client was shown one file's diagnostics under the
+other's name.
 
 ### Completion read surface (M003, ADR-0021 Option B)
 
@@ -2105,6 +2260,19 @@ program-call cache is disabled (server-state dependent). See
 
 Hidden operations (in `egglsp::operations` for internal use only, not model-facing): `completion`, `signatureHelp`, `codeAction` (arbitrary code actions), `codeLens`, and `goToImplementation`. The `source.organizeImports` source action is the only source action exposed to the model via `sourceActionPreview`.
 
+M017 added a second non-model-facing code-action entry point,
+`code_action_previews_for_warm_client`, for the **editor's** code-action read
+rather than the model's. It differs from `preview_code_action` in three ways
+that matter: it is **warm-only** (the caller resolves the client key, and
+every step — the capability gate, the document sync, the generation stamp — is
+taken against that same key, so the flow never starts a language server); it
+issues **one** `textDocument/codeAction` and previews each action's own edit
+**locally**, so there is no action index to go stale between two requests; and
+it returns a **list**, because a code action is a choice and a choice needs a
+list. It refuses every action carrying a `Command` payload — including a
+mixed one, since the LSP specification applies an action's edit *and then* its
+command, and applying half of an action is not applying it.
+
 ### Phase 4: Safety Boundary
 
 Phase 4 keeps the central safety rule that has governed the LSP
@@ -2145,9 +2313,10 @@ surfaced precisely.
 | `rename_preview_typed` | `textDocument/rename` | `RenamePreview` (capped at 100 files / 1000 edits; resource-op warnings; per-file stale-base evidence) |
 | `code_action_summaries` | `textDocument/codeAction` | `Vec<CodeActionSummary>` (capped at 50) |
 | `preview_code_action` | `textDocument/codeAction` (resolved) | `CodeActionPreview` (capped; rejects command-only with `LspError::CommandOnlyCodeAction`) |
+| `code_action_previews_for_warm_client` | `textDocument/codeAction` (one request, warm key) | `Vec<CodeActionEntry>` — one entry per offered action, each carrying its own preview |
 | `format_preview_typed` | `textDocument/formatting` | `FormattingPreview` (sha256 before/after hashes + bounded 8KB diff + on-disk invariant check; raw TextEdit payloads preserved in FileEditPreview) |
 
-The five preview-only operations all share three invariants:
+The six preview-only operations all share three invariants:
 
 1. **Never write to disk.** `format_preview_typed` and
    `rename_preview_typed` apply edits to an in-memory snapshot only.
@@ -2155,7 +2324,7 @@ The five preview-only operations all share three invariants:
    returns `LspError::RequestFailed` if the post-call `after_disk_hash`
    does not equal `before_hash` — the on-disk invariant check is
    defense-in-depth, not a workaround.
-2. **Root-bounded.** All five honor the existing `allowed_root`
+2. **Root-bounded.** All six honor the existing `allowed_root`
    contract; out-of-root edits are rejected by
    `preview_workspace_edit` with `LspError::PathOutsideRoot`.
 3. **Never execute `workspace/executeCommand`.** Command-only

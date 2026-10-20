@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use codegg_core::jobs::AttemptId;
+use codegg_core::jobs::{AttemptId, JobState};
 use codegg_core::run_store::RunId;
 
 use crate::scheduler::admission::BlockReason;
@@ -34,6 +34,8 @@ pub enum SchedulerEvent {
         job_id: String,
         attempt_id: AttemptId,
     },
+    /// A queued job became terminal without an executor attempt.
+    JobTerminal { job_id: String, state: JobState },
     /// The queue is at capacity and at least one submission was
     /// rejected.
     SchedulerOverloaded { queued: usize, cap: usize },

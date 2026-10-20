@@ -2607,6 +2607,8 @@ fn dummy_lsp_read_get() -> codegg_protocol::lsp::LspReadRequestDto {
         line: None,
         column: None,
         query: None,
+        server_id: None,
+        new_name: None,
     }
 }
 

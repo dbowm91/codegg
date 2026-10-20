@@ -66,6 +66,9 @@ pub const MAX_PROJECTION_NOTIFICATION_BOUND: usize = 16;
 /// session.
 pub const MAX_PROJECTION_SUBAGENTS: usize = 16;
 
+/// Maximum session-owned child instances, independent of per-turn history.
+pub const MAX_PROJECTION_SESSION_SUBAGENTS: usize = 32;
+
 /// Maximum byte length of a subagent display name in the projection.
 ///
 /// Display names are drawn from a validated pool whose entries are capped at

@@ -16,8 +16,8 @@ use crate::projection::dto::{
 };
 use crate::projection::limits::{
     MAX_PROJECTION_AGENT_RUNS, MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS,
-    MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_TOOL_PROGRAMS,
-    MAX_PROJECTION_WORKTREES,
+    MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_SESSION_SUBAGENTS,
+    MAX_PROJECTION_TOOL_PROGRAMS, MAX_PROJECTION_WORKTREES,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -49,6 +49,10 @@ pub struct SessionProjectionSnapshot {
     pub workspace: WorkspaceSummaryProjection,
     /// Active turn projection. `None` when no turn is in flight.
     pub active_turn: Option<crate::projection::dto::TurnProjection>,
+    /// Session-owned child instances. Unlike the conversational agent tree,
+    /// these survive parent-turn replacement and are the liveness authority.
+    #[serde(default)]
+    pub subagents: VecDeque<crate::projection::dto::AgentTreeNodeProjection>,
     /// Most recent completed turns (newest first). Bounded by
     /// [`crate::projection::limits::MAX_PROJECTION_RECENT_TOOLS`] of
     /// turn slots — older turns collapse into
@@ -121,6 +125,7 @@ impl SessionProjectionSnapshot {
                 health: Default::default(),
             },
             active_turn: None,
+            subagents: VecDeque::new(),
             recent_turns: VecDeque::new(),
             runs: VecDeque::new(),
             jobs: VecDeque::new(),
@@ -131,6 +136,55 @@ impl SessionProjectionSnapshot {
             convergences: VecDeque::new(),
             diagnostics: VecDeque::new(),
         }
+    }
+
+    /// Upsert one session-owned child instance, evicting the oldest terminal
+    /// instance first when the independent session cap is reached.
+    pub fn upsert_subagent(
+        &mut self,
+        node: crate::projection::dto::AgentTreeNodeProjection,
+    ) -> bool {
+        if let Some(slot) = self
+            .subagents
+            .iter_mut()
+            .find(|item| item.child_instance_id == node.child_instance_id)
+        {
+            if matches!(
+                slot.status,
+                crate::projection::dto::AgentTreeStatus::Running
+            ) {
+                let mut node = node;
+                // These fields describe the admitted generation, not mutable
+                // activity. Duplicate starts cannot rebind its lineage.
+                node.originating_turn_id
+                    .clone_from(&slot.originating_turn_id);
+                node.task_id = slot.task_id;
+                node.created_at = slot.created_at;
+                *slot = node;
+            } else if !matches!(
+                node.status,
+                crate::projection::dto::AgentTreeStatus::Running
+            ) && node.completed_at.unwrap_or_default()
+                >= slot.completed_at.unwrap_or_default()
+            {
+                *slot = node;
+            }
+            return true;
+        }
+        if self.subagents.len() >= MAX_PROJECTION_SESSION_SUBAGENTS {
+            if let Some(index) = self.subagents.iter().position(|item| {
+                !matches!(
+                    item.status,
+                    crate::projection::dto::AgentTreeStatus::Running
+                )
+            }) {
+                self.subagents.remove(index);
+            } else {
+                return false;
+            }
+        }
+        self.subagents.push_back(node);
+        true
     }
 
     /// Push a diagnostic, dropping the oldest if the cap is reached.
@@ -157,21 +211,55 @@ impl SessionProjectionSnapshot {
     /// erase the kind and the workspace the creation event recorded —
     /// a job whose kind is blank cannot be classified, and a job whose
     /// workspace is blank cannot be authorized against one.
-    pub fn upsert_job(&mut self, mut job: JobProjection) {
+    pub fn upsert_job(&mut self, job: JobProjection) {
         if let Some(slot) = self.jobs.iter_mut().find(|j| j.job_id == job.job_id) {
-            if job.workspace_id.is_empty() {
-                job.workspace_id = std::mem::take(&mut slot.workspace_id);
+            let prior_terminal = terminal_job_state(&slot.state);
+            let incoming_terminal = terminal_job_state(&job.state);
+            let different_attempt = matches!(
+                (&slot.active_attempt_id, &job.active_attempt_id),
+                (Some(old), Some(new)) if old != new
+            );
+            let stale_attempt = different_attempt && job.updated_at < slot.updated_at;
+            let newer_attempt = different_attempt && !stale_attempt;
+            let stale_lifecycle_hint =
+                !newer_attempt && job_state_rank(&job.state) < job_state_rank(&slot.state);
+            // A late terminal event from an earlier attempt must not finish a
+            // retry that is already running. Likewise, a delayed create/start
+            // hint cannot resurrect a terminal job unless it names a new
+            // attempt (the retry transition).
+            if stale_attempt || (newer_attempt && incoming_terminal && !prior_terminal) {
+                return;
             }
-            if job.kind.is_empty() {
-                job.kind = std::mem::take(&mut slot.kind);
+            if prior_terminal && !incoming_terminal && !newer_attempt {
+                return;
             }
-            if job.session_id.is_none() {
-                job.session_id = slot.session_id.clone();
+            let mut merged = job;
+            if stale_lifecycle_hint {
+                merged.state.clone_from(&slot.state);
+                merged.active_attempt_id.clone_from(&slot.active_attempt_id);
             }
-            if job.turn_id.is_none() {
-                job.turn_id = slot.turn_id.clone();
+            if merged.workspace_id.is_empty() {
+                merged.workspace_id.clone_from(&slot.workspace_id);
             }
-            *slot = job;
+            if merged.kind.is_empty() {
+                merged.kind.clone_from(&slot.kind);
+            }
+            if merged.summary.is_empty() {
+                merged.summary.clone_from(&slot.summary);
+            }
+            if merged.session_id.is_none() {
+                merged.session_id.clone_from(&slot.session_id);
+            }
+            if merged.turn_id.is_none() {
+                merged.turn_id.clone_from(&slot.turn_id);
+            }
+            if merged.active_attempt_id.is_none() {
+                merged.active_attempt_id.clone_from(&slot.active_attempt_id);
+            }
+            if merged.error_class.is_none() {
+                merged.error_class.clone_from(&slot.error_class);
+            }
+            *slot = merged;
             return;
         }
         if self.jobs.len() >= MAX_PROJECTION_JOBS {
@@ -263,6 +351,30 @@ impl SessionProjectionSnapshot {
     }
 }
 
+fn terminal_job_state(state: &str) -> bool {
+    matches!(
+        state.trim().to_ascii_lowercase().as_str(),
+        "completed"
+            | "succeeded"
+            | "failed"
+            | "cancelled"
+            | "timed_out"
+            | "interrupted"
+            | "expired"
+    )
+}
+
+fn job_state_rank(state: &str) -> u8 {
+    match state.trim().to_ascii_lowercase().as_str() {
+        "created" | "scheduled" => 0,
+        "queued" | "blocked" => 1,
+        "started" | "running" => 2,
+        "completed" | "succeeded" | "failed" | "cancelled" | "timed_out" | "interrupted"
+        | "expired" => 3,
+        _ => 1,
+    }
+}
+
 /// Diagnostic entry recorded by the reducer. Diagnostics are
 /// strictly informational and must not affect reducer logic.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -301,6 +413,37 @@ mod tests {
         assert!(snap.runs.is_empty());
         assert!(snap.jobs.is_empty());
         assert!(snap.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn job_upsert_preserves_lifecycle_order_and_retry_attempts() {
+        let mut snapshot = SessionProjectionSnapshot::empty("s", "p", "w");
+        let job = |state: &str, attempt: Option<&str>| JobProjection {
+            job_id: "job-1".into(),
+            workspace_id: "w".into(),
+            kind: "test".into(),
+            state: state.into(),
+            summary: String::new(),
+            session_id: Some("s".into()),
+            turn_id: None,
+            active_attempt_id: attempt.map(str::to_string),
+            error_class: None,
+            updated_at: 1,
+        };
+        snapshot.upsert_job(job("running", Some("attempt-1")));
+        snapshot.upsert_job(job("created", None));
+        assert_eq!(snapshot.jobs[0].state, "running");
+        snapshot.upsert_job(job("completed", Some("attempt-1")));
+        snapshot.upsert_job(job("running", Some("attempt-1")));
+        assert_eq!(snapshot.jobs[0].state, "completed");
+        snapshot.upsert_job(job("queued", Some("attempt-2")));
+        assert_eq!(snapshot.jobs[0].state, "queued");
+        snapshot.upsert_job(job("failed", Some("attempt-1")));
+        assert_eq!(snapshot.jobs[0].state, "queued");
+        assert_eq!(
+            snapshot.jobs[0].active_attempt_id.as_deref(),
+            Some("attempt-2")
+        );
     }
 
     #[test]

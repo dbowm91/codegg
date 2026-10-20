@@ -7,7 +7,7 @@ Read-only source audit for M005 writer-containment corrective, milestone C002
 wiring parts). Other files are cited as corroborating evidence only.
 
 Worktree: `/home/sugarwookie/projects/codegg/.worktrees/m005-writer-audit`
-Base commit: `37a82843 docs(plans): accept ADR-0042 option B and unblock C002`
+Base commit: `37a82843 docs(plans): accept ADR-0044 option B and unblock C002`
 
 > Naming collision warning for later readers: `AGENTS.md:108-116` uses the label
 > **"C002"** for the M003 *session user-prompt-queue* write-transaction-shape

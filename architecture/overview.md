@@ -267,50 +267,60 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 ## Verified counts
 
 Every count below was re-measured against the current tree on
-**2026-10-13**, each against its own listed `Source`. The tool-source,
-integration-test, and guard-script counts were remeasured on **2026-10-15**
-after reconciling the search-backend retirement with current `main`. The rows
-the M005 corrective C002 moved — architecture docs, `codegg-core` modules,
-database tables, storage layout version, and integration test files — were
-remeasured against their own `Source` on **2026-10-19**.
+**2026-10-20**, each against its own listed `Source`, after the M005
+writer-containment branch was reconciled with `main` (`origin/main`
+`a9f70375`). Earlier passes (2026-10-13, 2026-10-15, 2026-10-19) measured
+the same rows against smaller trees; the merge moved rows that **both**
+sides had measured, so no number was carried over from either side.
 
-M006 and M007 moved the same rows plus the event and request/response
-variant counts and the authorized-operation count. All of them were
-remeasured against their own `Source` on **2026-10-19**, with the
-request-variant method taken from `scripts/check_authorization_matrix.py`
-so the table and the guard count the same thing. The `CoreRequest`,
-`CoreResponse` and `CoreEvent` rows had already drifted from their
-`Source` before this measurement and are corrected here rather than
-incremented. The integration-test-file row moved again on 2026-10-19 when
-M006's service-level Git test was added (268 → 269); every other row in
-the table was re-measured on the same pass and did not move.
+Three rows were corrected rather than incremented, and the corrections are
+recorded here because the pre-merge numbers disagreed on **identical**
+source sets:
+
+- **Tool registrations in `with_options()`** is 65, not 63 or 65-by-a-different-
+  method: the count is 52 `registry.register(` call sites **plus** 13
+  `registry.register_boxed(` call sites in `src/tool/mod.rs`. The branch's
+  pre-merge row omitted the `register_boxed` call sites.
+- **Distinct production tool names** is 60. The branch's row said 59 and
+  `main`'s said 61, yet **both trees contain the same 70 `impl Tool for`
+  blocks and the same 60 literal production names** — so both pre-merge
+  numbers were stale. The merged tree re-measures to 60 under the method in
+  the row's `Source`.
+- **Built-in slash commands** is 166, the number the
+  `built_in_command_count_matches_release_docs` tripwire asserts. The
+  branch's row said 164, which the tripwire would have failed.
+
+The `CoreRequest`, `CoreResponse` and `CoreEvent` rows keep the
+`scripts/check_authorization_matrix.py` method so the table and the guard
+count the same thing; `CoreRequest` is 259 and `operation_descriptor` has
+exactly 259 `R::` arms, one per request variant.
 
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 90 | `architecture/*.md` |
-| Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
-| Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
-| Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
+| Tool registrations in `with_options()` | 65 call sites | `src/tool/mod.rs` — 52 `registry.register(` plus 13 `registry.register_boxed(` |
+| Distinct production tool names | 60 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 7 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs` and `broker.rs`; 3 of the 7 use the literals `read`, `direct_only`, `no_schema`, and 4 resolve their name at runtime) |
+| Tool source files | 81 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 49 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 259 | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 169 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 259 (235 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 169 (168 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 259 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
-| Identity newtypes | 18 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 164 | asserted by `built_in_command_count_matches_release_docs` |
+| Authorized operations | 259 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) — one `R::` arm per `CoreRequest` variant |
+| Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
+| Built-in slash commands | 166 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
-| TUI state modules | 31 (32 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
+| TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
 | Database tables (`CREATE TABLE`) | 94 | `crates/codegg-core/src/session/schema.rs` |
 | Storage layout version | 85 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 269 | `tests/*.rs` |
-| CI guard scripts | 53 | `scripts/check_*` |
+| Integration test files | 279 | `tests/*.rs` |
+| CI guard scripts | 63 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -578,7 +588,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (215 files)
+├── tests/                      # Integration tests (268 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates
@@ -605,12 +615,19 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (52 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (62 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
 The full count audit on **2026-10-13** remeasured each row directly against its listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, event/request/response variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, database tables, storage-layout version, Git operation/risk counts, workspace members, integration test files, and guard scripts). After merging current `main` on **2026-10-15**, tool source files (78), integration test files (244), and guard scripts (49) were rechecked and updated.
 
-This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
+The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **268** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is four test files (`tests/tui_composer_cursor.rs` from M001, `tests/tui_composer_claims.rs` from M002, `tests/tui_composer_motions.rs` from M004, `tests/tui_composer_selection.rs` from M005) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
 
+The integration-test-file row was **remeasured again on 2026-10-19** when the managed-agent-scratch workstream was reconciled with `main`: the count is now **268** (`ls tests/*.rs`), because the scratch workstream contributes two further test files (`tests/managed_scratch_job_admission.rs` and `tests/linux_native_scratch_containment.rs`) on top of the 266 measured above. The CI guard script row is unchanged at **58** (`ls scripts/check_*`); the scratch workstream adds no new guard, and the `main`-side value supersedes the 53 that the scratch branch carried.
+
+Every row was **remeasured on 2026-10-20** against its listed `Source` when the TUI editor Helix parity workstream (M001–M013, M015–M020) was reconciled with `main`. Sixteen rows had drifted: architecture docs **87**, tool registrations **65** (`registry.register` / `registry.register_boxed` inside `with_options()`), distinct production tool names **61**, tool source files **80**, `CoreRequest` variants **258** (234 struct + 24 unit), `CoreResponse` variants **168**, `CoreEvent` variants **92**, authorized operations **252** (distinct `OperationDescriptor::new` names), identity newtypes **19**, built-in slash commands **166** (the count `built_in_command_count_matches_release_docs` asserts), TUI state modules **32** (33 `.rs` files incl. `mod.rs`), database tables **92** (`CREATE TABLE` occurrences), storage-layout version **83**, integration test files **269**, and CI guard scripts **62**. Four methods were ambiguous and were pinned by re-running them at the commits that originally recorded each value — `541a1c84`, `3f8ecc48`, `ac4d5962` and `fc53d0af` — so the rows keep the counting method the table has always used rather than a new one. The tool-name row's exclusion note was corrected too: there are now **7** test-only `impl Tool for` mocks, not 5 — `disabled.rs` and `broker.rs` joined `program_manifest.rs`, `catalog.rs` and `tool_search.rs`. The counts on both sides of the `main` merge were individually correct for their own tree (58 guard scripts each, 268 test files on `main`, 244 on the branch); the merged tree is the union, so the two file-count rows moved again, and the sixteen code-count rows had been drifting on `main` and on this branch independently.
+
+The two file-count rows were **remeasured once more on 2026-10-20** when the TUI composer Helix parity workstream (M004–M007) was reconciled with `main`: integration test files are **274** (`ls tests/*.rs`) and CI guard scripts are **62** (`ls scripts/check_*`). The composer workstream contributes five further test files on top of the 269 measured above — `tests/tui_composer_motions.rs` (M004), `tests/tui_composer_selection.rs` (M005), `tests/tui_composer_undo.rs` and `tests/tui_composer_insert_transitions.rs` (M006), and `tests/tui_composer_keymap_consistency.rs` (M007) — and **no** new guard: M007 extends the existing `scripts/check_tui_composer_key_authority.py` with two rules rather than adding a script, so the guard row is unchanged. The `Full check_* inventory` line above was carrying the stale 58 and is corrected here to 62, which is what `ls scripts/check_*` reports in this tree.
+
+This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime ownership migration and M006 closure"). The `src/` tree above gained two root modules that were missing: `src/decision.rs` (the opt-in System One-compatible `DecisionEngine` backend) and `src/decision_sdm.rs` (the opt-in pinned SDM local Rank backend, gated behind `--features decision-runtime-sdm`). The same commit deleted thirteen `src/tool_advisor/` modules (`contextual.rs`, `late_interaction.rs`, `operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`, `retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`, `sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`, `sequence_retrieval.rs`, `training.rs`), leaving `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`, `context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`, `retrieval_relevance.rs`, and `training_data.rs`. See [tool-advisor.md](tool-advisor.md) for the decision-subsystem contract and the retired-work history.

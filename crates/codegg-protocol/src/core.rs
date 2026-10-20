@@ -4054,6 +4054,10 @@ pub enum CoreEvent {
     },
     SubagentStarted {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
+        #[serde(default)]
+        originating_turn_id: Option<String>,
         task_id: u64,
         agent: String,
         description: String,
@@ -4083,18 +4087,24 @@ pub enum CoreEvent {
     },
     SubagentProgress {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         message: String,
     },
     SubagentCompleted {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         result_summary: String,
     },
     SubagentFailed {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         error: String,

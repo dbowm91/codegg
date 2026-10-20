@@ -206,6 +206,50 @@ pub fn relative_to_known_temp_root(path: &Path) -> Option<PathBuf> {
     })
 }
 
+/// The non-authoritative redirect offer for a structured mutation of a
+/// recognized host temporary root that is not an authorized root.
+///
+/// The offer names a *suggested* path under the caller's own private scratch
+/// root. It grants nothing, rewrites nothing, and the caller must still
+/// refuse the original target: the human remains the only authority for that
+/// location. It returns `None` when the target is not under a known host
+/// temporary root, or when the private scratch root does not exist.
+///
+/// The wording lives here so the permission layer and the write tool cannot
+/// drift apart: the same refusal is shown whether the model is answered
+/// before the human is asked, or the tool refuses the path itself.
+pub fn temp_root_redirect_message(path: &Path, private_scratch: Option<&Path>) -> Option<String> {
+    let relative = relative_to_known_temp_root(path)?;
+    let scratch_root = private_scratch?.canonicalize().ok()?;
+    let suggestion = scratch_root.join(relative);
+    Some(format!(
+        "temporary path is outside the authorized workspace; retry at '{}' or request access to the original location through the normal permission flow",
+        suggestion.display()
+    ))
+}
+
+/// The canonical form of a target that may not exist yet: the deepest
+/// existing ancestor is canonicalized and the remaining components are
+/// appended. Returns `None` when the path has no existing ancestor.
+///
+/// This is the same walk [`validate_target_path`] performs, minus the
+/// containment test, so a caller can compare a not-yet-created target
+/// against roots and path rules without creating it first.
+pub fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        let component = existing.file_name()?.to_os_string();
+        suffix.push(component);
+        existing = existing.parent()?.to_path_buf();
+    }
+    let mut normalized = existing.canonicalize().ok()?;
+    for component in suffix.iter().rev() {
+        normalized.push(component);
+    }
+    Some(normalized)
+}
+
 /// Resolve a caller-supplied working directory against the workspace root.
 ///
 /// Delegates to [`validate_target_path`] rather than repeating its containment

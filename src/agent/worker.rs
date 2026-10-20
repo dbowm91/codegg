@@ -81,6 +81,11 @@ impl SubAgentReport {
 #[derive(Debug, Clone)]
 pub struct SubAgentRequest {
     pub task_id: u64,
+    /// Stable identity for this dispatch generation, independent of the
+    /// legacy numeric task id and durable AgentRun identity.
+    pub child_instance_id: String,
+    /// Immutable parent-turn lineage when this dispatch has a controlling turn.
+    pub originating_turn_id: Option<String>,
     /// Durable identity of the run being executed, when scheduler-owned.
     pub run_id: Option<codegg_core::identity::AgentRunId>,
     pub prompt: String,
@@ -94,6 +99,14 @@ pub struct SubAgentRequest {
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    /// The daemon-owned workspace identity this child runs under.
+    ///
+    /// A tool call is authorized against a workspace identity and a path
+    /// policy; a child that carries neither has every tool refused with
+    /// "verified tool authority is missing workspace identity". The
+    /// scheduler binds the workspace the job was admitted for, so the child
+    /// inherits it rather than inventing one.
+    pub workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     /// Shared with the owning turn when the child runs in the same workspace.
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     /// M005: parent turn sandbox ceiling (`None` = pre-M005 default
@@ -847,10 +860,13 @@ impl SubAgentSpawner {
 
     async fn enqueue_request_with_mode(
         &self,
-        request: SubAgentRequest,
+        mut request: SubAgentRequest,
         scheduler_cancel: CancellationToken,
         scheduled: bool,
     ) -> Result<oneshot::Receiver<SubAgentResult>, String> {
+        if request.child_instance_id.is_empty() {
+            request.child_instance_id = uuid::Uuid::new_v4().to_string();
+        }
         if self.pool.config.subagent.as_ref().and_then(|s| s.enabled) == Some(false) {
             return Err("subagent delegation is disabled".to_string());
         }
@@ -984,6 +1000,7 @@ async fn run_subagent_task_with_cancel(
     subagent_pool: Arc<SubAgentPool>,
 ) -> SubAgentResult {
     let task_id = request.task_id;
+    let child_instance_id = request.child_instance_id.clone();
     let session_id = request.parent_id.clone().unwrap_or_default();
 
     // Draw the display name exactly once, here at spawn, and carry it in the
@@ -1004,6 +1021,8 @@ async fn run_subagent_task_with_cancel(
 
     GlobalEventBus::publish(AppEvent::SubagentStarted {
         session_id: session_id.clone(),
+        child_instance_id: child_instance_id.clone(),
+        originating_turn_id: request.originating_turn_id.clone(),
         task_id,
         agent: request.agent.clone(),
         description: request.description.clone(),
@@ -1028,6 +1047,7 @@ async fn run_subagent_task_with_cancel(
 
     GlobalEventBus::publish(AppEvent::SubagentProgress {
         session_id: session_id.clone(),
+        child_instance_id: child_instance_id.clone(),
         task_id,
         agent: request.agent.clone(),
         message: "Task execution started".to_string(),
@@ -1038,6 +1058,7 @@ async fn run_subagent_task_with_cancel(
         _ = scheduler_cancel.cancelled() => {
             GlobalEventBus::publish(AppEvent::SubagentFailed {
                 session_id: session_id.clone(), task_id, agent: request.agent.clone(),
+                child_instance_id: child_instance_id.clone(),
                 error: "Task cancelled by scheduler".to_string(),
             });
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
@@ -1046,6 +1067,7 @@ async fn run_subagent_task_with_cancel(
             let msg = "Task cancelled during shutdown".to_string();
             GlobalEventBus::publish(AppEvent::SubagentFailed {
                 session_id: session_id.clone(),
+                child_instance_id: child_instance_id.clone(),
                 task_id,
                 agent: request.agent.clone(),
                 error: msg.clone(),
@@ -1056,6 +1078,7 @@ async fn run_subagent_task_with_cancel(
         _ = lineage_token.cancelled() => {
             GlobalEventBus::publish(AppEvent::SubagentFailed {
                 session_id: session_id.clone(), task_id, agent: request.agent.clone(),
+                child_instance_id: child_instance_id.clone(),
                 error: "Task cancelled by root lineage".to_string(),
             });
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
@@ -1087,6 +1110,7 @@ async fn run_subagent_task_with_cancel(
                 Ok((output, report, validation, artifacts)) => {
                     GlobalEventBus::publish(AppEvent::SubagentCompleted {
                         session_id: session_id.clone(),
+                        child_instance_id: child_instance_id.clone(),
                         task_id,
                         agent: request.agent.clone(),
                         result_summary: output.chars().take(200).collect(),
@@ -1109,6 +1133,7 @@ async fn run_subagent_task_with_cancel(
                     let _ = e;
                     GlobalEventBus::publish(AppEvent::SubagentFailed {
                         session_id: session_id_for_bus,
+                        child_instance_id: child_instance_id.clone(),
                         task_id,
                         agent: agent_name,
                         error: error_for_bus,
@@ -1522,7 +1547,7 @@ async fn execute_agent_task(
         mcp_service,
         pool,
         std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
-        workspace_root,
+        workspace_root.clone(),
         subagent_session_id,
         writer_fence,
     );
@@ -1576,6 +1601,19 @@ async fn execute_agent_task(
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }
+    // A delegated child holds no workspace services lease, so it would
+    // otherwise reach the broker with no workspace identity and no path
+    // policy, and have every tool call refused with "verified tool
+    // authority is missing workspace ...". Inherit the identity the
+    // scheduler bound this job to, and install the policy for the root the
+    // executor bound this run to. When that root is the workspace's
+    // canonical root this is the same policy the parent turn holds.
+    if let Some(workspace_id) = request.workspace_id.clone() {
+        agent_loop.set_workspace_id(workspace_id);
+    }
+    agent_loop.set_workspace_path_policy(
+        codegg_core::workspace_services::WorkspacePathPolicy::for_root(workspace_root),
+    );
     // M005: child loop carries the narrowed sandbox ceiling; approval
     // stays Interactive (never broader than the parent without explicit
     // narrowing through the snapshot ceiling).
@@ -1881,6 +1919,8 @@ mod admission_tests {
     fn request(task_id: u64) -> SubAgentRequest {
         SubAgentRequest {
             task_id,
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             prompt: "test".into(),
             agent: "build".into(),
             parent_id: Some("root-a".into()),
@@ -1893,6 +1933,7 @@ mod admission_tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,

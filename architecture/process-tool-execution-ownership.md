@@ -63,6 +63,17 @@ intact. A revoked shared directory is removed after the last admitted lease
 releases; run-private cache directories remain available for host cache
 maintenance.
 
+The delegated-grant containment of that model — the run-private root and the
+explicitly granted shared roots writable, and every other scratch root, the
+scratch parent, unrelated host temporary directories, and cross-boundary
+links refused — is now qualified on a native Linux host with Landlock
+ABI >= 3 by `tests/linux_native_scratch_containment.rs`. The fixture drives
+the real admission, scheduler and managed-process path and asserts the
+obtained backend status; see
+`plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`.
+Windows remains unclaimed, because the Required backend there is still
+absent.
+
 Durable or background work is admitted by `JobSubmissionService` and runs
 through a scheduler executor. The process service executes an accepted
 attempt; it is not a second scheduler or job authority.

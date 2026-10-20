@@ -223,6 +223,8 @@ mod tests {
 
         // Send subagent request - create task first so subsequent operations work
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "Hello from parent".to_string(),
@@ -236,6 +238,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: Some(std::env::current_dir().expect("test workspace root")),
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -347,6 +350,8 @@ mod tests {
         let task_store = subagent_pool.task_store();
 
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "Test".to_string(),
@@ -360,6 +365,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: Some(std::env::current_dir().expect("test workspace root")),
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -418,6 +424,8 @@ mod tests {
         let task_store = subagent_pool.task_store();
 
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "Test".to_string(),
@@ -431,6 +439,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: Some(std::env::current_dir().expect("test workspace root")),
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -493,6 +502,8 @@ mod tests {
 
         // Depth equal to max_depth (3) should fail
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "Test".to_string(),
@@ -506,6 +517,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -534,6 +546,8 @@ mod tests {
 
         // Depth greater than max_depth should also fail
         let request2 = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 2,
             run_id: None,
             prompt: "Test".to_string(),
@@ -547,6 +561,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -592,6 +607,8 @@ mod tests {
         .await;
         let spawner = subagent_pool.spawner();
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 41,
             run_id: None,
             prompt: "same work".into(),
@@ -605,6 +622,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -709,6 +727,8 @@ mod tests {
 
         // Send request with denied tools
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "Test with denied tools".to_string(),
@@ -722,6 +742,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: Some(std::env::current_dir().expect("test workspace root")),
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -917,6 +938,8 @@ mod tests {
         // Enqueue 3 tasks (max_concurrent is 2)
         for i in 0..3 {
             let request = SubAgentRequest {
+                child_instance_id: String::new(),
+                originating_turn_id: None,
                 task_id: i as u64,
                 run_id: None,
                 prompt: format!("Task {}", i),
@@ -930,6 +953,7 @@ mod tests {
                 max_tool_calls: None,
                 parent_model: None,
                 workspace_root: Some(std::env::current_dir().expect("test workspace root")),
+                workspace_id: None,
                 workspace_locks: None,
                 parent_sandbox_profile: None,
                 sandbox_profile: None,
@@ -1008,6 +1032,8 @@ mod tests {
     #[test]
     fn test_subagent_request_builder() {
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 123,
             run_id: None,
             prompt: "Test prompt".to_string(),
@@ -1021,6 +1047,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -1051,6 +1078,8 @@ mod tests {
     #[test]
     fn test_subagent_request_with_different_depths() {
         let request_depth_0 = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "depth 0".to_string(),
@@ -1064,12 +1093,15 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
         };
 
         let request_depth_2 = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 2,
             run_id: None,
             prompt: "depth 2".to_string(),
@@ -1083,6 +1115,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -1103,6 +1136,8 @@ mod tests {
     #[test]
     fn test_subagent_request_clone() {
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "Test prompt".to_string(),
@@ -1116,6 +1151,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -1162,6 +1198,8 @@ mod tests {
 
         let spawner = subagent_pool.spawner();
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 1,
             run_id: None,
             prompt: "test".to_string(),
@@ -1175,6 +1213,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
@@ -1228,6 +1267,8 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             async move {
                 let req = SubAgentRequest {
+                    child_instance_id: String::new(),
+                    originating_turn_id: None,
                     task_id: 1,
                     run_id: None,
                     prompt: "task 1".to_string(),
@@ -1241,6 +1282,7 @@ mod tests {
                     max_tool_calls: None,
                     parent_model: None,
                     workspace_root: None,
+                    workspace_id: None,
                     workspace_locks: None,
                     parent_sandbox_profile: None,
                     sandbox_profile: None,
@@ -1255,6 +1297,8 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             async move {
                 let req = SubAgentRequest {
+                    child_instance_id: String::new(),
+                    originating_turn_id: None,
                     task_id: 2,
                     run_id: None,
                     prompt: "task 2".to_string(),
@@ -1268,6 +1312,7 @@ mod tests {
                     max_tool_calls: None,
                     parent_model: None,
                     workspace_root: None,
+                    workspace_id: None,
                     workspace_locks: None,
                     parent_sandbox_profile: None,
                     sandbox_profile: None,
@@ -1392,6 +1437,8 @@ mod tests {
 
         // Create and send a task
         let request = SubAgentRequest {
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             task_id: 999,
             run_id: None,
             prompt: "Block me".to_string(),
@@ -1405,6 +1452,7 @@ mod tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,

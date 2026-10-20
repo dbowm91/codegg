@@ -2017,7 +2017,21 @@ impl AgentRunStore for SqliteAgentRunStore {
             .get_task(&run.task_id)
             .await?
             .ok_or_else(|| AgentRunStoreError::TaskNotFound(run.task_id.to_string()))?;
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        // Read-then-write admission must take the SQLite writer reservation
+        // before inspecting the granted shared resources. This transaction
+        // reads `agent_scratch_resource` first and inserts the attempt leases
+        // afterwards, so a deferred transaction would hold a shared read lock
+        // and then have to upgrade it — and SQLite refuses that upgrade
+        // without calling the busy handler, so `busy_timeout` never applies
+        // and concurrent scratch admission can fail with SQLITE_BUSY_SNAPSHOT
+        // ("database is locked") instead of one caller waiting its turn. This
+        // is the same hazard `create_or_get` documents above, in the same
+        // file: take the write lock at BEGIN.
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
         let mut resources = vec![(
             ScratchId::parse(run_id.as_str()).map_err(storage_error)?,
             "private_run",

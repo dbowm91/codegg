@@ -5,7 +5,8 @@
 //! `DocumentSnapshot` borrow by the renderer.
 
 use codegg_protocol::lsp::{
-    LspDiagnosticDto, LspDiagnosticsResultDto, LspReadResultDto, LspSemanticTokenDto,
+    LspCodeActionDto, LspCodeActionUnavailable, LspDiagnosticDto, LspDiagnosticsResultDto,
+    LspPreviewCandidateDto, LspReadPayloadDto, LspReadResultDto, LspSemanticTokenDto,
 };
 
 pub const MAX_EDITOR_DIAGNOSTICS: usize = 128;
@@ -48,6 +49,15 @@ pub enum EditorLspPanel {
     ReadResult,
 }
 
+/// Which way an unimpaired diagnostic leaf walks the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorDiagnosticStep {
+    /// `]d` — forward. `]` is forward throughout this layer.
+    Forward,
+    /// `[d` — backward.
+    Backward,
+}
+
 /// Bounded LSP state attached to one editor generation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditorLspState {
@@ -58,6 +68,13 @@ pub struct EditorLspState {
     pub diagnostics_loading: bool,
     pub diagnostics_request_id: u64,
     pub read_result: Option<LspReadResultDto>,
+    /// The reviewable candidate the last preview read carried, if any.
+    ///
+    /// It is scoped like everything else here: `reset_for_scope` wipes it, so
+    /// a candidate can never be offered against a document it was not
+    /// computed for. A preview that could not become a candidate carries
+    /// none — and says why it could not.
+    pub preview_candidate: Option<LspPreviewCandidateDto>,
     pub read_error: Option<String>,
     pub read_loading: bool,
     pub read_request_id: u64,
@@ -176,6 +193,9 @@ impl EditorLspState {
         self.read_loading = true;
         self.read_result = None;
         self.read_error = None;
+        // A new read invalidates the previous candidate: it was computed
+        // against the previous answer's content.
+        self.preview_candidate = None;
         self.selected_index = 0;
         Some(self.read_request_id)
     }
@@ -196,6 +216,7 @@ impl EditorLspState {
         self.read_loading = false;
         self.read_error =
             error.map(|message| truncate_chars(&message, MAX_EDITOR_QUERY_ERROR_CHARS));
+        self.preview_candidate = result.as_ref().and_then(candidate_of);
         self.read_result = result;
         self.selected_index = 0;
         self.panel = Some(EditorLspPanel::ReadResult);
@@ -264,6 +285,63 @@ pub fn truncate_chars(value: &str, max_chars: usize) -> String {
         format!("{prefix}…")
     } else {
         prefix
+    }
+}
+
+/// The reviewable candidate a read result carried, if any.
+///
+/// Only the preview reads carry one: a hover or a definition has nothing to
+/// apply. A preview that could not become a candidate — a truncated rename, a
+/// preview with no edits — carries none, and the reader is told why instead.
+///
+/// A code-action read carries **several** candidates, one per action, and
+/// they are not lifted out here: a code action is a *choice*, so the panel is
+/// where the choice is made, and the review opens on the one that was
+/// chosen.
+fn candidate_of(result: &LspReadResultDto) -> Option<LspPreviewCandidateDto> {
+    match result.payload.as_ref()? {
+        LspReadPayloadDto::FormatPreview(preview) => preview.candidate.clone(),
+        LspReadPayloadDto::RenamePreview(preview) => preview.candidate.clone(),
+        _ => None,
+    }
+}
+
+/// Why a code action cannot be reviewed and applied, in one line.
+///
+/// The vocabulary lives here so the panel and the `Enter` handler say the
+/// *same* thing: a reader who reads the panel and then presses `Enter` must
+/// not be given a second, different explanation.
+///
+/// `None` when the action can be applied.
+pub fn code_action_unavailable_reason(action: &LspCodeActionDto) -> Option<String> {
+    match action.unavailable {
+        Some(LspCodeActionUnavailable::NoEdit) => {
+            Some("the server offered no edit, so there is nothing to apply".to_string())
+        }
+        Some(LspCodeActionUnavailable::Command) => Some(
+            "the server attaches a command to this action, and this editor does not run commands"
+                .to_string(),
+        ),
+        Some(LspCodeActionUnavailable::Disabled) => {
+            // The server's own reason, when it gave one. Its words, not ours:
+            // the reason belongs to the server that disabled the action.
+            Some(match action.disabled_reason.as_deref() {
+                Some(reason) if !reason.trim().is_empty() => {
+                    format!("the server disabled this action: {reason}")
+                }
+                _ => "the server disabled this action".to_string(),
+            })
+        }
+        Some(LspCodeActionUnavailable::IncompletePreview) => {
+            Some("the preview is incomplete, so there is nothing to apply".to_string())
+        }
+        Some(LspCodeActionUnavailable::TooLarge) => {
+            Some("the change is too large to apply".to_string())
+        }
+        Some(LspCodeActionUnavailable::BoundReached) => {
+            Some("the result reached its preview bound, so this action has no preview".to_string())
+        }
+        None => None,
     }
 }
 
@@ -736,5 +814,91 @@ mod tests {
         result.status = codegg_protocol::lsp::LspDiagnosticsStatus::NotReady;
         result.files.clear();
         result
+    }
+
+    /// A reviewable candidate, as the daemon mints one.
+    fn candidate() -> LspPreviewCandidateDto {
+        use codegg_protocol::lsp::LspPreviewPatchDto;
+        LspPreviewCandidateDto {
+            preview_id: "editor-preview-1".into(),
+            preview_revision: 1,
+            preview_digest: "c".repeat(64),
+            kind: "formatting".into(),
+            title: "Format src/lib.rs".into(),
+            provenance: "editor:format:src/lib.rs".into(),
+            patches: vec![LspPreviewPatchDto {
+                path: "src/lib.rs".into(),
+                patch: "@@ -1 +1 @@\n-old\n+new\n".into(),
+                original_hash: "a".repeat(64),
+            }],
+        }
+    }
+
+    /// The candidate is scoped like everything else here.
+    ///
+    /// A candidate is the material the apply path consumes, so offering one
+    /// against the wrong document would be offering a change that belongs to
+    /// another file. A new read invalidates it, and a new scope wipes it.
+    #[test]
+    fn a_candidate_is_scoped_to_the_read_that_produced_it() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspReadOperation, LspReadPayloadDto, LspReadResultDto,
+            LspReadStatus,
+        };
+        let scope = scope();
+        let mut state = EditorLspState::default();
+        let request = state.begin_read(&scope).unwrap();
+        let result = LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".into(),
+                edit_count: 1,
+                before_hash: "a".into(),
+                after_hash: "b".into(),
+                diff: "-a\n+b\n".into(),
+                truncated: false,
+                base_stale: false,
+                candidate: Some(candidate()),
+            })),
+        };
+        assert!(state.apply_read(request, &scope, Some(result), None));
+        assert!(
+            state.preview_candidate.is_some(),
+            "the candidate the read carried must be held"
+        );
+
+        // A new read invalidates it: it was computed against the old answer.
+        let request = state.begin_read(&scope).unwrap();
+        assert!(
+            state.preview_candidate.is_none(),
+            "a new read must not inherit the previous candidate"
+        );
+
+        // And a new scope wipes it entirely.
+        let result = LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".into(),
+                edit_count: 1,
+                before_hash: "a".into(),
+                after_hash: "b".into(),
+                diff: "-a\n+b\n".into(),
+                truncated: false,
+                base_stale: false,
+                candidate: Some(candidate()),
+            })),
+        };
+        assert!(state.apply_read(request, &scope, Some(result), None));
+        let other_scope = EditorLspScope {
+            generation: scope.generation + 1,
+            ..scope.clone()
+        };
+        state.reset_for_scope(other_scope);
+        assert!(
+            state.preview_candidate.is_none(),
+            "a candidate must not survive the scope it was read under"
+        );
     }
 }

@@ -182,11 +182,11 @@ The module header is explicit (`workstream_claim.rs:1-4`):
 > "Claims coordinate declared responsibilities only. They are never consulted
 > by filesystem, Git, sandbox, or scheduler authorization."
 
-ADR-0042 states the same rule (`plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md:27`):
+ADR-0044 states the same rule (`plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md:27`):
 > "A task/path claim, process-resource key, repository lock or Git lease is not
 > write authority."
 
-and (`plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md:47`):
+and (`plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md:47`):
 > "Claims are advisory; no path-glob locking as a safety substitute."
 
 Nothing in the filesystem, Git, sandbox, or scheduler path in `codegg-core`

@@ -26,6 +26,7 @@ root and lifecycle modules.
 | `src/tui/app/render.rs` | Cached render composition; no I/O or async work |
 | `src/tui/app/input.rs` | Synchronous `TuiMsg` processing |
 | `src/tui/app/project_session.rs` | Active project/session and projection lifecycle |
+| `src/tui/commands/primary_projection.rs` | Default `/core` session projection subscription, snapshot installation, bounded pre-install events, ack/resync, and teardown |
 | `src/tui/app/prompt_turn.rs` | Prompt submission and route-safe turn start |
 | `src/tui/app/modal.rs` | FocusManager-backed modal lifecycle |
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
@@ -321,12 +322,15 @@ Three rules, each of which was a defect first:
   - **The row is a carved row, and the input box does not move with it.**
     `session_layout` gives the prompt chunk a fixed, bottom-anchored height, and
     the working strip, hint line and todo strip come off its **top** in that
-    order. So a panel that starts declining shrinks the carved region and hands
-    the row to the transcript (`Min(10)`), and the composer stays on its row —
+    order. So the composer stays on its row whatever the carved region does —
     the opposite of what the arithmetic looks like it should do. Pin it, because
     a hint row that reflowed the input every time a panel took or lost focus
     would be the same defect the working strip's reserved row 0 exists to
     prevent. Nothing to do with that strip, which is reserved unconditionally.
+    **The row is not vacated when a panel lets go**: the composer takes it over,
+    because the composer's own verbs are what the row is for (M007). The row's
+    *content* changes with the keyboard; its *presence* does not, so the working
+    strip above it does not move either.
   A **hosted** box gets its verbs from the box itself via
   `Component::keymap_hint()`, so the string sits next to the `handle_key`
   arms that implement it; the host's generic `j/k scroll · i act` is only
@@ -477,6 +481,169 @@ Three rules, each of which was a defect first:
   inserted newlines, so every navigation key was an edit key until `Esc`, a
   chord nothing on screen named. `open_document` and `:new` both call
   `enter_editor_normal`; nothing puts a fresh document in `Insert`.
+- **Insert mode has its own chords, and its table is a tuple match.**
+  `handle_insert_key` dispatches on `(key.modifiers, key.code)`, because every
+  Helix insert-mode chord is a *modified* key: `Ctrl+h`, `Ctrl+d`, `Ctrl+j`,
+  `Ctrl+k`, `Ctrl+u`, `Ctrl+w`, `Alt+Backspace`, `Alt+d`, `Alt+Delete`, plus
+  `Ctrl+x` for the completion popup. A chord may mean one thing in `Normal` and
+  another in `Insert` (`Ctrl+d` pages in one and deletes a character in the
+  other) — each still has exactly one owner, and the owner is the stage that
+  claims it. **The catch-all character arm is last**, so an unmodified
+  character chord added later sits above it rather than under it. Teach
+  `scripts/check_tui_editor_key_authority.py` any new dispatch shape *before*
+  the shape lands: it reads the tuple table and the legacy `match key.code`
+  table, treats an arm it cannot resolve as an **error** and never as a pass,
+  and its `--self-test` runs synthetic tables through the same analysis the
+  real check uses.
+- **A typing burst is one undo step.**
+  `TuiDocumentPresentation::insert_session` accumulates the edits of one `INS`
+  burst and commits them as a single `EditorUndoEntry` when insert mode ends,
+  so one `u` takes back the whole run rather than its last keystroke. A run is
+  one *contiguous insertion*: a deletion, a replacement, or an insertion away
+  from the end of the run ends it, because those are separate edits. The
+  session keeps bounded `TextTransaction`s and never a copy of the text. A
+  reconciliation **discards** an open session rather than committing it — the
+  text it described is the pre-reload text.
+- **The first edit of a run is asked the same question as every later one.**
+  `absorb_insert_edit` asks whether an insertion continues the run; the first
+  edit must clear the same bar, and `submit_edit` asks it through
+  `typing_run_continues`: the cursor must end where the inserted text ends. A
+  run whose text does not end where the cursor is cannot be continued. The
+  open-line verbs are why — `o` inserts its newline at the **end** of the line
+  it opens and leaves the cursor at its **start**, so the text the reader
+  types goes in before the newline, and the open-line edit is its own undo step
+  rather than the first keystroke of a run.
+- **`o` and `O` open a line, through the shared edit funnel.**
+  `editor_open_line` shares `editor_editing_command`'s read-only gate, its
+  snapshot and its `resolve_edit`; it differs only in what it returns. A verb
+  that **writes** claims its key and reports the refusal
+  (`BufferKey::Consumed` plus a notice), so `o`/`O` behave like `d`/`D`/`x`; a
+  verb that only **moves the cursor** (`i`/`a`/`I`/`A`) leaves the key
+  unclaimed and lets the status row's "read-only" be the report. The open-line
+  cursor is the **start of the opened line** — the two cases reach it by
+  different arithmetic, and getting it wrong puts the reader's typing on the
+  line after the one that was opened.
+- **The history is one list with a cursor in it.**
+  `TuiDocumentPresentation` holds `history`, `history_bytes` and
+  `history_cursor` — not an undo stack and a redo stack. `history_cursor` is
+  the number of *applied* entries, so undo and redo are the same movement in
+  opposite directions and an entry never moves between containers. The cursor
+  moves **only after** the apply is accepted: a refused apply leaves the
+  document, the history and the cursor exactly where they were.
+  `MAX_EDITOR_UNDO_DEPTH` (256) and `MAX_EDITOR_UNDO_BYTES` (4 MiB) are **one
+  cap over the history as a whole** — the two-stack model enforced them
+  twice, so its worst case was twice the documented bound.
+  `Alt+u` and `Alt+U` (Helix's `earlier`/`later`) are the explicit history
+  gestures and **report** their boundary ("no earlier change" / "no later
+  change" in the status row); `u` and `U` stay silent there, as they always
+  have — a CodeGG convention, not a Helix behaviour. The position is
+  observable: while the cursor is not at the tip the banner row says
+  `history <at>/<of>`, and at the tip it says nothing.
+- **A modifier is an exact bitmask, and a capital has two spellings.**
+  An arm's modifier predicate is read as the set of **exact** bitmasks it
+  admits: `m == alt || m == alt_shift` admits exactly `ALT` and exactly
+  `ALT | SHIFT`, not their combination, and the key-authority guard compares
+  those bitmasks rather than modifier *names* — `ALT` and `ALT | SHIFT` are
+  disjoint, exactly as Rust's `==` on the bitflags says they are. Write a
+  multi-modifier arm as a `let alt_shift = KeyModifiers::ALT |
+  KeyModifiers::SHIFT;` binding, never as the or-pattern `m == alt | m ==
+  shift`, which is not a bitmask at all. And a terminal may report a capital
+  as the shifted glyph (`Char('U')`) or as the plain glyph plus `SHIFT`
+  (`Char('u')` with `SHIFT`): an arm that claims a capital accepts both
+  spellings, because a chord live on one terminal and dead on the next is a
+  binding that does not exist. When the two spellings differ in the *key
+  code* — `Alt+U` is `Char('U')` with `ALT` **or** `Char('u')` with
+  `ALT | SHIFT` — they need two arms, and the guard counts arms.
+- **The `m` grammar is two levels, and the sub-state rides in the variant.**
+  `EditorPrefix::Match` is the first level and `EditorPrefix::MatchArg(arg)`
+  is the second, with `MatchArg` naming the argument being waited for — so
+  the presentation still has **one** pending-prefix field and
+  `scripts/check_tui_editor_prefix_state.py` stays green. A second
+  `pending_*` field is exactly what that guard exists to prevent.
+  The leaf table does not carry a **verb**: the two-level commands' leaves
+  all carry `PrefixAction::Capture(MatchArg)`, whose payload is a `Copy`
+  enum, and the verb is produced when the *capture* resolves — which is what
+  keeps `PrefixAction` and `PrefixLeaf` `Copy` and the leaf tables `const`.
+  `EditorPrefix::display()` returns a `Cow` so the two halves of `m r` do
+  not render alike: the second half shows the character already captured
+  (`m r (`).
+- **A bracket match that cannot land says which of the two things went
+  wrong.** `m m` on no delimiter and `m m` on a delimiter with no mate are
+  different answers — one means *move the cursor*, the other means *the code
+  is unbalanced* — and both are reported. The disclosure lives on
+  `TuiDocumentPresentation::match_note`, beside the find and paragraph
+  notes, and `lift_motion_notes` lifts it into the notice immediately after
+  the motion, so it describes exactly one keystroke.
+- **A surround edits, and then holds a selection.** `submit_edit` clears
+  every selection on success, so a verb that means to leave one behind says
+  which one: `HelixVerbOutcome::EditAndSelect` carries the members, and the
+  command layer applies them **after** the submission. The members are in
+  **post-edit** coordinates, and they are **computed** rather than read — a
+  post-edit offset past the old end of the document cannot be read from the
+  pre-edit snapshot, because `clamp_offset` pulls it back to the old end.
+- **A text object follows the motion, not a private rule.** `m i w` uses
+  `is_word_byte` and `m i W` uses `is_long_word_byte`, so each object agrees
+  with the `w`/`W` the reader just used to get there. A WORD is everything
+  up to whitespace, punctuation included — on `a.b` the two objects differ.
+- **The space menu is a table, and a leaf names a request, not an action.**
+  `SPACE_LEAVES` holds one row per Helix space gesture, and every row names
+  what it wants: `PrefixAction::Effect(EditorPendingEffect)`. The effect enum
+  is **editor-level** (`src/tui/editor_effect.rs`), not LSP-level — a file
+  picker and a clipboard verb are not language-server facts, and
+  `EditorLspState` is reset wholesale on a scope change, which is the wrong
+  fate for them. The leaf parks the effect on `EditorState::pending_effect`
+  and `handle_editor_key` drains it on the very next statement: one hop, not
+  a queue, so a leaf can never leave a request armed.
+- **`space f` is a request for a root, not a walk.** The listing is
+  daemon-owned (ADR-0022, C005): it is resolved from the active tab's
+  canonical project/workspace binding, and the TUI never walks its own
+  filesystem. So the editor checks that binding **before** it opens anything —
+  with no workspace root, or with a root that has no canonical ids, it says
+  so and opens nothing, because a browser that opens empty is a key that
+  appears to do nothing. `App::open_file_picker` is the one place that knows
+  how to seed the browser, so `/files` and `space f` cannot disagree about
+  what it shows, and the browser's title names the root it is browsing.
+- **A space key that cannot run says why.** `EditorPendingEffect::Unavailable`
+  carries the reason, and it renders as a **status row**, not a toast: a
+  toast disappears, a status line stays and can be read. Every Helix space
+  glyph is bound, bound to a statement, or documented as out of scope — there
+  is no dead key in the menu.
+- **A preview is a read, and a complete one can become an edit.** `space r` and `=`
+  show what a rename or a format *would* change. `space r` collects the new
+  name on the `:` command line — the mechanism M008 established, not a second
+  input mode — so the leaf arms the prompt and the read follows it. Since M016
+  a preview that is complete enough carries the material the apply path
+  consumes, and the chord opens the **change review** on it: the diff on
+  screen is the change that would be written, `[a]pply` sends it through the
+  daemon's checked apply path, and `Esc` rejects it. A preview that cannot be
+  applied stays a preview and says which it was. Since M017 `space a` is a
+  preview too — the **code-action read** — and it is a *choice*: the LSP panel
+  is the picker, `j`/`k` move and `Enter` opens the review on the selected
+  action. Do not open the review on the first action: the reader has not
+  chosen one. The write path is **not** missing — ADR-0008 owns it, and the
+  editor reaches it by carrying the candidate to the one builder,
+  `build_apply_request`. There is no registry and no second apply path.
+- **A Normal-mode chord that needs the App layer reports what it wants.**
+  `=` is a Normal chord, not a prefix leaf, and `pending_effect` is
+  documented as *a prefix leaf's* effect — so `=` returns
+  `BufferKey::LspRead(LspReadOperation)`, the same shape the other
+  Normal-mode verbs use: the buffer decides **what** was asked for, and the
+  App layer — which holds the core client — does **how**.
+- **A leaf table is policed by its own guard.**
+  `scripts/check_tui_editor_leaf_authority.py` rejects a duplicated glyph
+  inside one table, a glyph that is not printable ASCII, one glyph claimed by
+  two tables of the same prefix, a leaf behind a guard-block chord, and a
+  table no prefix binds. It reads the guard-block chords through the
+  key-authority guard rather than re-parsing the dispatch chain, because two
+  parsers for one shape is two models of it. A leaf is consulted only while
+  its prefix is armed, and the resolver disarms before consulting it, so a
+  leaf **cannot** shadow a directly-bound chord — the earlier rule that said
+  otherwise was demonstrably false on the shipped tree.
+- **A panel never claims a key that means text.** In `INS` a printable is
+  text. The completion popup and the LSP diagnostics panel are mode-aware:
+  their `j`/`k`/`r`/`Enter` claims are Normal-mode claims, and in `INS` the
+  popup's `Enter` is a newline, its `↑`/`↓` move the cursor, and its
+  `Tab`/`Shift+Tab` move the candidate selection.
 - **`/` searches the document, not the command catalog.** On this route the
   composer arms bare text with `:`, so an unclaimed `/` became `:/` and
   resolved to no command — a key that looks like it should do something and
@@ -872,8 +1039,9 @@ Three rules, each of which was a defect first:
   into the next pick. A panel row that a user selects must do something:
   `AgentsPanel` had no `Enter` arm at all and consumed the key silently.
 - **Subagent rows are projection-derived and last-known-good.**
-  `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
-  A snapshot that arrives replaces the rows; a *missing* snapshot does not,
+  `session_work::select_session_work` reads session-owned child instances first,
+  falling back to a turn tree only for legacy snapshots, and folds related
+  AgentRun/Job/tool-program records by explicit ids. A snapshot that arrives replaces the rows; a *missing* snapshot does not,
   because absence is not evidence that no subagents exist and clearing on it
   blanks the strip mid-turn. Never synthesize a row the projection did not
   vouch for, and never synthesize progress text: the projection adapter
@@ -1157,6 +1325,150 @@ Three rules, each of which was a defect first:
   can answer the other — a box is not a side panel, and a panel is not a dialog.
   It is a **pure read**: a badge that forced `input_mode` to match what it
   displays turns the state it reports into the state it causes.
+- **The composer's caret is derived, and `PromptWidget` has no `focused` flag.**
+  `App::composer_holds_keyboard` answers "does the composer hold the keyboard",
+  in the same shape as `composer_input_mode` and over the same seams. Its order
+  mirrors `App::on_key`'s priority chain: a mounted modal owns the keyboard, then
+  a focused side panel (`App::panel_owns_keyboard` — the extracted `panel_active`
+  condition, so the key chain and the caret rules read **one** derivation), then
+  the editor's buffer when it is explicitly focused; otherwise the composer owns
+  it. The old `focused` field was **dead in production** (`PromptWidget::blur()`'s
+  only caller was a test), so "no cursor while another surface has the keyboard"
+  was unimplementable as written. Do not reintroduce a stored flag: a copy of
+  this fact can drift from the badge, which is the defect class the mode
+  resolution exists to kill.
+- **Two carets, mutually exclusive, and the blink is the terminal's.**
+  Insert mode positions the **terminal's own cursor** at the caret with
+  `Frame::set_cursor_position` (never the deprecated `Frame::set_cursor`); Normal
+  mode paints a solid block instead. Both read
+  `PromptWidget::caret_cell`, the single computation of where the caret is on
+  screen, so the two cannot disagree. The app runs **one** animation cadence
+  (the 100 ms working strip), so a blinking caret must come from the terminal —
+  ratatui hides the terminal cursor whenever a frame did not position it, so
+  "position nothing" is how the composer shows no cursor at all. The rule the
+  badge and the caret share: **when the composer holds the keyboard, `[INS]`
+  means the terminal cursor is positioned and `[NOR]` means the block is
+  painted; when it does not, neither caret is present.**
+- **The composer owns a closed set of Normal-mode letters, and a claimed
+  letter never falls through.** `src/tui/composer_claims.rs` is the single
+  table; the app's binding map is consulted only for letters the composer does
+  not claim. A claimed letter is consumed **even when its verb is not
+  implemented yet** — that is the fallthrough rule, and it is the whole point
+  of the table: a reserved claim that leaks becomes an unrelated app action
+  (the terminal panel records the failure verbatim: an unclaimed `d` silently
+  became `OpenDiff`). The claim step runs **before** the binding map, inside
+  the composer branch of the key chain, so a modal, a focused panel, the
+  Workspace view and the editor route are all consulted first. The gate is
+  the *resolved* mode plus `App::composer_holds_keyboard`, never the raw
+  `UiState::input_mode`. A condition on a claim must be written on the entry
+  (`j`/`k` are the one conditional pair): an implicit conditional is how a
+  leak reappears. A claimed **capital** answers to both encodings
+  (`Char('U')` with `SHIFT` and with `NONE`), like the app's
+  `insert_panel_direction_bindings`; a lowercase claim is the bare key only.
+- **A consumed claim that does nothing is a dead key — never claim a letter
+  the app needs to keep working.** `i` is the app's **only** route back to
+  Insert mode (it is the `None` arm of the key chain, not a binding), so its
+  verb is **live**: it runs the transition the app already had, and the table
+  is where that ownership now lives. A reserved `i` would swallow the key,
+  do nothing, and leave the user in Normal mode with no way to type. When a
+  verb is promoted from reserved to live, the runner in
+  `App::run_composer_claim` is where the behaviour goes — not the binding
+  map — and the `None` arm keeps the gesture only for the surfaces the
+  composer does not own.
+- **The live verbs so far are the motions and the selection verbs.** `w`, `b`,
+  `e`, `j`, `k` (motions), `v`, `x`, `d`, `p` (selection and clipboard),
+  `i`, `a`, `o` (the insert transitions) and `u`, `U` (undo and redo) — every
+  claim in the table is live, so the runner's match on the verbs is
+  **exhaustive** and a verb added without an arm does not compile. Two rules
+  make them work, and
+  both are shared with the editor rather than local to the composer: a motion
+  moves the caret through **`move_caret`** (the machine's `move_to`), never
+  `set_caret`, because that is what makes a held character selection *grow*
+  with the motion; and the selection has **one** byte range
+  (`ComposerText::selection_range`, the editor's rule term for term) that
+  delete, copy and the renderer all read. A second range is how "copy" and
+  "delete" stop meaning the same thing. The word and vertical **targets** come
+  from `src/tui/text_geometry.rs`, so the composer and the editor land on the
+  same offset for the same text; a composer with its own word rule would be
+  two answers to one question.
+- **An edit that changes the buffer's length drops the held selection, and the
+  undo history never evicts its last entry.** The selection's points are byte
+  offsets into the text the edit replaces, so the rule lives in
+  `ComposerText::replace_range` — the one place every edit passes through —
+  rather than in each caller's judgement; `undo` and `redo` change the length
+  too and drop it the same way. The history's byte bound drops **older** edits
+  and never the newest one: evicting the newest edit because it is large would
+  make a large paste unundoable the moment it was made. The undo scope is the
+  composer's **own text** (roadmap D4): a submit and a staged projection
+  replace the buffer and drop the history, so an undo can never bring back
+  text the user has already sent.
+- **The hint row and the help are DERIVED from the claim table, and the guard
+  polices both.** `composer_verb_entries` (`src/tui/composer_claims.rs`) is a
+  read-only view over `COMPOSER_CLAIMS` — the live claims, each with its key,
+  its human label, and its condition. Three surfaces read it and none keeps a
+  copy: the **hint row** above the composer (`App::composer_hint_row`), the
+  **help**'s composer section (`composer_help_entries`, `src/tui/input.rs`),
+  and the **guard** (`scripts/check_tui_composer_key_authority.py`). A
+  hand-written list anywhere would be a second copy of the table, and a second
+  copy is the drift the table exists to prevent.
+  - **Focus gates the row; the mode changes its text.** The row is present in
+    Normal and in Insert alike, so `Esc` does not reflow the transcript — the
+    interactive terminal panel's shape (`src/tui/panels/terminal.rs:416`). The
+    row names the composer's **keys**, not their descriptions: the
+    descriptions live in the help, and a row spelling out fourteen verbs does
+    not fit eighty columns.
+  - **A part is never split.** The row is bounded by dropping whole parts from
+    the end, because a row cut in the middle of a key names a key that does not
+    exist. `fit_parts` measures display columns, not bytes.
+  - **Two rules police the help.** **G10** asks "does the help describe the
+    composer's verbs?" — the composer section must be derived, every live verb
+    must have a label, and no app row may advertise a claimed key for a
+    different action (the `a` → "Focus sidebar" class) or a reserved claim. The
+    one exception is a *conditional* claim's fall-through row, the `j`/`k` row,
+    which earns the exception by carrying its condition. **G11** asks "does the
+    help describe the *app's* re-spelled verbs?" — each must be documented
+    under a modifier chord and not under its old bare letter. Both are scoped
+    to the **Normal-mode** section: the Dialog and Command sections describe
+    other surfaces, where the same letters mean something else.
+- **The copy gesture belongs to the help box, and the ROUTE decides — never
+  the mode.** `space` opens the composer's help and `y` in that box copies the
+  selection; the `/help` command's box does not copy, and `y` there is a
+  filter character. The mode cannot say which box this is: a `/help` box
+  starts in Insert and `Esc` moves it to Normal, and a `space` box can be
+  switched to Insert with `Enter`. So the route travels **in the open
+  request** (`Dialog::Help(HelpRoute)`), and a call site cannot open the box
+  without saying which box it is; the default route is the one that cannot
+  copy. `HelpRoute` now lives in `src/tui::input` beside the content it
+  selects, and `HelpDialog::with_route` **rebuilds** that content — the route
+  selects content as well as behaviour, and relabelling the box without
+  rebuilding it would leave the chord route teaching a gesture it does not
+  have. The copy is a **`TuiMsg`**, not a dialog-side mutation:
+  `open_dialog` pushes a *clone* onto the focus manager, and the clone is what
+  receives the keys.
+- **A letter the composer claims is not available to the app.** The four
+  app-level actions that owned `x`, `d`, `i` and `a` moved to `Ctrl+Alt+X`,
+  `Ctrl+Alt+D`, `Ctrl+Alt+E` and `Ctrl+Alt+S`, in **both** maps. The `a`
+  re-spelling **deleted** a binding rather than moving one: `FocusSidebar`
+  already answered to `Ctrl+Alt+S` in both maps, so the vim map's bare `a`
+  was a second spelling of an action that already had one — the composer's
+  insert-after key took the letter and nothing was lost with it.
+  `Ctrl+Alt+<letter>` is the
+  legacy-safe family: the terminal delivers `ESC` + the control byte, which
+  crossterm reports as the letter with CONTROL|ALT. `Ctrl+Alt+I` is **not**
+  usable — `ESC` + `0x09` arrives as `Tab` with ALT. A chord's `(modifiers,
+  key)` pair must not be one the table **claims**: a claim is matched on the
+  exact modifier set, so `Ctrl+Alt+X` is not the claim for the bare `x` and the
+  composer does not take the chord back — but a chord spelled with a modifier
+  set the table claims would be swallowed. When an action's only spelling
+  becomes a chord, it must leave `is_normal_only`: a chord cannot be composed
+  as text, so gating it out of Insert mode would take the action out of the
+  mode the app boots in. **A bare spelling of a letter the composer does *not*
+  claim is not a re-spelling violation.** The default map's `/` for  focus-prompt is the live example: `/` is not claimed, so the plan's
+  invariant — *a letter the composer does not claim must resolve to the same
+  app action it resolves to today* — requires it to keep working, and it is
+  the gesture that enters command mode, which is what makes the rest of a
+  typed slash command land. Removing it broke the only route back into the
+  panel manager from a focused panel.
 - **Never make one key answer two questions.** `Esc` used to be both "leave
   insert" and "pass an escape byte through", disambiguated by a hidden
   `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's
@@ -1270,15 +1582,35 @@ Three rules, each of which was a defect first:
 
 ## Static Guards
 
-Both guards fail `verify.sh quick` and the CI `verify` job. Read them before
-adding TUI code - they are the executable form of the invariants above.
+Every guard in the table below fails `verify.sh quick` and the CI `verify` job.
+Read them before adding TUI code - they are the executable form of the
+invariants above.
 
 | Script | Enforces |
 |---|---|
 | `python3 scripts/check_tui_project_authority.py` | Scans `tui/app/state/**`, `tui/app/mod.rs`, `tui/commands/**`, `tui/runtime/**`, `tui/command.rs`, and `tui/components/dialogs/command.rs`; rejects `session_state.project_dir` and `std::env::current_dir()` as project authority. Only clearly marked bootstrap boundaries and test fixtures are exempt. |
 | `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
+| `python3 scripts/check_tui_composer_key_authority.py` | Reads the composer's claim table (`src/tui/composer_claims.rs`) and the two binding maps, and fails when a letter is claimed twice, when a claimed letter can still reach an app-level action, when a re-spelled chord is missing from a map, when a re-spelled action has no chord to reach it by or still answers to a claimed key, when a capital claim misses an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only` entry. Carries a `--self-test` that injects each violation class. |
+| `python3 scripts/check_tui_editor_key_authority.py` | Scans the editor's dispatch stages and rejects a chord claimed twice, a chord claimed by a later stage after an earlier one took it, and a shadowed arm. The conflict model is the **exact modifier bitmask**, so `ALT` and `ALT \| SHIFT` are disjoint. `--self-test` runs ten cases, including one the guard cannot resolve — that must be an error, not a pass. |
+| `python3 scripts/check_tui_editor_prefix_state.py` | Rejects a second pending-prefix mechanism: the presentation must hold exactly one, typed `EditorPrefix`. A grammar that wants a second level puts it in the **variant** (`EditorPrefix::MatchArg`), not in a second field. |
+| `python3 scripts/check_tui_editor_leaf_authority.py` | Polices the editor's **leaf tables**: no duplicated glyph inside one table, every glyph printable ASCII, one glyph per prefix across that prefix's tables, no leaf behind a guard-block chord, and no table no prefix binds. Reads the guard-block chords through the key-authority guard. `--self-test` runs nine synthetic cases through the same analysis the real check uses. |
+| `python3 scripts/check_tui_editor_apply_path.py` | Polices the **preview-apply path**: one builder (`build_apply_request`) and one `CoreRequest::LspPreviewApply` construction, and a carried candidate that is never registered. Reads ADR-0008's contract. |
+| `python3 scripts/check_tui_editor_completion_authority.py` | Polices the **completion popup's triggers**: `F8` claimed exactly once, `Ctrl-x` claimed exactly once, no trigger shadowing the guard block's `Ctrl+s`/`Ctrl+r`, and `Ctrl-x` in Insert mode only. Tells the triggers from the popup's own keys **structurally** — the arms before the popup-open check — and reads the guard-block chords through the key-authority guard. |
+| `python3 scripts/check_tui_editor_doc_drift.py` | Polices the **binding set against `docs/tui.md`**: every leaf gesture and every claimed chord the code owns is documented, every key the document declares unbound is unbound, and the document carries an unbound declaration at all. Reads the chords and the leaf tables through the key- and leaf-authority guards, so there is one parser per dispatch shape. `--self-test` runs eight synthetic cases, one of which is the clean tree. |
+| `python3 scripts/check_tui_transport_authority.py` | Polices **transport selection**: `AppMode::RemoteCore` names two different frontends — the WebSocket attach path (which owns `remote_send_tx`) and the socket-daemon path (which does not) — so a remote send may only be gated on `App::is_ws_attach_transport()`. Sending on the mode alone drops the message into an absent channel, which has hung a turn twice. |
+| `python3 scripts/check_tui_subagent_name_pool_isolation.py` | Polices **subagent descriptor provenance**: the TUI may not resolve a subagent's descriptor against the curated name pool. The descriptor is drawn once, at spawn, by the only code holding the name lease, and every surface downstream reads what the projection carried. A display name is not a stable key, so a local lookup reintroduces the attribution defect C001 recorded once. |
 
 ## Testing
+
+The default socket-connected TUI owns a session-scoped projection separately
+from `/observe`. `set_session`, active-tab switch, and reconnect start a
+generation-fenced subscription; the completion validates project/session/tab
+and stream identity before installing the snapshot. Reconnect takes a fresh
+authoritative snapshot. Until it lands, `Ctrl+T`, `/sessions`, and the sidebar
+show loading or unavailable state instead of claiming an empty session. Keep
+the live-event pre-install queue bounded and drain it only after snapshot
+installation. Do not route projection events through `AppMode` or the raw
+session event subscription.
 
 ```bash
 cargo test --test tui_render        # rendering integration tests

@@ -99,6 +99,18 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     agent_loop.set_workspace_id(input.execution.workspace_id.clone());
     if let Some(lease) = input.workspace_service_lease {
         agent_loop.set_workspace_services_lease(lease);
+    } else {
+        // Runtimes without a workspace services bundle (the in-process
+        // standalone core) still have the workspace's canonical root. The
+        // bundle's policy is the single-root policy over that root, so
+        // installing it here is the same policy the daemon would have
+        // supplied — not a stand-in. Without it every tool call is refused
+        // with "verified tool authority is missing workspace path policy".
+        agent_loop.set_workspace_path_policy(
+            codegg_core::workspace_services::WorkspacePathPolicy::for_root(
+                input.execution.workspace_root.clone(),
+            ),
+        );
     }
     if let Some(spool) = input.subagent_pool {
         agent_loop.set_subagent_pool(spool);

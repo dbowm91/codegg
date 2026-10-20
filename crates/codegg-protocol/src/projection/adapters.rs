@@ -102,6 +102,7 @@ pub fn snapshot_from_snapshot_session(
         secondary_sessions: Vec::new().into(),
         workspace,
         active_turn: None,
+        subagents: Vec::new().into(),
         recent_turns: Vec::new().into(),
         runs: Vec::new().into(),
         jobs: Vec::new().into(),
@@ -460,6 +461,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
         }
         CoreEvent::TurnFailed { turn_id: None, .. } => {}
         CoreEvent::SubagentStarted {
+            child_instance_id,
+            originating_turn_id,
             task_id,
             agent,
             description,
@@ -470,6 +473,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             ..
         } => {
             let mut node = AgentTreeNodeProjection {
+                child_instance_id: child_instance_id.clone(),
+                originating_turn_id: originating_turn_id.clone(),
                 task_id: *task_id,
                 agent: truncate_str(agent, MAX_PROJECTION_STRING_BYTES).into_owned(),
                 description: truncate_str(description, MAX_PROJECTION_STRING_BYTES).into_owned(),
@@ -493,28 +498,40 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             events.push(ProjectionEvent::SubagentStarted { node });
         }
         CoreEvent::SubagentProgress {
-            task_id, message, ..
+            child_instance_id,
+            task_id,
+            message,
+            ..
         } => {
             events.push(ProjectionEvent::SubagentProgress {
+                child_instance_id: child_instance_id.clone(),
                 task_id: *task_id,
                 message: truncate_str(message, MAX_PROJECTION_STRING_BYTES).into_owned(),
                 at: env.timestamp_ms,
             });
         }
         CoreEvent::SubagentCompleted {
+            child_instance_id,
             task_id,
             result_summary,
             ..
         } => {
             events.push(ProjectionEvent::SubagentCompleted {
+                child_instance_id: child_instance_id.clone(),
                 task_id: *task_id,
                 result_summary: truncate_str(result_summary, MAX_PROJECTION_RUN_SUMMARY_BYTES)
                     .into_owned(),
                 completed_at: env.timestamp_ms,
             });
         }
-        CoreEvent::SubagentFailed { task_id, error, .. } => {
+        CoreEvent::SubagentFailed {
+            child_instance_id,
+            task_id,
+            error,
+            ..
+        } => {
             events.push(ProjectionEvent::SubagentFailed {
+                child_instance_id: child_instance_id.clone(),
                 task_id: *task_id,
                 error: truncate_str(error, MAX_PROJECTION_STRING_BYTES).into_owned(),
                 failed_at: env.timestamp_ms,
@@ -713,8 +730,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 .into_owned(),
                 state: "started".to_string(),
                 summary: attempt_id.clone(),
-                session_id: session_id.clone(),
-                turn_id: None,
+                session_id: session_id.clone().or_else(|| env.session_id.clone()),
+                turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: None,
                 updated_at: env.timestamp_ms,
@@ -738,8 +755,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 .into_owned(),
                 state: "completed".to_string(),
                 summary: attempt_id.clone(),
-                session_id: session_id.clone(),
-                turn_id: None,
+                session_id: session_id.clone().or_else(|| env.session_id.clone()),
+                turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: None,
                 updated_at: env.timestamp_ms,
@@ -765,8 +782,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 .into_owned(),
                 state: "failed".to_string(),
                 summary: truncate_str(message, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned(),
-                session_id: session_id.clone(),
-                turn_id: None,
+                session_id: session_id.clone().or_else(|| env.session_id.clone()),
+                turn_id: env.turn_id.clone(),
                 active_attempt_id: Some(attempt_id.clone()),
                 error_class: Some(
                     truncate_str(error_class, MAX_PROJECTION_STRING_BYTES).into_owned(),
@@ -774,6 +791,76 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 updated_at: env.timestamp_ms,
             };
             events.push(ProjectionEvent::JobUpserted { job });
+        }
+        CoreEvent::JobCancelled { job_id, attempt_id } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "cancelled".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
+        }
+        CoreEvent::JobTimedOut { job_id, attempt_id } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "timed_out".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
+        }
+        CoreEvent::JobInterrupted {
+            job_id, attempt_id, ..
+        } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "interrupted".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
+        }
+        CoreEvent::JobRetried {
+            job_id,
+            new_attempt_id,
+            ..
+        } => {
+            events.push(ProjectionEvent::JobUpserted {
+                job: JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: String::new(),
+                    state: "queued".into(),
+                    summary: String::new(),
+                    session_id: env.session_id.clone(),
+                    turn_id: env.turn_id.clone(),
+                    active_attempt_id: Some(new_attempt_id.clone()),
+                    error_class: None,
+                    updated_at: env.timestamp_ms,
+                },
+            });
         }
         CoreEvent::BackgroundJobCompleted {
             session_id,
@@ -1091,6 +1178,8 @@ mod tests {
         let env = envelope(
             CoreEvent::SubagentStarted {
                 session_id: "s1".into(),
+                child_instance_id: "child-7".into(),
+                originating_turn_id: Some("turn-1".into()),
                 task_id: 7,
                 agent: "explorer".into(),
                 description: "exploring the tree".into(),
@@ -1128,6 +1217,8 @@ mod tests {
         let env = envelope(
             CoreEvent::SubagentStarted {
                 session_id: "s1".into(),
+                child_instance_id: "child-8".into(),
+                originating_turn_id: None,
                 task_id: 8,
                 agent: "explorer".into(),
                 description: "no name yet".into(),

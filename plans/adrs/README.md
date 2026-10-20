@@ -152,10 +152,10 @@ capability by existing group membership. M005 is active for writer-containment
 design and qualification; shared-write execution remains unavailable pending
 real tool-path confinement and lifecycle recovery evidence.
 
-## ADR-0042 restricted shared-checkout boundary reservation (2026-10-19)
+## ADR-0044 restricted shared-checkout boundary reservation (2026-10-19)
 
 The M005 writer-containment corrective proposed
-ADR-0042-restricted-agent-shared-checkout-writer-contract.md and recorded a
+ADR-0044-restricted-agent-shared-checkout-writer-contract.md and recorded a
 narrower CodeGG-mediated checkout writer-coordination boundary (external
 same-user processes are not contained). Filing the ADR neither authorized new
 checkout sharing nor amended accepted ADR-0002 or ADR-0032. Implementation

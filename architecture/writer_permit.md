@@ -21,7 +21,7 @@ selector exists.
 Roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md` (C002).
 Implementation plan: `plans/implementation/agent-workstream-m005-writer-containment-corrective/002-durable-writer-permit-and-quarantine.md`.
 Closure: `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md`.
-Decision: `plans/adrs/ADR-0042-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19**, option B — restricted CodeGG-managed coordination).
+Decision: `plans/adrs/ADR-0044-restricted-agent-shared-checkout-writer-contract.md` (**accepted 2026-10-19**, option B — restricted CodeGG-managed coordination).
 Contract: `plans/implementation/agent-workstream-m005-writer-containment-corrective/c001-restricted-profile-contract.md`.
 Writer inventory: `docs/writer-disposition.toml`, guarded by `scripts/check_writer_disposition.py`.
 

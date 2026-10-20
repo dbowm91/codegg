@@ -52,6 +52,13 @@ Load this skill when working on:
 
 ## Quick Reference
 
+The daemon attaches one scheduler lifecycle receiver for session projection.
+`JobAdmitted`, attempt resource release, and queued terminal events are
+resolved against `JobStore` before publishing. Keep this observer bounded and
+non-authoritative: scheduler/store state is the source of truth, and snapshot
+rebuild heals a missed event. Never infer owner session from the foreground
+tab or from caller display data; use the durable `JobRecord`.
+
 ### Submit a job through the scheduler
 
 ```rust

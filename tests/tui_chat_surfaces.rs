@@ -461,14 +461,33 @@ async fn sending_consumes_the_seed_so_a_second_enter_is_a_plain_send() {
 
 // ── The contextual key line ──────────────────────────────────────────
 
+/// With no panel focused, **no panel advertises keys**.
+///
+/// The name is the file-picker workstream's citation and it is kept for that
+/// reason: that workstream's contract is that an empty or unfocused panel says
+/// nothing, and this test is the vehicle for it. The *row* is not empty — the
+/// composer's own verbs are what the row is for (M007) — so the row's content
+/// is asserted alongside: the composer speaks for itself and no panel speaks
+/// through it.
 #[tokio::test(flavor = "current_thread")]
 async fn no_panel_focused_advertises_no_keys() {
     let mut app = test_app();
+    let hints = app
+        .composer_hint_text()
+        .expect("the composer holds the keyboard, so its own verbs are named");
     assert!(
-        app.composer_hint_text().is_none(),
-        "the row is not reserved at all when nothing is focused, so the \
-         prompt keeps its full height"
+        hints.contains("COMP"),
+        "the row names the surface that holds the keyboard: {hints}"
     );
+    for verb in [
+        "jk move", "r reply", "e edit", "X redact", "TERM ·", "panel",
+    ] {
+        assert!(
+            !hints.contains(verb),
+            "no panel advertises itself while it does not hold the keyboard: \
+             {verb} in {hints}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -547,9 +566,17 @@ async fn an_unbound_panel_advertises_nothing_and_takes_no_focus() {
         !app.panel_host.is_focused(),
         "a panel with no bound project must not take the keyboard"
     );
+    let hints = app
+        .composer_hint_text()
+        .expect("the composer holds the keyboard, so its own verbs are named");
     assert!(
-        app.composer_hint_text().is_none(),
-        "an unbound panel has nothing to offer"
+        !hints.contains("r reply") && !hints.contains("jk move"),
+        "an unbound panel has nothing to offer, and the row must not offer it \
+         on the panel's behalf: {hints}"
+    );
+    assert!(
+        hints.contains("COMP"),
+        "the row names the composer instead: {hints}"
     );
     assert_eq!(
         app.input_target(),

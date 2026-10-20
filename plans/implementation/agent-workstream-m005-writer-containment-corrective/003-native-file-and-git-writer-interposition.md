@@ -5,7 +5,7 @@ Primary class: invariant / capability foundation
 Planning baseline: plan/agent-workstream-m005-writer-audit audit 2026-10-19; recheck current source before implementation.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C003
 Original: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md, Q2
-ADRs: ADR-0002, ADR-0032 and **accepted ADR-0042 (option B, 2026-10-19)**. Both upstream gates are satisfied: ADR-0042 option B was accepted on 2026-10-19, and C002 closed at `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md` (implementation `7fb56e11`). C003 is the routing milestone — it must show that a writer *without* the permit is refused, and it enables no shared mutation on its own. C004–C006 remain blocked on their own ordered predecessors.
+ADRs: ADR-0002, ADR-0032 and **accepted ADR-0044 (option B, 2026-10-19)**. Both upstream gates are satisfied: ADR-0044 option B was accepted on 2026-10-19, and C002 closed at `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md` (implementation `7fb56e11`). C003 is the routing milestone — it must show that a writer *without* the permit is refused, and it enables no shared mutation on its own. C004–C006 remain blocked on their own ordered predecessors.
 
 ## Objective
 

@@ -306,6 +306,10 @@ pub enum AppEvent {
     /// A subagent started.
     SubagentStarted {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
+        #[serde(default)]
+        originating_turn_id: Option<String>,
         task_id: u64,
         agent: String,
         description: String,
@@ -334,6 +338,8 @@ pub enum AppEvent {
     /// A subagent sent progress.
     SubagentProgress {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         message: String,
@@ -341,6 +347,8 @@ pub enum AppEvent {
     /// A subagent completed.
     SubagentCompleted {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         result_summary: String,
@@ -348,6 +356,8 @@ pub enum AppEvent {
     /// A subagent failed.
     SubagentFailed {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         error: String,

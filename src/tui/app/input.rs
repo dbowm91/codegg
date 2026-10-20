@@ -18,7 +18,11 @@ impl App {
             TuiMsg::OpenModelDialog => self.open_dialog(Dialog::Model),
             TuiMsg::OpenAgentDialog => self.open_dialog(Dialog::Agent),
             TuiMsg::OpenSessionDialog => self.open_dialog(Dialog::Session),
-            TuiMsg::OpenHelpDialog => self.open_dialog(Dialog::Help),
+            // The composer's help chord. ADR-0042 part 7: the box this opens
+            // owns the copy gesture, and the route is what says so — the mode
+            // cannot, because `Esc` and `Enter` move a box between modes.
+            TuiMsg::OpenHelpDialog => self.open_dialog(Dialog::Help(HelpRoute::Chord)),
+            TuiMsg::CopyComposerSelection => self.copy_composer_selection(),
             TuiMsg::OpenTreeDialog => {
                 self.enqueue_tui_command(TuiCommand::OpenTreeDialog);
             }
@@ -863,7 +867,6 @@ impl App {
             TuiMsg::SearchNext => self.messages_state.messages.search_next(),
             TuiMsg::SearchPrev => self.messages_state.messages.search_prev(),
             TuiMsg::ClearSearch => self.messages_state.messages.clear_search(),
-            TuiMsg::FocusPrompt => self.prompt_state.prompt.focus(),
             TuiMsg::StashPrompt => self.stash_prompt(),
             TuiMsg::RestorePrompt => self.restore_prompt(),
             TuiMsg::CopyMessage => self.copy_message(),
@@ -1088,6 +1091,161 @@ impl App {
                 } else {
                     self.messages_state.toasts.error("Run store not available");
                 }
+            }
+            TuiMsg::OpenJobDetail { job_id } => {
+                use crate::tui::components::dialogs::job_detail::JobDetailDialog;
+                let Some(tx) = self.tui_cmd_tx.clone() else {
+                    self.messages_state
+                        .toasts
+                        .error("TUI command channel unavailable; job detail was not requested");
+                    return;
+                };
+                let request_id = self.dialog_state.job_detail_request.begin();
+                let core_client = self.core_client.clone();
+                let mut dialog = JobDetailDialog::loading(job_id.clone());
+                dialog.can_cancel = !self.is_observing();
+                self.push_dialog(Dialog::JobDetail, Box::new(dialog));
+                crate::tui::async_cmd::spawn_tui_task(Some(tx), "job_detail_load", async move {
+                    let Some(client) = core_client else {
+                        return Some(TuiCommand::OpenJobDetailLoaded {
+                            request_id,
+                            job_id,
+                            job: None,
+                            attempts: Vec::new(),
+                            error: Some("Core unavailable — reconnect and retry".into()),
+                            notice: None,
+                        });
+                    };
+                    let get = crate::core::new_request(
+                        format!("job-get-{}", uuid::Uuid::new_v4()),
+                        crate::protocol::core::CoreRequest::JobGet {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let attempts = crate::core::new_request(
+                        format!("job-attempts-{}", uuid::Uuid::new_v4()),
+                        crate::protocol::core::CoreRequest::JobAttempts {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let (job_result, attempts_result) =
+                        tokio::join!(client.request(get), client.request(attempts));
+                    let mut error = None;
+                    let job = match job_result {
+                        Ok(crate::protocol::core::CoreResponse::JobGet { job }) => job,
+                        Ok(crate::protocol::core::CoreResponse::Error { .. }) => {
+                            error = Some("Job unavailable in this session".into());
+                            None
+                        }
+                        Ok(_) => {
+                            error = Some("Unexpected response while loading job".into());
+                            None
+                        }
+                        Err(_) => {
+                            error = Some("Could not reach daemon while loading job".into());
+                            None
+                        }
+                    };
+                    let attempts = match attempts_result {
+                        Ok(crate::protocol::core::CoreResponse::JobAttempts {
+                            attempts, ..
+                        }) => attempts,
+                        _ => Vec::new(),
+                    };
+                    Some(TuiCommand::OpenJobDetailLoaded {
+                        request_id,
+                        job_id,
+                        job,
+                        attempts,
+                        error,
+                        notice: None,
+                    })
+                });
+            }
+            TuiMsg::CancelJob { job_id } => {
+                let Some(tx) = self.tui_cmd_tx.clone() else {
+                    self.focus_manager.with_dialog_mut::<
+                        crate::tui::components::dialogs::job_detail::JobDetailDialog,
+                        _,
+                    >(
+                        crate::tui::components::component::DialogType::JobDetail,
+                        |dialog| {
+                            dialog.cancel_pending = false;
+                            dialog.error = Some(
+                                "TUI command channel unavailable; cancel was not sent".into(),
+                            );
+                        },
+                    );
+                    return;
+                };
+                let request_id = self.dialog_state.job_detail_request.begin();
+                let core_client = self.core_client.clone();
+                crate::tui::async_cmd::spawn_tui_task(Some(tx), "job_cancel", async move {
+                    let Some(client) = core_client else {
+                        return Some(TuiCommand::OpenJobDetailLoaded {
+                            request_id,
+                            job_id,
+                            job: None,
+                            attempts: Vec::new(),
+                            error: Some("Core unavailable — cancel was not sent".into()),
+                            notice: None,
+                        });
+                    };
+                    let request = crate::core::new_request(
+                        format!("job-cancel-{}", uuid::Uuid::new_v4()),
+                        crate::protocol::core::CoreRequest::JobCancel {
+                            job_id: job_id.clone(),
+                            reason: Some("requested from TUI job detail".into()),
+                        },
+                    );
+                    let notice = match client.request(request).await {
+                        Ok(crate::protocol::core::CoreResponse::JobCancelResult { result }) => {
+                            Some(format!(
+                                "Cancellation {} for job {}",
+                                result.outcome, job_id
+                            ))
+                        }
+                        Ok(crate::protocol::core::CoreResponse::Error { .. }) => {
+                            Some("The daemon refused the cancellation request".into())
+                        }
+                        _ => Some(
+                            "Cancellation outcome unavailable; refresh to reconcile daemon state"
+                                .into(),
+                        ),
+                    };
+                    let get = crate::core::new_request(
+                        format!("job-get-{}", uuid::Uuid::new_v4()),
+                        crate::protocol::core::CoreRequest::JobGet {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let attempts = crate::core::new_request(
+                        format!("job-attempts-{}", uuid::Uuid::new_v4()),
+                        crate::protocol::core::CoreRequest::JobAttempts {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let (job_result, attempts_result) =
+                        tokio::join!(client.request(get), client.request(attempts));
+                    let job = match job_result {
+                        Ok(crate::protocol::core::CoreResponse::JobGet { job }) => job,
+                        _ => None,
+                    };
+                    let attempts = match attempts_result {
+                        Ok(crate::protocol::core::CoreResponse::JobAttempts {
+                            attempts, ..
+                        }) => attempts,
+                        _ => Vec::new(),
+                    };
+                    Some(TuiCommand::OpenJobDetailLoaded {
+                        request_id,
+                        job_id,
+                        job,
+                        attempts,
+                        error: None,
+                        notice,
+                    })
+                });
             }
             TuiMsg::SecurityReviewJump { path, line } => {
                 // Read-only: copy the file path to the clipboard and

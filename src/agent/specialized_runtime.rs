@@ -165,6 +165,8 @@ async fn run_research_child(
         .await;
     let request = SubAgentRequest {
         task_id,
+        child_instance_id: String::new(),
+        originating_turn_id: None,
         run_id: None,
         prompt: child_prompt(task),
         agent: "general".into(),
@@ -182,6 +184,7 @@ async fn run_research_child(
         max_tool_calls: Some(MAX_CHILD_TOOL_CALLS),
         parent_model: Some(parent_model.into()),
         workspace_root: Some(workspace.to_path_buf()),
+        workspace_id: None,
         workspace_locks: None,
         // M005: research children inherit the parent WorkspaceWrite
         // ceiling by default; read-only evidence work narrows further

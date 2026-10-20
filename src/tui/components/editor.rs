@@ -175,6 +175,19 @@ impl EditorWidget<'_> {
         } else {
             format!("  · {}", self.find_note)
         };
+        // Where the history cursor is standing, when it is not at the tip.
+        //
+        // A time cursor nobody can see is a rename, so the position is
+        // disclosed whenever the reader is standing somewhere other than the
+        // newest change — that is exactly the state an `Alt-u` leaves behind,
+        // and the state in which "is this the newest change?" is worth
+        // answering. At the tip, which is the overwhelmingly common case, it
+        // says nothing, so an ordinary editing session draws exactly what it
+        // drew before this existed.
+        let history = match self.presentation.history_position() {
+            Some((position, length)) => format!("  · history {position}/{length}"),
+            None => String::new(),
+        };
         // The `:` line replaces the status text while it is open. It owns
         // the banner row because that row is what the user is looking at
         // when they typed `:`, and a separate floating line would read as a
@@ -202,17 +215,17 @@ impl EditorWidget<'_> {
             )
         } else if let Some(notice) = self.notice {
             (
-                format!("{notice}{find}{pending}"),
+                format!("{notice}{history}{find}{pending}"),
                 Style::default().fg(theme.error),
             )
         } else if !self.writable {
             (
-                format!("{}{find}{pending}", self.status),
+                format!("{}{history}{find}{pending}", self.status),
                 Style::default().fg(theme.warning),
             )
         } else {
             (
-                format!("{}{find}{pending}", self.status),
+                format!("{}{history}{find}{pending}", self.status),
                 Style::default().fg(theme.muted),
             )
         };
@@ -393,7 +406,7 @@ impl EditorWidget<'_> {
         // Resolved once per frame, not per row: `selection_range` clamps and
         // resolves lines, and doing that per row would re-walk the selection
         // for every visible line.
-        let selection = editor::selection_range(self.presentation, self.snapshot);
+        let selection = editor::selection_ranges(self.presentation, self.snapshot);
         let gutter_style = Style::default().fg(theme.muted);
         let current_gutter = Style::default()
             .fg(theme.primary)
@@ -471,7 +484,7 @@ impl EditorWidget<'_> {
                 ));
             } else {
                 frame_remaining = frame_remaining.saturating_sub(row_bytes);
-                spans.extend(self.line_spans(line_index, viewport, text_style, selection.as_ref()));
+                spans.extend(self.line_spans(line_index, viewport, text_style, &selection));
             }
             lines.push(Line::from(spans));
         }
@@ -511,7 +524,12 @@ impl EditorWidget<'_> {
             height,
         );
         let theme = Arc::clone(&self.theme);
-        let (title, mut lines) = match panel {
+        // The scroll offset is the payload's own, because one payload is a
+        // **picker** over a list longer than the panel is tall: the
+        // code-action list scrolls its window to the selected action, so
+        // `Enter` can never offer to apply a change the reader cannot see.
+        // Every other payload keeps the panel's standing behaviour.
+        let (title, mut lines, scroll) = match panel {
             EditorLspPanel::Diagnostics => {
                 let status = match self.lsp.diagnostics_status {
                     DiagnosticsViewStatus::Idle => "not requested".to_string(),
@@ -550,10 +568,22 @@ impl EditorWidget<'_> {
                 {
                     lines.push(Line::from("No diagnostics"));
                 }
-                (" Diagnostics · Enter jump · r refresh · Esc close ", lines)
+                (
+                    " Diagnostics · Enter jump · r refresh · Esc close ",
+                    lines,
+                    self.lsp.selected_index,
+                )
             }
             EditorLspPanel::ReadResult => {
                 let mut lines = Vec::new();
+                // The title names what `Enter` does, and the two read-result
+                // kinds differ: a location opens a file, a code action opens
+                // a change review.
+                let mut title = " LSP result · Enter opens safe target · Esc close ";
+                // The standing scroll for the read-result panel; the
+                // code-action payload overrides it with its own window's
+                // offset.
+                let mut scroll = self.lsp.selected_index;
                 if self.lsp.read_loading {
                     lines.push(Line::from("Request in progress…"));
                 }
@@ -564,8 +594,34 @@ impl EditorWidget<'_> {
                 }
                 if let Some(result) = &self.lsp.read_result {
                     use codegg_protocol::lsp::{LspReadPayloadDto, LspReadStatus};
+                    if matches!(result.payload, Some(LspReadPayloadDto::CodeActions { .. })) {
+                        title = " LSP code actions · Enter reviews · Esc close ";
+                    }
                     if result.status == LspReadStatus::NotReady {
                         lines.push(Line::from("Language server not ready"));
+                    }
+                    if result.status == LspReadStatus::Ambiguous {
+                        // Not an empty result. Falling through to "No results"
+                        // would tell the user the workspace is clean at this
+                        // position, when in fact the daemon declined to
+                        // choose between two healthy servers.
+                        lines.push(Line::from(
+                            "Several language servers are running for this workspace",
+                        ));
+                    }
+                    if result.status == LspReadStatus::Unsupported {
+                        // A live server that simply does not do this. Reporting
+                        // it as "not ready" would send the user looking for a
+                        // server that is already running and already answered.
+                        let capability = match result.payload.as_ref() {
+                            Some(LspReadPayloadDto::UnsupportedCapability { capability }) => {
+                                capability.as_str()
+                            }
+                            _ => "this operation",
+                        };
+                        lines.push(Line::from(format!(
+                            "The language server does not support this ({capability})"
+                        )));
                     }
                     match result.payload.as_ref() {
                         Some(LspReadPayloadDto::Hover { text, .. }) => lines.push(Line::from(
@@ -603,13 +659,217 @@ impl EditorWidget<'_> {
                                 ))
                             }),
                         ),
-                        _ => {}
+                        Some(LspReadPayloadDto::AmbiguousClients { candidates }) => {
+                            lines.push(Line::from("Name one to answer:"));
+                            lines.extend(candidates.iter().take(8).map(|candidate| {
+                                Line::from(format!(
+                                    "  · {}",
+                                    crate::tui::editor_lsp::truncate_chars(candidate, 80)
+                                ))
+                            }));
+                        }
+                        Some(LspReadPayloadDto::Highlights { highlights, .. }) => {
+                            lines.extend(highlights.iter().take(8).enumerate().map(
+                                |(index, entry)| {
+                                    Line::from(format!(
+                                        "{}{}:{} · {}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        entry.range.start_line + 1,
+                                        entry.range.start_column + 1,
+                                        // The server's own read/write
+                                        // classification, carried rather than
+                                        // reinterpreted — the same contract
+                                        // `LspSymbolDto::kind` follows.
+                                        match entry.kind {
+                                            Some(2) => "read",
+                                            Some(3) => "write",
+                                            Some(_) => "text",
+                                            None => "occurrence",
+                                        }
+                                    ))
+                                },
+                            ))
+                        }
+                        Some(LspReadPayloadDto::SignatureHelp {
+                            signatures,
+                            active_signature,
+                            active_parameter,
+                        }) => {
+                            if signatures.is_empty() {
+                                lines.push(Line::from("No signature at this position"));
+                            }
+                            lines.extend(signatures.iter().take(8).enumerate().map(
+                                |(index, signature)| {
+                                    Line::from(format!(
+                                        "{}{}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        crate::tui::editor_lsp::truncate_chars(
+                                            &signature.label,
+                                            200,
+                                        )
+                                    ))
+                                },
+                            ));
+                            // Which overload the server considers live, if it
+                            // said. Left as a separate line rather than
+                            // spliced into the label: the label is the
+                            // server's text and rewriting it would make the
+                            // panel disagree with what was returned.
+                            if let Some(active) = active_signature {
+                                let active = *active as usize;
+                                let parameter = active_parameter.map(|p| p.to_string());
+                                lines.push(Line::from(format!(
+                                    "active signature {}{}",
+                                    active + 1,
+                                    parameter
+                                        .map(|p| format!(" · argument {p}"))
+                                        .unwrap_or_default()
+                                )));
+                            }
+                        }
+                        Some(LspReadPayloadDto::FormatPreview(preview)) => {
+                            if preview.diff.is_empty() {
+                                lines.push(Line::from("Already formatted — no changes"));
+                            } else {
+                                if preview.base_stale {
+                                    lines.push(Line::from(
+                                        "The file changed while this preview was built; it is stale",
+                                    ));
+                                }
+                                lines.push(Line::from(format!(
+                                    "{} edit(s) · {}",
+                                    preview.edit_count,
+                                    preview_disposition(
+                                        preview.truncated,
+                                        preview.candidate.is_some()
+                                    )
+                                )));
+                                lines.extend(preview.diff.lines().take(16).map(|line| {
+                                    Line::from(crate::tui::editor_lsp::truncate_chars(line, 200))
+                                }));
+                            }
+                        }
+                        Some(LspReadPayloadDto::RenamePreview(preview)) => {
+                            lines.push(Line::from(format!(
+                                "{} → {} · {} edit(s) in {} file(s) · {}",
+                                preview.old_name.as_deref().unwrap_or("(symbol)"),
+                                preview.new_name,
+                                preview.edit_count,
+                                preview.files.len(),
+                                preview_disposition(preview.truncated, preview.candidate.is_some())
+                            )));
+                            if preview.base_stale {
+                                lines.push(Line::from(
+                                    "A file changed while this preview was built; it is stale",
+                                ));
+                            }
+                            lines.extend(preview.files.iter().take(8).enumerate().map(
+                                |(index, file)| {
+                                    Line::from(format!(
+                                        "{}{} · {} edit(s)",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        file.path,
+                                        file.edit_count
+                                    ))
+                                },
+                            ));
+                            lines.extend(preview.warnings.iter().take(4).map(|warning| {
+                                Line::from(format!(
+                                    "  ! {}",
+                                    crate::tui::editor_lsp::truncate_chars(warning, 120)
+                                ))
+                            }));
+                        }
+                        Some(LspReadPayloadDto::CodeActions { actions, truncated }) => {
+                            if actions.is_empty() {
+                                lines.push(Line::from("No code actions at this position"));
+                            } else {
+                                // The window **follows the selection**.
+                                //
+                                // A code action is a choice and the panel is
+                                // where the choice is made, so the selected
+                                // action has to be *readable*: `Enter` on an
+                                // action the reader cannot see would offer to
+                                // apply a change they did not read. The
+                                // window ends on the selected action, and the
+                                // scroll below moves the view to it.
+                                const VISIBLE_ACTIONS: usize = 8;
+                                let selected = self.lsp.selected_index.min(actions.len() - 1);
+                                let start = selected.saturating_sub(VISIBLE_ACTIONS - 1);
+                                lines.extend(
+                                    actions[start..]
+                                        .iter()
+                                        .take(VISIBLE_ACTIONS)
+                                        .enumerate()
+                                        .map(|(offset, action)| {
+                                            let index = start + offset;
+                                            let kind = action.kind.as_deref().unwrap_or("action");
+                                            let preferred = if action.preferred {
+                                                " · preferred"
+                                            } else {
+                                                ""
+                                            };
+                                            // The disposition is the *same*
+                                            // words `Enter` will give if the
+                                            // action turns out to be
+                                            // unappliable.
+                                            let disposition = match crate::tui::editor_lsp::
+                                                code_action_unavailable_reason(action)
+                                            {
+                                                Some(reason) => reason,
+                                                None => "ready to apply".to_string(),
+                                            };
+                                            Line::from(format!(
+                                                "{}{} · {kind}{preferred} · {disposition}",
+                                                if index == selected { "> " } else { "  " },
+                                                crate::tui::editor_lsp::truncate_chars(
+                                                    &action.title,
+                                                    80
+                                                )
+                                            ))
+                                        }),
+                                );
+                                scroll = selected - start;
+                                if *truncated {
+                                    lines.push(Line::from(
+                                        "  … the server offered more actions than the result carries",
+                                    ));
+                                } else if actions.len() > VISIBLE_ACTIONS {
+                                    lines.push(Line::from(format!(
+                                        "  … {} actions offered; the panel shows {VISIBLE_ACTIONS} at a time",
+                                        actions.len()
+                                    )));
+                                }
+                            }
+                        }
+                        // Two payloads whose explanation is rendered above, next to
+                        // the status it belongs to, rather than here: semantic
+                        // tokens are a presentation overlay consumed by
+                        // `request_editor_semantic_tokens`, and an unsupported
+                        // capability already printed its own line. Explicit
+                        // arms rather than a wildcard, so a new payload cannot
+                        // slip through unrendered and print "No results".
+                        Some(LspReadPayloadDto::SemanticTokens { .. }) => {}
+                        Some(LspReadPayloadDto::UnsupportedCapability { .. }) => {}
+                        None => {}
                     }
                 }
                 if lines.is_empty() {
                     lines.push(Line::from("No results"));
                 }
-                (" LSP result · Enter opens safe target · Esc close ", lines)
+                (title, lines, scroll)
             }
         };
         let block = Block::default()
@@ -621,10 +881,7 @@ impl EditorWidget<'_> {
         frame.render_widget(Clear, rect);
         frame.render_widget(block, rect);
         lines.truncate(inner.height as usize);
-        frame.render_widget(
-            Paragraph::new(lines).scroll((self.lsp.selected_index as u16, 0)),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
     }
 
     /// Bounded completion popup for the M003 read.
@@ -820,7 +1077,7 @@ impl EditorWidget<'_> {
         line_index: usize,
         viewport: EditorViewport,
         base: Style,
-        selection: Option<&std::ops::Range<usize>>,
+        selection: &[std::ops::Range<usize>],
     ) -> Vec<Span<'static>> {
         use crate::tui::editor_lsp::utf16_column_to_byte;
         let Some(start) = editor::line_start(self.snapshot, line_index) else {
@@ -836,8 +1093,9 @@ impl EditorWidget<'_> {
             // so a partial range would need per-byte slicing to be exact. The
             // row is a 32 KiB marker either way; highlighting all of it says
             // "selected" honestly and costs nothing.
-            let whole_line_selected =
-                selection.is_some_and(|range| range.start <= start && range.end > start);
+            let whole_line_selected = selection
+                .iter()
+                .any(|range| range.start <= start && range.end > start);
             let base = if whole_line_selected {
                 base.patch(Style::default().bg(self.theme.selection))
             } else {
@@ -968,15 +1226,17 @@ impl EditorWidget<'_> {
             boundaries.push(range.start);
             boundaries.push(range.end);
         }
-        // The cursor cell. It has to exist even when it sits past the last
-        // character — otherwise "the cursor is at the end of the line" is
-        // the one position a reader cannot see.
-        let cursor_cell = self.cursor_cell(start, &line, line_index, visible_start, visible_end);
-        if let Some((from, to)) = cursor_cell {
-            boundaries.push(from);
-            boundaries.push(to);
+        // Every selection head on this row, primary and extras alike. They
+        // have to exist even when a head sits past the last character —
+        // otherwise "the cursor is at the end of the line" is the one
+        // position a reader cannot see.
+        let head_cells = self.head_cells(start, &line, line_index, visible_start, visible_end);
+        for (from, to, _) in &head_cells {
+            boundaries.push(*from);
+            boundaries.push(*to);
         }
         let cursor_style = self.cursor_style();
+        let extra_head_style = self.extra_head_style();
         boundaries.sort_unstable();
         boundaries.dedup();
         boundaries
@@ -986,12 +1246,12 @@ impl EditorWidget<'_> {
                 if range.start == range.end {
                     return None;
                 }
-                // The only byte range that legitimately misses the line is the
-                // cursor's virtual cell past its end; it renders as one space
+                // The only byte range that legitimately misses the line is a
+                // head's virtual cell past its end; it renders as one space
                 // rather than disappearing.
                 let text = match line.get(range.clone()) {
                     Some(text) => text.to_string(),
-                    None if cursor_cell.is_some_and(|(from, _)| from == range.start) => {
+                    None if head_cells.iter().any(|(from, _, _)| *from == range.start) => {
                         " ".to_string()
                     }
                     None => return None,
@@ -1002,12 +1262,14 @@ impl EditorWidget<'_> {
                         token_range.start <= range.start && token_range.end >= range.end
                     })
                     .map_or(base, |(_, token_style)| base.patch(*token_style));
-                let at_cursor = cursor_cell.is_some_and(|(from, _)| from == range.start);
                 // Absolute offsets back to line-relative, then clipped to the
                 // segment so a selection boundary can only colour part of it.
-                let selected = selection.is_some_and(|selected| {
-                    let from = selected.start.saturating_sub(start);
-                    let to = selected.end.saturating_sub(start);
+                // Membership is over the whole **set**: a byte inside any
+                // member is selected, which is what makes two separate
+                // highlighted regions read as two selections.
+                let selected = selection.iter().any(|member| {
+                    let from = member.start.saturating_sub(start);
+                    let to = member.end.saturating_sub(start);
                     from < range.end && to > range.start
                 });
                 let searched = search_ranges
@@ -1031,17 +1293,29 @@ impl EditorWidget<'_> {
                 } else {
                     style
                 };
-                // The cursor is painted last so nothing can bury it: a
-                // selection or a search hit that happened to cover the
+                // Heads are painted last so nothing can bury them: a
+                // selection or a search hit that happened to cover a
                 // cursor's own cell must not make the position unreadable.
                 //
-                // It *patches* rather than replaces. Replacing dropped the
+                // Each *patches* rather than replaces. Replacing dropped the
                 // base outright, and since the Insert caret only carries a
                 // foreground and a modifier, that punched an untinted
                 // one-cell hole in the current line — the caret cell was the
                 // one cell on the row that did not belong to the row.
-                let style = if at_cursor {
+                //
+                // The primary wins over an extra head sharing its cell: it is
+                // the one the keyboard is on, so it is the one that must stay
+                // readable.
+                let at_primary = head_cells
+                    .iter()
+                    .any(|(from, _, is_primary)| *is_primary && *from == range.start);
+                let at_extra = head_cells
+                    .iter()
+                    .any(|(from, _, is_primary)| !*is_primary && *from == range.start);
+                let style = if at_primary {
                     style.patch(cursor_style)
+                } else if at_extra {
+                    style.patch(extra_head_style)
                 } else {
                     style
                 };
@@ -1050,31 +1324,28 @@ impl EditorWidget<'_> {
             .collect()
     }
 
-    /// The cell the cursor occupies on this row, as a line-relative byte
-    /// range, or `None` when the cursor is on another line or scrolled out
-    /// of the horizontal window.
+    /// The cell a byte offset occupies on this row, as a line-relative byte
+    /// range, or `None` when the offset is scrolled out of the horizontal
+    /// window.
     ///
-    /// A cursor sitting past the last character still owns a cell: it is
-    /// rendered as a single space one column past the end of the text. That
-    /// is the position a reader reaches most often — the end of a line they
-    /// are about to append to — so it is the one that must never be
-    /// invisible.
-    fn cursor_cell(
+    /// A position past the last character on an otherwise fully visible row
+    /// still owns a cell: it is rendered as a single space one column past the
+    /// end of the text. That is the position a reader reaches most often — the
+    /// end of a line they are about to append to — so it is the one that must
+    /// never be invisible.
+    fn cell_for_offset(
         &self,
+        byte: usize,
         line_start: usize,
         line: &str,
-        line_index: usize,
         visible_start: usize,
         visible_end: usize,
     ) -> Option<(usize, usize)> {
-        if line_index != editor::cursor_line(self.snapshot, self.cursor_byte) {
-            return None;
-        }
-        let at = self.cursor_byte.saturating_sub(line_start).min(line.len());
+        let at = byte.saturating_sub(line_start).min(line.len());
         // Past the last character on an otherwise fully visible row: the
-        // virtual cell. Anywhere else it means the cursor is simply scrolled
+        // virtual cell. Anywhere else it means the position is simply scrolled
         // out of the window, and inventing a cell there would paint a ghost
-        // cursor somewhere the viewport has already decided not to show.
+        // marker somewhere the viewport has already decided not to show.
         if at == visible_end && visible_end < line.len() {
             return None;
         }
@@ -1086,6 +1357,96 @@ impl EditorWidget<'_> {
             .next()
             .map_or(at + 1, |ch| at + ch.len_utf8());
         Some((at, end.max(at + 1)))
+    }
+
+    /// Every selection head that lands on this row, as line-relative byte
+    /// ranges paired with whether that head **is the cursor**.
+    ///
+    /// The flag means "the keyboard is here", not "this member is primary".
+    /// Those coincide on every Helix path — `cursor_byte` *is* the primary's
+    /// head — and they come apart only when a motion moved the cursor without
+    /// consulting the selection machine, such as a goto. Painting a member
+    /// head with the cursor's reverse video in that state would put a second
+    /// block exactly where the reader reads "the keyboard is here", which is
+    /// the one thing a cursor must never do. So every head that is not the
+    /// cursor is drawn as an extra, and the cursor alone carries cursor styling.
+    fn head_cells(
+        &self,
+        line_start: usize,
+        line: &str,
+        line_index: usize,
+        visible_start: usize,
+        visible_end: usize,
+    ) -> Vec<(usize, usize, bool)> {
+        let mut cells: Vec<(usize, usize, bool)> = self
+            .presentation
+            .selections
+            .iter()
+            .filter(|selection| {
+                editor::cursor_line(self.snapshot, selection.head.byte) == line_index
+                    // The cursor's own cell joins this partition below, so a
+                    // head that coincides with it must not be drawn twice.
+                    && selection.head.byte != self.cursor_byte
+            })
+            .filter_map(|selection| {
+                self.cell_for_offset(
+                    selection.head.byte,
+                    line_start,
+                    line,
+                    visible_start,
+                    visible_end,
+                )
+                .map(|(from, to)| (from, to, false))
+            })
+            .collect();
+        // The cursor's own cell joins the same partition as the heads, so it
+        // is folded in here rather than handled by a separate code path — two
+        // code paths for "which cell is marked" is how they drift apart.
+        if let Some((from, to)) =
+            self.cursor_cell(line_start, line, line_index, visible_start, visible_end)
+        {
+            cells.push((from, to, true));
+        }
+        cells
+    }
+
+    /// The cell the cursor occupies on this row, as a line-relative byte
+    /// range, or `None` when the cursor is on another line or scrolled out of
+    /// the horizontal window.
+    fn cursor_cell(
+        &self,
+        line_start: usize,
+        line: &str,
+        line_index: usize,
+        visible_start: usize,
+        visible_end: usize,
+    ) -> Option<(usize, usize)> {
+        if line_index != editor::cursor_line(self.snapshot, self.cursor_byte) {
+            return None;
+        }
+        self.cell_for_offset(
+            self.cursor_byte,
+            line_start,
+            line,
+            visible_start,
+            visible_end,
+        )
+    }
+
+    /// How an **extra** selection head paints itself.
+    ///
+    /// Distinct from both neighbours by construction. The primary cursor swaps
+    /// the theme's own foreground and background; a selected cell wears
+    /// `theme.selection` as its background. An extra head therefore takes the
+    /// accent colour as its background, which is already the "you are here"
+    /// signal the current-line gutter uses — a reader who cannot tell an extra
+    /// cursor from a highlight has no way to know how many selections they are
+    /// about to destroy with `d`.
+    fn extra_head_style(&self) -> Style {
+        Style::default()
+            .fg(self.theme.background)
+            .bg(self.theme.primary)
+            .add_modifier(Modifier::BOLD)
     }
 
     /// How the cursor paints itself.
@@ -1159,6 +1520,23 @@ fn display_width_str(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
+/// What the panel says will happen to the change.
+///
+/// A preview that carries a candidate is **ready to apply**: the review is
+/// open on it, and the review is where the user decides. A preview without
+/// one is still a preview — and a *truncated* preview says so, because a
+/// partial change is not the change that was previewed, and offering it as
+/// applicable would be a lie.
+fn preview_disposition(truncated: bool, has_candidate: bool) -> &'static str {
+    if has_candidate {
+        "ready to apply"
+    } else if truncated {
+        "not applied — the preview is truncated"
+    } else {
+        "not applied"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,14 +1563,27 @@ mod tests {
         search_line: &'a str,
         search_count: usize,
         search_partial: bool,
-        /// A held selection, for tests that need the renderer's third
-        /// background layer to actually be painted.
-        selection: Option<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
+        /// The held selection **set**, for tests that need the renderer's
+        /// third background layer — or its extra head markers — painted.
+        selections: Vec<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
         /// Retained `/` match offsets, for the search highlight layer.
         search_matches: Vec<usize>,
+        /// The history cursor's position and the history's length, as
+        /// `(position, length)`.
+        ///
+        /// The entries themselves are built through the real history API, so
+        /// a test that asks for a position gets a history that could have
+        /// produced it.
+        history: (usize, usize),
         writable: bool,
         busy: bool,
         scope: codegg_protocol::document::DocumentScope,
+        /// The LSP state the widget renders.
+        ///
+        /// Owned rather than borrowed so a test can seed a **panel** — the
+        /// read results the widget draws — without reaching into the
+        /// widget's own fields.
+        lsp: crate::tui::editor_lsp::EditorLspState,
     }
 
     fn defaults<'a>() -> Options<'a> {
@@ -1210,12 +1601,39 @@ mod tests {
             search_line: "",
             search_count: 0,
             search_partial: false,
-            selection: None,
+            selections: Vec::new(),
             search_matches: Vec::new(),
+            history: (0, 0),
             writable: true,
             busy: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
+            lsp: crate::tui::editor_lsp::EditorLspState::default(),
         }
+    }
+
+    /// Give the presentation a history of `length` entries and park the
+    /// cursor at `position`.
+    ///
+    /// The entries are built through the real history API, so a test that
+    /// asks for a position gets a history an ordinary editing session could
+    /// have produced — not a hand-set field that the widget would read but
+    /// nothing could have created.
+    fn seed_history(
+        presentation: &mut TuiDocumentPresentation,
+        (position, length): (usize, usize),
+    ) {
+        use codegg_document::{TextEdit, TextTransaction};
+        for _ in 0..length {
+            editor::push_undo(
+                presentation,
+                TextTransaction::new(vec![TextEdit::new(0..0, "x")]),
+                TextTransaction::new(vec![TextEdit::new(0..1, "")]),
+                1,
+                0,
+                Vec::new(),
+            );
+        }
+        presentation.history_cursor = position.min(presentation.history.len());
     }
 
     /// Paint one editor frame and return the rendered rows as plain text.
@@ -1229,12 +1647,13 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
-            selection: options.selection,
+            selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
-        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        seed_history(&mut presentation, options.history);
+        let lsp = &options.lsp;
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1260,7 +1679,7 @@ mod tests {
                     writable: options.writable,
                     busy: options.busy,
                     snapshot: &snapshot,
-                    lsp: &lsp,
+                    lsp,
                     completion: &completion,
                     highlight: &mut highlight,
                     presentation: &mut presentation,
@@ -1299,12 +1718,13 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
-            selection: options.selection,
+            selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
-        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        seed_history(&mut presentation, options.history);
+        let lsp = &options.lsp;
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1330,7 +1750,7 @@ mod tests {
                     writable: options.writable,
                     busy: options.busy,
                     snapshot: &snapshot,
-                    lsp: &lsp,
+                    lsp,
                     completion: &completion,
                     highlight: &mut highlight,
                     presentation: &mut presentation,
@@ -1430,6 +1850,81 @@ mod tests {
             mode: crate::tui::helix_selection::SelectionMode::Char,
             growing: false,
         }
+    }
+
+    #[test]
+    fn every_members_highlight_is_painted_not_just_the_primarys() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta gamma").snapshot();
+        // Two disjoint members, with the cursor parked on the *primary*'s
+        // head — the case where a renderer that still resolved one range would
+        // tint exactly one of the two.
+        let buffer = render_buffer(
+            "alpha beta gamma",
+            30,
+            8,
+            // Parked on the space at byte 5: a cursor is painted last, so
+            // parking it on byte 0 would have asserted the cursor's own style
+            // and passed for the wrong reason.
+            5,
+            Options {
+                buffer_focused: false,
+                selections: vec![
+                    selection_over(&snapshot, 0..1),
+                    selection_over(&snapshot, 6..10),
+                ],
+                ..defaults()
+            },
+        );
+        // Text byte N is body column N; the gutter is not counted.
+        assert_eq!(
+            body_style(&buffer, 0, 0).bg,
+            theme.selection,
+            "the primary's member paints"
+        );
+        assert_eq!(
+            body_style(&buffer, 0, 6).bg,
+            theme.selection,
+            "an extra member paints too, or the reader cannot see how many \
+             selections `d` is about to destroy"
+        );
+        assert_ne!(
+            body_style(&buffer, 0, 3).bg,
+            theme.selection,
+            "a byte outside every member stays untinted"
+        );
+    }
+
+    #[test]
+    fn an_extra_head_is_marked_differently_from_the_cursor() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta gamma").snapshot();
+        let mut extra = selection_over(&snapshot, 6..10);
+        extra.head = editor::EditorPoint { byte: 10, line: 0 };
+        let buffer = render_buffer(
+            "alpha beta gamma",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                selections: vec![selection_over(&snapshot, 0..1), extra],
+                ..defaults()
+            },
+        );
+        let cursor = body_style(&buffer, 0, 0);
+        // Byte 10 is the space after "beta" — the extra member's head.
+        let head = body_style(&buffer, 0, 10);
+        assert_eq!(cursor.bg, theme.foreground, "the cursor is reverse video");
+        assert_eq!(
+            head.bg, theme.primary,
+            "an extra head carries the accent background"
+        );
+        assert_ne!(
+            cursor.bg, head.bg,
+            "a reader who cannot tell a cursor from an extra has no way to \
+             know where the keyboard is"
+        );
     }
 
     #[test]
@@ -2012,6 +2507,18 @@ mod tests {
             EditorPrefix::FindPrevious,
             EditorPrefix::FindTillNext,
             EditorPrefix::FindTillPrevious,
+            // The `m` grammar's two levels. Both are here because the `m`
+            // level is the one pending state whose *second* level is a
+            // different state again: a reader who armed `m` and then `m r`
+            // has to be able to see which half they are in, and the two
+            // halves must not render alike.
+            EditorPrefix::Match,
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundAdd),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundDelete),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceFrom),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceTo('(')),
+            EditorPrefix::MatchArg(editor::MatchArg::AroundObject),
+            EditorPrefix::MatchArg(editor::MatchArg::InnerObject),
         ] {
             let lines = render(
                 "content",
@@ -2034,16 +2541,23 @@ mod tests {
                     EditorPrefix::FindPrevious,
                     EditorPrefix::FindTillNext,
                     EditorPrefix::FindTillPrevious,
+                    EditorPrefix::Match,
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundAdd),
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundDelete),
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceFrom),
+                    EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceTo('(')),
+                    EditorPrefix::MatchArg(editor::MatchArg::AroundObject),
+                    EditorPrefix::MatchArg(editor::MatchArg::InnerObject),
                 ] {
                     assert!(
-                        !banner.contains(armed.display()),
+                        !banner.contains(armed.display().as_ref()),
                         "an idle editor must not show {armed:?}'s indicator {:?}: {banner:?}",
                         armed.display()
                     );
                 }
             } else {
                 assert!(
-                    banner.contains(prefix.display()),
+                    banner.contains(prefix.display().as_ref()),
                     "{prefix:?} renders {:?} but the banner reads {banner:?}",
                     prefix.display()
                 );
@@ -2070,11 +2584,12 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
-            selection: options.selection,
+            selections: options.selections,
             search_line: options.search_line.to_string(),
             search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
+        seed_history(&mut presentation, options.history);
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2213,11 +2728,13 @@ mod tests {
             search_line: "",
             search_count: 0,
             search_partial: false,
-            selection: None,
+            selections: Vec::new(),
             search_matches: Vec::new(),
+            history: (0, 0),
             scope: codegg_protocol::document::DocumentScope::Workspace,
             writable: true,
             busy: false,
+            lsp: crate::tui::editor_lsp::EditorLspState::default(),
         };
         let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2528,7 +3045,7 @@ mod tests {
             presentation: &mut presentation,
             theme,
         };
-        let spans = widget.line_spans(0, viewport, Style::default(), None);
+        let spans = widget.line_spans(0, viewport, Style::default(), &[]);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("let"), "{joined}");
         assert!(joined.contains("value"), "{joined}");
@@ -2777,7 +3294,7 @@ mod tests {
             4,
             Options {
                 buffer_focused: true,
-                selection: Some(selection_over(&snapshot, 1..4)),
+                selections: vec![selection_over(&snapshot, 1..4)],
                 ..defaults()
             },
         );
@@ -2840,7 +3357,7 @@ mod tests {
             0,
             Options {
                 buffer_focused: false,
-                selection: Some(selection_over(&snapshot, 0..3)),
+                selections: vec![selection_over(&snapshot, 0..3)],
                 search_line: "aaa",
                 search_count: 1,
                 search_matches: vec![0],
@@ -2910,5 +3427,353 @@ mod tests {
         let plain_readout = &plain[readout_row(height) as usize];
         assert!(plain_readout.contains("3 matches"), "{plain_readout:?}");
         assert!(!plain_readout.contains("partial"), "{plain_readout:?}");
+    }
+
+    // ── The history cursor's position ───────────────────────────────────
+
+    /// A time cursor nobody can see is a rename.
+    ///
+    /// The position is disclosed when the reader is standing somewhere other
+    /// than the newest change, and says nothing at the tip — so the ordinary
+    /// case draws exactly what it drew before the cursor existed.
+    #[test]
+    fn the_history_position_is_disclosed_only_when_the_cursor_is_not_at_the_tip() {
+        let height = 8;
+        let at_tip = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                history: (3, 3),
+                ..defaults()
+            },
+        );
+        let banner = &at_tip[banner_row(height) as usize];
+        assert!(
+            !banner.contains("history"),
+            "at the tip there is nothing to disclose: {banner:?}"
+        );
+
+        let behind = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                history: (1, 3),
+                ..defaults()
+            },
+        );
+        let banner = &behind[banner_row(height) as usize];
+        assert!(
+            banner.contains("history 1/3"),
+            "the position belongs on the banner row: {banner:?}"
+        );
+    }
+
+    /// The rename preview names the files that would change, and says that
+    /// nothing is applied.
+    ///
+    /// The rendering is M013's, but a rendering nobody exercises is a
+    /// rendering nobody knows works, and "the preview shows the files" is
+    /// the whole point of the chord.
+    #[test]
+    fn the_rename_preview_names_the_files_it_would_change() {
+        use codegg_protocol::lsp::{
+            LspReadOperation, LspReadPayloadDto, LspReadResultDto, LspReadStatus, LspRenameFileDto,
+            LspRenamePreviewDto,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::RenamePreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::RenamePreview(LspRenamePreviewDto {
+                old_name: Some("old".to_string()),
+                new_name: "renamed".to_string(),
+                edit_count: 2,
+                files: vec![LspRenameFileDto {
+                    path: "src/lib.rs".to_string(),
+                    edit_count: 2,
+                }],
+                warnings: Vec::new(),
+                truncated: false,
+                base_stale: false,
+                candidate: None,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("renamed"),
+            "the preview names the new name, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("src/lib.rs"),
+            "and the file it would change, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("not applied"),
+            "and says that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// The format preview shows the diff, and says that nothing is applied.
+    #[test]
+    fn the_format_preview_shows_the_diff_and_says_it_is_not_applied() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspReadOperation, LspReadPayloadDto, LspReadResultDto,
+            LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: false,
+                base_stale: false,
+                candidate: None,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("let x =  1;"),
+            "the preview shows the diff, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("not applied"),
+            "and says that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// The code-action panel lists what the server offered, and says which
+    /// of the offered actions can be applied.
+    ///
+    /// The reader has to be able to see *all* of the offer — including the
+    /// parts that cannot be applied — because the offer is the server's
+    /// answer, and hiding an action would hide the answer. Each line says
+    /// what would happen, so a command-only action is visibly not an
+    /// application and not a mystery.
+    #[test]
+    fn the_code_action_panel_lists_the_offer_and_says_which_can_be_applied() {
+        use codegg_protocol::lsp::{
+            LspCodeActionDto, LspCodeActionUnavailable, LspPreviewCandidateDto, LspPreviewPatchDto,
+            LspReadOperation, LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::CodeActionPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::CodeActions {
+                actions: vec![
+                    LspCodeActionDto {
+                        title: "Add the missing import".to_string(),
+                        kind: Some("quickfix".to_string()),
+                        preferred: true,
+                        disabled_reason: None,
+                        has_edit: true,
+                        has_command: false,
+                        candidate: Some(LspPreviewCandidateDto {
+                            preview_id: "editor-preview-1".to_string(),
+                            preview_revision: 1,
+                            preview_digest: "a".repeat(64),
+                            kind: "code_action".to_string(),
+                            title: "Add the missing import".to_string(),
+                            provenance: "editor:code_action:Add the missing import".to_string(),
+                            patches: vec![LspPreviewPatchDto {
+                                path: "src/lib.rs".to_string(),
+                                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                                original_hash: "b".repeat(64),
+                            }],
+                        }),
+                        unavailable: None,
+                    },
+                    LspCodeActionDto {
+                        title: "Run the test suite".to_string(),
+                        kind: None,
+                        preferred: false,
+                        disabled_reason: None,
+                        has_edit: false,
+                        has_command: true,
+                        candidate: None,
+                        unavailable: Some(LspCodeActionUnavailable::Command),
+                    },
+                ],
+                truncated: false,
+            }),
+        });
+
+        let painted = render("hello", 96, 24, 0, options).join("\n");
+        assert!(
+            painted.contains("Add the missing import"),
+            "the panel names the action, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("ready to apply"),
+            "and says the applicable one can be applied, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("Run the test suite"),
+            "the unapplicable action is listed too, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("command"),
+            "and says why it cannot be applied, got:\n{painted}"
+        );
+    }
+
+    /// The code-action panel shows the **selected** action, even when the
+    /// server offered more actions than the panel is tall.
+    ///
+    /// A code action is a choice, and the panel is where the choice is made.
+    /// If the selection could move off the visible rows, `Enter` would offer
+    /// to apply a change the reader could not see — so the window follows
+    /// the selection.
+    #[test]
+    fn the_code_action_panel_keeps_the_selected_action_visible() {
+        use codegg_protocol::lsp::{
+            LspCodeActionDto, LspPreviewCandidateDto, LspPreviewPatchDto, LspReadOperation,
+            LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let action = |index: usize| LspCodeActionDto {
+            title: format!("Action {index}"),
+            kind: Some("quickfix".to_string()),
+            preferred: false,
+            disabled_reason: None,
+            has_edit: true,
+            has_command: false,
+            candidate: Some(LspPreviewCandidateDto {
+                preview_id: format!("editor-preview-{index}"),
+                preview_revision: 1,
+                preview_digest: "a".repeat(64),
+                kind: "code_action".to_string(),
+                title: format!("Action {index}"),
+                provenance: format!("editor:code_action:Action {index}"),
+                patches: vec![LspPreviewPatchDto {
+                    path: "src/lib.rs".to_string(),
+                    patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                    original_hash: "b".repeat(64),
+                }],
+            }),
+            unavailable: None,
+        };
+
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.selected_index = 10;
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::CodeActionPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::CodeActions {
+                actions: (0..12).map(action).collect(),
+                truncated: false,
+            }),
+        });
+
+        let painted = render("hello", 96, 24, 0, options).join("\n");
+        assert!(
+            painted.contains("> Action 10"),
+            "the selected action must be visible and marked, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("Action 0\n"),
+            "the window must have moved past the earlier actions, got:\n{painted}"
+        );
+    }
+
+    /// A preview that became a candidate is not "not applied" any more.
+    ///
+    /// The chords stopped showing what *would* change and started doing it,
+    /// so the panel's disposition line has to say so. A panel still claiming
+    /// "not applied" for a candidate would be a status row lying about the
+    /// last keystroke.
+    #[test]
+    fn a_preview_with_a_candidate_says_it_is_ready_to_apply() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspPreviewCandidateDto, LspPreviewPatchDto, LspReadOperation,
+            LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: false,
+                base_stale: false,
+                candidate: Some(LspPreviewCandidateDto {
+                    preview_id: "editor-preview-1".to_string(),
+                    preview_revision: 1,
+                    preview_digest: "a".repeat(64),
+                    kind: "formatting".to_string(),
+                    title: "Format src/lib.rs".to_string(),
+                    provenance: "editor:format:src/lib.rs".to_string(),
+                    patches: vec![LspPreviewPatchDto {
+                        path: "src/lib.rs".to_string(),
+                        patch: "@@ -1 +1 @@\n- let x = 1;\n+ let x =  1;".to_string(),
+                        original_hash: "b".repeat(64),
+                    }],
+                }),
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("ready to apply"),
+            "a candidate is ready to apply, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("not applied"),
+            "and must not still claim that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// A truncated preview says why it cannot be applied.
+    #[test]
+    fn a_truncated_preview_says_it_cannot_be_applied() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspReadOperation, LspReadPayloadDto, LspReadResultDto,
+            LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: true,
+                base_stale: false,
+                candidate: None,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("truncated"),
+            "a truncated preview must say it is truncated, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("ready to apply"),
+            "and must not offer itself as applicable, got:\n{painted}"
+        );
     }
 }

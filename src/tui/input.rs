@@ -94,6 +94,37 @@ pub enum HelpMode {
     Dialog,
 }
 
+/// How the help box was opened.
+///
+/// The route, not the mode, decides whether `y` is a verb here: the copy
+/// gesture belongs to the box the `space` chord opens, and to no other box.
+/// A `/help` box starts in Insert and `Esc` moves it to Normal, so a
+/// mode-only rule would make `y` copy in a box that must not copy; and a
+/// `space`-opened box moves to Insert with `Enter`, where `y` must stay a
+/// filter character. The mode is a *consequence* of the route, not a
+/// substitute for it.
+///
+/// The route lives here, beside the help's **content**, because it selects
+/// content as well as behaviour: the chord route's box lists the copy
+/// gesture, and the command route's box does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpRoute {
+    /// The composer's help chord — `space` (and `?`, which opens the same box
+    /// from the same Normal-mode chord position). This box owns the copy
+    /// gesture.
+    Chord,
+    /// The app's help — the `/help` command, and the docked help panel. It
+    /// lists the keys; it never copies.
+    Command,
+}
+
+impl HelpRoute {
+    /// Whether this route's box owns the copy gesture.
+    pub fn owns_copy(self) -> bool {
+        matches!(self, HelpRoute::Chord)
+    }
+}
+
 /// A single help entry describing a keybinding.
 pub struct HelpEntry {
     pub mode: HelpMode,
@@ -541,7 +572,7 @@ impl ActionKey {
             Self::SelectModel => "Select model",
             Self::ClearSession => "Clear session",
             Self::NewSession => "New session",
-            Self::ToggleAgentRun => "Stop / resume agent (x)",
+            Self::ToggleAgentRun => "Stop / resume agent (Ctrl+Alt+X)",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
             Self::OpenPanelManager => "Open panel manager (Shift+S)",
@@ -552,7 +583,7 @@ impl ActionKey {
             Self::ToggleSection => "Toggle section",
             Self::CloseSession => "Close session",
             Self::Help => "Show help",
-            Self::FocusPrompt => "Focus prompt",
+            Self::FocusPrompt => "Focus prompt (Ctrl+Alt+E)",
             Self::StashPrompt => "Stash prompt",
             Self::RestorePrompt => "Restore prompt",
             Self::CopyMessage => "Copy message",
@@ -579,7 +610,7 @@ impl ActionKey {
             Self::StopTts => "Stop TTS",
             Self::ToggleFullscreen => "Toggle fullscreen",
             Self::TogglePermissionMode => "Toggle permission mode",
-            Self::OpenDiff => "Open diff",
+            Self::OpenDiff => "Open diff (Ctrl+Alt+D)",
             Self::GoToTop => "Go to top",
             Self::GoToBottom => "Go to bottom",
             Self::OpenProjectPicker => "Open project picker (Shift+F)",
@@ -664,11 +695,14 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // above prevent.
             | InputAction::NextSubagentTab
             | InputAction::PreviousSubagentTab
-            | InputAction::CloseSubagentTab
-            // Already covered by the bare-char rule, but stated here because
-            // it is load-bearing: `x` must never be claimed while composing,
-            // or typing a word containing it would stop the agent.
-            | InputAction::ToggleAgentRun
+            | InputAction::CloseSubagentTab // `ToggleAgentRun` used to be listed here because its only
+                                            // spelling was the bare letter `x`, and a bare letter is skipped
+                                            // in Insert mode by the `is_bare_char` rule above — the listing
+                                            // was belt-and-braces for a key the user types constantly. The
+                                            // composer now claims `x` (ADR-0042) and the action's only
+                                            // spelling is the `Ctrl+Alt+X` chord, so the entry is gone rather
+                                            // than the bug being documented: a chord cannot be composed as
+                                            // text, so it is already unambiguous in Insert mode.
     )
 }
 
@@ -782,11 +816,49 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // `q` quits from Normal mode. Insert mode skips bare-char bindings, so
     // this costs nothing while typing.
     map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
-    // `x` stops a running turn and resumes a stopped one. Bare char, so it is
-    // Normal-mode only and can never shadow an `x` typed into the composer.
+    // `x` stops a running turn and resumes a stopped one. It used to be a
+    // bare `x`, which the composer now claims for Helix line-select
+    // (ADR-0042), so the action moved to a chord that is not a letter.
+    //
+    // `Ctrl+Alt+X` is the legacy-safe chord shape: the terminal delivers
+    // `ESC` + `0x18`, which crossterm reports as `Char('x')` with
+    // CONTROL|ALT — the same family as `Ctrl+Alt+B` and `Ctrl+Alt+N`. A
+    // bare `Ctrl+X` would be a single byte and `Ctrl+Alt+X` degrades to
+    // nothing rather than to a different action, so a stray press cannot
+    // stop a turn the user did not mean to stop.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('x')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('x'),
+        ),
         InputAction::ToggleAgentRun,
+    );
+    // `d` opens the diff view. The composer claims `d` for Helix
+    // delete-selection (ADR-0042), so the action moved to a chord that is
+    // not a letter. `Ctrl+Alt+D` keeps the letter, so the gesture stays
+    // recognisable, and the bare `Ctrl+D` twin keeps its own meaning
+    // (page down) rather than aliasing this one.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('d'),
+        ),
+        InputAction::OpenDiff,
+    );
+    // `i` focuses the prompt. The composer claims `i` for Helix
+    // insert-before-caret (ADR-0042), so the action moved to a chord that is
+    // not a letter. `Ctrl+Alt+I` is **not** that chord: the terminal
+    // delivers `ESC` + `0x09`, which crossterm reports as `Tab` with ALT,
+    // so the verb would be unreachable on every terminal. The chord that
+    // works is `Ctrl+Alt+E` — a legacy-safe letter whose `ESC` + `0x05`
+    // arrives as `Char('e')` with CONTROL|ALT — and it is bound in the vim
+    // map too, so the action is reachable whichever map is active.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('e'),
+        ),
+        InputAction::FocusPrompt,
     );
     map.insert((KeyModifiers::NONE, KeyCode::Up), InputAction::NavigateUp);
     map.insert(
@@ -801,6 +873,25 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::NONE, KeyCode::Char('k')),
         InputAction::NavigateUp,
     );
+    // `h` and `l` move the composer caret, which is exactly Helix `h` and
+    // `l`. The vim map has always bound them; this map did not, and the
+    // asymmetry had teeth: ADR-0042 and the composer plan both record `h`
+    // and `l` as "no conflict — the existing action already moves the
+    // composer caret", so the composer claim table left them unclaimed on
+    // the strength of a premise that was only true in the vim map. In the
+    // default configuration the composer's Normal-mode caret therefore had
+    // no letter that could move it: `h` and `l` were unbound, and `w`, `b`
+    // and `e` are claimed by the composer and consumed as pending verbs.
+    //
+    // The binding is the same one the arrow keys already use, so `h`/`l`
+    // behave exactly like `Left`/`Right` — including in the surfaces that
+    // own the keyboard before the binding map is consulted. A caret motion
+    // is a Helix-parity capability rather than a keymap flavour, so it
+    // belongs in both maps; `scripts/check_tui_composer_key_authority.py`
+    // rule G9 fails if the two maps ever disagree about a caret motion
+    // again.
+    map.insert((KeyModifiers::NONE, KeyCode::Char('h')), InputAction::Left);
+    map.insert((KeyModifiers::NONE, KeyCode::Char('l')), InputAction::Right);
     map.insert(
         (KeyModifiers::NONE, KeyCode::Tab),
         InputAction::ToggleComposerMode,
@@ -898,6 +989,26 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('a')),
         InputAction::SwitchAgent,
     );
+    // `/` opens the command palette from Normal mode, and it **stays**.
+    //
+    // The composer does not claim `/`, so this spelling has no conflict with
+    // the claim table: ADR-0042's conflict table names the *vim* map's `i` as
+    // the focus-prompt conflict, and the re-spelling exists because the
+    // composer claims that letter. `/` is not a claimed key, and the plan's
+    // invariant — "a letter the composer does not claim must resolve to the
+    // same app action it resolves to today" — requires it to keep resolving
+    // to `FocusPrompt`.
+    //
+    // It is also load-bearing beyond the action: `/` is the gesture that
+    // enters command mode, and command mode is what makes the rest of a
+    // typed slash command land as text. Removing it took away "type
+    // `/panels` from Normal mode and press Enter" — the only way back into
+    // the panel manager from a focused panel, which owns every key by
+    // contract (`tests/tui_side_panels.rs`).
+    //
+    // The focus-prompt **capability** moved to `Ctrl+Alt+E` in both maps, and
+    // the vim map's `i` spelling is gone, which is the spelling the ADR
+    // actually named.
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('/')),
         InputAction::FocusPrompt,
@@ -1084,17 +1195,41 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::NONE, KeyCode::Char('k')),
         InputAction::NavigateUp,
     );
+    // Stop / resume the running turn. The default map's bare `x` is gone:
+    // the composer claims `x` for Helix line-select (ADR-0042), so the
+    // action moved to a chord that is not a letter. The chord is in **both**
+    // maps, so the capability does not depend on which map is active.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('x'),
+        ),
+        InputAction::ToggleAgentRun,
+    );
     map.insert((KeyModifiers::NONE, KeyCode::Char('h')), InputAction::Left);
     map.insert((KeyModifiers::NONE, KeyCode::Char('l')), InputAction::Right);
+    // The vim map's bare `i` (focus prompt) and bare `d` (open diff) are
+    // gone: the composer claims both letters for Helix insert-before-caret
+    // and delete-selection (ADR-0042). The actions moved to chords that are
+    // not letters, and the chords are bound in **both** maps so the
+    // capability is reachable whichever map is active.
+    //
+    // `Ctrl+Alt+I` would be the mnemonic spelling, but the terminal delivers
+    // it as `ESC` + `0x09`, which crossterm reports as `Tab` with ALT — the
+    // verb would be unreachable on every terminal. `Ctrl+Alt+E` is the
+    // deliverable alternative (`ESC` + `0x05` arrives as `Char('e')` with
+    // CONTROL|ALT), and "E" reads as "e\nter" the command palette.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('i')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('e'),
+        ),
         InputAction::FocusPrompt,
     );
-    // Vim normal mode equivalent of the documented "Space a" concept.
-    map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('a')),
-        InputAction::FocusSidebar,
-    );
+    // The vim map's bare `a` (focus sidebar) is gone: the composer claims the
+    // letter for Helix insert-after-caret (ADR-0042). The action keeps a
+    // reachable chord — `Ctrl+Alt+S`, below — so no capability is lost; the
+    // bare `a` was a second spelling of an action that already had one.
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char(':')),
         InputAction::Command,
@@ -1206,8 +1341,14 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         InputAction::ToggleFullscreen,
     );
 
+    // The vim map's bare `d` (open diff) is gone: the composer claims `d`
+    // for Helix delete-selection (ADR-0042). The action moved to a chord
+    // that is not a letter, and the chord is bound in both maps.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char('d')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('d'),
+        ),
         InputAction::OpenDiff,
     );
 
@@ -1281,7 +1422,7 @@ pub fn vim_bindings() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
 
 /// Returns all default help entries across all modes.
 pub fn default_help_entries() -> Vec<HelpEntry> {
-    vec![
+    let mut entries = vec![
         // Insert mode: only modifier-based shortcuts (bare chars insert text)
         HelpEntry {
             mode: HelpMode::Insert,
@@ -1505,19 +1646,16 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "j/k",
             action: "Navigate up/down",
-            condition: None,
+            // The composer claims `j` and `k` when its buffer has more than
+            // one line (ADR-0042), so transcript scroll is what is left of
+            // the pair on a single-line buffer.
+            condition: Some("single-line composer buffer"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Space",
             action: "Show help",
             condition: None,
-        },
-        HelpEntry {
-            mode: HelpMode::Normal,
-            key: "a",
-            action: "Focus sidebar (agent tree)",
-            condition: Some("vim mode"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1562,9 +1700,9 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "i",
+            key: "Ctrl+Alt+E",
             action: "Focus prompt (insert mode)",
-            condition: Some("vim mode"),
+            condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1586,9 +1724,15 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "d",
+            key: "Ctrl+Alt+D",
             action: "Open diff",
-            condition: Some("vim mode"),
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+Alt+X",
+            action: "Stop / resume agent (toggle the running turn)",
+            condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -2002,7 +2146,78 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             action: "Next field",
             condition: Some("some dialogs"),
         },
-    ]
+    ];
+
+    // The composer's own verbs, **derived** from the claim table.
+    //
+    // A hand-written list here would be a second copy of the table, and a
+    // second copy is the drift this milestone exists to remove: a verb that
+    // landed in the table would not land in the help, and a verb that left
+    // the table would stay in the help. The rows are spliced in at the head
+    // of the Normal-mode section so they read as the composer's own block
+    // rather than as a tail on the app's rows.
+    let composer = composer_help_entries();
+    if !composer.is_empty() {
+        let at = entries
+            .iter()
+            .position(|entry| entry.mode == HelpMode::Normal)
+            .unwrap_or(entries.len());
+        entries.splice(at..at, composer);
+    }
+    entries
+}
+
+/// The help's composer section: one row per live claim.
+///
+/// Derived from the claim table, so the help cannot describe a verb the
+/// composer does not have, and cannot omit one it does. A **reserved** claim
+/// has no row — there is no behaviour to describe, and advertising it would
+/// teach a gesture that does nothing.
+fn composer_help_entries() -> Vec<HelpEntry> {
+    crate::tui::composer_claims::composer_verb_entries()
+        .into_iter()
+        .map(|entry| HelpEntry {
+            mode: HelpMode::Normal,
+            key: entry.key_text,
+            action: entry.label,
+            condition: entry.condition.label(),
+        })
+        .collect()
+}
+
+/// The help's route-dependent rows.
+///
+/// The copy gesture is the **second step of the `space` chord**, and only the
+/// box the `space` chord opens performs it. The `/help` command's box does
+/// not list it: there `y` is a filter character, and listing it would teach a
+/// gesture that does nothing.
+///
+/// The composer's own verbs are **not** here — they are documentation, and a
+/// user who opens `/help` is exactly the user who needs to know what `w`
+/// does. Only the `y` **verb** is route-dependent, because only the `y` verb
+/// is *performed* by a route.
+fn route_help_entries(route: HelpRoute) -> Vec<HelpEntry> {
+    if !route.owns_copy() {
+        return Vec::new();
+    }
+    vec![HelpEntry {
+        mode: HelpMode::Normal,
+        key: "space+y",
+        action: "Copy the composer's selection",
+        condition: None,
+    }]
+}
+
+/// The help entries for a mode and a route.
+///
+/// The route's rows are appended after the route-independent ones, so the
+/// copy gesture reads as the last thing the chord route's box teaches.
+pub fn help_entries_for_mode_and_route(mode: HelpMode, route: HelpRoute) -> Vec<HelpEntry> {
+    default_help_entries()
+        .into_iter()
+        .chain(route_help_entries(route))
+        .filter(|entry| entry.mode == mode)
+        .collect()
 }
 
 /// Returns help entries filtered by the given mode.
@@ -2017,8 +2232,13 @@ pub fn help_entries_for_mode(mode: HelpMode) -> Vec<HelpEntry> {
 ///
 /// When `vim_mode` is true, normal-mode entries include vim-specific bindings.
 /// The `active_mode` parameter determines which section is shown first/prominently.
-pub fn build_help_lines(vim_mode: bool, active_mode: HelpMode) -> Vec<String> {
-    let all_entries = default_help_entries();
+/// The `route` parameter selects the **route-dependent** rows: the copy
+/// gesture belongs to the chord route's box and to no other.
+pub fn build_help_lines(vim_mode: bool, active_mode: HelpMode, route: HelpRoute) -> Vec<String> {
+    let all_entries: Vec<HelpEntry> = default_help_entries()
+        .into_iter()
+        .chain(route_help_entries(route))
+        .collect();
     let mut lines = Vec::new();
 
     // Helper to format a section
@@ -2948,6 +3168,24 @@ mod tests {
                         // not a single physical key and cannot be audited here.
                         continue;
                     };
+                    // A letter the composer claims is resolved by the
+                    // **composer**, not by the app's binding map.
+                    //
+                    // In Normal mode the composer's claim table owns a closed
+                    // set of letters (ADR-0042), and the app map is consulted
+                    // only for letters the composer does *not* claim. The app
+                    // map may still bind one of those letters — the vim map's
+                    // `p` is PreviousSubagentTab — but that binding is
+                    // unreachable while the composer holds the keyboard, so
+                    // comparing the composer's help row against it would
+                    // report a contradiction that does not exist.
+                    //
+                    // The exemption is not a hole: the composer's rows are
+                    // audited against the claim table instead, by
+                    // `every_claimed_composer_letter_has_a_help_row`.
+                    if mode == HelpMode::Normal && composer_claims_key(modifiers, code) {
+                        continue;
+                    }
                     // Terminals differ in how they report an uppercase letter:
                     // some send `Char('W')` with SHIFT, others `Char('w')` with
                     // SHIFT, and the maps store either form. Try the plausible
@@ -3007,6 +3245,55 @@ mod tests {
             unbound,
             mislabelled
         );
+    }
+
+    /// Whether the composer claims this key.
+    ///
+    /// The claim table is the authority: a letter it owns belongs to the
+    /// composer, and the app's binding map is consulted only for the letters
+    /// it does not own.
+    fn composer_claims_key(modifiers: KeyModifiers, code: KeyCode) -> bool {
+        crate::tui::composer_claims::claim_for(modifiers, code).is_some()
+    }
+
+    /// Every letter the composer claims has a row in the Normal-mode help.
+    ///
+    /// The I6 audit exempts a claimed letter, because the composer resolves it
+    /// rather than the app's binding map. This is the other half of that
+    /// bargain: the exemption means the help is the only place the
+    /// composer's letters are documented, so a claim with no row would be a
+    /// letter the user cannot find at all.
+    #[test]
+    fn every_claimed_composer_letter_has_a_help_row() {
+        let normal = help_entries_for_mode(HelpMode::Normal);
+        for claim in crate::tui::composer_claims::COMPOSER_CLAIMS {
+            let key = claim.key.to_string();
+            assert!(
+                normal.iter().any(|entry| entry.key == key),
+                "the composer claims {key:?} but the Normal-mode help has no row \
+                 for it"
+            );
+        }
+    }
+
+    /// The help does not advertise bare `a` as the sidebar's gesture.
+    ///
+    /// `a` is the composer's insert-after key (ADR-0042). The old row taught
+    /// `a` as "Focus sidebar (agent tree)" in vim mode, which was true of the
+    /// old binding and false of the new one — a help row that lies about a
+    /// claimed letter. The sidebar keeps its chord, and that chord is
+    /// documented on its own row.
+    #[test]
+    fn the_help_does_not_advertise_bare_a_as_the_sidebars_gesture() {
+        for entry in default_help_entries() {
+            assert!(
+                !(entry.key == "a" && entry.action.to_ascii_lowercase().contains("sidebar")),
+                "the help still advertises bare `a` as a sidebar gesture: \
+                 key {:?}, action {:?}",
+                entry.key,
+                entry.action
+            );
+        }
     }
 
     /// The spellings a shifted letter may plausibly arrive as.
@@ -3145,7 +3432,7 @@ mod tests {
 
     #[test]
     fn test_build_help_lines_insert_mode_shows_insert_first() {
-        let lines = build_help_lines(false, HelpMode::Insert);
+        let lines = build_help_lines(false, HelpMode::Insert, HelpRoute::Command);
         // First non-empty content line should be in the Insert Mode section
         let insert_header = lines.iter().position(|l| l.contains("Insert Mode"));
         let normal_header = lines.iter().position(|l| l.contains("Normal Mode"));
@@ -3159,7 +3446,7 @@ mod tests {
 
     #[test]
     fn test_build_help_lines_normal_mode_shows_normal_first() {
-        let lines = build_help_lines(false, HelpMode::Normal);
+        let lines = build_help_lines(false, HelpMode::Normal, HelpRoute::Command);
         let insert_header = lines.iter().position(|l| l.contains("Insert Mode"));
         let normal_header = lines.iter().position(|l| l.contains("Normal Mode"));
         assert!(insert_header.is_some());
@@ -3172,7 +3459,7 @@ mod tests {
 
     #[test]
     fn test_build_help_lines_vim_mode_includes_vim_keys() {
-        let lines = build_help_lines(true, HelpMode::Normal);
+        let lines = build_help_lines(true, HelpMode::Normal, HelpRoute::Command);
         let text = lines.join("\n");
         assert!(
             text.contains("vim mode"),
@@ -3190,7 +3477,7 @@ mod tests {
 
     #[test]
     fn test_build_help_lines_no_vim_hides_vim_only_keys() {
-        let lines = build_help_lines(false, HelpMode::Normal);
+        let lines = build_help_lines(false, HelpMode::Normal, HelpRoute::Command);
         let text = lines.join("\n");
         // When vim mode is off, vim-specific entries like "i" (focus prompt)
         // and ":" (command mode) should not appear with "vim mode" condition
@@ -3206,7 +3493,7 @@ mod tests {
 
     #[test]
     fn test_build_help_lines_command_mode_section() {
-        let lines = build_help_lines(false, HelpMode::Command);
+        let lines = build_help_lines(false, HelpMode::Command, HelpRoute::Command);
         let text = lines.join("\n");
         assert!(
             text.contains("Command Mode"),
@@ -3218,7 +3505,7 @@ mod tests {
 
     #[test]
     fn test_build_help_lines_dialog_mode_section() {
-        let lines = build_help_lines(false, HelpMode::Dialog);
+        let lines = build_help_lines(false, HelpMode::Dialog, HelpRoute::Command);
         let text = lines.join("\n");
         assert!(
             text.contains("Dialog Mode"),

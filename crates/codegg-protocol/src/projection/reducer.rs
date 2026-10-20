@@ -752,44 +752,88 @@ impl ProjectionReducer {
                 ApplyOutcome::Applied
             }
             ProjectionEvent::SubagentStarted { node } => {
-                let Some(turn) = snapshot.active_turn.as_mut() else {
+                let mut node = node.clone();
+                node.normalise();
+                if node.child_instance_id.is_empty() {
+                    // Legacy recorded events have no generation-safe identity.
+                    // Keep them in the turn-local compatibility view only.
+                    if let Some(turn) = snapshot.active_turn.as_mut() {
+                        if turn.agent_tree.len() >= MAX_PROJECTION_SUBAGENTS {
+                            turn.agent_tree.pop_front();
+                        }
+                        turn.agent_tree.push_back(node);
+                    }
+                    return ApplyOutcome::Applied;
+                }
+                let origin_turn_id = node.originating_turn_id.clone();
+                if !snapshot.upsert_subagent(node.clone()) {
                     return self.record_diagnostic(
                         snapshot,
                         input,
-                        "orphan_subagent_started",
-                        "SubagentStarted without an active turn",
+                        "session_subagent_capacity",
+                        "Session-owned child capacity is full of live instances",
                     );
-                };
-                let mut node = node.clone();
-                node.normalise();
-                if turn.agent_tree.len() >= MAX_PROJECTION_SUBAGENTS {
-                    turn.agent_tree.pop_front();
                 }
-                turn.agent_tree.push_back(node);
-                snapshot.primary_session.active_subagents = turn
-                    .agent_tree
+                if let (Some(turn_id), Some(turn)) = (origin_turn_id, snapshot.active_turn.as_mut())
+                {
+                    if turn.turn_id == turn_id {
+                        if let Some(existing) = turn
+                            .agent_tree
+                            .iter_mut()
+                            .find(|item| item.child_instance_id == node.child_instance_id)
+                        {
+                            *existing = node;
+                        } else {
+                            if turn.agent_tree.len() >= MAX_PROJECTION_SUBAGENTS {
+                                turn.agent_tree.pop_front();
+                            }
+                            turn.agent_tree.push_back(node);
+                        }
+                    }
+                }
+                snapshot.primary_session.active_subagents = snapshot
+                    .subagents
                     .iter()
                     .filter(|n| matches!(n.status, AgentTreeStatus::Running))
                     .count();
                 ApplyOutcome::Applied
             }
             ProjectionEvent::SubagentProgress {
+                child_instance_id,
                 task_id,
                 message,
                 at,
             } => {
-                if let Some(turn) = snapshot.active_turn.as_mut() {
-                    if let Some(slot) = turn.agent_tree.iter_mut().find(|n| n.task_id == *task_id) {
+                let slot = if child_instance_id.is_empty() {
+                    None
+                } else {
+                    snapshot
+                        .subagents
+                        .iter_mut()
+                        .find(|node| node.child_instance_id == *child_instance_id)
+                };
+                if let Some(slot) = slot {
+                    if matches!(slot.status, AgentTreeStatus::Running) {
                         slot.description =
                             truncate_str(message, MAX_PROJECTION_STRING_BYTES).into_owned();
-                        let _ = at;
+                    }
+                    let _ = at;
+                    ApplyOutcome::Applied
+                } else if let Some(turn) = snapshot.active_turn.as_mut() {
+                    if let Some(slot) = turn
+                        .agent_tree
+                        .iter_mut()
+                        .find(|n| n.task_id == *task_id && n.child_instance_id.is_empty())
+                    {
+                        slot.description =
+                            truncate_str(message, MAX_PROJECTION_STRING_BYTES).into_owned();
                         ApplyOutcome::Applied
                     } else {
                         self.record_diagnostic(
                             snapshot,
                             input,
                             "unknown_subagent_progress",
-                            "SubagentProgress referenced an unknown task",
+                            "SubagentProgress referenced an unknown child instance",
                         )
                     }
                 } else {
@@ -797,76 +841,67 @@ impl ProjectionReducer {
                         snapshot,
                         input,
                         "orphan_subagent_progress",
-                        "SubagentProgress without an active turn",
+                        "SubagentProgress without a correlated child instance",
                     )
                 }
             }
             ProjectionEvent::SubagentCompleted {
+                child_instance_id,
                 task_id,
                 result_summary,
                 completed_at,
             } => {
-                if let Some(turn) = snapshot.active_turn.as_mut() {
-                    if let Some(slot) = turn.agent_tree.iter_mut().find(|n| n.task_id == *task_id) {
-                        slot.status = AgentTreeStatus::Completed;
-                        slot.result_summary = Some(
-                            truncate_str(result_summary, MAX_PROJECTION_STRING_BYTES).into_owned(),
-                        );
-                        slot.completed_at = Some(*completed_at);
-                        snapshot.primary_session.active_subagents = turn
-                            .agent_tree
-                            .iter()
-                            .filter(|n| matches!(n.status, AgentTreeStatus::Running))
-                            .count();
-                        ApplyOutcome::Applied
-                    } else {
-                        self.record_diagnostic(
-                            snapshot,
-                            input,
-                            "unknown_subagent_completed",
-                            "SubagentCompleted referenced an unknown task",
-                        )
-                    }
+                let updated = update_subagent_terminal(
+                    snapshot,
+                    child_instance_id,
+                    *task_id,
+                    AgentTreeStatus::Completed,
+                    result_summary,
+                    *completed_at,
+                );
+                if updated {
+                    snapshot.primary_session.active_subagents = snapshot
+                        .subagents
+                        .iter()
+                        .filter(|n| matches!(n.status, AgentTreeStatus::Running))
+                        .count();
+                    ApplyOutcome::Applied
                 } else {
                     self.record_diagnostic(
                         snapshot,
                         input,
-                        "orphan_subagent_completed",
-                        "SubagentCompleted without an active turn",
+                        "unknown_subagent_completed",
+                        "SubagentCompleted referenced an unknown child instance",
                     )
                 }
             }
             ProjectionEvent::SubagentFailed {
+                child_instance_id,
                 task_id,
                 error,
                 failed_at,
             } => {
-                if let Some(turn) = snapshot.active_turn.as_mut() {
-                    if let Some(slot) = turn.agent_tree.iter_mut().find(|n| n.task_id == *task_id) {
-                        slot.status = AgentTreeStatus::Failed;
-                        slot.result_summary =
-                            Some(truncate_str(error, MAX_PROJECTION_STRING_BYTES).into_owned());
-                        slot.completed_at = Some(*failed_at);
-                        snapshot.primary_session.active_subagents = turn
-                            .agent_tree
-                            .iter()
-                            .filter(|n| matches!(n.status, AgentTreeStatus::Running))
-                            .count();
-                        ApplyOutcome::Applied
-                    } else {
-                        self.record_diagnostic(
-                            snapshot,
-                            input,
-                            "unknown_subagent_failed",
-                            "SubagentFailed referenced an unknown task",
-                        )
-                    }
+                let updated = update_subagent_terminal(
+                    snapshot,
+                    child_instance_id,
+                    *task_id,
+                    AgentTreeStatus::Failed,
+                    error,
+                    *failed_at,
+                );
+                if updated {
+                    snapshot.primary_session.active_subagents = snapshot
+                        .subagents
+                        .iter()
+                        .filter(|n| matches!(n.status, AgentTreeStatus::Running))
+                        .count();
+                    ApplyOutcome::Applied
                 } else {
                     self.record_diagnostic(
                         snapshot,
                         input,
-                        "orphan_subagent_failed",
-                        "SubagentFailed without an active turn",
+                        "unknown_subagent_failed",
+                        "SubagentFailed referenced an unknown child instance",
                     )
                 }
             }
@@ -1455,6 +1490,60 @@ impl ProjectionReducer {
     }
 }
 
+fn update_subagent_terminal(
+    snapshot: &mut SessionProjectionSnapshot,
+    child_instance_id: &str,
+    task_id: u64,
+    status: AgentTreeStatus,
+    summary: &str,
+    at: i64,
+) -> bool {
+    let mut found = false;
+    if !child_instance_id.is_empty() {
+        if let Some(node) = snapshot
+            .subagents
+            .iter_mut()
+            .find(|node| node.child_instance_id == child_instance_id)
+        {
+            found = true;
+            set_subagent_terminal(node, status, summary, at);
+        }
+    }
+    let update_turn = |turn: &mut crate::projection::dto::TurnProjection, found: &mut bool| {
+        if let Some(node) = turn.agent_tree.iter_mut().find(|node| {
+            if child_instance_id.is_empty() {
+                node.child_instance_id.is_empty() && node.task_id == task_id
+            } else {
+                node.child_instance_id == child_instance_id
+            }
+        }) {
+            *found = true;
+            set_subagent_terminal(node, status, summary, at);
+        }
+    };
+    if let Some(turn) = snapshot.active_turn.as_mut() {
+        update_turn(turn, &mut found);
+    }
+    for turn in &mut snapshot.recent_turns {
+        update_turn(turn, &mut found);
+    }
+    found
+}
+
+fn set_subagent_terminal(
+    node: &mut crate::projection::dto::AgentTreeNodeProjection,
+    status: AgentTreeStatus,
+    summary: &str,
+    at: i64,
+) {
+    if !matches!(node.status, AgentTreeStatus::Running) {
+        return;
+    }
+    node.status = status;
+    node.result_summary = Some(truncate_str(summary, MAX_PROJECTION_STRING_BYTES).into_owned());
+    node.completed_at = Some(at);
+}
+
 /// Public extension trait that adds [`SessionProjectionSnapshot`]
 /// helpers used by the reducer and adapters.
 pub trait ProjectionState {
@@ -2016,6 +2105,8 @@ mod tests {
                 Some("turn-1".into()),
                 ProjectionEvent::SubagentStarted {
                     node: AgentTreeNodeProjection {
+                        child_instance_id: "child-7".into(),
+                        originating_turn_id: Some("turn-1".into()),
                         task_id: 7,
                         agent: "explorer".into(),
                         description: "exploring".into(),
@@ -2094,14 +2185,10 @@ mod tests {
     /// - `specialized_runtime.rs` wraps `send_and_wait` in `MAX_CHILD_TIMEOUT`,
     ///   so expiry drops the awaiting future while the worker keeps running.
     ///
-    /// Retaining such a node needs somewhere to put it that is not
-    /// `active_turn.agent_tree`, which means durable subagent identity — the
-    /// addendum's own stop condition for C006, and parent **D-5**. So the drop
-    /// stays, and this test now pins *what happens* rather than claiming it is
-    /// unavoidable. If the durable identity lands, this test is the place that
-    /// must change.
+    /// Session-owned identity lets this lifecycle survive its parent turn;
+    /// this test pins the reducer behavior when the event arrives late.
     #[test]
-    fn a_subagent_started_without_an_active_turn_is_diagnosed_not_applied() {
+    fn a_subagent_started_without_an_active_turn_is_session_owned() {
         use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
         use crate::projection::fixtures::idle_snapshot;
 
@@ -2116,6 +2203,8 @@ mod tests {
                 None,
                 ProjectionEvent::SubagentStarted {
                     node: AgentTreeNodeProjection {
+                        child_instance_id: "child-7".into(),
+                        originating_turn_id: None,
                         task_id: 7,
                         agent: "explorer".into(),
                         description: "exploring".into(),
@@ -2132,20 +2221,158 @@ mod tests {
                 },
             ),
         );
-        assert!(
-            !matches!(outcome, ApplyOutcome::Applied),
-            "an orphan subagent node must not be applied onto a turn that does not exist"
-        );
+        assert!(matches!(outcome, ApplyOutcome::Applied));
         assert!(
             snap.active_turn.is_none(),
-            "the snapshot must not grow an active turn to host the node"
+            "the snapshot must not grow an active turn to host the child"
         );
-        assert!(
-            snap.diagnostics
-                .iter()
-                .any(|d| d.code == "orphan_subagent_started"),
-            "the drop must stay observable: got {:?}",
-            snap.diagnostics
+        assert_eq!(snap.subagents.len(), 1);
+        assert_eq!(snap.subagents[0].child_instance_id, "child-7");
+        assert_eq!(snap.primary_session.active_subagents, 1);
+        assert!(!snap
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "orphan_subagent_started"));
+    }
+
+    #[test]
+    fn child_generation_survives_turn_replacement_and_late_terminal_is_identity_keyed() {
+        use crate::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
+        use crate::projection::fixtures::{active_turn_event_script, FIXTURE_SESSION_ID};
+
+        let reducer = ProjectionReducer::default();
+        let initial = crate::projection::fixtures::idle_snapshot();
+        let mut snapshot = initial.clone();
+        let start = |child: &str, timestamp: i64| {
+            ReducerEventInput::session(
+                timestamp as u64,
+                timestamp,
+                FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: AgentTreeNodeProjection {
+                        child_instance_id: child.into(),
+                        originating_turn_id: Some("turn-1".into()),
+                        task_id: 7,
+                        agent: "explore".into(),
+                        description: format!("{child} started"),
+                        status: AgentTreeStatus::Running,
+                        parent_task_id: None,
+                        created_at: timestamp,
+                        completed_at: None,
+                        result_summary: None,
+                        display_name: None,
+                        profile: None,
+                        usefulness: None,
+                        run_id: None,
+                    },
+                },
+            )
+        };
+        let mut script = active_turn_event_script();
+        script.push(start("generation-a", 4));
+        let mut replacement_turn = crate::projection::fixtures::active_turn_snapshot()
+            .active_turn
+            .unwrap();
+        replacement_turn.turn_id = "turn-2".into();
+        script.push(ReducerEventInput::session(
+            5,
+            5,
+            FIXTURE_SESSION_ID,
+            Some("turn-2".into()),
+            ProjectionEvent::TurnStarted {
+                turn: replacement_turn,
+            },
+        ));
+        // A reused numeric task id denotes a new generation, never the old one.
+        script.push(start("generation-b", 6));
+        script.push(ReducerEventInput::session(
+            7,
+            7,
+            FIXTURE_SESSION_ID,
+            None,
+            ProjectionEvent::SubagentProgress {
+                child_instance_id: "generation-a".into(),
+                task_id: 7,
+                message: "old child progress after turn replacement".into(),
+                at: 7,
+            },
+        ));
+        script.push(ReducerEventInput::session(
+            8,
+            8,
+            FIXTURE_SESSION_ID,
+            None,
+            ProjectionEvent::SubagentCompleted {
+                child_instance_id: "generation-a".into(),
+                task_id: 7,
+                result_summary: "old child finished".into(),
+                completed_at: 7,
+            },
+        ));
+        script.push(start("generation-a", 9));
+        script.push(ReducerEventInput::session(
+            10,
+            10,
+            FIXTURE_SESSION_ID,
+            None,
+            ProjectionEvent::SubagentCompleted {
+                child_instance_id: "generation-a".into(),
+                task_id: 7,
+                result_summary: "conflicting duplicate terminal".into(),
+                completed_at: 9,
+            },
+        ));
+        script.push(start("generation-c", 11));
+        script.push(ReducerEventInput::session(
+            12,
+            12,
+            FIXTURE_SESSION_ID,
+            None,
+            ProjectionEvent::SubagentFailed {
+                child_instance_id: "generation-c".into(),
+                task_id: 7,
+                error: "child failed".into(),
+                failed_at: 12,
+            },
+        ));
+        reducer.apply_all(&mut snapshot, script.clone());
+        assert_eq!(snapshot.subagents.len(), 3);
+        let old = snapshot
+            .subagents
+            .iter()
+            .find(|node| node.child_instance_id == "generation-a")
+            .unwrap();
+        let new = snapshot
+            .subagents
+            .iter()
+            .find(|node| node.child_instance_id == "generation-b")
+            .unwrap();
+        assert_eq!(old.status, AgentTreeStatus::Completed);
+        assert_eq!(new.status, AgentTreeStatus::Running);
+        assert_eq!(snapshot.primary_session.active_subagents, 1);
+        assert_eq!(old.originating_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(old.task_id, 7);
+        assert_eq!(old.result_summary.as_deref(), Some("old child finished"));
+        assert_eq!(old.description, "old child progress after turn replacement");
+        let failed = snapshot
+            .subagents
+            .iter()
+            .find(|node| node.child_instance_id == "generation-c")
+            .unwrap();
+        assert_eq!(failed.status, AgentTreeStatus::Failed);
+        let failed = snapshot
+            .subagents
+            .iter()
+            .find(|node| node.child_instance_id == "generation-c")
+            .unwrap();
+        assert_eq!(failed.status, AgentTreeStatus::Failed);
+        let first = snapshot.clone();
+        let mut replay = initial;
+        reducer.apply_all(&mut replay, script);
+        assert_eq!(
+            first, replay,
+            "replaying the child lifecycle must be deterministic"
         );
     }
 }

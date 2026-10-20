@@ -432,6 +432,7 @@ fn active_subagents_are_listed_with_their_task_and_status() {
     app.session_state.session_status = SessionStatus::Working;
     app.ui_state.subagents.set_rows(vec![
         SubagentRow {
+            child_instance_id: None,
             profile: None,
             usefulness: None,
             task_id: "1".into(),
@@ -442,6 +443,7 @@ fn active_subagents_are_listed_with_their_task_and_status() {
             status: "running".into(),
         },
         SubagentRow {
+            child_instance_id: None,
             profile: None,
             usefulness: None,
             task_id: "2".into(),
@@ -469,6 +471,7 @@ fn a_long_fan_out_is_truncated_with_an_honest_count() {
     app.ui_state.subagents.set_rows(
         (0..12)
             .map(|i| SubagentRow {
+                child_instance_id: None,
                 profile: None,
                 usefulness: None,
                 task_id: i.to_string(),
@@ -503,6 +506,7 @@ fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
     app.session_state.session_status = SessionStatus::Idle;
     app.ui_state.subagents.set_rows(vec![
         SubagentRow {
+            child_instance_id: None,
             profile: None,
             usefulness: None,
             task_id: "t1".into(),
@@ -513,6 +517,7 @@ fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
             status: "running".into(),
         },
         SubagentRow {
+            child_instance_id: None,
             profile: None,
             usefulness: None,
             task_id: "t2".into(),
@@ -547,7 +552,8 @@ fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
 fn an_actually_idle_session_still_reads_idle() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
-    app.ui_state.subagents.set_rows(vec![SubagentRow {
+    let rows = vec![SubagentRow {
+        child_instance_id: None,
         profile: None,
         usefulness: None,
         task_id: "t1".into(),
@@ -556,7 +562,9 @@ fn an_actually_idle_session_still_reads_idle() {
         agent: "explore".into(),
         description: "done".into(),
         status: "completed".into(),
-    }]);
+    }];
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
 
     assert_eq!(app.awaiting_task_counts(), (0, 0));
     let buffer = render_to_buffer(&mut app, 100, 30);
@@ -606,6 +614,56 @@ fn seed_projection_with_live_job(app: &mut App) {
         descriptor,
         snapshot,
     );
+}
+
+/// Install authoritative session-owned child rows for task-overlay tests.
+fn seed_projection_with_subagents(app: &mut App, rows: &[SubagentRow]) {
+    use codegg::protocol::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
+    use codegg::protocol::projection::replay::{
+        ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+        ProjectionSubscriptionId,
+    };
+    use codegg::protocol::projection::snapshot::SessionProjectionSnapshot;
+
+    let mut snapshot = SessionProjectionSnapshot::empty("sess", "proj", "ws");
+    snapshot.subagents = rows
+        .iter()
+        .map(|row| AgentTreeNodeProjection {
+            child_instance_id: row.child_instance_id.clone().unwrap_or_default(),
+            originating_turn_id: None,
+            task_id: row.task_id.parse().unwrap_or_default(),
+            agent: row.agent.clone(),
+            description: row.description.clone(),
+            status: match row.status.as_str() {
+                "completed" => AgentTreeStatus::Completed,
+                "failed" => AgentTreeStatus::Failed,
+                _ => AgentTreeStatus::Running,
+            },
+            parent_task_id: None,
+            created_at: 0,
+            completed_at: None,
+            result_summary: None,
+            display_name: row.display_name.clone(),
+            profile: row.profile.clone(),
+            usefulness: row.usefulness.clone(),
+            run_id: row.run_id.clone(),
+        })
+        .collect();
+    let descriptor = ProjectionStreamDescriptor {
+        stream_id: ProjectionStreamId::new("stream-sess").expect("valid stream id"),
+        kind: ProjectionStreamKind::Session,
+        project_id: "proj".into(),
+        workspace_id: Some("ws".into()),
+        session_id: Some("sess".into()),
+        projection_version: 1,
+        retention_floor_seq: 0,
+        high_water_seq: 0,
+        latest_checkpoint_seq: None,
+    };
+    let subscription_id = ProjectionSubscriptionId::new("sub-children");
+    let controller = app.projection_client.controller_mut();
+    let _ = controller.unsubscribe(&subscription_id);
+    controller.install_subscription(subscription_id, descriptor, snapshot);
 }
 
 /// Regression: a live job must reach the status row through the projection.
@@ -677,7 +735,8 @@ fn the_status_row_counts_live_work_without_the_sidebar() {
 fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
-    app.ui_state.subagents.set_rows(vec![SubagentRow {
+    let rows = vec![SubagentRow {
+        child_instance_id: None,
         profile: None,
         usefulness: None,
         task_id: "7".into(),
@@ -686,7 +745,9 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),
-    }]);
+    }];
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
     render_to_buffer(&mut app, 100, 30);
 
     let strip = app.ui_state.working_area.expect("strip drawn");
@@ -721,6 +782,7 @@ fn clicking_the_throbber_row_opens_nothing() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        child_instance_id: None,
         profile: None,
         usefulness: None,
         task_id: "7".into(),
@@ -745,6 +807,7 @@ fn the_strip_is_hit_tested_before_the_composer() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        child_instance_id: None,
         profile: None,
         usefulness: None,
         task_id: "7".into(),
@@ -1010,16 +1073,20 @@ fn a_working_turn_names_the_key_that_stops_it() {
 #[test]
 fn the_stop_confirmation_is_visible_between_the_two_presses() {
     let mut app = test_app();
-    // A fresh app composes (Insert), and bare-char bindings are Normal-mode
-    // only so `x` can never shadow a letter being typed. Reaching for the stop
-    // key therefore means leaving Insert first.
+    // The stop key is a chord (`Ctrl+Alt+X`) since ADR-0042 gave the bare `x`
+    // to the composer. A chord cannot be composed as text, so it needs no
+    // mode gate — but the app is put in Normal mode anyway, because that is
+    // where the user reaches for it.
     app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
     app.session_state.session_status = SessionStatus::Working;
 
     // First press: arm, and say what completes it. Without this the second
     // press looks like a no-op and the key reads as broken.
     let _ = render_to_buffer(&mut app, 100, 30);
-    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.on_key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ));
     assert!(
         app.prompt_state.stop_armed_at.is_some(),
         "one press must arm, not stop"
@@ -1116,6 +1183,7 @@ fn a_saturated_overlay_never_squeezes_the_transcript_below_its_floor() {
         app.ui_state.subagents.set_rows(
             (0..10)
                 .map(|i| SubagentRow {
+                    child_instance_id: None,
                     profile: None,
                     usefulness: None,
                     task_id: i.to_string(),
@@ -1157,7 +1225,8 @@ fn the_overlay_appears_when_the_pane_has_room_for_it() {
         status: "in_progress".into(),
         priority: "high".into(),
     }]);
-    app.ui_state.subagents.set_rows(vec![SubagentRow {
+    let rows = vec![SubagentRow {
+        child_instance_id: None,
         profile: None,
         usefulness: None,
         task_id: "1".into(),
@@ -1166,7 +1235,9 @@ fn the_overlay_appears_when_the_pane_has_room_for_it() {
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),
-    }]);
+    }];
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
     app.tasks_expanded = true;
 
     render_to_buffer(&mut app, 100, 50);
@@ -1182,6 +1253,33 @@ fn the_overlay_appears_when_the_pane_has_room_for_it() {
     assert!(text.contains("Subagents"), "{text}");
     assert!(text.contains("Sally"), "{text}");
     assert!(text.contains("explore"), "{text}");
+}
+
+#[test]
+fn the_overlay_names_rows_omitted_by_its_bound() {
+    use codegg::tui::app::state::subagents::SubagentRow;
+
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    let rows: Vec<SubagentRow> = (0..10)
+        .map(|index| SubagentRow {
+            child_instance_id: Some(format!("child-{index}")),
+            task_id: index.to_string(),
+            run_id: None,
+            display_name: Some(format!("worker-{index}")),
+            profile: None,
+            usefulness: None,
+            agent: "explore".into(),
+            description: "background work".into(),
+            status: "running".into(),
+        })
+        .collect();
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
+    app.tasks_expanded = true;
+
+    let text = buffer_text(&render_to_buffer(&mut app, 120, 50));
+    assert!(text.contains("Subagents · 4 more"), "{text}");
 }
 
 #[test]
@@ -1248,6 +1346,7 @@ fn an_expanded_but_empty_tasks_overlay_confirms_the_key_worked() {
 
 fn subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
     SubagentRow {
+        child_instance_id: Some(task_id.into()),
         task_id: task_id.into(),
         run_id: Some(format!("run-{task_id}")),
         display_name: Some(name.into()),
@@ -1262,6 +1361,7 @@ fn subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
 /// The same row as the projection delivers it once descriptors exist.
 fn described_subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
     SubagentRow {
+        child_instance_id: Some(task_id.into()),
         profile: Some("Reconnaissance generalist.".into()),
         usefulness: Some("Useful for broad recon.".into()),
         ..subagent(task_id, name, status)
@@ -1332,6 +1432,7 @@ fn the_subagent_tab_omits_the_agent_section_without_a_descriptor() {
 fn app_with_subagents(rows: Vec<SubagentRow>) -> App {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
+    seed_projection_with_subagents(&mut app, &rows);
     app.ui_state.subagents.set_rows(rows);
     app
 }
@@ -1583,6 +1684,48 @@ fn the_overlay_is_a_keyboard_path_into_a_tab() {
 }
 
 #[test]
+fn an_overlay_selection_does_not_retarget_when_its_row_finishes() {
+    let mut app = test_app();
+    let rows = vec![
+        SubagentRow {
+            child_instance_id: Some("child-first".into()),
+            task_id: "7".into(),
+            run_id: None,
+            display_name: Some("first".into()),
+            profile: None,
+            usefulness: None,
+            agent: "explore".into(),
+            description: "first task".into(),
+            status: "running".into(),
+        },
+        SubagentRow {
+            child_instance_id: Some("child-second".into()),
+            task_id: "7".into(),
+            run_id: None,
+            display_name: Some("second".into()),
+            profile: None,
+            usefulness: None,
+            agent: "explore".into(),
+            description: "second task".into(),
+            status: "running".into(),
+        },
+    ];
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
+    app.tasks_expanded = true;
+    app.move_tasks_selection(1);
+    let rows = vec![subagent("7", "second", "running")];
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
+
+    assert!(
+        !app.open_selected_task(),
+        "the disappeared selection must not slide onto the next row"
+    );
+    assert!(app.ui_state.subagents.tabs.is_empty());
+}
+
+#[test]
 fn the_overlay_cursor_walks_every_group_without_resting_on_a_heading() {
     let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
     app.set_todos(vec![codegg::tui::app::TodoEntry {
@@ -1621,6 +1764,7 @@ fn the_overlay_cursor_never_rests_on_a_row_that_was_truncated_away() {
     let rows: Vec<SubagentRow> = (0..60)
         .map(|index| subagent(&index.to_string(), &format!("n{index}"), "running"))
         .collect();
+    seed_projection_with_subagents(&mut app, &rows);
     app.ui_state.subagents.set_rows(rows);
     app.toggle_tasks_list();
 

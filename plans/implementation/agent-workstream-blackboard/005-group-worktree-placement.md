@@ -16,7 +16,7 @@ have separate corrective handoffs in
 plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md
 (C001–C006), with executable plans under
 plans/implementation/agent-workstream-m005-writer-containment-corrective/.
-ADR-0042 option B was **accepted on 2026-10-19**, which unblocked C002
+ADR-0044 option B was **accepted on 2026-10-19**, which unblocked C002
 only and enabled no shared mutation; C001 is closed with the restricted
 CodeGG-mediated writer profile and denial matrix, and C002 is closed with
 the durable generation-fenced checkout writer permit. C003 is

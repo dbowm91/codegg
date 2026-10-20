@@ -5,7 +5,7 @@ Primary class: infrastructure / invariant
 Planning baseline: plan/agent-workstream-m005-writer-audit (2026-10-19 source audit; revalidate at execution).
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C002.
 Original: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md, Q1.
-Accepted predecessor decisions: ADR-0002, ADR-0032, **ADR-0042 (option B, accepted 2026-10-19)**. The ADR-0042 hard gate is satisfied; it authorizes the C002 permit service and nothing else.
+Accepted predecessor decisions: ADR-0002, ADR-0032, **ADR-0044 (option B, accepted 2026-10-19)**. The ADR-0044 hard gate is satisfied; it authorizes the C002 permit service and nothing else.
 
 ## Objective
 

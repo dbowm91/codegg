@@ -50,6 +50,9 @@ Provides code navigation and analysis:
 - `hover()` - Get type/info hover for cursor position
 - `document_symbols()` - List all symbols in a document
 - `code_actions_unchecked()` - Get available code actions/quick fixes
+- `code_action_previews_for_warm_client()` - The **warm-only** code-action
+  read: one `textDocument/codeAction` request against a key the caller
+  resolved, with every action's edit previewed locally
 - `completion()` - Trigger completion at cursor
 - `signature_help()` - Show function signature hints
 - `code_lens()` - Get CodeLens data
@@ -128,7 +131,96 @@ Use the lsp tool to find the definition of the `processRequest` function
 1. File changes are sent to LSP server via `textDocument/didChange`
 2. Server publishes diagnostics via `textDocument/publishDiagnostics`
 3. `DiagnosticsCollector` receives and debounces updates (150ms)
-4. TUI displays diagnostics with severity indicators
+4. The daemon's diagnostics cadence compares what changed and publishes an
+   envelope for each file whose set actually changed
+5. TUI displays diagnostics with severity indicators
+
+The daemon drives step 4 on its own, every 750 ms, for each live session whose
+workspace already has a warm server. Nothing has to ask for it — the editor
+does not poll, and closing it does not stop diagnostics from being delivered.
+If you only need the current state once, `LspDiagnosticsGet` returns it
+directly and remains the correctness authority after a daemon restart.
+
+Diagnostics are reported by **workspace-relative path**, so `src/lib.rs` and
+`tests/lib.rs` are tracked separately.
+
+## Editor Reads
+
+Reads issued from the editor (hover, goto definition, goto implementation,
+references, declaration, document highlights, document and workspace symbols,
+signature help, semantic tokens, formatting preview, rename preview) go through
+the daemon and are **warm-only**: a read never starts a language server. If no
+server is running for your workspace, the read comes back `NotReady`, which
+means "nothing is running yet" — not "no results."
+
+If more than one language server is running for the same workspace and the
+file's extension does not single one out, the read comes back `Ambiguous` and
+names the candidates, rather than silently answering from whichever server
+happened to be first. Name a server explicitly to resolve it. `Ambiguous` is
+not a temporary state: retrying will not change the answer.
+
+If the server is running but does not offer that feature, the read comes back
+`Unsupported` and names the capability it lacks. That is different from
+`NotReady` on purpose: your language server is fine, it simply does not do this,
+and nothing you do will change that.
+
+### A preview you can apply
+
+Formatting and rename can both be asked for, and both return a **preview**: a
+diff, or the list of files a rename would touch.
+
+Both previews have a key:
+
+| Key | What it does |
+|---|---|
+| `=` | the **format preview** for the open document — the diff the formatter would produce, and how many edits that is |
+| `space r` | the **rename preview** for the symbol under the cursor — the old and new names, the files that would change, and the edits in each |
+
+`space r` asks for the new name first: it opens the editor's `:` line with
+`rename-preview ` already filled in, you type the name, and you press `Enter`.
+The line is the same one you could have typed by hand — `:rename-preview
+newname` — and `Esc` abandons it. An empty name, or one longer than the
+server's limit, is refused before a request is sent, and the refusal names the
+limit.
+
+**A preview that can be applied opens the review.** The diff in the review is
+the change that would be written, and the review is where you decide:
+
+- `[a]pply` sends the change through the daemon's checked apply path — the
+  same path `/lsp-preview-apply` uses, with the same revalidation of the file
+  it was computed against;
+- `Esc` rejects it. Nothing is written.
+
+So `=` and `space r` are no longer only a picture of what would change: they
+lead to the change itself, reviewed before it lands.
+
+**A preview that cannot be applied stays a preview, and says so.** The editor
+offers an apply only when the whole change is known. A truncated preview, a
+change with no edits, and a change too large to apply are all still previews,
+and the panel says which.
+
+Two refusals are the daemon's, not the editor's, and both appear verbatim in
+the review:
+
+- **Unsaved edits.** The apply will not write over a file you have edited but
+  not saved. Save it, then run the preview again.
+- **A file that changed.** If the file changed on disk since the preview was
+  built, the apply refuses and asks for a fresh preview.
+
+After a successful apply the editor reloads the file it wrote — unless your
+buffer holds edits the editor has not saved, in which case it keeps them and
+tells you the file changed on disk.
+
+`space a` — the code action — asks the server what code actions it would offer
+at the cursor. It is **one** `textDocument/codeAction` request, and the diff of
+each action's own edit is computed locally, so the action you pick is the
+action that was previewed. The panel is the picker: `j`/`k` move, `Enter`
+opens the change review on the selected action.
+
+An action that carries a **command** is never applied here, even one that also
+carries an edit — the LSP specification applies an action's edit *and then* its
+command, and this surface never runs commands. The panel says so, in the same
+words `Enter` uses.
 
 ## Error Handling
 

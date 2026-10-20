@@ -778,8 +778,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.find("a.txt:1:needle a").is_some());
-        assert!(result.find("b.txt:1:needle b").is_some());
+        assert!(result.contains("a.txt:1:needle a"));
+        assert!(result.contains("b.txt:1:needle b"));
         assert!(!result.contains("a.txt: /"));
     }
 

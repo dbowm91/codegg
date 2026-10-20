@@ -4151,6 +4151,10 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
     ));
     // C005 (ADR-0031): the serving daemon owns its delegated idle wake.
     daemon.attach_idle_wake();
+    // M013: the serving daemon owns the LSP diagnostics cadence. Without it
+    // nothing ever calls the publisher, so the push stream stays permanently
+    // cold and every client reads that as "no diagnostics yet".
+    daemon.start_lsp_diagnostics_driver();
 
     daemon.start_event_bridge();
     daemon.recover_state().await;
@@ -4424,6 +4428,10 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
     ));
     // C005 (ADR-0031): the serving daemon owns its delegated idle wake.
     daemon.attach_idle_wake();
+    // M013: the serving daemon owns the LSP diagnostics cadence. Without it
+    // nothing ever calls the publisher, so the push stream stays permanently
+    // cold and every client reads that as "no diagnostics yet".
+    daemon.start_lsp_diagnostics_driver();
 
     daemon.start_event_bridge();
     daemon.recover_state().await;

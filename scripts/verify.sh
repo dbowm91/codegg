@@ -85,8 +85,20 @@ run_quick() {
     echo "==> python3 scripts/check_tui_editor_key_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_key_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_leaf_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_leaf_authority.py)
+
+    echo "==> python3 scripts/check_tui_editor_completion_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_completion_authority.py)
+
+    echo "==> python3 scripts/check_tui_editor_apply_path.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_apply_path.py)
+
     echo "==> python3 scripts/check_tui_editor_prefix_state.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py)
+
+    echo "==> python3 scripts/check_tui_editor_doc_drift.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py)
 
     echo "==> python3 scripts/check_tui_transport_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_transport_authority.py)
@@ -95,6 +107,11 @@ run_quick() {
     (cd "$REPO_ROOT" && python3 scripts/check_tui_subagent_name_pool_isolation.py --self-test)
     echo "==> python3 scripts/check_tui_subagent_name_pool_isolation.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_subagent_name_pool_isolation.py)
+
+    echo "==> python3 scripts/check_tui_composer_key_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py --self-test)
+    echo "==> python3 scripts/check_tui_composer_key_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_composer_key_authority.py)
 
     echo "==> python3 scripts/check_daemon_listing_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)

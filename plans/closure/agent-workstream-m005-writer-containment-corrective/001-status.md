@@ -5,9 +5,9 @@ Source plan: `plans/implementation/agent-workstream-m005-writer-containment-corr
 Contract deliverable: `plans/implementation/agent-workstream-m005-writer-containment-corrective/c001-restricted-profile-contract.md`
 Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md`
 Repository baseline reviewed: `e78497d29444e5130c50948cc1b55e914afae04c`
-Decision outcome: **ADR-0042 remains `proposed` — still proposed; not accepted** (as at C001 close)
-Subsequent decision (2026-10-19, after this record): **ADR-0042 option B accepted** by the maintainers, recorded in the ADR's "Acceptance record" section. C002 is unblocked. See §8.1.
-Recommendation: closed; at C001 close C002 remained blocked on an independent maintainer accept/reject decision on ADR-0042. That decision was recorded on 2026-10-19 (option B accepted); see §8.1.
+Decision outcome: **ADR-0044 remains `proposed` — still proposed; not accepted** (as at C001 close)
+Subsequent decision (2026-10-19, after this record): **ADR-0044 option B accepted** by the maintainers, recorded in the ADR's "Acceptance record" section. C002 is unblocked. See §8.1.
+Recommendation: closed; at C001 close C002 remained blocked on an independent maintainer accept/reject decision on ADR-0044. That decision was recorded on 2026-10-19 (option B accepted); see §8.1.
 
 ## 1. Finding and disposition
 
@@ -68,7 +68,7 @@ writer visible. It creates no permit, fences nothing, and enables nothing.
 | Legacy isolated mutator continues | `tests/writer_disposition_guards.rs::the_legacy_isolated_mutator_still_dispatches` — the default catalog still registers and resolves `write`, `edit`, `replace`, `apply_patch`, `bash`, `git`. C001 changed no runtime behaviour. | Pass |
 | Verify no hidden CodeGG API (editor save, HTTP POST, restore, init, run-local `.codegg`) omitted | `c001-evidence/03` covers editor save, HTTP write/delete, document create/save/delete, project init, edit-checkpoint restore; `c001-evidence/04` enumerates the 13 paths physically inside a checkout under `.codegg/`, including the legacy `sessions.db` and the run store. The guard then keeps the set from drifting. | Pass |
 | Verify policy denies arbitrary shell/Python/plugin/PTY/LSP/MCP until native proof; ordinary group read does not grant mutation | 15 `denied-process` roots in the matrix cover bash, terminal, python_script, test, verify, ci_watch, job, the local MCP child, the LSP server child, the process-backed plugin and the hook adapter. Read-only roots are `read-proven` and are not writers. | Pass |
-| Write an explicit decision outcome | **Still proposed.** ADR-0042 is unchanged and remains `proposed — NOT accepted`. This closure records that outcome explicitly. | Pass |
+| Write an explicit decision outcome | **Still proposed.** ADR-0044 is unchanged and remains `proposed — NOT accepted`. This closure records that outcome explicitly. | Pass |
 | `cargo fmt`, scoped tests/guards, `scripts/verify.sh quick`, source inventory checks | See §5. | Pass |
 
 ## 4. Before/after trace
@@ -156,13 +156,13 @@ that sequence, and turn the Q0 posture from a claim into an inventory.
 The original milestone's own gate — "do not start Q1 storage until the
 product boundary and per-platform capability matrix are accepted" — is
 unchanged and still binding. C001 supplies the product-boundary package
-(ADR-0042, `proposed`) and the writer inventory Q1–Q5 will be measured
+(ADR-0044, `proposed`) and the writer inventory Q1–Q5 will be measured
 against. It does not start Q1.
 
 ## 8. C002 unblock audit
 
 **C002 is NOT unblocked.** C002 requires an explicit maintainer
-accept/reject decision on ADR-0042, and ADR-0042 is `proposed`. The
+accept/reject decision on ADR-0044, and ADR-0044 is `proposed`. The
 corrective's own gate is unchanged: "C002 may not start until the decision
 is accepted and C001 is closed."
 
@@ -174,14 +174,14 @@ the decision package, and the package is complete.
 | Gate condition | State |
 |---|---|
 | C001 closed | **Satisfied** — this record. |
-| ADR-0042 explicitly accepted by an independent maintainer | **Not satisfied** — ADR-0042 remains `proposed`. |
+| ADR-0044 explicitly accepted by an independent maintainer | **Not satisfied** — ADR-0044 remains `proposed`. |
 | C002 may start | **No.** |
 
 No part of this closure, the contract document, the manifest, the guard or the
-new tests changes ADR-0042's status, and none of them mark it accepted in
+new tests changes ADR-0044's status, and none of them mark it accepted in
 code or in the registry.
 
-### 8.1 Subsequent decision — ADR-0042 option B accepted (2026-10-19)
+### 8.1 Subsequent decision — ADR-0044 option B accepted (2026-10-19)
 
 The independent maintainer decision that §8 required was made **after this
 record was written**, and is recorded in the ADR's own "Acceptance record"
@@ -191,7 +191,7 @@ was "still proposed", and that is the outcome C001 closed with.
 | Gate condition | State at C001 close | State now |
 |---|---|---|
 | C001 closed | Satisfied | Satisfied |
-| ADR-0042 explicitly accepted by an independent maintainer | Not satisfied | **Satisfied 2026-10-19 — option B** |
+| ADR-0044 explicitly accepted by an independent maintainer | Not satisfied | **Satisfied 2026-10-19 — option B** |
 | C002 may start | No | **Yes — C002 is active** |
 
 What the acceptance did and did not do:

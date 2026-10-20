@@ -1,6 +1,8 @@
 # Managed Agent Scratch Spaces Roadmap
 
-Status: conditionally closed — M004 session/agent-private reclamation is closed. M003 remains conditionally closed pending Linux and Windows native sandbox qualification.
+Status: conditionally closed — M004 session/agent-private reclamation is closed, and M005 (the temp-root redirect offer) is closed on both hosted CI and a live observation with a real model. M003 remains conditionally closed pending **Windows** native sandbox qualification; the **Linux** half is now closed by the post-closure corrective addendum's C001.
+
+Post-closure qualification successor: `plans/subsystems/managed-agent-scratch-native-qualification-corrective-addendum.md` (C001 Linux native Required **closed** with native evidence; C002 Windows native Required **blocked** with a recorded stop condition). This addendum does not reopen M001/M002/M004, Windows shared cleanup, or already-green PR #128 CI.
 
 Planning baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (main inspected 2026-10-16).
 
@@ -109,6 +111,7 @@ Exit: two child runs get distinct private roots, a parent can create/grant one s
 Class: polish / invariant hardening. Status: **conditionally closed**.
 Plan: `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md`.
 Exit: structured path denial / approval-needed results suggest authorized scratch but never rewrite a required path, explicit operator Deny remains authoritative, garbage collection is demonstrably safe under crash/race/symlink cases, Linux/macOS/Windows support claims are evidence-qualified.
+Closure: `plans/closure/managed-agent-scratch/003-status.md`. The Linux native sandbox qualification is closed by the post-closure corrective addendum's C001 (`plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`, native Landlock evidence, CI run `39298041771`, 14,813/14,813 green); the **Windows** native sandbox qualification remains outstanding and keeps M003 conditional.
 
 ### M004 — Session and agent-private scratch reclamation
 
@@ -151,3 +154,4 @@ All three milestones have accepted `plans/closure/managed-agent-scratch/00N-stat
 | M002 | closed | `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md` | `plans/closure/managed-agent-scratch/002-status.md` | none |
 | M003 | conditionally closed | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | `plans/closure/managed-agent-scratch/003-status.md` | Authenticated workspace/private/shared-scratch mutations bypass only the implicit default Ask; explicit tool/path rules remain authoritative. Unix and Windows shared cleanup implementations are qualified by platform tests; Linux and Windows native sandbox containment remain unqualified. M004 was the corrective successor and is closed; no later milestone is registered. |
 | M004 | closed | `plans/implementation/managed-agent-scratch/004-private-scratch-reclamation.md` | `plans/closure/managed-agent-scratch/004-status.md` | Exact-head cleanup, full CI, Windows lifecycle, and desktop evidence recorded. No successor plan in this line is currently eligible or blocked. |
+| M005 | closed | `plans/implementation/managed-agent-scratch/005-temp-root-redirect-offer-before-human-approval.md` | `plans/closure/managed-agent-scratch/005-status.md` | Corrective pass on M003's advisory temp-write recovery: the recovery hint lives inside the write tool, so under the default policy the model never received it — the human was asked first. M005 answers the model first with the same actionable message and lets the human decide only when the model repeats the restricted path. Hosted CI run `39374727100` passed on the pull-request head and run `39378897301` passed on the merged head (`e52695b9`), and the live observation with a real model was obtained on 2026-10-20 under the default policy (closure §4 and §13). No successor milestone in this line is currently registered. |

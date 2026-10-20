@@ -1030,6 +1030,8 @@ impl JobExecutor for SubagentJobExecutor {
         };
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
+            child_instance_id: String::new(),
+            originating_turn_id: ctx.job.turn_id.clone(),
             run_id: run_id.clone(),
             prompt,
             agent,
@@ -1050,6 +1052,9 @@ impl JobExecutor for SubagentJobExecutor {
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: model,
             workspace_root: Some(workspace_root),
+            // The scheduler bound this job to a workspace; the child runs
+            // under that identity rather than inventing one.
+            workspace_id: Some(ctx.workspace_id.clone()),
             workspace_locks: None,
             // M005: scheduler-owned children inherit the default ceiling;
             // isolated worktree roots become their writable sandbox roots

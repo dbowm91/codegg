@@ -1,11 +1,11 @@
 # M005 Writer-Containment Corrective C006 — Restricted Shared Checkout End-to-End Qualification (Q1–Q5)
 
-Status: blocked — C004 AND C005 strict closure, C001–C003/ADR-0042 upstream gates inherited
+Status: blocked — C004 AND C005 strict closure, C001–C003/ADR-0044 upstream gates inherited
 Primary class: capability closure / invariant
 Planning baseline: plan/agent-workstream-m005-writer-audit 2026-10-19; revalidate exact implementation HEAD.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C006
 Original: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md, Q1–Q5 and strict M005 closure.
-ADRs: accepted ADR-0002/0032 plus **accepted ADR-0042 (option B, 2026-10-19)**; the C004+C005 strict closures remain the binding gate.
+ADRs: accepted ADR-0002/0032 plus **accepted ADR-0044 (option B, 2026-10-19)**; the C004+C005 strict closures remain the binding gate.
 
 ## Objective
 

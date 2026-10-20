@@ -24,8 +24,17 @@
 use sha2::Digest;
 use std::path::PathBuf;
 
-/// Let the tool's watchdog return typed timeout details and partial output
-/// before the broker's independent invocation watchdog fires.
+/// Head start the broker's watchdog gets over the tool's own deadline.
+///
+/// The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
+/// around the tool invocation, so it must expire strictly after the tool's
+/// internal deadline or it preempts the tool before it can return the output it
+/// collected while being killed. Expressed in milliseconds because that is the
+/// unit `BrokerContext::timeout_ms` uses.
+///
+/// The window also lets the tool's own watchdog return typed timeout details
+/// and partial output before the broker's independent invocation watchdog
+/// fires.
 pub(crate) const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
 
 use crate::error::ToolError;

@@ -21,6 +21,7 @@ pub(super) mod plugins;
 /// (which name [`policy::PolicySnapshotReason`]) stay well-formed.
 pub mod policy;
 pub(super) mod presence;
+pub(super) mod primary_projection;
 pub(super) mod project_catalog;
 pub(super) mod project_init;
 pub(super) mod project_picker;

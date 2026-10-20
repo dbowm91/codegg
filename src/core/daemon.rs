@@ -3203,11 +3203,28 @@ impl CoreDaemon {
             | CoreRequest::EditCheckpointReapply { session_id, .. }
             | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => Some(session_id),
             CoreRequest::LspPreviewApply { request } => Some(request.session_id.as_str()),
+            // M013: the M006-B read surface resolves its session exactly like
+            // the completion read and the preview-apply write.
+            //
+            // This arm did not exist. `LspReadGet` is `ViaSession + FileRead`,
+            // so with no locator the daemon resolved no project, and every
+            // read from a team principal failed closed with
+            // `authorization_scope_required` — before the request ever reached
+            // the warm-client resolver. The whole M006-B editor read surface
+            // was unreachable from a socket-connected client, which is a team
+            // principal, and the failure was indistinguishable from "you may
+            // not read this". It was invisible because M006-B's own tests
+            // called the daemon as LocalOwner, which bypasses scope
+            // resolution entirely.
+            //
+            // Deliberately *not* widened beyond `ViaSession`: the project is
+            // still resolved server-side from the session row, so a caller
+            // cannot name a project it has no claim on.
+            CoreRequest::LspReadGet { request } => Some(request.session_id.as_str()),
             // M003: the completion read resolves its session exactly like the
             // preview-apply write, so a team principal with `file.read` on
             // the session's project passes and one without is denied — never
-            // `NotReady`, never `MissingScope` for a bound session. The M006-B
-            // reads are deliberately untouched here.
+            // `NotReady`, never `MissingScope` for a bound session.
             CoreRequest::LspCompletionGet { request } => Some(request.session_id.as_str()),
             CoreRequest::SessionSelectionUpdate { request } => Some(request.session_id.as_str()),
             CoreRequest::GoalSet { session_id, .. }
@@ -5129,6 +5146,12 @@ mod tests {
     #[tokio::test]
     async fn session_create_through_daemon() {
         let daemon = test_daemon().await;
+        // A real temp directory, like every other caller of `seed_test_context`.
+        // This used to hardcode `/tmp`, which is a symlink to `/private/tmp` on
+        // macOS: the workspace registry rejects a root whose canonical form
+        // differs from the one it was given, so the fixture failed at
+        // registration with `InvalidRootPath("/tmp")` and the test never reached
+        // the behaviour it is about.
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().to_string_lossy().into_owned();
         let (project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
@@ -5253,6 +5276,9 @@ mod tests {
     #[tokio::test]
     async fn turn_submit_rejects_when_active() {
         let daemon = test_daemon().await;
+        // A real temp directory, for the same reason as
+        // `session_create_through_daemon`: a hardcoded `/tmp` is a symlink on
+        // macOS and the fixture failed at workspace registration.
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().to_string_lossy().into_owned();
         let (project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
