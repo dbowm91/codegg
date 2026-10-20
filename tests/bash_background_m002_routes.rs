@@ -40,6 +40,7 @@ async fn harness() -> (
         .get_or_register(&workspace_root)
         .await
         .expect("register");
+    let workspace_root = root.path().to_path_buf();
     std::mem::forget(root);
     let services = WorkspaceServiceRegistry::new(
         workspace_registry,

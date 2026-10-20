@@ -263,6 +263,57 @@ If a sandbox profile is requested without a workspace root, bash runs without
 OS containment and that is reported as *unavailable*, never as full host
 access — the absence of a workspace never silently widens authority.
 
+Model-owned Bash and Python processes receive a private scratch directory for
+their session. Use the `CODEGG_SCRATCH_DIR` environment variable in shell
+commands, or its displayed path with the structured `read` and `write` tools,
+for temporary artifacts shared across tool calls in that session. `TMPDIR`,
+`TMP`, and `TEMP` point there for managed model processes. Writes inside the
+session workspace or scratch directory do not trigger the implicit default
+`Ask`; explicit rules still apply. Human shell commands do not receive the
+session scratch grant.
+
+Each durable subagent run gets its own private scratch directory, so sibling
+temporary files stay separate. An orchestrator can create a named shared
+scratch resource with the `task` tool and grant its opaque ID to selected
+direct children. Those children receive the shared path as
+`CODEGG_SHARED_SCRATCH_<ALIAS>`; `TMPDIR`, `TMP`, `TEMP`, and
+`CODEGG_SCRATCH_DIR` remain private to each run. A sibling without the grant
+cannot read or write the resource through structured tools, and Required
+sandboxes deny writes to ungranted sibling roots. Some native backends permit
+broad reads for tool compatibility, so scratch grants do not claim OS-level
+read confidentiality.
+
+On a native Linux host with Landlock ABI >= 3, this containment is qualified
+end to end: the granted shared root and the run's private root are writable
+while an ungranted sibling, another session's scratch, the scratch parent, an
+unrelated host temporary directory, and a symlink planted inside the workspace
+that points out of it are all refused by the kernel. The evidence is produced
+by `tests/linux_native_scratch_containment.rs`, which admits the delegated
+run through the real task, submission, and scheduler path and launches it
+through the real managed-process owner. A host that cannot obtain Landlock
+fails that qualification rather than skipping it. Other platforms are not
+covered by it.
+
+If a structured write targets a known host temp directory outside the
+authorized workspace and scratch roots, CodeGG suggests the corresponding
+path under the run's private scratch directory. The suggestion is not an
+authorization or a rewrite: the original path is left untouched, and any
+explicit permission Deny remains final. Structured reads and shell commands
+are not redirected. FullHost shell processes retain access to the real host
+temp directory unless their selected native sandbox constrains it. Revoking a
+shared resource stops new child admission; active attempt leases keep it alive.
+Unix and Windows cleanup run after the final lease releases. Both reclaim only
+the revoked shared resource beneath an opaque tombstone. Reparse points are
+quarantined on Windows; deleting a hardlink inside the tombstone only removes
+that name and leaves its outside target intact. Other unsupported platforms
+retain revoked shared scratch rather than guessing at safe recursive removal.
+Terminal delegated-run scratch is reclaimed after the child process returns.
+When a session is soft-deleted, its complete scratch tree is reclaimed after
+all durable runs and jobs are terminal; cleanup is deferred while work remains
+active and stops if the session is restored. The daemon resumes cleanup for
+deleted sessions after restart. Durable transcripts, run results, and Git
+worktrees live outside this disposable tree.
+
 ## Testing and the scheduler
 
 The `test` tool runs the project's suite through the daemon scheduler rather

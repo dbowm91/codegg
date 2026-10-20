@@ -379,7 +379,7 @@ impl CoreDaemon {
         if wakes > 0 {
             tracing::info!(wakes, "idle-continuation wakes dispatched during recovery");
         }
-        if let Some(scheduler) = self.deps.scheduler.as_ref() {
+        let recovery = if let Some(scheduler) = self.deps.scheduler.as_ref() {
             match scheduler
                 .recover_at_startup(&self.deps.recovery_policy)
                 .await
@@ -408,6 +408,49 @@ impl CoreDaemon {
             }
         } else {
             None
+        };
+        self.reconcile_deleted_session_scratch().await;
+        recovery
+    }
+
+    /// Resume best-effort cleanup watchers for soft-deleted sessions after a
+    /// daemon restart. The cleanup helper serializes with restore and rechecks
+    /// durable run/job liveness before touching each owner tree.
+    async fn reconcile_deleted_session_scratch(&self) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+        let mut after_id = String::new();
+        loop {
+            let session_ids = match sqlx::query_scalar::<_, String>(
+                "SELECT id FROM session WHERE time_deleted IS NOT NULL AND id > ? ORDER BY id LIMIT 256",
+            )
+            .bind(&after_id)
+            .fetch_all(pool)
+            .await
+            {
+                Ok(session_ids) => session_ids,
+                Err(error) => {
+                    tracing::warn!(?error, "deleted-session scratch recovery scan deferred");
+                    return;
+                }
+            };
+            if session_ids.is_empty() {
+                return;
+            }
+            let page_is_full = session_ids.len() == 256;
+            for session_id in &session_ids {
+                crate::core::daemon_sessions::spawn_deleted_session_scratch_reclaimer(
+                    session_id.clone(),
+                    pool.clone(),
+                    self.deps.agent_run_store.clone(),
+                    self.deps.job_store.clone(),
+                );
+            }
+            if !page_is_full {
+                return;
+            }
+            after_id = session_ids.last().cloned().unwrap_or_default();
         }
     }
 

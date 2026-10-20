@@ -246,6 +246,11 @@ typed_identity!(
     "agent_run_id"
 );
 typed_identity!(
+    /// Stable identity for a managed scratch resource; never a path locator.
+    ScratchId,
+    "scratch_id"
+);
+typed_identity!(
     /// Stable identity for a bounded group of related agent runs.
     AgentRunGroupId,
     "agent_run_group_id"

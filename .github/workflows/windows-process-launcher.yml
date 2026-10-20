@@ -9,6 +9,7 @@ on:
       - 'Cargo.lock'
       - 'src/managed_process.rs'
       - 'src/managed_process/**'
+      - 'src/scratch.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'src/tool/bash/process.rs'
@@ -32,6 +33,7 @@ on:
       - 'Cargo.lock'
       - 'src/managed_process.rs'
       - 'src/managed_process/**'
+      - 'src/scratch.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'src/tool/bash/process.rs'
@@ -155,6 +157,10 @@ jobs:
       - name: Windows suspended-target failure injection
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::failed_job_assignment_never_runs_the_suspended_target -- --nocapture
+
+      - name: Windows managed scratch lifecycle tests
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
+        run: cargo test --locked -p codegg --lib scratch::tests -- --nocapture --test-threads=1
 
       - name: Restricted stdio setup failure injection
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes

@@ -156,6 +156,12 @@ The idempotency class is persisted at creation time. It is never re-inferred fro
 
 `recover_generation` marks non-terminal attempts from a stale generation as `Interrupted`. The parent job is requeued only if `RecoveryPolicy` permits based on `IdempotencyClass`. Default policy requeues `ReadOnly` and `SafeRepeat` only.
 
+Subagent attempt leases retain its run-private and explicitly shared scratch
+until the child worker returns. Terminal run-private scratch is then reclaimed.
+Soft-deleted session scratch waits for all durable runs and jobs to become
+terminal; restore cancels cleanup, and daemon startup re-arms cleanup for
+deleted sessions.
+
 ### RunStore vs JobStore
 
 JobStore owns queue/lifecycle. RunStore owns execution artifacts. They are NOT a single atomic transaction. Attempt completion and RunStore completion are coordinated best-effort. Never assume RunStore is the queue authority.

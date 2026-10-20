@@ -88,6 +88,7 @@ impl JobDispatcher for SubAgentJobDispatcher {
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: model,
             workspace_root,
+            workspace_id: None,
             workspace_locks: None,
             // M005: durable-job fallback inherits the default ceiling.
             parent_sandbox_profile: None,

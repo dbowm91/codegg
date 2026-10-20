@@ -1,9 +1,9 @@
 //! Tool permission, execution-context, and batch execution ownership.
 
 use super::r#loop::{
-    extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_path_within_workspace, is_test_command, is_workspace_file_mutation, parse_mcp_tool_name,
-    truncate_test_event_preview, AgentLoop, ToolPermissionOutcome, ToolTimeoutConfig,
+    extract_bash_command, extract_git_subcommand, extract_path_from_tool_call, is_test_command,
+    parse_mcp_tool_name, truncate_test_event_preview, AgentLoop, ToolPermissionOutcome,
+    ToolTimeoutConfig,
 };
 use crate::agent::progress_recovery::ToolExecutionOutcome;
 use crate::bus::events::AppEvent;
@@ -421,9 +421,9 @@ impl AgentLoop {
             accepted_call_ordinal,
         );
         let path_policy_fingerprint = self
-            .workspace_service_lease
+            .workspace_path_policy
             .as_ref()
-            .map(|lease| lease.path_policy().authority_fingerprint());
+            .map(|policy| policy.authority_fingerprint());
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
@@ -441,6 +441,7 @@ impl AgentLoop {
                     snapshot: snapshot.clone(),
                     receipt: receipt.clone(),
                     command_preflight,
+                    scratch_scope: self.scratch_scope.clone(),
                 },
             ),
             timeout_ms,
@@ -619,6 +620,38 @@ impl AgentLoop {
                     Some(&self.session_id),
                 )
                 .await
+        } else if matches!(
+            tc.name.as_str(),
+            "write" | "edit" | "apply_patch" | "replace"
+        ) {
+            if let Some(path) = path.as_deref() {
+                let session_scratch = if self.scratch_scope.is_none() {
+                    crate::scratch::session_scratch_dir(&self.session_id).ok()
+                } else {
+                    None
+                };
+                let mut allowed_roots = vec![self.workspace_root.as_path()];
+                if let Some(scope) = &self.scratch_scope {
+                    allowed_roots.push(scope.private_root.as_path());
+                    allowed_roots.extend(scope.shared.iter().map(|root| root.path.as_path()));
+                } else if let Some(root) = session_scratch.as_deref() {
+                    allowed_roots.push(root);
+                }
+                self.services
+                    .permission_checker
+                    .check_trusted_root_mutation(
+                        tc.name.as_str(),
+                        path,
+                        &allowed_roots,
+                        Some(&self.session_id),
+                    )
+                    .await
+            } else {
+                self.services
+                    .permission_checker
+                    .check(&tc.name, None, Some(&self.session_id))
+                    .await
+            }
         } else {
             self.services
                 .permission_checker
@@ -770,24 +803,6 @@ impl AgentLoop {
                     );
                     DeterministicVerdict::Escalate { request }
                 } else if let PermissionResult::Ask(req) = perm_result {
-                    // Preserve the narrow local-file UX exception. External
-                    // MCP origin is never evidence that an unknown tool is
-                    // safe.
-                    if is_workspace_file_mutation(
-                        tc.name.as_str(),
-                        req.path.as_deref(),
-                        &self.workspace_root,
-                    ) && is_path_within_workspace(req.path.as_deref(), &self.workspace_root)
-                        && sensitive_match.is_none()
-                    {
-                        return ToolPermissionOutcome::Allowed {
-                            tool_call: tc.clone(),
-                            receipt: self.accepted_permission_receipt(
-                                approval_source::WORKSPACE_FILE_MUTATION,
-                            ),
-                            command_preflight: command_preflight.clone(),
-                        };
-                    }
                     let dialog_args = req.args.clone();
                     let request = ApprovalRequest::new(
                         req.tool.clone(),
