@@ -37,10 +37,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use codegg_protocol::lsp::{
-    LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto, LspFormatPreviewDto, LspHighlightDto,
-    LspPreviewCandidateDto, LspPreviewPatchDto, LspRangeDto, LspReadOperation, LspReadPayloadDto,
-    LspReadRequestDto, LspReadResultDto, LspRenameFileDto, LspRenamePreviewDto, LspSignatureDto,
-    LspSignatureParameterDto, LspSymbolDto,
+    LspCodeActionDto, LspCodeActionUnavailable, LspDiagnosticsGetRequestDto,
+    LspDiagnosticsResultDto, LspFormatPreviewDto, LspHighlightDto, LspPreviewCandidateDto,
+    LspPreviewPatchDto, LspRangeDto, LspReadOperation, LspReadPayloadDto, LspReadRequestDto,
+    LspReadResultDto, LspRenameFileDto, LspRenamePreviewDto, LspSignatureDto,
+    LspSignatureParameterDto, LspSymbolDto, MAX_LSP_CODE_ACTIONS, MAX_LSP_PREVIEW_CANDIDATE_BYTES,
+    MAX_LSP_PREVIEW_CANDIDATE_PATCHES, MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES,
+    MAX_LSP_READ_CANDIDATE_BYTES,
 };
 
 use crate::core::daemon::CoreDaemon;
@@ -724,6 +727,48 @@ impl CoreDaemon {
                     Err(err) => return Self::read_operation_error(operation, &err),
                 }
             }
+            LspReadOperation::CodeActionPreview => {
+                // A code action is about a position, so this is a point read
+                // at the cursor: a zero-width range there. The daemon asks
+                // **once** and previews each action's own edit locally — see
+                // `egglsp`'s `code_action_previews_for_warm_client` for why a
+                // second request would be a hazard rather than a saving.
+                let range = crate::lsp::lsp_types::Range {
+                    start: crate::lsp::lsp_types::Position {
+                        line,
+                        character: column,
+                    },
+                    end: crate::lsp::lsp_types::Position {
+                        line,
+                        character: column,
+                    },
+                };
+                match operations
+                    .code_action_previews_for_warm_client(
+                        key,
+                        target,
+                        range,
+                        None,
+                        // One extra, so `truncated` is a measured fact rather
+                        // than a guess at the cap.
+                        MAX_LSP_CODE_ACTIONS + 1,
+                        Some(root),
+                    )
+                    .await
+                {
+                    Ok(mut entries) => {
+                        let truncated = entries.len() > MAX_LSP_CODE_ACTIONS;
+                        entries.truncate(MAX_LSP_CODE_ACTIONS);
+                        let actions = mint_code_action_candidates(
+                            root,
+                            entries,
+                            MAX_LSP_READ_CANDIDATE_BYTES,
+                        );
+                        LspReadPayloadDto::CodeActions { actions, truncated }
+                    }
+                    Err(err) => return Self::read_operation_error(operation, &err),
+                }
+            }
         };
         Ok(LspReadResultDto::ready(operation, payload))
     }
@@ -1039,6 +1084,137 @@ fn mint_rename_candidate(
         &format!("editor:rename:{old_name}->{}", preview.new_name),
         patches,
     )
+}
+
+/// Mint the candidates for one code-action read, or the reason each action
+/// has none.
+///
+/// The reasons are **per action**, not per result, because the causes are
+/// per action: one action can be command-only while the one beside it is
+/// perfectly applicable. A result-wide flag could only say "something was
+/// cut", and the reader would not know which.
+///
+/// The order of the checks is the order a reader needs: the server's own
+/// facts first (a command, a disabled marker), then the facts of the edit
+/// (none, incomplete), and only then this surface's own bound. Each action
+/// carries the most specific true statement about why it has no candidate.
+fn mint_code_action_candidates(
+    root: &Path,
+    entries: Vec<egglsp::CodeActionEntry>,
+    max_total_bytes: usize,
+) -> Vec<LspCodeActionDto> {
+    let mut actions = Vec::with_capacity(entries.len());
+    // The running total of patch bytes this result carries. The bound is on
+    // the *result*, not on each candidate: a read result travels over the
+    // wire, and several candidates in one result would each be within their
+    // own bound while the result as a whole was not.
+    let mut total_bytes = 0usize;
+    let mut bound_reached = false;
+    for entry in entries {
+        let mut candidate = None;
+        let mut unavailable = None;
+        if entry.has_command {
+            // The surface never runs commands, and the LSP specification has
+            // the client apply an action's edit *and then* its command.
+            // Applying the edit of a mixed action would apply half of what
+            // the action means.
+            unavailable = Some(LspCodeActionUnavailable::Command);
+        } else if entry.disabled_reason.is_some() {
+            unavailable = Some(LspCodeActionUnavailable::Disabled);
+        } else if !entry.has_edit {
+            unavailable = Some(LspCodeActionUnavailable::NoEdit);
+        } else {
+            match code_action_patches(root, &entry) {
+                None => unavailable = Some(LspCodeActionUnavailable::IncompletePreview),
+                Some(patches) => {
+                    let bytes: usize = patches.iter().map(|(_, patch, _)| patch.len()).sum();
+                    if code_action_exceeds_candidate_bounds(&patches) {
+                        unavailable = Some(LspCodeActionUnavailable::TooLarge);
+                    } else if bound_reached || total_bytes.saturating_add(bytes) > max_total_bytes {
+                        // The bound is reached: no further candidate is
+                        // minted. The action keeps its place in the list, and
+                        // says why it has no preview.
+                        bound_reached = true;
+                        unavailable = Some(LspCodeActionUnavailable::BoundReached);
+                    } else {
+                        total_bytes += bytes;
+                        candidate = mint_preview_candidate(
+                            "code_action",
+                            &entry.title,
+                            &format!("editor:code_action:{}", entry.title),
+                            patches,
+                        );
+                        if candidate.is_none() {
+                            // The mint refused it. The size bounds were
+                            // checked above, so what is left is a material
+                            // the apply path would refuse for its shape.
+                            unavailable = Some(LspCodeActionUnavailable::IncompletePreview);
+                        }
+                    }
+                }
+            }
+        }
+        actions.push(LspCodeActionDto {
+            title: entry.title,
+            kind: entry.kind,
+            preferred: entry.preferred,
+            disabled_reason: entry.disabled_reason,
+            has_edit: entry.has_edit,
+            has_command: entry.has_command,
+            candidate,
+            unavailable,
+        });
+    }
+    actions
+}
+
+/// The patches a code action's preview would apply, or `None` when the
+/// preview is not complete enough to be one.
+///
+/// A truncated preview, a file whose patch was omitted, and a file outside
+/// the workspace all mean the same thing here: the change is not fully
+/// known, and a partial change is not a change the apply path can make.
+fn code_action_patches(
+    root: &Path,
+    entry: &egglsp::CodeActionEntry,
+) -> Option<Vec<(String, String, String)>> {
+    let preview = entry.preview.as_ref()?;
+    if preview.truncated {
+        return None;
+    }
+    let mut patches = Vec::new();
+    for file in &preview.affected_files {
+        if file.patch_omitted || file.patch.is_empty() {
+            return None;
+        }
+        // Containment is re-applied here rather than trusted: the server
+        // names these files, and a path outside the session's workspace must
+        // not ride out inside a preview.
+        let path = workspace_relative_target(root, &file.file)?;
+        patches.push((path, file.patch.clone(), file.original_hash.clone()));
+    }
+    if patches.is_empty() {
+        return None;
+    }
+    Some(patches)
+}
+
+/// Whether the apply path would refuse this material for its size.
+///
+/// The bounds are the candidate's own, so a candidate this accepts is one
+/// the daemon can at least shape into a request.
+fn code_action_exceeds_candidate_bounds(patches: &[(String, String, String)]) -> bool {
+    if patches.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCHES {
+        return true;
+    }
+    if patches
+        .iter()
+        .any(|(_, patch, _)| patch.len() > MAX_LSP_PREVIEW_CANDIDATE_PATCH_BYTES)
+    {
+        return true;
+    }
+    let total: usize = patches.iter().map(|(_, patch, _)| patch.len()).sum();
+    total > MAX_LSP_PREVIEW_CANDIDATE_BYTES
 }
 
 fn uri_file_name(uri: &crate::lsp::lsp_types::Uri) -> String {
@@ -1745,5 +1921,179 @@ mod preview_candidate_tests {
             "the path must be workspace-relative, so the apply path joins it to the root"
         );
         assert_eq!(candidate.preview_digest, recompute(&candidate));
+    }
+
+    /// One code action whose edit previews cleanly.
+    fn code_action_entry(title: &str, file: &Path, patch: &str) -> egglsp::CodeActionEntry {
+        egglsp::CodeActionEntry {
+            title: title.to_string(),
+            kind: Some("quickfix".to_string()),
+            preferred: false,
+            disabled_reason: None,
+            has_edit: true,
+            has_command: false,
+            preview: Some(egglsp::CodeActionPreview {
+                title: title.to_string(),
+                kind: Some("quickfix".to_string()),
+                affected_files: vec![egglsp::FileEditPreview {
+                    file: file.to_path_buf(),
+                    original_hash: "a".repeat(64),
+                    edits: Vec::new(),
+                    patch: patch.to_string(),
+                    patch_omitted: false,
+                }],
+                edit_count: 1,
+                warnings: Vec::new(),
+                truncated: false,
+                server_generation: 1,
+            }),
+        }
+    }
+
+    /// A workspace with one file, and the path to it.
+    fn code_action_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, "fn main() {}\n").expect("write");
+        (dir, file)
+    }
+
+    #[test]
+    fn a_code_action_candidate_digest_is_recomputable_from_its_own_fields() {
+        let (dir, file) = code_action_workspace();
+        let actions = mint_code_action_candidates(
+            dir.path(),
+            vec![code_action_entry(
+                "Add missing import",
+                &file,
+                "@@ -1 +1 @@\n-use a;\n+use b;\n",
+            )],
+            MAX_LSP_READ_CANDIDATE_BYTES,
+        );
+        assert_eq!(actions.len(), 1);
+        let candidate = actions[0]
+            .candidate
+            .clone()
+            .expect("an editable action with room is a candidate");
+        assert_eq!(candidate.kind, "code_action");
+        assert_eq!(candidate.title, "Add missing import");
+        assert_eq!(
+            candidate.patches[0].path, "lib.rs",
+            "the path must be workspace-relative"
+        );
+        assert_eq!(
+            candidate.preview_digest,
+            recompute(&candidate),
+            "the apply path recomputes the digest from the request's own patches"
+        );
+        assert_eq!(actions[0].unavailable, None);
+    }
+
+    #[test]
+    fn a_command_bearing_action_gets_no_candidate() {
+        // The surface never runs commands, and the LSP specification applies
+        // an action's edit *and then* its command. An action that carries a
+        // command is never applied here — not even one that also carries an
+        // edit, which would be half of what the action means.
+        let (dir, file) = code_action_workspace();
+        let mut entry = code_action_entry("Run the tests", &file, "@@ -1 +1 @@\n-a\n+b\n");
+        entry.has_command = true;
+        let actions =
+            mint_code_action_candidates(dir.path(), vec![entry], MAX_LSP_READ_CANDIDATE_BYTES);
+        assert!(actions[0].candidate.is_none());
+        assert_eq!(
+            actions[0].unavailable,
+            Some(LspCodeActionUnavailable::Command)
+        );
+    }
+
+    #[test]
+    fn a_disabled_action_gets_no_candidate_and_keeps_the_servers_reason() {
+        let (dir, file) = code_action_workspace();
+        let mut entry = code_action_entry("Refactor this", &file, "@@ -1 +1 @@\n-a\n+b\n");
+        entry.disabled_reason = Some("the server says this is not applicable here".to_string());
+        let actions =
+            mint_code_action_candidates(dir.path(), vec![entry], MAX_LSP_READ_CANDIDATE_BYTES);
+        assert!(actions[0].candidate.is_none());
+        assert_eq!(
+            actions[0].unavailable,
+            Some(LspCodeActionUnavailable::Disabled)
+        );
+        assert_eq!(
+            actions[0].disabled_reason.as_deref(),
+            Some("the server says this is not applicable here"),
+            "the server's own words are carried, not re-worded"
+        );
+    }
+
+    #[test]
+    fn an_action_with_no_edit_gets_no_candidate() {
+        let (dir, _file) = code_action_workspace();
+        let entry = egglsp::CodeActionEntry {
+            title: "Do nothing".to_string(),
+            kind: None,
+            preferred: false,
+            disabled_reason: None,
+            has_edit: false,
+            has_command: false,
+            preview: None,
+        };
+        let actions =
+            mint_code_action_candidates(dir.path(), vec![entry], MAX_LSP_READ_CANDIDATE_BYTES);
+        assert!(actions[0].candidate.is_none());
+        assert_eq!(
+            actions[0].unavailable,
+            Some(LspCodeActionUnavailable::NoEdit)
+        );
+    }
+
+    #[test]
+    fn the_daemon_stops_minting_when_the_result_reaches_its_bound() {
+        // The bound is on the *result*, not on each candidate: a read result
+        // travels over the wire, and several candidates in one result would
+        // each be within their own bound while the result was not.
+        let (dir, file) = code_action_workspace();
+        let patch = "x".repeat(64);
+        let entries: Vec<egglsp::CodeActionEntry> = (0..3)
+            .map(|index| code_action_entry(&format!("Action {index}"), &file, &patch))
+            .collect();
+        // Room for one candidate's worth of patch bytes and no more.
+        let actions = mint_code_action_candidates(dir.path(), entries, patch.len());
+        assert!(
+            actions[0].candidate.is_some(),
+            "the first action fits in the bound"
+        );
+        assert!(
+            actions[1].candidate.is_none(),
+            "the second would exceed the bound, so no candidate is minted"
+        );
+        assert_eq!(
+            actions[1].unavailable,
+            Some(LspCodeActionUnavailable::BoundReached)
+        );
+        assert_eq!(
+            actions[2].unavailable,
+            Some(LspCodeActionUnavailable::BoundReached),
+            "minting stops at the bound rather than skipping ahead"
+        );
+    }
+
+    #[test]
+    fn a_file_outside_the_workspace_leaves_the_action_without_a_candidate() {
+        // Containment is re-applied rather than trusted: the server names the
+        // files, and a path outside the session's workspace must not ride out
+        // inside a preview.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let outside = dir.path().join("outside.rs");
+        std::fs::write(&outside, "outside\n").expect("write");
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let entry = code_action_entry("Edit outside", &outside, "@@ -1 +1 @@\n-a\n+b\n");
+        let actions = mint_code_action_candidates(&root, vec![entry], MAX_LSP_READ_CANDIDATE_BYTES);
+        assert!(actions[0].candidate.is_none());
+        assert_eq!(
+            actions[0].unavailable,
+            Some(LspCodeActionUnavailable::IncompletePreview)
+        );
     }
 }

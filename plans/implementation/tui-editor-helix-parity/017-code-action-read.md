@@ -1,7 +1,8 @@
 # TUI editor Helix parity Milestone 017 — the code-action read
 
-Status: ready for handoff
-Repository baseline: `bb6642688` (`feat/auto-20261018-12255c45`)
+Status: implemented - closed 2026-10-19
+Closure record: `plans/closure/tui-editor-helix-parity/017-status.md`
+Repository baseline: `9b04b59a` (`feat/auto-20261018-12255c45`) — M016's commit, which this milestone builds on
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7
 (a new milestone added by the M017-planning amendment; see the roadmap's
@@ -265,3 +266,86 @@ Report rather than improvise if:
 - The panel is the picker. A second input mode for one more choice would be
   a worse editor.
 - The candidate travels the same way M016's does: carried, never registered.
+
+## 17. Deviations from this plan
+
+Recorded as the implementation went, because a plan that disagrees with the
+code is a defect. Each of these is a *narrowing or a sharpening* of what the
+plan said — none of them is a scope reduction, and none of them changes the
+milestone's objective.
+
+1. **The DTO carries two fields the plan did not list.**
+   `LspCodeActionDto` is `{ title, kind, preferred, disabled_reason, has_edit,
+   has_command, candidate, unavailable }`, not the plan's six fields.
+
+   - `has_command` is the server's own fact — the action carried a `Command`
+     payload — and without it the panel could only say "this action cannot be
+     applied", not *why*.
+   - `unavailable` is the *conclusion*, an `LspCodeActionUnavailable` that
+     names the cause: `NoEdit`, `Command`, `Disabled`, `IncompletePreview`,
+     `TooLarge` or `BoundReached`.
+
+2. **The reason is per action, not a result-wide flag.** The plan's W2 said
+   "the payload says that some actions carry no preview because of it", which
+   could have been one boolean on the payload. A result-wide flag cannot
+   distinguish two actions that both lack a candidate for *different* reasons,
+   and it cannot say *which* action the bound cut — the daemon stops minting
+   at the bound, so the actions after it are cut for that reason while an
+   action earlier in the list may have had its own. The per-action reason
+   replaces the flag and answers the plan's acceptance criterion exactly.
+
+3. **A command-bearing action gets no candidate even when it also carries an
+   edit.** The plan's W4 said "a candidate per action that has an edit". The
+   LSP specification has the client apply an action's edit *and then* its
+   command, so applying the edit alone applies half of what the action means.
+   The plan's own §5 puts "executing a command-only action" out of scope, and
+   §14 says to report if the design would have to execute a command; this is
+   the same rule seen from the other side. It also matches what `egglsp`'s
+   existing single-action `preview_code_action` already does, so the list and
+   the single agree. A consequence worth stating: a *mixed* action is refused
+   whole, not half-applied.
+
+4. **The payload carries `truncated` as well as `actions`.** Every other read
+   payload in the protocol says whether its list was capped, and a code-action
+   list that was capped without saying so would be a silent truncation.
+
+5. **The total-candidate bound is a parameter of the daemon's minting
+   function**, `mint_code_action_candidates(root, entries, max_total_bytes)`,
+   rather than a constant read inside it. The production call passes
+   `MAX_LSP_READ_CANDIDATE_BYTES`; the test passes a small bound, so the
+   enforcement is proved without materialising megabytes of patch text.
+
+6. **The bound's value is 2 MiB**, against the per-candidate bound of 1 MiB.
+   A result-wide bound at or below the per-candidate bound would let exactly
+   one large candidate through and refuse the second of two ordinary ones, so
+   the result bound is set above the per-candidate one. The protocol test
+   asserts the relation that makes this sound: a candidate that passes its own
+   bound can always be minted in a result.
+
+7. **`egglsp`'s entry point takes a `Range`, not `start`/`end`.** The plan's
+   W3 signature wrote `start, end`; a `Range` is the same thing with a name,
+   and the daemon builds it from the cursor's line and column.
+
+8. **The code-action read asks without a diagnostics context.** The editor's
+   read passes no diagnostics to the server, so a server that keys its quick
+   fixes to the diagnostics it was told about will offer fewer of them than it
+   would with the context attached. This is a known narrowing, not an
+   oversight, and it is recorded in the closure's residuals.
+
+9. **The `space a` leaf's *test* was replaced, not deleted.** The old test
+   asserted that the leaf "says that no code-action request exists". That
+   claim became false when the read landed, so the test now asserts what the
+   leaf *does* — issues the code-action read — and that it states no reason
+   for not doing it.
+10. **The code-action panel overrides the panel's standing scroll.** The plan
+    said "the LSP panel is the picker", and the panel's standing behaviour is
+    to show the first rows and put the marker on the selected one — so a
+    selection beyond the visible rows is invisible. That is harmless where
+    `Enter` *jumps* (diagnostics, locations), and it is not harmless here:
+    `Enter` applies a **change**, so an off-screen selection would offer to
+    apply something the reader could not read. The code-action arm therefore
+    renders a window that ends on the selected action and supplies its own
+    scroll offset. The other pickers keep the standing behaviour; changing
+    it for them is a separate concern with its own milestone, and it is
+    recorded as a residual in the closure record.
+

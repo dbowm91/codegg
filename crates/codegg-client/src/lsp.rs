@@ -264,6 +264,7 @@ pub fn operation_label(operation: LspReadOperation) -> &'static str {
         LspReadOperation::SignatureHelp => "signature help",
         LspReadOperation::FormatPreview => "format preview",
         LspReadOperation::RenamePreview => "rename preview",
+        LspReadOperation::CodeActionPreview => "code action preview",
     }
 }
 

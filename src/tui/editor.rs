@@ -552,9 +552,10 @@ pub const GOTO_LEAVES: &[PrefixLeaf] = &[
 ///   change review on it when the whole rename is known. The write path is
 ///   ADR-0008's, and the editor reaches it by carrying the candidate to the
 ///   one builder, so nothing is registered anywhere.
-/// - `space a` (code action) — bound to a **statement**: no code-action
-///   *read* exists in the protocol to ask with, so there is nothing to
-///   preview.
+/// - `space a` (code action) — bound to the code-action **preview**
+///   (`LspReadOperation::CodeActionPreview`). The read answers with the
+///   actions the server would offer, each carrying its own diff, and the LSP
+///   panel is the picker.
 /// - `space w` / `space W` — window/workspace switching, out of scope.
 ///
 /// `]`/`[` diagnostic stepping is already bound as bare keys, so the
@@ -650,14 +651,16 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
         glyph: 'r',
         action: PrefixAction::Effect(EditorPendingEffect::RenamePrompt),
     },
-    // `space a` — the code action. Helix's applies one, and there is nothing
-    // to preview: no code-action *read* exists in the protocol to ask with.
-    // The reason says exactly that, rather than implying a preview exists
-    // and is merely unapplied.
+    // `space a` — the code action. Helix's applies one; CodeGG's asks the
+    // server what it *would* offer and shows each action's own diff. A code
+    // action is a **choice**, so the read answers with a list and the LSP
+    // panel is the picker: `j`/`k` move, `Enter` opens the change review on
+    // the selected action. An action the server attached a command to, or
+    // marked disabled, is listed and says why it cannot be applied.
     PrefixLeaf {
         glyph: 'a',
-        action: PrefixAction::Effect(EditorPendingEffect::Unavailable(
-            "code action: no code-action request exists in this editor, so there is nothing to preview",
+        action: PrefixAction::Effect(EditorPendingEffect::Read(
+            LspReadOperation::CodeActionPreview,
         )),
     },
     // `space F` — the *other* file picker. This build has one workspace

@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `space r` collects the new name on the `:` line — the same line the editor's
   other argument-taking commands use — and refuses an empty or over-long name
   without spending a request on it.
+- **`space a` now asks the language server what code actions it would offer
+  at the cursor.** It used to say that there was no code-action request to
+  make; there is one now, and the editor asks **once** and works out each
+  action's own diff locally — so the action you pick is the action that was
+  previewed, and the server is not asked twice about a list that may have
+  changed. A code action is a *choice*, so the panel is the picker: `j`/`k`
+  move, and `Enter` opens the change review on the action you selected.
+  An action the server attached a **command** to is never applied here — the
+  LSP specification applies an action's edit *and then* its command, and
+  applying half of an action is not applying it — and the panel says so
+  rather than hiding the action.
 - **Helix's insert-mode chords are available in `INS`.** `Ctrl+h` and `Ctrl+d`
   delete one character backward and forward, `Ctrl+j` inserts a newline, `Ctrl+k`
   and `Ctrl+u` delete to the end and the start of the line, `Ctrl+w` and

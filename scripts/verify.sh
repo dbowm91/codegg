@@ -88,6 +88,9 @@ run_quick() {
     echo "==> python3 scripts/check_tui_editor_leaf_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_leaf_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_completion_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_completion_authority.py)
+
     echo "==> python3 scripts/check_tui_editor_apply_path.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_apply_path.py)
 

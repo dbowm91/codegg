@@ -1,6 +1,6 @@
 # TUI Editor Helix Keybinding Parity Roadmap
 
-Status: active (M001–M013, M015 and M016 closed; M017 and M018 ready; M014 blocked on ADR-0034)
+Status: active (M001–M013, M015, M016 and M017 closed; M018 ready; M014 blocked on ADR-0034)
 
 Long-term references:
 
@@ -1555,6 +1555,44 @@ spot (M018).
 >    the *raw* action. A preview's payload is a diff, which is what the
 >    format and rename previews already return.
 
+> **Amendment A2 (2026-10-19) — M017 is `closed`, and three of the four
+> decisions above were sharpened.**
+>
+> Closure record: `plans/closure/tui-editor-helix-parity/017-status.md`.
+>
+> 1. **The one-request shape is measured, not asserted.** The egglsp
+>    integration test reads the fake server's **own transcript** and asserts
+>    that it saw exactly one `textDocument/codeAction`. The claim is about
+>    what the server received, not about what the client intended to send.
+> 2. **The bound is per action, not per result.** Amendment A1 said the
+>    result "says when it stops minting". A result-wide flag cannot say
+>    *which* action the bound cut, and it cannot distinguish an action that
+>    was cut from an action that had no edit — the daemon stops minting at
+>    the bound, so the actions after it are cut for that reason while an
+>    action earlier in the list may have had its own. The reason is therefore
+>    carried **on the action**, as `LspCodeActionUnavailable`, and the panel
+>    and the `Enter` handler read it through one helper so the two cannot
+>    drift apart.
+> 3. **A command-bearing action is refused whole, not half-applied.** The
+>    deliverable boundary above said "a command-only or disabled action
+>    cannot be applied". The implementation refuses *any* action carrying a
+>    `Command` payload, including one that also carries an edit: the LSP
+>    specification has the client apply an action's edit **and then** its
+>    command, so applying the edit alone applies half of what the action
+>    means. This matches what `egglsp`'s single-action `preview_code_action`
+>    already did, so the list and the single agree.
+> 4. **The review opens on the *selected* action, so the review does not open
+>    by itself.** A code action is a choice, and the panel is where the choice
+>    is made; `candidate_of` deliberately does **not** lift a code-action
+>    candidate out of the payload, which is what keeps the review from
+>    opening on the first entry before the reader has chosen one.
+> 5. **The chords did not move.** `space a` keeps the glyph it had; the leaf
+>    table gains no glyph and the Normal-mode chord count is unchanged. What
+>    changed is what the leaf *does* — which is why the change is recorded
+>    here, in the closure record, in `CHANGELOG.md`, in `docs/tui.md`,
+>    `docs/LSP.md`, in `architecture/tui.md` and `architecture/lsp.md`, and in
+>    the two skill files.
+
 Plan: `plans/implementation/tui-editor-helix-parity/017-code-action-read.md`
 
 ### M018 — The completion-trigger guard
@@ -1605,6 +1643,37 @@ surface above its chain. A guard for the popup's own keys.
 > 3. **A shape the guard cannot resolve is an error, not a skip.** The rule
 >    the key guard already follows, for the same reason: a guard that skips
 >    what it does not understand passes by not looking.
+
+> **Amendment A2 (2026-10-19) — M018 is `closed`, and the guard's four
+> invariants are recorded.**
+>
+> Closure record: `plans/closure/tui-editor-helix-parity/018-status.md`.
+>
+> 1. **The guard is `scripts/check_tui_editor_completion_authority.py`**, and
+>    it is registered in `scripts/verify.sh quick` and in the CI `verify`
+>    job. It imports
+>    `scripts/check_tui_editor_key_authority.py` as a module and asks it for
+>    the guard-block chords, exactly as the leaf guard does — so the two
+>    guards cannot disagree about what the guard block claims.
+> 2. **The structural boundary held.** The popup-open check is found exactly
+>    once; a shape where it is missing, or where it appears twice, is an
+>    **error** (exit 2), because a boundary the guard cannot find is a
+>    boundary it would guess — and a guess here would read the popup's own
+>    keys as triggers and report `j` and `k` twice.
+> 3. **The shadowing direction is the one the code has.** The completion
+>    surface is claimed *before* the guard block, so a trigger that claimed
+>    `Ctrl+s` or `Ctrl+r` would make the **guard block's** claim a lie. The
+>    guard checks the modifier with the key guard's own exact-bitmask helper
+>    (`combos_intersect`), because Rust's `==` on a bitmask admits exactly one
+>    combination: `CONTROL` and `CONTROL | SHIFT` are disjoint.
+> 4. **`Ctrl-x`'s mode is checked, not read from a comment.** The arm says
+>    *"in normal mode `Ctrl-x` is not the editor's to take"*; the guard
+>    requires the arm's mode predicate to be `EditorMode::Insert` and nothing
+>    else.
+> 5. **This milestone changed no behaviour.** No key changed meaning, no
+>    chord moved, and the key guard's counts are untouched: **2 guard-block /
+>    71 Normal / 8 Insert**, with the leaf tables at **5 / 44 / 12**. What
+>    changed is that a chord which was invisible is now visible.
 
 Plan: `plans/implementation/tui-editor-helix-parity/018-completion-trigger-guard.md`
 
@@ -1748,8 +1817,8 @@ Roadmap closure does **not** require full Helix parity. The deferred list in
 | M014 | **blocked** | — | — | ADR-0034 acceptance; its plan is written after the ADR selects an option |
 | M015 | **closed** | `plans/implementation/tui-editor-helix-parity/015-lsp-preview-leaves.md` | `plans/closure/tui-editor-helix-parity/015-status.md` | M013 closed; the previews are delivered and unreachable until this lands. Closed 2026-10-19 (Amendment A1): the two previews M013 shipped now have keys — `=` shows the format preview and `space r` collects a new name on the `:` line and shows the rename preview — both apply nothing, `space a` states that no code-action request exists, and the guard's Normal chord count is **71**, one for the `=` arm |
 | M016 | **closed** | `plans/implementation/tui-editor-helix-parity/016-preview-apply-bridge.md` | `plans/closure/tui-editor-helix-parity/016-status.md` | M015 closed (hard); ADR-0008 accepted, so no new ADR. The bridge the M015 closure named: the editor's preview becomes a **reviewable artifact**, the chords lead to the change review, and the review is the apply step (Amendment A1). Closed 2026-10-19: the **candidate is carried, not registered** — `LspReadGet` registers nothing, no protocol request exports a preview, and the frontend's own registry is `None` in socket mode (`src/main.rs:3454`) and empty in production, so the read result carries the candidate and the TUI relays it. The apply path needs no registry either: `apply_preview` recomputes the digest over the request's own patches, so a candidate altered in transit fails the check. `build_apply_request` takes a *source* — the registry or a carried candidate — and is still the single place a `CoreRequest::LspPreviewApply` is constructed, which `scripts/check_tui_editor_apply_path.py` now enforces structurally. The chord and leaf counts did not move: **2 / 71 / 8** and **5 / 44 / 12** |
-| M017 | **ready** | `plans/implementation/tui-editor-helix-parity/017-code-action-read.md` | — | M016 closed (hard — the candidate and the bridge are its machinery); ADR-0012's read family, whose "read-only by construction" note is corrected in place. The code-action read: one request, many local previews, the panel as the picker (Amendment A1) |
-| M018 | **ready** | `plans/implementation/tui-editor-helix-parity/018-completion-trigger-guard.md` | — | None — this milestone changes no behaviour. The completion-trigger guard: a **separate** guard, for the same reason M010's leaf guard is (the popup is a surface above the chain, with a modality the key guard's model does not have). It reads the key guard's **model** for the guard-block chords, and it tells the triggers from the popup's own keys **structurally** — the arms before the popup-open check (Amendment A1) |
+| M017 | **closed** | `plans/implementation/tui-editor-helix-parity/017-code-action-read.md` | `plans/closure/tui-editor-helix-parity/017-status.md` | M016 closed (hard — the candidate and the bridge are its machinery); ADR-0012's read family, whose "read-only by construction" note is corrected in place. The code-action read: one request, many local previews, the panel as the picker (Amendment A1). Closed 2026-10-19 (Amendment A2): the one-request shape is **measured** — the egglsp integration test reads the fake server's own transcript and asserts it saw exactly one `textDocument/codeAction`; the bound is **per action** (`LspCodeActionUnavailable`), because a result-wide flag cannot say which action the bound cut; a **command-bearing** action is refused whole, edit or not, because the LSP specification applies an action's edit *and then* its command; and the review opens on the **selected** action, so it does not open on the first entry before the reader has chosen one. The chord and leaf counts did not move: **2 / 71 / 8** and **5 / 44 / 12** |
+| M018 | **closed** | `plans/implementation/tui-editor-helix-parity/018-completion-trigger-guard.md` | `plans/closure/tui-editor-helix-parity/018-status.md` | None — this milestone changes no behaviour. The completion-trigger guard: a **separate** guard, for the same reason M010's leaf guard is (the popup is a surface above the chain, with a modality the key guard's model does not have). It reads the key guard's **model** for the guard-block chords, and it tells the triggers from the popup's own keys **structurally** — the arms before the popup-open check (Amendment A1). Closed 2026-10-19 (Amendment A2): `scripts/check_tui_editor_completion_authority.py` polices four invariants — the `F8` trigger exactly once, the `Ctrl-x` trigger exactly once, no trigger shadowing the guard block's `Ctrl+s`/`Ctrl+r`, and `Ctrl-x` in Insert mode only — with a nine-case self-test and an injection proof on the real tree. **No behaviour changed**: the key guard's counts are untouched at **2 / 71 / 8** and the leaf tables at **5 / 44 / 12** |
 
 **M013 is closed** (`plans/closure/tui-editor-helix-parity/013-status.md`).
 It discharges **M010**'s last dependency edge, and it found **six** further
@@ -2023,9 +2092,33 @@ Insert-mode chord(s)`.** The count is recomputed **once**, at the end.
    captured**: the second half renders `"m r ("`, which required
    `EditorPrefix::display()` to return a `Cow<'static, str>` rather than a
    `&'static str`. See Amendment A4 and the plan's §17.2.
-5. **Does M011's `Ctrl-x` need a guard?** `handle_completion_key` is outside
-   the key-authority guard's scope, so the chord is invisible to it — the
-   same blind spot the plans note for the leaf tables.
+5. ~~**Does M011's `Ctrl-x` need a guard?**~~ **Answered by M018
+   (2026-10-19): yes, and it is a separate guard.**
+   `handle_completion_key` is outside the key-authority guard's scope, so the
+   chord was invisible to it — the same blind spot the plans note for the leaf
+   tables. The leaf tables' answer was a **separate** guard rather than a
+   wider key guard, and the completion popup is the same kind of thing: a
+   surface *above* the dispatch chain, with a modality the key guard's model
+   does not have (a claim that is conditional on a surface being open). So the
+   answer is `scripts/check_tui_editor_completion_authority.py`, and it reads
+   the guard-block chords **through**
+   `scripts/check_tui_editor_key_authority.py` rather than re-parsing the
+   chain, exactly as the leaf guard does.
+
+   The invariant that makes the separation possible is **structural**: the
+   triggers are the arms **before** the popup-open check, and the popup's own
+   keys (`Esc`, `Enter`, `Up`, `Down`, `j`, `k`) are after it. A guard that
+   counted both would report `j` and `k` twice and call it a defect — the
+   overlap between the popup's keys and the Normal-mode verbs is *by design*.
+
+   The four invariants it polices: **1** the `F8` trigger is claimed exactly
+   once; **2** the `Ctrl-x` trigger is claimed exactly once; **3** a trigger
+   shadows neither of the guard block's mode-independent chords (`Ctrl+s`,
+   `Ctrl+r`) — the guard block runs *after* this surface, so a trigger that
+   claimed either would make the guard block's claim a lie; **4** `Ctrl-x` is
+   claimed in **Insert mode only**, which is what its own comment says and
+   what the guard checks, because a comment is not a mechanism. See the M018
+   amendment and `plans/closure/tui-editor-helix-parity/018-status.md`.
 6. ~~**Which invariants does M010's new leaf-table guard police?**~~ **Answered
    by M010 (2026-10-19).** Five, and the plan's own rule 4 was **wrong as
    written** — it forbade a leaf glyph equal to a guard-block chord's
@@ -2088,6 +2181,21 @@ guard has to know the final shape of the chords M016 and M017 bind.
 **M016 is closed** (2026-10-19): the bridge is built, the candidate is carried
 rather than registered, and `=` and `space r` open the change review on it.
 M017 and M018 are `ready`.
+
+**M017 is closed** (2026-10-19): `space a` asks the server what code actions it
+would offer at the cursor, in **one** request, and previews each action's own
+edit locally. The panel is the picker — `j`/`k` move, `Enter` opens the change
+review on the *selected* action — and an action the server attached a command
+to is refused whole and says why.
+
+**M018 is closed** (2026-10-19): the `Ctrl-x` chord is visible to a guard. The
+completion-trigger guard is a **separate** script, for the same reason the leaf
+guard is, and it reads the key guard's model rather than re-parsing the chain.
+It changes no behaviour: the key guard's counts are untouched at **2 / 71 / 8**
+and the leaf tables at **5 / 44 / 12**.
+
+**The third wave is done.** M014 stays out of it — ADR-0034 is still
+`proposed`, and it records that *"no option is selected by this record"*.
 
 **M014 stays out of the wave.** ADR-0034 is still `proposed`, and it records
 that *"no option is selected by this record"*. Option A (a frontend tree-sitter

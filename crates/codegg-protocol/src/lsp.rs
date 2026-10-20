@@ -122,6 +122,20 @@ pub const MAX_LSP_PREVIEW_CANDIDATE_STRING_BYTES: usize = 4_096;
 /// of any other kind is refused rather than passed through.
 pub const LSP_PREVIEW_KINDS: [&str; 3] = ["rename", "code_action", "formatting"];
 
+/// Maximum total patch bytes across every candidate in one read result.
+///
+/// One read result may carry several candidates — a code-action read carries
+/// one per action — so the per-candidate bound is not enough on its own. The
+/// daemon stops minting when this is reached and says so, rather than
+/// silently offering fewer.
+pub const MAX_LSP_READ_CANDIDATE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Maximum code actions returned for one code-action read.
+///
+/// The server's own list is bounded by what it chose to send; this is the
+/// ceiling on what the daemon carries, and a list that reached it says so.
+pub const MAX_LSP_CODE_ACTIONS: usize = 50;
+
 /// Why a reviewable candidate was refused.
 ///
 /// Every variant names the bound it broke, because the reader of a refusal
@@ -295,10 +309,14 @@ impl LspPreviewCandidateDto {
 /// The read operations ADR-0012 exposes.
 ///
 /// `TypeDefinition` is intentionally absent: egglsp does not implement it, so
-/// offering it here would be a promise the daemon cannot keep. `CodeAction` is
-/// absent for the same reason under a stronger rule — its answers are edits,
-/// and this family is read-only by construction (see
-/// [`LspReadPayloadDto`]).
+/// offering it here would be a promise the daemon cannot keep.
+///
+/// The **raw** `CodeAction` is absent for a stronger reason — its answers are
+/// edits, and this family is read-only by construction (see
+/// [`LspReadPayloadDto`]). The *preview* of a code action is not absent: a
+/// preview's payload is a diff, exactly as the format and rename previews'
+/// are, so [`Self::CodeActionPreview`] answers with what each action *would*
+/// change and never writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LspReadOperation {
@@ -319,6 +337,12 @@ pub enum LspReadOperation {
     /// Preview of `textDocument/rename`. A **preview** for the same reason, and
     /// it needs a `new_name` to ask about at all.
     RenamePreview,
+    /// Preview of `textDocument/codeAction`. A **preview** for the same reason.
+    ///
+    /// A code action is about a position, so this is a point operation. It
+    /// answers with the actions the server would offer there, each carrying
+    /// the diff of its own edit — and never the edit itself as a write.
+    CodeActionPreview,
 }
 
 impl LspReadOperation {
@@ -339,6 +363,7 @@ impl LspReadOperation {
                 | Self::DocumentHighlight
                 | Self::SignatureHelp
                 | Self::RenamePreview
+                | Self::CodeActionPreview
         )
     }
 
@@ -381,6 +406,7 @@ impl LspReadOperation {
             Self::SignatureHelp => "signatureHelpProvider",
             Self::FormatPreview => "documentFormattingProvider",
             Self::RenamePreview => "renameProvider",
+            Self::CodeActionPreview => "codeActionProvider",
         }
     }
 }
@@ -681,6 +707,81 @@ pub struct LspRenamePreviewDto {
     pub candidate: Option<LspPreviewCandidateDto>,
 }
 
+/// Why a code action cannot be reviewed and applied.
+///
+/// Present exactly when the action carries no candidate. Every variant names a
+/// cause the daemon observed; none of them is a guess about what the server
+/// meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspCodeActionUnavailable {
+    /// The action carries no edit: the server sent an action with nothing in
+    /// it, and there is nothing to preview.
+    NoEdit,
+    /// The action carries a `Command` payload.
+    ///
+    /// This surface never runs commands, and the LSP specification has the
+    /// client apply an action's edit *and then* its command. Applying the
+    /// edit of a mixed action would apply half of what the action means, so
+    /// an action that carries a command is never applied here — not even one
+    /// that also carries an edit.
+    Command,
+    /// The server marked the action disabled, and said why.
+    Disabled,
+    /// The action's edit could not be previewed completely: a truncated
+    /// preview, a file whose patch was omitted, or a file outside the
+    /// workspace.
+    IncompletePreview,
+    /// The action's edit is larger than the apply path accepts, so it cannot
+    /// become a candidate however much room the result has.
+    TooLarge,
+    /// The read result reached its total candidate bound, so this action's
+    /// candidate was not minted.
+    BoundReached,
+}
+
+/// One code action the server would offer at the requested position.
+///
+/// The action is the server's own: its title, its kind and its disabled
+/// reason are carried verbatim rather than re-worded, so what the panel says
+/// can be matched against what the server said.
+///
+/// `candidate` is present only when the action can become one — that is, when
+/// it carries an editable edit, carries no command, is not disabled, and the
+/// result had room for it. `unavailable` is present exactly when `candidate`
+/// is not, and says which of the reasons applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspCodeActionDto {
+    /// The action's title, as the server wrote it.
+    pub title: String,
+    /// The LSP `CodeActionKind`, when the server gave one.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Whether the server marked this action preferred.
+    #[serde(default)]
+    pub preferred: bool,
+    /// The server's own reason, when it marked the action disabled.
+    #[serde(default)]
+    pub disabled_reason: Option<String>,
+    /// Whether the action carried a `WorkspaceEdit` payload.
+    #[serde(default)]
+    pub has_edit: bool,
+    /// Whether the action carried a `Command` payload.
+    ///
+    /// Carried so the panel can say *why* an action cannot be applied, rather
+    /// than only that it cannot.
+    #[serde(default)]
+    pub has_command: bool,
+    /// The reviewable candidate, when this action can become one.
+    #[serde(default)]
+    pub candidate: Option<LspPreviewCandidateDto>,
+    /// Why this action cannot be reviewed and applied.
+    ///
+    /// `None` exactly when the action carries a candidate.
+    #[serde(default)]
+    pub unavailable: Option<LspCodeActionUnavailable>,
+}
+
 /// The payload of a successful read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -731,6 +832,18 @@ pub enum LspReadPayloadDto {
     FormatPreview(LspFormatPreviewDto),
     /// What this rename would touch. Never applied.
     RenamePreview(LspRenamePreviewDto),
+    /// The code actions the server would offer at the requested position.
+    ///
+    /// A **preview**: every candidate is a diff, and nothing here has been
+    /// written. Several actions can carry candidates at once, which is why
+    /// this is a list and not a single preview.
+    CodeActions {
+        actions: Vec<LspCodeActionDto>,
+        /// True when the action list itself was capped, so a client knows it
+        /// is not the whole set the server offered.
+        #[serde(default)]
+        truncated: bool,
+    },
     /// The capability the resolved server does not advertise.
     ///
     /// Carries no answer — like [`Self::AmbiguousClients`], it exists so a
@@ -1968,5 +2081,99 @@ mod tests {
         assert_eq!(request.server_id, None);
         assert_eq!(request.new_name, None);
         assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_code_action_operation_is_a_point_operation() {
+        // A code action is about a position: the request carries the cursor's
+        // line and column, and the operation refuses to be asked without one.
+        assert!(LspReadOperation::CodeActionPreview.is_point());
+        assert!(!LspReadOperation::CodeActionPreview.is_file_scoped());
+        assert!(!LspReadOperation::CodeActionPreview.is_workspace());
+        assert_eq!(
+            LspReadOperation::CodeActionPreview.capability(),
+            "codeActionProvider"
+        );
+        assert_eq!(
+            point(LspReadOperation::CodeActionPreview).validate(),
+            Ok(())
+        );
+        let mut without_a_position = point(LspReadOperation::CodeActionPreview);
+        without_a_position.line = None;
+        assert_eq!(
+            without_a_position.validate(),
+            Err(LspReadInvalid::IncoherentFields)
+        );
+    }
+
+    #[test]
+    fn the_code_actions_payload_round_trips() {
+        let result = LspReadResultDto::ready(
+            LspReadOperation::CodeActionPreview,
+            LspReadPayloadDto::CodeActions {
+                actions: vec![LspCodeActionDto {
+                    title: "Add missing import".to_string(),
+                    kind: Some("quickfix".to_string()),
+                    preferred: true,
+                    disabled_reason: None,
+                    has_edit: true,
+                    has_command: false,
+                    candidate: None,
+                    unavailable: None,
+                }],
+                truncated: false,
+            },
+        );
+        let json = serde_json::to_string(&result).expect("a code-action read serializes");
+        assert_eq!(
+            serde_json::from_str::<LspReadResultDto>(&json).expect("and round-trips"),
+            result
+        );
+    }
+
+    #[test]
+    fn a_command_only_action_carries_no_candidate_and_says_why() {
+        // The action is listed — the reader must see what the server offered
+        // — and it carries the reason it cannot be applied, so the panel and
+        // the `Enter` handler say the same thing.
+        let action = LspCodeActionDto {
+            title: "Run the test suite".to_string(),
+            kind: None,
+            preferred: false,
+            disabled_reason: None,
+            has_edit: false,
+            has_command: true,
+            candidate: None,
+            unavailable: Some(LspCodeActionUnavailable::Command),
+        };
+        assert!(action.candidate.is_none());
+        let json = serde_json::to_string(&action).expect("a code action serializes");
+        let round_tripped: LspCodeActionDto = serde_json::from_str(&json).expect("and round-trips");
+        assert_eq!(round_tripped, action);
+        assert_eq!(
+            round_tripped.unavailable,
+            Some(LspCodeActionUnavailable::Command)
+        );
+    }
+
+    #[test]
+    fn one_candidate_always_fits_in_one_read_result() {
+        // The result-wide bound has to be at least the per-candidate bound,
+        // or a candidate that passes its own bound could never be minted in
+        // a result — the result would refuse what the candidate allows.
+        //
+        // The constants are read through `black_box` so the comparison is a
+        // *runtime* check: a bare comparison of two constants is folded away
+        // by the compiler, and a test that the compiler already guarantees is
+        // not a test.
+        let total = std::hint::black_box(MAX_LSP_READ_CANDIDATE_BYTES);
+        let per_candidate = std::hint::black_box(MAX_LSP_PREVIEW_CANDIDATE_BYTES);
+        assert!(
+            total >= per_candidate,
+            "the result-wide bound ({total}) must be at least the per-candidate \
+             bound ({per_candidate}), or a candidate that passes its own bound \
+             could never be minted in a result"
+        );
+        assert!(std::hint::black_box(MAX_LSP_CODE_ACTIONS) > 0);
     }
 }

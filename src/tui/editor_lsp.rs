@@ -5,8 +5,8 @@
 //! `DocumentSnapshot` borrow by the renderer.
 
 use codegg_protocol::lsp::{
-    LspDiagnosticDto, LspDiagnosticsResultDto, LspPreviewCandidateDto, LspReadPayloadDto,
-    LspReadResultDto, LspSemanticTokenDto,
+    LspCodeActionDto, LspCodeActionUnavailable, LspDiagnosticDto, LspDiagnosticsResultDto,
+    LspPreviewCandidateDto, LspReadPayloadDto, LspReadResultDto, LspSemanticTokenDto,
 };
 
 pub const MAX_EDITOR_DIAGNOSTICS: usize = 128;
@@ -293,11 +293,55 @@ pub fn truncate_chars(value: &str, max_chars: usize) -> String {
 /// Only the preview reads carry one: a hover or a definition has nothing to
 /// apply. A preview that could not become a candidate — a truncated rename, a
 /// preview with no edits — carries none, and the reader is told why instead.
+///
+/// A code-action read carries **several** candidates, one per action, and
+/// they are not lifted out here: a code action is a *choice*, so the panel is
+/// where the choice is made, and the review opens on the one that was
+/// chosen.
 fn candidate_of(result: &LspReadResultDto) -> Option<LspPreviewCandidateDto> {
     match result.payload.as_ref()? {
         LspReadPayloadDto::FormatPreview(preview) => preview.candidate.clone(),
         LspReadPayloadDto::RenamePreview(preview) => preview.candidate.clone(),
         _ => None,
+    }
+}
+
+/// Why a code action cannot be reviewed and applied, in one line.
+///
+/// The vocabulary lives here so the panel and the `Enter` handler say the
+/// *same* thing: a reader who reads the panel and then presses `Enter` must
+/// not be given a second, different explanation.
+///
+/// `None` when the action can be applied.
+pub fn code_action_unavailable_reason(action: &LspCodeActionDto) -> Option<String> {
+    match action.unavailable {
+        Some(LspCodeActionUnavailable::NoEdit) => {
+            Some("the server offered no edit, so there is nothing to apply".to_string())
+        }
+        Some(LspCodeActionUnavailable::Command) => Some(
+            "the server attaches a command to this action, and this editor does not run commands"
+                .to_string(),
+        ),
+        Some(LspCodeActionUnavailable::Disabled) => {
+            // The server's own reason, when it gave one. Its words, not ours:
+            // the reason belongs to the server that disabled the action.
+            Some(match action.disabled_reason.as_deref() {
+                Some(reason) if !reason.trim().is_empty() => {
+                    format!("the server disabled this action: {reason}")
+                }
+                _ => "the server disabled this action".to_string(),
+            })
+        }
+        Some(LspCodeActionUnavailable::IncompletePreview) => {
+            Some("the preview is incomplete, so there is nothing to apply".to_string())
+        }
+        Some(LspCodeActionUnavailable::TooLarge) => {
+            Some("the change is too large to apply".to_string())
+        }
+        Some(LspCodeActionUnavailable::BoundReached) => {
+            Some("the result reached its preview bound, so this action has no preview".to_string())
+        }
+        None => None,
     }
 }
 

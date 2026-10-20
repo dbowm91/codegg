@@ -50,6 +50,9 @@ Provides code navigation and analysis:
 - `hover()` - Get type/info hover for cursor position
 - `document_symbols()` - List all symbols in a document
 - `code_actions_unchecked()` - Get available code actions/quick fixes
+- `code_action_previews_for_warm_client()` - The **warm-only** code-action
+  read: one `textDocument/codeAction` request against a key the caller
+  resolved, with every action's edit previewed locally
 - `completion()` - Trigger completion at cursor
 - `signature_help()` - Show function signature hints
 - `code_lens()` - Get CodeLens data
@@ -208,9 +211,16 @@ After a successful apply the editor reloads the file it wrote — unless your
 buffer holds edits the editor has not saved, in which case it keeps them and
 tells you the file changed on disk.
 
-`space a` — the code action — is **not** bound to a preview, because there is
-no code-action request to make: nothing in the protocol asks a server what
-code actions it would offer. Pressing it says so.
+`space a` — the code action — asks the server what code actions it would offer
+at the cursor. It is **one** `textDocument/codeAction` request, and the diff of
+each action's own edit is computed locally, so the action you pick is the
+action that was previewed. The panel is the picker: `j`/`k` move, `Enter`
+opens the change review on the selected action.
+
+An action that carries a **command** is never applied here, even one that also
+carries an edit — the LSP specification applies an action's edit *and then* its
+command, and this surface never runs commands. The panel says so, in the same
+words `Enter` uses.
 
 ## Error Handling
 

@@ -943,9 +943,57 @@ After a successful apply the editor reloads the file it wrote, unless your
 buffer holds edits the editor has not saved; then it keeps them and tells you
 that the file changed on disk.
 
-`space a` — the code action — is not bound to a preview, because there is no
-code-action *request* to make: nothing in the protocol asks a server what
-code actions it would offer. Pressing it says so.
+`space a` — the code action — asks the server what code actions it would offer
+**at the cursor**, and shows each one with the diff of its own edit. It is a
+**choice**, not a single change, so the panel is the picker: `j` and `k` move
+the selection, `Enter` opens the change review on the action you selected,
+and `Esc` closes the panel. See
+[Code actions: the picker is the panel](#code-actions-the-picker-is-the-panel).
+
+### Code actions: the picker is the panel
+
+`space a` asks the server what code actions it would offer at the cursor, and
+the **panel** is where you choose one. It is a list, not a single change, so it
+cannot be a preview the way `=` and `space r` are.
+
+| Key | What it does |
+|---|---|
+| `space a` | ask the server for the code actions it would offer at the cursor |
+| `j` / `k` | move the selection through the offered actions |
+| `Enter` | open the change review on the selected action |
+| `Esc` | close the panel |
+
+The review is the same one the preview keys open, and the change in it is the
+change that would be written. `[a]pply` sends it through the daemon's checked
+apply path; `Esc` rejects it.
+
+The panel shows eight actions at a time and the window follows the selection,
+so the action you are about to apply is always the one you can read. When the
+server offered more, the panel says how many.
+
+**One request, many previews.** The editor asks the server once, and computes
+the diff of each action's own edit locally. It does not ask once per action,
+and it does not ask for a list and then ask again for the one you picked: an
+action's position in a list is only meaningful for the list the server
+returned in that moment, and a second request may return a different list. The
+action you pick is therefore the action that was previewed.
+
+**Not every action can be applied, and the panel says which and why.**
+
+| The action… | What the panel says |
+|---|---|
+| carries an edit | *ready to apply* |
+| carries a command | the server attaches a command, and this editor does not run commands |
+| carries no edit at all | the server offered no edit, so there is nothing to apply |
+| is disabled by the server | the server disabled this action, with the server's own reason |
+| has a change too large to apply | the change is too large to apply |
+| has a change that could not be previewed completely | the preview is incomplete, so there is nothing to apply |
+| arrives after the result reached its preview bound | the result reached its preview bound, so this action has no preview |
+
+An action that carries a **command** is never applied here, even one that also
+carries an edit. The LSP specification has the client apply an action's edit
+*and then* its command; applying the edit alone would apply half of what the
+action means, so the whole action is refused and the reason is on the screen.
 
 ### Multi-key gestures
 
@@ -1022,10 +1070,10 @@ The language-server jumps are bound, through the space and `g` menus:
 nothing: no language server implements it here, so the editor tells you that
 instead of leaving the key dead.
 
-Two more language-server features are bound as **previews** rather than
-jumps: `=` and `space r` show what a format or a rename *would* change, and
-open the review when the whole change is known and can be applied.
-See [The preview keys](#the-preview-keys).
+Three more language-server features are bound as **previews** rather than
+jumps: `=`, `space r` and `space a` show what a format, a rename or a code
+action *would* change, and open the review when the whole change is known and
+can be applied. See [The preview keys](#the-preview-keys).
 
 ### The space menu
 
@@ -1037,6 +1085,7 @@ cannot. Nothing in it is dead.
 | `space f` | open the workspace file browser |
 | `space ?` | open the editor's own command palette — the `:` list, filtered as you type |
 | `space r` | open the rename prompt — the `:` line, pre-filled — and preview the rename |
+| `space a` | ask what code actions the server would offer at the cursor, and pick one |
 | `space y` | copy every selection |
 | `space Y` | copy **only** the main selection |
 | `space p` | paste after the selection, or after the character under the cursor |
@@ -1058,7 +1107,7 @@ review when the change can be applied: the rename preview lists the files a
 rename would touch, and the format preview shows the diff.
 See [The preview keys](#the-preview-keys).
 
-These eight say why they cannot run rather than doing nothing:
+These seven say why they cannot run rather than doing nothing:
 
 | Key | Why |
 |---|---|
@@ -1069,7 +1118,6 @@ These eight say why they cannot run rather than doing nothing:
 | `space c` | nothing here knows a comment syntax for the buffer you are editing |
 | `space C` | the same, for block comments |
 | `space '` | the pickers are not fuzzy, so there is no query to recall |
-| `space a` | no code-action request exists in this editor, so there is nothing to preview |
 
 The function keys do the same jobs and keep working: F2 diagnostics, F3 hover,
 F4 definition, F5 references, F6 document symbols, F7 workspace symbols.

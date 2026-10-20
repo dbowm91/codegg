@@ -123,6 +123,9 @@ jobs:
       - name: TUI editor leaf-authority guard
         run: python3 scripts/check_tui_editor_leaf_authority.py
 
+      - name: TUI editor completion-authority guard
+        run: python3 scripts/check_tui_editor_completion_authority.py
+
       - name: TUI editor apply-path guard
         run: python3 scripts/check_tui_editor_apply_path.py
 

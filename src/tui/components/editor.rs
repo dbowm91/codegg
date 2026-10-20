@@ -524,7 +524,12 @@ impl EditorWidget<'_> {
             height,
         );
         let theme = Arc::clone(&self.theme);
-        let (title, mut lines) = match panel {
+        // The scroll offset is the payload's own, because one payload is a
+        // **picker** over a list longer than the panel is tall: the
+        // code-action list scrolls its window to the selected action, so
+        // `Enter` can never offer to apply a change the reader cannot see.
+        // Every other payload keeps the panel's standing behaviour.
+        let (title, mut lines, scroll) = match panel {
             EditorLspPanel::Diagnostics => {
                 let status = match self.lsp.diagnostics_status {
                     DiagnosticsViewStatus::Idle => "not requested".to_string(),
@@ -563,10 +568,22 @@ impl EditorWidget<'_> {
                 {
                     lines.push(Line::from("No diagnostics"));
                 }
-                (" Diagnostics · Enter jump · r refresh · Esc close ", lines)
+                (
+                    " Diagnostics · Enter jump · r refresh · Esc close ",
+                    lines,
+                    self.lsp.selected_index,
+                )
             }
             EditorLspPanel::ReadResult => {
                 let mut lines = Vec::new();
+                // The title names what `Enter` does, and the two read-result
+                // kinds differ: a location opens a file, a code action opens
+                // a change review.
+                let mut title = " LSP result · Enter opens safe target · Esc close ";
+                // The standing scroll for the read-result panel; the
+                // code-action payload overrides it with its own window's
+                // offset.
+                let mut scroll = self.lsp.selected_index;
                 if self.lsp.read_loading {
                     lines.push(Line::from("Request in progress…"));
                 }
@@ -577,6 +594,9 @@ impl EditorWidget<'_> {
                 }
                 if let Some(result) = &self.lsp.read_result {
                     use codegg_protocol::lsp::{LspReadPayloadDto, LspReadStatus};
+                    if matches!(result.payload, Some(LspReadPayloadDto::CodeActions { .. })) {
+                        title = " LSP code actions · Enter reviews · Esc close ";
+                    }
                     if result.status == LspReadStatus::NotReady {
                         lines.push(Line::from("Language server not ready"));
                     }
@@ -772,6 +792,68 @@ impl EditorWidget<'_> {
                                 ))
                             }));
                         }
+                        Some(LspReadPayloadDto::CodeActions { actions, truncated }) => {
+                            if actions.is_empty() {
+                                lines.push(Line::from("No code actions at this position"));
+                            } else {
+                                // The window **follows the selection**.
+                                //
+                                // A code action is a choice and the panel is
+                                // where the choice is made, so the selected
+                                // action has to be *readable*: `Enter` on an
+                                // action the reader cannot see would offer to
+                                // apply a change they did not read. The
+                                // window ends on the selected action, and the
+                                // scroll below moves the view to it.
+                                const VISIBLE_ACTIONS: usize = 8;
+                                let selected = self.lsp.selected_index.min(actions.len() - 1);
+                                let start = selected.saturating_sub(VISIBLE_ACTIONS - 1);
+                                lines.extend(
+                                    actions[start..]
+                                        .iter()
+                                        .take(VISIBLE_ACTIONS)
+                                        .enumerate()
+                                        .map(|(offset, action)| {
+                                            let index = start + offset;
+                                            let kind = action.kind.as_deref().unwrap_or("action");
+                                            let preferred = if action.preferred {
+                                                " · preferred"
+                                            } else {
+                                                ""
+                                            };
+                                            // The disposition is the *same*
+                                            // words `Enter` will give if the
+                                            // action turns out to be
+                                            // unappliable.
+                                            let disposition = match crate::tui::editor_lsp::
+                                                code_action_unavailable_reason(action)
+                                            {
+                                                Some(reason) => reason,
+                                                None => "ready to apply".to_string(),
+                                            };
+                                            Line::from(format!(
+                                                "{}{} · {kind}{preferred} · {disposition}",
+                                                if index == selected { "> " } else { "  " },
+                                                crate::tui::editor_lsp::truncate_chars(
+                                                    &action.title,
+                                                    80
+                                                )
+                                            ))
+                                        }),
+                                );
+                                scroll = selected - start;
+                                if *truncated {
+                                    lines.push(Line::from(
+                                        "  … the server offered more actions than the result carries",
+                                    ));
+                                } else if actions.len() > VISIBLE_ACTIONS {
+                                    lines.push(Line::from(format!(
+                                        "  … {} actions offered; the panel shows {VISIBLE_ACTIONS} at a time",
+                                        actions.len()
+                                    )));
+                                }
+                            }
+                        }
                         // Two payloads whose explanation is rendered above, next to
                         // the status it belongs to, rather than here: semantic
                         // tokens are a presentation overlay consumed by
@@ -787,7 +869,7 @@ impl EditorWidget<'_> {
                 if lines.is_empty() {
                     lines.push(Line::from("No results"));
                 }
-                (" LSP result · Enter opens safe target · Esc close ", lines)
+                (title, lines, scroll)
             }
         };
         let block = Block::default()
@@ -799,10 +881,7 @@ impl EditorWidget<'_> {
         frame.render_widget(Clear, rect);
         frame.render_widget(block, rect);
         lines.truncate(inner.height as usize);
-        frame.render_widget(
-            Paragraph::new(lines).scroll((self.lsp.selected_index as u16, 0)),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
     }
 
     /// Bounded completion popup for the M003 read.
@@ -3472,6 +3551,142 @@ mod tests {
         assert!(
             painted.contains("not applied"),
             "and says that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// The code-action panel lists what the server offered, and says which
+    /// of the offered actions can be applied.
+    ///
+    /// The reader has to be able to see *all* of the offer — including the
+    /// parts that cannot be applied — because the offer is the server's
+    /// answer, and hiding an action would hide the answer. Each line says
+    /// what would happen, so a command-only action is visibly not an
+    /// application and not a mystery.
+    #[test]
+    fn the_code_action_panel_lists_the_offer_and_says_which_can_be_applied() {
+        use codegg_protocol::lsp::{
+            LspCodeActionDto, LspCodeActionUnavailable, LspPreviewCandidateDto, LspPreviewPatchDto,
+            LspReadOperation, LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::CodeActionPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::CodeActions {
+                actions: vec![
+                    LspCodeActionDto {
+                        title: "Add the missing import".to_string(),
+                        kind: Some("quickfix".to_string()),
+                        preferred: true,
+                        disabled_reason: None,
+                        has_edit: true,
+                        has_command: false,
+                        candidate: Some(LspPreviewCandidateDto {
+                            preview_id: "editor-preview-1".to_string(),
+                            preview_revision: 1,
+                            preview_digest: "a".repeat(64),
+                            kind: "code_action".to_string(),
+                            title: "Add the missing import".to_string(),
+                            provenance: "editor:code_action:Add the missing import".to_string(),
+                            patches: vec![LspPreviewPatchDto {
+                                path: "src/lib.rs".to_string(),
+                                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                                original_hash: "b".repeat(64),
+                            }],
+                        }),
+                        unavailable: None,
+                    },
+                    LspCodeActionDto {
+                        title: "Run the test suite".to_string(),
+                        kind: None,
+                        preferred: false,
+                        disabled_reason: None,
+                        has_edit: false,
+                        has_command: true,
+                        candidate: None,
+                        unavailable: Some(LspCodeActionUnavailable::Command),
+                    },
+                ],
+                truncated: false,
+            }),
+        });
+
+        let painted = render("hello", 96, 24, 0, options).join("\n");
+        assert!(
+            painted.contains("Add the missing import"),
+            "the panel names the action, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("ready to apply"),
+            "and says the applicable one can be applied, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("Run the test suite"),
+            "the unapplicable action is listed too, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("command"),
+            "and says why it cannot be applied, got:\n{painted}"
+        );
+    }
+
+    /// The code-action panel shows the **selected** action, even when the
+    /// server offered more actions than the panel is tall.
+    ///
+    /// A code action is a choice, and the panel is where the choice is made.
+    /// If the selection could move off the visible rows, `Enter` would offer
+    /// to apply a change the reader could not see — so the window follows
+    /// the selection.
+    #[test]
+    fn the_code_action_panel_keeps_the_selected_action_visible() {
+        use codegg_protocol::lsp::{
+            LspCodeActionDto, LspPreviewCandidateDto, LspPreviewPatchDto, LspReadOperation,
+            LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let action = |index: usize| LspCodeActionDto {
+            title: format!("Action {index}"),
+            kind: Some("quickfix".to_string()),
+            preferred: false,
+            disabled_reason: None,
+            has_edit: true,
+            has_command: false,
+            candidate: Some(LspPreviewCandidateDto {
+                preview_id: format!("editor-preview-{index}"),
+                preview_revision: 1,
+                preview_digest: "a".repeat(64),
+                kind: "code_action".to_string(),
+                title: format!("Action {index}"),
+                provenance: format!("editor:code_action:Action {index}"),
+                patches: vec![LspPreviewPatchDto {
+                    path: "src/lib.rs".to_string(),
+                    patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                    original_hash: "b".repeat(64),
+                }],
+            }),
+            unavailable: None,
+        };
+
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.selected_index = 10;
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::CodeActionPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::CodeActions {
+                actions: (0..12).map(action).collect(),
+                truncated: false,
+            }),
+        });
+
+        let painted = render("hello", 96, 24, 0, options).join("\n");
+        assert!(
+            painted.contains("> Action 10"),
+            "the selected action must be visible and marked, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("Action 0\n"),
+            "the window must have moved past the earlier actions, got:\n{painted}"
         );
     }
 

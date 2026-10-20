@@ -49,9 +49,16 @@ commands use — and `=` previews what formatting would change. M016 gave both
 previews a way to become an edit: a complete preview carries the material the
 apply path consumes, and the chord opens the **change review** on it, where
 `[a]pply` writes it and `Esc` rejects it. A preview that cannot be applied
-(truncated, empty, too large) stays a preview and says so. `space a` (code
-action) stays unbound with a visible reason, because no code-action *read*
-exists to preview.
+(truncated, empty, too large) stays a preview and says so. M017 added the third
+preview leaf, `space a`: it asks the server what code actions it would offer
+at the cursor, **once**, and works out each action's own diff locally. A code
+action is a *choice*, so the LSP panel is the picker — `j`/`k` move and `Enter`
+opens the change review on the selected action. An action the server attached
+a **command** to is never applied here, even one that also carries an edit:
+the LSP specification applies an action's edit *and then* its command, and
+applying half of an action is not applying it. The panel says which actions
+cannot be applied and why; the reason is per action, because one action in a
+list can be command-only while the one beside it is perfectly applicable.
 
 **The write path is the daemon's, and it is ADR-0008's.** ADR-0008 is accepted
 and owns it: `CoreRequest::LspPreviewApply` is authorized `via_session` +

@@ -2849,6 +2849,10 @@ fn lsp_result_count(state: &crate::tui::editor_lsp::EditorLspState) -> usize {
         // change something. A no-op format is not a result worth counting.
         Some(LspReadPayloadDto::FormatPreview(preview)) => usize::from(!preview.diff.is_empty()),
         Some(LspReadPayloadDto::RenamePreview(preview)) => preview.files.len(),
+        // Every code action is a row, including the ones that cannot be
+        // applied: the panel lists them so the reader can see what the
+        // server offered and why one of them is not available.
+        Some(LspReadPayloadDto::CodeActions { actions, .. }) => actions.len(),
         _ => 0,
     }
 }
@@ -2890,6 +2894,20 @@ fn jump_to_selected_diagnostic(state: &mut EditorState) {
 
 fn open_selected_lsp_target(app: &mut App) {
     use crate::protocol::lsp::LspReadPayloadDto;
+    // A code action opens a **change review**, not a file. It is dispatched
+    // first and returns, because everything below this point is about
+    // opening a workspace-relative path.
+    if matches!(
+        app.editor_state
+            .lsp
+            .read_result
+            .as_ref()
+            .and_then(|result| result.payload.as_ref()),
+        Some(LspReadPayloadDto::CodeActions { .. })
+    ) {
+        open_selected_code_action(app);
+        return;
+    }
     let target = app
         .editor_state
         .lsp
@@ -2935,6 +2953,52 @@ fn open_selected_lsp_target(app: &mut App) {
             .toasts
             .warning("LSP target path is invalid; result remains display-only"),
     }
+}
+
+/// Open the change review on the selected code action, or say why it cannot.
+///
+/// A code action is a **choice**, and the panel is where the choice is made:
+/// `j`/`k` move the selection and `Enter` acts on the one selected. The
+/// review it opens is M016's carried review, so the candidate reviewed is
+/// the candidate applied.
+///
+/// An action with no candidate is not a failure. The panel already said why
+/// it cannot be applied, and this says the same thing in the place the user
+/// pressed the key — the same words, from the same helper, so the two
+/// cannot drift apart.
+fn open_selected_code_action(app: &mut App) {
+    use crate::protocol::lsp::LspReadPayloadDto;
+    let Some(actions) = app
+        .editor_state
+        .lsp
+        .read_result
+        .as_ref()
+        .and_then(|result| match result.payload.as_ref() {
+            Some(LspReadPayloadDto::CodeActions { actions, .. }) => Some(actions),
+            _ => None,
+        })
+    else {
+        return;
+    };
+    let Some(action) = actions.get(app.editor_state.lsp.selected_index) else {
+        app.messages_state.toasts.info("No code action is selected");
+        return;
+    };
+    if let Some(reason) = crate::tui::editor_lsp::code_action_unavailable_reason(action) {
+        app.messages_state
+            .toasts
+            .info(&format!("\"{}\" cannot be applied: {reason}", action.title));
+        return;
+    }
+    let Some(candidate) = action.candidate.clone() else {
+        // A daemon-minted action carries a candidate or a reason, never
+        // neither. Refuse rather than open a review of nothing.
+        app.messages_state
+            .toasts
+            .info("This code action carries no preview");
+        return;
+    };
+    crate::tui::commands::change_review::open_carried(app, candidate);
 }
 
 fn editor_word_at_cursor(state: &EditorState) -> Option<String> {
@@ -11268,29 +11332,29 @@ mod tests {
         assert!(!presentation.command_active, "and the prompt is closed");
     }
 
-    /// `space a` says that there is no code-action request to make — not
-    /// that there is one and it may not be applied.
+    /// `space a` asks the server what code actions it would offer.
+    ///
+    /// It used to say that there was no code-action request to make. That
+    /// was true when it was written, and it stopped being true when M017
+    /// added the read — so the leaf is a read now, and the test says what
+    /// the leaf *does* rather than what it used to say.
     #[tokio::test]
-    async fn space_a_states_that_no_code_action_request_exists() {
+    async fn space_a_asks_for_the_code_actions_rather_than_stating_a_reason() {
         let (state, _daemon) = opened_writer("hello").await;
-        let mut app = app_on_the_editor_route(state).await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
 
         arm_on_app(&mut app, EditorPrefix::Space);
         handle_editor_key(&mut app, key(KeyCode::Char('a')));
 
-        let note = app
-            .editor_state
-            .notice
-            .as_ref()
-            .map(|notice| notice.message())
-            .expect("the reason is stated");
-        assert!(
-            note.contains("no code-action request exists in this editor"),
-            "the reason says what is actually true, got {note}"
+        let request = next_read(&mut reads).await;
+        assert_eq!(
+            request.operation,
+            LspReadOperation::CodeActionPreview,
+            "the leaf is the code-action read"
         );
         assert!(
-            !note.contains("ADR"),
-            "and does not imply a preview exists and is merely unapplied, got {note}"
+            app.editor_state.notice.is_none(),
+            "a leaf that does something does not also state a reason for not doing it"
         );
     }
 
@@ -11525,6 +11589,148 @@ mod tests {
         assert!(
             app.editor_state.lsp.preview_candidate.is_none(),
             "and the editor must hold no candidate"
+        );
+    }
+
+    /// A code action with a candidate opens the review on **that** action's
+    /// candidate.
+    ///
+    /// A code action is a *choice*, so the review does not open by itself:
+    /// the panel is the picker, and `Enter` acts on the selected action. The
+    /// candidate reviewed is the candidate applied — the same bridge M016
+    /// built, reached through the picker.
+    #[tokio::test]
+    async fn a_selected_code_action_opens_the_review_on_its_own_candidate() {
+        use codegg_protocol::lsp::{LspCodeActionDto, LspPreviewCandidateDto, LspPreviewPatchDto};
+
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('a')));
+        let _request = next_read(&mut reads).await;
+
+        let scope = current_lsp_scope(&app).expect("the scope resolved");
+        let request_id = app.editor_state.lsp.read_request_id;
+        apply_editor_lsp_read(
+            &mut app,
+            request_id,
+            scope,
+            LspReadOperation::CodeActionPreview,
+            Some(LspReadResultDto {
+                operation: LspReadOperation::CodeActionPreview,
+                status: LspReadStatus::Ready,
+                payload: Some(crate::protocol::lsp::LspReadPayloadDto::CodeActions {
+                    actions: vec![LspCodeActionDto {
+                        title: "Add the missing import".to_string(),
+                        kind: Some("quickfix".to_string()),
+                        preferred: false,
+                        disabled_reason: None,
+                        has_edit: true,
+                        has_command: false,
+                        candidate: Some(LspPreviewCandidateDto {
+                            preview_id: "editor-preview-7".to_string(),
+                            preview_revision: 1,
+                            preview_digest: "c".repeat(64),
+                            kind: "code_action".to_string(),
+                            title: "Add the missing import".to_string(),
+                            provenance: "editor:code_action:Add the missing import".to_string(),
+                            patches: vec![LspPreviewPatchDto {
+                                path: "src/lib.rs".to_string(),
+                                patch: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                                original_hash: "a".repeat(64),
+                            }],
+                        }),
+                        unavailable: None,
+                    }],
+                    truncated: false,
+                }),
+            }),
+            None,
+        );
+
+        assert!(
+            !app.change_review_state.is_open(),
+            "a code action is a choice: the review must not open before one is picked"
+        );
+
+        // `Enter` in the panel acts on the selected action.
+        assert!(handle_editor_key(&mut app, key(KeyCode::Enter)));
+        assert!(
+            app.change_review_state.is_open(),
+            "the selected action must open the review, got: {:?}",
+            reported(&app)
+        );
+        assert_eq!(
+            app.change_review_state
+                .carried
+                .as_ref()
+                .map(|candidate| candidate.preview_id.clone()),
+            Some("editor-preview-7".to_string()),
+            "the review must hold the selected action's own candidate"
+        );
+    }
+
+    /// A command-only action cannot be applied, and says why.
+    ///
+    /// The surface never runs commands, and the LSP specification applies an
+    /// action's edit *and then* its command — so an action that carries a
+    /// command is never applied here. The reader is told that in the place
+    /// they pressed the key, in the same words the panel used.
+    #[tokio::test]
+    async fn a_command_only_code_action_cannot_be_applied_and_says_why() {
+        use codegg_protocol::lsp::{LspCodeActionDto, LspCodeActionUnavailable};
+
+        let (state, _daemon) = opened_writer("hello").await;
+        let (mut app, mut reads) = app_with_a_lsp_scope(state).await;
+
+        arm_on_app(&mut app, EditorPrefix::Space);
+        handle_editor_key(&mut app, key(KeyCode::Char('a')));
+        let _request = next_read(&mut reads).await;
+
+        let scope = current_lsp_scope(&app).expect("the scope resolved");
+        let request_id = app.editor_state.lsp.read_request_id;
+        apply_editor_lsp_read(
+            &mut app,
+            request_id,
+            scope,
+            LspReadOperation::CodeActionPreview,
+            Some(LspReadResultDto {
+                operation: LspReadOperation::CodeActionPreview,
+                status: LspReadStatus::Ready,
+                payload: Some(crate::protocol::lsp::LspReadPayloadDto::CodeActions {
+                    actions: vec![LspCodeActionDto {
+                        title: "Run the test suite".to_string(),
+                        kind: None,
+                        preferred: false,
+                        disabled_reason: None,
+                        has_edit: false,
+                        has_command: true,
+                        candidate: None,
+                        unavailable: Some(LspCodeActionUnavailable::Command),
+                    }],
+                    truncated: false,
+                }),
+            }),
+            None,
+        );
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Enter)));
+        assert!(
+            !app.change_review_state.is_open(),
+            "an action that cannot be applied must not open a review"
+        );
+        let messages: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|toast| toast.message.clone())
+            .collect();
+        assert!(
+            messages.iter().any(
+                |message| message.contains("Run the test suite") && message.contains("command")
+            ),
+            "the toast must name the action and the reason, got: {messages:?}"
         );
     }
 

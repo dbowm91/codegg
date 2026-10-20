@@ -572,7 +572,8 @@ crates/egglsp/src/operations/
 ├── navigation.rs       # declaration, implementation, document_highlights, require_capability
 ├── signature.rs        # signature_help_typed, lsp_units_to_byte_offset (UTF-16-aware)
 ├── completion.rs       # completion_bounded, CompletionCandidate construction
-├── code_actions.rs     # code_action_summaries, preview_code_action, CodeActionSummary
+├── code_actions.rs     # code_action_summaries, preview_code_action, CodeActionSummary,
+│                       #   code_action_previews_for_warm_client, CodeActionEntry
 ├── rename.rs           # prepare_rename_typed, rename_preview_typed, PrepareRenameResult, RenamePreview
 ├── formatting.rs       # format_preview_typed, FormattingPreview (with base_stale, final_disk_hash)
 ├── semantic_tokens.rs  # semantic_tokens, decode_semantic_tokens (checked arithmetic overflow)
@@ -615,6 +616,9 @@ impl LspOperations {
     pub async fn rename_preview_typed(&self, file_path: &Path, line: u32, column: u32, new_name: &str, allowed_root: Option<&Path>) -> Result<RenamePreview, LspError>
     pub async fn code_action_summaries(&self, file_path: &Path, start_line: u32, start_col: u32, end_line: u32, end_col: u32, diagnostics: Vec<Diagnostic>, only: Option<Vec<CodeActionKind>>, max_actions: usize) -> Result<Vec<CodeActionSummary>, LspError>
     pub async fn preview_code_action(&self, file_path: &Path, start_line: u32, start_col: u32, end_line: u32, end_col: u32, diagnostics: Vec<Diagnostic>, only: Option<Vec<CodeActionKind>>, action_index: usize, allowed_root: Option<&Path>) -> Result<CodeActionPreview, LspError>
+
+    // M017 — the warm-only code-action read. One request, many previews.
+    pub async fn code_action_previews_for_warm_client(&self, key: &str, file_path: &Path, range: Range, only: Option<Vec<CodeActionKind>>, max_actions: usize, allowed_root: Option<&Path>) -> Result<Vec<CodeActionEntry>, LspError>
     pub async fn format_preview_typed(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<FormattingPreview, LspError>
 }
 ```
@@ -2256,6 +2260,19 @@ program-call cache is disabled (server-state dependent). See
 
 Hidden operations (in `egglsp::operations` for internal use only, not model-facing): `completion`, `signatureHelp`, `codeAction` (arbitrary code actions), `codeLens`, and `goToImplementation`. The `source.organizeImports` source action is the only source action exposed to the model via `sourceActionPreview`.
 
+M017 added a second non-model-facing code-action entry point,
+`code_action_previews_for_warm_client`, for the **editor's** code-action read
+rather than the model's. It differs from `preview_code_action` in three ways
+that matter: it is **warm-only** (the caller resolves the client key, and
+every step — the capability gate, the document sync, the generation stamp — is
+taken against that same key, so the flow never starts a language server); it
+issues **one** `textDocument/codeAction` and previews each action's own edit
+**locally**, so there is no action index to go stale between two requests; and
+it returns a **list**, because a code action is a choice and a choice needs a
+list. It refuses every action carrying a `Command` payload — including a
+mixed one, since the LSP specification applies an action's edit *and then* its
+command, and applying half of an action is not applying it.
+
 ### Phase 4: Safety Boundary
 
 Phase 4 keeps the central safety rule that has governed the LSP
@@ -2296,9 +2313,10 @@ surfaced precisely.
 | `rename_preview_typed` | `textDocument/rename` | `RenamePreview` (capped at 100 files / 1000 edits; resource-op warnings; per-file stale-base evidence) |
 | `code_action_summaries` | `textDocument/codeAction` | `Vec<CodeActionSummary>` (capped at 50) |
 | `preview_code_action` | `textDocument/codeAction` (resolved) | `CodeActionPreview` (capped; rejects command-only with `LspError::CommandOnlyCodeAction`) |
+| `code_action_previews_for_warm_client` | `textDocument/codeAction` (one request, warm key) | `Vec<CodeActionEntry>` — one entry per offered action, each carrying its own preview |
 | `format_preview_typed` | `textDocument/formatting` | `FormattingPreview` (sha256 before/after hashes + bounded 8KB diff + on-disk invariant check; raw TextEdit payloads preserved in FileEditPreview) |
 
-The five preview-only operations all share three invariants:
+The six preview-only operations all share three invariants:
 
 1. **Never write to disk.** `format_preview_typed` and
    `rename_preview_typed` apply edits to an in-memory snapshot only.
@@ -2306,7 +2324,7 @@ The five preview-only operations all share three invariants:
    returns `LspError::RequestFailed` if the post-call `after_disk_hash`
    does not equal `before_hash` — the on-disk invariant check is
    defense-in-depth, not a workaround.
-2. **Root-bounded.** All five honor the existing `allowed_root`
+2. **Root-bounded.** All six honor the existing `allowed_root`
    contract; out-of-root edits are rejected by
    `preview_workspace_edit` with `LspError::PathOutsideRoot`.
 3. **Never execute `workspace/executeCommand`.** Command-only

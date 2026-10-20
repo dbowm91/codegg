@@ -512,11 +512,12 @@ model to the wrong connection.
   consumes, and the chord opens the **change review** on it: the diff on
   screen is the change that would be written, `[a]pply` sends it through the
   daemon's checked apply path, and `Esc` rejects it. A preview that cannot be
-  applied stays a preview and says which it was. `space a` says there is
-  **no code-action request to preview**, which is a different claim from "there
-  is one and it may not be applied": the latter would imply a preview exists.
-  The write path is **not** missing — ADR-0008 owns it, and the editor reaches
-  it by carrying the candidate to the one builder,
+  applied stays a preview and says which it was. Since M017 `space a` is a
+  preview too — the **code-action read** — and it is a *choice*: the LSP panel
+  is the picker, `j`/`k` move and `Enter` opens the review on the selected
+  action. Do not open the review on the first action: the reader has not
+  chosen one. The write path is **not** missing — ADR-0008 owns it, and the
+  editor reaches it by carrying the candidate to the one builder,
   `build_apply_request`. There is no registry and no second apply path.
 - **A Normal-mode chord that needs the App layer reports what it wants.**
   `=` is a Normal chord, not a prefix leaf, and `pending_effect` is

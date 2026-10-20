@@ -5183,7 +5183,7 @@ pending slot now live in `src/tui/editor_effect.rs`.)
 | `space D` | **unavailable**: no server capability backs a separate workspace-diagnostics request |
 | `space c` / `space C` | **unavailable**: no comment syntax is known for the edited buffer |
 | `space '` | **unavailable**: the pickers are not fuzzy, so there is no query to recall |
-| `space a` | **unavailable**: no code-action *request* exists, so there is nothing to preview |
+| `space a` | the **code-action read** — the actions the server would offer at the cursor, each with the diff of its own edit; the panel is the picker |
 | `=` | the **format preview** — what the formatter would change, and the change review when it can be applied |
 | `space r` | the **rename preview** — what a rename would touch, and the change review when it can be applied |
 
@@ -5253,10 +5253,52 @@ the `:` line is submitted. The new name is collected through the `:` command
 line, M008's precedent, rather than through a second input mode; an empty
 name and an over-long one are refused before a request is spent on them.
 
-`space a` is **not** bound to a preview, because there is no code-action
-*read* to preview — the server capability exists, but nothing in
-`LspReadOperation` asks for one. Its reason says exactly that, rather than
-implying that a preview exists and is merely unapplied.
+`space a` is the **code-action read**, and it is bound to a read: the server
+capability exists, and `LspReadOperation::CodeActionPreview` now asks for it.
+The leaf is a *point* operation, so the request carries the cursor's line and
+column and the range is zero-width there.
+
+**A code action is a choice, so the panel is the picker.** The read answers
+with a *list*, and the editor does not open a review on the first entry: it
+would be choosing for the reader. `j`/`k` move the selection (the panel's row
+count is the action count), and `Enter` opens the change review on the
+**selected** action's candidate — the same carried review M016 built, reached
+through a picker instead of through a single preview. `candidate_of` does
+*not* lift a code-action candidate out of the payload, which is what keeps the
+review from opening before a choice is made.
+
+**The reason an action cannot be applied is per action, not per result.** One
+action in a list can be command-only while the one beside it is perfectly
+applicable, so a result-wide flag could only say "something was cut" and the
+reader would not know which. The reason is therefore carried on the action
+itself, and the panel and the `Enter` handler read it through **one** helper
+(`code_action_unavailable_reason`) so the two cannot drift apart: the panel
+says why in the list, and pressing `Enter` says the same thing in the place
+the key was pressed.
+
+**The window follows the selection.** The panel is at most twelve rows tall,
+and a server can offer more actions than that. The code-action arm renders a
+window of eight that **ends on the selected action**, and the panel's scroll
+offset becomes that window's offset rather than the selection's index. This is
+the one payload that overrides the panel's standing scroll, and it does so for
+a reason the other payloads do not share: here `Enter` applies a *change*, so
+an off-screen selection would offer to apply something the reader could not
+read. The other pickers in the panel (diagnostics, locations, symbols,
+highlights, signature help, rename files) keep the standing behaviour, which
+shows the first rows and the marker on the selected one; a selection beyond
+the visible rows is invisible in those panels too. That is a **pre-existing**
+panel property, inherited rather than introduced, and changing it for the
+other payloads is a separate concern with its own milestone.
+
+**One request, many previews.** The alternative shape — summaries first, then a
+second request naming the chosen action — has a hazard this shape does not: an
+action's *index* is only meaningful for the list the server returned in that
+moment, and a second request may return a different list, so the index would
+name a different action than the user picked. One request removes the index
+entirely, and the candidate is computed from exactly the action that is
+shown. The request count is measured, not assumed: the egglsp integration test
+reads the fake server's own transcript and asserts that it saw exactly one
+`textDocument/codeAction`.
 
 **The preview/apply transition landed, and it was registered before it did.**
 M015 recorded the change of meaning while the preview was what a reader

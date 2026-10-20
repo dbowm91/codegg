@@ -1,7 +1,8 @@
 # TUI editor Helix parity Milestone 018 — the completion-trigger guard
 
-Status: ready for handoff
-Repository baseline: `bb6642688` (`feat/auto-20261018-12255c45`)
+Status: implemented - closed 2026-10-19
+Closure record: `plans/closure/tui-editor-helix-parity/018-status.md`
+Repository baseline: `9b04b59a` (`feat/auto-20261018-12255c45`) — M016's commit, which this milestone builds on
 
 Source roadmap: `plans/subsystems/tui-editor-helix-parity-roadmap.md` §7
 (a new milestone added by the M018-planning amendment; see the roadmap's
