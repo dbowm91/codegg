@@ -1,6 +1,6 @@
 # Managed Agent Scratch Milestone M005 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -52,8 +52,9 @@ for it. The offer replaces the *implicit default* `Ask` only; an operator tool
 rule, an operator path rule, a stored decision, and a hard deny all keep their
 authority.
 
-**The one condition on this closure is a live observation with a real model,
-which could not be obtained in this environment** — see §10.
+**The one condition on this closure — a live observation with a real model —
+has since been obtained**, and the milestone is closed on that evidence. See
+§4 for the run and §13 for the correction that discharges the condition.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -67,7 +68,7 @@ which could not be obtained in this environment** — see §10.
 | The offer covers only an unauthorized temp root | `permission::tests::temp_root_redirect_offer_only_covers_an_unauthorized_temp_root` | pass — a target inside an authorized root, a target outside every root that is not a known temp root, a missing private scratch root, and the edit family are all out of scope |
 | The restricted path is never written | both `agent_loop_harness` tests | pass — the `/tmp` target does not exist after either test |
 | The message the model sees is identical in both paths | `tool::write::delegated_scratch_tests::unauthorized_temp_write_suggests_private_scratch_without_rewriting`; `tool::util::tests::temp_guidance_uses_path_components_and_rejects_traversal` | pass — both still green with the shared wording |
-| A live observation with a real model | — | **not obtained** — see §10 |
+| A live observation with a real model | the durable `projection_event` stream of sessions `4cb43218-4435-4b0e-beeb-a3cfa39777b0`, `4ef5f8cb-cae6-4654-bbb9-e37418f9500c`, and `4112e79b-cce5-480b-9bed-62e6b7e089fe` | pass — the first attempt was answered with the guidance and no `PermissionPending` was published; the follow-through wrote at the suggested scratch path, on two models and two wire surfaces; the repeated attempt published `PermissionPending` |
 
 ## 3. Production implementation evidence
 
@@ -110,12 +111,101 @@ probe contracts are path-gated on `src/managed_process/**`, `src/scratch.rs`,
 `src/tool/mod.rs`, and `src/tool/factory.rs`, and this milestone touches
 none of them.
 
-**Not run, and why.** The live observation in §2 was not obtained: the
-isolated harness's provider credentials are no longer usable. The
-`generalcompute` key is rejected with HTTP 401, the `minimax` key fails
-decryption, and the stored `openai` and `opencode_go` credentials have no
-bound provider connection. Binding a credential is an operator decision, and
-the developer's own daemon was not driven, so no live run was possible.
+### Live observation with a real model (2026-10-20)
+
+The condition this record originally named has been discharged. The
+observation was taken on an **isolated** daemon (its own `HOME` and
+`CODEGG_DAEMON_HOME`, a separate socket, and a separate workspace), so the
+developer's own daemon was not driven. The provider was `opencode_go` on
+model `muse-spark-1.3-contributor`, and the isolated configuration was set to
+the **default** permission policy — `permission: null`, with no `default` or
+`write` rule — which is the policy the milestone is about. The two earlier
+sessions cited in §13 are *not* the evidence for this: they ran under
+`permission: {default: "allow", write: "allow"}`.
+
+The credential was supplied by the operator for this run only and was passed
+**through the process environment** as `OPENCODE_GO_API_KEY`. It was never
+written to the configuration file, never written to the credential store, never
+committed, and never appears in any artifact: a recursive search of the
+isolated home and the harness directory for the key's prefix returned nothing,
+the daemon log contains no occurrence of it, and the `permission` table is
+empty (0 rows) — so the run also demonstrates that the offer creates no
+stored decision.
+
+Three sessions were driven: two proving the offer and its follow-through, and
+one proving that the escalation path is intact.
+
+**Session `4cb43218-4435-4b0e-beeb-a3cfa39777b0` — the offer, then the
+follow-through, with no human involved.** The prompt asked for a file at
+`/tmp/codegg-m005-live-probe.txt` and told the model to follow the tool's
+guidance if the path was refused; it did not name any scratch location, so the
+model could only learn the redirect from the tool's own message. The durable
+`projection_event` stream records:
+
+| seq | event | content |
+|---|---|---|
+| 3 | `tool_started` | `write` with `{"content":"live probe","path":"/tmp/codegg-m005-live-probe.txt"}` |
+| 4 | `tool_completed` | `temporary path is outside the authorized workspace; retry at '[HOME]/Library/Caches/codegg/scratch/sessions/69291aca…/codegg-m005-live-probe.txt' or request access to the original location through the normal permission flow` |
+| 5 | `message_appended` | the model's own text: *"Tool refused /tmp path — retrying at the suggested scratch location."* |
+| 6 | `tool_started` | `write` with the **suggested scratch path** |
+| 7 | `tool_completed` | `Created [HOME]/Library/Caches/…/codegg-m005-live-probe.txt …` — success |
+
+For that session the projection contains **zero** `permission_pending` events,
+`core_event_log` holds **zero** rows, `session_events` holds only the two
+events of the successful scratch write, and the `permission` table holds zero
+rows. The restricted path was never created: `/tmp/codegg-m005-live-probe.txt`
+and `/private/tmp/codegg-m005-live-probe.txt` both do not exist, while the
+scratch file exists with exactly the requested content.
+
+**Session `4112e79b-cce5-480b-9bed-62e6b7e089fe` — the escalation path is
+intact.** The prompt asked for `/tmp/codegg-m005-insist-probe.txt` and told the
+model to retry the *same* path if refused. The projection records the first
+attempt answered with the same guidance (seq 4, no human asked), then the
+model repeating the identical path (seq 6), then — the decisive event — seq 7:
+
+```json
+{"kind": "permission_pending",
+ "permission": {"tool": "write",
+                "path": "/tmp/codegg-m005-insist-probe.txt",
+                "status": "pending",
+                "resolved_at": null}}
+```
+
+So the offer is issued once for a given target, and the model's insistence
+reaches the human exactly as before. The turn then parks on the unanswered
+human decision, which is the unchanged behaviour.
+
+**Session `4ef5f8cb-cae6-4654-bbb9-e37418f9500c` — the same behaviour on a
+second model and a second wire surface.** The provider and the first session
+used `muse-spark-1.3-contributor`, whose reviewed wire hint is the
+`openai_responses` surface. This session used `longcat-2.5-preview-free`,
+whose hint is `openai_chat_completions`, and the same prompt shape. The
+projection records the same sequence: `tool_started` for
+`/tmp/codegg-m005-longcat-probe.txt` (seq 2), `tool_completed` carrying the
+same guidance (seq 3), `tool_started` for the suggested scratch path (seq 4),
+`tool_completed` reporting the file created (seq 5) — and **zero**
+`permission_pending` events for the session. The scratch file exists with
+exactly the requested content, and the restricted path does not exist.
+
+The offer is therefore not an artifact of one model or of one wire surface: it
+is the permission layer's behaviour, and it is reproduced on both surfaces
+CodeGG resolves for this provider.
+
+One observation from the run that is **not** an M005 regression: the daemon
+logged `checkpoint path normalization failed, batch non-restorable: unsafe
+path: <scratch path>`. `normalize_single_path`
+(`crates/codegg-core/src/snapshot/affected_paths.rs:206`) rejects *any*
+absolute path that is not under the workspace root, and a private scratch root
+never is, so every scratch write has always been non-restorable for
+checkpointing. The write itself succeeded; the warning reports that the
+mutation batch cannot be restored, which is the correct outcome for a path
+outside the workspace.
+
+**Not run, and why.** Nothing in §2 is outstanding. The earlier statement that
+the live observation could not be obtained is superseded by the run above; the
+reason it was unavailable then — unusable provider credentials in the isolated
+harness — no longer applies, because the operator supplied a working
+`opencode_go` credential for this run.
 
 ## 5. Invariant review
 
@@ -184,9 +274,9 @@ migration is needed.
 
 | Severity | Finding | Condition and exact future evidence |
 |---|---|---|
-| low | The live observation with a real model was not obtained in this environment | The isolated harness's provider credentials are unusable: `generalcompute` returns HTTP 401, `minimax` fails decryption, and the stored `openai` and `opencode_go` credentials have no bound provider connection. The future evidence is one daemon run in which a model writes to a known host temp root under the default policy, and the durable `core_event_log` shows a `tool_started` with **no** `permission_pending` for that attempt, followed by a write at the suggested scratch path. The product path is already covered by the two `agent_loop_harness` tests above, and the model-follows-the-guidance behavior was observed live in session `3bfab29a` for the tool-level variant of the same message. |
+| — | none open | The one finding this record originally carried — that the live observation with a real model had not been obtained — is discharged by the run in §4 and §13. |
 
-No high or medium finding is open.
+No high, medium, or low finding is open.
 
 ## 11. Roadmap disposition
 
@@ -197,17 +287,58 @@ M003 remains outstanding and keeps M003 conditionally closed — that block is
 unrelated to this change and is owned by
 `plans/subsystems/windows-native-sandbox-roadmap.md`.
 
-M005 is **conditionally closed**: the production change and the merged-tree
-verification are complete, and the single named condition is the live
-observation above.
+M005 is **closed**: the production change is merged and verified on the merged
+tree, the hosted CI is green on the pull-request head and on the merged head,
+and the live observation with a real model has been obtained under the default
+policy. No successor milestone in this line is currently registered, and no
+registered plan lists M005 as a dependency.
 
 ## 12. Registry updates
 
-- `plans/registry.md`: the M005 row moves to `conditionally closed`, with the
-  live-observation condition named and the hosted CI run IDs recorded.
+- `plans/registry.md`: the M005 row moves to `closed`, with the hosted CI run
+  IDs and the live-observation evidence recorded.
 - `plans/subsystems/managed-agent-scratch-roadmap.md`: the M005 row moves to
-  `conditionally closed` with the same condition and the same run IDs.
+  `closed` with the same evidence.
 - The M003 rows are unchanged.
 - No downstream plan is unblocked by this milestone: the Windows Required
   container remains blocked on the independently owned backend, and no
   registered plan lists M005 as a dependency.
+
+## 13. Factual correction — live observation obtained (2026-10-20)
+
+This record was merged as **conditionally closed** with exactly one named
+condition: *a live observation with a real model*. That condition is now
+discharged, and the milestone is closed on that evidence. The correction is
+factual; the implementation is unchanged since `e52695b9`.
+
+What this correction does **not** change:
+
+- **The production change is not touched.** The implementation, the shared
+  message wording, the implicit-default-only gating, the once-per-target
+  offer, and the "the offer sits after the security escalations" ordering are
+  all as merged.
+- **The M003 closure record is not rewritten.** M003 remains conditionally
+  closed on its own Windows Required-sandbox condition, which is unrelated to
+  this change and stays owned by
+  `plans/subsystems/windows-native-sandbox-roadmap.md`.
+- **The two earlier sessions are not the evidence for this.** The observations
+  in sessions `281f028f` and `3bfab29a` — the model following the suggestion —
+  were taken while the isolated configuration carried
+  `permission: {default: "allow", write: "allow"}`. Under that permissive
+  policy the write was allowed outright and the tool's own hint produced the
+  message; the *human-prompt* observation in session `2164790b` was taken
+  under the default policy. Pairing the two, as the earlier draft of this
+  record did, compared runs with different permission policies. The evidence
+  that closes this milestone is the run in §4, where both halves were observed
+  under the **same** default policy in the **same** session family.
+- **The credential is not part of the record.** The operator-supplied
+  `opencode_go` key used for the run was passed only through the process
+  environment and is not reproduced here. Nothing in the repository, the
+  isolated configuration, the credential store, or the daemon log contains it.
+
+The durable evidence lives in the isolated daemon's `projection_event` stream
+for sessions `4cb43218-4435-4b0e-beeb-a3cfa39777b0`,
+`4ef5f8cb-cae6-4654-bbb9-e37418f9500c`, and
+`4112e79b-cce5-480b-9bed-62e6b7e089fe`, and the file-system state confirms
+that the restricted path was never created. The observation is reproduced in
+§4.
