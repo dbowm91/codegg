@@ -17,10 +17,13 @@ Corrective predecessor:
 
 Repository baseline reviewed: `fe2c1306` on `main`
 
-Implementation commit:
+Implementation commits:
 
 - `39e1445b` — `feat(permission): answer the model with a temp-root redirect
   before the human`
+- `d806d6d0` — `test(agent-loop): cover the temp-root redirect offer end to end`
+- `141f7114` — `docs(permission,plans): record the temp-root redirect offer
+  contract and close M005`
 
 ## 1. Executive finding
 
@@ -84,12 +87,19 @@ Local (macOS, rustc 1.89.0, load-averaged host):
 |---|---|
 | `cargo fmt --all -- --check` | pass |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | pass |
-| Focused suite — scratch, delegation, scheduler, sandbox, cleanup, permission, subagent, workspace-root authority, approval, temp-root | pass (see the run recorded in the pull request) |
+| `scripts/verify.sh quick` | pass — every guard green, and `cargo check --workspace --all-targets --locked` clean |
+| Focused suite — scratch, delegation, scheduler, sandbox, cleanup, permission, subagent, workspace-root authority, approval, temp-root | pass — **719 passed, 0 failed** |
 | `cargo nextest run -p codegg --lib -E 'test(/temp_root_redirect/)'` | 3/3 pass |
 | `cargo nextest run -p codegg --test agent_loop_harness -E 'test(/temp_root_write/)'` | 2/2 pass |
 
-Hosted CI on the pull-request head: recorded in the pull request for this
-change.
+Hosted CI on the pull-request head: run **`39374727100`** — the `verify` job
+passed on head `141f7114` (all 27 guards, workspace Clippy, and the workspace
+tests). The pull request is [#134](https://github.com/dbowm91/codegg/pull/134).
+
+No other workflow applies to this change: the Windows launcher and native
+probe contracts are path-gated on `src/managed_process/**`, `src/scratch.rs`,
+`src/tool/mod.rs`, and `src/tool/factory.rs`, and this milestone touches
+none of them.
 
 **Not run, and why.** The live observation in §2 was not obtained: the
 isolated harness's provider credentials are no longer usable. The

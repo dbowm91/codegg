@@ -1,6 +1,6 @@
 # Managed Agent Scratch Milestone M005 — Temp-root redirect offer before human approval
 
-Status: active
+Status: conditionally closed — see `plans/closure/managed-agent-scratch/005-status.md` (implementation `39e1445b`)
 Repository baseline: `fe2c1306` on `main`
 
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`
