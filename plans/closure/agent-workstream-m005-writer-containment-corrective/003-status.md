@@ -282,6 +282,8 @@ The scoped suites that cover the changed surfaces:
 | `tests/writer_permit_service.rs` (C002, unchanged in behaviour) | 12 passed, 0 failed — including `a_run_without_the_lease_is_refused`, which is the cross-tenant denial and would have broken if the group-sharing rule had widened it |
 | `tests/tool_broker_integration.rs` | 25 passed, 0 failed |
 | `cargo test -p codegg --lib -- tool::write tool::edit tool::replace tool::apply_patch tool::git tool::lsp_preview_apply` | 36 passed, 0 failed |
+| `python3 scripts/check_writer_disposition.py` | `writer-disposition check ok: 49 declared roots, 17 writer tools, 30 writer modules` |
+| `python3 scripts/check_writer_disposition.py --self-test` | `writer-disposition self-test ok` |
 
 ### 4.3 Pre-existing defects touched in passing
 
@@ -386,6 +388,13 @@ for the test and clippy runs, and in the shared directory for
 - `scripts/check_writer_disposition.py` — the guard now scans the process
   launchers, so a launcher without a declared disposition fails the guard
   rather than sitting outside it (§3.5).
+- `.github/workflows/ci.yml` — the writer-disposition guard and its
+  self-test are now CI steps. The guard ran four times in `verify.sh quick`
+  but not at all in CI, so its contract was enforced only locally while
+  C004's and C005's worklist depended on it.
+- `AGENTS.md` — the writer-disposition guard is recorded as a
+  change-triggered guard for a new writer surface, and the guard is named in
+  the `verify.sh quick` description.
 - `plans/implementation/agent-workstream-m005-writer-containment-corrective/003-native-file-and-git-writer-interposition.md` — the status line was advanced from "ready … not started" to closed, with this record as its closure.
 
 ## 10. Unresolved findings
