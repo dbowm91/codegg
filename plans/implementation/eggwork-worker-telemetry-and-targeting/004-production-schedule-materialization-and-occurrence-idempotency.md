@@ -57,6 +57,8 @@ F. **Backward compatibility.** A schedule persisted before this milestone materi
 6. **The host boundary is re-applied**: with no node approved, the occurrence is refused and **no local job is created** — there is no local fallback. With the node approved, the remote job is materialized.
 7. The driver claims the due occurrences, claims nothing when nothing is due, and stops on shutdown.
 8. A paused schedule materializes nothing.
+9. **The daemon wires the whole path**: `CoreDaemon::with_deps` installs the driver, a `ScheduleCreate` request through the daemon's own request surface is claimed by that driver, and the job it produces is a real durable row carrying its schedule.
+10. A refusal carries a stable, secret-free reason code that reaches the operator's log.
 
 ## 5. Verification and documentation
 

@@ -15,6 +15,10 @@ Repository baseline reviewed: `51d1a0b7` (branch `planning/eggwork-targeting-and
 Implementation commits or pull requests:
 
 - `25af0c05` — feat(scheduler): materialize schedule occurrences exactly once (Eggwork M004)
+- `2539e9ad` — fix(tui): restore the builtin-action exhaustive list and close Eggwork M004
+  (the closure record; the `/nodes` registry defect the milestone's own
+  whole-lib sweep exposed; the refusal reason code; the daemon-level
+  end-to-end test)
 
 ## 1. Executive finding
 
