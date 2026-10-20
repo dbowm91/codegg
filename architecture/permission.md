@@ -179,6 +179,20 @@ offering a scratch path there would be a broken promise. The offer state is
 in-memory and per session: a daemon restart clears it, so the next attempt is
 offered again.
 
+The offer sits *after* the security and sensitive-path escalations, never
+before them: a write to a system directory, a sensitive path, or a security
+finding reaches the human first, unchanged. The recognized host temp roots
+this milestone covers are `/tmp`-style paths, which are not system paths in
+that sense, while the product's own scratch roots live under the user cache
+directory.
+
+The guidance the model receives goes through the same `redact_local_paths`
+pass as any tool output, so a scratch root under `/var` or `/tmp` is shown
+redacted. The model already knows its own scratch root — the capability
+contract in its prompt names the private session scratch, and a delegated
+run's prompt block names its private run scratch — so the offered file name
+remains actionable without disclosing a path the model was not given.
+
 `check_with_args()` adds a destructive-pattern fallback for
 `ShellExec` tools. If the user's ruleset would allow the command but
 it matches a destructive pattern (`rm -rf /`, `mkfs`, `dd of=...`,
