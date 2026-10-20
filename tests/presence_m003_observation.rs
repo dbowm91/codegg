@@ -250,13 +250,18 @@ async fn observer_cannot_steer_cancel_or_mutate_through_daemon() {
         },
     ];
     for request in denied {
+        let expected_code = if matches!(&request, CoreRequest::JobCancel { .. }) {
+            "authorization_scope_required"
+        } else {
+            "authorization_denied"
+        };
         let response = Box::pin(daemon.handle_request_for_client(
             new_request(format!("req-deny-{}", uuid::Uuid::new_v4()), request),
             member_client,
         ))
         .await
         .unwrap();
-        assert_eq!(error_code(&response), "authorization_denied");
+        assert_eq!(error_code(&response), expected_code);
     }
     // Checked file mutation denies as well (opaque scope fails closed for
     // team principals without file.modify on a resolvable scope).
