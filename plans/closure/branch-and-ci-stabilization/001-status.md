@@ -311,10 +311,34 @@ The authoritative workspace sweep is recorded in §4.1.
 
 ### 4.1 The authoritative sweep
 
-`cargo nextest run --workspace --locked --profile ci`, run on the committed
-tree with no concurrent edits and no Git commands in the worktree:
+`XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast`,
+run on the committed tree (`58a26531`) with no concurrent edits and no Git
+commands in the worktree:
 
-- **RESULT_PLACEHOLDER**
+- **15003 tests run: 15003 passed, 8 skipped, 0 failed, 0 timed out**
+  (`Summary [ 481.534s]`, exit 0).
+- The eight skipped tests are the repository's own `#[ignore]` declarations:
+  four tool-advisor qualifications, the manual object-view performance
+  qualification, and three opt-in real-process runs (a local Eggsearch
+  compatibility smoke and two pinned-Eggsearch-child runs). They were skipped
+  in every earlier sweep as well. Nothing was disabled, filtered, or excluded
+  to reach this result — the sweep ran the whole workspace under the `ci`
+  profile with `--no-fail-fast`.
+- The sweep ran with **this workstation's `~/.cache` still at mode 0777** —
+  world-writable, and correctly refused by the product — and with the sweep's
+  own private cache root. The green result is therefore a property of the
+  product and of the sweep's own environment, not of a repaired host.
+- The earlier sweep of this tree recorded **44 failures across 15 binaries**,
+  every one of them the typed refusal `WrongOwner`. The families that failed
+  then — `scratch`, `core::daemon`, `core::daemon_sessions`,
+  `tool_program_m015/016/017`, `session_family control_m004`,
+  `async_background_c006`, `agent_loop_harness`, `identity_live_execution_audit`,
+  `identity_m002_live_audit_hooks`, `workspace_root_execution_authority`,
+  `linux_native_scratch_containment`, `python_script::executor`,
+  `managed_process`, `tool::bash` — all pass now.
+- The three live-language-server tests are **absent** from this sweep (they
+  sit behind `lsp-real-server-tests`), and the four sibling rejection tests
+  that use the same tool are present and pass.
 
 ## 5. Invariant review
 
