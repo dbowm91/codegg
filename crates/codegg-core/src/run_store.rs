@@ -338,10 +338,11 @@ pub struct SandboxRecord {
 /// best-effort limit the node could not apply is recorded as *not
 /// applied* — never silently downgraded to *not requested*, and never
 /// claimed as *applied*.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum RemoteResourceOutcome {
     /// The dimension carried no limit.
+    #[default]
     NotRequested,
     /// The node could not apply the limit.
     NotApplied {
@@ -358,12 +359,6 @@ pub enum RemoteResourceOutcome {
         /// The enforcement backend the node used.
         backend: String,
     },
-}
-
-impl Default for RemoteResourceOutcome {
-    fn default() -> Self {
-        Self::NotRequested
-    }
 }
 
 /// The per-dimension outcome the node reported for one remote execution.

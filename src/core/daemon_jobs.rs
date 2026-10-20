@@ -12,6 +12,27 @@ use super::daemon::{
     ensure_session_row, tool_program_detail_from_job, tool_program_summary_from_job,
 };
 
+/// A remote-target admission refusal, kept small on purpose.
+///
+/// `CoreResponse` is a large enum, so returning it by value in a `Result`
+/// would put a kilobyte on the error path of every request that can be
+/// refused. The refusal travels as a code and a message and becomes a
+/// `CoreResponse::Error` at the request boundary.
+#[derive(Debug)]
+struct RemoteTargetRefusal {
+    code: String,
+    message: String,
+}
+
+impl RemoteTargetRefusal {
+    fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
 impl CoreDaemon {
     pub(crate) async fn handle_jobs_request(
         &self,
@@ -88,7 +109,7 @@ impl CoreDaemon {
                 // host boundary admits them before anything is enqueued.
                 // A refusal here creates no job at all — not even a
                 // local one.
-                if let Err(response) = self
+                if let Err(refusal) = self
                     .admit_remote_target(
                         &new_job.target,
                         new_job.kind,
@@ -100,7 +121,10 @@ impl CoreDaemon {
                     )
                     .await
                 {
-                    return Ok(response);
+                    return Ok(CoreResponse::Error {
+                        code: refusal.code,
+                        message: refusal.message,
+                    });
                 }
                 let Some(submission) = self.deps.submission.clone() else {
                     return Ok(CoreResponse::Error {
@@ -371,7 +395,7 @@ impl CoreDaemon {
                 // same jobs its occurrences would produce. The check runs
                 // before the schedule becomes durable, so a refused
                 // schedule never fires a local job later.
-                if let Err(response) = self
+                if let Err(refusal) = self
                     .admit_remote_target(
                         &template.job_template.target,
                         template.job_template.kind,
@@ -383,7 +407,10 @@ impl CoreDaemon {
                     )
                     .await
                 {
-                    return Ok(response);
+                    return Ok(CoreResponse::Error {
+                        code: refusal.code,
+                        message: refusal.message,
+                    });
                 }
                 match self.deps.schedule_store.create(template).await {
                     Ok(record) => {
@@ -1089,7 +1116,7 @@ impl CoreDaemon {
         principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
         project: Option<&codegg_core::identity::ProjectId>,
         correlation_id: &str,
-    ) -> Result<(), CoreResponse> {
+    ) -> Result<(), RemoteTargetRefusal> {
         let codegg_core::jobs::ExecutionTarget::EggworkNode { node_id } = target else {
             // Local execution is unaffected by every remote gate.
             return Ok(());
@@ -1098,25 +1125,25 @@ impl CoreDaemon {
         // Gate 1 — shape. A job that could never run remotely is refused
         // now rather than after it became durable.
         if let Err(rejection) = crate::scheduler::eggwork::validate_remote_job(kind, payload) {
-            return Err(CoreResponse::Error {
-                code: rejection.code().to_owned(),
-                message: rejection.message(),
-            });
+            return Err(RemoteTargetRefusal::new(
+                rejection.code().to_owned(),
+                rejection.message(),
+            ));
         }
 
         // Gate 2 — administrator. Checked before the principal gate so an
         // unauthorized caller learns nothing about which nodes exist.
         let Some(policy) = self.deps.remote_target_policy.as_deref() else {
-            return Err(CoreResponse::Error {
-                code: "remote_target_not_approved".to_owned(),
-                message: "remote execution is not available on this daemon".to_owned(),
-            });
+            return Err(RemoteTargetRefusal::new(
+                "remote_target_not_approved".to_owned(),
+                "remote execution is not available on this daemon".to_owned(),
+            ));
         };
         if let Err(rejection) = policy.check(node_id) {
-            return Err(CoreResponse::Error {
-                code: rejection.code().to_owned(),
-                message: rejection.message(),
-            });
+            return Err(RemoteTargetRefusal::new(
+                rejection.code().to_owned(),
+                rejection.message(),
+            ));
         }
 
         // Gate 2b — resource limits. The operator's ceiling for the node
@@ -1127,10 +1154,10 @@ impl CoreDaemon {
         // node's live capabilities are checked later, in the executor's
         // preflight, before any workspace upload.
         if let Err(rejection) = policy.check_resource_request(node_id, remote_request) {
-            return Err(CoreResponse::Error {
-                code: rejection.code().to_owned(),
-                message: rejection.to_string(),
-            });
+            return Err(RemoteTargetRefusal::new(
+                rejection.code().to_owned(),
+                rejection.to_string(),
+            ));
         }
 
         // Gate 3 — principal. The local-owner broad policy owns the
@@ -1140,10 +1167,10 @@ impl CoreDaemon {
             return Ok(());
         }
         let Some(pool) = self.pool.clone() else {
-            return Err(CoreResponse::Error {
-                code: "authorization_denied".to_owned(),
-                message: "not authorized for node.target on job_submit_node_target".to_owned(),
-            });
+            return Err(RemoteTargetRefusal::new(
+                "authorization_denied".to_owned(),
+                "not authorized for node.target on job_submit_node_target".to_owned(),
+            ));
         };
         let service = codegg_core::authorization::AuthorizationService::new(
             codegg_core::team::TeamStore::new(pool),
@@ -1160,10 +1187,10 @@ impl CoreDaemon {
         );
         match service.authorize(&request).await {
             Ok(_) => Ok(()),
-            Err(error) => Err(CoreResponse::Error {
-                code: error.code().to_owned(),
-                message: error.to_string(),
-            }),
+            Err(error) => Err(RemoteTargetRefusal::new(
+                error.code().to_owned(),
+                error.to_string(),
+            )),
         }
     }
 }
