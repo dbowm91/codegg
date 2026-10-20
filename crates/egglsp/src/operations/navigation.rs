@@ -110,8 +110,33 @@ impl LspOperations {
         }
     }
 
-    /// Inspect the explicit [`CapabilityDecision`] for `file_path`
-    /// and `op` without short-circuiting on the decision.
+    /// [`require_capability`](Self::require_capability) against an
+    /// already-warm client key.
+    ///
+    /// The same three-way decision, taken against a key the caller resolved
+    /// itself. This is the form every warm-only caller needs: the file-path
+    /// form has to resolve a client to ask the question, and resolving a
+    /// client is the one step that is allowed to create one.
+    pub(crate) async fn require_capability_for_key(
+        &self,
+        key: &str,
+        op: LspSemanticOperation,
+    ) -> Result<(), LspError> {
+        match self.service.capability_decision(key, op).await {
+            CapabilityDecision::Supported => Ok(()),
+            CapabilityDecision::Unsupported(u) => Err(LspError::Unavailable(u)),
+            CapabilityDecision::Unknown {
+                operation,
+                reason: _,
+            } => Err(LspError::NotInitialized(format!(
+                "capability {} is not yet known for client {key}",
+                operation.as_str(),
+            ))),
+        }
+    }
+
+    /// Inspect the explicit [`CapabilityDecision`] for `key` and `op`
+    /// without short-circuiting on the decision.
     ///
     /// `require_capability` collapses `Unsupported` and `Unknown`
     /// into errors, which prevents callers that need to *react*
@@ -120,13 +145,23 @@ impl LspOperations {
     /// unsupported, but failing closed when the capability is
     /// still unknown) from making the right choice. Use this
     /// helper when a flow needs the full three-way decision.
-    pub(crate) async fn capability_decision_for_file(
+    ///
+    /// Key-addressed rather than file-addressed: the only flow that needs the
+    /// full decision is rename preview, and it resolves a warm client first.
+    /// A file-path form here would be reachable only by that flow's absence —
+    /// i.e. it would exist to start servers.
+    ///
+    /// Warm-only by construction, and the same-key discipline matters more
+    /// here than for [`Self::require_capability_for_key`]: the rename flow
+    /// needs the full three-way decision on *two* capabilities, and a
+    /// decision taken against a separately resolved client could describe a
+    /// different server than the one that answers the request.
+    pub(crate) async fn capability_decision_for_key(
         &self,
-        file_path: &Path,
+        key: &str,
         op: LspSemanticOperation,
     ) -> Result<CapabilityDecision, LspError> {
-        let (key, _) = self.service.get_or_create_client(file_path).await?;
-        Ok(self.service.capability_decision(&key, op).await)
+        Ok(self.service.capability_decision(key, op).await)
     }
 
     /// Return the first known client key, used as the routing target
@@ -142,6 +177,34 @@ impl LspOperations {
         column: u32,
     ) -> Result<Vec<LocationLink>, LspError> {
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.go_to_definition_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// `textDocument/definition` against an already-warm client key.
+    ///
+    /// Warm-only by construction: the caller resolved `key` itself, so this
+    /// method can never transitively reach `get_or_create_client` and start a
+    /// language server. See [`Self::completion_for_warm_client`] for the same
+    /// shape on another operation.
+    pub async fn go_to_definition_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LocationLink>, LspError> {
+        self.go_to_definition_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn go_to_definition_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LocationLink>, LspError> {
         let uri = url_to_uri(&Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -160,7 +223,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/definition", params)
+            .send_request(key, "textDocument/definition", params)
             .await?;
 
         if resp.is_null() {
@@ -200,6 +263,36 @@ impl LspOperations {
         self.require_capability(file_path, LspSemanticOperation::Declaration)
             .await?;
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.declaration_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// `textDocument/declaration` against an already-warm client key.
+    ///
+    /// Warm-only by construction, and the capability gate is taken against
+    /// the same key rather than re-resolved from the file — a gate that
+    /// resolved its own client could answer about a *different* server than
+    /// the one that answers the request.
+    pub async fn declaration_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LocationLink>, LspError> {
+        self.require_capability_for_key(key, LspSemanticOperation::Declaration)
+            .await?;
+        self.declaration_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn declaration_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LocationLink>, LspError> {
         let uri = url_to_uri(&Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -218,7 +311,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/declaration", params)
+            .send_request(key, "textDocument/declaration", params)
             .await?;
 
         if resp.is_null() {
@@ -239,6 +332,33 @@ impl LspOperations {
         self.require_capability(file_path, LspSemanticOperation::Implementation)
             .await?;
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.implementation_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// `textDocument/implementation` against an already-warm client key.
+    /// Warm-only by construction; see
+    /// [`Self::declaration_for_warm_client`].
+    pub async fn implementation_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LocationLink>, LspError> {
+        self.require_capability_for_key(key, LspSemanticOperation::Implementation)
+            .await?;
+        self.implementation_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn implementation_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<LocationLink>, LspError> {
         let uri = url_to_uri(&Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -258,7 +378,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/implementation", params)
+            .send_request(key, "textDocument/implementation", params)
             .await?;
 
         if resp.is_null() {
@@ -281,6 +401,33 @@ impl LspOperations {
         self.require_capability(file_path, LspSemanticOperation::DocumentHighlight)
             .await?;
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.document_highlights_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// `textDocument/documentHighlight` against an already-warm client key.
+    /// Warm-only by construction; see
+    /// [`Self::declaration_for_warm_client`].
+    pub async fn document_highlights_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<DocumentHighlight>, LspError> {
+        self.require_capability_for_key(key, LspSemanticOperation::DocumentHighlight)
+            .await?;
+        self.document_highlights_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn document_highlights_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<DocumentHighlight>, LspError> {
         let uri = url_to_uri(&Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -299,7 +446,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/documentHighlight", params)
+            .send_request(key, "textDocument/documentHighlight", params)
             .await?;
 
         if resp.is_null() {
@@ -316,24 +463,34 @@ impl LspOperations {
             LspError::NotInitialized("no LSP client available for workspace_symbols".to_string())
         })?;
 
-        match self
-            .service
-            .capability_decision(&key, LspSemanticOperation::WorkspaceSymbols)
-            .await
-        {
-            CapabilityDecision::Supported => {}
-            CapabilityDecision::Unsupported(u) => return Err(LspError::Unavailable(u)),
-            CapabilityDecision::Unknown {
-                operation,
-                reason: _,
-            } => {
-                return Err(LspError::NotInitialized(format!(
-                    "capability {} is not yet known for workspace_symbols",
-                    operation.as_str(),
-                )));
-            }
-        }
+        self.require_capability_for_key(&key, LspSemanticOperation::WorkspaceSymbols)
+            .await?;
+        self.workspace_symbols_with_key(&key, query).await
+    }
 
+    /// `workspace/symbol` against an already-warm client key.
+    ///
+    /// This is the one file-path-independent operation in this module, and it
+    /// is where the polyglot bug hid best: [`Self::workspace_symbols`] routes
+    /// to whichever client [`Self::first_client_key`] returns, so its answer
+    /// depended on hash-map iteration order rather than on anything about the
+    /// request. A warm-only caller resolves the key it wants and passes it in,
+    /// which is what lets the daemon say *which* server it refused to pick.
+    pub async fn workspace_symbols_for_warm_client(
+        &self,
+        key: &str,
+        query: &str,
+    ) -> Result<Vec<SymbolInformation>, LspError> {
+        self.require_capability_for_key(key, LspSemanticOperation::WorkspaceSymbols)
+            .await?;
+        self.workspace_symbols_with_key(key, query).await
+    }
+
+    async fn workspace_symbols_with_key(
+        &self,
+        key: &str,
+        query: &str,
+    ) -> Result<Vec<SymbolInformation>, LspError> {
         let params = serde_json::to_value(WorkspaceSymbolParams {
             query: query.to_string(),
             partial_result_params: Default::default(),
@@ -342,7 +499,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "workspace/symbol", params)
+            .send_request(key, "workspace/symbol", params)
             .await?;
 
         if resp.is_null() {
@@ -360,6 +517,31 @@ impl LspOperations {
         column: u32,
     ) -> Result<Vec<Location>, LspError> {
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.find_references_with_key(&key, file_path, line, column)
+            .await
+    }
+
+    /// `textDocument/references` against an already-warm client key.
+    /// Warm-only by construction; see
+    /// [`Self::go_to_definition_for_warm_client`].
+    pub async fn find_references_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<Location>, LspError> {
+        self.find_references_with_key(key, file_path, line, column)
+            .await
+    }
+
+    async fn find_references_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<Location>, LspError> {
         let uri = url_to_uri(&Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -381,7 +563,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/references", params)
+            .send_request(key, "textDocument/references", params)
             .await?;
 
         if resp.is_null() {
@@ -399,6 +581,28 @@ impl LspOperations {
         column: u32,
     ) -> Result<Option<String>, LspError> {
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.hover_with_key(&key, file_path, line, column).await
+    }
+
+    /// `textDocument/hover` against an already-warm client key. Warm-only by
+    /// construction; see [`Self::go_to_definition_for_warm_client`].
+    pub async fn hover_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Option<String>, LspError> {
+        self.hover_with_key(key, file_path, line, column).await
+    }
+
+    async fn hover_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Option<String>, LspError> {
         let uri = url_to_uri(&Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -416,7 +620,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/hover", params)
+            .send_request(key, "textDocument/hover", params)
             .await?;
 
         if resp.is_null() {
@@ -438,6 +642,25 @@ impl LspOperations {
         file_path: &Path,
     ) -> Result<Vec<DocumentSymbol>, LspError> {
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        self.document_symbols_with_key(&key, file_path).await
+    }
+
+    /// `textDocument/documentSymbol` against an already-warm client key.
+    /// Warm-only by construction; see
+    /// [`Self::go_to_definition_for_warm_client`].
+    pub async fn document_symbols_for_warm_client(
+        &self,
+        key: &str,
+        file_path: &Path,
+    ) -> Result<Vec<DocumentSymbol>, LspError> {
+        self.document_symbols_with_key(key, file_path).await
+    }
+
+    async fn document_symbols_with_key(
+        &self,
+        key: &str,
+        file_path: &Path,
+    ) -> Result<Vec<DocumentSymbol>, LspError> {
         let uri = url_to_uri(&Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
@@ -450,7 +673,7 @@ impl LspOperations {
 
         let resp = self
             .service
-            .send_request(&key, "textDocument/documentSymbol", params)
+            .send_request(key, "textDocument/documentSymbol", params)
             .await?;
 
         if resp.is_null() {

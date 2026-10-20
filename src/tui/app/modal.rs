@@ -268,6 +268,41 @@ impl App {
         crate::tui::commands::project_picker::switch_active_tab(self, &target_id);
     }
 
+    /// Open the workspace file browser.
+    ///
+    /// The one place that knows how to seed the box, so `/files` and the
+    /// editor's `space f` agree about what it shows.
+    ///
+    /// The box is seeded from the shared tree state rather than building its
+    /// own listing, so it opens where a previous browse left off and both
+    /// surfaces agree about the current workspace. A walk is kicked only
+    /// when nothing has been listed yet, or when the shared tree belongs to
+    /// a *different* workspace: a browser that shows the previous
+    /// workspace's files under this one's name is worse than a slow one.
+    /// Reopening a populated box for the same workspace is instant and must
+    /// not hit the filesystem.
+    ///
+    /// The listing itself is daemon-owned (ADR-0022, C005) — the TUI never
+    /// walks its own filesystem — and the box names the root it is browsing,
+    /// because `FilesDialog::title` is a breadcrumb over the tree's own
+    /// root.
+    pub fn open_file_picker(&mut self) {
+        use crate::tui::components::dialogs::files::FilesDialog;
+        let active_root = self.active_workspace_root();
+        let belongs_to_another_workspace = match &active_root {
+            Some(root) => self.file_tree_state.root.as_deref() != Some(root.as_path()),
+            None => false,
+        };
+        if self.file_tree_state.nodes.is_empty() || belongs_to_another_workspace {
+            crate::tui::commands::file_tree::rebuild(self);
+        }
+        let dialog = FilesDialog::new(
+            Arc::clone(&self.ui_state.theme),
+            self.file_tree_state.clone(),
+        );
+        self.focus_manager.push(Box::new(dialog));
+    }
+
     pub fn open_dialog(&mut self, dialog: Dialog) {
         match dialog {
             Dialog::Session => {
@@ -338,21 +373,7 @@ impl App {
                     .push(Box::new(self.dialog_state.tree_dialog.clone()));
             }
             Dialog::Files => {
-                use crate::tui::components::dialogs::files::FilesDialog;
-                // The box is seeded from the shared tree state rather than
-                // building its own listing, so `/files` opens where a
-                // previous browse left off and both surfaces agree about the
-                // current workspace. A walk is kicked only when nothing has
-                // been listed yet; reopening a populated box is instant and
-                // must not hit the filesystem.
-                if self.file_tree_state.nodes.is_empty() {
-                    crate::tui::commands::file_tree::rebuild(self);
-                }
-                let dialog = FilesDialog::new(
-                    Arc::clone(&self.ui_state.theme),
-                    self.file_tree_state.clone(),
-                );
-                self.focus_manager.push(Box::new(dialog));
+                self.open_file_picker();
             }
             Dialog::Theme => {
                 if self.dialog_state.theme_picker.is_none() {

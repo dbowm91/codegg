@@ -233,6 +233,7 @@ mod tests {
             "agent".to_string(),
             false,
             parse_review(&owned),
+            owned.iter().map(|(path, _)| path.clone()).collect(),
         );
         state
     }

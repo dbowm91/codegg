@@ -270,30 +270,30 @@ after reconciling the search-backend retirement with current `main`.
 
 | Item | Count | Source |
 |------|-------|--------|
-| Architecture docs | 86 | `architecture/*.md` |
-| Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
-| Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
-| Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
+| Architecture docs | 87 | `architecture/*.md` |
+| Tool registrations in `with_options()` | 65 call sites | `src/tool/mod.rs` |
+| Distinct production tool names | 61 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 7 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs` and `broker.rs`) |
+| Tool source files | 80 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 243 (219 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 158 | `crates/codegg-protocol/src/core.rs` |
-| `CoreEvent` variants | 88 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 258 (234 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 168 | `crates/codegg-protocol/src/core.rs` |
+| `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 237 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
-| Identity newtypes | 18 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 164 | asserted by `built_in_command_count_matches_release_docs` |
+| Authorized operations | 252 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
+| Built-in slash commands | 166 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
-| TUI state modules | 31 (32 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 87 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 79 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| TUI state modules | 32 (33 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
+| Database tables (`CREATE TABLE`) | 92 | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | 83 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 268 | `tests/*.rs` |
-| CI guard scripts | 58 | `scripts/check_*` |
+| Integration test files | 269 | `tests/*.rs` — re-measured 2026-10-20 in the merged tree |
+| CI guard scripts | 62 | `scripts/check_*` — re-measured 2026-10-20 in the merged tree |
 
 ## Feature gates
 
@@ -594,6 +594,8 @@ The full count audit on **2026-10-13** remeasured each row directly against its 
 The two file-count rows were **remeasured on 2026-10-19** against their listed `Source` while the TUI composer Helix parity workstream landed M001 and M002: integration test files are **266** (`ls tests/*.rs`) and CI guard scripts are **58** (`ls scripts/check_*`). This workstream's own contribution is two test files (`tests/tui_composer_cursor.rs` from M001, `tests/tui_composer_claims.rs` from M002) and one guard (`scripts/check_tui_composer_key_authority.py` from M002); the remaining movement is drift that accumulated after the 2026-10-15 audit, and it is corrected here rather than left for the next reader to find.
 
 The integration-test-file row was **remeasured again on 2026-10-19** when the managed-agent-scratch workstream was reconciled with `main`: the count is now **268** (`ls tests/*.rs`), because the scratch workstream contributes two further test files (`tests/managed_scratch_job_admission.rs` and `tests/linux_native_scratch_containment.rs`) on top of the 266 measured above. The CI guard script row is unchanged at **58** (`ls scripts/check_*`); the scratch workstream adds no new guard, and the `main`-side value supersedes the 53 that the scratch branch carried.
+
+Every row was **remeasured on 2026-10-20** against its listed `Source` when the TUI editor Helix parity workstream (M001–M013, M015–M020) was reconciled with `main`. Sixteen rows had drifted: architecture docs **87**, tool registrations **65** (`registry.register` / `registry.register_boxed` inside `with_options()`), distinct production tool names **61**, tool source files **80**, `CoreRequest` variants **258** (234 struct + 24 unit), `CoreResponse` variants **168**, `CoreEvent` variants **92**, authorized operations **252** (distinct `OperationDescriptor::new` names), identity newtypes **19**, built-in slash commands **166** (the count `built_in_command_count_matches_release_docs` asserts), TUI state modules **32** (33 `.rs` files incl. `mod.rs`), database tables **92** (`CREATE TABLE` occurrences), storage-layout version **83**, integration test files **269**, and CI guard scripts **62**. Four methods were ambiguous and were pinned by re-running them at the commits that originally recorded each value — `541a1c84`, `3f8ecc48`, `ac4d5962` and `fc53d0af` — so the rows keep the counting method the table has always used rather than a new one. The tool-name row's exclusion note was corrected too: there are now **7** test-only `impl Tool for` mocks, not 5 — `disabled.rs` and `broker.rs` joined `program_manifest.rs`, `catalog.rs` and `tool_search.rs`. The counts on both sides of the `main` merge were individually correct for their own tree (58 guard scripts each, 268 test files on `main`, 244 on the branch); the merged tree is the union, so the two file-count rows moved again, and the sixteen code-count rows had been drifting on `main` and on this branch independently.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 

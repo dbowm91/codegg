@@ -85,8 +85,20 @@ run_quick() {
     echo "==> python3 scripts/check_tui_editor_key_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_key_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_leaf_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_leaf_authority.py)
+
+    echo "==> python3 scripts/check_tui_editor_completion_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_completion_authority.py)
+
+    echo "==> python3 scripts/check_tui_editor_apply_path.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_apply_path.py)
+
     echo "==> python3 scripts/check_tui_editor_prefix_state.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py)
+
+    echo "==> python3 scripts/check_tui_editor_doc_drift.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py)
 
     echo "==> python3 scripts/check_tui_transport_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_transport_authority.py)
