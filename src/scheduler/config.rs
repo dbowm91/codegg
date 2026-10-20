@@ -19,6 +19,8 @@ pub use codegg_config::{
     SchedulerRolloutConfig as SchedulerRolloutMode,
 };
 
+use std::collections::HashMap;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -58,6 +60,35 @@ pub struct ResolvedSchedulerConfig {
     pub resources: ResourceBudget,
     pub queue: QueueCaps,
     pub fairness: FairnessWeights,
+    /// Per-node ceiling on concurrently admitted remote executions.
+    ///
+    /// A remote job does not consume the controller's local CPU, memory,
+    /// or process budget — those describe the *remote node's* capacity,
+    /// which the node enforces. It consumes a node-scoped reservation
+    /// instead, bounded by this map, plus a small controller transfer
+    /// budget.
+    ///
+    /// A node absent from this map falls back to the controller's
+    /// process-slot budget, which preserves the effective concurrency
+    /// bound remote work had before the budgets were split.
+    pub remote_node_capacity: HashMap<String, u32>,
+}
+
+impl ResolvedSchedulerConfig {
+    /// Install the per-node remote execution ceilings.
+    pub fn with_remote_node_capacity(mut self, capacity: HashMap<String, u32>) -> Self {
+        self.remote_node_capacity = capacity;
+        self
+    }
+
+    /// The concurrency ceiling for one remote node.
+    pub fn remote_node_limit(&self, node_id: &str) -> u32 {
+        self.remote_node_capacity
+            .get(node_id)
+            .copied()
+            .unwrap_or(self.resources.max_process_slots)
+            .max(1)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +98,15 @@ pub struct ResourceBudget {
     pub max_memory_mb_hint: u64,
     pub max_io_weight: u32,
     pub max_network_slots: u32,
+    /// Bound on the remote transfers the controller may have in flight.
+    ///
+    /// The controller's own cost of moving a workspace to a node and
+    /// streaming events back. Deliberately a *separate* budget from
+    /// `max_network_slots`, which measures the network demand of local
+    /// jobs: a remote transfer must not be throttled by an unrelated
+    /// dimension, and a local job's network demand must not be throttled
+    /// by remote traffic.
+    pub max_remote_transfers: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +139,7 @@ impl Default for ResolvedSchedulerConfig {
                 max_memory_mb_hint: 8192,
                 max_io_weight: 8,
                 max_network_slots: 4,
+                max_remote_transfers: 16,
             },
             queue: QueueCaps {
                 max_total: 256,
@@ -114,6 +155,7 @@ impl Default for ResolvedSchedulerConfig {
                 max_high_priority_burst: 8,
                 aging_secs: 300,
             },
+            remote_node_capacity: HashMap::new(),
         }
     }
 }
@@ -148,6 +190,9 @@ impl ResolvedSchedulerConfig {
             }
             if let Some(v) = r.max_network_slots {
                 out.resources.max_network_slots = v;
+            }
+            if let Some(v) = r.max_remote_transfers {
+                out.resources.max_remote_transfers = v;
             }
         }
         if let Some(q) = &cfg.queue {

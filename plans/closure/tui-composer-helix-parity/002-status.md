@@ -2,6 +2,21 @@
 
 Status: closed
 
+> **Factual correction, recorded after closure (C001).** One of this milestone's
+> exit conditions was **not met** when it closed: *"`h` and `l` still move the
+> composer caret"*. The two letters moved the composer caret in the **vim map
+> only**; `default_bindings_internal()` bound neither, and `vim_mode` defaults to
+> false, so in the app's default configuration the composer drew a caret that no
+> letter could move. §2's requirement-to-evidence matrix has no row for that
+> condition, which is why it closed green, and §2's rows are otherwise thorough.
+> The correction landed in
+> `plans/subsystems/tui-composer-helix-parity-corrective-addendum.md` (C001):
+> both letters are now bound in the default map, and guard rule G9 fails if the
+> two maps ever disagree about a caret motion. Nothing else in this record is
+> amended — the claim table, the fallthrough rule, the re-spellings, the encodings
+> and the conditional `j`/`k` pair all stand as written. See §2's row for the
+> exit condition and C001's closure record for the correction's own evidence.
+>
 > **Read this with §4.2.** `scripts/verify.sh quick` is green. `scripts/verify.sh full`
 > is **not** green on this machine: both of its nextest sweeps fail on 59 tests that
 > register a workspace at `/tmp`, which macOS makes a symlink. The same sweeps were
@@ -117,6 +132,7 @@ the app's existing behaviour with a new owner.
 | **AC9 — the editor's and the terminal panel's keymaps are unchanged** | `python3 scripts/check_tui_editor_key_authority.py`, `check_tui_editor_prefix_state.py`, `check_tui_editor_text_authority.py`, `check_tui_transport_authority.py` — all green in `verify.sh quick`; the editor's and terminal panel's own suites are unchanged and green | pass | No editor or terminal-panel file was modified. |
 | **AC10 — a claimed capital is reachable in both encodings** | `::a_claimed_capital_letter_is_reachable_in_both_encodings`; guard G6 | pass | `U` answers to `Char('U')` with `SHIFT` **and** with `NONE`, like `insert_panel_direction_bindings`. |
 | **AC11 — a capital in Insert mode inserts and opens nothing** | `::every_claim_table_letter_is_typed_as_text_in_insert_mode`, `::a_claimed_lowercase_letter_is_not_claimed_in_its_shifted_spelling` | pass | |
+| **The exit condition "`h` and `l` still move the composer caret"** | `tests/tui_composer_claims.rs::the_caret_motions_are_bound_the_same_way_in_every_map`, `::h_and_l_move_the_composer_caret_in_normal_mode`; guard rule G9 | **failed at closure, corrected in C001** | This condition had **no row in this matrix when the milestone closed**, and it was the one condition that was false: the letters were bound in the vim map only. The corrective is `plans/subsystems/tui-composer-helix-parity-corrective-addendum.md` (C001), whose closure record carries the evidence. The `j`/`k` half of the same exit condition is AC7, and it passed. |
 | **The plan's §15 closure-evidence requirements** | §4 below | pass | Guard output (plain and `--self-test`), a real-tree injection, the per-criterion test evidence, and the `quick` and `full` gate output. |
 
 ## 3. Production implementation evidence

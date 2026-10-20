@@ -39,11 +39,13 @@ pub mod event_log;
 pub mod global_agent_authority;
 pub mod instance;
 pub mod lsp_diagnostics_store;
+pub mod node_telemetry;
 pub mod notification;
 pub mod project_activation;
 pub mod project_init;
 pub mod provider_connections;
 pub mod provider_qualification;
+pub mod remote_targets;
 pub mod runtime_deps;
 pub mod session_runtime;
 pub mod session_selection;
@@ -580,6 +582,8 @@ pub(crate) fn map_app_event_to_core_event(
         }),
         crate::bus::events::AppEvent::SubagentStarted {
             session_id,
+            child_instance_id,
+            originating_turn_id,
             task_id,
             agent,
             description,
@@ -589,6 +593,8 @@ pub(crate) fn map_app_event_to_core_event(
             run_id,
         } => Some(CoreEvent::SubagentStarted {
             session_id,
+            child_instance_id,
+            originating_turn_id,
             task_id,
             agent,
             description,
@@ -599,33 +605,39 @@ pub(crate) fn map_app_event_to_core_event(
         }),
         crate::bus::events::AppEvent::SubagentProgress {
             session_id,
+            child_instance_id,
             task_id,
             agent,
             message,
         } => Some(CoreEvent::SubagentProgress {
             session_id,
+            child_instance_id,
             task_id,
             agent,
             message,
         }),
         crate::bus::events::AppEvent::SubagentCompleted {
             session_id,
+            child_instance_id,
             task_id,
             agent,
             result_summary,
         } => Some(CoreEvent::SubagentCompleted {
             session_id,
+            child_instance_id,
             task_id,
             agent,
             result_summary,
         }),
         crate::bus::events::AppEvent::SubagentFailed {
             session_id,
+            child_instance_id,
             task_id,
             agent,
             error,
         } => Some(CoreEvent::SubagentFailed {
             session_id,
+            child_instance_id,
             task_id,
             agent,
             error,
@@ -1230,6 +1242,8 @@ mod tests {
     fn subagent_started_maps_its_identity_fields_onto_the_core_event() {
         let ev = map_app_event_to_core_event(crate::bus::events::AppEvent::SubagentStarted {
             session_id: "s1".into(),
+            child_instance_id: "child-1".into(),
+            originating_turn_id: Some("turn-1".into()),
             task_id: 7,
             agent: "explore".into(),
             description: "walking the tree".into(),
@@ -1243,6 +1257,8 @@ mod tests {
         match ev {
             CoreEvent::SubagentStarted {
                 task_id,
+                child_instance_id,
+                originating_turn_id,
                 display_name,
                 profile,
                 usefulness,
@@ -1250,6 +1266,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(task_id, 7);
+                assert_eq!(child_instance_id, "child-1");
+                assert_eq!(originating_turn_id.as_deref(), Some("turn-1"));
                 assert_eq!(
                     display_name.as_deref(),
                     Some("Sally"),

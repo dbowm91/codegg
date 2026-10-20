@@ -40,7 +40,12 @@ violate.
 3. **Projection is derived, never authoritative.** Mailbox/journal run
    records are execution truth; projection may summarize but never replay
    a journal event as a turn or tool call. Reconnect recovers from durable
-   run/control state.
+   run/control state. Ephemeral subagent workers have a separate bounded
+   session-owned projection keyed by trusted `child_instance_id`; their
+   parent turn may finish first. The registry is daemon-process local and
+   starts empty after restart, while durable AgentRuns/jobs are rebuilt from
+   their stores. Never attach an old lifecycle event to whichever turn is
+   active when it arrives.
 4. **Chat bodies stay inert; presence stays liveness-only.** Collaboration
    text never executes; presence never gates work. Both ride the
    daemon-owned, authorized, privacy-preserving event path.

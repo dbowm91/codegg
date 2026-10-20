@@ -59,6 +59,7 @@ pub enum DialogType {
     Logs,
     Plugin,
     RunDetail,
+    JobDetail,
     Collaborators,
     ProjectChat,
     Team,
@@ -92,7 +93,13 @@ impl From<DialogType> for Dialog {
             DialogType::Model => Dialog::Model,
             DialogType::Agent => Dialog::Agent,
             DialogType::Session => Dialog::Session,
-            DialogType::Help => Dialog::Help,
+            DialogType::Help => Dialog::Help(
+                // A bare dialog *type* carries no route, so it gets the one
+                // that cannot copy. The route is carried by the open request
+                // (`Dialog::Help(route)`), which is where the decision
+                // belongs.
+                crate::tui::components::dialogs::help::HelpRoute::Command,
+            ),
             DialogType::Tree => Dialog::Tree,
             DialogType::Files => Dialog::Files,
             DialogType::Theme => Dialog::Theme,
@@ -126,6 +133,7 @@ impl From<DialogType> for Dialog {
             DialogType::Logs => Dialog::Logs,
             DialogType::Plugin => Dialog::Plugin,
             DialogType::RunDetail => Dialog::RunDetail,
+            DialogType::JobDetail => Dialog::JobDetail,
             DialogType::ProjectPicker => Dialog::ProjectPicker,
             DialogType::Collaborators => Dialog::Collaborators,
             DialogType::ProjectChat => Dialog::ProjectChat,
@@ -151,7 +159,7 @@ impl From<Dialog> for DialogType {
             Dialog::Model => DialogType::Model,
             Dialog::Agent => DialogType::Agent,
             Dialog::Session => DialogType::Session,
-            Dialog::Help => DialogType::Help,
+            Dialog::Help(_) => DialogType::Help,
             Dialog::Tree => DialogType::Tree,
             Dialog::Files => DialogType::Files,
             Dialog::Theme => DialogType::Theme,
@@ -187,6 +195,7 @@ impl From<Dialog> for DialogType {
             Dialog::Logs => DialogType::Logs,
             Dialog::Plugin => DialogType::Plugin,
             Dialog::RunDetail => DialogType::RunDetail,
+            Dialog::JobDetail => DialogType::JobDetail,
             Dialog::ProjectPicker => DialogType::ProjectPicker,
             Dialog::Collaborators => DialogType::Collaborators,
             Dialog::ProjectChat => DialogType::ProjectChat,
@@ -334,7 +343,10 @@ mod tests {
             (DialogType::Model, Dialog::Model),
             (DialogType::Agent, Dialog::Agent),
             (DialogType::Session, Dialog::Session),
-            (DialogType::Help, Dialog::Help),
+            (
+                DialogType::Help,
+                Dialog::Help(crate::tui::components::dialogs::help::HelpRoute::Command),
+            ),
             (DialogType::Tree, Dialog::Tree),
             (DialogType::Files, Dialog::Files),
             (DialogType::Theme, Dialog::Theme),

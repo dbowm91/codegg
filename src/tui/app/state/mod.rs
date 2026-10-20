@@ -21,6 +21,7 @@ pub mod prompt;
 pub mod restore;
 pub mod routing;
 pub mod session;
+pub mod session_work;
 pub mod snapshot;
 pub mod subagent_addressee;
 pub mod subagent_tabs;

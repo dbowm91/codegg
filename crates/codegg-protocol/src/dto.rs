@@ -1,6 +1,309 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Wire shape of an explicit execution target.
+///
+/// The canonical forms are `{"kind":"local"}` and
+/// `{"kind":"eggwork_node","node_id":"<table key>"}`. The node id names an
+/// entry of the daemon's `[eggwork.nodes]` table — never an endpoint, TLS
+/// key path, or any other credential-bearing locator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ExecutionTargetDto {
+    /// Run on the local executor. The historical default.
+    Local,
+    /// Run on the named Eggwork node.
+    EggworkNode {
+        /// The `[eggwork.nodes]` table key of the target node.
+        node_id: String,
+    },
+    /// The submitted target could not be decoded as a known target.
+    ///
+    /// This variant exists so that a malformed target produces a typed
+    /// refusal from the daemon instead of failing the decode of the
+    /// enclosing request. Transports drop frames they cannot decode
+    /// (see `src/core/transport/daemon_socket.rs`), so a decode failure
+    /// here would leave the caller waiting forever for a reply.
+    ///
+    /// The daemon never echoes this variant back to a client.
+    Invalid {
+        /// Human-readable reason the target was refused.
+        reason: String,
+    },
+}
+
+impl ExecutionTargetDto {
+    /// Decode a wire value into a typed target without ever failing.
+    ///
+    /// Unknown kinds, a missing or empty node id, and any key beyond the
+    /// documented shape decode to [`ExecutionTargetDto::Invalid`]. The
+    /// caller turns that into a typed refusal.
+    pub fn from_json_value(value: &serde_json::Value) -> Self {
+        let Some(object) = value.as_object() else {
+            return Self::Invalid {
+                reason: "execution target must be an object".to_owned(),
+            };
+        };
+        let Some(kind) = object.get("kind").and_then(serde_json::Value::as_str) else {
+            return Self::Invalid {
+                reason: "execution target is missing a string 'kind'".to_owned(),
+            };
+        };
+        match kind {
+            "local" => {
+                let extra: Vec<&str> = object
+                    .keys()
+                    .filter(|key| key.as_str() != "kind")
+                    .map(String::as_str)
+                    .collect();
+                if extra.is_empty() {
+                    Self::Local
+                } else {
+                    Self::Invalid {
+                        reason: format!(
+                            "execution target 'local' does not accept {}",
+                            extra.join(", ")
+                        ),
+                    }
+                }
+            }
+            "eggwork_node" => {
+                let extra: Vec<&str> = object
+                    .keys()
+                    .filter(|key| key.as_str() != "kind" && key.as_str() != "node_id")
+                    .map(String::as_str)
+                    .collect();
+                if !extra.is_empty() {
+                    return Self::Invalid {
+                        reason: format!(
+                            "execution target 'eggwork_node' does not accept {}",
+                            extra.join(", ")
+                        ),
+                    };
+                }
+                let Some(node_id) = object.get("node_id").and_then(serde_json::Value::as_str)
+                else {
+                    return Self::Invalid {
+                        reason: "execution target 'eggwork_node' requires a string 'node_id'"
+                            .to_owned(),
+                    };
+                };
+                if node_id.trim().is_empty() {
+                    return Self::Invalid {
+                        reason: "execution target 'eggwork_node' requires a non-empty 'node_id'"
+                            .to_owned(),
+                    };
+                }
+                Self::EggworkNode {
+                    node_id: node_id.to_owned(),
+                }
+            }
+            other => Self::Invalid {
+                reason: format!("unknown execution target kind '{other}'"),
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExecutionTargetDto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&value))
+    }
+}
+
+/// How strongly a remote resource limit must hold on the node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteLimitEnforcementDto {
+    /// The node must enforce the limit or the submission is refused.
+    Required,
+    /// The node may apply the limit; a node that cannot says so.
+    BestEffort,
+}
+
+/// One remote resource limit on the wire.
+///
+/// The unit is carried by the *field* that holds this value, never by the
+/// value itself:
+///
+/// - `memory_bytes` — bytes of resident memory.
+/// - `cpu_quota_milli_percent` — milli-percent of one CPU's quota. This is
+///   **not** a CPU-time budget: `1000` means one full CPU (`100.0%`).
+/// - `pids` — process/thread count.
+///
+/// This is a physically-unit limit, deliberately distinct from the
+/// abstract scheduler tokens (`cpu_weight`, `memory_mb_hint`) carried by
+/// the job's resource request. The two never convert into one another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RemoteResourceLimitDto {
+    /// The limit value in the dimension's own unit.
+    pub value: u64,
+    /// How strongly the limit must hold.
+    pub enforcement: RemoteLimitEnforcementDto,
+}
+
+impl RemoteResourceLimitDto {
+    /// Decode a wire value into a limit without ever failing.
+    ///
+    /// A value that is absent, not a number, or not an unsigned integer
+    /// decodes to `0`, which the daemon refuses: a limit of zero is not
+    /// "unlimited", it is an invalid limit. An unrecognized `enforcement`
+    /// keyword decodes to `required` — the stricter reading — so an
+    /// unknown keyword can never quietly weaken a limit. An unrecognized
+    /// *key* is refused as well, so a credential-bearing locator cannot
+    /// ride along inside a limit.
+    pub fn from_json_value(value: &serde_json::Value) -> Self {
+        let raw = value.as_object();
+        if let Some(raw) = raw {
+            let unknown: Vec<&str> = raw
+                .keys()
+                .map(String::as_str)
+                .filter(|key| !matches!(*key, "value" | "enforcement"))
+                .collect();
+            if !unknown.is_empty() {
+                return Self {
+                    value: 0,
+                    enforcement: RemoteLimitEnforcementDto::Required,
+                };
+            }
+        }
+        let limit = raw.and_then(|object| object.get("value"));
+        let value = limit.and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let enforcement = match raw
+            .and_then(|object| object.get("enforcement"))
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("best_effort") => RemoteLimitEnforcementDto::BestEffort,
+            _ => RemoteLimitEnforcementDto::Required,
+        };
+        Self { value, enforcement }
+    }
+}
+
+impl<'de> Deserialize<'de> for RemoteResourceLimitDto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&value))
+    }
+}
+
+/// A set of remote resource limits on the wire.
+///
+/// An absent dimension means the dimension is *not requested*. The whole
+/// set is optional: omitting it preserves the pre-M003 behavior of running
+/// remote work without resource limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum RemoteResourceLimitsDto {
+    /// A well-formed set of limits.
+    Limits {
+        /// Resident-memory limit in bytes.
+        memory_bytes: Option<RemoteResourceLimitDto>,
+        /// CPU quota limit in milli-percent of one CPU.
+        cpu_quota_milli_percent: Option<RemoteResourceLimitDto>,
+        /// Process/thread limit.
+        pids: Option<RemoteResourceLimitDto>,
+    },
+    /// The submitted limits could not be understood.
+    ///
+    /// This variant exists so that a malformed limit produces a typed
+    /// refusal from the daemon instead of failing the decode of the
+    /// enclosing request. Transports drop frames they cannot decode, so a
+    /// decode failure here would leave the caller waiting forever.
+    ///
+    /// The daemon never echoes this variant back to a client.
+    Invalid {
+        /// Human-readable reason the limits were refused.
+        reason: String,
+    },
+}
+
+impl RemoteResourceLimitsDto {
+    /// Decode a wire value into a typed limit set without ever failing.
+    ///
+    /// An unrecognized key is an error rather than something to ignore: a
+    /// client that sent `cpu_weight` here meant to constrain the node, and
+    /// silently dropping the key would run the job unconstrained.
+    pub fn from_json_value(value: &serde_json::Value) -> Self {
+        let Some(object) = value.as_object() else {
+            return Self::Invalid {
+                reason: "remote resource limits must be an object".to_owned(),
+            };
+        };
+        let known = ["kind", "memory_bytes", "cpu_quota_milli_percent", "pids"];
+        let unknown: Vec<&str> = object
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !known.contains(key))
+            .collect();
+        if !unknown.is_empty() {
+            return Self::Invalid {
+                reason: format!(
+                    "remote resource limits do not accept {}; expected memory_bytes, cpu_quota_milli_percent or pids",
+                    unknown.join(", ")
+                ),
+            };
+        }
+        // The wire form is tagged, so `kind` is either absent (a bare
+        // object) or exactly "limits". Anything else is a shape this
+        // decoder does not understand.
+        match object.get("kind").and_then(serde_json::Value::as_str) {
+            None | Some("limits") => {}
+            Some(other) => {
+                return Self::Invalid {
+                    reason: format!("unknown remote resource limits kind '{other}'"),
+                };
+            }
+        }
+        Self::Limits {
+            // An explicit `null` dimension is an *absent* dimension, not a
+            // zero limit. Treating it as zero would turn a request that
+            // simply omits a dimension into one the daemon refuses.
+            memory_bytes: object
+                .get("memory_bytes")
+                .filter(|value| !value.is_null())
+                .map(RemoteResourceLimitDto::from_json_value),
+            cpu_quota_milli_percent: object
+                .get("cpu_quota_milli_percent")
+                .filter(|value| !value.is_null())
+                .map(RemoteResourceLimitDto::from_json_value),
+            pids: object
+                .get("pids")
+                .filter(|value| !value.is_null())
+                .map(RemoteResourceLimitDto::from_json_value),
+        }
+    }
+
+    /// `true` when the set carries no dimension at all.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Limits {
+                memory_bytes,
+                cpu_quota_milli_percent,
+                pids,
+            } => memory_bytes.is_none() && cpu_quota_milli_percent.is_none() && pids.is_none(),
+            Self::Invalid { .. } => false,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RemoteResourceLimitsDto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&value))
+    }
+}
+
 /// Bounds applied to project catalog payloads at the protocol boundary.
 pub const MAX_PROJECT_LIST_ITEMS: usize = 128;
 pub const MAX_PROJECT_WORKSPACES: usize = 64;
@@ -229,6 +532,219 @@ pub struct Session {
     pub time_archived: Option<i64>,
     #[serde(default)]
     pub time_deleted: Option<i64>,
+}
+
+/// Where a node's host telemetry came from.
+///
+/// Only the node's locally installed Gregg provider exists today; the enum
+/// keeps the wire shape open without inventing a second source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeTelemetrySourceDto {
+    /// Readings come from the node's locally installed Gregg provider.
+    Gregg,
+}
+
+/// The provider's own view of whether its observation is usable.
+///
+/// This is the node's statement, not CodeGG's: `ready` means the node
+/// validated a sample inside its freshness bound, `stale` means it holds a
+/// sample that is now older than that bound, and the remaining variants
+/// mean no usable observation exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeTelemetryStateDto {
+    /// No provider is configured on the node.
+    Disabled,
+    /// A provider is configured but has not produced an observation yet.
+    Warming,
+    /// A validated observation is available and within its freshness bound.
+    Ready,
+    /// An observation exists but is older than the freshness bound.
+    Stale,
+    /// The provider could not be reached, or answered with something unusable.
+    Unavailable,
+    /// The provider answered with a payload that failed validation.
+    Invalid,
+}
+
+/// Whether one metric dimension carries a measurement.
+///
+/// `value` means the node reported the dimension, `unknown` means the node
+/// supports it but did not report it this time, and `unsupported` means the
+/// host platform cannot produce it at all. The last two are never rendered
+/// as a zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeMetricStateDto {
+    /// The node reported a measurement.
+    Value,
+    /// The dimension is supported but was not reported in this sample.
+    Unknown,
+    /// The host platform cannot produce this dimension.
+    Unsupported,
+}
+
+/// CPU utilization of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeCpuDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Logical CPU cores visible to the kernel.
+    #[serde(default)]
+    pub logical_cores: Option<u32>,
+    /// Aggregate CPU busy percentage.
+    #[serde(default)]
+    pub usage_pct: Option<f64>,
+    /// Aggregate CPU I/O-wait percentage, when the host reports it.
+    #[serde(default)]
+    pub iowait_pct: Option<f64>,
+}
+
+/// Physical memory of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeMemoryDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Bytes available without swapping.
+    #[serde(default)]
+    pub available_bytes: Option<u64>,
+    /// Total physical memory in bytes.
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    /// Bytes currently resident in physical memory.
+    #[serde(default)]
+    pub used_bytes: Option<u64>,
+}
+
+/// Load averages of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeLoadDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// One-minute load average.
+    #[serde(default)]
+    pub one: Option<f64>,
+    /// Five-minute load average.
+    #[serde(default)]
+    pub five: Option<f64>,
+    /// Fifteen-minute load average.
+    #[serde(default)]
+    pub fifteen: Option<f64>,
+}
+
+/// Swap utilization of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeSwapDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Bytes currently in swap.
+    #[serde(default)]
+    pub used_bytes: Option<u64>,
+    /// Total swap in bytes.
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+}
+
+/// Storage capacity of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeDiskDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Free bytes across the reported volumes.
+    #[serde(default)]
+    pub available_bytes: Option<u64>,
+    /// Total bytes across the reported volumes.
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    /// How many volumes contributed to the aggregate.
+    #[serde(default)]
+    pub volume_count: Option<u32>,
+}
+
+/// Aggregate disk throughput of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeDiskIoDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Aggregate read throughput in bytes per second.
+    #[serde(default)]
+    pub read_bytes_per_sec: Option<u64>,
+    /// Aggregate write throughput in bytes per second.
+    #[serde(default)]
+    pub write_bytes_per_sec: Option<u64>,
+}
+
+/// Aggregate network throughput of a remote host.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeNetworkDto {
+    /// Whether the node reported the dimension at all.
+    pub state: NodeMetricStateDto,
+    /// Aggregate receive throughput in bytes per second.
+    #[serde(default)]
+    pub rx_bytes_per_sec: Option<u64>,
+    /// Aggregate transmit throughput in bytes per second.
+    #[serde(default)]
+    pub tx_bytes_per_sec: Option<u64>,
+}
+
+/// One node's sanitized host telemetry (Eggwork M002).
+///
+/// The shape is CodeGG-owned. It projects the node's authenticated
+/// telemetry document into a bounded operator view and deliberately carries
+/// no interface identity, hostname, mount path, process id, or provider
+/// error text — only the provider state, the freshness of the observation,
+/// the dimensions the node actually reported, and a bounded diagnostic when
+/// no usable observation exists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeTelemetryDto {
+    /// The `[eggwork.nodes]` table key of the node this snapshot describes.
+    ///
+    /// This is the same identifier space as
+    /// [`ExecutionTargetDto::EggworkNode`], so an operator can copy it
+    /// straight into a job target.
+    pub node_id: String,
+    /// The provider that produced the observation.
+    pub source: NodeTelemetrySourceDto,
+    /// The provider's own view of the observation.
+    pub state: NodeTelemetryStateDto,
+    /// Age of the observation in milliseconds, as reported by the node.
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    /// The provider's bounded error *category*, when it reported one.
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// Wall-clock time of the observation, in unix milliseconds.
+    #[serde(default)]
+    pub observed_at_unix_ms: Option<u64>,
+    /// The interval the node sampled at, in milliseconds.
+    #[serde(default)]
+    pub sample_interval_ms: Option<u64>,
+    /// CPU utilization.
+    #[serde(default)]
+    pub cpu: Option<NodeCpuDto>,
+    /// Physical memory utilization.
+    #[serde(default)]
+    pub memory: Option<NodeMemoryDto>,
+    /// Load averages.
+    #[serde(default)]
+    pub load: Option<NodeLoadDto>,
+    /// Swap utilization.
+    #[serde(default)]
+    pub swap: Option<NodeSwapDto>,
+    /// Storage capacity.
+    #[serde(default)]
+    pub disk: Option<NodeDiskDto>,
+    /// Aggregate disk throughput.
+    #[serde(default)]
+    pub disk_io: Option<NodeDiskIoDto>,
+    /// Aggregate network throughput.
+    #[serde(default)]
+    pub network: Option<NodeNetworkDto>,
+    /// A bounded, endpoint-free explanation of why this snapshot carries no
+    /// usable observation.
+    #[serde(default)]
+    pub diagnostic: Option<String>,
 }
 
 #[cfg(test)]
@@ -637,10 +1153,16 @@ pub struct JobSummaryDto {
     pub updated_at_ms: i64,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    /// Identity of the node this job targets.
+    ///
+    /// `None` for local jobs. This is identity only: no endpoint, key
+    /// path, or other credential-bearing locator is ever exposed.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 /// Full job record for `JobGet`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JobRecordDto {
     pub job_id: String,
     pub workspace_id: String,
@@ -674,10 +1196,16 @@ pub struct JobRecordDto {
     pub cancel_reason: Option<String>,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    /// Identity of the node this job targets.
+    ///
+    /// `None` for local jobs. This is identity only: no endpoint, key
+    /// path, or other credential-bearing locator is ever exposed.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 /// Execution attempt record for `JobAttempts`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JobAttemptDto {
     pub attempt_id: String,
     pub job_id: String,
@@ -739,6 +1267,12 @@ pub struct ScheduleRecordDto {
     pub last_occurrence_at_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Identity of the node this schedule's jobs target.
+    ///
+    /// `None` for local schedules. This is identity only: no endpoint,
+    /// key path, or other credential-bearing locator is ever exposed.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 /// C005 (ADR-0031): durable host grant for one background wait, as
@@ -822,6 +1356,23 @@ pub struct JobSubmitDto {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    /// Explicit execution target for this job.
+    ///
+    /// Omitted (or `null`) means the local executor, which is exactly the
+    /// behavior of every client that predates explicit targeting. A remote
+    /// target names a configured Eggwork node; the daemon refuses it
+    /// unless the principal holds the node-target capability and the
+    /// administrator approved that node.
+    #[serde(default)]
+    pub target: Option<ExecutionTargetDto>,
+    /// Optional remote resource limits for a job that targets a node.
+    ///
+    /// These are physical limits in the node's own units, never the
+    /// abstract scheduler tokens. The daemon refuses any request that
+    /// exceeds the operator's configured ceiling for the target node, and
+    /// refuses any request that would weaken a `required` limit.
+    #[serde(default)]
+    pub remote_resources: Option<RemoteResourceLimitsDto>,
 }
 
 /// Parameters for `ScheduleCreate`.
@@ -945,4 +1496,252 @@ pub enum EditRestoreResultDto {
         checkpoint_id: String,
         reason: String,
     },
+}
+
+#[cfg(test)]
+mod execution_target_tests {
+    use super::*;
+
+    #[test]
+    fn omitted_target_decodes_as_local() {
+        let raw = serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat"
+        });
+        let dto: JobSubmitDto = serde_json::from_value(raw).expect("legacy submit decodes");
+        assert_eq!(dto.target, None);
+    }
+
+    #[test]
+    fn explicit_local_target_decodes() {
+        let dto: JobSubmitDto = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat",
+            "target": {"kind": "local"}
+        }))
+        .expect("local target decodes");
+        assert_eq!(dto.target, Some(ExecutionTargetDto::Local));
+    }
+
+    #[test]
+    fn named_node_target_decodes() {
+        let dto: JobSubmitDto = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat",
+            "target": {"kind": "eggwork_node", "node_id": "builder"}
+        }))
+        .expect("node target decodes");
+        assert_eq!(
+            dto.target,
+            Some(ExecutionTargetDto::EggworkNode {
+                node_id: "builder".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_kind_decodes_to_invalid_instead_of_failing_the_request() {
+        let dto: JobSubmitDto = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-1",
+            "kind": "build",
+            "priority": "background",
+            "source": {"kind": "interactive"},
+            "payload": {"kind": "shell"},
+            "idempotency": "safe_repeat",
+            "target": {"kind": "kubernetes_node", "node_id": "builder"}
+        }))
+        .expect("unknown kind still decodes the request");
+        match dto.target {
+            Some(ExecutionTargetDto::Invalid { reason }) => {
+                assert!(reason.contains("kubernetes_node"), "{reason}");
+            }
+            other => panic!("expected an invalid target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_node_id_decodes_to_invalid() {
+        let target = ExecutionTargetDto::from_json_value(&serde_json::json!({
+            "kind": "eggwork_node",
+            "node_id": "   "
+        }));
+        assert!(matches!(target, ExecutionTargetDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn endpoint_override_is_rejected() {
+        // A target may name a node, never an endpoint or a key path.
+        let target = ExecutionTargetDto::from_json_value(&serde_json::json!({
+            "kind": "eggwork_node",
+            "node_id": "builder",
+            "endpoint": "https://attacker.invalid"
+        }));
+        match target {
+            ExecutionTargetDto::Invalid { reason } => {
+                assert!(reason.contains("endpoint"), "{reason}");
+            }
+            other => panic!("expected an invalid target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_node_id_decodes_to_invalid() {
+        let target =
+            ExecutionTargetDto::from_json_value(&serde_json::json!({"kind": "eggwork_node"}));
+        assert!(matches!(target, ExecutionTargetDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn target_round_trips_through_the_wire_form() {
+        let target = ExecutionTargetDto::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        let json = serde_json::to_value(&target).unwrap();
+        assert_eq!(json["kind"], "eggwork_node");
+        assert_eq!(json["node_id"], "builder");
+        let decoded: ExecutionTargetDto = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, target);
+    }
+
+    // ── M003: remote resource limits ────────────────────────────────────
+
+    #[test]
+    fn remote_limits_decode_into_their_dimensions() {
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({
+            "memory_bytes": {"value": 536870912u64, "enforcement": "required"},
+            "cpu_quota_milli_percent": {"value": 1000u64, "enforcement": "best_effort"},
+            "pids": {"value": 64u64}
+        }));
+        let RemoteResourceLimitsDto::Limits {
+            memory_bytes,
+            cpu_quota_milli_percent,
+            pids,
+        } = limits
+        else {
+            panic!("expected a decoded limit set")
+        };
+        assert_eq!(
+            memory_bytes,
+            Some(RemoteResourceLimitDto {
+                value: 536_870_912,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            })
+        );
+        assert_eq!(
+            cpu_quota_milli_percent,
+            Some(RemoteResourceLimitDto {
+                value: 1000,
+                enforcement: RemoteLimitEnforcementDto::BestEffort,
+            })
+        );
+        // An absent enforcement keyword decodes to the stricter reading.
+        assert_eq!(
+            pids,
+            Some(RemoteResourceLimitDto {
+                value: 64,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_enforcement_keyword_never_decodes_to_best_effort() {
+        let limit = RemoteResourceLimitDto::from_json_value(&serde_json::json!({
+            "value": 10u64,
+            "enforcement": "best-effort"
+        }));
+        assert_eq!(limit.enforcement, RemoteLimitEnforcementDto::Required);
+    }
+
+    #[test]
+    fn an_unusable_value_decodes_to_zero_rather_than_failing() {
+        // A non-numeric value must not fail the enclosing frame decode:
+        // transports drop frames they cannot decode.
+        let limit = RemoteResourceLimitDto::from_json_value(&serde_json::json!({
+            "value": "536870912"
+        }));
+        assert_eq!(limit.value, 0);
+        let limit = RemoteResourceLimitDto::from_json_value(&serde_json::json!("nope"));
+        assert_eq!(limit.value, 0);
+    }
+
+    #[test]
+    fn an_unknown_dimension_is_refused_rather_than_ignored() {
+        // `cpu_weight` is an abstract scheduler token, not a remote limit.
+        // Silently ignoring it would run the job unconstrained.
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({
+            "cpu_weight": 3
+        }));
+        assert!(matches!(limits, RemoteResourceLimitsDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn a_non_object_limit_set_is_refused() {
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!(7));
+        assert!(matches!(limits, RemoteResourceLimitsDto::Invalid { .. }));
+    }
+
+    #[test]
+    fn an_empty_limit_set_carries_no_dimension() {
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({}));
+        assert!(limits.is_empty());
+    }
+
+    #[test]
+    fn an_explicit_null_dimension_is_absent_not_a_zero_limit() {
+        // A `null` dimension means "not requested". Decoding it as a zero
+        // limit would make the daemon refuse a request that merely omits
+        // a dimension.
+        let limits = RemoteResourceLimitsDto::from_json_value(&serde_json::json!({
+            "memory_bytes": {"value": 1024u64},
+            "cpu_quota_milli_percent": null,
+            "pids": null
+        }));
+        let RemoteResourceLimitsDto::Limits {
+            memory_bytes,
+            cpu_quota_milli_percent,
+            pids,
+        } = limits
+        else {
+            panic!("expected a decoded limit set")
+        };
+        assert_eq!(
+            memory_bytes,
+            Some(RemoteResourceLimitDto {
+                value: 1024,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            })
+        );
+        assert_eq!(cpu_quota_milli_percent, None);
+        assert_eq!(pids, None);
+    }
+
+    #[test]
+    fn remote_limits_round_trip_through_the_wire_form() {
+        let limits = RemoteResourceLimitsDto::Limits {
+            memory_bytes: Some(RemoteResourceLimitDto {
+                value: 1024,
+                enforcement: RemoteLimitEnforcementDto::Required,
+            }),
+            cpu_quota_milli_percent: None,
+            pids: None,
+        };
+        let json = serde_json::to_value(&limits).unwrap();
+        assert_eq!(json["kind"], "limits");
+        assert_eq!(json["memory_bytes"]["value"], 1024);
+        let decoded: RemoteResourceLimitsDto = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, limits);
+    }
 }

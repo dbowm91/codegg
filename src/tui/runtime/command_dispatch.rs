@@ -225,6 +225,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             Some(text) => app.messages_state.toasts.info(&text),
             None => app.messages_state.toasts.info("No LSP server connected"),
         },
+        TuiCommand::NodeTelemetryRequested => {
+            crate::tui::commands::diagnostics::request_node_telemetry(app);
+        }
+        TuiCommand::NodeTelemetryLoaded { nodes, error } => match error {
+            Some(error) => app.messages_state.toasts.warning(&error),
+            None => {
+                let text = crate::tui::commands::diagnostics::format_node_telemetry(&nodes);
+                app.messages_state.toasts.info(&text);
+            }
+        },
         TuiCommand::ShareSession { session_id } => {
             start_share_session(app, session_id);
         }
@@ -388,6 +398,32 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ObserveUnsubscribed { .. } => {
             // Best-effort unsubscribe completion; no state to apply
             // (reducer already cleared on stop). Ignored when stale.
+        }
+        TuiCommand::PrimaryProjectionSubscribed {
+            request_id,
+            project_id,
+            session_id,
+            tab_id,
+            subscription_id,
+            cursor,
+            projection,
+            error,
+            unsupported,
+        } => {
+            super::super::commands::primary_projection::apply_subscribed(
+                app,
+                super::super::commands::primary_projection::PrimaryProjectionCompletion {
+                    request_id,
+                    project_id,
+                    session_id,
+                    tab_id,
+                    subscription_id,
+                    cursor,
+                    projection,
+                    error,
+                    unsupported,
+                },
+            );
         }
         TuiCommand::RefreshChat { project_id } => {
             super::super::commands::chat::start_chat_history(app, project_id);
@@ -786,6 +822,32 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::OpenRunDetailError { error } => {
             app.messages_state.toasts.error(&error);
+        }
+        TuiCommand::OpenJobDetailLoaded {
+            request_id,
+            job_id,
+            job,
+            attempts,
+            error,
+            notice,
+        } => {
+            if !app.dialog_state.job_detail_request.finish(request_id)
+                || app.ui_state.dialog != crate::tui::Dialog::JobDetail
+            {
+                return;
+            }
+            if app.ui_state.dialog == crate::tui::Dialog::JobDetail {
+                app.close_dialog();
+            }
+            if let Some(notice) = notice {
+                app.messages_state.toasts.info(&notice);
+            }
+            let mut dialog = crate::tui::components::dialogs::job_detail::JobDetailDialog::loaded(
+                job_id, job, attempts,
+            );
+            dialog.can_cancel = !app.is_observing();
+            dialog.error = error;
+            app.push_dialog(crate::tui::Dialog::JobDetail, Box::new(dialog));
         }
         TuiCommand::RunRerunFinished {
             parent_run_id,

@@ -174,6 +174,7 @@ mod tests {
 
     fn running_row() -> SubagentRow {
         SubagentRow {
+            child_instance_id: Some("child-7".to_string()),
             task_id: "task-7".to_string(),
             run_id: Some("run-7".to_string()),
             display_name: Some("Sally".to_string()),

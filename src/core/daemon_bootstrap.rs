@@ -649,24 +649,114 @@ impl CoreDaemon {
                                 }
                             }
                             crate::bus::events::AppEvent::SubagentStarted {
-                                session_id, ..
+                                session_id,
+                                child_instance_id,
+                                originating_turn_id,
+                                task_id,
+                                agent,
+                                description,
+                                display_name,
+                                profile,
+                                usefulness,
+                                run_id,
+                                ..
                             } => {
                                 if let Some(runtime) = daemon.sessions.get(session_id) {
-                                    runtime
-                                        .active_subagent_count
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    let node = codegg_protocol::projection::dto::AgentTreeNodeProjection {
+                                        child_instance_id: child_instance_id.clone(),
+                                        originating_turn_id: originating_turn_id.clone(),
+                                        task_id: *task_id,
+                                        agent: agent.clone(),
+                                        description: description.clone(),
+                                        status: codegg_protocol::projection::dto::AgentTreeStatus::Running,
+                                        parent_task_id: None,
+                                        created_at: Utc::now().timestamp_millis(),
+                                        completed_at: None,
+                                        result_summary: None,
+                                        display_name: display_name.clone(),
+                                        profile: profile.clone(),
+                                        usefulness: usefulness.clone(),
+                                        run_id: run_id.clone(),
+                                    };
+                                    let mut children = runtime.subagents.write().await;
+                                    if !children.contains_key(child_instance_id) {
+                                        if children.len()
+                                            < codegg_protocol::projection::MAX_PROJECTION_SESSION_SUBAGENTS
+                                        {
+                                            children.insert(child_instance_id.clone(), node);
+                                        } else if let Some(terminal_key) = children
+                                            .iter()
+                                            .filter(|(_, existing)| {
+                                                !matches!(
+                                                    existing.status,
+                                                    codegg_protocol::projection::dto::AgentTreeStatus::Running
+                                                )
+                                            })
+                                            .min_by_key(|(_, existing)| {
+                                                existing.completed_at.unwrap_or(existing.created_at)
+                                            })
+                                            .map(|(key, _)| key.clone())
+                                        {
+                                            children.remove(&terminal_key);
+                                            children.insert(child_instance_id.clone(), node);
+                                        } else {
+                                            runtime.subagent_overflow.fetch_add(
+                                                1,
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            );
+                                        }
+                                    }
+                                    runtime.active_subagent_count.store(
+                                        children.values().filter(|existing| matches!(
+                                            existing.status,
+                                            codegg_protocol::projection::dto::AgentTreeStatus::Running
+                                        )).count(),
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                }
+                            }
+                            crate::bus::events::AppEvent::SubagentProgress {
+                                session_id,
+                                child_instance_id,
+                                message,
+                                ..
+                            } => {
+                                if let Some(runtime) = daemon.sessions.get(session_id) {
+                                    if let Some(node) =
+                                        runtime.subagents.write().await.get_mut(child_instance_id)
+                                    {
+                                        if matches!(
+                                            node.status,
+                                            codegg_protocol::projection::dto::AgentTreeStatus::Running
+                                        ) {
+                                            node.description = message.clone();
+                                        }
+                                    }
                                 }
                             }
                             crate::bus::events::AppEvent::SubagentCompleted {
                                 session_id,
+                                child_instance_id,
                                 task_id,
                                 agent,
-                                ..
+                                result_summary,
                             } => {
                                 if let Some(runtime) = daemon.sessions.get(session_id) {
-                                    runtime
-                                        .active_subagent_count
-                                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                    let mut children = runtime.subagents.write().await;
+                                    if let Some(node) = children.get_mut(child_instance_id) {
+                                        if matches!(node.status, codegg_protocol::projection::dto::AgentTreeStatus::Running) {
+                                            node.status = codegg_protocol::projection::dto::AgentTreeStatus::Completed;
+                                            node.result_summary = Some(result_summary.clone());
+                                            node.completed_at = Some(Utc::now().timestamp_millis());
+                                            runtime.active_subagent_count.store(
+                                                children.values().filter(|existing| matches!(
+                                                    existing.status,
+                                                    codegg_protocol::projection::dto::AgentTreeStatus::Running
+                                                )).count(),
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            );
+                                        }
+                                    }
                                 }
                                 use super::notification::*;
                                 let event = NotificationEvent {
@@ -696,6 +786,7 @@ impl CoreDaemon {
                             }
                             crate::bus::events::AppEvent::SubagentFailed {
                                 session_id,
+                                child_instance_id,
                                 task_id,
                                 agent,
                                 error,
@@ -704,6 +795,21 @@ impl CoreDaemon {
                                     runtime
                                         .active_subagent_count
                                         .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                    let mut children = runtime.subagents.write().await;
+                                    if let Some(node) = children.get_mut(child_instance_id) {
+                                        if matches!(node.status, codegg_protocol::projection::dto::AgentTreeStatus::Running) {
+                                            node.status = codegg_protocol::projection::dto::AgentTreeStatus::Failed;
+                                            node.result_summary = Some(error.clone());
+                                            node.completed_at = Some(Utc::now().timestamp_millis());
+                                            runtime.active_subagent_count.store(
+                                                children.values().filter(|existing| matches!(
+                                                    existing.status,
+                                                    codegg_protocol::projection::dto::AgentTreeStatus::Running
+                                                )).count(),
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            );
+                                        }
+                                    }
                                 }
                                 use super::notification::*;
                                 let event = NotificationEvent {

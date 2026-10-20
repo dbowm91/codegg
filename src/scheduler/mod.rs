@@ -33,6 +33,8 @@ pub mod ci_watch;
 pub mod ci_watch_idle;
 pub mod config;
 pub mod eggwork;
+pub mod eggwork_limits;
+pub mod eggwork_telemetry;
 pub mod events;
 pub mod executor;
 pub mod executors;
@@ -41,6 +43,8 @@ pub mod idle_continuation;
 pub mod job_complete_audit;
 pub mod job_notifications;
 pub mod permit;
+pub mod schedule_driver;
+pub mod schedule_materializer;
 #[allow(clippy::module_inception)]
 pub mod scheduler;
 pub mod snapshot;

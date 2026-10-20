@@ -30,7 +30,7 @@
 use codegg::tui::app::state::WorkspaceDashboardState;
 use codegg::tui::app::{App, Dialog, SessionStatus, TuiCommand};
 use codegg::tui::components::component::DialogType;
-use codegg::tui::components::dialogs::help::HelpDialog;
+use codegg::tui::components::dialogs::help::{HelpDialog, HelpRoute};
 use codegg::tui::composer_claims::{self, COMPOSER_CLAIMS};
 use codegg::tui::input::{build_bindings, InputAction, InputMode};
 use codegg::tui::route::Route;
@@ -57,7 +57,7 @@ fn bind(app: &mut App, modifiers: KeyModifiers, code: KeyCode, action: InputActi
 }
 
 fn help_is_open(app: &App) -> bool {
-    matches!(app.ui_state.dialog, Dialog::Help)
+    matches!(app.ui_state.dialog, Dialog::Help(_))
 }
 
 /// The composer's text.
@@ -115,8 +115,8 @@ fn the_composer_claims_neither_space_nor_y() {
     }
 }
 
-/// `g` keeps `GoToTop`, and `h`/`l` keep moving the composer caret, so
-/// neither is claimed.
+/// `g` keeps `GoToTop`, and `h`/`l` keep moving the composer caret in **every**
+/// map, so none of the three is claimed.
 #[test]
 fn the_composer_claims_neither_g_h_nor_l() {
     for key in ['g', 'h', 'l'] {
@@ -677,7 +677,7 @@ fn every_claim_table_letter_is_typed_as_text_in_insert_mode() {
 fn with_a_dialog_open_a_claimed_letter_reaches_the_dialog() {
     let mut app = test_app();
     normal_mode(&mut app);
-    app.open_dialog(Dialog::Help);
+    app.open_dialog(Dialog::Help(HelpRoute::Command));
 
     // `i` is a claimed letter, and it is also the help box's own gesture.
     press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
@@ -761,5 +761,77 @@ fn the_claim_lookup_is_the_table() {
                 "the lookup did not find the claim for {claim:?} under {modifiers:?}"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The premise the claim table rests on
+// ---------------------------------------------------------------------------
+
+/// The composer does not claim `h` and `l`, because the app already moves
+/// the composer caret with them — Helix's horizontal motions.
+///
+/// That premise is only true if the binding exists in **every** map the app
+/// can be configured with. It was not: the vim map bound `h` and `l` and the
+/// default map bound neither, and `vim_mode` defaults to false. In the
+/// default configuration the composer's Normal-mode caret had no letter that
+/// could move it — `h` and `l` were unbound, and `w`, `b` and `e` are
+/// claimed by the composer and consumed as pending verbs.
+///
+/// This is the test that would have caught it. The guard's rule G9 checks
+/// the same property statically; this one states it in the terms the
+/// documents use.
+#[test]
+fn the_caret_motions_are_bound_the_same_way_in_every_map() {
+    for (label, bindings) in [
+        ("default", codegg::tui::input::default_bindings()),
+        ("vim", codegg::tui::input::vim_bindings()),
+    ] {
+        assert_eq!(
+            bindings.get(&(KeyModifiers::NONE, KeyCode::Char('h'))),
+            Some(&InputAction::Left),
+            "the {label} map must bind `h` to the caret's left motion: the composer \
+             does not claim `h` because {label} mode is supposed to move the caret"
+        );
+        assert_eq!(
+            bindings.get(&(KeyModifiers::NONE, KeyCode::Char('l'))),
+            Some(&InputAction::Right),
+            "the {label} map must bind `l` to the caret's right motion: the composer \
+             does not claim `l` because {label} mode is supposed to move the caret"
+        );
+    }
+}
+
+/// `h` and `l` move the composer caret in Normal mode, in every map.
+///
+/// The behaviour, not the binding: the point of the premise is that a user
+/// in Normal mode can move the caret with the Helix keys. A binding that
+/// exists but is shadowed by a surface that owns the keyboard first would
+/// satisfy the map-level test and still leave the caret stuck.
+#[test]
+fn h_and_l_move_the_composer_caret_in_normal_mode() {
+    for vim_mode in [false, true] {
+        let label = if vim_mode { "vim" } else { "default" };
+        let mut app = test_app();
+        app.ui_state.bindings = build_bindings(None, vim_mode);
+        app.prompt_state.prompt.set_text("hello".into());
+        normal_mode(&mut app);
+
+        let end = app.prompt_state.prompt.cursor_pos();
+        assert_eq!(end, 5, "the caret starts at the end of the text");
+
+        press(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(
+            app.prompt_state.prompt.cursor_pos(),
+            4,
+            "`h` must move the caret one character left in the {label} map"
+        );
+
+        press(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(
+            app.prompt_state.prompt.cursor_pos(),
+            5,
+            "`l` must move the caret one character right in the {label} map"
+        );
     }
 }

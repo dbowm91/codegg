@@ -15,6 +15,13 @@ use crate::scheduler::admission::AdmissionController;
 
 /// Dimensions that can be reserved on the admission controller. Each
 /// admission acquires all of these atomically.
+///
+/// A reservation with a `remote_node` is scoped to that node: the
+/// controller's local CPU, memory, and process dimensions describe the
+/// *node's* capacity (the node enforces those with its own cgroup
+/// limits), so they are not charged against the local budget. A remote
+/// reservation charges the node's capacity key and a small controller
+/// transfer budget instead, and it keeps every exclusivity key.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PermitDimensions {
     pub cpu_weight: u32,
@@ -23,6 +30,8 @@ pub struct PermitDimensions {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// The remote node this reservation is for, if any.
+    pub remote_node: Option<String>,
 }
 
 /// Token returned by the admission controller when a permit is taken.
@@ -144,6 +153,7 @@ pub fn permit_from_request(
         io_weight: io,
         network_slots: network,
         exclusivity_keys: keys,
+        remote_node: None,
     }
 }
 

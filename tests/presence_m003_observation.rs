@@ -228,6 +228,13 @@ async fn observer_cannot_steer_cancel_or_mutate_through_daemon() {
             session_id: session_id.to_owned(),
             turn_id: "turn-1".to_owned(),
         },
+        // Job cancellation is an observation-to-control boundary too. Use
+        // an opaque id: authorization must reject before job existence can
+        // be enumerated or any scheduler state can be changed.
+        CoreRequest::JobCancel {
+            job_id: "job-observer-must-not-cancel".to_owned(),
+            reason: Some("observer authorization regression".to_owned()),
+        },
         CoreRequest::TurnSteer {
             session_id: session_id.to_owned(),
             turn_id: "turn-1".to_owned(),
@@ -243,13 +250,18 @@ async fn observer_cannot_steer_cancel_or_mutate_through_daemon() {
         },
     ];
     for request in denied {
+        let expected_code = if matches!(&request, CoreRequest::JobCancel { .. }) {
+            "authorization_scope_required"
+        } else {
+            "authorization_denied"
+        };
         let response = Box::pin(daemon.handle_request_for_client(
             new_request(format!("req-deny-{}", uuid::Uuid::new_v4()), request),
             member_client,
         ))
         .await
         .unwrap();
-        assert_eq!(error_code(&response), "authorization_denied");
+        assert_eq!(error_code(&response), expected_code);
     }
     // Checked file mutation denies as well (opaque scope fails closed for
     // team principals without file.modify on a resolvable scope).

@@ -3,6 +3,29 @@
 //! Both implementations use an [`Arc<dyn JobStore>`] reference to count
 //! running jobs per schedule when evaluating overlap policy in
 //! [`claim_due`].
+//!
+//! # The tick runs in three phases
+//!
+//! [`claim_due`] is deliberately split into **plan**, **materialize**, and
+//! **commit**:
+//!
+//! 1. **Plan** — a short read of the due schedules and the occurrences
+//!    each one owes. No transaction is held.
+//! 2. **Materialize** — the slow part: a job submission, and for a remote
+//!    target a node round trip. It runs with **no** transaction open.
+//! 3. **Commit** — one write transaction that records the occurrence rows
+//!    and advances the schedules' cursors together.
+//!
+//! The split exists because materialization needs the job store, and the
+//! job store needs a pool connection. A materialization performed while
+//! the schedule store held its own connection would wait for a second
+//! connection that a single-connection pool never has — a self-deadlock
+//! that no amount of waiting resolves.
+//!
+//! The phases are safe to separate because the occurrence's job id is a
+//! pure function of `(schedule_id, scheduled_for)`: a crash between the
+//! materialization and the commit replays into the *same* job, and the
+//! `job.id` primary key keeps it to one.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,6 +37,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::StorageError;
 use crate::jobs::{JobId, JobState, JobStore, JobStoreQuery, ScheduleId};
+use crate::session::user_prompt_queue::ImmediateWrite;
 use crate::workspace::WorkspaceId;
 
 use super::schedule::{
@@ -21,6 +45,137 @@ use super::schedule::{
     OccurrenceMaterializer, OccurrenceStatus, OverlapPolicy, ScheduleError, ScheduleKind,
     ScheduleQuery, ScheduleRecord, ScheduleState, ScheduleStore, ScheduleSummary, ScheduleTemplate,
 };
+
+// ── Tick phases ───────────────────────────────────────────────────────────
+
+/// The tick's plan for one due schedule.
+struct SchedulePlan {
+    schedule: ScheduleRecord,
+    /// The occurrences this schedule owes, in order.
+    targets: Vec<DateTime<Utc>>,
+    /// The number of this schedule's jobs already running.
+    running: u32,
+}
+
+/// What the tick decided about one occurrence.
+#[derive(Clone)]
+enum OccurrenceOutcome {
+    /// The occurrence owns a durable job.
+    Queued(JobId),
+    /// The overlap policy skipped it.
+    Skipped,
+    /// The materializer refused it. It is not recorded, so it stays
+    /// retryable.
+    Failed {
+        /// A stable, secret-free reason code.
+        ///
+        /// The operator surface is a log line, so this is the only part
+        /// of the refusal that reaches one. It carries no message, no
+        /// endpoint, and no policy detail.
+        code: String,
+    },
+}
+
+/// The tick's results for one schedule.
+struct ScheduleOutcome {
+    schedule_id: ScheduleId,
+    kind: ScheduleKind,
+    /// The occurrences that reached a decision, in order.
+    decided: Vec<(DateTime<Utc>, OccurrenceOutcome)>,
+}
+
+impl ScheduleOutcome {
+    /// The last occurrence that reached a decision.
+    ///
+    /// A refused occurrence is not one: the cursor must not advance past
+    /// it, or the occurrence would be lost.
+    fn last_decided(&self) -> Option<DateTime<Utc>> {
+        self.decided
+            .iter()
+            .rev()
+            .find(|(_, outcome)| !matches!(outcome, OccurrenceOutcome::Failed { .. }))
+            .map(|(at, _)| *at)
+    }
+
+    /// The first refused occurrence, if any.
+    fn first_failed(&self) -> Option<DateTime<Utc>> {
+        self.decided
+            .iter()
+            .find(|(_, outcome)| matches!(outcome, OccurrenceOutcome::Failed { .. }))
+            .map(|(at, _)| *at)
+    }
+}
+
+/// Materialize a schedule's planned occurrences.
+///
+/// The overlap decision is made here, not in the plan phase, because a
+/// skipped occurrence must not count towards the running total that
+/// skips the next one.
+async fn materialize_plan(
+    plan: SchedulePlan,
+    materialize: &dyn OccurrenceMaterializer,
+) -> ScheduleOutcome {
+    let overlap = plan.schedule.overlap_policy;
+    let mut running = plan.running;
+    let mut decided = Vec::new();
+
+    for target in plan.targets {
+        if should_skip(overlap, running) {
+            decided.push((target, OccurrenceOutcome::Skipped));
+            continue;
+        }
+        match materialize.materialize(&plan.schedule, target).await {
+            Ok(job_id) => {
+                decided.push((target, OccurrenceOutcome::Queued(job_id)));
+                running += 1;
+            }
+            Err(error) => {
+                // The occurrence was refused. It is deliberately **not**
+                // recorded: the occurrence row is the durable "this
+                // already happened" marker, and its
+                // `(schedule_id, scheduled_for)` primary key would turn
+                // the later retry into a no-op. Leaving it absent keeps
+                // the occurrence retryable.
+                //
+                // The remaining occurrences of this schedule are not
+                // processed, so they stay due and are retried in order.
+                decided.push((
+                    target,
+                    OccurrenceOutcome::Failed {
+                        code: error.code().to_owned(),
+                    },
+                ));
+                break;
+            }
+        }
+    }
+
+    ScheduleOutcome {
+        schedule_id: plan.schedule.schedule_id.clone(),
+        kind: plan.schedule.kind.clone(),
+        decided,
+    }
+}
+
+/// The schedule's next horizon after a tick.
+///
+/// A refused occurrence keeps the schedule due: the horizon must not move
+/// past it, or the occurrence would be lost rather than retried.
+fn next_horizon(
+    kind: &ScheduleKind,
+    now: DateTime<Utc>,
+    last_decided: Option<DateTime<Utc>>,
+    first_failed: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    let mut next = compute_next_run(kind, now, last_decided);
+    if let Some(failed_at) = first_failed {
+        next = Some(match next {
+            Some(candidate) if candidate < failed_at => candidate,
+            _ => failed_at,
+        });
+    }
+    next
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -245,90 +400,123 @@ impl ScheduleStore for InMemoryScheduleStore {
         now: DateTime<Utc>,
         materialize: &dyn OccurrenceMaterializer,
     ) -> Result<Vec<ClaimedOccurrence>, ScheduleError> {
-        let due_ids: Vec<String> = {
+        // Phase 1 — plan. A short read; no transaction is held across the
+        // materialization below.
+        let plans = self.plan_due(now).await?;
+
+        // Phase 2 — materialize, with no transaction open.
+        let mut outcomes = Vec::new();
+        for plan in plans {
+            outcomes.push(materialize_plan(plan, materialize).await);
+        }
+
+        // Phase 3 — commit: the occurrence rows and the schedules' cursors
+        // move together.
+        let claimed = self.commit_outcomes(&outcomes, now).await?;
+        Ok(claimed)
+    }
+}
+
+impl InMemoryScheduleStore {
+    /// The due schedules and the occurrences each one owes.
+    async fn plan_due(&self, now: DateTime<Utc>) -> Result<Vec<SchedulePlan>, ScheduleError> {
+        let due: Vec<ScheduleRecord> = {
             let guard = self.schedules.lock().await;
             guard
                 .values()
                 .filter(|r| r.state == ScheduleState::Active)
                 .filter(|r| r.next_run_at.map(|t| t <= now).unwrap_or(false))
-                .map(|r| r.schedule_id.to_string())
+                .cloned()
                 .collect()
         };
 
+        let mut plans = Vec::new();
+        for schedule in due {
+            let running =
+                count_running_for_schedule(&*self.job_store, &schedule.schedule_id).await?;
+            let targets = missed_run_targets(
+                &schedule.kind,
+                schedule.last_occurrence_at,
+                now,
+                &schedule.missed_run_policy,
+            );
+            plans.push(SchedulePlan {
+                schedule,
+                targets,
+                running,
+            });
+        }
+        Ok(plans)
+    }
+
+    /// Record the decided occurrences and advance the schedules' cursors.
+    async fn commit_outcomes(
+        &self,
+        outcomes: &[ScheduleOutcome],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ClaimedOccurrence>, ScheduleError> {
         let mut claimed = Vec::new();
+        let mut schedules = self.schedules.lock().await;
+        let mut occurrences = self.occurrences.lock().await;
 
-        for sid_str in &due_ids {
-            let schedule_id = ScheduleId::new_unchecked(sid_str.clone());
-            let mut running = count_running_for_schedule(&*self.job_store, &schedule_id).await?;
+        for outcome in outcomes {
+            let last_decided = outcome.last_decided();
+            let first_failed = outcome.first_failed();
 
-            let (kind, missed_policy, overlap, template, last_occurrence) = {
-                let guard = self.schedules.lock().await;
-                let r = guard
-                    .get(sid_str)
-                    .ok_or_else(|| ScheduleError::ScheduleNotFound(sid_str.clone()))?;
-                (
-                    r.kind.clone(),
-                    r.missed_run_policy.clone(),
-                    r.overlap_policy,
-                    r.job_template.clone(),
-                    r.last_occurrence_at,
-                )
-            };
-
-            let targets = missed_run_targets(&kind, last_occurrence, now, &missed_policy);
-
-            for target in targets {
-                let key = (sid_str.clone(), target.timestamp());
-                let skip = should_skip(overlap, running);
-                let status = if skip {
-                    OccurrenceStatus::Skipped
-                } else {
-                    OccurrenceStatus::Queued
+            for (target, decision) in &outcome.decided {
+                let mut failure_code: Option<String> = None;
+                let (job_id, status) = match decision {
+                    OccurrenceOutcome::Queued(job_id) => {
+                        (Some(job_id.clone()), OccurrenceStatus::Queued)
+                    }
+                    OccurrenceOutcome::Skipped => (None, OccurrenceStatus::Skipped),
+                    // A refused occurrence is not recorded, so the retry
+                    // is not turned into a no-op by the primary key.
+                    OccurrenceOutcome::Failed { code } => {
+                        failure_code = Some(code.clone());
+                        (None, OccurrenceStatus::Failed)
+                    }
                 };
-                let job_id = if !skip {
-                    materialize
-                        .materialize(&schedule_id, &template, target)
-                        .await
-                        .ok()
-                } else {
-                    None
-                };
-
-                let row = OccurrenceRow {
-                    schedule_id: schedule_id.clone(),
-                    scheduled_for: target,
-                    job_id: job_id.clone(),
-                    status,
-                    time_created: now,
-                };
-                self.occurrences.lock().await.entry(key).or_insert(row);
-
-                claimed.push(ClaimedOccurrence {
-                    schedule_id: schedule_id.clone(),
-                    scheduled_for: target,
-                    job_id: job_id.unwrap_or_else(|| {
-                        JobId::new_unchecked(format!("skipped-{}", target.timestamp()))
-                    }),
-                    status,
-                });
-
-                if !skip {
-                    running += 1;
+                if !matches!(decision, OccurrenceOutcome::Failed { .. }) {
+                    let key = (outcome.schedule_id.as_str().to_owned(), target.timestamp());
+                    let row = OccurrenceRow {
+                        schedule_id: outcome.schedule_id.clone(),
+                        scheduled_for: *target,
+                        job_id: job_id.clone(),
+                        status,
+                        time_created: now,
+                    };
+                    occurrences.entry(key).or_insert(row);
                 }
+                claimed.push(ClaimedOccurrence {
+                    schedule_id: outcome.schedule_id.clone(),
+                    scheduled_for: *target,
+                    job_id,
+                    status,
+                    failure_code,
+                });
             }
 
-            let new_next = compute_next_run(&kind, now, Some(now));
-            let mut guard = self.schedules.lock().await;
-            if let Some(r) = guard.get_mut(sid_str) {
-                r.last_occurrence_at = Some(now);
-                r.next_run_at = new_next;
-                r.updated_at = now;
-                if matches!(r.kind, ScheduleKind::OneShot { .. }) {
-                    r.state = ScheduleState::Completed;
+            let new_next = next_horizon(&outcome.kind, now, last_decided, first_failed);
+            if let Some(record) = schedules.get_mut(outcome.schedule_id.as_str()) {
+                // The cursor only ever advances: a concurrent tick that
+                // already moved it further is not walked back.
+                let new_last = match (record.last_occurrence_at, last_decided) {
+                    (Some(stored), Some(planned)) => Some(stored.max(planned)),
+                    (None, planned) => planned,
+                    (stored, None) => stored,
+                };
+                record.last_occurrence_at = new_last;
+                record.next_run_at = new_next;
+                record.updated_at = now;
+                // A one-shot is complete only once its occurrence reached
+                // a decision. A refused occurrence leaves the schedule
+                // active so the occurrence is retried.
+                if matches!(record.kind, ScheduleKind::OneShot { .. }) && new_next.is_none() {
+                    record.state = ScheduleState::Completed;
                 }
             }
         }
-
         Ok(claimed)
     }
 }
@@ -523,12 +711,28 @@ impl ScheduleStore for SqliteScheduleStore {
         now: DateTime<Utc>,
         materialize: &dyn OccurrenceMaterializer,
     ) -> Result<Vec<ClaimedOccurrence>, ScheduleError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))?;
+        // Phase 1 — plan. A short read; no transaction is held across the
+        // materialization below.
+        let plans = self.plan_due(now).await?;
 
+        // Phase 2 — materialize, with no transaction open. The job store
+        // needs a pool connection of its own; holding one here would
+        // deadlock a single-connection pool.
+        let mut outcomes = Vec::new();
+        for plan in plans {
+            outcomes.push(materialize_plan(plan, materialize).await);
+        }
+
+        // Phase 3 — commit: the occurrence rows and the schedules' cursors
+        // move together.
+        let claimed = self.commit_outcomes(&outcomes, now).await?;
+        Ok(claimed)
+    }
+}
+
+impl SqliteScheduleStore {
+    /// The due schedules and the occurrences each one owes.
+    async fn plan_due(&self, now: DateTime<Utc>) -> Result<Vec<SchedulePlan>, ScheduleError> {
         let due_rows = sqlx::query(
             r#"
             SELECT id, workspace_id, session_id, kind_json, job_template_json,
@@ -540,79 +744,122 @@ impl ScheduleStore for SqliteScheduleStore {
             "#,
         )
         .bind(now.timestamp_millis())
-        .fetch_all(&mut *tx)
+        .fetch_all(&self.pool)
         .await
         .map_err(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))?;
 
-        let mut claimed = Vec::new();
-
+        let mut plans = Vec::new();
         for row in due_rows {
             let record = row_to_schedule(&row)?;
-            let sid = record.schedule_id.clone();
-
-            let running = count_running_for_schedule(&*self.job_store, &sid).await?;
-
+            let running = count_running_for_schedule(&*self.job_store, &record.schedule_id).await?;
             let targets = missed_run_targets(
                 &record.kind,
                 record.last_occurrence_at,
                 now,
                 &record.missed_run_policy,
             );
+            plans.push(SchedulePlan {
+                schedule: record,
+                targets,
+                running,
+            });
+        }
+        Ok(plans)
+    }
 
-            let mut running = running;
+    /// Record the decided occurrences and advance the schedules' cursors.
+    ///
+    /// The transaction reads each schedule's stored cursor and then writes
+    /// it back, so it opens with `BEGIN IMMEDIATE`: a deferred transaction
+    /// would hold a shared read lock across that read and then have to
+    /// upgrade it to write — which SQLite refuses with `SQLITE_BUSY`
+    /// without waiting.
+    async fn commit_outcomes(
+        &self,
+        outcomes: &[ScheduleOutcome],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ClaimedOccurrence>, ScheduleError> {
+        let mut tx = ImmediateWrite::begin_with(&self.pool, |e| {
+            ScheduleError::Storage(StorageError::Database(e.to_string()))
+        })
+        .await?;
 
-            for target in targets {
-                let target_ms = target.timestamp();
-                let skip = should_skip(record.overlap_policy, running);
-                let status = if skip {
-                    OccurrenceStatus::Skipped
-                } else {
-                    OccurrenceStatus::Queued
+        let mut claimed = Vec::new();
+
+        for outcome in outcomes {
+            let last_decided = outcome.last_decided();
+            let first_failed = outcome.first_failed();
+            let sid = outcome.schedule_id.clone();
+
+            for (target, decision) in &outcome.decided {
+                let mut failure_code: Option<String> = None;
+                let (job_id, status) = match decision {
+                    OccurrenceOutcome::Queued(job_id) => {
+                        (Some(job_id.clone()), OccurrenceStatus::Queued)
+                    }
+                    OccurrenceOutcome::Skipped => (None, OccurrenceStatus::Skipped),
+                    // A refused occurrence is not recorded, so the retry
+                    // is not turned into a no-op by the primary key.
+                    OccurrenceOutcome::Failed { code } => {
+                        failure_code = Some(code.clone());
+                        (None, OccurrenceStatus::Failed)
+                    }
                 };
-                let job_id = if !skip {
-                    materialize
-                        .materialize(&sid, &record.job_template, target)
-                        .await
-                        .ok()
-                } else {
-                    None
-                };
-
-                sqlx::query(
-                    r#"
-                    INSERT OR IGNORE INTO schedule_occurrence
-                        (schedule_id, scheduled_for, job_id, status, time_created)
-                    VALUES (?, ?, ?, ?, ?)
-                    "#,
-                )
-                .bind(sid.as_str())
-                .bind(target_ms)
-                .bind(job_id.as_ref().map(|j| j.as_str()))
-                .bind(occurrence_status_to_str(status))
-                .bind(now.timestamp_millis())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))?;
-
+                if !matches!(decision, OccurrenceOutcome::Failed { .. }) {
+                    sqlx::query(
+                        r#"
+                        INSERT OR IGNORE INTO schedule_occurrence
+                            (schedule_id, scheduled_for, job_id, status, time_created)
+                        VALUES (?, ?, ?, ?, ?)
+                        "#,
+                    )
+                    .bind(sid.as_str())
+                    .bind(target.timestamp())
+                    .bind(job_id.as_ref().map(|id| id.as_str()))
+                    .bind(occurrence_status_to_str(status))
+                    .bind(now.timestamp_millis())
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))?;
+                }
                 claimed.push(ClaimedOccurrence {
                     schedule_id: sid.clone(),
-                    scheduled_for: target,
-                    job_id: job_id
-                        .unwrap_or_else(|| JobId::new_unchecked(format!("skipped-{}", target_ms))),
+                    scheduled_for: *target,
+                    job_id,
                     status,
+                    failure_code,
                 });
-
-                if !skip {
-                    running += 1;
-                }
             }
 
-            let new_next = compute_next_run(&record.kind, now, Some(now));
-            let is_one_shot = matches!(record.kind, ScheduleKind::OneShot { .. });
+            // The cursor only ever advances: a concurrent tick that
+            // already moved it further is not walked back.
+            let stored_row =
+                sqlx::query("SELECT last_occurrence_at, state FROM schedule WHERE id = ?")
+                    .bind(sid.as_str())
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))?;
+            let stored_last = stored_row
+                .as_ref()
+                .map(|row| row.get::<Option<i64>, _>("last_occurrence_at"))
+                .unwrap_or(None)
+                .and_then(DateTime::<Utc>::from_timestamp_millis);
+            let stored_state = stored_row
+                .as_ref()
+                .map(|row| row.get::<String, _>("state"))
+                .unwrap_or_else(|| state_to_str(ScheduleState::Active).to_string());
+            let new_last = match (stored_last, last_decided) {
+                (Some(stored), Some(planned)) => Some(stored.max(planned)),
+                (None, planned) => planned,
+                (stored, None) => stored,
+            };
+
+            let new_next = next_horizon(&outcome.kind, now, new_last, first_failed);
+            let is_one_shot = matches!(outcome.kind, ScheduleKind::OneShot { .. });
             let new_state = if is_one_shot && new_next.is_none() {
                 "completed"
             } else {
-                state_to_str(record.state)
+                stored_state.as_str()
             };
             sqlx::query(
                 r#"
@@ -624,19 +871,18 @@ impl ScheduleStore for SqliteScheduleStore {
                 WHERE id = ?
                 "#,
             )
-            .bind(now.timestamp_millis())
+            .bind(new_last.map(|t| t.timestamp_millis()))
             .bind(new_next.map(|t| t.timestamp_millis()))
             .bind(new_state)
             .bind(now.timestamp_millis())
             .bind(sid.as_str())
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))?;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))?;
+        tx.commit_with(|e| ScheduleError::Storage(StorageError::Database(e.to_string())))
+            .await?;
 
         Ok(claimed)
     }
@@ -704,14 +950,39 @@ mod tests {
         impl OccurrenceMaterializer for Stub {
             async fn materialize(
                 &self,
-                _sid: &ScheduleId,
-                _template: &JobTemplate,
+                _schedule: &ScheduleRecord,
                 _at: DateTime<Utc>,
             ) -> Result<JobId, super::super::schedule::MaterializerError> {
                 Ok(JobId::new_unchecked(uuid::Uuid::new_v4().to_string()))
             }
         }
         Stub
+    }
+
+    /// A materializer that really creates the job, so a test can assert
+    /// on the durable job spec the template produced.
+    fn creating_materializer(job_store: Arc<dyn JobStore>) -> impl OccurrenceMaterializer {
+        struct Creator {
+            job_store: Arc<dyn JobStore>,
+        }
+        #[async_trait]
+        impl OccurrenceMaterializer for Creator {
+            async fn materialize(
+                &self,
+                schedule: &ScheduleRecord,
+                at: DateTime<Utc>,
+            ) -> Result<JobId, super::super::schedule::MaterializerError> {
+                let spec = schedule.job_template.new_job_for_occurrence(
+                    schedule.workspace_id.clone(),
+                    schedule.schedule_id.clone(),
+                    schedule.session_id.clone(),
+                    at,
+                );
+                let job = self.job_store.create_job(spec).await?;
+                Ok(job.job_id)
+            }
+        }
+        Creator { job_store }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -778,7 +1049,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn in_memory_overlap_skip_if_running() {
-        let job_store = Arc::new(InMemoryJobStore::new());
+        let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
         let store = InMemoryScheduleStore::new(job_store.clone());
 
         let rec = store
@@ -918,5 +1189,158 @@ mod tests {
             .await
             .unwrap();
         assert!(c2.is_empty());
+    }
+
+    /// M001: a template that targets a remote node materializes a job
+    /// with the same target. The template is the only place the target
+    /// lives, so the materialization path must carry it unchanged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_materialization_preserves_remote_target() {
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let store = InMemoryScheduleStore::new(job_store.clone());
+        let now = Utc::now();
+
+        let mut template = test_template("build");
+        template.target = ExecutionTarget::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        let record = store
+            .create(ScheduleTemplate {
+                workspace_id: ws(),
+                session_id: None,
+                kind: ScheduleKind::OneShot { run_at: now },
+                job_template: template,
+                overlap_policy: OverlapPolicy::Allow,
+                missed_run_policy: MissedRunPolicy::RunOnceNow,
+                next_run_at: Some(now),
+                labels: HashMap::new(),
+            })
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim_due(now, &creating_materializer(job_store.clone()))
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let job_id = claimed[0]
+            .job_id
+            .clone()
+            .expect("a materialized occurrence owns a job");
+        let job = job_store
+            .get_job(&job_id)
+            .await
+            .unwrap()
+            .expect("job exists");
+        assert_eq!(
+            job.target,
+            ExecutionTarget::EggworkNode {
+                node_id: "builder".to_owned()
+            }
+        );
+        assert_eq!(job.schedule_id.as_ref(), Some(&record.schedule_id));
+    }
+
+    /// M001: a template persisted before explicit targeting existed has
+    /// no `target` key and must decode as the local executor.
+    #[test]
+    fn template_without_target_key_decodes_as_local() {
+        // A real persisted template with the `target` key removed is
+        // exactly what a pre-M001 schedule row holds.
+        let mut encoded = serde_json::to_value(test_template("build")).expect("template encodes");
+        let object = encoded.as_object_mut().expect("template is an object");
+        assert!(
+            object.remove("target").is_some(),
+            "the template carries a target"
+        );
+        let template: JobTemplate =
+            serde_json::from_value(encoded).expect("legacy template decodes");
+        assert_eq!(template.target, ExecutionTarget::Local);
+        assert_eq!(template.target_node_id(), None);
+    }
+
+    /// M001: a template that names a remote node round-trips through the
+    /// persisted JSON form, so a restarted daemon keeps the target.
+    #[test]
+    fn template_with_remote_target_round_trips() {
+        let mut template = test_template("build");
+        template.target = ExecutionTarget::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        let encoded = serde_json::to_value(&template).expect("template encodes");
+        let decoded: JobTemplate = serde_json::from_value(encoded).expect("template decodes");
+        assert_eq!(decoded.target, template.target);
+        assert_eq!(decoded.target_node_id(), Some("builder"));
+    }
+
+    /// M001: a one-shot schedule that targets a remote node materializes
+    /// exactly one job, and that job keeps the remote target. The
+    /// occurrence key `(schedule_id, scheduled_for)` is what keeps a
+    /// replay from producing a second job.
+    #[tokio::test(flavor = "current_thread")]
+    async fn sqlite_one_shot_schedule_materializes_one_remote_job() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory db");
+        crate::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+        let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+        let store = SqliteScheduleStore::new(pool, job_store.clone());
+        let now = Utc::now();
+
+        let mut template = test_template("build");
+        template.target = ExecutionTarget::EggworkNode {
+            node_id: "builder".to_owned(),
+        };
+        store
+            .create(ScheduleTemplate {
+                workspace_id: ws(),
+                session_id: None,
+                kind: ScheduleKind::OneShot { run_at: now },
+                job_template: template,
+                overlap_policy: OverlapPolicy::Allow,
+                missed_run_policy: MissedRunPolicy::RunOnceNow,
+                next_run_at: Some(now),
+                labels: HashMap::new(),
+            })
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim_due(now, &creating_materializer(job_store.clone()))
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].status, OccurrenceStatus::Queued);
+
+        let job = job_store
+            .get_job(
+                claimed[0]
+                    .job_id
+                    .as_ref()
+                    .expect("a materialized occurrence owns a job"),
+            )
+            .await
+            .unwrap()
+            .expect("materialized job exists");
+        assert_eq!(
+            job.target,
+            ExecutionTarget::EggworkNode {
+                node_id: "builder".to_owned()
+            }
+        );
+
+        // A replay of the same tick does not duplicate the occurrence.
+        let replay = store
+            .claim_due(now, &creating_materializer(job_store.clone()))
+            .await
+            .unwrap();
+        assert!(
+            replay.is_empty(),
+            "the one-shot schedule does not fire twice"
+        );
     }
 }

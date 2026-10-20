@@ -93,6 +93,7 @@ pub struct JobSubmissionService {
     daemon_generation: DaemonGeneration,
     goal_store: Option<Arc<codegg_core::goal::GoalStore>>,
     idempotency: Mutex<HashMap<SubmissionKey, IdempotentSubmission>>,
+    created_sink: parking_lot::RwLock<Option<tokio::sync::mpsc::Sender<JobRecord>>>,
 }
 
 impl JobSubmissionService {
@@ -109,6 +110,7 @@ impl JobSubmissionService {
             daemon_generation,
             goal_store: None,
             idempotency: Mutex::new(HashMap::new()),
+            created_sink: parking_lot::RwLock::new(None),
         })
     }
 
@@ -129,6 +131,7 @@ impl JobSubmissionService {
             daemon_generation,
             goal_store: Some(goal_store),
             idempotency: Mutex::new(HashMap::new()),
+            created_sink: parking_lot::RwLock::new(None),
         })
     }
 
@@ -138,6 +141,12 @@ impl JobSubmissionService {
 
     pub fn daemon_generation(&self) -> &DaemonGeneration {
         &self.daemon_generation
+    }
+
+    /// Install the daemon-owned post-admission observer. It is deliberately
+    /// notification-only: a closed observer cannot fail durable submission.
+    pub fn set_created_sink(&self, sink: tokio::sync::mpsc::Sender<JobRecord>) {
+        *self.created_sink.write() = Some(sink);
     }
 
     pub async fn workspace_id_for_root(
@@ -166,6 +175,19 @@ impl JobSubmissionService {
             .await
             .map_err(|e| JobSubmissionError::Workspace(e.to_string()))?;
         Ok(lease.path_policy().authority_fingerprint())
+    }
+
+    /// Fetch a durable job by id, if it exists.
+    ///
+    /// The schedule materializer uses this for the crash-replay path: an
+    /// occurrence whose job row was written before the daemon stopped must
+    /// not be materialized a second time. The job id is a pure function of
+    /// the occurrence, so the lookup is exact.
+    pub async fn existing_job(
+        &self,
+        job_id: &JobId,
+    ) -> Result<Option<JobRecord>, JobSubmissionError> {
+        Ok(self.store.get_job(job_id).await?)
     }
 
     pub async fn submit(
@@ -313,6 +335,12 @@ impl JobSubmissionService {
                     job_id: job.job_id.clone(),
                 },
             );
+        }
+        let created_sink = self.created_sink.read().clone();
+        if let Some(sink) = created_sink {
+            if let Err(error) = sink.send(job.clone()).await {
+                tracing::warn!(job_id = %job.job_id, %error, "job lifecycle projection receiver is unavailable; snapshot rebuild will heal it");
+            }
         }
         Ok(to_submitted(&job))
     }
@@ -703,17 +731,33 @@ mod tests {
             services,
             codegg_core::jobs::DaemonGeneration::new_unchecked("generation-test"),
         );
+        let (created_tx, mut created_rx) = tokio::sync::mpsc::channel(8);
+        submission.set_created_sink(created_tx);
         let key = SubmissionKey::new("retry-1").expect("key");
+        let mut first_spec = spec(workspace.id.clone());
+        first_spec.session_id = Some("owner-session".into());
         let first = submission
-            .submit(Some(key.clone()), spec(workspace.id.clone()))
+            .submit(Some(key.clone()), first_spec)
             .await
             .expect("first submission");
+        let mut retry_spec = spec(workspace.id.clone());
+        retry_spec.session_id = Some("owner-session".into());
         let second = submission
-            .submit(Some(key), spec(workspace.id.clone()))
+            .submit(Some(key), retry_spec)
             .await
             .expect("retry submission");
 
         assert_eq!(first.job_id, second.job_id);
+        let published = created_rx
+            .recv()
+            .await
+            .expect("post-admission lifecycle event");
+        assert_eq!(published.job_id, first.job_id);
+        assert_eq!(published.session_id.as_deref(), Some("owner-session"));
+        assert!(
+            created_rx.try_recv().is_err(),
+            "idempotent retry must not republish create"
+        );
         let jobs = store
             .list_jobs(codegg_core::jobs::store::JobStoreQuery::default())
             .await

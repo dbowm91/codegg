@@ -1117,7 +1117,15 @@ async fn begin_immediate(pool: &SqlitePool) -> Result<ImmediateWrite, UserPrompt
 /// `mark_delivered`, `mark_delivery_failed`, `release_delivery`, and
 /// `retry_failed`: each is a single guarded `UPDATE` with no prior read, so
 /// there is no read lock to upgrade. Only the read-then-write paths need this.
-struct ImmediateWrite {
+///
+/// # Reuse
+///
+/// The type lives here, next to the store that established the pattern, because
+/// the C002 guard pins it to this file. Another store in this crate with the
+/// same read-then-write shape opens its transaction with
+/// [`ImmediateWrite::begin_with`] and maps the error into its own type, rather
+/// than taking this module's error type.
+pub(crate) struct ImmediateWrite {
     /// `Option` so [`Drop`] can take the connection out; it is `Some` for the
     /// whole time the transaction is usable.
     conn: Option<sqlx::pool::PoolConnection<sqlx::Sqlite>>,
@@ -1130,7 +1138,21 @@ type SqliteTx = sqlx::sqlite::SqliteTransactionManager;
 
 impl ImmediateWrite {
     async fn begin(pool: &SqlitePool) -> Result<Self, UserPromptQueueError> {
-        let mut conn = pool.acquire().await.map_err(storage_error)?;
+        Self::begin_with(pool, storage_error).await
+    }
+
+    /// Begin an immediate transaction, mapping the raw sqlx error with `map`.
+    ///
+    /// `BEGIN IMMEDIATE` takes SQLite's write lock **before** any read, and that
+    /// acquisition honours `busy_timeout`. A deferred transaction takes a shared
+    /// read lock on its first `SELECT` and then has to upgrade it, which SQLite
+    /// refuses with `SQLITE_BUSY` without waiting — so two callers could both
+    /// fail instead of one winning and the other waiting its turn.
+    pub(crate) async fn begin_with<E>(
+        pool: &SqlitePool,
+        map: impl Fn(sqlx::Error) -> E,
+    ) -> Result<Self, E> {
+        let mut conn = pool.acquire().await.map_err(&map)?;
         // `TransactionManager::begin` takes the statement to run. Handing it
         // `BEGIN IMMEDIATE` is what makes this transaction immediate — and going
         // through the manager rather than issuing raw SQL is what keeps sqlx's
@@ -1142,7 +1164,7 @@ impl ImmediateWrite {
             Some(std::borrow::Cow::Borrowed("BEGIN IMMEDIATE")),
         )
         .await
-        .map_err(storage_error)?;
+        .map_err(&map)?;
         Ok(Self {
             conn: Some(conn),
             settled: false,
@@ -1155,10 +1177,15 @@ impl ImmediateWrite {
     /// therefore leaves the connection unsettled, so [`Drop`] rolls it back —
     /// rather than returning a connection that may still hold a write lock to
     /// the next borrower.
-    async fn commit(mut self) -> Result<(), UserPromptQueueError> {
+    async fn commit(self) -> Result<(), UserPromptQueueError> {
+        self.commit_with(storage_error).await
+    }
+
+    /// Commit, mapping the raw sqlx error with `map`.
+    pub(crate) async fn commit_with<E>(mut self, map: impl Fn(sqlx::Error) -> E) -> Result<(), E> {
         SqliteTx::commit(self.conn.as_mut().expect("live while committing"))
             .await
-            .map_err(storage_error)?;
+            .map_err(&map)?;
         self.settled = true;
         Ok(())
     }

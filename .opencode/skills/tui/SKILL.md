@@ -26,6 +26,7 @@ root and lifecycle modules.
 | `src/tui/app/render.rs` | Cached render composition; no I/O or async work |
 | `src/tui/app/input.rs` | Synchronous `TuiMsg` processing |
 | `src/tui/app/project_session.rs` | Active project/session and projection lifecycle |
+| `src/tui/commands/primary_projection.rs` | Default `/core` session projection subscription, snapshot installation, bounded pre-install events, ack/resync, and teardown |
 | `src/tui/app/prompt_turn.rs` | Prompt submission and route-safe turn start |
 | `src/tui/app/modal.rs` | FocusManager-backed modal lifecycle |
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
@@ -300,12 +301,15 @@ model to the wrong connection.
   - **The row is a carved row, and the input box does not move with it.**
     `session_layout` gives the prompt chunk a fixed, bottom-anchored height, and
     the working strip, hint line and todo strip come off its **top** in that
-    order. So a panel that starts declining shrinks the carved region and hands
-    the row to the transcript (`Min(10)`), and the composer stays on its row —
+    order. So the composer stays on its row whatever the carved region does —
     the opposite of what the arithmetic looks like it should do. Pin it, because
     a hint row that reflowed the input every time a panel took or lost focus
     would be the same defect the working strip's reserved row 0 exists to
     prevent. Nothing to do with that strip, which is reserved unconditionally.
+    **The row is not vacated when a panel lets go**: the composer takes it over,
+    because the composer's own verbs are what the row is for (M007). The row's
+    *content* changes with the keyboard; its *presence* does not, so the working
+    strip above it does not move either.
   A **hosted** box gets its verbs from the box itself via
   `Component::keymap_hint()`, so the string sits next to the `handle_key`
   arms that implement it; the host's generic `j/k scroll · i act` is only
@@ -1014,8 +1018,9 @@ model to the wrong connection.
   into the next pick. A panel row that a user selects must do something:
   `AgentsPanel` had no `Enter` arm at all and consumed the key silently.
 - **Subagent rows are projection-derived and last-known-good.**
-  `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
-  A snapshot that arrives replaces the rows; a *missing* snapshot does not,
+  `session_work::select_session_work` reads session-owned child instances first,
+  falling back to a turn tree only for legacy snapshots, and folds related
+  AgentRun/Job/tool-program records by explicit ids. A snapshot that arrives replaces the rows; a *missing* snapshot does not,
   because absence is not evidence that no subagents exist and clearing on it
   blanks the strip mid-turn. Never synthesize a row the projection did not
   vouch for, and never synthesize progress text: the projection adapter
@@ -1349,9 +1354,84 @@ model to the wrong connection.
   `App::run_composer_claim` is where the behaviour goes — not the binding
   map — and the `None` arm keeps the gesture only for the surfaces the
   composer does not own.
-- **A letter the composer claims is not available to the app.** The three
-  app-level actions that owned `x`, `d` and `i` moved to `Ctrl+Alt+X`,
-  `Ctrl+Alt+D` and `Ctrl+Alt+E`, in **both** maps. `Ctrl+Alt+<letter>` is the
+- **The live verbs so far are the motions and the selection verbs.** `w`, `b`,
+  `e`, `j`, `k` (motions), `v`, `x`, `d`, `p` (selection and clipboard),
+  `i`, `a`, `o` (the insert transitions) and `u`, `U` (undo and redo) — every
+  claim in the table is live, so the runner's match on the verbs is
+  **exhaustive** and a verb added without an arm does not compile. Two rules
+  make them work, and
+  both are shared with the editor rather than local to the composer: a motion
+  moves the caret through **`move_caret`** (the machine's `move_to`), never
+  `set_caret`, because that is what makes a held character selection *grow*
+  with the motion; and the selection has **one** byte range
+  (`ComposerText::selection_range`, the editor's rule term for term) that
+  delete, copy and the renderer all read. A second range is how "copy" and
+  "delete" stop meaning the same thing. The word and vertical **targets** come
+  from `src/tui/text_geometry.rs`, so the composer and the editor land on the
+  same offset for the same text; a composer with its own word rule would be
+  two answers to one question.
+- **An edit that changes the buffer's length drops the held selection, and the
+  undo history never evicts its last entry.** The selection's points are byte
+  offsets into the text the edit replaces, so the rule lives in
+  `ComposerText::replace_range` — the one place every edit passes through —
+  rather than in each caller's judgement; `undo` and `redo` change the length
+  too and drop it the same way. The history's byte bound drops **older** edits
+  and never the newest one: evicting the newest edit because it is large would
+  make a large paste unundoable the moment it was made. The undo scope is the
+  composer's **own text** (roadmap D4): a submit and a staged projection
+  replace the buffer and drop the history, so an undo can never bring back
+  text the user has already sent.
+- **The hint row and the help are DERIVED from the claim table, and the guard
+  polices both.** `composer_verb_entries` (`src/tui/composer_claims.rs`) is a
+  read-only view over `COMPOSER_CLAIMS` — the live claims, each with its key,
+  its human label, and its condition. Three surfaces read it and none keeps a
+  copy: the **hint row** above the composer (`App::composer_hint_row`), the
+  **help**'s composer section (`composer_help_entries`, `src/tui/input.rs`),
+  and the **guard** (`scripts/check_tui_composer_key_authority.py`). A
+  hand-written list anywhere would be a second copy of the table, and a second
+  copy is the drift the table exists to prevent.
+  - **Focus gates the row; the mode changes its text.** The row is present in
+    Normal and in Insert alike, so `Esc` does not reflow the transcript — the
+    interactive terminal panel's shape (`src/tui/panels/terminal.rs:416`). The
+    row names the composer's **keys**, not their descriptions: the
+    descriptions live in the help, and a row spelling out fourteen verbs does
+    not fit eighty columns.
+  - **A part is never split.** The row is bounded by dropping whole parts from
+    the end, because a row cut in the middle of a key names a key that does not
+    exist. `fit_parts` measures display columns, not bytes.
+  - **Two rules police the help.** **G10** asks "does the help describe the
+    composer's verbs?" — the composer section must be derived, every live verb
+    must have a label, and no app row may advertise a claimed key for a
+    different action (the `a` → "Focus sidebar" class) or a reserved claim. The
+    one exception is a *conditional* claim's fall-through row, the `j`/`k` row,
+    which earns the exception by carrying its condition. **G11** asks "does the
+    help describe the *app's* re-spelled verbs?" — each must be documented
+    under a modifier chord and not under its old bare letter. Both are scoped
+    to the **Normal-mode** section: the Dialog and Command sections describe
+    other surfaces, where the same letters mean something else.
+- **The copy gesture belongs to the help box, and the ROUTE decides — never
+  the mode.** `space` opens the composer's help and `y` in that box copies the
+  selection; the `/help` command's box does not copy, and `y` there is a
+  filter character. The mode cannot say which box this is: a `/help` box
+  starts in Insert and `Esc` moves it to Normal, and a `space` box can be
+  switched to Insert with `Enter`. So the route travels **in the open
+  request** (`Dialog::Help(HelpRoute)`), and a call site cannot open the box
+  without saying which box it is; the default route is the one that cannot
+  copy. `HelpRoute` now lives in `src/tui::input` beside the content it
+  selects, and `HelpDialog::with_route` **rebuilds** that content — the route
+  selects content as well as behaviour, and relabelling the box without
+  rebuilding it would leave the chord route teaching a gesture it does not
+  have. The copy is a **`TuiMsg`**, not a dialog-side mutation:
+  `open_dialog` pushes a *clone* onto the focus manager, and the clone is what
+  receives the keys.
+- **A letter the composer claims is not available to the app.** The four
+  app-level actions that owned `x`, `d`, `i` and `a` moved to `Ctrl+Alt+X`,
+  `Ctrl+Alt+D`, `Ctrl+Alt+E` and `Ctrl+Alt+S`, in **both** maps. The `a`
+  re-spelling **deleted** a binding rather than moving one: `FocusSidebar`
+  already answered to `Ctrl+Alt+S` in both maps, so the vim map's bare `a`
+  was a second spelling of an action that already had one — the composer's
+  insert-after key took the letter and nothing was lost with it.
+  `Ctrl+Alt+<letter>` is the
   legacy-safe family: the terminal delivers `ESC` + the control byte, which
   crossterm reports as the letter with CONTROL|ALT. `Ctrl+Alt+I` is **not**
   usable — `ESC` + `0x09` arrives as `Tab` with ALT. A chord's `(modifiers,
@@ -1362,8 +1442,7 @@ model to the wrong connection.
   becomes a chord, it must leave `is_normal_only`: a chord cannot be composed
   as text, so gating it out of Insert mode would take the action out of the
   mode the app boots in. **A bare spelling of a letter the composer does *not*
-  claim is not a re-spelling violation.** The default map's `/` for
-  focus-prompt is the live example: `/` is not claimed, so the plan's
+  claim is not a re-spelling violation.** The default map's `/` for  focus-prompt is the live example: `/` is not claimed, so the plan's
   invariant — *a letter the composer does not claim must resolve to the same
   app action it resolves to today* — requires it to keep working, and it is
   the gesture that enters command mode, which is what makes the rest of a
@@ -1501,6 +1580,16 @@ invariants above.
 | `python3 scripts/check_tui_subagent_name_pool_isolation.py` | Polices **subagent descriptor provenance**: the TUI may not resolve a subagent's descriptor against the curated name pool. The descriptor is drawn once, at spawn, by the only code holding the name lease, and every surface downstream reads what the projection carried. A display name is not a stable key, so a local lookup reintroduces the attribution defect C001 recorded once. |
 
 ## Testing
+
+The default socket-connected TUI owns a session-scoped projection separately
+from `/observe`. `set_session`, active-tab switch, and reconnect start a
+generation-fenced subscription; the completion validates project/session/tab
+and stream identity before installing the snapshot. Reconnect takes a fresh
+authoritative snapshot. Until it lands, `Ctrl+T`, `/sessions`, and the sidebar
+show loading or unavailable state instead of claiming an empty session. Keep
+the live-event pre-install queue bounded and drain it only after snapshot
+installation. Do not route projection events through `AppMode` or the raw
+session event subscription.
 
 ```bash
 cargo test --test tui_render        # rendering integration tests

@@ -213,18 +213,24 @@ pub enum ProjectionEvent {
     SubagentStarted { node: AgentTreeNodeProjection },
     /// A subagent reported progress (kept bounded).
     SubagentProgress {
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         message: String,
         at: i64,
     },
     /// A subagent completed.
     SubagentCompleted {
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         result_summary: String,
         completed_at: i64,
     },
     /// A subagent failed.
     SubagentFailed {
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         error: String,
         failed_at: i64,
@@ -559,5 +565,24 @@ mod tests {
         };
         assert!(event.is_turn_scoped("t1"));
         assert!(!event.is_turn_scoped("t2"));
+    }
+
+    #[test]
+    fn legacy_subagent_lifecycle_event_decodes_without_generation_id() {
+        let event: ProjectionEvent = serde_json::from_value(serde_json::json!({
+            "kind": "subagent_completed",
+            "task_id": 7,
+            "result_summary": "done",
+            "completed_at": 11
+        }))
+        .expect("older subagent lifecycle events remain readable");
+        assert!(matches!(
+            event,
+            ProjectionEvent::SubagentCompleted {
+                child_instance_id,
+                task_id: 7,
+                ..
+            } if child_instance_id.is_empty()
+        ));
     }
 }

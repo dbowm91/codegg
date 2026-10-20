@@ -340,6 +340,8 @@ impl BashTool {
                         rerun: None,
                         actual_backend: Some(execution_outcome_clone_actual(execution_outcome)),
                         fallback: execution_outcome.fallback_record(),
+
+                        remote_resources: None,
                     },
                 )
                 .await

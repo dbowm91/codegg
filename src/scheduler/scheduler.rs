@@ -2037,6 +2037,13 @@ impl JobScheduler {
         // durable-state backstop tick.
         if matches!(result.state, codegg_core::jobs::CancelOutcome::Cancelled) {
             self.signal_job(job_id).await;
+            if let Some(terminal) = self.store.get_job(job_id).await? {
+                self.emit_event(SchedulerEvent::JobTerminal {
+                    job_id: job_id.as_str().to_string(),
+                    state: terminal.state,
+                })
+                .await;
+            }
         }
         // Remove from in-memory queue if present.
         let mut q = self.queue.lock().await;
@@ -2202,6 +2209,9 @@ fn build_permit_dimensions(job: &JobRecord) -> PermitDimensions {
         io_weight: job.resource_request.io_weight,
         network_slots: job.resource_request.network_slots,
         exclusivity_keys: job.resource_request.exclusivity_keys.clone(),
+        // A remotely targeted job is reserved against its node, not
+        // against the controller's local CPU/memory/process budget.
+        remote_node: job.target.eggwork_node_id().map(str::to_owned),
     }
 }
 

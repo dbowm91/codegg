@@ -285,6 +285,8 @@ mod tests {
             },
             CoreEvent::SubagentStarted {
                 session_id: "s".into(),
+                child_instance_id: String::new(),
+                originating_turn_id: None,
                 task_id: 1,
                 agent: "a".into(),
                 description: "d".into(),
@@ -295,18 +297,21 @@ mod tests {
             },
             CoreEvent::SubagentProgress {
                 session_id: "s".into(),
+                child_instance_id: String::new(),
                 task_id: 1,
                 agent: "a".into(),
                 message: "m".into(),
             },
             CoreEvent::SubagentCompleted {
                 session_id: "s".into(),
+                child_instance_id: String::new(),
                 task_id: 1,
                 agent: "a".into(),
                 result_summary: "r".into(),
             },
             CoreEvent::SubagentFailed {
                 session_id: "s".into(),
+                child_instance_id: String::new(),
                 task_id: 1,
                 agent: "a".into(),
                 error: "e".into(),

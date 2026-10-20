@@ -362,6 +362,14 @@ pub enum TuiCommand {
     OpenRunDetailError {
         error: String,
     },
+    OpenJobDetailLoaded {
+        request_id: u64,
+        job_id: String,
+        job: Option<crate::protocol::dto::JobRecordDto>,
+        attempts: Vec<crate::protocol::dto::JobAttemptDto>,
+        error: Option<String>,
+        notice: Option<String>,
+    },
     /// Completion for a daemon-owned historical run rerun request.
     RunRerunFinished {
         parent_run_id: String,
@@ -1274,6 +1282,21 @@ pub enum TuiCommand {
     ObserveUnsubscribed {
         subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
     },
+    /// Default socket TUI session projection subscription completion.
+    PrimaryProjectionSubscribed {
+        request_id: u64,
+        project_id: String,
+        session_id: String,
+        tab_id: Option<String>,
+        subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
+        cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        projection: Option<(
+            crate::protocol::projection::replay::ProjectionStreamDescriptor,
+            crate::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
+        error: Option<String>,
+        unsupported: bool,
+    },
     /// Project Collaboration M002: explicit refresh of one project's
     /// chat window (channel ensure + history through `CoreClient`).
     RefreshChat {
@@ -1440,6 +1463,18 @@ pub enum TuiCommand {
     /// Completion of a [`TuiCommand::LspStatusDetailRequested`] round trip.
     LspStatusDetailLoaded {
         detail: Option<String>,
+    },
+    /// Eggwork M002: request the host telemetry of the configured remote
+    /// nodes. Awaiting the daemon is off the render path.
+    NodeTelemetryRequested,
+    /// Eggwork M002: completion of a [`TuiCommand::NodeTelemetryRequested`]
+    /// round trip.
+    ///
+    /// `nodes` carries the daemon's snapshots verbatim, including the nodes
+    /// that could not be read; the TUI never fills in a missing dimension.
+    NodeTelemetryLoaded {
+        nodes: Vec<crate::protocol::dto::NodeTelemetryDto>,
+        error: Option<String>,
     },
     /// M007: request a daemon-resolved policy snapshot
     /// (`ApprovalPreferenceGet` + `ExecutionPolicyGet`). The completion

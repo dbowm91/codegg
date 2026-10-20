@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicUsize;
 use tokio::sync::{mpsc, watch, RwLock};
 
 use codegg_core::workspace::WorkspaceId;
+use codegg_protocol::projection::dto::AgentTreeNodeProjection;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeSessionStatus {
@@ -43,6 +44,10 @@ pub struct SessionRuntime {
     pub last_input_tokens: RwLock<Option<usize>>,
     pub last_output_tokens: RwLock<Option<usize>>,
     pub active_subagent_count: AtomicUsize,
+    /// In-process liveness authority for non-durable children. The registry
+    /// starts empty after daemon restart, so dead workers cannot reappear live.
+    pub subagents: RwLock<std::collections::HashMap<String, AgentTreeNodeProjection>>,
+    pub subagent_overflow: AtomicUsize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +176,8 @@ impl SessionRuntimeRegistry {
             last_input_tokens: RwLock::new(None),
             last_output_tokens: RwLock::new(None),
             active_subagent_count: AtomicUsize::new(0),
+            subagents: RwLock::new(std::collections::HashMap::new()),
+            subagent_overflow: AtomicUsize::new(0),
         });
         self.sessions.insert(key, arc.clone());
         arc

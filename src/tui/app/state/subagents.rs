@@ -36,6 +36,8 @@ fn take_chars(s: &str, width: usize) -> String {
 /// One delegated run advertised in the working strip.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubagentRow {
+    /// Session-owned dispatch identity; absent only for legacy turn-local rows.
+    pub child_instance_id: Option<String>,
     /// Canonical task identity; the join key against durable runs.
     pub task_id: String,
     /// Durable run id when one exists, so the view can fetch run detail.
@@ -72,6 +74,15 @@ pub struct SubagentRow {
 }
 
 impl SubagentRow {
+    /// Generation-safe identity used by tabs and controls. Legacy rows fall
+    /// back to their daemon-local numeric task id for compatibility.
+    pub fn identity_key(&self) -> &str {
+        self.child_instance_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&self.task_id)
+    }
+
     /// What to call this subagent in the UI.
     ///
     /// Prefers the curated display name (`Sally`) and falls back to the agent
@@ -267,7 +278,12 @@ impl SubagentState {
     /// than by a row index, so they cannot open a tab for a row that has since
     /// shifted under them.
     pub fn open_task(&mut self, task_id: &str) -> bool {
-        let Some(row) = self.rows.iter().find(|row| row.task_id == task_id).cloned() else {
+        let Some(row) = self
+            .rows
+            .iter()
+            .find(|row| row.identity_key() == task_id || row.task_id == task_id)
+            .cloned()
+        else {
             return false;
         };
         self.open(row)
@@ -275,7 +291,10 @@ impl SubagentState {
 
     /// Whether a tab for `task_id` is already open.
     pub fn has_tab(&self, task_id: &str) -> bool {
-        self.tabs.contains(task_id)
+        self.rows
+            .iter()
+            .find(|row| row.identity_key() == task_id || row.task_id == task_id)
+            .is_some_and(|row| self.tabs.contains(row.identity_key()))
     }
 
     /// Open `row` as a tab, returning whether the tab set took it.
@@ -315,6 +334,7 @@ mod tests {
 
     fn row(status: &str) -> SubagentRow {
         SubagentRow {
+            child_instance_id: Some("t1".into()),
             task_id: "t1".into(),
             run_id: Some("r1".into()),
             display_name: Some("Sally".into()),
@@ -342,6 +362,7 @@ mod tests {
 
     fn row_id(task_id: &str, status: &str) -> SubagentRow {
         SubagentRow {
+            child_instance_id: Some(task_id.into()),
             task_id: task_id.into(),
             ..row(status)
         }

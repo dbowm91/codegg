@@ -48,6 +48,122 @@ struct SeamProjectionSink {
     inner: Arc<codegg_core::projection_replay::seam::ProjectionPublicationSeam>,
 }
 
+fn install_job_lifecycle_projection(
+    scheduler: &Arc<crate::scheduler::JobScheduler>,
+    submission: &Arc<crate::scheduler::JobSubmissionService>,
+    job_store: Arc<dyn codegg_core::jobs::JobStore>,
+    event_log: Arc<super::event_log::EventLog>,
+) {
+    let (created_tx, mut created_rx) = tokio::sync::mpsc::channel(256);
+    submission.set_created_sink(created_tx);
+    let created_log = event_log.clone();
+    tokio::spawn(async move {
+        while let Some(job) = created_rx.recv().await {
+            created_log
+                .publish(
+                    job.session_id.clone(),
+                    job.turn_id.clone(),
+                    CoreEvent::JobCreated {
+                        job_id: job.job_id.as_str().to_string(),
+                        workspace_id: job.workspace_id.to_string(),
+                        kind: job.kind.as_str().to_string(),
+                        session_id: job.session_id.clone(),
+                        turn_id: job.turn_id.clone(),
+                    },
+                )
+                .await;
+        }
+    });
+
+    let (scheduler_tx, mut scheduler_rx) = tokio::sync::mpsc::channel(256);
+    if !scheduler.set_event_sink_blocking(scheduler_tx) {
+        tracing::error!("failed to attach scheduler lifecycle projection event sink");
+        return;
+    }
+    tokio::spawn(async move {
+        while let Some(event) = scheduler_rx.recv().await {
+            use crate::scheduler::events::SchedulerEvent;
+            let (job_id, attempt_id, started, terminal_state) = match event {
+                SchedulerEvent::JobAdmitted {
+                    job_id, attempt_id, ..
+                } => (job_id, attempt_id.to_string(), true, None),
+                SchedulerEvent::JobResourceReleased { job_id, attempt_id } => {
+                    (job_id, attempt_id.to_string(), false, None)
+                }
+                SchedulerEvent::JobTerminal { job_id, state } => {
+                    (job_id, String::new(), false, Some(state))
+                }
+                _ => continue,
+            };
+            let id = codegg_core::jobs::JobId::new_unchecked(&job_id);
+            let record = match job_store.get_job(&id).await {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    tracing::warn!(%job_id, "scheduler lifecycle event referenced a missing job");
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(%job_id, %error, "failed to resolve owner for scheduler lifecycle event");
+                    continue;
+                }
+            };
+            let payload = if started {
+                CoreEvent::JobStarted {
+                    job_id: job_id.clone(),
+                    attempt_id,
+                }
+            } else {
+                match terminal_state.unwrap_or(record.state) {
+                    codegg_core::jobs::JobState::Completed => CoreEvent::JobCompleted {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                    },
+                    codegg_core::jobs::JobState::Failed => CoreEvent::JobFailed {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                        error_class: "failed".into(),
+                        message: String::new(),
+                    },
+                    codegg_core::jobs::JobState::Cancelled => CoreEvent::JobCancelled {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                    },
+                    codegg_core::jobs::JobState::TimedOut => CoreEvent::JobTimedOut {
+                        job_id: job_id.clone(),
+                        attempt_id,
+                    },
+                    codegg_core::jobs::JobState::Interrupted => {
+                        let attempt_id = codegg_core::jobs::AttemptId::new_unchecked(&attempt_id);
+                        let recovery_generation = match job_store.list_attempts(&id).await {
+                            Ok(attempts) => attempts
+                                .into_iter()
+                                .find(|attempt| attempt.attempt_id == attempt_id)
+                                .map(|attempt| attempt.daemon_generation.to_string()),
+                            Err(error) => {
+                                tracing::warn!(%job_id, %error, "failed to resolve interrupted job generation");
+                                None
+                            }
+                        };
+                        let Some(recovery_generation) = recovery_generation else {
+                            tracing::warn!(%job_id, attempt_id = %attempt_id, "interrupted job event has no durable attempt generation");
+                            continue;
+                        };
+                        CoreEvent::JobInterrupted {
+                            job_id: job_id.clone(),
+                            attempt_id: attempt_id.to_string(),
+                            recovery_generation,
+                        }
+                    }
+                    _ => continue,
+                }
+            };
+            event_log
+                .publish(record.session_id, record.turn_id, payload)
+                .await;
+        }
+    });
+}
+
 impl super::event_log::ProjectionSink for SeamProjectionSink {
     fn publish(
         &self,
@@ -281,6 +397,31 @@ impl CoreDaemon {
                 Default::default()
             }
         };
+        // Per-node ceilings on concurrently admitted remote executions.
+        //
+        // A remote job does not consume the controller's local CPU, memory,
+        // or process budget — those tokens describe the *node's* capacity.
+        // It consumes a node-scoped reservation instead, bounded here.
+        // A node with no configured ceiling falls back to the controller's
+        // process-slot budget, which preserves the effective concurrency
+        // bound remote work had before the budgets were split.
+        let scheduler_config = scheduler_config.with_remote_node_capacity(
+            config
+                .eggwork
+                .as_ref()
+                .and_then(|eggwork| eggwork.nodes.as_ref())
+                .map(|nodes| {
+                    nodes
+                        .iter()
+                        .filter_map(|(table_key, profile)| {
+                            profile
+                                .max_concurrent_executions
+                                .map(|limit| (table_key.clone(), limit))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
         let (scheduler, should_spawn_scheduler) = if let Some(existing) = deps.scheduler.clone() {
             (existing, false)
         } else if scheduler_config.enabled {
@@ -332,9 +473,8 @@ impl CoreDaemon {
                     );
                 }
             }
-            // SchedulerEvent has no corresponding CoreEvent protocol variant.
-            // Leave the optional sink unset rather than attaching a sender whose
-            // receiver would be dropped and falsely reporting a live event path.
+            // The scheduler sink is installed with its daemon-owned lifecycle
+            // projector below, after the shared submission boundary exists.
             (scheduler_arc, true)
         } else {
             // Even when disabled, build a placeholder scheduler so
@@ -355,6 +495,63 @@ impl CoreDaemon {
         // mailbox intent has been committed.
         run_control.set_scheduler_sync(scheduler.clone());
         deps.scheduler_config = scheduler_config.clone();
+        // M001: resolve the daemon-owned remote-target admission policy.
+        //
+        // An explicitly injected policy is the caller's decision and is
+        // never overridden. Otherwise the policy comes from the daemon
+        // configuration, which approves no node until an administrator
+        // names one — so a daemon that never opted in refuses every
+        // remote target at the host boundary while local execution
+        // keeps working unchanged.
+        if deps.remote_target_policy.is_none() {
+            let policy = match config.eggwork.as_ref() {
+                Some(eggwork) => {
+                    crate::core::remote_targets::RemoteTargetPolicy::from_config(eggwork)
+                }
+                None => crate::core::remote_targets::RemoteTargetPolicy::default(),
+            };
+            deps.remote_target_policy = Some(Arc::new(policy));
+        }
+        // Eggwork M002: resolve the daemon's node table exactly once.
+        //
+        // The same resolution feeds the read-only host-telemetry
+        // coordinator and the fixed-target executor, so both agree on
+        // which nodes exist and on their trust material. A resolution
+        // failure leaves both surfaces empty rather than half-configured,
+        // and it is logged once here instead of once per consumer.
+        let mut eggwork_nodes = match config.eggwork.as_ref() {
+            Some(eggwork) => {
+                match crate::scheduler::eggwork::EggworkExecutorConfig::from_daemon_config(eggwork)
+                {
+                    Ok(exec_config) => Some(exec_config),
+                    Err(error) => {
+                        tracing::error!(
+                            error = %error,
+                            "USER ACTION REQUIRED: eggwork nodes not resolved - fix [eggwork.nodes] key material paths"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        // The telemetry coordinator is daemon-owned and independent of job
+        // dispatch, so it is installed whether or not the scheduler is
+        // enabled.
+        if let Some(exec_config) = eggwork_nodes.as_ref() {
+            if !exec_config.nodes.is_empty() {
+                deps.node_telemetry = Some(Arc::new(
+                    crate::scheduler::eggwork_telemetry::NodeTelemetryService::new(
+                        exec_config.nodes.clone(),
+                        Arc::new(crate::scheduler::eggwork::NodeClientFactory),
+                    ),
+                ));
+                tracing::info!(
+                    node_count = exec_config.nodes.len(),
+                    "eggwork node telemetry coordinator installed"
+                );
+            }
+        }
         if let Err(error) = scheduler.configure_agent_run_store_sync(deps.agent_run_store.clone()) {
             tracing::error!(
                 ?error,
@@ -377,6 +574,12 @@ impl CoreDaemon {
             ),
         };
         deps.submission = Some(submission.clone());
+        install_job_lifecycle_projection(
+            &scheduler,
+            &submission,
+            deps.job_store.clone(),
+            event_log.clone(),
+        );
         // C001 daemon-scoped singletons: one notifier + one watcher for the
         // daemon lifetime, injected into every turn. Per-turn construction
         // remains only for legacy/test paths that never asked for the shared
@@ -437,6 +640,35 @@ impl CoreDaemon {
             }
             None => (None, None),
         };
+        // M004: the schedule materialization driver — one earliest-due
+        // wake loop per pooled daemon with the scheduler enabled.
+        //
+        // The driver *creates* work; the scheduler *runs* it. It is gated
+        // on the scheduler being enabled because the submission facade
+        // refuses every submission when the scheduler is disabled, and on
+        // a pool because a pool-less daemon has no cross-process
+        // durability to claim. A schedule that never fires is worse than
+        // an honest absence, so the driver is installed only where it
+        // can actually do its job.
+        let (schedule_driver, schedule_driver_handle) = match deps.pool.clone() {
+            Some(_) if scheduler.is_enabled() => {
+                let materializer =
+                    crate::scheduler::schedule_materializer::ScheduleMaterializer::new(
+                        submission.clone(),
+                        deps.remote_target_policy.clone(),
+                    );
+                let driver = crate::scheduler::schedule_driver::ScheduleDriver::new(
+                    deps.schedule_store.clone(),
+                    materializer,
+                );
+                let handle = tokio::runtime::Handle::try_current()
+                    .ok()
+                    .map(|_| driver.spawn());
+                tracing::info!("schedule materialization driver installed");
+                (Some(driver), handle)
+            }
+            _ => (None, None),
+        };
         if let Some(pool) = deps.legacy_agent.subagent_pool.as_ref() {
             pool.configure_durable_delegation(
                 submission.clone(),
@@ -473,51 +705,22 @@ impl CoreDaemon {
             // Fixed-target Eggwork remote execution (M001). The executor is
             // registered only when named nodes are configured; Eggwork jobs
             // without a matching profile fail closed at execution time.
-            match codegg_config::schema::Config::load() {
-                Ok(config) => {
-                    if let Some(ref eggwork) = config.eggwork {
-                        match crate::scheduler::eggwork::EggworkExecutorConfig::from_daemon_config(
-                            eggwork,
-                        ) {
-                            Ok(exec_config) => {
-                                if exec_config.nodes.is_empty() {
-                                    tracing::info!(
-                                        "eggwork executor not registered: no nodes configured"
-                                    );
-                                } else {
-                                    let count = exec_config.nodes.len();
-                                    let executor = crate::scheduler::eggwork::EggworkExecutor::new(
-                                        exec_config.with_store(deps.job_store.clone()),
-                                    );
-                                    if let Err(error) =
-                                        scheduler.register_executor_sync(Arc::new(executor))
-                                    {
-                                        tracing::warn!(
-                                            ?error,
-                                            "eggwork executor registration failed"
-                                        );
-                                    } else {
-                                        tracing::info!(
-                                            node_count = count,
-                                            "eggwork executor registered"
-                                        );
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                tracing::error!(
-                                    error = %error,
-                                    "USER ACTION REQUIRED: eggwork executor not registered - fix [eggwork.nodes] key material paths"
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::debug!(
-                        ?error,
-                        "eggwork executor not registered: daemon config unavailable"
+            //
+            // The node table was resolved once above, where the telemetry
+            // coordinator took its share of the same resolution.
+            if let Some(exec_config) = eggwork_nodes.take() {
+                if exec_config.nodes.is_empty() {
+                    tracing::info!("eggwork executor not registered: no nodes configured");
+                } else {
+                    let count = exec_config.nodes.len();
+                    let executor = crate::scheduler::eggwork::EggworkExecutor::new(
+                        exec_config.with_store(deps.job_store.clone()),
                     );
+                    if let Err(error) = scheduler.register_executor_sync(Arc::new(executor)) {
+                        tracing::warn!(?error, "eggwork executor registration failed");
+                    } else {
+                        tracing::info!(node_count = count, "eggwork executor registered");
+                    }
                 }
             }
         }
@@ -577,6 +780,8 @@ impl CoreDaemon {
             _projection_maintenance_handle: projection_maintenance_handle,
             ci_watch_driver,
             _ci_watch_driver_handle: ci_watch_driver_handle,
+            schedule_driver,
+            _schedule_driver_handle: schedule_driver_handle,
             continuation_service: Some(shared_continuation),
             _idle_completion_handle: idle_completion_handle,
             idle_wake_cell,

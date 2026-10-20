@@ -209,6 +209,8 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                 schedule_id: None,
                 depends_on: Vec::new(),
                 labels: std::collections::HashMap::new(),
+                target: None,
+                remote_resources: None,
             };
             let submitted = match core_client
                 .request(crate::core::new_request(

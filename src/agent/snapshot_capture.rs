@@ -161,6 +161,8 @@ impl AgentLoop {
         // test harness).
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             run_id: None,
             prompt,
             agent,

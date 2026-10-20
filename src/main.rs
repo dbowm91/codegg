@@ -81,6 +81,37 @@ fn resolve_output_format(format: OutputFormat, json_output: bool) -> OutputForma
     }
 }
 
+fn merge_cli_policy_overrides(
+    root: Option<codegg::policy_surface::CliPolicyOverride>,
+    command: Option<codegg::policy_surface::CliPolicyOverride>,
+) -> Result<Option<codegg::policy_surface::CliPolicyOverride>, String> {
+    use codegg::policy_surface::CliPolicyOverride;
+    match (root, command) {
+        (None, None) => Ok(None),
+        (Some(policy), None) | (None, Some(policy)) => Ok(Some(policy)),
+        (Some(root), Some(command)) => {
+            let approval_mode = match (root.approval_mode, command.approval_mode) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err("top-level and ACP approval mode flags conflict".to_string());
+                }
+                (Some(value), _) | (_, Some(value)) => Some(value),
+                (None, None) => None,
+            };
+            let sandbox_profile = match (root.sandbox_profile, command.sandbox_profile) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err("top-level and ACP sandbox flags conflict".to_string());
+                }
+                (Some(value), _) | (_, Some(value)) => Some(value),
+                (None, None) => None,
+            };
+            Ok(Some(CliPolicyOverride {
+                approval_mode,
+                sandbox_profile,
+            }))
+        }
+    }
+}
+
 /// Clap log-level mapping for `-v` counting.
 ///
 /// Documented and tested exactly: no flag warns, `-v` informs, `-vv`
@@ -451,7 +482,10 @@ enum Commands {
         command: AuthSubcommand,
     },
     /// Run an ACP v1 agent over newline-delimited JSON-RPC on stdio.
-    Acp,
+    Acp {
+        #[command(flatten)]
+        policy: ExecutionPolicyArgs,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -1180,6 +1214,45 @@ mod cli_surface_tests {
     }
 
     #[test]
+    fn acp_policy_flags_share_resolution_and_reject_conflicts() {
+        let command = Cli::try_parse_from([
+            "codegg",
+            "acp",
+            "--approval-mode",
+            "yolo",
+            "--sandbox",
+            "full-host",
+        ])
+        .expect("ACP policy flags parse");
+        let Some(Commands::Acp { policy }) = command.command else {
+            panic!("expected ACP command");
+        };
+        assert_eq!(
+            policy.resolve().unwrap(),
+            codegg::policy_surface::resolve_cli_policy(Some("yolo"), Some("full-host"), false)
+                .unwrap()
+        );
+
+        let conflict = Cli::try_parse_from([
+            "codegg",
+            "--approval-mode",
+            "interactive",
+            "acp",
+            "--approval-mode",
+            "yolo",
+        ])
+        .expect("each policy spelling parses before merged validation");
+        let Some(Commands::Acp { policy }) = conflict.command else {
+            panic!("expected ACP command");
+        };
+        assert!(merge_cli_policy_overrides(
+            conflict.policy.resolve().unwrap(),
+            policy.resolve().unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
     fn output_format_compat_aliases() {
         let cli = Cli::try_parse_from(["codegg", "--output-format", "json"])
             .expect("legacy root spelling parses");
@@ -1352,7 +1425,10 @@ async fn main() -> Result<(), AppError> {
             // Fallback to no-op subscriber if we can't create the file, to avoid stdout/stderr flood in TUI
             tracing_subscriber::registry().init();
         }
-    } else if matches!(cli.command, Some(Commands::CoreStdio) | Some(Commands::Acp)) {
+    } else if matches!(
+        cli.command,
+        Some(Commands::CoreStdio) | Some(Commands::Acp { .. })
+    ) {
         // core-stdio reserves stdout for the JSONL protocol.  Keep tracing
         // on stderr so a diagnostic can never corrupt a response frame.
         tracing_subscriber::fmt()
@@ -1414,8 +1490,16 @@ async fn main() -> Result<(), AppError> {
             Commands::Auth { command } => {
                 cmd_auth(command.clone())?;
             }
-            Commands::Acp => {
-                codegg::acp::run().await?;
+            Commands::Acp { policy } => {
+                let root_policy = cli.policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid execution policy flags: {}", e))
+                })?;
+                let command_policy = policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid ACP execution policy flags: {}", e))
+                })?;
+                let policy = merge_cli_policy_overrides(root_policy, command_policy)
+                    .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
+                codegg::acp::run(policy).await?;
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;

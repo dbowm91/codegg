@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
-    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDeleteRequestDto,
-    ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto,
-    ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto, RunQueryDto,
-    RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
-    SessionBindingDto, WorkspaceServiceHealthDto,
+    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, NodeTelemetryDto,
+    ProjectDeleteRequestDto, ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto,
+    ProjectSummaryDto, ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto,
+    RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto,
+    ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -1379,6 +1379,14 @@ pub enum CoreResponse {
     SchedulerSnapshot {
         snapshot: serde_json::Value,
     },
+    /// Sanitized host telemetry for the requested Eggwork nodes
+    /// (Eggwork M002).
+    ///
+    /// One snapshot per requested node, in the daemon's node order. A node
+    /// that could not be read still appears, with a bounded diagnostic.
+    NodeTelemetry {
+        nodes: Vec<NodeTelemetryDto>,
+    },
     ModelsSnapshot {
         current_model: Option<String>,
         models: Vec<String>,
@@ -2071,6 +2079,12 @@ pub struct ClientSnapshot {
     pub attached_sessions: Vec<String>,
 }
 
+// Request variants carry bounded request payloads by design: `JobSubmit`
+// embeds the job spec (which carries the explicit remote target), and
+// `WorkOrderCreate` embeds its request. The enum's largest variant is
+// therefore the one that carries a payload, which is the point of the
+// enum — the same reason `CoreResponse` and `CoreEvent` below are allowed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreRequest {
@@ -2786,6 +2800,20 @@ pub enum CoreRequest {
     },
     /// Request the current bounded scheduler snapshot.
     SchedulerSnapshot,
+    /// Read the host telemetry of the named Eggwork nodes (Eggwork M002).
+    ///
+    /// A read-only operator request: it observes a remote node's host and
+    /// never creates, mutates or releases a job. `node_id` selects one
+    /// `[eggwork.nodes]` table key; `None` asks for every configured node.
+    ///
+    /// The answer carries one snapshot per node, including the nodes that
+    /// could not be read — a node without a usable observation reports a
+    /// bounded diagnostic rather than being omitted or zero-filled.
+    NodeTelemetry {
+        /// The `[eggwork.nodes]` table key to read, or every node.
+        #[serde(default)]
+        node_id: Option<String>,
+    },
     /// Wait for one durable job completion without giving the client direct
     /// access to scheduler internals.
     JobWait {
@@ -3988,6 +4016,10 @@ pub enum CoreEvent {
     },
     SubagentStarted {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
+        #[serde(default)]
+        originating_turn_id: Option<String>,
         task_id: u64,
         agent: String,
         description: String,
@@ -4017,18 +4049,24 @@ pub enum CoreEvent {
     },
     SubagentProgress {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         message: String,
     },
     SubagentCompleted {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         result_summary: String,
     },
     SubagentFailed {
         session_id: String,
+        #[serde(default)]
+        child_instance_id: String,
         task_id: u64,
         agent: String,
         error: String,

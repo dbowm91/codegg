@@ -44,6 +44,7 @@ use codegg_protocol::document::MAX_DOCUMENT_EDITS;
 use codegg_protocol::lsp::LspReadOperation;
 
 use super::document_session::TuiDocumentPresentation;
+use super::text_geometry;
 use crate::tui::editor_effect::{ClipboardVerb, EditorPendingEffect};
 use crate::tui::editor_lsp::EditorDiagnosticStep;
 use crate::tui::editor_match;
@@ -1935,51 +1936,31 @@ impl MatchNote {
 ///
 /// A non-boundary offset is at most three bytes past the preceding
 /// boundary in valid UTF-8, so this walks back at most three steps.
+///
+/// The rule lives in [`crate::tui::text_geometry`], shared with the composer.
 pub fn clamp_offset(snapshot: &DocumentSnapshot, offset: usize) -> usize {
-    let mut candidate = offset.min(snapshot.len_bytes());
-    while candidate > 0 && !snapshot.is_byte_boundary(candidate) {
-        candidate -= 1;
-    }
-    candidate
+    text_geometry::clamp_offset(snapshot, offset)
 }
 
 /// Next character boundary strictly after `offset`, or the end of the
 /// document. Returns `None` only when `offset` is already the end.
 pub fn next_char_boundary(snapshot: &DocumentSnapshot, offset: usize) -> Option<usize> {
-    let mut candidate = clamp_offset(snapshot, offset).saturating_add(1);
-    while candidate < snapshot.len_bytes() {
-        if snapshot.is_byte_boundary(candidate) {
-            return Some(candidate);
-        }
-        candidate += 1;
-    }
-    None
+    text_geometry::next_char_boundary(snapshot, offset)
 }
 
 /// Previous character boundary strictly before `offset`.
 pub fn prev_char_boundary(snapshot: &DocumentSnapshot, offset: usize) -> usize {
-    let mut candidate = clamp_offset(snapshot, offset);
-    while candidate > 0 {
-        candidate -= 1;
-        if snapshot.is_byte_boundary(candidate) {
-            return candidate;
-        }
-    }
-    0
+    text_geometry::prev_char_boundary(snapshot, offset)
 }
 
 /// Zero-based line containing `offset`, clamped to a valid line.
 pub fn cursor_line(snapshot: &DocumentSnapshot, offset: usize) -> usize {
-    let offset = clamp_offset(snapshot, offset);
-    snapshot
-        .byte_to_position(offset)
-        .map(|position| position.line)
-        .unwrap_or_else(|_| snapshot.len_lines().saturating_sub(1))
+    text_geometry::cursor_line(snapshot, offset)
 }
 
 /// Byte offset where `line` starts.
 pub fn line_start(snapshot: &DocumentSnapshot, line: usize) -> Option<usize> {
-    snapshot.line_range(line).ok().map(|range| range.start)
+    text_geometry::line_start(snapshot, line)
 }
 
 /// Byte length of `line` including its terminator, without reading content.
@@ -2026,30 +2007,12 @@ pub fn bounded_prefix_end(snapshot: &DocumentSnapshot, start: usize, end: usize)
 /// C002: inspects at most the last two bytes rather than reading the whole
 /// line, so a multi-megabyte line costs a constant here.
 pub fn line_content_end(snapshot: &DocumentSnapshot, line: usize) -> Option<usize> {
-    let range = snapshot.line_range(line).ok()?;
-    if range.start >= range.end {
-        return Some(range.start);
-    }
-    // The terminator, if any, is `\n`, `\r`, or `\r\n` at the very end.
-    let mut tail_start = range.end.saturating_sub(2).max(range.start);
-    while tail_start < range.end && !snapshot.is_byte_boundary(tail_start) {
-        tail_start += 1;
-    }
-    let tail = snapshot.read_bytes(tail_start, range.end).ok()?;
-    let terminator = if tail.ends_with("\r\n") {
-        2
-    } else if tail.ends_with('\n') || tail.ends_with('\r') {
-        1
-    } else {
-        0
-    };
-    Some(range.end.saturating_sub(terminator))
+    text_geometry::line_content_end(snapshot, line)
 }
 
 /// Byte offset of the end of the last line, excluding any terminator.
 pub fn buffer_content_end(snapshot: &DocumentSnapshot) -> usize {
-    let last = snapshot.len_lines().saturating_sub(1);
-    line_content_end(snapshot, last).unwrap_or_else(|| snapshot.len_bytes())
+    text_geometry::buffer_content_end(snapshot)
 }
 
 /// Zero-based index of the document's last line.
@@ -2310,49 +2273,17 @@ fn leading_byte(snapshot: &DocumentSnapshot, offset: usize) -> Option<u8> {
         .ok()
         .and_then(|text| text.as_bytes().first().copied())
 }
-
 /// Start of the next word at or after `offset`.
+///
+/// The rule lives in [`crate::tui::text_geometry`], shared with the composer,
+/// so both surfaces agree on where a word starts.
 pub fn word_forward(snapshot: &DocumentSnapshot, offset: usize) -> usize {
-    let mut cursor = clamp_offset(snapshot, offset);
-    let end = snapshot.len_bytes();
-    while cursor < end {
-        if !is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
-            cursor += 1;
-            continue;
-        }
-        while cursor < end && is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
-            cursor = next_char_boundary(snapshot, cursor).unwrap_or(end);
-        }
-        if cursor >= end {
-            return buffer_content_end(snapshot);
-        }
-        // Skip the separator run, then report the next word start.
-        while cursor < end && !is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
-            cursor = next_char_boundary(snapshot, cursor).unwrap_or(end);
-        }
-        return cursor;
-    }
-    buffer_content_end(snapshot)
+    text_geometry::word_forward(snapshot, offset)
 }
 
 /// Start of the previous word strictly before `offset`.
 pub fn word_backward(snapshot: &DocumentSnapshot, offset: usize) -> usize {
-    let mut cursor = clamp_offset(snapshot, offset);
-    while cursor > 0 {
-        let previous = prev_char_boundary(snapshot, cursor);
-        if is_word_byte(leading_byte(snapshot, previous).unwrap_or(0)) {
-            break;
-        }
-        cursor = previous;
-    }
-    while cursor > 0 {
-        let previous = prev_char_boundary(snapshot, cursor);
-        if !is_word_byte(leading_byte(snapshot, previous).unwrap_or(0)) {
-            break;
-        }
-        cursor = previous;
-    }
-    cursor
+    text_geometry::word_backward(snapshot, offset)
 }
 
 /// Byte offset of the character at the end of the word at or after `offset`.
@@ -2374,22 +2305,11 @@ pub fn word_backward(snapshot: &DocumentSnapshot, offset: usize) -> usize {
 /// readable at all, so the interior could never be classified. Worse, the
 /// final `.unwrap_or(cursor)` then had nowhere to advance to on the last
 /// character of a document, which is a spin.
+///
+/// The rule lives in [`crate::tui::text_geometry`], shared with the composer,
+/// so both surfaces agree on where a word ends.
 pub fn word_end(snapshot: &DocumentSnapshot, offset: usize) -> usize {
-    let end = snapshot.len_bytes();
-    let mut cursor = clamp_offset(snapshot, offset);
-    if !is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
-        cursor = word_forward(snapshot, cursor);
-        if cursor >= end || !is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
-            return buffer_content_end(snapshot);
-        }
-    }
-    while let Some(next) = next_char_boundary(snapshot, cursor) {
-        match leading_byte(snapshot, next) {
-            Some(byte) if is_word_byte(byte) => cursor = next,
-            _ => break,
-        }
-    }
-    cursor
+    text_geometry::word_end(snapshot, offset)
 }
 
 /// Start of the next whitespace-delimited run at or after `offset`.
@@ -2480,23 +2400,16 @@ pub fn long_word_end(snapshot: &DocumentSnapshot, offset: usize) -> usize {
 /// The column is clamped into the target line, and [`offset_on_line`] clamps it
 /// again onto a character boundary, so a stale column recorded against older
 /// text cannot produce an offset outside the line or mid-codepoint.
+///
+/// The rule itself lives in [`crate::tui::text_geometry`], shared with the
+/// composer; the editor's own sticky column is the editor's own state.
 pub fn move_vertical(
     snapshot: &DocumentSnapshot,
     offset: usize,
     delta: isize,
     desired_column: Option<usize>,
 ) -> usize {
-    let offset = clamp_offset(snapshot, offset);
-    let last_line = snapshot.len_lines().saturating_sub(1);
-    let current = cursor_line(snapshot, offset);
-    let column = desired_column
-        .unwrap_or_else(|| offset.saturating_sub(line_start(snapshot, current).unwrap_or(0)));
-    let target = if delta.is_negative() {
-        current.saturating_sub(delta.unsigned_abs())
-    } else {
-        current.saturating_add(delta as usize).min(last_line)
-    };
-    offset_on_line(snapshot, target, column)
+    text_geometry::move_vertical(snapshot, offset, delta, desired_column)
 }
 
 /// A position in the document as a Helix selection point.
