@@ -117,4 +117,4 @@ unblock M004 because M002 and M003 remain dependencies.
 
 The M001 implementation plan and roadmap row are marked closed and this record
 is listed under Recently closed. M003 remains blocked on explicit acceptance of
-ADR-0042; therefore M004–M006 remain blocked in order.
+ADR-0043; therefore M004–M006 remain blocked in order.

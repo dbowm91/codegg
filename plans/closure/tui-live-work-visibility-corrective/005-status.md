@@ -5,7 +5,7 @@ Date: 2026-10-19
 Class: **capability**
 Source implementation plan: `plans/implementation/tui-live-work-visibility-corrective/005-job-and-subagent-inspection-controls.md`
 Source subsystem roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md#7-milestones`
-Applicable decisions: ADR-0041 Option A (parent-mediated steering); ADR-0042 Option A
+Applicable decisions: ADR-0041 Option A (parent-mediated steering); ADR-0043 Option A
 Implementation commit: `a735ffed21fce498a26b1f50aa7085456760ce9d`
 
 ## Finding

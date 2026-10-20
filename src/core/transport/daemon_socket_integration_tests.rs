@@ -602,6 +602,257 @@ async fn projection_daemon() -> Arc<CoreDaemon> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_scheduled_subagent_is_recoverable_while_provider_is_held() {
+    use crate::agent::worker::SubAgentPool;
+    use crate::agent::{Agent, AgentMode};
+    use crate::config::schema::{Config, SubagentConfig};
+    use crate::provider::{
+        ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, ProviderError, ProviderRegistry,
+        TokenUsage,
+    };
+    use async_trait::async_trait;
+    use codegg_core::jobs::{
+        IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, ResourceRequest,
+        RetryPolicy,
+    };
+
+    #[derive(Clone)]
+    struct HeldProvider {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        id: String,
+    }
+
+    #[async_trait]
+    impl Provider for HeldProvider {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "held M006 provider"
+        }
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+        async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(Box::pin(futures_util::stream::iter([
+                Ok(ChatEvent::TextDelta(Arc::new("worker finished".to_owned()))),
+                Ok(ChatEvent::Finish {
+                    stop_reason: Arc::new("stop".to_owned()),
+                    usage: TokenUsage::default(),
+                }),
+            ])))
+        }
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(vec![ModelInfo {
+                id: "held/model".into(),
+                name: "held model".into(),
+                provider: self.id.clone(),
+                context_window: 4096,
+                max_output_tokens: Some(1024),
+                supports_tools: true,
+                supports_vision: false,
+                variants: Vec::new(),
+            }])
+        }
+    }
+
+    let base = projection_daemon().await;
+    let pool = base.pool.clone().expect("daemon database");
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mut providers = ProviderRegistry::new();
+    providers.register(HeldProvider {
+        entered: entered.clone(),
+        release: release.clone(),
+        id: "held".into(),
+    });
+    let mut config = Config::default();
+    config.subagent = Some(SubagentConfig {
+        enabled: Some(true),
+        ..Default::default()
+    });
+    let agent = Agent {
+        name: "held-worker".into(),
+        description: "M006 deterministic worker".into(),
+        mode: AgentMode::Subagent,
+        model: Some("held/model".into()),
+        hidden: false,
+        ..Default::default()
+    };
+    let worker_pool = Arc::new(
+        SubAgentPool::new(
+            &config,
+            vec![agent],
+            providers,
+            Arc::new(crate::session::SessionStore::new(pool.clone())),
+            Some(pool.clone()),
+        )
+        .await,
+    );
+    let daemon = Arc::new(CoreDaemon::new(Some(pool), Some(worker_pool), None));
+    daemon.start_event_bridge();
+
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace = daemon
+        .workspaces
+        .get_or_register(root.path())
+        .await
+        .expect("workspace");
+    let project = codegg_core::project_catalog::ProjectCatalog::new(daemon.pool.clone().unwrap())
+        .register_local_project(
+            codegg_core::project_catalog::RegisterLocalProject {
+                display_name: "M006 held worker".into(),
+                description: None,
+                tags: Vec::new(),
+                primary_repository_id: None,
+            },
+            &workspace.id,
+            "m006-held-worker",
+        )
+        .await
+        .expect("project");
+    daemon.sessions.get_or_create(
+        "m006-parent-session",
+        workspace.id.clone(),
+        root.path().to_path_buf(),
+        project.project_id.as_str().to_owned(),
+        root.path().to_path_buf(),
+    );
+    let submission = daemon
+        .deps
+        .submission
+        .as_ref()
+        .expect("scheduler submission");
+    let job = submission
+        .submit(
+            None,
+            NewJob {
+                workspace_id: workspace.id.clone(),
+                session_id: Some("m006-parent-session".into()),
+                turn_id: Some("m006-parent-turn".into()),
+                kind: JobKind::Subagent,
+                source: JobSource::Interactive,
+                priority: JobPriority::Normal,
+                payload: JobPayload::Subagent {
+                    prompt: "wait for the test latch".into(),
+                    agent: "held-worker".into(),
+                    model: Some("held/model".into()),
+                    parent_id: Some("m006-parent-session".into()),
+                    denied_tools: Vec::new(),
+                    allowed_paths: vec![root.path().to_string_lossy().into_owned()],
+                    max_tool_calls: Some(4),
+                },
+                resource_request: ResourceRequest::default(),
+                timeout: None,
+                retry_policy: RetryPolicy::default(),
+                idempotency: IdempotencyClass::ReadOnly,
+                not_before: None,
+                deadline: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                parent_job_id: None,
+                parent_attempt_id: None,
+                parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
+                target: codegg_core::jobs::ExecutionTarget::Local,
+            },
+        )
+        .await
+        .expect("scheduler accepts real worker job");
+
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("worker reaches provider latch");
+    let snapshot = daemon
+        .projection_snapshot_for_session(
+            "m006-parent-session",
+            project.project_id.as_str(),
+            workspace.id.as_str(),
+        )
+        .await;
+    assert_eq!(
+        snapshot.subagents.len(),
+        1,
+        "late snapshot contains the running real child"
+    );
+    let child = &snapshot.subagents[0];
+    assert_eq!(
+        child.originating_turn_id.as_deref(),
+        Some("m006-parent-turn")
+    );
+    assert_eq!(
+        child.status,
+        crate::protocol::projection::dto::AgentTreeStatus::Running
+    );
+    daemon
+        .event_log
+        .publish(
+            Some("m006-parent-session".into()),
+            Some("m006-parent-turn".into()),
+            crate::protocol::core::CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
+                context_limit: None,
+                session_id: "m006-parent-session".into(),
+                turn_id: "m006-parent-turn".into(),
+                stop_reason: "completed while child remains held".into(),
+            },
+        )
+        .await;
+    let after_parent_completion = daemon
+        .projection_snapshot_for_session(
+            "m006-parent-session",
+            project.project_id.as_str(),
+            workspace.id.as_str(),
+        )
+        .await;
+    assert_eq!(after_parent_completion.subagents[0].status, child.status);
+
+    let cancel = daemon
+        .handle_request(crate::core::new_request(
+            "m006-owner-cancel-running-child".into(),
+            crate::protocol::core::CoreRequest::JobCancel {
+                job_id: job.job_id.as_str().into(),
+                reason: Some("M006 held worker cancellation".into()),
+            },
+        ))
+        .await
+        .expect("owner can cancel the running worker");
+    assert!(
+        matches!(
+            cancel,
+            crate::protocol::core::CoreResponse::JobCancelResult { .. }
+        ),
+        "expected cancellation acknowledgement, got {cancel:?}"
+    );
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let stored = daemon
+                .deps
+                .job_store
+                .get_job(&job.job_id)
+                .await
+                .unwrap()
+                .unwrap();
+            if stored.state.is_terminal() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("real worker reaches terminal scheduler state");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_job() {
     use crate::core::transport::SocketCoreClient;
     use crate::core::CoreClient;

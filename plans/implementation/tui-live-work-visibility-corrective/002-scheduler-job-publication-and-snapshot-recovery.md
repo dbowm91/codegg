@@ -5,7 +5,7 @@ Primary class: invariant
 Repository review baseline: `df923802` (`plan/tui-live-work-visibility-corrective`, rebased on `origin/main`, 2026-10-19)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M002.
 Requirements: `plans/000-long-term-specification.md#26-reliability-and-recovery`, `#28-observability`, `#27-security-requirements`.
-Related accepted decisions: ADR-0031 (idle completion), ADR-0038 (queue/scheduler authority); proposed ADR-0042 is **not** required here.
+Related accepted decisions: ADR-0031 (idle completion), ADR-0038 (queue/scheduler authority); proposed ADR-0043 is **not** required here.
 Corrective origin: `8fab1ba...` plus prior `plans/closure/tui-subagent-and-job-visibility-convergence/002-status.md`, which validated seeded `snapshot.jobs` rows but did not prove production publications.
 
 ## 1. Objective and readiness

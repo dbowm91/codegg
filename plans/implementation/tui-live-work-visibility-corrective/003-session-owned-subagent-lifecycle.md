@@ -2,15 +2,15 @@
 
 Status: **closed** — closure: `plans/closure/tui-live-work-visibility-corrective/003-status.md`
 Primary class: invariant
-Repository review baseline: `61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649` (`main`, 2026-10-19; re-pin)
+Repository review baseline: `ea5dab90424ba95312310ac7b1072be0f1323742` (`main`, 2026-10-20)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M003.
 Requirements: `plans/000-long-term-specification.md#13-multi-project-and-multi-session-tui`, `#26-reliability-and-recovery`, `#28-observability`; `plans/001-terminology-and-domain-model.md`.
-Decision gate: `plans/adrs/ADR-0042-session-owned-subagent-lifecycle-projection.md` (proposed Option A). Related accepted ADR-0041 preserves **parent-mediated** steering.
+Decision gate: `plans/adrs/ADR-0043-session-owned-subagent-lifecycle-projection.md` (proposed Option A). Related accepted ADR-0041 preserves **parent-mediated** steering.
 Corrective origin: C006's **unfixed** residual in `plans/closure/tui-subagent-and-job-visibility-convergence/007-status.md`; prior C004/C005 field propagation tests did not exercise execution after a parent turn exited.
 
 ## 1. Objective, dependency and scope
 
-Ensure every real subagent has session-owned identity and lifecycle state independent of `active_turn`, so it remains visible across parent timeout/completion, turn replacement and reconnection and terminates correctly after cancel/failure/restart. Do **not** implement durable DTO changes or redefine child identity until ADR-0042 is accepted; test-first source inventory and reproduction may be done before acceptance. M001 and M002 are soft integration dependencies for eventual UI proof.
+Ensure every real subagent has session-owned identity and lifecycle state independent of `active_turn`, so it remains visible across parent timeout/completion, turn replacement and reconnection and terminates correctly after cancel/failure/restart. Do **not** implement durable DTO changes or redefine child identity until ADR-0043 is accepted; test-first source inventory and reproduction may be done before acceptance. M001 and M002 are soft integration dependencies for eventual UI proof.
 
 ## 2. Current evidence and constraints
 

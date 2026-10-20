@@ -119,12 +119,12 @@ job set.
 ## 11. Roadmap disposition
 
 M002 is closed. M001 is also closed. M003 remains blocked because proposed
-ADR-0042 requires explicit acceptance before its child-identity/schema work;
+ADR-0043 requires explicit acceptance before its child-identity/schema work;
 therefore M004, M005, and M006 remain blocked in order.
 
 ## 12. Registry updates
 
 The M002 implementation plan and roadmap row are marked closed and this record
 is listed under Recently closed. The unblock audit found no newly eligible
-downstream plan: M003 still requires ADR-0042 acceptance, and M004–M006 retain
+downstream plan: M003 still requires ADR-0043 acceptance, and M004–M006 retain
 their hard dependency chain.

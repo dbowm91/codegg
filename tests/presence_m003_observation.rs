@@ -228,6 +228,13 @@ async fn observer_cannot_steer_cancel_or_mutate_through_daemon() {
             session_id: session_id.to_owned(),
             turn_id: "turn-1".to_owned(),
         },
+        // Job cancellation is an observation-to-control boundary too. Use
+        // an opaque id: authorization must reject before job existence can
+        // be enumerated or any scheduler state can be changed.
+        CoreRequest::JobCancel {
+            job_id: "job-observer-must-not-cancel".to_owned(),
+            reason: Some("observer authorization regression".to_owned()),
+        },
         CoreRequest::TurnSteer {
             session_id: session_id.to_owned(),
             turn_id: "turn-1".to_owned(),

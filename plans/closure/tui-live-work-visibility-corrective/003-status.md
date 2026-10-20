@@ -5,7 +5,7 @@ Date: 2026-10-19
 Class: **invariant**
 Source implementation plan: `plans/implementation/tui-live-work-visibility-corrective/003-session-owned-subagent-lifecycle.md`
 Source subsystem roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md#7-milestones`
-ADR gate: `plans/adrs/ADR-0042-session-owned-subagent-lifecycle-projection.md` — Option A explicitly accepted 2026-10-19
+ADR gate: `plans/adrs/ADR-0043-session-owned-subagent-lifecycle-projection.md` — Option A explicitly accepted 2026-10-19
 Implementation commit: `a735ffed21fce498a26b1f50aa7085456760ce9d`
 
 ## Finding
@@ -59,6 +59,6 @@ as conditional rather than claiming it passed.
 
 ## Unblock audit
 
-M003 is closed after ADR-0042 Option A acceptance. This unblocked M004, whose
+M003 is closed after ADR-0043 Option A acceptance. This unblocked M004, whose
 hard prerequisites M001 and M002 were already closed. M005 remained dependent
 on M004; M006 remained sequenced behind M001–M005 and its real-terminal gate.

@@ -1029,7 +1029,7 @@ impl JobExecutor for SubagentJobExecutor {
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             child_instance_id: String::new(),
-            originating_turn_id: None,
+            originating_turn_id: ctx.job.turn_id.clone(),
             run_id: run_id.clone(),
             prompt,
             agent,

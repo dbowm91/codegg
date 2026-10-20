@@ -5,7 +5,7 @@ Primary class: infrastructure
 Repository review baseline: `df923802` (`plan/tui-live-work-visibility-corrective`, rebased on `origin/main`, 2026-10-19)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M001.
 Requirements: `plans/000-long-term-specification.md#13-multi-project-and-multi-session-tui`, `#25-tui-target-behavior`, `#28-observability`; `plans/001-terminology-and-domain-model.md`.
-Applicable accepted decisions: ADR-0007 (session control), ADR-0036 (steering). ADR-0042 is **not** a dependency for this milestone.
+Applicable accepted decisions: ADR-0007 (session control), ADR-0036 (steering). ADR-0043 is **not** a dependency for this milestone.
 Corrective origin: `8fab1ba7d48d794b397ce4a0a207d5ae547ff976`, prior `plans/closure/tui-subagent-and-job-visibility-convergence/001-status.md` and `002-status.md` (synthetic projection-to-render coverage, no launched TUI/real daemon subscription).
 
 ## 1. Objective and readiness

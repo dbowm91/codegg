@@ -1,4 +1,4 @@
-# ADR-0042: Session-Owned Subagent Lifecycle Projection
+# ADR-0043: Session-Owned Subagent Lifecycle Projection
 
 Status: **accepted** — Option A (explicitly accepted by the user on 2026-10-19)
 

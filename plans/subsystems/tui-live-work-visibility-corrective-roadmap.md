@@ -2,11 +2,11 @@
 
 Status: conditionally closed (2026-10-19; M001–M005 closed, M006 conditionally closed pending full runtime/operator qualification)
 
-Repository review baseline: `61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649` on `main`. Originating user reproduction: real sessions with waiting jobs and subagents show neither in `/sessions` nor `Ctrl+T` after commit `8fab1ba7d48d794b397ce4a0a207d5ae547ff976`.
+Repository review baseline: `ea5dab90424ba95312310ac7b1072be0f1323742` on `main` (2026-10-20). Originating user reproduction: real sessions with waiting jobs and subagents show neither in `/sessions` nor `Ctrl+T` after commit `8fab1ba7d48d794b397ce4a0a207d5ae547ff976`.
 
 Long-term: `plans/000-long-term-specification.md#13-multi-project-and-multi-session-tui`, `plans/000-long-term-specification.md#25-tui-target-behavior`, `plans/000-long-term-specification.md#26-reliability-and-recovery`, `plans/000-long-term-specification.md#27-security-requirements`, `plans/000-long-term-specification.md#28-observability`, `plans/001-terminology-and-domain-model.md`; governance `plans/003-planning-process.md`.
 
-Predecessors (retain their history; do not retroactively change closure claims): `plans/subsystems/tui-subagent-and-job-visibility-roadmap.md`; `plans/subsystems/tui-subagent-and-job-visibility-convergence-corrective-addendum.md`; `plans/closure/tui-subagent-and-job-visibility-convergence/001-status.md` through `007-status.md`. The C006 closure explicitly escalates a **still-broken orphan-subagent** path. Related accepted decisions: ADR-0031 (idle completion), ADR-0035/0036/0037/0038 (prompt/turn authority), ADR-0041 (human-to-subagent Option A). Proposed decision: `plans/adrs/ADR-0042-session-owned-subagent-lifecycle-projection.md` (do not implement M003's schema/identity changes until accepted).
+Predecessors (retain their history; do not retroactively change closure claims): `plans/subsystems/tui-subagent-and-job-visibility-roadmap.md`; `plans/subsystems/tui-subagent-and-job-visibility-convergence-corrective-addendum.md`; `plans/closure/tui-subagent-and-job-visibility-convergence/001-status.md` through `007-status.md`. The C006 closure explicitly escalates a **still-broken orphan-subagent** path. Related accepted decisions: ADR-0031 (idle completion), ADR-0035/0036/0037/0038 (prompt/turn authority), ADR-0041 (human-to-subagent Option A). Proposed decision: `plans/adrs/ADR-0043-session-owned-subagent-lifecycle-projection.md` (do not implement M003's schema/identity changes until accepted).
 
 ## 1. Purpose and ownership
 
@@ -49,13 +49,13 @@ Truth is sourced from authorized projected state, not process-local `GlobalEvent
 ```text
 M001 production subscription / unavailable-vs-empty ────┐
 M002 scheduler job publication + late-attach rebuild ───┤
-ADR-0042 accepted -> M003 child identity & lifetime ───┤
+ADR-0043 accepted -> M003 child identity & lifetime ───┤
                                                         +--> M004 one work model
                                                         +--> M005 inspect/control UX
                                                         +--> M006 real transport and TUI acceptance
 ```
 
-M001 and M002 are closed. ADR-0042 Option A was accepted and M003 is closed. M004 and M005 are closed in dependency order. M006 is conditionally closed under its explicit stop rule: the socket-to-painted-TUI slice passes, while real-worker concurrency, late-attach/restart recovery, the full denial matrix, and the manual terminal receipt remain unqualified. These are re-entry conditions for full capability acceptance, not blockers on another registered plan in this line.
+M001 and M002 are closed. ADR-0043 Option A was accepted and M003 is closed. M004 and M005 are closed in dependency order. M006 is conditionally closed under its explicit stop rule: the socket-to-painted-TUI slice passes, while real-worker concurrency, late-attach/restart recovery, the full denial matrix, and the manual terminal receipt remain unqualified. These are re-entry conditions for full capability acceptance, not blockers on another registered plan in this line.
 
 ## 6. Milestones
 
@@ -63,7 +63,7 @@ M001 and M002 are closed. ADR-0042 Option A was accepted and M003 is closed. M00
 |---|---|---|---|
 | M001 | infrastructure | **closed** | Default `/core` TUI subscribes for its bound session, handles connection errors honestly, and installs/drains real projection envelopes; reconnect takes a fresh authoritative snapshot. Closure: `plans/closure/tui-live-work-visibility-corrective/001-status.md`. |
 | M002 | invariant | **closed** | Scheduler admission and lifecycle updates produce session-scoped projected jobs; late snapshots contain bounded outstanding jobs. Closure: `plans/closure/tui-live-work-visibility-corrective/002-status.md`. |
-| M003 | invariant | **closed** | Session-owned bounded child lifecycle and generation-safe identity; ADR-0042 Option A accepted. Closure: `plans/closure/tui-live-work-visibility-corrective/003-status.md`. |
+| M003 | invariant | **closed** | Session-owned bounded child lifecycle and generation-safe identity; ADR-0043 Option A accepted. Closure: `plans/closure/tui-live-work-visibility-corrective/003-status.md`. |
 | M004 | capability | **closed** | One ID-based session-work selector feeds `/sessions`, `Ctrl+T`, and sidebar; socket/event publication reaches both painted work surfaces. Closure: `plans/closure/tui-live-work-visibility-corrective/004-status.md`. |
 | M005 | capability | **closed** | Identity-keyed job detail and daemon-authorized cancel; observer cancel disabled; parent-mediated child interaction preserved. Closure: `plans/closure/tui-live-work-visibility-corrective/005-status.md`. |
 | M006 | capability | **conditionally closed** | Socket-to-painted-TUI and job cancel slice passes. Real worker concurrency, late attach/restart, complete denial matrix, and manual terminal receipt remain required for full acceptance. Closure: `plans/closure/tui-live-work-visibility-corrective/006-status.md`. |
@@ -74,7 +74,7 @@ Plans: `plans/implementation/tui-live-work-visibility-corrective/001-...` throug
 
 **Authorization:** session subscription must bind authenticated project/session identity, reuse established observation/control checks and exact stream ownership. A session's work must not be exposed through another session or a global broadcaster. Read-only observers cannot gain cancel/steer powers. Preserve ADR-0041 Option A; do not send directly to a child without a successor decision.
 
-**Storage/protocol:** prefer current job/agent-run stores and additive projection schema. Any new child identity, scope, DTO or persisted state requires ADR-0042 and an explicit migration/compatibility decision. Legacy events with no identity use clearly defined read-only fallback; never fabricate durable identities.
+**Storage/protocol:** prefer current job/agent-run stores and additive projection schema. Any new child identity, scope, DTO or persisted state requires ADR-0043 and an explicit migration/compatibility decision. Legacy events with no identity use clearly defined read-only fallback; never fabricate durable identities.
 
 **Failure/races:** handle subscribe response-before-events, switch while request in flight, reconnect with cursor gaps, daemon restart, rapid create→start→finish, parent cancellation, child outliving turn, duplicate/out-of-order event, bounded retention, resource starvation, and unreadable/unauthorized session. Terminal and missing states must not be conflated.
 

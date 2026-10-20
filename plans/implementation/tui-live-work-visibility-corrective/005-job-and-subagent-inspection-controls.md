@@ -2,10 +2,10 @@
 
 Status: **closed** — closure: `plans/closure/tui-live-work-visibility-corrective/005-status.md`
 Primary class: capability
-Repository review baseline: `61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649` (`main`, 2026-10-19; re-pin)
+Repository review baseline: `ea5dab90424ba95312310ac7b1072be0f1323742` (`main`, 2026-10-20)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M005.
 Long-term: `plans/000-long-term-specification.md#25-tui-target-behavior`, `#27-security-requirements`, `#28-observability`; `plans/001-terminology-and-domain-model.md`.
-Applicable accepted decisions: ADR-0007 (session controller), ADR-0036 (TurnSteer), ADR-0041 **Option A** (subagent messages addressed to parent, not child). M003/ADR-0042 must have yielded stable child identity before handoff.
+Applicable accepted decisions: ADR-0007 (session controller), ADR-0036 (TurnSteer), ADR-0041 **Option A** (subagent messages addressed to parent, not child). M003/ADR-0043 must have yielded stable child identity before handoff.
 Corrective origin: `8fab1ba...`; previous C002 explicitly consumed `Enter` on job rows with no action; C007 added only `/subagent-send` through the controlling parent turn, not direct child interaction.
 
 ## 1. Objective and readiness

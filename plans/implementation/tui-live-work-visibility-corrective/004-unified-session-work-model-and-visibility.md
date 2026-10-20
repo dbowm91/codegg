@@ -2,10 +2,10 @@
 
 Status: **closed** — closure: `plans/closure/tui-live-work-visibility-corrective/004-status.md`
 Primary class: capability
-Repository review baseline: `61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649` (`main`, 2026-10-19; re-pin)
+Repository review baseline: `ea5dab90424ba95312310ac7b1072be0f1323742` (`main`, 2026-10-20)
 Source roadmap: `plans/subsystems/tui-live-work-visibility-corrective-roadmap.md` M004.
 Long-term: `plans/000-long-term-specification.md#13-multi-project-and-multi-session-tui`, `#25-tui-target-behavior`, `#28-observability`; `plans/001-terminology-and-domain-model.md`.
-Applicable accepted decisions: ADR-0041 (human interaction), ADR-0031 (idle continuation); proposed `plans/adrs/ADR-0042-session-owned-subagent-lifecycle-projection.md` must be resolved through M003.
+Applicable accepted decisions: ADR-0041 (human interaction), ADR-0031 (idle continuation); proposed `plans/adrs/ADR-0043-session-owned-subagent-lifecycle-projection.md` must be resolved through M003.
 Original closure paths: `plans/closure/tui-subagent-and-job-visibility-convergence/001-status.md`, `002-status.md`, `003-status.md`, `004-status.md`. Those tests seeded rows directly and did not demonstrate runtime liveness.
 
 ## 1. Objective and dependencies
