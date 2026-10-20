@@ -103,3 +103,29 @@ C005 is blocked. It cannot hand off positive local Git recovery to Linux C002 or
 - Record C005 as blocked with this closure record.
 - Keep the Linux trusted Git corrective roadmap active; preserve C010 no-admission, C012 negative findings, and proposed ADR-0044 status.
 - No downstream Linux C002, M003, M006, or M008 milestone is newly unblocked.
+
+## 13. Addendum — status of the gates since this review
+
+The disposition above is the review's disposition **at the reviewed baseline**
+(`59ab0d2d`). This addendum records which of its named gates have since been
+addressed, so it is not read as a statement about the current tree. **C005
+remains blocked**; the blocked disposition is unchanged.
+
+| Gate | Status |
+|---|---|
+| C004 lacks production-owned durable publication/recovery | **addressed.** C007 (`plans/closure/linux-trusted-git-cost-corrective/007-status.md`) implements and qualifies a daemon-owned publisher: a private staging index, a compare-and-swap publication under Git's own `index.lock`, a durable journal, a startup reconciler, and a recovery path that reports committed / aborted / ambiguous and never a silent wrong answer. Proven on a qualified host by hosted runs `39318206124`, `39339024314` and `39351065569`. |
+| M005 production-owner host/configuration acceptance is absent | **partially addressed.** The owner qualification is now closed by C014 (hosted runs `39318206124` and `39339024314`, both reporting the M005 netns owner proof and the native restricted-userns proof `ok`), and the obtained network fact is now reported per launch by C023 (`plans/closure/linux-execution-isolation/023-status.md`), with hosted run `39351065569` proving the publication receipt states the boundary it obtained. **What is still absent:** the tool-program child-job route is unqualified, there is no machine-readable supported-host policy, and no independent M003/C010 admission decision has been recorded. |
+| ADR-0044 is proposed, not accepted | **still unsatisfied.** It is an owner decision. C006's review (`plans/closure/linux-trusted-git-cost-corrective/006-status.md` §8) records which of its blocking items remain: the typed consistency class, the production live-ODB read route, the consumer-side admissibility fence, and `include.path` mediation are all still unimplemented. C023 removed the clause 2 M005 vacuity; it did not accept the ADR. |
+| C002 writer-race, consistency, setup/resource and compatibility evidence is incomplete | **still unsatisfied.** C002's own closure is "conditionally closed — contained live-read and performance pilots complete for **test-only** use; production remains blocked": the pilot is gated behind a dev-only feature enabled through `[dev-dependencies]`, so it is absent from `cargo build` and from the shipped binary. Its measured cost improvement is evidence about the *mechanism*, not evidence that a production route exists, and the writer-race, consistency, setup/resource and compatibility evidence this review named is still missing. |
+| Independent M003/C010 admission | **still unsatisfied.** C010 no-admission stands and is unchanged. |
+
+So two of the five rows moved: one fully (C004's production publisher) and one
+partially (M005's owner qualification — the owner path and the obtained fact
+are closed; the tool-program child-job route, the supported-host policy and
+the admission decision are not). The remaining rows are an **architecture
+decision** (ADR-0044 acceptance) and an **admission decision** (M003/C010),
+both of which are the owner's to make, plus C002's test-only pilot status.
+C005's own ordered packages 1–6 (the parity work, the hostile filter/hook/
+helper denial matrix, the cost comparison, the native acceptance matrix, the
+cross-platform non-regression and rollback dry-run) are also unstarted; this
+addendum closes a gate, it does not perform the plan.
