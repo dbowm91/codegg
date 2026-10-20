@@ -453,7 +453,12 @@ Persistent writes are restricted to approved workspace roots, authorized
 session scratch roots, and stateless device nodes. A model process with a
 trusted session identity receives an owner-private directory under the
 per-user CodeGG cache root (`dirs::cache_dir()/codegg`) as
-`CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. This is kept outside the
+`CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. The per-user cache root the
+allocator depends on is created private (0700) when the product creates it, so
+the process umask cannot produce a root the ownership check would then refuse;
+a cache root that already exists is validated rather than re-permissioned, and
+one another user could write to is refused with a typed `WrongOwner` error
+instead of being silently tightened. This is kept outside the
 macOS credential-denied daemon data root; scratch contents are disposable and
 may be removed by host cache maintenance. The Required launch adds the exact
 path as a read/write root. Durable child runs receive a separate owner-private

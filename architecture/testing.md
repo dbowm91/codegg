@@ -292,6 +292,31 @@ cargo nextest run --workspace --profile ci
 scripts/capture-nextest-timing.sh --top 20
 ```
 
+### The sweep's private cache root
+
+The scratch allocator resolves its per-user cache root from
+`dirs::cache_dir()` and refuses a root another local user could write to (see
+`architecture/security.md`). A broad sweep therefore inherits the operator's
+cache root, and its result would be a property of that machine's home
+directory rather than of the product. Both canonical runners give the sweep a
+private cache root of its own:
+
+- `scripts/verify.sh full` creates one with `mktemp -d` and exports
+  `XDG_CACHE_HOME` for the duration of the run.
+- `.github/workflows/ci.yml` sets `XDG_CACHE_HOME` to a directory under the
+  runner's temporary directory.
+
+A manual broad run that has to be independent of the operator's home directory
+does the same:
+
+```bash
+XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci
+```
+
+The root stays **outside** the workspace on purpose: several qualifications
+grant the repository itself as the workspace root, so a scratch root inside it
+would no longer be a distinct root from the granted workspace.
+
 ## CI Structure
 
 Routine CI is one bounded `verify` job in `.github/workflows/ci.yml`

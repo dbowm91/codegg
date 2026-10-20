@@ -97,6 +97,24 @@ Two independent defects made the sweep's signal untrustworthy:
 - Product behaviour of any kind.
 - Historical closure verdicts, statuses, and findings.
 
+**Scope correction — 2026-10-20 (recorded, not silent).** The "product behaviour
+of any kind" exclusion above was written before the authoritative sweep had run.
+The sweep showed that this milestone's own objective — "make the default test
+sweep's green result mean what it claims: a property of the product, not of the
+host it ran on" (§1) — cannot be met without **one** product change: the scratch
+allocator's per-user cache root. The exclusion and the objective conflict, and
+the objective governs, because the roadmap's completion definition
+(`plans/subsystems/branch-and-ci-stabilization-roadmap.md` §11) requires the
+sweep's result not to depend on the host.
+
+The change is bounded and is the only product behaviour this milestone touches:
+a cache root the product creates is created private, so the operator's umask
+cannot produce a root the product's own ownership check would then refuse. No
+fail-closed path is weakened — a cache root that already exists and another
+user could write to is still refused, and is still refused with the same typed
+error. The work package, the tests, and the evidence are §7 WP-G, §10, and the
+closure's §3.7.
+
 ## 6. Required production changes
 
 - **Storage** — `crates/codegg-core/src/session/schema.rs`: the branch's M005
@@ -108,6 +126,12 @@ Two independent defects made the sweep's signal untrustworthy:
   it.
 - **Test surface** — `src/tool/lsp.rs`: three live-language-server tests move
   behind `lsp-real-server-tests`.
+- **Scratch allocator** — `src/scratch.rs`: the per-user cache root the
+  allocator depends on is created private (0700) when the product creates it.
+  The allocator must not depend on the operator's umask: it creates the root,
+  so it has to be able to use what it created. A cache root that already exists
+  is validated, never re-permissioned, and one another user could write to is
+  still refused with the same typed `WrongOwner` error.
 - **Identifiers and records** — the ADR file, its references, the migration
   record, the guard's self-test fixture, and the affected roadmaps and closure
   records.
@@ -139,6 +163,33 @@ failure a typed refusal. Gate the live-language-server tests.
 **WP-F — Re-measure and record.** Re-measure the published counts against this
 tree and against their listed `Source`; write the plan, the closure, and the
 registry rows.
+
+**WP-G — Make the sweep independent of the operator's home directory.** The
+authoritative sweep failed with 44 tests across 15 binaries, every one of them
+the same typed refusal: `WrongOwner("/home/sugarwookie/.cache")` or
+`WrongOwner("/tmp/.tmp…")`. The cause is the scratch allocator's ownership
+check on the per-user cache root: it refuses a root that is group- or
+world-writable, and on a host whose cache root is 0777 — or whose umask lets a
+created root become 0775 — the allocator refuses the machine it runs on.
+
+Three changes close it:
+
+- **The product** creates the cache root it depends on privately, so the
+  operator's umask can no longer produce a root the allocator then refuses.
+- **The fixtures** stop lying about their mode: `tempfile` creates directories
+  with the *default* permissions, so a fixture that claims "a private 0700
+  directory" got 0775 on a host with umask 002. The scratch-home fixture now
+  sets the mode it documents.
+- **The runners** give the sweep a private cache root of its own, so the
+  sweep's result is a property of the product rather than of the machine it
+  ran on. `scripts/verify.sh full` creates one with `mktemp -d`; the CI job
+  sets one under the runner's temporary directory; and the root stays outside
+  the workspace, because several qualifications grant the repository itself as
+  the workspace root.
+
+No fail-closed path is weakened: the refusal of an unsafe cache root is
+unchanged, and it is now a **tested contract** rather than an accident of the
+host.
 
 ## 8. Failure, cancellation, restart, contention semantics
 
@@ -177,6 +228,16 @@ registry rows.
 - The default sweep must no longer contain a live-language-server test: the
   three gated names are absent from the test listing without the feature, and
   the four rejection tests remain.
+- The scratch allocator — a cache root the product creates is private (0700)
+  and umask-independent; a group- or world-writable cache root is refused with
+  the typed `WrongOwner` error and is never re-permissioned. The first test
+  must be **provably non-vacuous**: it must fail against the pre-fix
+  behaviour.
+- The scratch allocator's resolution — with no `XDG_CACHE_HOME` the scratch
+  root lives under the home directory's cache, and with one it lives under
+  that root.
+- The forty-four tests that failed in the authoritative sweep — they must
+  pass.
 
 ## 11. Required verification commands
 
@@ -190,8 +251,12 @@ python3 scripts/check_adr_integrity.py
 python3 scripts/check_adr_integrity.py --self-test
 python3 scripts/check_project_catalog_invariants.py
 scripts/verify.sh quick
-cargo nextest run --workspace --locked --profile ci
+XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci
 ```
+
+The sweep's private cache root is part of the command, not an environment the
+runner happens to have: `scripts/verify.sh full` and `.github/workflows/ci.yml`
+both supply it, and §7 WP-G says why.
 
 ## 12. Documentation updates
 
@@ -211,6 +276,9 @@ cargo nextest run --workspace --locked --profile ci
 - The default sweep contains no test that requires an installed language
   server.
 - A transient object-store read failure is retried; a persistent one refuses.
+- The scratch allocator's cache root does not depend on the operator's umask,
+  an unsafe cache root is still refused, and the default sweep's result does
+  not depend on the operator's home directory.
 - Every published count is measured against its listed `Source` on this tree.
 
 ## 14. Stop conditions

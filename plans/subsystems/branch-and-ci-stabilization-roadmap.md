@@ -183,7 +183,17 @@ milestone depends on C001 for correctness; C001 exists so that the work that
 - **Dependencies:** `main` reachable; no other milestone.
 - **Deliverable boundary:** the branch's history, its two identifier
   namespaces, its published counts, and the determinism of its default test
-  sweep. No product behaviour changes.
+  sweep.
+- **Boundary correction — 2026-10-20 (recorded, not silent).** The boundary
+  originally read "No product behaviour changes". The authoritative sweep showed
+  that this milestone's exit condition ("the sweep's remaining failures are
+  zero or explained") and this roadmap's completion definition ("the default
+  sweep's result does not depend on the host") cannot both be met without one
+  bounded product change: the scratch allocator's per-user cache root. The
+  allocator created the root it then refused, so whether the product could run
+  at all depended on the operator's umask. The change is confined to *how a
+  cache root the product creates is created*; a cache root that already exists
+  and another user could write to is still refused, with the same typed error.
 - **Exit conditions:** the tree compiles with every target; both identifier
   guards pass; the canonical gate passes; the sweep's remaining failures are
   zero or explained; and the records say exactly what was and was not verified.
@@ -232,6 +242,24 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   Resolved in favour of retrying inside the existing bounded attempts, because
   the bound already exists for exactly this class of event and a persistent
   failure still refuses.
+- **Decision point: what to do about a per-user cache root the product itself
+  created.** The scratch allocator refuses a cache root that another local user
+  could write to — a deliberate hardening (`c05ace49`, "validate per-user cache
+  parent") that closes the "another user swaps the scratch root out from under
+  the product" hole. The allocator nevertheless created that root with
+  `create_dir_all`, whose mode follows the process umask, so on a host with
+  umask 002 it created a 0775 root and then refused it. Resolved in favour of
+  creating the root privately when the product creates it, and of **not**
+  re-permissioning a root that already exists: the hardening stays exactly as
+  it was, and only the self-defeating creation is removed.
+- **Decision point: how the sweep gets a cache root of its own.** Resolved in
+  favour of the canonical runners supplying one — `scripts/verify.sh full`
+  creates a private directory with `mktemp -d`, and the CI job sets one under
+  the runner's temporary directory — rather than a workspace-wide Cargo `[env]`
+  override. The Cargo override would also have redirected the *product's* cache
+  root for a local `cargo run`, which is a product behaviour change outside
+  this milestone, and it would have placed the scratch root inside the
+  repository, which several qualifications grant as their workspace root.
 
 ## 11. Completion definition
 

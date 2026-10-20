@@ -98,6 +98,17 @@ impl ScratchHome {
     fn install() -> Self {
         let guard = scratch_home_lock();
         let dir = tempfile::tempdir().expect("scratch home");
+        // `tempfile` creates its directories with the *default* permissions, so
+        // the mode depends on the operator's umask (0755 under umask 022, 0775
+        // under umask 002). The allocator refuses a cache root another user can
+        // write to, so the fixture has to be private on every host rather than
+        // only on the hosts whose umask happens to produce a private mode.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("private scratch home");
+        }
         let canonical = std::fs::canonicalize(dir.path()).expect("canonical scratch home");
         let previous = std::env::var_os("XDG_CACHE_HOME");
         std::env::set_var("XDG_CACHE_HOME", &canonical);

@@ -1,6 +1,6 @@
 # Branch and CI Stabilization Milestone C001 — Closure Status
 
-Status: closed — the branch is integrated with `main`, both identifier namespaces are unique, the content the branch had lost is restored, the tree compiles with every target, the canonical gate passes, and the default sweep's remaining failures are the ones this milestone is responsible for.
+Status: closed — the branch is integrated with `main`, both identifier namespaces are unique, the content the branch had lost is restored, the tree compiles with every target, the canonical gate passes, and the default sweep's green result is a property of the product rather than of the host it ran on.
 
 Source implementation plan:
 
@@ -66,6 +66,23 @@ The branch's test signal had two independent defects, and both are closed:
   were killed in both recorded sweeps. They now sit behind the repository's
   existing `lsp-real-server-tests` feature, which is what that feature is for.
 
+The authoritative sweep then exposed a **third** defect, with a different
+character: 44 tests across 15 binaries failed with one typed refusal,
+`WrongOwner`. The scratch allocator refuses a per-user cache root that another
+local user could write to — a deliberate hardening that closes the "another
+user swaps the scratch root out from under the product" hole — and it created
+that root with `create_dir_all`, whose mode follows the process umask. On a
+host whose umask grants group-write (this workstation's is `0002`), the
+allocator created a `0775` root and then refused it; on a host whose cache
+root is `0777`, it refused the machine it was running on. The allocator also
+depended on a *fixture* that documented itself as "a private, canonical, 0700
+directory" while `tempfile` had in fact created it with the default
+permissions. Both are closed: the product creates the root it depends on
+privately, the fixture sets the mode it documents, and the sweep gets a cache
+root of its own so its result is a property of the product rather than of the
+machine it ran on. The refusal itself is unchanged, and is now a **tested
+contract** rather than an accident of the host.
+
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
@@ -77,7 +94,7 @@ The branch's test signal had two independent defects, and both are closed:
 | The layout version tracks the highest wired migration | `STORAGE_LAYOUT_VERSION = 85`; `scripts/check_project_catalog_invariants.py` → "storage layout marker tracks highest wired schema migration" PASS | pass |
 | One ADR identifier per decision | `python3 scripts/check_adr_integrity.py` → pass; `main` passes the same guard, so the guard is not merely permissive | pass |
 | The ADR guard is itself trustworthy | `python3 scripts/check_adr_integrity.py --self-test` → "ADR integrity fixtures passed" | pass |
-| Every live local ADR path resolves | the guard's own check; the one dangling reference (`ADR-0028-command-syntax-and-execution-authority.md`) was corrected with a provenance note | pass |
+| Every live local ADR path resolves | the guard's own check; two dangling references were found and corrected with a provenance note — the `ADR-0028-command-syntax-and-execution-authority.md` reference in the agent-tool-use addendum, and this record's own reference to the command ADR's **former** filename (the guard treats any `plans/adrs/ADR-….md` path form as a live link, so a historical name is cited by number or filename only) | pass |
 | Content the branch had lost is restored | the eleven registry rows and prose for three unrelated workstreams are back in `plans/registry.md` | pass |
 | A stale ADR identifier no longer names a different decision | `plans/subsystems/tui-editor-helix-parity-roadmap.md` is now **byte-identical to `main`**; four editor closure records likewise | pass |
 | Every target compiles | `cargo check --workspace --all-targets --locked` → clean | pass |
@@ -86,6 +103,11 @@ The branch's test signal had two independent defects, and both are closed:
 | A persistent object-store read failure still fails closed | `crates/egggit` regression test `a_persistent_object_store_read_failure_still_fails_closed`; also non-vacuous — against the pre-fix behaviour the refusal came after 1 attempt instead of the bounded 3 | pass |
 | The default sweep needs no installed toolchain | the three live-language-server tests are **absent** from `cargo test -p codegg --lib -- --list` without the feature; the four rejection tests that use the same tool remain | pass |
 | The fourteen tests that failed in the recorded sweep pass | all 18 matching tests (14 failures plus 4 same-named in another binary) → **18 passed** | pass |
+| A cache root the product creates is private and umask-independent | `src/scratch.rs` regression test `a_cache_root_the_product_creates_is_private`; **non-vacuity proved** — against the pre-fix behaviour the same test fails with `WrongOwner` on a root the allocator had just created | pass |
+| An unsafe cache root is refused, not used and not tightened | `src/scratch.rs` tests `a_group_writable_cache_root_is_refused` (0775) and `a_world_writable_cache_root_is_refused` (0777) — both assert the typed `WrongOwner` refusal and the path it names | pass |
+| The scratch root follows the resolved cache root | `tests/scratch_cache_root_contract.rs`: `the_default_cache_root_is_the_home_directory_cache` and `an_explicit_cache_home_is_the_root_the_allocator_uses` | pass |
+| The forty-four tests that failed in the authoritative sweep pass | the sweep's result is recorded in §4.1; the previously-failing families (`scratch`, `core::daemon`, `core::daemon_sessions`, `tool_program_m015/016/017`, `session_family control_m004`, `async_background_c006`, `agent_loop_harness`, `identity_live_execution_audit`, `identity_m002_live_audit_hooks`, `workspace_root_execution_authority`, `linux_native_scratch_containment`, `python_script::executor`, `managed_process`, `tool::bash`) pass | pass |
+| The sweep's result does not depend on the operator's home directory | `scripts/verify.sh full` and `.github/workflows/ci.yml` both give the sweep a private cache root; the authoritative sweep in §4.1 was run with the host's own `~/.cache` still world-writable (0777) and still passed | pass |
 | Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20; six rows corrected | pass |
 | The canonical gate after the sweep | `scripts/verify.sh quick` → "Quick verification passed." (§4) | pass |
 
@@ -106,7 +128,8 @@ migration evidence and in `plans/closure/linux-execution-isolation/012-status.md
 
 ### 3.2 ADR identity
 
-`plans/adrs/ADR-0042-command-syntax-and-execution-authority.md` became
+The command-authority ADR's file was renamed: the decision's identity moved
+from `ADR-0042-command-syntax-and-execution-authority.md` to
 `plans/adrs/ADR-0045-command-syntax-and-execution-authority.md`, with the
 accepted decision's text, status, date, owners, authority, non-goals, and
 security limits unchanged. Fourteen files referenced the old path and thirteen
@@ -193,6 +216,67 @@ conventions could not be reproduced from their listed `Source` on this tree
 a guess would be worse than recording that they were not re-derived. This is
 stated in the table's own re-measurement note rather than left implicit.
 
+### 3.7 The scratch allocator's per-user cache root
+
+The authoritative sweep failed **44 tests across 15 binaries**, and every one of
+them carried the same typed refusal. The two shapes of the error named the two
+directories the allocator had resolved:
+
+```
+WrongOwner("/home/sugarwookie/.cache")   ← the operator's real cache root
+WrongOwner("/tmp/.tmpFwxAu8/home/.cache") ← a test's isolated home
+WrongOwner("/tmp/.tmprQVE9k")            ← a test's isolated cache root
+```
+
+`ensure_private_parent` refuses a cache root that is group- or world-writable,
+or that is not owned by the user. That check is a deliberate hardening
+(`c05ace49`, "validate per-user cache parent"): it closes the hole where
+another local user renames `~/.cache/codegg` out from under the product and
+replaces it with their own directory. The check was **not** weakened.
+
+The defect was on the other side of it. The allocator resolved the root and
+then created it:
+
+```rust
+let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
+std::fs::create_dir_all(&cache_root)?;   // mode follows the process umask
+ensure_private_parent(&cache_root, expected_uid)?;  // refuses a writable root
+```
+
+`create_dir_all` creates with mode `0777 & ~umask`. This workstation's umask
+is `0002`, so the allocator created a `0775` root and then refused it. The
+same is true of every fixture that builds a cache root: `tempfile` creates its
+directories with the *default* permissions too, so a fixture that documented
+itself as "a private, canonical, 0700 directory" actually got `0775`. And the
+operator's real `~/.cache` was `0777` — genuinely unsafe, and correctly
+refused.
+
+Three changes close it, and none of them weakens the refusal:
+
+- **The product** (`src/scratch.rs`). `ensure_private_cache_root` creates the
+  root with mode `0700` when the product creates it, so the umask can no
+  longer produce a root the allocator then refuses. A root that **already
+  exists** is only validated — the product never re-permissions a directory it
+  does not own, so an unsafe root is still refused rather than silently
+  tightened.
+- **The fixture** (`tests/linux_native_scratch_containment.rs`). The scratch
+  home sets the mode it documents.
+- **The runners.** `scripts/verify.sh full` creates a private cache root with
+  `mktemp -d` and exports it for the sweep; the CI job sets one under the
+  runner's temporary directory. The root stays outside the workspace, because
+  several qualifications grant the repository itself as their workspace root.
+
+A workspace-wide Cargo `[env]` override was considered and **rejected**: it
+would also have redirected the product's cache root for a local `cargo run`
+(the LSP server download cache lives under the same root), and it would have
+placed the scratch root inside the repository. The decision is recorded in the
+roadmap's §10.
+
+The refusal of an unsafe cache root is now a tested contract rather than an
+accident of the host: `a_group_writable_cache_root_is_refused` (0775) and
+`a_world_writable_cache_root_is_refused` (0777) assert the typed error and the
+path it names.
+
 ## 4. Verification executed
 
 Local, on the final tree, in this order.
@@ -208,6 +292,7 @@ Local, on the final tree, in this order.
 | `cargo test -p egggit --locked --lib process::tests` | 32 passed, 0 failed |
 | `cargo nextest run -p codegg --locked --profile ci -E '<the 14 recorded failures>'` | **18 passed, 0 failed** |
 | `cargo test -p codegg --locked --lib -- --list` | the three live-language-server tests are **absent**; the four rejection tests remain |
+| `cargo nextest run -p codegg --locked --profile ci -E 'binary(scratch_cache_root_contract) or binary(linux_native_scratch_containment) or test(/scratch::tests::/)'` | **28 passed, 0 failed** (the scratch allocator's own qualifications, its resolution contract, and the native containment fixture) |
 
 The two `crates/egggit` regression tests were proved **non-vacuous**: with the
 pre-fix behaviour restored temporarily, both fail — the transient test with
@@ -215,6 +300,12 @@ pre-fix behaviour restored temporarily, both fail — the transient test with
 exact error the recorded sweep reported, and the persistent test because the
 refusal came after one attempt instead of the bounded three. The fix was then
 restored and both pass.
+
+The scratch allocator's regression test was proved **non-vacuous** the same
+way: with `ensure_private_cache_root`'s body restored to the pre-fix
+`create_dir_all` + `ensure_private_parent`, `a_cache_root_the_product_creates_is_private`
+fails with `WrongOwner` on the root the allocator had just created. The fix was
+then restored and the test passes.
 
 The authoritative workspace sweep is recorded in §4.1.
 
@@ -235,11 +326,14 @@ tree with no concurrent edits and no Git commands in the worktree:
 - **A persistent object-store failure stays a typed refusal.** Holds: the
   fail-closed regression test passes and is non-vacuous.
 - **The default sweep is host-independent.** Holds for the live-language-server
-  case, which was the only host dependency found in the recorded failures. It
-  does **not** hold in general: the sweep still contains tests whose runtime
-  depends on machine speed, and the nextest profile's 120 s kill threshold
-  remains a boundary for them. That is a standing property of the profile, not
-  a defect this milestone introduced; see §10.
+  case and for the per-user cache root: the sweep's cache root is supplied by
+  the canonical runners, the allocator creates the root it depends on privately
+  rather than at the umask's discretion, and the refusal of an unsafe cache
+  root is a tested contract. It does **not** hold in general: the sweep still
+  contains tests whose runtime depends on machine speed, and the nextest
+  profile's 120 s kill threshold remains a boundary for them. That is a
+  standing property of the profile, not a defect this milestone introduced; see
+  §10.
 - **No accepted decision's substance changed.** Holds: the command-authority
   ADR's status, date, text, authority, non-goals, and security limits are
   unchanged; only the identifier and the unambiguous cross-references moved.
@@ -258,6 +352,14 @@ tree with no concurrent edits and no Git commands in the worktree:
 - The LSP gate's failure behaviour: a host without a language server now
   *skips* those three tests instead of hanging; a host with one runs them only
   when the feature is enabled.
+- The canonical gate caught a defect in the tree this milestone had already
+  committed: the closure record named the command ADR's **former** filename in
+  the `plans/adrs/ADR-….md` path form, which the ADR guard reads as a live
+  link. The reference now follows the repository's citation pattern — live
+  paths in full, historical identities by number or filename. The guard and its
+  self-test were re-run and pass. It is recorded here because a gate that
+  fails on the tree it is meant to certify is the gate working, not the gate
+  misbehaving.
 
 ## 7. Migration and compatibility review
 
@@ -265,8 +367,12 @@ tree with no concurrent edits and no Git commands in the worktree:
   C007 publication journal (one table, one index, additive). A database at 83
   gains the M005 network-intent preference and then the journal. Both are
   additive; no existing table is altered and no stored data is rewritten.
-- No protocol change. No user-visible behaviour change. No decision's
-  substance change.
+- No protocol change. One bounded product change: a per-user cache root that
+  the product **creates** is now created with mode `0700` instead of the
+  process umask's default. A cache root that already exists is unaffected —
+  it is validated, never re-permissioned — so no existing directory's
+  permissions change, and an unsafe one is still refused. No decision's
+  substance changes.
 - The branch's history was rewritten by the rebase. Every commit subject is
   preserved; every SHA changed. The pre-rebase tip remains reachable through
   `backup/pre-rebase-032b-c001` for provenance.
@@ -285,6 +391,12 @@ tree with no concurrent edits and no Git commands in the worktree:
   sibling tests that exercise the same code paths without a server remain in
   the default sweep, and the three gated tests are still runnable through the
   feature the repository already defines.
+- The scratch allocator's cache-root change does **not** relax the boundary it
+  sits behind. A cache root another local user could write to is still refused,
+  with the same typed `WrongOwner` error and the same path; the change only
+  affects the mode of a directory the product is creating for the first time,
+  and the product still never re-permissions a directory it did not create.
+  The two refusal tests pin that behaviour.
 - The audit record's network boundary contract (C023) is untouched by this
   milestone.
 
@@ -301,6 +413,23 @@ tree with no concurrent edits and no Git commands in the worktree:
   — the corrected dangling ADR path, with a provenance note.
 - `scripts/check_adr_integrity.py` — the self-test fixture follows the
   renumbered identity.
+- `architecture/security.md` — the scratch allocator's cache-root contract: a
+  root the product creates is private, and an existing unsafe root is refused
+  rather than tightened.
+- `architecture/testing.md` — the sweep's private cache root, and why the
+  canonical runners supply one.
+- `AGENTS.md` — the broad runner's command now carries its private cache root.
+- `scripts/verify.sh`, `.github/workflows/ci.yml` — the canonical runners
+  supply the sweep's private cache root.
+
+### Host state on this workstation
+
+`/home/sugarwookie/.cache` was mode `0777` — world-writable — which the
+product refuses by design, so an installed `codegg` on this machine could not
+allocate scratch at all. The directory was repaired to `0755` after the
+authoritative sweep had been run and recorded **with the unsafe mode still in
+place**, so the sweep's result is evidence about the product and not about the
+repair. The repair is a host action; nothing in the repository depends on it.
 
 ## 10. Unresolved findings
 
