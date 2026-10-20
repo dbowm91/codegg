@@ -24,6 +24,9 @@ Implementation commits:
 - `d806d6d0` — `test(agent-loop): cover the temp-root redirect offer end to end`
 - `141f7114` — `docs(permission,plans): record the temp-root redirect offer
   contract and close M005`
+- `d861e1f6` — `docs(plans): record the M005 hosted CI evidence and the
+  milestone status`
+- `e52695b9` — merge commit for pull request #134
 
 ## 1. Executive finding
 
@@ -95,6 +98,12 @@ Local (macOS, rustc 1.89.0, load-averaged host):
 Hosted CI on the pull-request head: run **`39374727100`** — the `verify` job
 passed on head `141f7114` (all 27 guards, workspace Clippy, and the workspace
 tests). The pull request is [#134](https://github.com/dbowm91/codegg/pull/134).
+The planning-record-only follow-up head `d861e1f6` was green on run
+**`39377117365`**.
+
+Post-merge verification on `main`: the milestone merged as **`e52695b9`**
+(merge commit, pull request #134), and the `main` push run **`39378897301`**
+passed the same `verify` job on the merged head.
 
 No other workflow applies to this change: the Windows launcher and native
 probe contracts are path-gated on `src/managed_process/**`, `src/scratch.rs`,
@@ -195,9 +204,9 @@ observation above.
 ## 12. Registry updates
 
 - `plans/registry.md`: the M005 row moves to `conditionally closed`, with the
-  live-observation condition named.
+  live-observation condition named and the hosted CI run IDs recorded.
 - `plans/subsystems/managed-agent-scratch-roadmap.md`: the M005 row moves to
-  `conditionally closed` with the same condition.
+  `conditionally closed` with the same condition and the same run IDs.
 - The M003 rows are unchanged.
 - No downstream plan is unblocked by this milestone: the Windows Required
   container remains blocked on the independently owned backend, and no
