@@ -640,7 +640,7 @@ pub struct JobSummaryDto {
 }
 
 /// Full job record for `JobGet`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JobRecordDto {
     pub job_id: String,
     pub workspace_id: String,
@@ -677,7 +677,7 @@ pub struct JobRecordDto {
 }
 
 /// Execution attempt record for `JobAttempts`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JobAttemptDto {
     pub attempt_id: String,
     pub job_id: String,

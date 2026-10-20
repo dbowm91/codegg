@@ -52,6 +52,7 @@ pub enum Dialog {
     Logs,
     Plugin,
     RunDetail,
+    JobDetail,
     ProjectPicker,
     Collaborators,
     ProjectChat,
@@ -130,6 +131,7 @@ impl Dialog {
                 | Self::Logs
                 | Self::Plugin
                 | Self::RunDetail
+                | Self::JobDetail
                 | Self::ProjectPicker
                 | Self::Collaborators
                 | Self::ProjectChat
@@ -548,6 +550,12 @@ pub enum TuiMsg {
     },
     OpenRunDetail {
         run_id: String,
+    },
+    OpenJobDetail {
+        job_id: String,
+    },
+    CancelJob {
+        job_id: String,
     },
     ShellInclude {
         id: String,

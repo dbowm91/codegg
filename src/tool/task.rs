@@ -2160,6 +2160,8 @@ impl TaskTool {
                     .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
                 let req = SubAgentRequest {
                     task_id,
+                    child_instance_id: String::new(),
+                    originating_turn_id: self.parent_turn_id.clone(),
                     run_id: None,
                     description: description.clone(),
                     prompt,

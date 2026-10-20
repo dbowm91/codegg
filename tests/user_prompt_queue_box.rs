@@ -2611,6 +2611,7 @@ fn as_socket_daemon_frontend(app: &mut App) {
 /// Seed one running subagent for the addressed-reply tests.
 fn seed_running_subagent(app: &mut App) {
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        child_instance_id: None,
         task_id: "task-1".to_string(),
         run_id: None,
         display_name: Some("Sally".to_string()),
@@ -2647,6 +2648,7 @@ async fn an_addressed_reply_steers_the_parent_turn_and_submits_nothing() {
     as_socket_daemon_frontend(&mut app);
     app.session_state.active_turn_id = Some("turn-live".to_string());
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        child_instance_id: None,
         task_id: "task-1".to_string(),
         run_id: Some("run-1".to_string()),
         display_name: Some("Sally".to_string()),

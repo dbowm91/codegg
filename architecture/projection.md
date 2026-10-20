@@ -80,6 +80,7 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_TOOL_PROGRAM_CALLS` | 128 |
 | `MAX_PROJECTION_NOTIFICATION_BOUND` | 16 |
 | `MAX_PROJECTION_SUBAGENTS` | 16 |
+| `MAX_PROJECTION_SESSION_SUBAGENTS` | 32 |
 | `MAX_PROJECTION_AGENT_RUNS` | 64 |
 | `MAX_PROJECTION_WORKTREES` | 32 |
 | `MAX_PROJECTION_RUN_GROUPS` | 32 |
@@ -169,6 +170,16 @@ implementations MUST go through these helpers.
 | Tool Program | `ToolProgramSubmitted`, `ToolProgramTerminal`, `ToolProgramAdmitted`, `ToolProgramStarted`, `ToolProgramProgress`, `ToolProgramWaitingForCall`, `ToolProgramWaitingForJob`, `ToolProgramRetryBackoff` |
 | Selection | `TokenUsageUpdated`, `ModelSelected`, `AgentSelected` |
 | Meta | `Diagnostic`, `ResyncRequired`, `Unknown` |
+
+Subagent events carry a generation-safe `child_instance_id` minted at worker
+dispatch and an optional immutable `originating_turn_id`. The session snapshot
+keeps a separately bounded `subagents` collection (32 entries); the bounded
+per-turn `agent_tree` remains a conversational compatibility view. Durable
+`run_id` and `job_id` associations are explicit and never inferred from the
+numeric worker task id. A daemon-local active-child registry supplies late
+session snapshots for ephemeral workers; it starts empty after restart, while
+AgentRunStore and JobStore rebuild durable work. Capacity is live-first and
+reports an omission diagnostic when all retained child slots are live.
 
 ### Adapter Layer
 
@@ -408,17 +419,35 @@ No runtime configuration. All limits, versions, and caps are
 compile-time constants. The projection protocol version is bumped
 when additive changes land that the reducer MUST interpret.
 
-## Background job visibility (M003)
+## Background job visibility
 
-Background jobs need no new projection variant and no TUI polling task as
-a source of truth. The bounded job list is the existing `JobList` protocol
-surface (filtered by owning session); pending completion notices are the
-existing `SessionEvent::JobTerminalNotification` rows, visible on reconnect,
-restart, and next-turn replay with the same authoritative state as the
-daemon. The `job` model tool provides cancel/wait/inspect over the same
-store. Out-of-order events, multi-client scoped visibility, reconnect
-snapshots, and TUI shutdown are covered by the existing event-log and
-`JobStore` durability (one logical notice per terminal; redacted bounds).
+The default `/core` TUI owns one projection subscription for its active
+session. It negotiates projection support, installs the authorized
+`ProjectionSubscribed` snapshot, applies only envelopes matching that
+subscription and stream, and acknowledges at the controller's existing
+cadence. Events arriving while the UI loop is applying the subscribe response
+are retained in a bounded queue and drained after snapshot installation. A
+switch or reconnect clears the prior generation and takes a fresh snapshot.
+The TUI presents loading and unavailable states separately from an
+authoritative empty snapshot. `/observe` remains an independent read-only
+subscription.
+
+`JobSubmissionService` publishes `JobCreated` after durable creation and
+successful scheduler enqueue, covering direct tool submissions and the
+`CoreRequest::JobSubmit` path through the same seam. Scheduler admission and
+release events publish owner-scoped started and terminal transitions after
+resolving the durable `JobRecord`; ownerless lifecycle events are dropped with
+a diagnostic. Session snapshot assembly queries `JobStore` by owner, selects
+live jobs before recent terminals, and reports bounded truncation or read
+failure diagnostics. `JobUpserted` merge rules prevent delayed created/running
+events from regressing a later state, while a new retry attempt may reopen a
+terminal job.
+
+This lifecycle stream complements the durable
+`SessionEvent::JobTerminalNotification` completion history. It does not add a
+frontend database query or polling loop. The `job` model tool continues to
+provide cancel/wait/inspect over the same store. Reconnect currently obtains a
+fresh snapshot rather than resuming from a retained primary-TUI cursor.
 
 C004 adds one additive live hint on the same durability: a persisted,
 session-scoped `CoreEvent::BackgroundJobCompleted` (identity, kind,

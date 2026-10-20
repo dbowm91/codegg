@@ -441,6 +441,13 @@ impl QuestionProjection {
 /// without claiming durable agent-run semantics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTreeNodeProjection {
+    /// Unique identity minted at trusted child dispatch. Empty only on legacy
+    /// recorded events that predate session-owned child identity.
+    #[serde(default)]
+    pub child_instance_id: String,
+    /// Parent turn captured at admission; never inferred by the reducer.
+    #[serde(default)]
+    pub originating_turn_id: Option<String>,
     /// Stable task id assigned by the daemon. Frontend-local; never
     /// reused after the projection snapshot evicts the node.
     pub task_id: u64,
@@ -493,6 +500,12 @@ pub struct AgentTreeNodeProjection {
 
 impl AgentTreeNodeProjection {
     pub fn normalise(&mut self) {
+        self.child_instance_id =
+            truncate_str(&self.child_instance_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        if let Some(turn_id) = self.originating_turn_id.as_deref() {
+            self.originating_turn_id =
+                Some(truncate_str(turn_id, MAX_PROJECTION_STRING_BYTES).into_owned());
+        }
         self.agent = truncate_str(&self.agent, MAX_PROJECTION_STRING_BYTES).into_owned();
         self.description =
             truncate_str(&self.description, MAX_PROJECTION_STRING_BYTES).into_owned();
@@ -1101,6 +1114,8 @@ mod tests {
 
     fn subagent_node() -> AgentTreeNodeProjection {
         AgentTreeNodeProjection {
+            child_instance_id: "child-7".into(),
+            originating_turn_id: Some("turn-1".into()),
             task_id: 7,
             agent: "explore".into(),
             description: "walking the tree".into(),
@@ -1167,7 +1182,8 @@ mod tests {
         );
     }
 
-    /// A node recorded before descriptors existed decodes with both absent.
+    /// A node recorded before session-owned identity/descriptors existed
+    /// decodes into the turn-local legacy compatibility shape.
     ///
     /// The mixed-version guarantee, stated at the DTO: a new frontend reading a
     /// snapshot an old daemon recorded must not error, and must render the row
@@ -1189,6 +1205,8 @@ mod tests {
         assert!(node.profile.is_none());
         assert!(node.usefulness.is_none());
         assert!(node.display_name.is_none());
+        assert!(node.child_instance_id.is_empty());
+        assert!(node.originating_turn_id.is_none());
     }
 
     /// C004: the identity fields survive the wire in the **present** direction.

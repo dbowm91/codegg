@@ -270,7 +270,7 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent transcript; job rows are read-only) |
+| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent transcript; job rows are read-only). The dialog labels live-work loading or unavailable state separately from an authoritative empty result. |
 | `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
 | `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
@@ -640,6 +640,12 @@ when it finishes, so two concurrent runs never share a name, and a name is not
 a durable handle for that run. Read it as "the subagent I was watching a minute
 ago", not as an identifier you can rely on later.
 
+Each child also has a generation-safe internal identity independent of its
+display name and numeric worker task id. The daemon keeps live child state with
+its session; durable AgentRuns and jobs are associated through their explicit
+run/job IDs. After daemon restart, durable work is rebuilt from its stores and
+ephemeral workers are not shown as still running.
+
 **Every named agent also has a character.** The same curated pool each name
 comes from describes it — Greg is a confident generalist who changes three
 unrelated files before finding the missing environment variable; Susan is blunt
@@ -677,7 +683,7 @@ letter is `[NOR]`-only, the chord is live in both modes.
 `Ctrl+T` opens a single overlay listing **todos, then subagents, then jobs**,
 each under its own heading. A group with nothing in it is left out entirely —
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
-and `Esc` closes the overlay. With nothing in any group the overlay says
+`Enter` opens a child transcript or job detail; `i` inspects a durable child run or linked job by its stable ID. The dialog shows job attempt history, and `Esc` closes it. With nothing in any group the overlay says
 `Nothing pending` rather than opening to a blank strip, so a quiet session still
 confirms the key did something.
 
@@ -686,6 +692,17 @@ subagents and completed jobs are filtered out. When a job reports a state this
 build does not recognise it is shown rather than hidden, because showing
 finished work costs a glance and hiding live work costs you the thing you
 asked for.
+
+Job detail is keyed by `job_id`. It shows the current daemon record and bounded
+attempt metadata; press `x` to request cancellation when the job is live. The
+dialog refreshes from the daemon after the request and reports refusal or an
+uncertain outcome without claiming the job stopped. `/sessions` job rows and
+the sessions sidebar open the same detail surface. On a child with a linked
+run or job, `i` opens that linked detail while `Enter` keeps opening the child
+transcript. Read-only observers can inspect jobs but do not get the cancel
+key. `/sessions` opens on the
+active session and clears work rows when you select a different session whose
+projection is not loaded, showing that live work is unavailable.
 
 Opening it from `[INS]` switches to `[NOR]`, because the overlay's own keys —
 `j`/`k`, `Enter`, `Esc` — are `[NOR]` gestures and must never be claimed while

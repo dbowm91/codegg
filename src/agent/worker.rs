@@ -81,6 +81,11 @@ impl SubAgentReport {
 #[derive(Debug, Clone)]
 pub struct SubAgentRequest {
     pub task_id: u64,
+    /// Stable identity for this dispatch generation, independent of the
+    /// legacy numeric task id and durable AgentRun identity.
+    pub child_instance_id: String,
+    /// Immutable parent-turn lineage when this dispatch has a controlling turn.
+    pub originating_turn_id: Option<String>,
     /// Durable identity of the run being executed, when scheduler-owned.
     pub run_id: Option<codegg_core::identity::AgentRunId>,
     pub prompt: String,
@@ -855,10 +860,13 @@ impl SubAgentSpawner {
 
     async fn enqueue_request_with_mode(
         &self,
-        request: SubAgentRequest,
+        mut request: SubAgentRequest,
         scheduler_cancel: CancellationToken,
         scheduled: bool,
     ) -> Result<oneshot::Receiver<SubAgentResult>, String> {
+        if request.child_instance_id.is_empty() {
+            request.child_instance_id = uuid::Uuid::new_v4().to_string();
+        }
         if self.pool.config.subagent.as_ref().and_then(|s| s.enabled) == Some(false) {
             return Err("subagent delegation is disabled".to_string());
         }
@@ -992,6 +1000,7 @@ async fn run_subagent_task_with_cancel(
     subagent_pool: Arc<SubAgentPool>,
 ) -> SubAgentResult {
     let task_id = request.task_id;
+    let child_instance_id = request.child_instance_id.clone();
     let session_id = request.parent_id.clone().unwrap_or_default();
 
     // Draw the display name exactly once, here at spawn, and carry it in the
@@ -1012,6 +1021,8 @@ async fn run_subagent_task_with_cancel(
 
     GlobalEventBus::publish(AppEvent::SubagentStarted {
         session_id: session_id.clone(),
+        child_instance_id: child_instance_id.clone(),
+        originating_turn_id: request.originating_turn_id.clone(),
         task_id,
         agent: request.agent.clone(),
         description: request.description.clone(),
@@ -1036,6 +1047,7 @@ async fn run_subagent_task_with_cancel(
 
     GlobalEventBus::publish(AppEvent::SubagentProgress {
         session_id: session_id.clone(),
+        child_instance_id: child_instance_id.clone(),
         task_id,
         agent: request.agent.clone(),
         message: "Task execution started".to_string(),
@@ -1046,6 +1058,7 @@ async fn run_subagent_task_with_cancel(
         _ = scheduler_cancel.cancelled() => {
             GlobalEventBus::publish(AppEvent::SubagentFailed {
                 session_id: session_id.clone(), task_id, agent: request.agent.clone(),
+                child_instance_id: child_instance_id.clone(),
                 error: "Task cancelled by scheduler".to_string(),
             });
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
@@ -1054,6 +1067,7 @@ async fn run_subagent_task_with_cancel(
             let msg = "Task cancelled during shutdown".to_string();
             GlobalEventBus::publish(AppEvent::SubagentFailed {
                 session_id: session_id.clone(),
+                child_instance_id: child_instance_id.clone(),
                 task_id,
                 agent: request.agent.clone(),
                 error: msg.clone(),
@@ -1064,6 +1078,7 @@ async fn run_subagent_task_with_cancel(
         _ = lineage_token.cancelled() => {
             GlobalEventBus::publish(AppEvent::SubagentFailed {
                 session_id: session_id.clone(), task_id, agent: request.agent.clone(),
+                child_instance_id: child_instance_id.clone(),
                 error: "Task cancelled by root lineage".to_string(),
             });
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
@@ -1095,6 +1110,7 @@ async fn run_subagent_task_with_cancel(
                 Ok((output, report, validation, artifacts)) => {
                     GlobalEventBus::publish(AppEvent::SubagentCompleted {
                         session_id: session_id.clone(),
+                        child_instance_id: child_instance_id.clone(),
                         task_id,
                         agent: request.agent.clone(),
                         result_summary: output.chars().take(200).collect(),
@@ -1117,6 +1133,7 @@ async fn run_subagent_task_with_cancel(
                     let _ = e;
                     GlobalEventBus::publish(AppEvent::SubagentFailed {
                         session_id: session_id_for_bus,
+                        child_instance_id: child_instance_id.clone(),
                         task_id,
                         agent: agent_name,
                         error: error_for_bus,
@@ -1894,6 +1911,8 @@ mod admission_tests {
     fn request(task_id: u64) -> SubAgentRequest {
         SubAgentRequest {
             task_id,
+            child_instance_id: String::new(),
+            originating_turn_id: None,
             prompt: "test".into(),
             agent: "build".into(),
             parent_id: Some("root-a".into()),

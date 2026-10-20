@@ -601,6 +601,1066 @@ async fn projection_daemon() -> Arc<CoreDaemon> {
     Arc::new(CoreDaemon::new(Some(pool), None, None))
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
+    use crate::agent::worker::SubAgentPool;
+    use crate::agent::{Agent, AgentMode};
+    use crate::config::schema::{Config, SubagentConfig};
+    use crate::core::transport::SocketCoreClient;
+    use crate::core::CoreClient;
+    use crate::provider::{
+        ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, ProviderError, ProviderRegistry,
+        TokenUsage,
+    };
+    use async_trait::async_trait;
+    use codegg_core::jobs::{
+        IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, ResourceRequest,
+        RetryPolicy,
+    };
+
+    #[derive(Clone)]
+    struct HeldProvider {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        id: String,
+    }
+
+    #[async_trait]
+    impl Provider for HeldProvider {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "held M006 provider"
+        }
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+        async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(Box::pin(futures_util::stream::iter([
+                Ok(ChatEvent::TextDelta(Arc::new("worker finished".to_owned()))),
+                Ok(ChatEvent::Finish {
+                    stop_reason: Arc::new("stop".to_owned()),
+                    usage: TokenUsage::default(),
+                }),
+            ])))
+        }
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(vec![ModelInfo {
+                id: "held/model".into(),
+                name: "held model".into(),
+                provider: self.id.clone(),
+                context_window: 4096,
+                max_output_tokens: Some(1024),
+                supports_tools: true,
+                supports_vision: false,
+                variants: Vec::new(),
+            }])
+        }
+    }
+
+    let base = projection_daemon().await;
+    let pool = base.pool.clone().expect("daemon database");
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mut providers = ProviderRegistry::new();
+    providers.register(HeldProvider {
+        entered: entered.clone(),
+        release: release.clone(),
+        id: "held".into(),
+    });
+    let config = Config {
+        subagent: Some(SubagentConfig {
+            enabled: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let agent = Agent {
+        name: "held-worker".into(),
+        description: "M006 deterministic worker".into(),
+        mode: AgentMode::Subagent,
+        model: Some("held/model".into()),
+        git_read_only: true,
+        permissions: [
+            "write",
+            "edit",
+            "apply_patch",
+            "replace",
+            "terminal",
+            "bash",
+            "commit",
+            "lsp_preview_apply",
+        ]
+        .into_iter()
+        .map(|tool| (tool.to_string(), "deny".to_string()))
+        .collect(),
+        hidden: false,
+        ..Default::default()
+    };
+    let worker_pool = Arc::new(
+        SubAgentPool::new(
+            &config,
+            vec![agent],
+            providers,
+            Arc::new(crate::session::SessionStore::new(pool.clone())),
+            Some(pool.clone()),
+        )
+        .await,
+    );
+    let daemon = Arc::new(CoreDaemon::with_deps(
+        crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool.clone(),
+            Some(worker_pool),
+            None,
+        ),
+    ));
+    daemon.start_event_bridge();
+
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace = daemon
+        .workspaces
+        .get_or_register(root.path())
+        .await
+        .expect("workspace");
+    let project = codegg_core::project_catalog::ProjectCatalog::new(daemon.pool.clone().unwrap())
+        .register_local_project(
+            codegg_core::project_catalog::RegisterLocalProject {
+                display_name: "M006 held worker".into(),
+                description: None,
+                tags: Vec::new(),
+                primary_repository_id: None,
+            },
+            &workspace.id,
+            "m006-held-worker",
+        )
+        .await
+        .expect("project");
+    let (socket_path, socket_dir, server, shutdown) =
+        spawn_daemon_with_shutdown(Arc::clone(&daemon)).await;
+    let client = Arc::new(
+        SocketCoreClient::connect(&format!("unix://{socket_path}"))
+            .await
+            .expect("connect late-attaching TUI client"),
+    );
+    let session = match client
+        .request(crate::core::new_request(
+            "m006-create-worker-session".into(),
+            crate::protocol::core::CoreRequest::SessionCreate {
+                directory: root.path().to_string_lossy().into_owned(),
+                title: Some("M006 held worker session".into()),
+                project_id: Some(project.project_id.as_str().into()),
+                workspace_id: Some(workspace.id.as_str().into()),
+            },
+        ))
+        .await
+        .expect("create real socket session")
+    {
+        crate::protocol::core::CoreResponse::Session { session } => session,
+        other => panic!("session creation failed: {other:?}"),
+    };
+    daemon.bind_runtime(
+        &session.id,
+        workspace.clone(),
+        project.project_id.as_str().to_string(),
+        root.path().to_path_buf(),
+    );
+    let submission = daemon
+        .deps
+        .submission
+        .as_ref()
+        .expect("scheduler submission");
+    let job = submission
+        .submit(
+            None,
+            NewJob {
+                workspace_id: workspace.id.clone(),
+                session_id: Some(session.id.clone()),
+                turn_id: Some("m006-parent-turn".into()),
+                kind: JobKind::Subagent,
+                source: JobSource::Interactive,
+                priority: JobPriority::Normal,
+                payload: JobPayload::Subagent {
+                    prompt: "wait for the test latch".into(),
+                    agent: "held-worker".into(),
+                    model: Some("held/model".into()),
+                    parent_id: Some(session.id.clone()),
+                    denied_tools: Vec::new(),
+                    allowed_paths: vec![root.path().to_string_lossy().into_owned()],
+                    max_tool_calls: Some(4),
+                },
+                resource_request: ResourceRequest::default(),
+                timeout: None,
+                retry_policy: RetryPolicy::default(),
+                idempotency: IdempotencyClass::ReadOnly,
+                not_before: None,
+                deadline: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                parent_job_id: None,
+                parent_attempt_id: None,
+                parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
+                target: codegg_core::jobs::ExecutionTarget::Local,
+            },
+        )
+        .await
+        .expect("scheduler accepts real worker job");
+
+    if tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .is_err()
+    {
+        let stored = daemon
+            .deps
+            .job_store
+            .get_job(&job.job_id)
+            .await
+            .expect("read worker job after provider-latch timeout")
+            .expect("worker job remains durable after provider-latch timeout");
+        let attempts = daemon
+            .deps
+            .job_store
+            .list_attempts(&job.job_id)
+            .await
+            .expect("read worker attempts after provider-latch timeout");
+        panic!(
+            "worker did not reach provider latch: job state {:?}, attempts {attempts:#?}",
+            stored.state
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = daemon
+                .projection_snapshot_for_session(
+                    &session.id,
+                    project.project_id.as_str(),
+                    workspace.id.as_str(),
+                )
+                .await;
+            if snapshot.subagents.iter().any(|child| {
+                child.status == crate::protocol::projection::dto::AgentTreeStatus::Running
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("daemon projection records the held worker before late attachment");
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(64);
+    let mut app = crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    app.tui_cmd_tx = Some(command_tx);
+    app.attach_core_client(client.clone());
+    app.set_session(
+        crate::protocol_conversions::dto_to_session(session.clone())
+            .expect("session DTO conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("late TUI attaches to the live worker projection");
+    let (_, tui_snapshot) = app
+        .projection_client
+        .active_snapshot()
+        .expect("late TUI receives an authoritative worker snapshot");
+    assert_eq!(
+        tui_snapshot.subagents.len(),
+        1,
+        "late socket-attached TUI contains the running real child"
+    );
+    assert_eq!(
+        tui_snapshot.subagents[0].originating_turn_id.as_deref(),
+        Some("m006-parent-turn")
+    );
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Subagent { .. }))
+            .count(),
+        1,
+        "late-attached TUI derives the running child row from its socket snapshot"
+    );
+    app.open_dialog(crate::tui::Dialog::Session);
+    let painted_session_dialog = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            |dialog| dialog.clone(),
+        )
+        .expect("painted sessions dialog with real running child");
+    assert_eq!(painted_session_dialog.subagent_rows().len(), 1);
+    let snapshot = daemon
+        .projection_snapshot_for_session(
+            &session.id,
+            project.project_id.as_str(),
+            workspace.id.as_str(),
+        )
+        .await;
+    assert_eq!(
+        snapshot.subagents.len(),
+        1,
+        "late snapshot contains the running real child"
+    );
+    let child = &snapshot.subagents[0];
+    assert_eq!(
+        child.originating_turn_id.as_deref(),
+        Some("m006-parent-turn")
+    );
+    assert_eq!(
+        child.status,
+        crate::protocol::projection::dto::AgentTreeStatus::Running
+    );
+    daemon
+        .event_log
+        .publish(
+            Some(session.id.clone()),
+            Some("m006-parent-turn".into()),
+            crate::protocol::core::CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
+                context_limit: None,
+                session_id: session.id.clone(),
+                turn_id: "m006-parent-turn".into(),
+                stop_reason: "completed while child remains held".into(),
+            },
+        )
+        .await;
+    let after_parent_completion = daemon
+        .projection_snapshot_for_session(
+            &session.id,
+            project.project_id.as_str(),
+            workspace.id.as_str(),
+        )
+        .await;
+    assert_eq!(
+        after_parent_completion.subagents[0].status,
+        crate::protocol::projection::dto::AgentTreeStatus::Running
+    );
+
+    let cancel = client
+        .request(crate::core::new_request(
+            "m006-owner-cancel-running-child".into(),
+            crate::protocol::core::CoreRequest::JobCancel {
+                job_id: job.job_id.as_str().into(),
+                reason: Some("M006 held worker cancellation".into()),
+            },
+        ))
+        .await
+        .expect("send owner cancellation over socket");
+    assert!(
+        matches!(
+            cancel,
+            crate::protocol::core::CoreResponse::JobCancelResult { .. }
+        ),
+        "expected cancellation acknowledgement, got {cancel:?}"
+    );
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let stored = daemon
+                .deps
+                .job_store
+                .get_job(&job.job_id)
+                .await
+                .unwrap()
+                .unwrap();
+            if stored.state.is_terminal() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("real worker reaches terminal scheduler state");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = daemon
+                .projection_snapshot_for_session(
+                    &session.id,
+                    project.project_id.as_str(),
+                    workspace.id.as_str(),
+                )
+                .await;
+            if snapshot.subagents.iter().any(|child| {
+                child.status != crate::protocol::projection::dto::AgentTreeStatus::Running
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("real child lifecycle reaches a projected terminal state");
+    let restarted = Arc::new(CoreDaemon::with_deps(
+        crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(pool, None, None),
+    ));
+    restarted
+        .initialize_recovery_sequence()
+        .await
+        .expect("restart recovery reconciles the completed worker job");
+    let restart_snapshot = restarted
+        .projection_snapshot_for_session(
+            &session.id,
+            project.project_id.as_str(),
+            workspace.id.as_str(),
+        )
+        .await;
+    assert!(
+        restart_snapshot.subagents.is_empty(),
+        "a fresh daemon does not resurrect the old in-memory child as Running"
+    );
+    let recovered_job = restarted
+        .deps
+        .job_store
+        .get_job(&job.job_id)
+        .await
+        .expect("read recovered durable job")
+        .expect("job remains durable after restart");
+    assert!(
+        recovered_job.state.is_terminal(),
+        "terminal cancellation remains terminal after restart"
+    );
+    drop(app);
+    drop(client);
+    shutdown.cancel();
+    abort_server(server).await;
+    drop(socket_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_tui_socket_path_installs_authorized_session_snapshot_and_live_job() {
+    use crate::core::transport::SocketCoreClient;
+    use crate::core::CoreClient;
+    use crate::protocol::core::{CoreRequest, CoreResponse};
+    use codegg_core::jobs::{
+        IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, ResourceRequest,
+        RetryPolicy,
+    };
+
+    let daemon = projection_daemon().await;
+    daemon.start_event_bridge();
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace = daemon
+        .workspaces
+        .get_or_register(root.path())
+        .await
+        .expect("register workspace");
+    let project = codegg_core::project_catalog::ProjectCatalog::new(
+        daemon.pool.clone().expect("projection daemon pool"),
+    )
+    .register_local_project(
+        codegg_core::project_catalog::RegisterLocalProject {
+            display_name: "Primary TUI projection test".into(),
+            description: None,
+            tags: Vec::new(),
+            primary_repository_id: None,
+        },
+        &workspace.id,
+        "primary-tui-projection",
+    )
+    .await
+    .expect("register project");
+
+    let (socket_path, _socket_dir, server, shutdown) =
+        spawn_daemon_with_shutdown(Arc::clone(&daemon)).await;
+    let client = Arc::new(
+        SocketCoreClient::connect(&format!("unix://{socket_path}"))
+            .await
+            .expect("connect default socket TUI client"),
+    );
+    let session = match client
+        .request(crate::core::new_request(
+            "primary-tui-session".into(),
+            CoreRequest::SessionCreate {
+                directory: root.path().to_string_lossy().into_owned(),
+                title: Some("primary projection session".into()),
+                project_id: Some(project.project_id.as_str().into()),
+                workspace_id: Some(workspace.id.as_str().into()),
+            },
+        ))
+        .await
+        .expect("create owner session through socket")
+    {
+        CoreResponse::Session { session } => session,
+        other => panic!("session create failed: {other:?}"),
+    };
+    let job = NewJob {
+        workspace_id: workspace.id.clone(),
+        session_id: Some(session.id.clone()),
+        turn_id: Some("turn-primary-tui".into()),
+        kind: JobKind::Maintenance,
+        source: JobSource::Interactive,
+        priority: JobPriority::Normal,
+        payload: JobPayload::Maintenance {
+            task: "visible from initial projection snapshot".into(),
+        },
+        resource_request: ResourceRequest::default(),
+        timeout: None,
+        retry_policy: RetryPolicy::default(),
+        idempotency: IdempotencyClass::ReadOnly,
+        not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        deadline: None,
+        schedule_id: None,
+        depends_on: Vec::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
+        target: codegg_core::jobs::ExecutionTarget::Local,
+    };
+    let mut live_job = job.clone();
+    if let JobPayload::Maintenance { task } = &mut live_job.payload {
+        *task = "visible from live scheduler admission".into();
+    }
+    let submission = daemon
+        .deps
+        .submission
+        .as_ref()
+        .expect("daemon submission boundary");
+    let submitted_job = submission
+        .submit(None, job)
+        .await
+        .expect("submit durable owner job through scheduler boundary");
+    let stored_job = daemon
+        .deps
+        .job_store
+        .get_job(&submitted_job.job_id)
+        .await
+        .expect("read submitted job")
+        .expect("submitted job record");
+
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(64);
+    let mut app = crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    app.tui_cmd_tx = Some(command_tx);
+    app.attach_core_client(client);
+    app.set_session(
+        crate::protocol_conversions::dto_to_session(session.clone())
+            .expect("session DTO conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("default TUI projection subscription completion");
+    let (_, snapshot) = app
+        .projection_client
+        .active_snapshot()
+        .expect("default TUI installed the authoritative session snapshot");
+    assert_eq!(snapshot.primary_session.session_id, session.id);
+    assert_eq!(snapshot.jobs.len(), 1);
+    assert_eq!(snapshot.jobs[0].job_id, stored_job.job_id.as_str());
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Job { .. }))
+            .count(),
+        1
+    );
+    app.open_dialog(crate::tui::Dialog::Session);
+    let painted_session_dialog = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            |dialog| dialog.clone(),
+        )
+        .expect("painted sessions dialog");
+    assert_eq!(painted_session_dialog.job_rows().len(), 1);
+    app.close_dialog();
+    app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('t'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+    assert!(app.tasks_expanded, "Ctrl+T opens the live task overlay");
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Job { .. }))
+            .count(),
+        1
+    );
+
+    let live_submitted = submission
+        .submit(None, live_job)
+        .await
+        .expect("submit live job through the scheduler boundary");
+    let expected_subscription = app
+        .projection_client
+        .primary_subscription_id()
+        .cloned()
+        .expect("primary subscription id");
+    let expected_stream = app
+        .projection_client
+        .primary_stream_id()
+        .cloned()
+        .expect("primary stream id");
+    let event = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(event) = app
+                .core_event_rx
+                .as_mut()
+                .expect("attached event receiver")
+                .recv()
+                .await
+            {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id,
+                    stream_id,
+                    ..
+                } = &event.payload
+                {
+                    if subscription_id == &expected_subscription && stream_id == &expected_stream {
+                        break event;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("live projection event from the socket");
+    let CoreEvent::ProjectionStreamEvent {
+        subscription_id,
+        stream_id,
+        envelope,
+    } = event.payload
+    else {
+        panic!("expected projection stream event");
+    };
+    assert_eq!(subscription_id, expected_subscription);
+    assert_eq!(stream_id, expected_stream);
+    assert!(app.apply_core_event(CoreEvent::ProjectionStreamEvent {
+        subscription_id,
+        stream_id,
+        envelope,
+    }));
+    let (_, snapshot) = app
+        .projection_client
+        .active_snapshot()
+        .expect("live scheduler publication preserves authoritative snapshot");
+    assert_eq!(snapshot.jobs.len(), 2);
+    assert!(snapshot
+        .jobs
+        .iter()
+        .any(|job| job.job_id == live_submitted.job_id.as_str()));
+
+    let child_instance_id = "child-socket-live-1".to_string();
+    crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::SubagentStarted {
+        session_id: session.id.clone(),
+        child_instance_id: child_instance_id.clone(),
+        originating_turn_id: Some("turn-socket-live-work".into()),
+        task_id: 7,
+        agent: "worker".into(),
+        description: "socket-published child for live-work view".into(),
+        display_name: Some("Mira".into()),
+        profile: None,
+        usefulness: None,
+        run_id: None,
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(event) = app
+                .core_event_rx
+                .as_mut()
+                .expect("attached event receiver")
+                .recv()
+                .await
+            {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id,
+                    stream_id,
+                    envelope,
+                } = &event.payload
+                {
+                    if subscription_id == &expected_subscription && stream_id == &expected_stream {
+                        assert!(app.apply_core_event(CoreEvent::ProjectionStreamEvent {
+                            subscription_id: subscription_id.clone(),
+                            stream_id: stream_id.clone(),
+                            envelope: envelope.clone(),
+                        }));
+                        if app
+                            .projection_client
+                            .active_snapshot()
+                            .is_some_and(|(_, snapshot)| {
+                                snapshot
+                                    .subagents
+                                    .iter()
+                                    .any(|row| row.child_instance_id == child_instance_id)
+                            })
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("session-owned child projection event from the socket");
+    let second_child_instance_id = "child-socket-live-2".to_string();
+    crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::SubagentStarted {
+        session_id: session.id.clone(),
+        child_instance_id: second_child_instance_id.clone(),
+        originating_turn_id: Some("turn-socket-live-work".into()),
+        task_id: 8,
+        agent: "worker".into(),
+        description: "second socket-published child".into(),
+        display_name: Some("Sally".into()),
+        profile: None,
+        usefulness: None,
+        run_id: None,
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(event) = app
+                .core_event_rx
+                .as_mut()
+                .expect("attached event receiver")
+                .recv()
+                .await
+            {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id,
+                    stream_id,
+                    envelope,
+                } = &event.payload
+                {
+                    if subscription_id == &expected_subscription && stream_id == &expected_stream {
+                        assert!(app.apply_core_event(CoreEvent::ProjectionStreamEvent {
+                            subscription_id: subscription_id.clone(),
+                            stream_id: stream_id.clone(),
+                            envelope: envelope.clone(),
+                        }));
+                        if app
+                            .projection_client
+                            .active_snapshot()
+                            .is_some_and(|(_, snapshot)| {
+                                snapshot
+                                    .subagents
+                                    .iter()
+                                    .any(|row| row.child_instance_id == second_child_instance_id)
+                            })
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("second session-owned child projection event from the socket");
+    assert!(app.task_rows().iter().any(|row| matches!(
+        row,
+        crate::tui::app::state::tasks::TaskRow::Subagent { child_instance_id: Some(id), .. }
+            if id == &child_instance_id
+    )));
+    assert_eq!(
+        app.task_rows()
+            .iter()
+            .filter(|row| matches!(row, crate::tui::app::state::tasks::TaskRow::Subagent { .. }))
+            .count(),
+        2
+    );
+    app.open_dialog(crate::tui::Dialog::Session);
+    let painted_session_dialog = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            |dialog| dialog.clone(),
+        )
+        .expect("painted sessions dialog with live child");
+    assert!(painted_session_dialog.subagent_rows().iter().any(|row| row
+        .child_instance_id
+        .as_deref()
+        == Some(child_instance_id.as_str())
+        && row.task_id == "7"));
+    assert_eq!(painted_session_dialog.subagent_rows().len(), 2);
+    assert_eq!(painted_session_dialog.job_rows().len(), 2);
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).expect("test terminal");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("paint sessions dialog");
+    let painted_text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(
+        painted_text.contains("Mira"),
+        "painted session rows: {painted_text}"
+    );
+    assert!(
+        painted_text.contains("Sally"),
+        "painted session rows: {painted_text}"
+    );
+    assert!(
+        painted_text.contains("Subagents"),
+        "painted session sections: {painted_text}"
+    );
+
+    // M006 B: attaching an ordinary TUI after work has already been
+    // published must recover current rows from its authorized snapshot. A
+    // second session on this project must not inherit those rows.
+    let late_client: Arc<dyn CoreClient> = Arc::new(
+        SocketCoreClient::connect(&format!("unix://{socket_path}"))
+            .await
+            .expect("connect late-attach TUI client"),
+    );
+    let (late_command_tx, mut late_command_rx) = tokio::sync::mpsc::channel(64);
+    let mut late_app =
+        crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    late_app.tui_cmd_tx = Some(late_command_tx);
+    late_app.attach_core_client(Arc::clone(&late_client));
+    late_app.set_session(
+        crate::protocol_conversions::dto_to_session(session.clone())
+            .expect("late-attach session conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = late_command_rx
+                .recv()
+                .await
+                .expect("late-attach TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut late_app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("late TUI attaches to existing session projection");
+    let (_, late_snapshot) = late_app
+        .projection_client
+        .active_snapshot()
+        .expect("late TUI installed initial projection snapshot");
+    assert_eq!(late_snapshot.primary_session.session_id, session.id);
+    assert_eq!(late_snapshot.subagents.len(), 2);
+    assert_eq!(late_snapshot.jobs.len(), 2);
+    assert!(late_snapshot
+        .subagents
+        .iter()
+        .any(|row| row.child_instance_id == child_instance_id));
+    assert!(late_snapshot
+        .subagents
+        .iter()
+        .any(|row| row.child_instance_id == second_child_instance_id));
+
+    let other_session = match late_client
+        .request(crate::core::new_request(
+            "other-tui-session".into(),
+            crate::protocol::core::CoreRequest::SessionCreate {
+                directory: root.path().to_string_lossy().into_owned(),
+                title: Some("other projection session".into()),
+                project_id: Some(project.project_id.as_str().into()),
+                workspace_id: Some(workspace.id.as_str().into()),
+            },
+        ))
+        .await
+        .expect("create second session through socket")
+    {
+        crate::protocol::core::CoreResponse::Session { session } => session,
+        other => panic!("second session creation failed: {other:?}"),
+    };
+    let (other_command_tx, mut other_command_rx) = tokio::sync::mpsc::channel(64);
+    let mut other_app =
+        crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
+    other_app.tui_cmd_tx = Some(other_command_tx);
+    other_app.attach_core_client(late_client);
+    other_app.set_session(
+        crate::protocol_conversions::dto_to_session(other_session.clone())
+            .expect("second session conversion"),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = other_command_rx
+                .recv()
+                .await
+                .expect("second-session TUI command channel");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::PrimaryProjectionSubscribed { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(
+                    &mut other_app,
+                    command,
+                )
+                .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("second session projection subscription completes");
+    let (_, other_snapshot) = other_app
+        .projection_client
+        .active_snapshot()
+        .expect("second session has authoritative projection snapshot");
+    assert_eq!(other_snapshot.primary_session.session_id, other_session.id);
+    assert!(other_snapshot.subagents.is_empty());
+    assert!(other_snapshot.jobs.is_empty());
+
+    app.close_dialog();
+    app.tasks_expanded = false;
+    app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('t'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+    assert!(app.task_rows().iter().any(|row| matches!(
+        row,
+        crate::tui::app::state::tasks::TaskRow::Subagent { child_instance_id: Some(id), .. }
+            if id == &child_instance_id
+    )));
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("paint tasks overlay");
+    let painted_text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(
+        painted_text.contains("Mira"),
+        "painted task overlay: {painted_text}"
+    );
+    assert!(
+        painted_text.contains("Sally"),
+        "painted task overlay: {painted_text}"
+    );
+
+    // M005: drive a job row through /sessions, inspect it, request cancel,
+    // and verify the daemon's durable state after the UI refresh.
+    app.tasks_expanded = false;
+    app.open_dialog(crate::tui::Dialog::Session);
+    for _ in 0..8 {
+        let selected_is_job = app
+            .focus_manager
+            .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+                crate::tui::components::component::DialogType::Session,
+                |dialog| {
+                    matches!(
+                        dialog.selected_row(),
+                        Some(crate::tui::components::dialogs::session::SessionDialogRow::Job(_))
+                    )
+                },
+            )
+            .unwrap_or(false);
+        if selected_is_job {
+            break;
+        }
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI job detail completion");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::OpenJobDetailLoaded { .. }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("job Enter opened details through the TUI command path");
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('x'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let command = command_rx.recv().await.expect("TUI job cancel completion");
+            if matches!(
+                &command,
+                crate::tui::app::TuiCommand::OpenJobDetailLoaded {
+                    notice: Some(_),
+                    ..
+                }
+            ) {
+                crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, command)
+                    .await;
+                break;
+            }
+        }
+    })
+    .await
+    .expect("job cancel reconciled through the TUI command path");
+    let cancelled_job_id = app
+        .focus_manager
+        .with_dialog::<crate::tui::components::dialogs::job_detail::JobDetailDialog, _>(
+            crate::tui::components::component::DialogType::JobDetail,
+            |dialog| {
+                assert_eq!(
+                    dialog.job.as_ref().map(|job| job.state.as_str()),
+                    Some("cancelled")
+                );
+                dialog.job_id.clone()
+            },
+        )
+        .expect("job detail remained on the requested entity");
+    assert_eq!(
+        daemon
+            .deps
+            .job_store
+            .get_job(&codegg_core::jobs::JobId::new_unchecked(&cancelled_job_id))
+            .await
+            .expect("read cancelled job")
+            .expect("cancelled job record")
+            .state,
+        codegg_core::jobs::JobState::Cancelled
+    );
+
+    shutdown_server(server, shutdown).await;
+}
+
 async fn publish_projection_event(daemon: &CoreDaemon, project_id: &str, session_id: &str) {
     publish_projection_event_with_turn(daemon, project_id, session_id, "turn-socket").await;
 }
