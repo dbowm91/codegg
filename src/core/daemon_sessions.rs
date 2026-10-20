@@ -660,14 +660,24 @@ impl CoreDaemon {
                         message: "Core client missing database pool".to_string(),
                     });
                 };
-                let store = crate::session::SessionStore::new(pool);
+                let store = crate::session::SessionStore::new(pool.clone());
                 let result = if permanent {
                     store.delete(&session_id).await.map(|_| ())
                 } else {
                     store.soft_delete(&session_id).await.map(|_| ())
                 };
                 match result {
-                    Ok(()) => Ok(CoreResponse::Ack),
+                    Ok(()) => {
+                        // Keep scratch recoverable during the undo window, then
+                        // wait for durable runs and jobs to release their leases.
+                        spawn_deleted_session_scratch_reclaimer(
+                            session_id.clone(),
+                            pool.clone(),
+                            self.deps.agent_run_store.clone(),
+                            self.deps.job_store.clone(),
+                        );
+                        Ok(CoreResponse::Ack)
+                    }
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_delete_failed".to_string(),
                         message: e.to_string(),
@@ -1155,5 +1165,224 @@ impl CoreDaemon {
                 );
             }
         }
+    }
+}
+
+/// Returns `true` when cleanup completed or the session was restored, and
+/// `false` while an admitted run/job still owns the session scratch.
+pub(crate) fn spawn_deleted_session_scratch_reclaimer(
+    session_id: String,
+    pool: sqlx::SqlitePool,
+    runs: std::sync::Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    jobs: std::sync::Arc<dyn codegg_core::jobs::JobStore>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            match reclaim_deleted_session_scratch_when_idle(
+                &session_id,
+                &pool,
+                runs.as_ref(),
+                jobs.as_ref(),
+            )
+            .await
+            {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    session_id = %session_id,
+                    %error,
+                    "deleted session scratch cleanup retry deferred"
+                ),
+            }
+        }
+    });
+}
+
+async fn reclaim_deleted_session_scratch_when_idle(
+    session_id: &str,
+    pool: &sqlx::SqlitePool,
+    runs: &dyn codegg_core::agent_run::AgentRunStore,
+    jobs: &dyn codegg_core::jobs::JobStore,
+) -> Result<bool, String> {
+    // Acquire SQLite's writer lock and verify the row is still deleted before
+    // touching the tree. A concurrent restore either wins first (0 rows) or
+    // waits until the atomic tombstone cleanup has committed.
+    let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+    let claimed = sqlx::query(
+        "UPDATE session SET time_deleted = time_deleted WHERE id = ? AND time_deleted IS NOT NULL",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await.map_err(|error| error.to_string())?;
+        return Ok(true);
+    }
+    let run_records = runs
+        .list_by_session(session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if run_records.iter().any(|run| !run.status.is_terminal()) {
+        tx.rollback().await.map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    let job_records = jobs
+        .list_job_records(codegg_core::jobs::JobStoreQuery {
+            session_id: Some(session_id.to_string()),
+            states: vec![
+                codegg_core::jobs::JobState::Scheduled,
+                codegg_core::jobs::JobState::Queued,
+                codegg_core::jobs::JobState::Running,
+                codegg_core::jobs::JobState::Interrupted,
+                codegg_core::jobs::JobState::Blocked,
+            ],
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    if !job_records.is_empty() {
+        tx.rollback().await.map_err(|error| error.to_string())?;
+        return Ok(false);
+    }
+    crate::scratch::reclaim_deleted_session_scratch_dir(session_id)
+        .map_err(|error| error.to_string())?;
+    tx.commit().await.map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod scratch_cleanup_tests {
+    use super::*;
+    use codegg_core::jobs::{
+        IdempotencyClass, InMemoryJobStore, JobKind, JobPriority, JobSource, JobStore, NewJob,
+        ResourceRequest, RetryPolicy,
+    };
+    use codegg_core::session::{CreateSession, SessionStore};
+    use codegg_core::workspace::WorkspaceId;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    async fn cleanup_pool() -> sqlx::SqlitePool {
+        let url = format!(
+            "file:scratch-cleanup-{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let options = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite url")
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("sqlite pool");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("session schema");
+        pool
+    }
+
+    async fn create_session(store: &SessionStore) -> codegg_core::session::Session {
+        store
+            .create(CreateSession {
+                project_id: format!("scratch-cleanup-project-{}", uuid::Uuid::new_v4()),
+                directory: std::env::temp_dir().to_string_lossy().into_owned(),
+                title: Some("scratch cleanup test".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("create session")
+    }
+
+    fn active_test_job(session_id: &str) -> NewJob {
+        NewJob {
+            workspace_id: WorkspaceId::new_unchecked("scratch-cleanup-workspace"),
+            session_id: Some(session_id.to_string()),
+            turn_id: None,
+            kind: JobKind::Test,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload: codegg_core::jobs::JobPayload::Test {
+                command: "cargo test".into(),
+                argv: vec!["cargo".into(), "test".into()],
+                cwd: None,
+                scope: None,
+                parent_run_id: None,
+            },
+            resource_request: ResourceRequest::for_kind(JobKind::Test),
+            timeout: None,
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency: IdempotencyClass::SafeRepeat,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn deleted_session_cleanup_waits_for_jobs_and_preserves_restored_sessions() {
+        let pool = cleanup_pool().await;
+        let sessions = SessionStore::new(pool.clone());
+        let runs = Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let jobs = Arc::new(InMemoryJobStore::new());
+        let busy_session = create_session(&sessions).await;
+        let busy_root = crate::scratch::session_scratch_dir(&busy_session.id).unwrap();
+        std::fs::write(busy_root.join("keep.tmp"), "in use").unwrap();
+        jobs.create_job(active_test_job(&busy_session.id))
+            .await
+            .expect("create active job");
+        sessions.soft_delete(&busy_session.id).await.unwrap();
+
+        assert!(!reclaim_deleted_session_scratch_when_idle(
+            &busy_session.id,
+            &pool,
+            runs.as_ref(),
+            jobs.as_ref(),
+        )
+        .await
+        .unwrap());
+        assert_eq!(
+            std::fs::read_to_string(busy_root.join("keep.tmp")).unwrap(),
+            "in use"
+        );
+
+        sessions.restore(&busy_session.id).await.unwrap();
+        assert!(reclaim_deleted_session_scratch_when_idle(
+            &busy_session.id,
+            &pool,
+            runs.as_ref(),
+            jobs.as_ref(),
+        )
+        .await
+        .unwrap());
+        assert!(busy_root.join("keep.tmp").exists());
+        std::fs::remove_dir_all(&busy_root).unwrap();
+
+        let idle_session = create_session(&sessions).await;
+        let idle_root = crate::scratch::session_scratch_dir(&idle_session.id).unwrap();
+        std::fs::write(idle_root.join("remove.tmp"), "disposable").unwrap();
+        sessions.soft_delete(&idle_session.id).await.unwrap();
+        assert!(reclaim_deleted_session_scratch_when_idle(
+            &idle_session.id,
+            &pool,
+            runs.as_ref(),
+            jobs.as_ref(),
+        )
+        .await
+        .unwrap());
+        assert!(!idle_root.exists());
     }
 }

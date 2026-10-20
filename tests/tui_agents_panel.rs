@@ -11,12 +11,14 @@
 //! These drive the real key path — `/`, the characters, Enter — because the
 //! recursion started at submit time, not at open time.
 //!
-//! Bare `/agents` opens the "Send agents to panel" picker rather than jumping
-//! straight into the column, so the path continues through the box: the picker
-//! opens on the active panel, `j` walks the registry to Agents, and Enter
-//! commits. The picker cursor addresses `SidePanelId::ALL` (filtering never
-//! re-aims it), so the walk below is computed from the registry, not
-//! hand-numbered.
+//! Bare `/agents` now opens the **agent dialog** (`Dialog::Agent`), the same
+//! surface `/agent` opens. It used to open the "Send agents to panel" picker,
+//! which answered a placement question the user had not asked; that picker is
+//! gone from this path and panel *placement* lives on `/panels` instead. The
+//! recursion below is pinned by driving `/panels` — the entry point that now
+//! owns placement — through the same `/`, characters, Enter path. The picker
+//! cursor addressed `SidePanelId::ALL` (filtering never re-aimed it), so the
+//! walk below is computed from the registry, not hand-numbered.
 
 use codegg::tui::app::App;
 use codegg::tui::components::component::DialogType;
@@ -39,17 +41,46 @@ fn type_command(app: &mut App, command: &str) {
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
 }
 
-/// Drive the picker bare `/agents` opens and commit the Agents panel.
-///
-/// Asserts the picker itself opens: a `/agents` that selects nothing and
-/// opens nothing is the "routed nowhere" regression wearing a passing
-/// select assertion.
-fn pick_agents_panel(app: &mut App) {
-    type_command(app, "/agents");
+/// Bare `/agents` must open **agents**.
+#[test]
+fn bare_agents_opens_the_agent_dialog() {
+    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
+    type_command(&mut app, "/agents");
     assert_eq!(
         app.focus_manager.active_dialog_type(),
-        DialogType::PanelPicker,
-        "bare /agents opens the panel picker"
+        DialogType::Agent,
+        "bare /agents asks to see agents, so it must open agents — \
+         not a question about which panel should hold them"
+    );
+}
+
+// **Removed as vacuous.** This test used to assert that `/agents` and `/agent`
+// open the same surface. It could not fail.
+//
+// Both spellings resolve through the completion popup: `handle_command_key`
+// prefers `completion_rows()[completion_sel].label` over the raw query, and
+// "agent" ranks `/agents` above `/agent`, so **both executed the same command**
+// and the assertion compared a value with itself. Repointing bare `/agents` at
+// `Dialog::Help` left it green.
+//
+// It is deleted rather than rewritten here. The assertion that *should* exist —
+// that `/agent <name>` changes the selected agent — is not C003's to settle:
+// it is a different command (`B::AgentSelect`), and driving it from an
+// integration test runs into completion-popup routing that is a product
+// question rather than a missing assertion. See
+// `plans/closure/tui-subagent-and-job-visibility-convergence/006-status.md` §7.
+
+/// Selecting the Agents *panel* is still a real thing; it just lives on the
+/// panel manager now, where every other panel selection lives. This is the
+/// capability the retired picker used to be the only entry point to.
+#[test]
+fn the_panel_manager_still_loads_and_focuses_the_agents_panel() {
+    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
+    type_command(&mut app, "/panels");
+    assert_eq!(
+        app.focus_manager.active_dialog_type(),
+        DialogType::PanelManager,
+        "/panels is where panel placement is answered"
     );
     let steps = SidePanelId::Agents
         .index()
@@ -58,33 +89,14 @@ fn pick_agents_panel(app: &mut App) {
         app.on_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
     }
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
-}
-
-/// The crash itself, through the picker. A stack overflow aborts the process,
-/// so "this test finishes with the management panel selected" is the
-/// assertion: the picker commit must land on Agents, not recurse through a
-/// hosted placeholder and not strand the selection on the previous panel.
-#[test]
-fn the_agents_command_loads_its_panel_instead_of_recursing() {
-    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    pick_agents_panel(&mut app);
     assert_eq!(
         app.panel_host.active(),
         SidePanelId::Agents,
-        "/agents selects the management panel"
+        "the manager must still be able to select the management panel"
     );
-}
-
-/// `/agents` opens the panel to be *used*. Selecting without focusing left the
-/// keyboard in the composer and then warned that the panel had not taken
-/// focus — true of the keyboard, false of the panel.
-#[test]
-fn the_agents_panel_takes_the_keyboard() {
-    let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    pick_agents_panel(&mut app);
     assert!(
         app.panel_host.is_focused(),
-        "the panel the user just opened should have the keyboard"
+        "the panel the user just selected should have the keyboard"
     );
 }
 

@@ -276,6 +276,33 @@ impl CoreDaemon {
         // control fails closed until explicit takeover).
         self.reconcile_session_controllers(&active_turns).await;
 
+        // M003 (ADR-0038): the bounded restart twin. Reconciling stranded
+        // `delivering` rows and delivering what is now claimable must run
+        // **after** the controller reconciliation above, because delivery
+        // requires the session to be free: the claim and the admission both
+        // check for a live turn, and a session still holding a stale lease at
+        // this point would release every entry it tried to deliver and defer it
+        // to a trigger that never comes.
+        //
+        // It is also **after** `interrupt_incomplete_turn_receipts`, so a receipt
+        // the daemon killed mid-turn is already marked `interrupted` when the
+        // sweep asks whether a turn started. Reconciling first would read a
+        // receipt that had not yet been told the truth about itself.
+        self.reconcile_stranded_queue_deliveries().await;
+
+        // M007 (ADR-0039): the bounded queue advance task, spawned once the
+        // restart twin has finished so the two never race over the same row.
+        //
+        // It parks on `queue_schedule_changed` with no timer armed while nothing
+        // is scheduled, so an idle daemon costs nothing — which is why this is a
+        // spawn and not a `tokio::time::interval`. A `Weak` means a shutting-down
+        // daemon simply never restarts it.
+        if let Some(daemon) = self.idle_wake_cell.get().and_then(|weak| weak.upgrade()) {
+            tokio::spawn(async move {
+                daemon.run_queue_advance_task().await;
+            });
+        }
+
         // Count stale PermissionPending events (no PermissionResponded in same session)
         let stale_perms: Result<i64, sqlx::Error> = sqlx::query_scalar(
             "SELECT COUNT(*) FROM core_event_log WHERE event_type = 'permission_pending' \
@@ -352,7 +379,7 @@ impl CoreDaemon {
         if wakes > 0 {
             tracing::info!(wakes, "idle-continuation wakes dispatched during recovery");
         }
-        if let Some(scheduler) = self.deps.scheduler.as_ref() {
+        let recovery = if let Some(scheduler) = self.deps.scheduler.as_ref() {
             match scheduler
                 .recover_at_startup(&self.deps.recovery_policy)
                 .await
@@ -381,6 +408,49 @@ impl CoreDaemon {
             }
         } else {
             None
+        };
+        self.reconcile_deleted_session_scratch().await;
+        recovery
+    }
+
+    /// Resume best-effort cleanup watchers for soft-deleted sessions after a
+    /// daemon restart. The cleanup helper serializes with restore and rechecks
+    /// durable run/job liveness before touching each owner tree.
+    async fn reconcile_deleted_session_scratch(&self) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+        let mut after_id = String::new();
+        loop {
+            let session_ids = match sqlx::query_scalar::<_, String>(
+                "SELECT id FROM session WHERE time_deleted IS NOT NULL AND id > ? ORDER BY id LIMIT 256",
+            )
+            .bind(&after_id)
+            .fetch_all(pool)
+            .await
+            {
+                Ok(session_ids) => session_ids,
+                Err(error) => {
+                    tracing::warn!(?error, "deleted-session scratch recovery scan deferred");
+                    return;
+                }
+            };
+            if session_ids.is_empty() {
+                return;
+            }
+            let page_is_full = session_ids.len() == 256;
+            for session_id in &session_ids {
+                crate::core::daemon_sessions::spawn_deleted_session_scratch_reclaimer(
+                    session_id.clone(),
+                    pool.clone(),
+                    self.deps.agent_run_store.clone(),
+                    self.deps.job_store.clone(),
+                );
+            }
+            if !page_is_full {
+                return;
+            }
+            after_id = session_ids.last().cloned().unwrap_or_default();
         }
     }
 

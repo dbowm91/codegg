@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::protocol::core::UserPromptQueueEntryDto;
 use crate::session::Session;
 use crate::tui::app::types::{HistoryEntry, SessionStatus};
 use crate::tui::file_diff::FileDiffStatsResult;
@@ -171,6 +172,21 @@ pub struct SessionState {
     /// on session switch, project-dir change, file events (debounced),
     /// and periodically via the event loop.
     pub git_sidebar: GitSidebarState,
+    /// M002a (ADR-0035): the daemon's live prompt-queue projection for this
+    /// session, in daemon-owned ordinal order.
+    ///
+    /// Seeded empty and always replaced wholesale from `CoreResponse::
+    /// UserPromptQueue`. It is a *projection*, never an authoritative copy: the
+    /// TUI owns no queue state that could drift, and there is no local edit
+    /// path. A failed load leaves the previous value intact rather than
+    /// clearing it, so a transient transport error does not make a real
+    /// backlog look empty.
+    ///
+    /// Entries carry their daemon-owned `status`. A `delivering` entry appears
+    /// here and is **not** editable: it is live, a turn is in flight against it,
+    /// and the daemon refuses an edit to it with
+    /// `user_prompt_queue_entry_delivering`.
+    pub user_prompt_queue: Vec<UserPromptQueueEntryDto>,
 }
 
 /// Git sidebar metadata passed from the background probe to the

@@ -73,10 +73,10 @@ pub enum Dialog {
     /// `/approval` + `/sandbox` fast-select. FocusManager-owned; see
     /// `policy_selector.rs`.
     PolicySelector,
-    /// "Which panel should this content go in?" — opened by `/agents` and
-    /// shared with the panel manager's list mechanics. See
-    /// `components/dialogs/panel_picker.rs`.
-    PanelPicker,
+    /// M004: the session's waiting prompts. FocusManager-owned; see
+    /// `components/dialogs/queue.rs`. `dock_target` has no queue arm, so this
+    /// box is a modal and never docks.
+    Queue,
 }
 
 impl Dialog {
@@ -131,7 +131,7 @@ impl Dialog {
                 | Self::TriggerSecret
                 | Self::WorkspaceDashboard
                 | Self::PolicySelector
-                | Self::PanelPicker
+                | Self::Queue
         )
     }
 }
@@ -258,7 +258,6 @@ pub enum TuiMsg {
         panel: crate::tui::panels::SidePanelId,
         placement: crate::tui::panels::PanelPlacement,
     },
-    ToggleTodoList,
     /// Open the unified tasks overlay: todos, subagents, jobs.
     ToggleTasksList,
     ToggleFullscreen,
@@ -282,7 +281,6 @@ pub enum TuiMsg {
     SearchNext,
     SearchPrev,
     ClearSearch,
-    FocusPrompt,
     StashPrompt,
     RestorePrompt,
     CopyMessage,
@@ -368,6 +366,89 @@ pub enum TuiMsg {
     PolicyOptionSelected {
         approval_mode: Option<String>,
         sandbox_profile: Option<String>,
+    },
+    /// M004: `/queue` asked the daemon to discard one entry.
+    ///
+    /// Carries the `entry_id` the box had selected rather than an index, so a
+    /// projection that changed between the keystroke and the request cannot
+    /// make the delete name a different prompt. The daemon decides whether it
+    /// is allowed at all (`ControllerScope::QueueMutation`); the box does not
+    /// pre-empt it.
+    QueueDeleteSelected {
+        entry_id: String,
+    },
+    /// M004: re-read the queue projection for the active session. Emitted by
+    /// `r` in the box, which is the only surface the push path cannot cover —
+    /// a mutation made by a second attached frontend.
+    QueueRefreshRequested,
+    /// M005: `Enter` on a fresh compose step. The box has already left the
+    /// text step by the time this is observed.
+    ///
+    /// Carries the composed text and **not** an `entry_id`: the id is minted
+    /// here, at commit, rather than when the step opened. Minting it up front
+    /// would make an abandoned compose step burn an id, and — worse — make the
+    /// retry story ambiguous about which text the id belongs to.
+    QueueAddCommitted {
+        text: String,
+        /// M007 (ADR-0039): the resolved due time, or `None` for an immediate
+        /// entry.
+        ///
+        /// An absolute instant, not a duration: the duration was resolved
+        /// against the wall clock when the user pressed `Enter`, and resolving
+        /// it again at submit time would silently slide the entry by however
+        /// long the queue box took to get here.
+        run_at_ms: Option<i64>,
+    },
+    /// M005: `Enter` on the edit step.
+    ///
+    /// Carries the entry's **existing** id. An edit replaces text; it does not
+    /// replace identity, and minting a new id would orphan the row the user
+    /// meant to correct.
+    QueueEditCommitted {
+        entry_id: String,
+        text: String,
+        /// M007: `None` clears an existing schedule.
+        run_at_ms: Option<i64>,
+    },
+    /// M007: a duration the box could not parse, refused **before** any request.
+    ///
+    /// Carries the offending input verbatim so the message can quote what the
+    /// user actually typed. This is the input — a short grammar token the user
+    /// just composed — and never prompt text, which is the thing the rest of
+    /// this surface refuses to name anywhere.
+    QueueScheduleRejected {
+        input: String,
+    },
+    /// M005: the complete desired order of the **operable** (pending) rows.
+    ///
+    /// Already filtered and permuted by the box — see
+    /// `QueueDialog::pending_permutation` for why a client that sends every id
+    /// it rendered is refused the moment one row is mid-delivery. The TUI
+    /// builds the permutation and the daemon validates it; neither sorts the
+    /// other's data.
+    QueueReorderSelected {
+        entry_ids: Vec<String>,
+    },
+    /// M005: a reorder that cannot be expressed, named so the user gets a
+    /// reason instead of a keypress that does nothing.
+    QueueReorderUnavailable {
+        reason: crate::tui::components::dialogs::queue::QueueReorderRefusal,
+    },
+    /// M006: `s` on a queued prompt — hand it to the turn that is already
+    /// running instead of waiting for that turn to finish.
+    ///
+    /// Carries the entry id the box had selected, for the same reason delete
+    /// does: a projection that landed between the keystroke and the request must
+    /// not make this name a different prompt. Carries **no text** — the daemon
+    /// loads what the `add` stored, so a keystroke cannot submit text that no
+    /// queue entry accounts for.
+    QueueSendNowSelected {
+        entry_id: String,
+    },
+    /// M006: a send-now that produced no request, named so the user gets a
+    /// reason instead of a keypress that does nothing.
+    QueueSendNowUnavailable {
+        reason: crate::tui::components::dialogs::queue::QueueSendRefusal,
     },
     ReviewOpenDiff {
         path: String,

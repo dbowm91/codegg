@@ -13,6 +13,7 @@ use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
 use crate::session::Session;
+use crate::tui::app::state::tasks::TaskGroup;
 use crate::tui::app::TuiMsg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -76,10 +77,91 @@ impl DatePreset {
     }
 }
 
+/// One live subagent, as the dialog renders it.
+///
+/// An owned copy rather than a borrowed
+/// [`crate::tui::app::state::subagents::SubagentRow`] so the row survives a
+/// snapshot refresh that replaces the shared vector, and so `Clone` (which the
+/// focus-manager push depends on) does not have to reconstruct it. Every field
+/// is projection-derived; nothing here is minted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentListRow {
+    /// Canonical task identity. Keys the cursor; never the label.
+    pub task_id: String,
+    /// Display name, or the agent type when the node carried none.
+    pub label: String,
+    /// The agent type, shown beside the name.
+    pub agent: String,
+    /// What the subagent was asked to do.
+    pub description: String,
+    /// The pool's descriptor for this subagent's agent, or `None` for a node
+    /// recorded before descriptors existed.
+    ///
+    /// Rendered in place of `description` when present, so this dialog and the
+    /// `Ctrl+T` overlay — which this row is derived from — stay in step.
+    pub profile: Option<String>,
+    /// Raw status from the projection.
+    pub status: String,
+}
+
+/// One live job, as the dialog renders it. Read-only: there is no job detail
+/// view to open, so the row carries its identity and its text and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobListRow {
+    /// Canonical job identity. Keys the cursor; never the list position.
+    pub job_id: String,
+    pub kind: String,
+    pub summary: String,
+    pub state: String,
+    /// Present when the job failed; drives the error styling.
+    pub error_class: Option<String>,
+}
+
+/// One line of the dialog's flat row space.
+///
+/// Flat on purpose: the cursor is a single `usize` walking this vector, and a
+/// nested shape would buy nothing here because there is no per-section
+/// collapsing. Session rows **lead** the vector, so a session's row index is
+/// also its index into `sorted_sessions()` — which is what keeps
+/// `selected_session()` and every bulk-mode gesture working unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionDialogRow {
+    /// A session; `index` addresses [`SessionDialog::sorted_sessions`].
+    Session(usize),
+    /// A live subagent.
+    Subagent(SubagentListRow),
+    /// A live job.
+    Job(JobListRow),
+    /// A section heading. **Never selectable** — `j`/`k` skip these, so the
+    /// cursor can never come to rest on a line `Enter` has nothing to do with.
+    Header(TaskGroup),
+}
+
+impl SessionDialogRow {
+    /// Whether the cursor may rest on this row.
+    pub fn is_selectable(&self) -> bool {
+        !matches!(self, SessionDialogRow::Header(_))
+    }
+}
+
+/// A row's identity, independent of where it sits in the vector.
+///
+/// Used to carry focus across a refresh. An index is not a focus: the moment
+/// one subagent finishes, every row below it shifts up by one, and a cursor
+/// held as an index silently lands on a *different* entity — the user presses
+/// Enter believing they are reopening the subagent they were looking at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowIdentity {
+    Session(String),
+    Subagent(String),
+    Job(String),
+}
+
 pub struct SessionDialog {
     pub theme: Arc<Theme>,
     pub project_context: Option<String>,
     pub filter: String,
+    /// Index into [`SessionDialog::rows`], not into the session list.
     pub selected: usize,
     pub sessions: Vec<Session>,
     pub sort_by: SortBy,
@@ -92,6 +174,10 @@ pub struct SessionDialog {
     pub scroll: CenteredScroll,
     pub bulk_mode: bool,
     pub selected_ids: HashMap<String, bool>,
+    /// Live subagents shown under the session list.
+    subagents: Vec<SubagentListRow>,
+    /// Live jobs shown under the subagents.
+    jobs: Vec<JobListRow>,
     visible_height: usize,
     sorted_cache: RefCell<SortedCache>,
 }
@@ -114,6 +200,8 @@ impl Clone for SessionDialog {
             scroll: self.scroll.clone(),
             bulk_mode: self.bulk_mode,
             selected_ids: self.selected_ids.clone(),
+            subagents: self.subagents.clone(),
+            jobs: self.jobs.clone(),
             visible_height: self.visible_height,
             sorted_cache: RefCell::new(self.sorted_cache.borrow().clone()),
         }
@@ -138,6 +226,8 @@ impl SessionDialog {
             scroll: CenteredScroll::new(),
             bulk_mode: false,
             selected_ids: HashMap::new(),
+            subagents: Vec::new(),
+            jobs: Vec::new(),
             visible_height: 10,
             sorted_cache: RefCell::new(None),
         }
@@ -202,8 +292,225 @@ impl SessionDialog {
         self.message_preview.clear();
     }
 
+    /// Replace the live subagent and job sections.
+    ///
+    /// Focus is carried by identity, not by index: the previously selected
+    /// row's identity is remembered, and after the swap the cursor is placed
+    /// on the row that *same* entity now occupies. A row that vanished (a
+    /// subagent that finished mid-scroll) therefore leaves the cursor on the
+    /// nearest remaining selectable row rather than on whatever entity slid up
+    /// into the old index.
+    ///
+    /// An empty pair is not the same as "nothing is live", so there is no
+    /// clearing path here — the caller simply stops passing rows it no longer
+    /// has, which is what the projection-sync rule requires.
+    pub fn set_pending_rows(&mut self, subagents: Vec<SubagentListRow>, jobs: Vec<JobListRow>) {
+        let previous = self.selected_identity();
+        self.subagents = subagents;
+        self.jobs = jobs;
+        self.restore_identity(previous);
+    }
+
+    /// Live subagents currently shown, for tests and for callers that need to
+    /// assert on the section without rendering.
+    pub fn subagent_rows(&self) -> &[SubagentListRow] {
+        &self.subagents
+    }
+
+    /// Live jobs currently shown.
+    pub fn job_rows(&self) -> &[JobListRow] {
+        &self.jobs
+    }
+
+    /// The flat row space: sessions, then each non-empty section behind its
+    /// own heading.
+    ///
+    /// A section contributes **nothing at all** when empty — no heading, no
+    /// placeholder. A heading with no rows under it is a row that teaches the
+    /// user to ignore headings, which is the same rule the overlay applies and
+    /// the reason the two surfaces read alike.
+    pub fn rows(&self) -> Vec<SessionDialogRow> {
+        let session_count = self.sorted_sessions().len();
+        let mut rows: Vec<SessionDialogRow> =
+            (0..session_count).map(SessionDialogRow::Session).collect();
+
+        if !self.subagents.is_empty() {
+            rows.push(SessionDialogRow::Header(TaskGroup::Subagents));
+            rows.extend(
+                self.subagents
+                    .iter()
+                    .cloned()
+                    .map(SessionDialogRow::Subagent),
+            );
+        }
+        if !self.jobs.is_empty() {
+            rows.push(SessionDialogRow::Header(TaskGroup::Jobs));
+            rows.extend(self.jobs.iter().cloned().map(SessionDialogRow::Job));
+        }
+        rows
+    }
+
+    /// The row under the cursor, owned.
+    ///
+    /// Owned rather than borrowed because [`SessionDialog::rows`] builds a
+    /// fresh vector on every call; handing out a reference into it would
+    /// outlive the temporary.
+    pub fn selected_row(&self) -> Option<SessionDialogRow> {
+        self.rows().into_iter().nth(self.selected)
+    }
+
+    /// The identity of the selected row, if the cursor rests on one.
+    fn selected_identity(&self) -> Option<RowIdentity> {
+        let row = self.selected_row()?;
+        row_identity(&row, &self.sorted_sessions())
+    }
+
+    /// Put the cursor back on `identity`, or on the nearest selectable row if
+    /// that entity is gone.
+    fn restore_identity(&mut self, identity: Option<RowIdentity>) {
+        let rows = self.rows();
+        let Some(identity) = identity else {
+            // Nothing was focused (or the cursor sat on a heading). Fall back
+            // to the first selectable row rather than leaving it on a header.
+            self.select_first_selectable();
+            return;
+        };
+        if let Some(index) = rows
+            .iter()
+            .position(|row| row_identity(row, &self.sorted_sessions()) == Some(identity.clone()))
+        {
+            self.selected = index;
+            return;
+        }
+        self.clamp_selection(&rows);
+    }
+
+    fn select_first_selectable(&mut self) {
+        let rows = self.rows();
+        if let Some(index) = rows.iter().position(SessionDialogRow::is_selectable) {
+            self.selected = index;
+        }
+        self.sync_scroll(rows.len());
+    }
+
+    /// Bring `selected` back inside the selectable range after the row space
+    /// changed shape underneath it.
+    fn clamp_selection(&mut self, rows: &[SessionDialogRow]) {
+        if rows.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        if self.selected < rows.len() && rows[self.selected].is_selectable() {
+            return;
+        }
+        // Past the end: land on the last selectable row.
+        for index in (0..rows.len()).rev() {
+            if rows[index].is_selectable() {
+                self.selected = index;
+                return;
+            }
+        }
+        // Only headings remain (impossible today, but the walk must terminate).
+        self.selected = 0;
+    }
+
+    fn sync_scroll(&mut self, len: usize) {
+        let scroll = self.scroll.get();
+        if self.selected < scroll || self.selected >= scroll + self.visible_height {
+            self.scroll.clamp(self.selected, len, self.visible_height);
+        }
+    }
+
+    /// Move the cursor to `index`, skipping forward past any heading it lands
+    /// on. Used by the click paths, which compute a rendered line position.
+    pub fn select_index(&mut self, index: usize) {
+        let rows = self.rows();
+        let mut index = index.min(rows.len().saturating_sub(1));
+        while index < rows.len() && !rows[index].is_selectable() {
+            index += 1;
+        }
+        if index < rows.len() {
+            self.selected = index;
+        }
+        self.sync_scroll(rows.len());
+    }
+
+    pub fn select_up(&mut self) {
+        let rows = self.rows();
+        // Normalise first: `self.selected` is a public field, so a caller (or
+        // a stale index left by a shrink that did not go through
+        // `set_pending_rows`) can leave it past the end. Walking from a
+        // clamped start is what keeps `rows[index]` in bounds — and the clamp
+        // is *assigned*, not just used as the walk's origin, so a cursor that
+        // cannot move still ends up on a real row instead of staying invisible
+        // at index 99.
+        self.selected = self.selected.min(rows.len().saturating_sub(1));
+        let mut index = self.selected;
+        while index > 0 {
+            index -= 1;
+            if rows[index].is_selectable() {
+                self.selected = index;
+                break;
+            }
+        }
+        self.sync_scroll(rows.len());
+    }
+
+    pub fn select_down(&mut self) {
+        let rows = self.rows();
+        self.selected = self.selected.min(rows.len().saturating_sub(1));
+        let mut index = self.selected;
+        while index + 1 < rows.len() {
+            index += 1;
+            if rows[index].is_selectable() {
+                self.selected = index;
+                break;
+            }
+        }
+        self.sync_scroll(rows.len());
+    }
+
     pub fn selected_session(&self) -> Option<&Session> {
-        self.sorted_sessions().get(self.selected).copied()
+        match self.selected_row()? {
+            SessionDialogRow::Session(index) => self.sorted_sessions().get(index).copied(),
+            // A subagent, a job, or a heading is not a session, and must never
+            // be resolved as one. Sessions lead the vector, so a bare
+            // `sorted_sessions().get(self.selected)` would be right by
+            // coincidence rather than by construction — this matches on the
+            // row type instead.
+            SessionDialogRow::Subagent(_)
+            | SessionDialogRow::Job(_)
+            | SessionDialogRow::Header(_) => None,
+        }
+    }
+
+    /// What `Enter` does, per row type.
+    ///
+    /// Three row types, three honest answers:
+    ///
+    /// - **Session** → `SelectSession`, as before.
+    /// - **Subagent** → `OpenSubagentTab`, the *same* message the sidebar and
+    ///   the overlay's working strip send for the same `task_id`. Dispatching
+    ///   the shared message rather than opening a tab from here is what makes
+    ///   "the same tab every surface opens" true by construction instead of by
+    ///   three call sites agreeing. It opens a view; it cancels nothing.
+    /// - **Job** → consumed. There is no job detail view to open, so inventing
+    ///   a destination here would be inventing a feature; the row is
+    ///   read-only and `Enter` on it does nothing at all.
+    pub fn activate_selected(&self) -> Option<TuiMsg> {
+        match self.selected_row()? {
+            SessionDialogRow::Session(index) => self
+                .sorted_sessions()
+                .get(index)
+                .copied()
+                .cloned()
+                .map(|session| TuiMsg::SelectSession(Box::new(session))),
+            SessionDialogRow::Subagent(row) => Some(TuiMsg::OpenSubagentTab {
+                task_id: row.task_id,
+            }),
+            SessionDialogRow::Job(_) => None,
+            SessionDialogRow::Header(_) => None,
+        }
     }
 
     /// Number of sessions currently loaded into this dialog.
@@ -290,28 +597,6 @@ impl SessionDialog {
         }
     }
 
-    pub fn select_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
-        let scroll = self.scroll.get();
-        let len = self.sorted_sessions().len();
-        if self.selected < scroll || self.selected >= scroll + self.visible_height {
-            self.scroll.clamp(self.selected, len, self.visible_height);
-        }
-    }
-
-    pub fn select_down(&mut self) {
-        let len = self.sorted_sessions().len();
-        if len > 0 && self.selected + 1 < len {
-            self.selected += 1;
-        }
-        let scroll = self.scroll.get();
-        if self.selected < scroll || self.selected >= scroll + self.visible_height {
-            self.scroll.clamp(self.selected, len, self.visible_height);
-        }
-    }
-
     pub fn set_filter(&mut self, c: char) {
         self.filter.push(c);
         self.selected = 0;
@@ -349,8 +634,13 @@ impl SessionDialog {
     }
 
     pub fn toggle_selection(&mut self) {
-        if let Some(s) = self.sorted_sessions().get(self.selected) {
-            let id = s.id.clone();
+        // Bulk mode selects *sessions*. A subagent or job row carries no
+        // session id, and the old positional lookup would have silently
+        // resolved one — ticking a box against a subagent that bulk-archive
+        // then cannot act on. Route through `selected_session()` so the
+        // cursor's row type decides.
+        if let Some(session) = self.selected_session() {
+            let id = session.id.clone();
             let entry = self.selected_ids.entry(id).or_insert(false);
             *entry = !*entry;
         }
@@ -381,6 +671,22 @@ impl SessionDialog {
             .filter(|(_, &v)| v)
             .map(|(k, _)| k.clone())
             .collect()
+    }
+}
+
+/// A row's identity, for matching a cursor across a row-space change.
+///
+/// Sessions are matched by id and not by their `usize`, because re-sorting or
+/// re-filtering moves a session to a different index without changing what it
+/// is.
+fn row_identity(row: &SessionDialogRow, sorted: &[&Session]) -> Option<RowIdentity> {
+    match row {
+        SessionDialogRow::Session(index) => sorted
+            .get(*index)
+            .map(|s| RowIdentity::Session(s.id.clone())),
+        SessionDialogRow::Subagent(row) => Some(RowIdentity::Subagent(row.task_id.clone())),
+        SessionDialogRow::Job(row) => Some(RowIdentity::Job(row.job_id.clone())),
+        SessionDialogRow::Header(_) => None,
     }
 }
 
@@ -465,9 +771,7 @@ impl Component for SessionDialog {
                     self.toggle_bulk_mode();
                     None
                 } else {
-                    self.selected_session()
-                        .cloned()
-                        .map(|session| TuiMsg::SelectSession(Box::new(session)))
+                    self.activate_selected()
                 }
             }
             crossterm::event::KeyCode::Char('d') if !self.bulk_mode && self.filter.is_empty() => {
@@ -614,9 +918,10 @@ impl Component for SessionDialog {
         lines.push(Line::from(""));
 
         let sorted = self.sorted_sessions();
+        let rows = self.rows();
         let scroll = self.scroll.get();
 
-        if sorted.is_empty() {
+        if rows.is_empty() {
             let label = if self.loading {
                 "  Reloading..."
             } else {
@@ -628,64 +933,145 @@ impl Component for SessionDialog {
             )));
         } else {
             let mut row_idx = 0usize;
-            for (i, s) in sorted.iter().enumerate() {
+            for (i, row) in rows.iter().enumerate() {
                 if i < scroll {
                     continue;
                 }
-                let is_archived = s.time_archived.is_some();
-                let is_forked = s.parent_id.is_some();
-                let style = if i == self.selected {
-                    theme.selection_style()
+                // Headings are never selectable, so they take no stripe and no
+                // selection style — a highlighted heading would read as a row
+                // the cursor is on.
+                if let SessionDialogRow::Header(group) = row {
+                    lines.push(Line::from(Span::styled(
+                        format!(" ── {} ──", group.title()),
+                        Style::default().fg(theme.muted),
+                    )));
+                    continue;
+                }
+
+                let selected = i == self.selected;
+                let bg = if row_idx.is_multiple_of(2) {
+                    theme.background
                 } else {
-                    let bg = if row_idx.is_multiple_of(2) {
-                        theme.background
-                    } else {
-                        theme.alternate_bg
-                    };
-                    if is_archived {
-                        Style::default().fg(theme.muted).bg(bg)
-                    } else {
-                        Style::default().fg(theme.foreground).bg(bg)
-                    }
+                    theme.alternate_bg
                 };
                 row_idx += 1;
+                let lead = if selected { "▸" } else { " " };
 
-                let ts = chrono::DateTime::from_timestamp_millis(s.time_updated)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-                let msg_count = self.message_counts.get(&s.id).unwrap_or(&0);
+                let text = match row {
+                    SessionDialogRow::Session(session_index) => {
+                        let Some(s) = sorted.get(*session_index) else {
+                            continue;
+                        };
+                        let is_archived = s.time_archived.is_some();
+                        let is_forked = s.parent_id.is_some();
 
-                let title_suffix = if is_forked {
-                    if is_archived {
-                        " [archived]"
-                    } else {
-                        " (fork)"
+                        let ts = chrono::DateTime::from_timestamp_millis(s.time_updated)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let msg_count = self.message_counts.get(&s.id).unwrap_or(&0);
+
+                        let title_suffix = if is_forked {
+                            if is_archived {
+                                " [archived]"
+                            } else {
+                                " (fork)"
+                            }
+                        } else if is_archived {
+                            " [archived]"
+                        } else {
+                            ""
+                        };
+
+                        let display_title = if title_suffix.is_empty() {
+                            s.title.clone()
+                        } else {
+                            format!("{}{}", s.title, title_suffix)
+                        };
+
+                        let checkbox = if self.bulk_mode {
+                            if *self.selected_ids.get(&s.id).unwrap_or(&false) {
+                                "[✓] "
+                            } else {
+                                "[ ] "
+                            }
+                        } else {
+                            ""
+                        };
+
+                        let base = if selected {
+                            theme.selection_style()
+                        } else if is_archived {
+                            Style::default().fg(theme.muted).bg(bg)
+                        } else {
+                            Style::default().fg(theme.foreground).bg(bg)
+                        };
+                        // The bulk checkbox replaces the cursor marker: a
+                        // checkbox column and a `▸` in the same cell is a
+                        // column that means two things.
+                        let prefix = if self.bulk_mode {
+                            checkbox.to_string()
+                        } else {
+                            lead.to_string()
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}  {}msgs  {}", prefix, display_title, msg_count, ts),
+                            base,
+                        )));
+                        continue;
                     }
-                } else if is_archived {
-                    " [archived]"
-                } else {
-                    ""
-                };
-
-                let display_title = if title_suffix.is_empty() {
-                    s.title.clone()
-                } else {
-                    format!("{}{}", s.title, title_suffix)
-                };
-
-                let checkbox = if self.bulk_mode {
-                    if *self.selected_ids.get(&s.id).unwrap_or(&false) {
-                        "[✓] "
-                    } else {
-                        "[ ] "
+                    SessionDialogRow::Subagent(subagent) => {
+                        // Name and agent type together, exactly as the overlay
+                        // renders them: the name is what the user is looking
+                        // for, the type is what it actually is.
+                        let name = if subagent.label == subagent.agent {
+                            subagent.label.clone()
+                        } else {
+                            format!("{} ({})", subagent.label, subagent.agent)
+                        };
+                        // Descriptor when the projection carried one, the task description
+                        // otherwise: same rule the `Ctrl+T` overlay applies to the
+                        // row this was derived from.
+                        let topic = subagent
+                            .profile
+                            .as_deref()
+                            .unwrap_or(subagent.description.as_str());
+                        if topic.trim().is_empty() {
+                            format!("{lead}{name} · {}", subagent.status)
+                        } else {
+                            format!("{lead}{name} · {} — {}", subagent.status, topic)
+                        }
                     }
-                } else {
-                    "  "
+                    SessionDialogRow::Job(job) => {
+                        let colour = if job.error_class.is_some() {
+                            theme.error
+                        } else {
+                            theme.foreground
+                        };
+                        let text = if job.summary.trim().is_empty() {
+                            format!("{lead}{} · {}", job.kind, job.state)
+                        } else {
+                            format!("{lead}{} · {} — {}", job.kind, job.state, job.summary)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            text,
+                            if selected {
+                                theme.selection_style()
+                            } else {
+                                Style::default().fg(colour).bg(bg)
+                            },
+                        )));
+                        continue;
+                    }
+                    SessionDialogRow::Header(_) => unreachable!("handled above"),
                 };
 
                 lines.push(Line::from(Span::styled(
-                    format!("{}{}  {}msgs  {}", checkbox, display_title, msg_count, ts),
-                    style,
+                    text,
+                    if selected {
+                        theme.selection_style()
+                    } else {
+                        Style::default().fg(theme.foreground).bg(bg)
+                    },
                 )));
             }
         }
@@ -710,6 +1096,15 @@ impl Component for SessionDialog {
                 "↑/↓ navigate  |  Enter open  |  Esc close  |  b bulk mode",
                 Style::default().fg(theme.muted),
             )));
+            // Only claim the sections when they exist. A hint that advertises
+            // `Enter opens a subagent` over a list with no subagents teaches
+            // the user to look for something that is not there.
+            if !self.subagents.is_empty() || !self.jobs.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "Enter opens the subagent transcript · jobs are read-only",
+                    Style::default().fg(theme.muted),
+                )));
+            }
             lines.push(Line::from(Span::styled(
                 "d delete  a archive  f fork  s sort  h toggle archived  m search messages",
                 Style::default().fg(theme.muted),
@@ -717,7 +1112,11 @@ impl Component for SessionDialog {
         }
 
         if self.search_messages && !self.filter.is_empty() {
-            if let Some(selected_s) = sorted.get(self.selected) {
+            // The preview belongs to the selected *session*. With the cursor
+            // parked on a subagent or job row there is no session to preview,
+            // and indexing the session list by a row index that now addresses
+            // a different entity would show another session's messages.
+            if let Some(selected_s) = self.selected_session() {
                 if let Some(preview) = self.message_preview.get(&selected_s.id) {
                     let lines_preview: Vec<&str> = preview.lines().take(3).collect();
                     for (i, line) in lines_preview.iter().enumerate() {
@@ -812,5 +1211,364 @@ mod vim_key_tests {
             .collect::<String>();
         assert!(text.contains("project-a"));
         assert!(text.contains("/workspace/a"));
+    }
+}
+
+/// C002 — the sections under the session list.
+#[cfg(test)]
+mod pending_section_tests {
+    use super::*;
+    use crate::tui::app::TuiMsg;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn dialog() -> SessionDialog {
+        SessionDialog::new(Arc::new(Theme::default()))
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    fn session(id: &str) -> Session {
+        Session {
+            id: id.to_string(),
+            title: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn subagent(task_id: &str, label: &str) -> SubagentListRow {
+        SubagentListRow {
+            task_id: task_id.to_string(),
+            label: label.to_string(),
+            agent: "explore".to_string(),
+            description: "look around".to_string(),
+            profile: None,
+            status: "running".to_string(),
+        }
+    }
+
+    fn job(job_id: &str, kind: &str) -> JobListRow {
+        JobListRow {
+            job_id: job_id.to_string(),
+            kind: kind.to_string(),
+            summary: "build the thing".to_string(),
+            state: "running".to_string(),
+            error_class: None,
+        }
+    }
+
+    fn loaded(count: usize) -> SessionDialog {
+        let mut d = dialog();
+        d.load_sessions((0..count).map(|i| session(&format!("s{i}"))).collect());
+        d
+    }
+
+    fn headers(d: &SessionDialog) -> Vec<TaskGroup> {
+        d.rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                SessionDialogRow::Header(group) => Some(group),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sections_appear_when_rows_exist_and_vanish_when_they_do_not() {
+        let mut d = loaded(2);
+        assert!(
+            headers(&d).is_empty(),
+            "a sessions-only dialog must not render an empty section heading"
+        );
+
+        d.set_pending_rows(vec![subagent("t1", "Sally")], vec![job("j1", "test")]);
+        assert_eq!(
+            headers(&d),
+            vec![TaskGroup::Subagents, TaskGroup::Jobs],
+            "both headings appear once they have a row under them"
+        );
+        assert_eq!(
+            d.rows().len(),
+            6,
+            "2 sessions + 2 headings + 1 subagent row + 1 job row"
+        );
+
+        // A refresh that reports nothing live withdraws the whole section,
+        // heading included — not a heading stranded over an empty list.
+        d.set_pending_rows(Vec::new(), Vec::new());
+        assert!(headers(&d).is_empty());
+        assert_eq!(d.rows().len(), 2, "only the sessions remain");
+    }
+
+    #[test]
+    fn a_section_with_no_rows_contributes_no_heading() {
+        let mut d = loaded(1);
+        d.set_pending_rows(Vec::new(), vec![job("j1", "test")]);
+        assert_eq!(
+            headers(&d),
+            vec![TaskGroup::Jobs],
+            "an empty subagent section must not spend a row on a heading"
+        );
+    }
+
+    #[test]
+    fn navigation_walks_sessions_then_subagents_then_jobs_and_skips_headings() {
+        let mut d = loaded(2);
+        d.set_pending_rows(
+            vec![subagent("t1", "Sally"), subagent("t2", "Frank")],
+            vec![job("j1", "test")],
+        );
+
+        // Driven through `handle_key`, not through `select_down`, because the
+        // requirement is about the keys: `j` is only navigation while the
+        // filter is empty, and a call to the method would pass even if the
+        // binding were gone.
+        // rows: S0 S1 [Subagents] t1 t2 [Jobs] j1  == 7 rows.
+        let seen: Vec<String> = (0..7)
+            .map(|_| {
+                let id = match d.selected_row().expect("a row is always selectable here") {
+                    SessionDialogRow::Session(i) => format!("s{i}"),
+                    SessionDialogRow::Subagent(row) => row.task_id,
+                    SessionDialogRow::Job(row) => row.job_id,
+                    SessionDialogRow::Header(_) => "HEADER".to_string(),
+                };
+                d.handle_key(key('j'));
+                id
+            })
+            .collect();
+
+        assert_eq!(
+            seen,
+            vec!["s0", "s1", "t1", "t2", "j1", "j1", "j1"],
+            "j must skip both headings and stop at the last row"
+        );
+        assert!(
+            !seen.contains(&"HEADER".to_string()),
+            "the cursor came to rest on a section heading"
+        );
+
+        // And back up, which is where an off-by-one on the headings shows.
+        for _ in 0..7 {
+            d.handle_key(key('k'));
+        }
+        assert!(
+            matches!(d.selected_row(), Some(SessionDialogRow::Session(0))),
+            "k must walk back to the first session, got {:?}",
+            d.selected_row()
+        );
+    }
+
+    #[test]
+    fn enter_on_a_subagent_row_opens_the_shared_tab_message() {
+        let mut d = loaded(1);
+        d.set_pending_rows(vec![subagent("t7", "Sally")], Vec::new());
+        d.select_down(); // s0 -> the subagent (heading skipped)
+
+        match d.handle_key(enter()) {
+            // The same message `TuiMsg::OpenSubagentTab` the sidebar and the
+            // working strip send, so all three routes open one tab.
+            Some(TuiMsg::OpenSubagentTab { task_id }) => assert_eq!(task_id, "t7"),
+            other => panic!("expected the shared OpenSubagentTab message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_a_job_row_changes_nothing_and_closes_nothing() {
+        let mut d = loaded(1);
+        d.set_pending_rows(Vec::new(), vec![job("j9", "test")]);
+        d.select_down();
+
+        assert_eq!(
+            d.handle_key(enter()),
+            None,
+            "a job row is read-only: Enter must not invent a destination"
+        );
+        assert!(
+            d.filter.is_empty(),
+            "Enter must not leak into the filter buffer either"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_session_row_still_selects_the_session() {
+        let mut d = loaded(2);
+        match d.handle_key(enter()) {
+            Some(TuiMsg::SelectSession(session)) => assert_eq!(session.id, "s0"),
+            other => panic!("expected SelectSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_subagent_row_is_never_resolved_as_a_session() {
+        let mut d = loaded(1);
+        d.set_pending_rows(vec![subagent("t1", "Sally")], vec![job("j1", "test")]);
+        d.select_down();
+        assert!(
+            d.selected_session().is_none(),
+            "a subagent row must not resolve to the session sitting above it"
+        );
+        // The same for a job row, and for the heading in between.
+        d.select_down();
+        assert!(d.selected_session().is_none(), "a job row is not a session");
+        d.select_down();
+        assert!(d.selected_session().is_none());
+    }
+
+    #[test]
+    fn a_vanished_row_does_not_move_the_cursor_onto_another_entity() {
+        let mut d = loaded(1);
+        d.set_pending_rows(
+            vec![
+                subagent("t1", "Sally"),
+                subagent("t2", "Frank"),
+                subagent("t3", "Ida"),
+            ],
+            Vec::new(),
+        );
+        // Park the cursor on the middle subagent: s0, [Sub], t1, t2.
+        d.select_down();
+        d.select_down();
+        assert!(matches!(
+            d.selected_row(),
+            Some(SessionDialogRow::Subagent(ref r)) if r.task_id == "t2"
+        ));
+
+        // t2 finishes: its row goes, everything below it shifts up one.
+        d.set_pending_rows(
+            vec![subagent("t1", "Sally"), subagent("t3", "Ida")],
+            Vec::new(),
+        );
+
+        // t3 is still live, so focus follows it rather than holding an index
+        // that now points at a different subagent.
+        assert!(
+            matches!(
+                d.selected_row(),
+                Some(SessionDialogRow::Subagent(ref r)) if r.task_id == "t3"
+            ),
+            "focus must follow the entity, not the index; got {:?}",
+            d.selected_row()
+        );
+    }
+
+    #[test]
+    fn focus_falls_back_to_a_selectable_row_when_the_focused_row_is_gone() {
+        let mut d = loaded(1);
+        d.set_pending_rows(vec![subagent("t1", "Sally")], Vec::new());
+        d.select_down();
+        assert!(matches!(
+            d.selected_row(),
+            Some(SessionDialogRow::Subagent(_))
+        ));
+
+        // The subagent finishes and its whole section disappears.
+        d.set_pending_rows(Vec::new(), Vec::new());
+        let row = d.selected_row().expect("the session list still has a row");
+        assert!(
+            row.is_selectable(),
+            "focus must never be left on a heading or past the end: {row:?}"
+        );
+    }
+
+    #[test]
+    fn bulk_mode_selection_ignores_a_subagent_row() {
+        let mut d = loaded(1);
+        d.set_pending_rows(vec![subagent("t1", "Sally")], Vec::new());
+        d.toggle_bulk_mode();
+        d.select_down();
+        d.toggle_selection();
+        assert_eq!(
+            d.selected_count(),
+            0,
+            "a subagent carries no session id; ticking it would arm a bulk \
+             archive against a session the user never selected"
+        );
+    }
+
+    #[test]
+    fn clicking_a_heading_snaps_to_the_next_selectable_row() {
+        let mut d = loaded(1);
+        d.set_pending_rows(vec![subagent("t1", "Sally")], Vec::new());
+        d.select_index(1); // row 1 is the Subagents heading
+        assert!(
+            matches!(
+                d.selected_row(),
+                Some(SessionDialogRow::Subagent(ref r)) if r.task_id == "t1"
+            ),
+            "a click on a heading must land on a row, got {:?}",
+            d.selected_row()
+        );
+    }
+
+    #[test]
+    fn the_rendered_dialog_shows_both_sections() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut d = loaded(1);
+        d.set_pending_rows(vec![subagent("t7", "Sally")], vec![job("j3", "cargo")]);
+
+        let theme = Arc::new(Theme::default());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| d.render(frame, frame.area(), &theme))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(text.contains("Subagents"), "no subagent heading was drawn");
+        assert!(text.contains("Sally"), "no subagent name was drawn");
+        assert!(text.contains("Jobs"), "no jobs heading was drawn");
+        assert!(text.contains("cargo"), "no job row was drawn");
+    }
+
+    #[test]
+    fn a_stale_selection_index_past_the_end_does_not_panic_or_strand_the_cursor() {
+        // `selected` is a public field the click handlers and the legacy
+        // router assign directly, so an index past the end of the row space is
+        // reachable. `select_up` walks backwards from it, which is exactly the
+        // shape that indexes out of bounds.
+        let mut d = loaded(1);
+        d.set_pending_rows(vec![subagent("t1", "Sally")], vec![job("j1", "test")]);
+        d.selected = 99;
+
+        d.select_up();
+        assert!(
+            d.selected_row().map(|r| r.is_selectable()).unwrap_or(false),
+            "k must land on a real row, got {:?}",
+            d.selected_row()
+        );
+
+        d.selected = 99;
+        d.select_down();
+        assert!(
+            d.selected_row().map(|r| r.is_selectable()).unwrap_or(false),
+            "j must land on a real row, got {:?}",
+            d.selected_row()
+        );
+    }
+
+    #[test]
+    fn a_sessions_only_dialog_renders_exactly_as_before() {
+        // With no pending rows the row space is the session list, so the
+        // pre-existing rendering is untouched — that is the regression guard
+        // for every other `/sessions` test in the suite.
+        let d = loaded(2);
+        assert_eq!(d.rows().len(), 2);
+        assert_eq!(d.selected_row(), Some(SessionDialogRow::Session(0)));
+        assert_eq!(
+            d.selected_session().map(|s| s.id.clone()),
+            Some("s0".into())
+        );
     }
 }

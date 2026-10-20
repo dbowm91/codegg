@@ -270,7 +270,9 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser |
+| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent transcript; job rows are read-only) |
+| `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
+| `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
 | `/approval` | Approval-mode fast-select (`/approval-mode` is an alias) |
 | `/sandbox` | Sandbox-profile fast-select (`/sandbox-profile` is an alias) |
@@ -291,6 +293,184 @@ Registry metadata — domain, scope, and source exist for palette and help
 presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
 
+### The cursor in the composer
+
+The composer shows a caret, and what that caret tells you is where the
+keyboard is:
+
+| Where you are | What you see |
+|---|---|
+| Typing in the composer, `[INS]` mode | A **blinking** cursor at the caret |
+| The composer is in `[NOR]` mode | A **solid block** at the caret |
+| Another panel has the keyboard | **No cursor at all** in the composer |
+
+The blinking cursor is your terminal's own cursor, so it blinks at whatever
+rate your terminal is configured for — some terminals show it steady, and the
+`[INS]`/`[NOR]` badge is what tells the two modes apart.
+
+When you select a side panel, the composer stops showing a caret entirely.
+That is deliberate: a caret sitting in a box you are not typing in is a lie
+about where your keystrokes go, and the `▸` marker on the panel is the
+honest one.
+
+### Three keys moved to chords
+
+In `[NOR]` mode the composer now owns a set of letters for its own Helix-style
+editing, and three app-level actions that used to live on a letter moved to a
+chord. The capabilities are unchanged — only the spelling moved:
+
+| What it does | Was | Is now |
+|---|---|---|
+| Stop or resume the running turn | `x` | `Ctrl+Alt+X` |
+| Open the diff view | `d` (vim layout) | `Ctrl+Alt+D` |
+| Open the command palette from Normal mode | `i` (vim layout) | `Ctrl+Alt+E` |
+
+All three chords work in both layouts, so you do not have to know which one is
+active. The keys `x`, `d` and `i` still type normally in `[INS]` mode — they
+are only spoken for in `[NOR]` mode.
+
+`i` still takes you from `[NOR]` back to typing. That was already true in the
+default layout; in the vim layout it is now the same gesture instead of the
+command palette, which moved to `Ctrl+Alt+E`. The rest of the Helix editing
+verbs — motions, selection, undo — arrive with the next milestones.
+
+The slash command is unaffected: typing `/` at the start of the composer still
+opens the command palette, exactly as before, in both layouts.
+
+Help is unaffected too: `Space` still opens the help menu, and `?` still does
+as well.
+
+### Typing while the agent is already working
+
+You can keep typing during a turn, and pressing Enter does not throw the text
+away. If the agent is still working, CodeGG says so and **puts your prompt back
+in the composer** for you to send again once the turn ends — the running turn
+keeps going, and the status line above the composer keeps showing it (spinner,
+elapsed time) rather than flipping to an error.
+
+Nothing is sent on your behalf. The text comes back and you press Enter when you
+want it sent. Anything you typed while the submission was in flight is kept
+behind it in the draft stash.
+
+A lost connection is reported as a connection problem, not as "the agent is
+busy", and it restores your prompt the same way.
+
+## The prompt queue
+
+A prompt you send while a turn is running is kept instead of dropped, and it
+goes to the next turn for the same session. `/queue` shows what is waiting.
+
+| Key | What it does |
+|-----|--------------|
+| `j` / `k`, `↓` / `↑` | Move the selection |
+| `r` | Re-read the queue |
+| `a` | Add a prompt |
+| `e` | Edit the selected prompt in place |
+| `[` / `]` | Move the selected prompt earlier / later |
+| `d` | Delete the selected prompt |
+| `s` | Send the selected prompt to the turn running now |
+| `Esc` | Close the box |
+
+The list is in the order the queue is in. Each row shows its status, so a
+prompt whose turn is running right now says so rather than looking like it is
+still waiting. A prompt you gave a due time carries an `@` marker with the time
+left (`@2h`, `@30m`), so you can see at a glance which prompts are waiting for
+a clock and which are waiting for a turn. Once a due time arrives the marker
+becomes `@·`: the time has passed and the prompt is waiting for the next turn.
+
+### Adding and correcting
+
+`a` opens a line under the list. Type the prompt, then `Enter` — that moves to a
+second line where you say **when** it should run. Press `Enter` there to queue
+it, or `Esc` to go back to the prompt text without losing it. Leaving the delay
+empty queues the prompt for the next turn, which is what almost every prompt
+wants. The box is navigable again the moment you commit; you do not have to wait
+for the save to finish.
+
+`e` opens the same line with the selected prompt's text already in it, so you
+correct a typo instead of retyping. Editing never changes which prompt it is
+or where it sits; only the words change.
+
+### Setting a due time
+
+The delay line takes a number and a unit: `30s`, `5min`, `2h`, `1d`. There is no
+bare number — `5` is refused rather than guessed, because five seconds and five
+minutes are very different instructions to give a machine. The hint on that line
+lists the same forms, so you do not have to leave the box to learn them.
+
+A delay that lands at or after the moment the prompt would expire is refused
+rather than quietly shortened. Prompts stop being eligible after seven days; the
+box tells you the two times rather than scheduling something that can never run.
+
+A due time is a floor, not a promise. The prompt is delivered at the first turn
+boundary at or after that moment, and if the daemon is not running when the time
+passes the prompt goes on the next turn after it starts. Nothing here claims the
+prompt reaches the model at any particular second.
+
+### Typing safely
+
+While a line is open, every letter goes into it. Typing a prompt that contains
+`a`, `e`, `d`, `j`, `k`, or `s` is completely safe — the line's hint reads
+`Enter next · Esc cancel` precisely so you can see the box has switched into
+typing mode. The delay line is guarded the same way, so typing `2d` cannot
+delete the prompt you were writing.
+
+If a prompt is too long or the queue is full, the box says so and **keeps what
+you typed**, so you can shorten it and save again. It never quietly cuts text
+off.
+
+### Reordering
+
+`[` and `]` swap the selected prompt with its neighbour. At either end there is
+nothing to swap with, and the box tells you which end you are at rather than
+appearing to do nothing.
+
+A prompt whose turn has already started cannot be moved — it is mid-delivery.
+The same is true of editing it.
+
+Reordering the queue moves the prompts that are still waiting. One whose turn is
+running holds its place while it runs, and if that turn is interrupted the prompt
+resumes **where you put it** — it does not jump to the end.
+
+### Sending now
+
+`s` hands the selected prompt to the turn that is running **right now**, instead
+of waiting for that turn to finish. It is the one place where the queue reaches
+into a live turn rather than starting a new one.
+
+It is a handover, not an override. The prompt goes into the running turn's stream
+of messages; the agent reads it the way it reads anything else that arrives
+mid-turn, and it may already be part-way through answering something else. What
+`s` does **not** do is interrupt, restart, or force anything — if the turn is
+already finishing, or has no room for another message, the box says so and your
+prompt stays queued exactly where it was.
+
+When the running turn accepts the prompt, the box removes it from the list and
+records it as delivered to that turn, so it will not also arrive at the next one.
+If the queue cannot record that, the box tells you so plainly rather than
+leaving you to guess whether to send it again — check before you do.
+
+If nothing is running, `s` tells you the prompt stays queued for the next turn.
+That is not a refusal you need to work around; it is what an idle queue is for.
+
+### What it still cannot do
+
+- **It cannot delete, edit, reorder, or send now a prompt whose turn has already
+  started as its own.** The queue refuses it and the box says the prompt is
+  being delivered — it does not tell you the prompt expired, because it has not.
+  Close the box and the running turn keeps its text.
+- **It cannot send a prompt to a turn that has already ended**, and it cannot
+  send one for another frontend's turn. Both are refused with the reason.
+- **It cannot schedule a prompt for later** or claim a queue that has no owner.
+  Those are separate, explicit operations outside this box.
+
+The waiting count also appears on the status line above the composer
+(`· 2 queued`), so a queue with nothing running is still visibly not empty.
+
+The box is one session's queue. With another frontend attached to the same
+session, that session's queue belongs to whoever claimed it, and a change made
+there cannot be made here; the box says so if you try.
+
 ## Subagents, jobs, and the tasks overlay
 
 When a turn fans out — several subagents, background jobs — CodeGG gives each
@@ -302,23 +482,41 @@ when it finishes, so two concurrent runs never share a name, and a name is not
 a durable handle for that run. Read it as "the subagent I was watching a minute
 ago", not as an identifier you can rely on later.
 
-Three surfaces show this, and all three read one projection:
+**Every named agent also has a character.** The same curated pool each name
+comes from describes it — Greg is a confident generalist who changes three
+unrelated files before finding the missing environment variable; Susan is blunt
+about when she is the wrong tool. That description rides along with the name
+onto the row wherever it appears, so a fan-out reads as a team rather than as a
+list of `explore` calls.
+
+A one-line row has room for the character *or* the task, not both, so it shows
+the character and keeps the task as its fallback. Opening the subagent gives you
+both: the tab shows the **Task** and the **Agent** side by side. Subagents started
+before this existed have neither, so they show the task exactly as they always
+did.
+
+Five surfaces show this, and all five read one projection:
 
 | Surface | Open it with | What it shows |
 |---|---|---|
-| Tasks overlay | `Shift+T` in `NOR` | Todos, subagents, and jobs together |
+| Tasks overlay | `Ctrl+T` in `INS` or `NOR` | Todos, subagents, and jobs together |
 | Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
+| Sessions dialog | `/sessions` | The session list plus its live `Subagents` and `Jobs` sections |
+| Working strip | always on, above the input box | One row per in-flight subagent |
 | Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's transcript per tab, in the main buffer |
 
-All four keys are `[NOR]`-only. In `[INS]` they are ordinary capital letters,
-so composing a word containing `T`, `N`, `P`, or `X` never triggers them — and
-neither does any other capital letter. `Shift+F` (project picker) and `Ctrl+O`
-(Workspace view) work the same way round: the shifted letter is `[NOR]`-only,
-the chord is live in both modes.
+`Ctrl+T` works in **both** modes — the app boots in `[INS]`, and a chord that
+first needs an `Esc` is a chord most people never find.
+
+`Shift+N`, `Shift+P`, and `Shift+X` are `[NOR]`-only. In `[INS]` they are
+ordinary capital letters, so composing a word containing `N`, `P`, or `X` never
+triggers them — and neither does any other capital letter. `Shift+F` (project
+picker) and `Ctrl+O` (Workspace view) work the same way round: the shifted
+letter is `[NOR]`-only, the chord is live in both modes.
 
 ### The tasks overlay
 
-`Shift+T` opens a single overlay listing **todos, then subagents, then jobs**,
+`Ctrl+T` opens a single overlay listing **todos, then subagents, then jobs**,
 each under its own heading. A group with nothing in it is left out entirely —
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
 and `Esc` closes the overlay. With nothing in any group the overlay says
@@ -331,13 +529,16 @@ build does not recognise it is shown rather than hidden, because showing
 finished work costs a glance and hiding live work costs you the thing you
 asked for.
 
-The overlay is driven by `[NOR]` keys only, so you can press `i` and keep
-typing with it open.
+Opening it from `[INS]` switches to `[NOR]`, because the overlay's own keys —
+`j`/`k`, `Enter`, `Esc` — are `[NOR]` gestures and must never be claimed while
+you are composing. Closing it hands `[INS]` straight back, so peeking at pending
+work never ends composition mode. You can also press `i` to go back to typing
+with the overlay left open.
 
-`Ctrl+T` is unaffected and still owns the compact todo strip above the input.
-The two surfaces overlap by design — todos appear in both — because the strip is
-a progress line that stays on screen at all times, and the overlay is a
-fuller list you open when you want it.
+Above the input, the one-line todo strip stays on screen at all times. It has no
+expanded form of its own any more: the full list is the overlay's first group,
+next to the subagents and jobs, because "what is this session waiting on" is one
+question and answering it in two places meant the two could disagree.
 
 ### When the agent is waiting on other work
 
@@ -364,6 +565,40 @@ the run keeps going whether or not you are watching it. When a run drops out of
 the projection the tab stays open and stops claiming to be live, so the buffer
 cannot show "running" for something the daemon has stopped vouching for.
 
+### Talking to a subagent
+
+`/subagent-send` points your next prompt at one running subagent.
+
+```
+/subagent-send            address the subagent in the tab you are looking at
+/subagent-send Sally      address the running subagent named Sally
+/subagent-send 42         address task 42 — exact, and never ambiguous
+/subagent-send off        clear it again
+```
+
+While it is armed the badge beside the input reads `[TO Sally]` instead of
+`[LLM]`, and the input placeholder says what the prompt is for. The tab strip
+stays where it is — this does not take the keyboard away from the input box.
+
+**What actually happens:** your message is handed to **the agent running this
+turn**, addressed to Sally by name, with the task she was given. That agent
+decides whether to pass it on. Nothing is delivered to the subagent directly,
+and the confirmation toast says exactly that rather than telling you it was
+"sent". If you need a subagent to actually do something, that is what the
+parent agent is for.
+
+Two rules worth knowing:
+
+- **A reply can only be addressed while a turn is running**, because the turn
+  is what carries it. With nothing running, the prompt stays in the box and you
+  are told why — it never quietly starts a new turn instead.
+- **A finished subagent drops the address.** If Sally finishes while you are
+  typing, the badge goes back to `[LLM]`, so what you have written is treated as
+  an ordinary prompt instead of being steered at work that is already done.
+
+If a reply is refused, your text comes back to the input box so you can send it
+again — nothing durable keeps it for you.
+
 ### Session panel sections
 
 The Session panel lists `Todos`, then `Subagents`, then `Jobs`, so the three
@@ -372,7 +607,7 @@ move through them, `Space` collapses a section, and `Enter` (or a click) acts on
 the selected row:
 
 - a **subagent** row opens that subagent's transcript as a tab in the main
-  buffer, the same tab `Shift+T` would have opened;
+  buffer, the same tab `Ctrl+T` would have opened;
 - a **job** row does nothing. Jobs have no transcript to show yet, so the key
   is consumed rather than sending you somewhere arbitrary;
 - the **Agent Runs tree** further down the panel keeps its own behaviour:
@@ -1414,6 +1649,35 @@ why. Listings unavailable from the daemon are explicit errors — the tree
 never falls back to reading the local machine's own files, so a
 same-spelled local directory can never masquerade as the workspace. A busy
 daemon asks for an explicit retry with `r`.
+
+### Editing in the buffer
+
+The Editor route owns its own keys rather than routing them through the global
+binding table, because what a key means depends on whether the buffer has focus
+and which mode it is in.
+
+| Key | What it does |
+|---|---|
+| `Ctrl+E` | focus the buffer (`Esc` returns to the composer) |
+| `Esc` | leave insert mode, then drop buffer focus, then leave the view |
+| `Ctrl+S` | save the document through the controller |
+| `Ctrl+R` | resync the replica after a transport failure |
+| `Ctrl+R` (redo) | redo the last undone local edit |
+| `R` | reload from disk, discarding the local draft |
+| `h` `j` `k` `l` | move by character or line |
+| `0` / `$` | start or end of line |
+| `gg` / `G` | start or end of buffer |
+| `w` / `b` | move by word |
+| `PgUp` / `PgDn` | move by half a page |
+| `i` `a` `I` `A` | enter insert mode at the cursor or line end |
+| `o` / `O` | open a line below or above |
+| `x` / `D` | delete a character, or to end of line |
+| `dd` / `dw` | delete a line or a word |
+| `u` | undo the last local edit |
+
+`Ctrl+S` is the one chord whose meaning changes with the route: on the composer
+it stashes the prompt, and here it saves the document. `Ctrl+T` is the other —
+it toggles this route's file tree rather than opening the tasks overlay.
 
 ## Browsing files
 

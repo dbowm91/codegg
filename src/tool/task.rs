@@ -443,21 +443,37 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
             }
         ),
         ControlOutcome::Terminal(status) => format!("Run is terminal: {}", status.as_str()),
-        ControlOutcome::Status(run) => format!(
-            "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
-            run.run_id,
-            run.status.as_str(),
-            run.task_id,
-            run.result_ref.unwrap_or_default()
+        ControlOutcome::Status(run) => append_run_failure(
+            format!(
+                "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
+                run.run_id,
+                run.status.as_str(),
+                run.task_id,
+                run.result_ref.clone().unwrap_or_default()
+            ),
+            &run,
         ),
-        ControlOutcome::Wait { run, timed_out } => format!(
-            "Run: {}\nStatus: {}\nTimed out: {}\nResult: {}",
-            run.run_id,
-            run.status.as_str(),
-            timed_out,
-            run.result_ref.unwrap_or_default()
+        ControlOutcome::Wait { run, timed_out } => append_run_failure(
+            format!(
+                "Run: {}\nStatus: {}\nTimed out: {}\nResult: {}",
+                run.run_id,
+                run.status.as_str(),
+                timed_out,
+                run.result_ref.clone().unwrap_or_default()
+            ),
+            &run,
         ),
     }
+}
+
+fn append_run_failure(mut output: String, run: &codegg_core::agent_run::AgentRunRecord) -> String {
+    if let Some(class) = run.failure_class.as_deref() {
+        output.push_str(&format!("\nFailure stage/class: {class}"));
+    }
+    if let Some(message) = run.failure_message.as_deref() {
+        output.push_str(&format!("\nFailure detail: {message}"));
+    }
+    output
 }
 
 impl TaskTool {
@@ -1258,8 +1274,24 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, cancel_group, board, claim, release_claim, or request_handoff",
-                    "enum": ["spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group", "board", "claim", "release_claim", "request_handoff"]
+                    "description": "Action: create/revoke parent-owned shared scratch, spawn children, converge, manage groups/runs, or manage workstream claims. status/wait/message/interrupt/cancel address an AgentRunId through run_id; get retrieves a task through task_id (durable AgentTaskId string or legacy numeric ID). Group actions use group_id.",
+                    "enum": ["scratch_create", "scratch_revoke", "spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group", "board", "claim", "release_claim", "request_handoff"]
+                },
+                "scratch_alias": { "type": "string", "maxLength": 32, "description": "Bounded env-safe name for a parent-owned shared scratch resource (action=scratch_create)" },
+                "scratch_id": { "type": "string", "description": "Opaque ScratchId, never a path (action=scratch_revoke or spawn shared_scratch)" },
+                "shared_scratch": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "description": "Explicit parent-owned ScratchId grants for this child; each entry requires id and alias",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "maxLength": 128 },
+                            "alias": { "type": "string", "maxLength": 32 }
+                        },
+                        "required": ["id", "alias"],
+                        "additionalProperties": false
+                    }
                 },
                 "objective": { "type": "string", "description": "Bounded convergence objective (action=converge)" },
                 "criteria": { "type": "array", "maxItems": 32, "items": { "type": "string" }, "description": "Bounded acceptance criteria (action=converge)" },
@@ -1294,11 +1326,15 @@ impl Tool for TaskTool {
                     "description": "List of directories the subagent is allowed to access (action=spawn). Mutating durable runs are narrowed to their managed worktree."
                 },
                 "task_id": {
-                    "description": "Durable AgentTaskId or legacy numeric task ID"
+                    "anyOf": [
+                        {"type": "string", "minLength": 1},
+                        {"type": "integer", "minimum": 0}
+                    ],
+                    "description": "Required for action=get: durable AgentTaskId string or legacy numeric task ID. Do not use for run status/control."
                 },
                 "run_id": {
                     "type": "string",
-                    "description": "Durable AgentRunId for control/status/wait"
+                    "description": "Required for action=status, wait, message, interrupt, or cancel: durable AgentRunId. Do not use task_id here."
                 },
                 "message": {
                     "type": "string",
@@ -1315,7 +1351,7 @@ impl Tool for TaskTool {
                 "requests": {
                     "type": "array",
                     "maxItems": 16,
-                    "description": "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, and optional allowed_paths.",
+                    "description": "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, allowed_paths, and explicitly granted shared_scratch.",
                     "items": { "type": "object" }
                 },
                 "member_run_ids": {
@@ -1326,7 +1362,7 @@ impl Tool for TaskTool {
                 },
                 "group_id": {
                     "type": "string",
-                    "description": "Durable AgentRunGroupId for group actions"
+                    "description": "Required by status_group, wait_group, and cancel_group; durable AgentRunGroupId."
                 },
                 "join_policy": {
                     "type": "string",
@@ -1382,6 +1418,67 @@ impl TaskTool {
         explicit_base_commit: Option<String>,
     ) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
+
+        if matches!(action, "scratch_create" | "scratch_revoke") {
+            let agent_runs = self.agent_runs.as_ref().ok_or_else(|| {
+                ToolError::Execution("durable scratch ownership is unavailable".into())
+            })?;
+            let (session_id, owner_run_id) = match self.orchestration_owner.as_ref() {
+                Some(AgentOrchestrationOwner::Turn { session_id, .. }) => {
+                    (session_id.clone(), None)
+                }
+                Some(AgentOrchestrationOwner::Run { run_id }) => (
+                    self.parent_session_id.clone().unwrap_or_default(),
+                    Some(run_id.clone()),
+                ),
+                None => {
+                    return Err(ToolError::Execution(
+                        "shared scratch requires a host-owned session or run parent".into(),
+                    ));
+                }
+            };
+            return if action == "scratch_create" {
+                let alias = input["scratch_alias"].as_str().ok_or_else(|| {
+                    ToolError::Execution("scratch_create requires scratch_alias".into())
+                })?;
+                let resource = agent_runs
+                    .create_scratch_resource(
+                        &session_id,
+                        owner_run_id.as_ref(),
+                        alias,
+                        &call_identity,
+                    )
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                Ok(format!(
+                    "Shared scratch created\nScratchId: {}\nAlias: {}\nShare only with direct child runs by including this id and a child-local alias in shared_scratch.",
+                    resource.scratch_id, resource.alias
+                ))
+            } else {
+                let id = input["scratch_id"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        ToolError::Execution("scratch_revoke requires scratch_id".into())
+                    })
+                    .and_then(|value| {
+                        codegg_core::identity::ScratchId::parse(value)
+                            .map_err(|error| ToolError::Execution(error.to_string()))
+                    })?;
+                let resource = agent_runs
+                    .revoke_scratch_resource(&id, &session_id, owner_run_id.as_ref())
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                if !agent_runs
+                    .has_scratch_leases(&resource.scratch_id)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?
+                {
+                    crate::scratch::reclaim_shared_scratch_dir(&session_id, &resource.scratch_id)
+                        .map_err(|error| ToolError::Execution(error.to_string()))?;
+                }
+                Ok(format!("Shared scratch revoked\nScratchId: {id}"))
+            };
+        }
 
         if matches!(
             action,
@@ -1694,12 +1791,15 @@ impl TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 return Ok(match run {
-                    Some(run) => format!(
-                        "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
-                        task.task_id,
-                        run.run_id,
-                        run.status.as_str(),
-                        run.result_ref.unwrap_or_default()
+                    Some(run) => append_run_failure(
+                        format!(
+                            "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
+                            task.task_id,
+                            run.run_id,
+                            run.status.as_str(),
+                            run.result_ref.clone().unwrap_or_default()
+                        ),
+                        &run,
                     ),
                     None => format!("Task: {}\nStatus: {}", task.task_id, task.status.as_str()),
                 });
@@ -1757,6 +1857,12 @@ impl TaskTool {
                 }
                 allowed_paths
             };
+            let shared_scratch = parse_shared_scratch_grants(&input["shared_scratch"])?;
+            if !shared_scratch.is_empty() && self.agent_runs.is_none() {
+                return Err(ToolError::Execution(
+                    "shared scratch grants require durable AgentRun ownership".into(),
+                ));
+            }
 
             if let (Some(submission), Some(workspace_root)) =
                 (self.submission.clone(), self.workspace_root.clone())
@@ -1788,6 +1894,7 @@ impl TaskTool {
                         &prompt,
                         &allowed_paths,
                         parent_run_id.as_ref(),
+                        &shared_scratch,
                     );
                     let depth = next_durable_depth(
                         parent_run.as_ref().map(|run| run.depth),
@@ -1835,6 +1942,7 @@ impl TaskTool {
                                     max_depth: Some(self.max_depth),
                                     ..Default::default()
                                 },
+                                shared_scratch: shared_scratch.clone(),
                                 depth,
                             },
                         )
@@ -2064,6 +2172,7 @@ impl TaskTool {
                     max_tool_calls: None,
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
+                    workspace_id: self.workspace_id.clone(),
                     workspace_locks: self.workspace_locks.clone(),
                     parent_sandbox_profile: Some(parent_sandbox),
                     // Inherit parent by default; worker narrows for
@@ -2189,6 +2298,7 @@ fn spawn_request_fingerprint(
     prompt: &str,
     allowed_paths: &[String],
     parent_run_id: Option<&AgentRunId>,
+    shared_scratch: &[codegg_core::agent_run::SharedScratchGrant],
 ) -> String {
     let mut normalized_paths = allowed_paths.to_vec();
     normalized_paths.sort();
@@ -2205,7 +2315,71 @@ fn spawn_request_fingerprint(
         hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
     }
+    let mut grants = shared_scratch.to_vec();
+    grants.sort_by(|left, right| {
+        left.alias
+            .to_ascii_lowercase()
+            .cmp(&right.alias.to_ascii_lowercase())
+            .then_with(|| left.scratch_id.cmp(&right.scratch_id))
+    });
+    for grant in grants {
+        hasher.update(grant.scratch_id.as_str().as_bytes());
+        hasher.update([0]);
+        hasher.update(grant.alias.to_ascii_lowercase().as_bytes());
+        hasher.update([0]);
+    }
     format!("spawn-request-{:x}", hasher.finalize())
+}
+
+fn parse_shared_scratch_grants(
+    value: &serde_json::Value,
+) -> Result<Vec<codegg_core::agent_run::SharedScratchGrant>, ToolError> {
+    let Some(values) = value.as_array() else {
+        if value.is_null() {
+            return Ok(Vec::new());
+        }
+        return Err(ToolError::Execution(
+            "shared_scratch must be an array".into(),
+        ));
+    };
+    if values.len() > 8 {
+        return Err(ToolError::Execution(
+            "shared_scratch exceeds the 8-resource limit".into(),
+        ));
+    }
+    let mut grants = Vec::with_capacity(values.len());
+    let mut aliases = std::collections::HashSet::new();
+    let mut env_keys = std::collections::HashSet::new();
+    let mut ids = std::collections::HashSet::new();
+    for value in values {
+        let id = value["id"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("shared_scratch entries require an id".into()))?;
+        let scratch_id = codegg_core::identity::ScratchId::parse(id)
+            .map_err(|error| ToolError::Execution(error.to_string()))?;
+        let alias = value["alias"].as_str().ok_or_else(|| {
+            ToolError::Execution("shared_scratch entries require an alias".into())
+        })?;
+        if alias.is_empty()
+            || alias.len() > 32
+            || !alias
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            || !aliases.insert(alias.to_ascii_lowercase())
+            || !env_keys.insert(alias.to_ascii_uppercase().replace('-', "_"))
+            || !ids.insert(scratch_id.clone())
+        {
+            return Err(ToolError::Execution(
+                "shared_scratch aliases must be unique bounded ASCII names and ids cannot repeat"
+                    .into(),
+            ));
+        }
+        grants.push(codegg_core::agent_run::SharedScratchGrant {
+            scratch_id,
+            alias: alias.to_owned(),
+        });
+    }
+    Ok(grants)
 }
 
 fn resolve_call_identity(input: &serde_json::Value, ctx: Option<&ToolExecutionContext>) -> String {
@@ -2278,6 +2452,27 @@ mod tests {
     }
 
     #[test]
+    fn task_schema_distinguishes_task_run_and_group_identifiers() {
+        let schema = TaskTool::default().parameters();
+        let task_id = &schema["properties"]["task_id"];
+        assert_eq!(task_id["anyOf"][0]["type"], "string");
+        assert_eq!(task_id["anyOf"][1]["type"], "integer");
+        assert!(task_id["description"]
+            .as_str()
+            .unwrap()
+            .contains("action=get"));
+        assert!(schema["properties"]["run_id"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("AgentRunId"));
+        assert!(schema["properties"]["group_id"].is_object());
+        assert!(!schema["properties"]["action"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("status (get alias)"));
+    }
+
+    #[test]
     fn identical_spawn_payloads_are_distinguished_by_call_identity() {
         let first = delegation_key("call-a");
         let second = delegation_key("call-b");
@@ -2290,6 +2485,7 @@ mod tests {
                 "same prompt",
                 &["src".into()],
                 None,
+                &[],
             ),
             spawn_request_fingerprint(
                 "general",
@@ -2297,6 +2493,7 @@ mod tests {
                 "same prompt",
                 &["src".into()],
                 None,
+                &[],
             )
         );
     }
@@ -2312,8 +2509,8 @@ mod tests {
             delegation_key("other-call")
         );
         assert_ne!(
-            spawn_request_fingerprint("general", "description-a", "prompt", &[], None),
-            spawn_request_fingerprint("general", "description-b", "prompt", &[], None)
+            spawn_request_fingerprint("general", "description-a", "prompt", &[], None, &[]),
+            spawn_request_fingerprint("general", "description-b", "prompt", &[], None, &[])
         );
     }
 }

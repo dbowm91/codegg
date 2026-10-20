@@ -74,6 +74,287 @@ that authority.
 | `worktree` | git worktree management |
 | `worktree_service` | managed worktree lifecycle service |
 
+### User Prompt Queue Read Contract (M002a, ADR-0035)
+
+### User Prompt Queue Due-Time Contract (M007, ADR-0039)
+
+`UserPromptQueueAdd` and `UserPromptQueueEdit` carry an optional
+`run_at_ms: Option<i64>`, `#[serde(default)]`, so a pre-M007 client that omits it
+sends `None` and a newer daemon reads an older projection without a sentinel.
+`UserPromptQueueEntryDto` carries it back for the same reason.
+
+**What the daemon owes.** A due time is a **floor, not a deadline**. The entry
+becomes eligible at that instant and is delivered at the next turn boundary at or
+after it. It is never delivered early — the store predicate is
+`(run_at_ms IS NULL OR run_at_ms <= ?)` and every caller re-evaluates it against
+its own `now_ms`, so two callers can only ever disagree about whether the instant
+has passed, never about whether it has been reached.
+
+**What the daemon does not owe.** Nothing about wall-clock precision. A due time
+that passes while the daemon is down is honoured *late* on the next boot; the
+daemon is late, not early. There is no scheduler permit, no executor, and no
+`JobTemplate` — ADR-0035 rejects that model, and a due time does not make a
+prompt a job.
+
+**Refusals.** A due time at or beyond the entry's own expiry is refused with
+`user_prompt_queue_due_time_after_expiry`, carrying both instants so a client can
+explain the conflict without being handed prompt text. It is refused, not
+clamped: clamping schedules an entry for its expiry, where it is due only once it
+has already expired — a scheduled prompt that can never run, with nothing on
+screen saying so. A due time in the **past** is accepted rather than refused; the
+user has already passed it, so the entry is eligible immediately.
+
+**Wakeup authority is ADR-0039's, not this contract's.** See
+`scripts/check_queue_delivery_callsites.py`: `submit_queued_prompt_turn` has
+exactly three permitted callers, and the third (the bounded queue advance tick)
+was a recorded decision, not a quiet third call site.
+
+**This is read-only infrastructure. No mutation surface exists yet.**
+`CoreRequest::UserPromptQueueList { session_id }` returns
+`CoreResponse::UserPromptQueue { session_id, entries }`, and nothing can
+enqueue, edit, reorder, or delete an entry. Every mutation operation belongs to
+M002b, which is gated on ADR-0037. **No user can queue a prompt as of this
+milestone**, and the read therefore always returns an empty list.
+
+| Property | Value |
+|---|---|
+| Authorization | `ScopeKind::ViaSession` + `Capability::SessionRead`, via `operation_descriptor` (`policy.rs`). The handler hand-rolls no check. |
+| Audit class | `UNINSTRUMENTED_OPERATIONS` — a read of inert metadata with no shared-state mutation. Denial *is* audited upstream by `authorize_request`. |
+| Routing | `DaemonRequestFamily::Turns`; registered in `session_id_for_request` so the audit chain carries the session locator. |
+| Storage | `codegg_core::session::UserPromptQueueStore` over the daemon pool (`daemon_turns::list_user_prompt_queue`). |
+| Ordering | Daemon-owned dense `ordinal`, ascending. The frontend never re-sorts. |
+| Expiry | Lazy and deterministic — the read marks due entries `expired` and returns survivors in one transaction. |
+
+The read deliberately does **not** route through `is_controller_bypass`. That
+bypass is an identity-only comparison against `LOCAL_OWNER_PRINCIPAL_ID` that
+is not bound to a session, so it would let any local owner read any session's
+queue. A read needs session read authority.
+
+Every new DTO field is `#[serde(default)]`, so a projection written by a newer
+daemon stays readable by an older client and an absent projection reads as an
+empty queue. Entry text never appears in a `tracing` call, an audit record, or
+a `CoreResponse::Error` message — `UserPromptQueueError`'s Display carries only
+identity, bounds, and availability.
+
+### Two Ownership Notions — Which Is Which
+
+ADR-0037 (accepted, Option B) introduced a second ownership concept **beside**
+the turn controller lease. They are adjacent, they are both durable rows keyed
+by `session_id`, and they answer different questions. Every seam names which
+one it is asking about.
+
+| | Turn controller lease | Queue owner (v81) |
+|---|---|---|
+| Table | `session_turn_controller` | `user_prompt_queue_owner` |
+| Answers | *May this principal steer or cancel this in-flight turn?* | *May this principal author this session's prompt queue?* |
+| Lifetime | **Turn-scoped.** `acquire` writes it, `release` deletes it. It exists only while a turn runs. | **Session-scoped.** It persists across turns and across daemon restart. |
+| Identity | ADR-0007 | ADR-0037 (accepted 2026-10-18) |
+| Changed by | `session_control_transfer` / `takeover`, CAS on `revision` | `user_prompt_queue_adopt` / `user_prompt_queue_transfer`, CAS on `revision` |
+
+The lease cannot answer the queue question **between turns**, because there is
+no row to read: `controller_lease_for` returns `None` and the old predicate
+refused every principal, the legitimate owner included. That is precisely the
+case queue authoring exists for — a user composes the next instruction when no
+turn is running.
+
+### Queue Mutation Contract (M002b, ADR-0037)
+
+Six operations, all `ScopeKind::ViaSession` + `Capability::AgentInvoke`:
+
+| Operation | Effect |
+|---|---|
+| `UserPromptQueueAdd { session_id, entry_id, text }` | Append; on an absent queue, create **and** adopt in one transaction. |
+| `UserPromptQueueEdit { session_id, entry_id, text }` | Replace text only. Identity and position unchanged. |
+| `UserPromptQueueDelete { session_id, entry_id }` | Remove, then renumber densely. |
+| `UserPromptQueueReorder { session_id, entry_ids }` | Write the complete new order, collision-free. |
+| `UserPromptQueueAdopt { session_id }` | The only repair path for an unowned queue. |
+| `UserPromptQueueTransfer { session_id, recipient_principal, expected_revision }` | CAS move of ownership. |
+
+**M002b still delivers no user-visible capability.** There is no command, no
+dialog, and no key. M004/M005 own anything a user can press. Delivery into
+turns arrived with M003 below.
+
+### Queue Send-Now Contract (M006, ADR-0036, Option A)
+
+`CoreDaemon::handle_user_prompt_queue_send_now` is the daemon side of `s` in
+`/queue`, and it is **not** a seventh `QueueMutation`. ADR-0037 excludes steering
+from the durable owner binding, so the *handover* is gated by the turn controller
+alone; the queue-ownership question is re-asked inside `mark_steer_delivered`'s
+transaction, where it is about a write to the queue rather than a reach into a turn.
+Running it through `ControllerScope::QueueMutation` would refuse a principal
+steering its own turn in a session it does not own.
+
+Its order is the safety argument, and each step is there because the next cannot
+undo it:
+
+1. **Pre-flight** the entry via `get_live`, so a prompt that could never be settled
+   is never steered at all. This is what stops a `delivering` row — already running
+   as its own turn — from being handed to a turn as well.
+2. **Steer** `runtime.active_turn`, resolving `turn_id` from the daemon's **own**
+   handle and applying `check_turn_controller`. The handle's `(turn_id, sender)`
+   pair is cloned under a short read, before any storage work, so no read lock is
+   held across a database round trip. A sender cloned from a since-ended turn is
+   not a hazard: its receiver is dropped with the turn, so `try_send` reports
+   `Closed` and the prompt stays queued.
+3. **Settle** with `mark_steer_delivered`, guarded on `status = 'pending'`.
+
+Step 3 can fail after step 2 succeeded — the turn holds the text and the row did not
+move. That is `AcceptedNotSettled`, never an error: an error would tell the user to
+resend a prompt that has already run. `steer_channel_code` is shared with
+`TurnSteer`, so the two steering paths cannot disagree about a full or closed channel.
+
+Adds **no** caller of `submit_queued_prompt_turn`; it reuses `TurnSteer`'s channel
+rather than a second delivery entry.
+
+### Queue Delivery Contract (M003, ADR-0038, Option B)
+
+`CoreDaemon::submit_queued_prompt_turn` is the **single** daemon-internal
+delivery entry: claim one entry in ordinal order, resolve the delivery principal
+from durable rows, re-authorize against current team state, admit through the
+canonical `CoreRequest::TurnSubmit` path, then resolve the claim as
+`delivered`, `failed`, or back to `pending`. There is no queue-specific submit,
+no relaxed receipt, and no replay of an interrupted one.
+
+**As whom.** The delivered principal is the queue owner: `principal_id` from
+`user_prompt_queue_owner`, `kind` from `TeamStore`, `AuthMethod::QueueDelivery`
+and `TransportClass::DaemonDelivery` as a *delivery classification*, and a
+daemon-owned `queue:<entry_id>` client marker that is metadata and never
+authority. A synthetic daemon identity would hold the controller lease as that
+identity, so the owner's next mid-turn queue mutation would fail
+`user_prompt_queue_controller_mismatch` — the queue would lock itself out the
+moment it started working. `is_controller_bypass` is refused for the same
+reason.
+
+**At-most-once** is inherited from `turn_admission_receipt`, not reimplemented:
+the submission id is a deterministic hash of the entry id alone, so a retry
+re-derives the same receipt and receives `Duplicate`.
+
+**Three triggers, and only three** — `scripts/check_queue_delivery_callsites.py`,
+which also fails when none is wired (a guard that passes on an unwired feature
+constrains nothing):
+
+| Caller | When | Why there |
+|---|---|---|
+| `deliver_next_queued_prompt` | after `spawn_turn_reaper` observes a terminal event, the lease is released, and the runtime is parked `Idle` | Both preconditions for delivery — free session and no lease row — are established there, which is why it is not on the terminal event itself |
+| `reconcile_stranded_queue_deliveries` | once per daemon start, after `interrupt_incomplete_turn_receipts` and after `reconcile_session_controllers` | A restart is the second moment a session is reliably free; before the controller reconciliation a stale lease would release every entry it tried to deliver |
+| `advance_due_queue_entries` | on the bounded queue advance tick, when `run_queue_advance_task` wakes at the earliest due instant across all sessions | **M007, authorized by ADR-0039 (accepted).** A scheduled entry on an idle session has no terminal transition and no restart to wait for; without this it would deliver late, or never within the session |
+
+None of the three is a poller. The daemon has **no periodic session-observation
+loop** — its three `tokio::time` intervals are projection retention (300s),
+opt-in provider refresh (30s), and opt-in TTS drain (500ms) — and M003 adds
+none. M007 adds one wakeup source and no loop: the tick computes the earliest
+due instant, sleeps exactly until it, and **parks on a `Notify` with no timer
+armed** when nothing is scheduled, so an idle daemon stays idle.
+
+Stranded `delivering` rows are resolved **from the receipt**, never from the
+entry, because the receipt is the only evidence of whether a turn actually
+started. The sweep is bounded (`USER_PROMPT_QUEUE_MAX_RECONCILE`, 256).
+
+A turn that reached admission and was refused is **terminal**; one that never
+reached admission is **released**. The split is on the typed `AppError` class
+(`Storage`/`Io` are transient), never on error wording.
+
+#### Three-valued ownership
+
+| State | Meaning | Who may mutate |
+|---|---|---|
+| `Absent` | no owner row **and** no entries | the first `add`, which creates both atomically |
+| `Owned(p)` | an owner row names `p` | `p` |
+| `Unowned` | entries exist, **no** owner row | nobody — an invalid state |
+
+`Unowned` is refused on **every** mutation including `add`, and is repaired only
+by explicit `UserPromptQueueAdopt`. First-add must not silently adopt here, or
+an invalidated queue would quietly become owned by whoever touched it next. It
+is unreachable through this milestone's own code paths — the only path creating
+entries also creates the owner in the same transaction — so it is a defensive
+state the tests construct by hand.
+
+**The adoption policy ADR-0037 deferred to M002b:** the *calling principal*
+becomes the owner on first add. Not the session creator, not the local
+interactive owner. The binding records who actually authored the queue.
+
+#### The single predicate
+
+`ControllerScope` (`src/core/daemon_control.rs`) generalizes
+`check_turn_controller` into one predicate whose call shape names the question:
+
+```rust
+enum ControllerScope<'a> {
+    Turn { session_id: &'a str, turn_id: &'a str },
+    QueueMutation { session_id: &'a str },
+    QueueAdoption { session_id: &'a str },
+}
+```
+
+Named variants, deliberately **not** `Option<&str>`: `None` cannot distinguish
+"a queue mutation on an unowned queue" from "a turn operation with no turn", and
+those need different refusals. `check_turn_controller` remains as the turn-scoped
+entry point and delegates here, so every pre-existing call site is unchanged and
+its behavior is proven by its existing tests.
+
+Mid-turn, `QueueMutation` requires the caller to be **both** the queue owner and
+the turn controller. Fail-closed, with no precedence rule:
+
+| Queue owner | Turn controller | Result |
+|---|---|---|
+| caller | caller | allowed |
+| caller | someone else | `user_prompt_queue_controller_mismatch` |
+| someone else | caller | `user_prompt_queue_not_owner` |
+| someone else | someone else | `user_prompt_queue_not_owner` |
+
+Ownership is evaluated before the turn term, which is what makes rows 3 and 4
+report `NotQueueOwner` rather than depending on check order.
+`QueueAdoption` is separate because it repairs a queue that has *no* owner, so
+the queue-owner term is absent by definition; the turn lease, if any, is the
+only standing available.
+
+**Authorization and mutation are never separable by a crash.** The store re-reads
+the owner row inside the same transaction that writes, so a refused mutation
+leaves no partial write and a committed one was authorized by the row it acted
+under.
+
+#### `is_controller_bypass` gains no queue authority
+
+ADR-0037 rules this out explicitly, and the code implements it: the bypass's
+early return is now guarded by `matches!(scope, ControllerScope::Turn { .. })`.
+The bypass is an identity-only comparison against `LOCAL_OWNER_PRINCIPAL_ID`,
+not bound to a session, so letting it carry queue authority would let the local
+interactive owner mutate **any** session's queue. Proven by execution in
+`user_prompt_queue_controller_bypass_carries_no_queue_authority`, not by
+inspection.
+
+#### Refusals
+
+| Code | Meaning |
+|---|---|
+| `user_prompt_queue_not_owner` | Caller is not the queue owner. **Carries no owner identity** — naming it to a refused caller would itself be the leak. |
+| `user_prompt_queue_unowned` | Queue has entries but no owner row. |
+| `user_prompt_queue_controller_mismatch` | Owner is not the controller of the active turn. |
+| `user_prompt_queue_owner_revision_conflict` | Transfer's `expected_revision` fence rejected the write; the loser is named. |
+| `user_prompt_queue_order_mismatch` | Reorder's entry list is not a permutation of the live set. |
+| `user_prompt_queue_not_found` / `_expired` | No such entry / the entry is terminal. |
+
+#### Audit
+
+Every mutation, **including adoption and transfer**, emits the
+`prompt_submit` action ADR-0037 fixed, via
+`audit_instrumentation::user_prompt_queue_mutation_event`. Records carry entry
+identity, the actor's own owner identity, and a byte count — never prompt text,
+and never a digest of it, because a length is bounded while a digest is a
+content oracle. This deliberately diverges from `session_control_transfer`, which
+maps to `membership_change`: the divergence is directed by ADR-0037, not an
+oversight.
+
+#### Reorder is collision-free by construction
+
+`UNIQUE (session_id, ordinal)` means a renumber walking straight to its targets
+can collide with a row it has not moved yet. `reorder` first displaces every
+affected row by `USER_PROMPT_QUEUE_RENUMBER_BAND_OFFSET` (1,000,000, well above
+every reachable ordinal), then writes the dense targets. A uniform offset keeps
+displaced rows distinct and lifts them clear of the target band, so neither
+statement can violate the constraint. A positive band offset rather than negative
+sentinels, because v80's `CHECK (ordinal >= 0)` forbids them.
+
 ### Re-exports into Root
 
 Root `src/lib.rs` re-exports these modules so downstream code can use
@@ -222,7 +503,8 @@ transport from the underlying agent and session logic.
 | `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router that delegates each envelope to exactly one family handler. ~6,000 lines (was ~12,000 before M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
 | `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 234 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
-| `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. |
+| `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. Also owns `spawn_turn_reaper`, whose post-terminal hook is M003's queue-delivery wake, and `publish_queue_changed`. |
+| `core::daemon_queue_delivery` | `CoreDaemon::submit_queued_prompt_turn`, `reconcile_stranded_queue_deliveries`, `advance_due_queue_entries` | M003 (ADR-0038): the single daemon-internal queue-delivery entry, its bounded restart twin, and M007's bounded advance tick (ADR-0039, accepted). Restricted to three callers by `scripts/check_queue_delivery_callsites.py`. |
 | `core::daemon_documents` | `handle_document_request` | Open/close/reload document operations over daemon-owned document state. |
 | `core::daemon_project_init` | `handle_project_init_request` | Bounded `/init` evidence preview and one-use, project-scoped guarded publication of root `AGENTS.md`. |
 | `core::daemon_lsp` | `handle_lsp_request` | LSP status/operations plus diagnostics-store reads. |

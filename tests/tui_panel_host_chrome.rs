@@ -58,7 +58,6 @@ use codegg::tui::components::component::Component;
 use codegg::tui::components::dialogs::diff::DiffDialog;
 use codegg::tui::components::dialogs::keybind::KeybindDialog;
 use codegg::tui::components::dialogs::mcp::McpDialog;
-use codegg::tui::components::dialogs::panel_picker::PanelPickerDialog;
 use codegg::tui::components::dialogs::plan::PlanDialog;
 use codegg::tui::components::dialogs::plugin::PluginDialog;
 use codegg::tui::components::dialogs::research::ResearchBrowserDialog;
@@ -575,43 +574,5 @@ fn theme_advertises_only_the_verbs_its_current_state_delivers() {
         &dialog.keymap_hint(),
         &["j", "k", "enter"],
         "ThemePickerDialog/previewing",
-    );
-}
-
-// --------------------------------------------------------- panel_picker
-
-/// `PanelPicker` declares `docks_as_viewer() == true` but `App::dock_target`
-/// has no `DialogType::PanelPicker` arm, so it falls to `None`. This test
-/// exercises the seam it can never reach in production, and exists to pin that
-/// down: the picker must still be chrome-free if a mapping is ever added, and
-/// adding one is explicitly not this milestone's business.
-#[test]
-fn panel_picker_leaves_the_panel_chrome_alone_if_it_ever_docks() {
-    let mut dialog = PanelPickerDialog::new(theme(), SidePanelId::Files, "widget");
-    let rows = host_rows(&mut dialog, SidePanelId::Files, true);
-    assert_host_chrome(&rows, "Files ●", "PanelPickerDialog");
-    assert_no_second_box(&rows, "PanelPickerDialog");
-}
-
-/// §3.5's recorded answer.
-///
-/// The host resolves the docking gesture and `App::dock_target` returns `None`
-/// for this box, so the gesture refuses — the key is swallowed by
-/// `PanelPicker::handle_key` never running. For the `/panels` picker itself
-/// that is harmless: `Shift+←` has no meaning there. No `dock_target` arm is
-/// added, because there is no panel a picker should be adopted into.
-#[test]
-fn the_panel_picker_has_no_dock_target_and_loses_the_docking_gesture() {
-    // A picker for `/agents` has the same property, so the gap is not specific
-    // to one caller: the widget opts into docking and nothing consumes it.
-    let dialog = PanelPickerDialog::new(theme(), SidePanelId::Files, "widget");
-    assert_eq!(
-        dialog.dialog_type(),
-        codegg::tui::components::component::DialogType::PanelPicker
-    );
-    assert!(
-        dialog.docks_as_viewer(),
-        "if this ever becomes false the gesture stops being swallowed and starts \
-         being answered, which would make this record stale"
     );
 }

@@ -26,12 +26,21 @@ pub(super) mod project_init;
 pub(super) mod project_picker;
 pub(super) mod prompt;
 pub(super) mod provider_connections;
+/// M004: the `/queue` box — open, refresh, and delete one waiting prompt.
+/// Public so the `TuiCommand` delete-completion variant and the integration
+/// target can both reach the applier without a test-only App shim.
+pub mod queue;
 pub(super) mod research;
 pub(super) mod run_rerun;
 pub(super) mod security;
 pub(super) mod session_selection;
 pub(super) mod sessions;
 pub(super) mod shell;
+/// C007: the composer's subagent addressee and the `TurnSteer` it
+/// issues. Public so the `TuiCommand` completion variant and the
+/// integration target can both reach the applier without a test-only
+/// App shim, matching `queue`.
+pub mod subagent_steer;
 pub(super) mod tasks;
 pub(super) mod team;
 pub(super) mod test;

@@ -130,6 +130,221 @@ session/principal; still-accepted receipts are retained until terminal or
 restart recovery. Recovery marks any prior accepted receipt `interrupted`,
 which prevents replay after an unknown provider outcome.
 
+**User prompt queue (v80):**
+`user_prompt_queue_entry` is the durable owner for queued user prompts
+(ADR-0035). It is session-scoped with `ON DELETE CASCADE`. Entries carry a
+daemon-maintained dense `ordinal` under `UNIQUE (session_id, ordinal)` — a
+schema-enforced total order, not a convention, which is why reorder renumbers
+inside one transaction using a collision-free strategy.
+`idx_user_prompt_queue_entry_session(session_id, status, ordinal)` is the
+covering index the read path uses.
+
+**Prompt queue due times (v82, ADR-0039):**
+`run_at_ms INTEGER` is the nullable optional due time M007 adds. It is additive
+and in place — `ALTER TABLE … ADD COLUMN`, no rebuild — which matters because
+v80's `status` `CHECK` cannot be altered at all. That is also why there is no
+`CHECK` here and no "scheduled" status: a nullable column with no sentinel admits
+every value a writer can produce, so there is no invalid state to constrain.
+
+`NULL` means **no due time**, not a sentinel. Every pre-v82 row reads back as an
+ordinary immediate entry. A backfill of `0` would have been indistinguishable
+from a real due time in the delivery predicate (`0 <= now` is true, so the row is
+immediately due) while rendering every existing prompt as scheduled.
+
+`idx_user_prompt_queue_entry_due(run_at_ms, session_id)` is **partial** over
+`status = 'pending' AND run_at_ms IS NOT NULL`. It exists solely for the
+cross-session advance sweep, which is the one query the v80 index cannot answer.
+Partial so a queue that never schedules anything pays nothing for it: its rows
+are exactly the scheduled pending entries, already bounded per session by
+`USER_PROMPT_QUEUE_MAX_PENDING`.
+
+The eligibility rule lives in one predicate,
+`(run_at_ms IS NULL OR run_at_ms <= ?)`, used by `claim_next_for_delivery` and
+`sessions_with_due_entries` alike. Ordering stays `ORDER BY ordinal ASC`, so
+reorder permutes only entries that are *already* eligible and a scheduled entry
+cannot be pulled forward by position — a not-yet-due entry is invisible to the
+ordering rather than a head-of-line block. The comparison is `<=`, so an entry is
+eligible at the exact due millisecond.
+
+**Prompt queue ownership (v81, ADR-0037):**
+`user_prompt_queue_owner` is the **durable, session-scoped** authority for who
+may mutate a session's queue. It is a second identity concept sitting beside the
+turn controller lease, not a replacement for it — see `architecture/core.md`
+"Two Ownership Notions" for which question each answers. v81 is additive and
+carries **only** this table; v80 is closed and was not edited.
+
+```sql
+CREATE TABLE user_prompt_queue_owner (
+    session_id TEXT PRIMARY KEY,
+    owner_principal TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    adopted_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+);
+```
+
+`revision` is the transfer fence, mirroring
+`session_turn_controller.revision`: `user_prompt_queue_transfer` carries
+`expected_revision`, and two concurrent transfers both reading the same revision
+converge on exactly one winner. The loser is refused by name
+(`user_prompt_queue_owner_revision_conflict`) rather than overwriting.
+`ON DELETE CASCADE` removes the authorization with the session, so a deleted
+session cannot leave a dangling mutator behind.
+
+Ownership is **three-valued** — `Absent` (no owner row and no entries), `Owned(p)`
+(an owner row names `p`), `Unowned` (entries but no owner row). Only `Owned(p)`
+authorizes a mutation; `Unowned` fails closed on every operation including
+`add`, and only explicit `UserPromptQueueAdopt` repairs it. This is why the
+first `add` creates the owner row and the entry in **one transaction**: a crash
+leaves neither or both, never an owner with no queue or a queue with no owner.
+
+Bounds are enforced **twice**: a typed refusal at the store boundary
+(`USER_PROMPT_QUEUE_MAX_ENTRY_BYTES` 64 KiB, `USER_PROMPT_QUEUE_MAX_PENDING`
+64, `USER_PROMPT_QUEUE_MAX_RETAINED_PER_SESSION` 256) and a `CHECK`
+constraint in the schema. A bounded resource refuses rather than truncates —
+shortening a prompt would silently change what the user wrote. An over-bound
+**edit** is refused for the same reason, and an expired entry is never
+resurrected by an edit.
+
+Expiry is **lazy and deterministic**: the read path marks due entries
+`expired` and returns the survivors in one transaction, so a crash mid-sweep
+leaves either all or none of them expired, and repeated reads are idempotent
+(an already-`expired` row matches no query). `USER_PROMPT_QUEUE_TTL_MS` is 7
+days, longer than the 24-hour promotion TTL, because a queue is an intentional
+backlog rather than a staging buffer. Mutation paths sweep expiry inside their
+own transaction too, so an edit or reorder cannot act on a row the read
+projection would already have hidden.
+
+Two schema decisions are deliberate and inherited by later milestones. The
+status `CHECK` enumerates all five roadmap values
+(`pending`/`delivering`/`delivered`/`failed`/`expired`) because SQLite cannot
+`ALTER` a `CHECK` — narrowing it after M002a would have forced a
+create-copy-drop-rename rebuild of a durable user table. **M003 gave all five
+their producer**, so the constraint no longer admits an unreachable value. And
+`run_at_ms` is **absent** from v80: nothing writes it. M007 adds it via
+`ALTER TABLE … ADD COLUMN`, which SQLite performs in place with no rebuild, in
+**v82** — v81 was spent on the queue-owner binding, and M003 took **no**
+migration number at all (see `plans/adrs/ADR-0038-queue-delivery-execution-authority.md`,
+Option B). A durable column with no producer would be a claim without a hook.
+
+**Queue delivery (M003, ADR-0038 — no migration):**
+`delivering` is **not** a terminal state, so it must behave like a live entry in
+exactly three places it did not have to before M002b: the read projection, the
+backlog bound, and the expiry sweep. Those three were separate
+`status = 'pending'` literals while `delivering` had no producer, which was
+correct only because no row could ever reach it. They are now one constant
+(`LIVE_STATUS_PREDICATE`), because they are one fact — split again, and a
+`delivering` row becomes invisible, uncounted, and unexpired at once, which is
+the exact defect M003 exists to close.
+
+The **operable** set is deliberately narrower than the **projected** set. A
+`delivering` entry appears in the read projection but is not editable, deletable,
+or reorderable, and returns `user_prompt_queue_entry_delivering` rather than
+`user_prompt_queue_expired`: mapping it to `Expired` was accurate while every
+non-`pending` row was terminal, and is now a lie a client may render to a user.
+
+A client therefore sends a permutation of the **operable** ids only, and the
+daemon owns where anything else lands. See **Queue renumbering (C001)** below for
+what "anywhere else" means.
+
+**Queue write transactions (C002 — no migration):**
+every queue path that **reads before it writes** opens its transaction with
+`begin_immediate`, which issues `BEGIN IMMEDIATE`. `SqlitePool::begin()` issues a
+**deferred** `BEGIN`, which takes no lock: the first `SELECT` then holds a shared
+read lock and the first `UPDATE` has to *upgrade* it, and SQLite refuses that
+upgrade with `SQLITE_BUSY` — code 6, `database is deadlocked` — **without calling
+the busy handler**, because waiting could deadlock. `busy_timeout` therefore never
+applies, and two callers that each read before either wrote could *both* fail
+rather than one winning and the other waiting its turn. Measured at 204 of 256
+concurrent claim rounds before C002; zero in 192 after.
+
+`BEGIN IMMEDIATE` takes the write lock before any read, and that acquisition *does*
+honour `busy_timeout`. It goes through `sqlx`'s `TransactionManager` rather than
+raw SQL, so sqlx's own transaction-depth counter stays correct — a raw `BEGIN`
+leaves it at zero, which silently turns the queued rollback into a no-op.
+
+Two paths keep a deferred transaction on purpose. `ownership` writes nothing, so
+there is no read lock to upgrade. `list_live` does write (the lazy expiry sweep),
+but its **first** statement is that sweep, so it already takes the write lock at
+that statement; taking it earlier would serialize every queue read in the daemon.
+`scripts/check_queue_write_transaction_shape.py` enforces both the shape and the
+allowlist, and fails if a deferred site stops matching its stated reason.
+
+An uncommitted `ImmediateWrite` queues a `ROLLBACK` on its connection when it
+drops, exactly as `sqlx::Transaction` does. It deliberately does **not** close the
+connection to force the rollback: that is destructive for a shared-cache
+in-memory database, where dropping the last connection destroys the database.
+
+Delivery transitions are `pending` → `delivering` on claim, then exactly one of
+`delivered` (a turn was admitted), `failed` (a refusal, terminal, with a reason
+code), or back to `pending` (never reached admission — **not** a failure, and
+the distinction is what stops a transient error from silently consuming a user's
+prompt). Only `failed` is explicitly retryable; `delivered` has had its turn and
+`expired` outlived its window.
+
+**Queue renumbering (C001 — invariant, no migration):**
+`renumber_dense` displaces **every row in the session, status-blind** by
+`USER_PROMPT_QUEUE_RENUMBER_BAND_OFFSET`, then writes dense `0..n-1` for the
+**whole live set**. Before C001 it wrote the client's *operable* ids only, so a
+`delivering` row was displaced and never written back: it sorted last, and a
+released delivery returned to `pending` at the back of the queue carrying a
+band-offset ordinal. `claim_next_for_delivery` orders by `ordinal ASC`, so that
+was a **delivery-order** defect, not a rendering one.
+
+The displacement stays exactly as it is, and must: terminal rows are not live but
+still hold ordinals under a session-wide `UNIQUE (session_id, ordinal)`, so
+excluding them from the displacement would reintroduce the collision the offset
+exists to prevent. The write set is folded by `merge_operable_into_live`, which
+holds each non-operable live row at **the rank it already had** — never pinned
+to the head and never swept to the tail, because pinning a released entry to an
+end is the defect being repaired. Concretely, live `[p1, d1, p2]` reordered to
+`[p2, p1]` becomes `[p2, d1, p1]`.
+
+That rule is what makes `release_delivery` and
+`resolve_stranded_delivery(Retry)` order-neutral: the entry kept a dense ordinal
+while stranded, so restoring `pending` moves nothing — neither the entry nor the
+rows around it. `retry_failed` is the one return path the merge does **not**
+reach, because it revives a row that was already **terminal** during the
+reorder and therefore absent from the live set; it has no production caller, and
+where a revived `failed` entry *should* land is an open maintainer decision
+(C001 closure §6.1).
+
+**The steer settlement (M006 — `mark_steer_delivered`):** a queued prompt can now
+reach a turn that was **already running**, without ever passing through a claim,
+so `mark_steer_delivered` is the second and last path into `delivered`. It is
+guarded on `status = 'pending'` for the same at-most-once reason every other
+transition here is: a row already `delivering` is running as its **own** turn, and
+settling it as steered too would record one prompt delivered twice.
+
+Its authority check is deliberately **settlement** authority, not steering
+authority. ADR-0037 excludes steering from the durable owner binding, so the
+*handover* is gated by the turn controller; but this write changes the queue, so
+`authorize_owned_queue` runs inside the transaction — otherwise a caller who
+steered someone else's turn could mark their entry delivered. Non-winning cases
+return the **same typed vocabulary as `delete`** (`NotFound`, `Delivering`,
+`Expired`, `NotQueueOwner`, `QueueUnowned`) rather than a second one, so a caller
+reports one reason set.
+
+One shared detail worth naming: `validate_turn_id` now backs both
+`mark_delivered` and `mark_steer_delivered`. A second copy of that rule could
+drift into accepting what the first refuses.
+
+At-most-once is **inherited from `turn_admission_receipt`**, not reimplemented:
+the submission id is a deterministic hash of the entry id alone, so a retry
+after a restart re-derives the same receipt and receives `Duplicate`. A stranded
+`delivering` row — a daemon killed between claim and receipt — is resolved at
+startup **from the receipt**, never from the entry, because the receipt is the
+only evidence of whether a turn actually started. That sweep is bounded
+(`USER_PROMPT_QUEUE_MAX_RECONCILE` 256) and runs once per daemon start; it is a
+repair pass, not a poller.
+
+Entry text is user-authored prompt content with the same sensitivity as a
+submitted turn: it never appears in a `tracing` call, an audit record, or a
+`CoreResponse::Error` message. Diagnostics reference entry identity only. Audit
+records carry entry identity, the actor's own owner identity, and a byte count —
+never prompt text and never a digest of it.
+
 **Tool Programs (v33–v35):**
 `tool_program`, `tool_program_call` (v33),
 `tool_program_notification` (v34), nullable lineage columns on `job`

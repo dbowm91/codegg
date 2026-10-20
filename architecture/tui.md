@@ -658,6 +658,12 @@ stop`, `press x again to stop agent` while a confirmation is armed, `press x or
 way out is what reads as a dropped connection. The rows below it are clickable
 and their hit rects are rebuilt every frame in `UiState::working_area` /
 `SubagentState::hits`, so a click resolves against the geometry the user saw.
+
+The `queued` suffix (M004) is appended in the same left-aligned `" · "` chain
+as the subagent and job counts, and is text on the existing row — never an extra
+row and never a condition on row 0's existence. It sits *after* the phase
+selection so a latched `last_error` still outranks it: the failure is what
+explains why nothing is progressing, and a waiting-prompt count is not.
 `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
 strip is carved out of the prompt chunk, so the reverse order would resolve
 every subagent click to click-to-focus.
@@ -705,10 +711,49 @@ stays in the toast, and `/logs` retains 50 of them via `ToastManager::history`.
 
 Rows come from `sync_subagents_from_snapshot`, which reads the same
 `active_turn` (falling back to the newest `recent_turns`) agent tree the
-sidebar renders, joined to durable runs by exact canonical task id only to
-attach a `run_id`. A snapshot that *arrives* replaces the rows; **a missing
-snapshot does not**, because absence is not evidence that no subagents exist
-and clearing on it would blank the strip mid-turn.
+sidebar renders. Every field on a row — including `run_id`, `display_name`,
+`profile`, and `usefulness` — is copied **verbatim off the projected node**;
+nothing is joined, looked up, or synthesized here. An earlier revision
+described this as being "joined to durable runs by exact canonical task id only
+to attach a `run_id`", and that join never worked: the node's `task_id` is a
+daemon-local `u64` rendered in decimal while `AgentRunSummary::task_id` is a UUID
+string, so the two could never match and `run_id` was permanently `None`. The
+durable id now arrives inside `CoreEvent::SubagentStarted` and is carried through
+the projection as a field.
+A snapshot that *arrives* replaces the rows; **a missing snapshot does not**,
+because absence is not evidence that no subagents exist and clearing on it
+would blank the strip mid-turn.
+
+**Descriptors are carried, never resolved.** `SubagentRow::profile` and
+`usefulness` are the curated pool entry's one-line character description and
+operational guidance. They are drawn once at spawn by `SubagentNameLease::entry`
+— which resolves the entry behind **its own leased name**, so the descriptor is
+by construction the one that was leased — and put on
+`AppEvent::SubagentStarted`, from where the projection adapter copies them
+verbatim. The reducer has no pool and cannot re-derive them; a re-drawn value
+would make replay non-deterministic, the same failure `display_name` already had.
+
+The TUI resolves nothing. `SubagentRow::descriptor()` returns only what arrived.
+A display name is not a stable key: the registry appends numeric variants
+(`Sally-2`), a name outside the pool must render *no* descriptor rather than a
+guessed one, and a released name can be re-drawn to a different subagent while a
+stale snapshot is still on screen. `scripts/check_tui_subagent_name_pool_isolation.py`
+enforces this and carries a `--self-test` proving it fails on a planted
+violation; run the guard, not the absence of a complaint.
+
+**One row, five surfaces, and a deliberate trade.** The strip, the sidebar panel,
+the `Ctrl+T` overlay, the `/sessions` dialog, and the subagent tab all render the
+same derived vector. The four one-line surfaces show `SubagentRow::topic()` — the
+descriptor when the projection carried one, the task description otherwise —
+because a single terminal line cannot legibly carry two pieces of prose and
+whichever is ellipsized second reads as noise. The sidebar additionally drops the
+descriptor entirely below `MIN_SIDEBAR_DESCRIPTOR_CHARS`, since a three-character
+stub reads as a rendering fault; a narrow column shows exactly what it showed
+before. The **subagent tab is the full-fidelity surface**: it renders `Task` and
+`Agent` side by side, wrapped and untruncated, which is what makes the
+one-line trade lossless. A node recorded before descriptors existed has neither
+field, so every surface falls back and the tab omits the `Agent` heading rather
+than leaving one over an empty body.
 
 **Subagent buffer** (`SubagentState::open`). Clicking a row replaces the
 transcript in the viewport rect rather than opening a modal, so `Esc` has one
@@ -726,7 +771,7 @@ height is predictable. The strip's rows are added to the prompt allocation in
 `session_layout` and then carved back off, so the input box keeps the height it
 requested and the viewport absorbs the difference.
 
-**Tasks overlay** (`Shift+T`, `state/tasks.rs`). One overlay over todos,
+**Tasks overlay** (`Ctrl+T`, `state/tasks.rs`). One overlay over todos,
 subagents, and jobs in that fixed order, each under its own header. A group
 with nothing in it contributes **no header at all** — the alternative, an
 empty "Jobs" heading above nothing, is what makes an overlay feel broken even
@@ -768,7 +813,7 @@ returns 0 only when collapsed; an expanded-but-empty overlay reserves the row
 for `render_tasks_strip`'s `Nothing pending` line. Height, not content, decides
 whether that line can paint — the render is handed `tasks_area`, and it returns
 at `None` before reaching the empty branch. Returning 0 for "nothing to show"
-therefore made the line unreachable *and* `Shift+T` a silently dead key on an
+therefore made the line unreachable *and* `Ctrl+T` a silently dead key on an
 idle session, which is the first thing a user tries. The same trap applies to
 any "draw an empty-state message" affordance: **reserve the row, then draw the
 message into it.**
@@ -800,6 +845,53 @@ the open, and the caller then has a defined outcome to report — `App::
 open_subagent_tab` toasts only when a row exists *and* the set is at capacity.
 Note that `open_task` requires the row to still exist: a panel row alone cannot
 open a tab, because a tab with nothing to render is not a tab.
+
+### Addressing a reply to a running subagent
+
+`/subagent-send` arms the composer to address one running subagent
+(`state/subagent_addressee.rs`, `commands/subagent_steer.rs`). This is ADR-0041
+**Option A**, and three properties are load-bearing:
+
+- **The addressee is composer data, not a focus mode.** `InputTarget` stays
+  `{Build, Chat}`; arming changes what Enter *means* on submit, never where
+  keystrokes go. A variant here would have made the badge lie about who holds
+  the keyboard.
+- **The recipient is the controlling parent turn, not the subagent.** The
+  request is `TurnSteer { session_id, turn_id }` where `turn_id` is
+  `session_state.active_turn_id` — read at send time, never the subagent's
+  `task_id`. `TurnSteer` is keyed on a *session turn*; naming a subagent's
+  daemon-local `u64` would resolve to `turn_id_mismatch` every time. The
+  subagent is named inside the payload as an addressee, and the parent decides
+  whether to relay (ADR-0041, *Indirect*).
+- **An armed composer cannot fall through to `TurnSubmit`.** The branch sits
+  after the observer return and before `pending_send`, so an addressed reply
+  that is refused reports in the steering vocabulary instead of silently
+  starting a new turn with a message written for a subagent.
+
+`SubagentAddressee` is invalidated three ways, all read from evidence rather
+than guessed: `from_tab`/`from_row` refuse a finished or detached run at arm
+time; `reconcile_addressee` clears it on **every** arriving snapshot when the
+run has left the tree *or* is still present but no longer running (presence
+alone is not liveness); and a `TurnStarted` drops it, because a subagent
+dispatched by the previous turn is not one this turn's agent is running. The
+single funnel is `App::apply_subagent_rows` — both `set_rows` call sites route
+through it, so a second call site cannot forget the rule.
+
+**A refused reply has no durable home, so the compositor restores it.**
+`TuiCommand::SubagentSteerFinished` carries the user's own words back, and the
+applier puts them into an *empty* composer. Unlike a queued prompt, a steer is
+never stored: it goes to the loop's `pending_steer` and into the in-flight
+provider transcript, nothing else. That is also why the TUI writes **no**
+transcript message for an accepted reply — one would render as durable on
+screen and vanish on reload. The toast is the record, and every sentence names
+the parent as recipient: the vocabulary is `send_now_outcome_message` with
+`SteerConsequence::ComposerOnly`, one function shared with M006's send-now
+rather than a second table that could drift on the codes.
+
+Addressing binds **no key**. A mode the user must be able to see, name, and undo
+from the palette is a command; a chord would give it none of those. Arming
+issues no request at all, so it cannot cancel, interrupt, or evict anything
+(I5).
 
 These keys name the buffer itself, adjacent to `Tab` for project tabs, but the
 two axes never consult each other — subagents are inside one session, projects
@@ -877,7 +969,7 @@ three used to be silent:
 
 | Failure | Carrier | Before |
 |---|---|---|
-| `turn.submit` refused / socket dead | `TuiCommand::TurnSubmissionFinished { error }` | the arm handled `error.is_none()` and discarded `Some(_)`, recording it only in a `tracing::debug!` |
+| `turn.submit` refused / socket dead | `TuiCommand::TurnSubmissionFinished { outcome }` | the arm handled `error.is_none()` and discarded `Some(_)`, recording it only in a `tracing::debug!` |
 | No core client | `dispatch_turn_submit_request` | bare `return` |
 | No session bound | `dispatch_turn_submit_request` | bare `return` |
 
@@ -886,12 +978,378 @@ session stayed pinned on `Working`, and the user saw no output and no error
 until `check_turn_stall` fired five minutes later with a generic "the core
 produced no event" — a diagnosis that named none of the three actual causes.
 
-`App::fail_unstarted_turn` is the single release path: it clears
-`working_since` (so the watchdog stops counting a turn that never started),
-drops `active_turn_id`, sets `SessionStatus::Error`, stops the thinking
-indicator, finalizes streaming, **releases `pending_send` so a retry is
-possible**, clears the prompt waiting flag, and toasts the reason. The
-`TurnSubmissionFinished` arm calls it with the daemon's own message.
+`App::fail_unstarted_turn` is the release path for a submit that started no
+turn: it clears `working_since` (so the watchdog stops counting a turn that
+never started), drops `active_turn_id`, sets `SessionStatus::Error`, stops the
+thinking indicator, finalizes streaming, **releases `pending_send` so a retry is
+possible**, clears the prompt waiting flag, and latches the reason through
+`report_turn_error`.
+
+### Turn-contention refusal is not an unstarted turn
+
+The daemon returns `turn_already_active` when a turn is already running — for
+both the in-memory collision and a durable controller-lease conflict
+(ADR-0007). Running every refusal through `fail_unstarted_turn` therefore made
+the frontend assert the opposite of the truth at the exact moment a user was
+waiting: it nulled `active_turn_id` and `working_since`, discarding the
+identity and elapsed age of a **live** turn, stopped the thinking indicator,
+finalized the activity stream of a turn that was still producing events, and
+set `Error` on a session that was actively working. The queue milestone that
+follows has to consult turn state to decide between queueing and steering, so a
+path that invalidates that state is a correctness problem, not a cosmetic one.
+
+`src/tui/app/turn_submit.rs` classifies the outcome **once**, at the only point
+that knows how the daemon answered, and the typed value travels to the
+completion arm as data — the arm never parses prose:
+
+| Outcome | Meaning | Turn state | Prompt |
+|---|---|---|---|
+| `Accepted` | `Ack` or `TurnAdmissionReceipt` | untouched | consumed |
+| `Contended` | `turn_already_active` | **untouched** — identity, age, status, spinner all kept | restored |
+| `Rejected` | any other daemon refusal code | torn down, error latched | restored |
+| `TransportFailure` | `CoreClient::request` returned `Err` | torn down, error latched | restored |
+| `Unexpected` | a response shape this frontend cannot read | torn down, error latched | **not** restored |
+
+Three of those decisions are deliberate:
+
+- **Contention restores the prompt but does not latch.** Row 0 gives
+  `last_error` absolute precedence (see "Working strip"), so latching here
+  would replace the live turn's spinner and elapsed time with a stale `✗` line
+  — the same state corruption in a different costume. Contention is not a turn
+  failure: the turn continues, so there is no dead turn for a latched reason to
+  explain. The refusal is reported as a warning toast, which is transient by
+  design and is retained in `/logs`. `App::fail_contended_turn` owns this.
+- **An unknown daemon code is `Rejected`, not `Unexpected`.** `Rejected` is the
+  only class that keeps the user's text. The daemon adds refusal codes over
+  time; routing an unrecognised one to a class that refuses to restore would
+  lose the user's words the first time a new reason appeared. Contention is a
+  deliberate exact-code allowlist (`CONTENTION_CODES`), never a default and
+  never a resemblance match.
+- **`Unexpected` does not restore the prompt.** An uninterpretable response may
+  already have been accepted, so offering a resubmit is how one prompt becomes
+  two turns.
+
+**Every recoverable refusal restores the composed text through one shared
+shape.** `PromptState::restore_prompt_with_stash` is that shape: it displaces
+any newer draft into the bounded stash (`PROMPT_STASH_BOUND`), puts the refused
+prompt back **whole** — the bound applies to how many drafts are kept, never to
+the text, because truncating would change what the user wrote — and calls
+`mark_retry_without_message` so resubmitting produces **one** transcript entry
+rather than two. Session-create failure, reconnect, and refused submission all
+route through it; the implementation was previously a literal `100` repeated in
+three places, which made the bound three promises rather than one. The prompt
+travels in `PendingTurnSubmission::prompt`, never across the command channel and
+never re-read from the composer, which the user may have kept typing into.
+
+The frontend never resubmits on the user's behalf. Handing the text back is the
+whole recovery; anything more would be a queue nobody approved.
+
+### The queue projection is pushed, not polled (M003, ADR-0038)
+
+`SessionState::user_prompt_queue` is a **projection**, never an authoritative
+copy: it is replaced wholesale and the TUI owns no queue state that could drift.
+Before M003 it was read on exactly one edge — the session change
+(`load_user_prompt_queue`, called from the same handler as the promotion
+projection). A session that never changes re-read it never, which was harmless
+while nothing could mutate the queue from the daemon side.
+
+Delivery broke that. The daemon claims an entry and admits a turn with **no
+reply channel**, so no client-initiated read can discover it: an entry the user
+queued would sit displayed as `pending` while its turn ran, and nothing on
+screen would ever say it was no longer waiting. `CoreEvent::UserPromptQueue` is
+therefore pushed after every delivery attempt that changed the queue, and
+`App::apply_core_event` adopts it through the **same**
+`apply_user_prompt_queue_loaded` applier the read path uses — so a pushed
+projection and a read projection cannot diverge in how they are filtered, the
+superseded-session guard included.
+
+Two properties the push depends on:
+
+- The event carries the entry's **real** `status`, not a constant.
+  `user_prompt_queue_entry_to_dto` hardcoded `"pending"` on the reasoning that
+  every row in `list_live` was pending by construction — true until M003 gave
+  `delivering` a producer. A `delivering` entry is visible and **not** editable,
+  and a client can only grey that row if the status reaches it. The daemon
+  refuses an edit to it with `user_prompt_queue_entry_delivering`, never
+  `user_prompt_queue_expired`.
+- `CoreEvent::UserPromptQueue` is classified `ClientLocal`, never `Safe`. It
+  carries user prompt text, and `event_log.publish` feeds the projection sink as
+  well as the frontend stream — marking it `Safe` would put a user's queued
+  prompt into the durable projection store behind a check the
+  `UserPromptQueueList` descriptor never ran.
+
+### The `/queue` box (M004)
+
+M003 made the projection exist. M004 is the first milestone a user can
+actually operate: `/queue` mounts `components/dialogs/queue.rs`, a
+FocusManager-owned list of the session's waiting prompts.
+
+It is a **view**, and every deliberate omission is a refusal to imply authority
+the TUI does not have:
+
+- The widget **never sorts**. `SessionState::user_prompt_queue` is the daemon's
+  order verbatim; a locally re-sorted list would claim an order the queue does
+  not have. Selection follows `entry_id` across a fresh projection rather than
+  the index, because a projection that lost a row would otherwise slide the
+  cursor onto a prompt the user never looked at — and a `d` there would delete
+  it.
+- **A `delivering` row is listed and offered to `d`.** The daemon refuses it
+  with `user_prompt_queue_entry_delivering`; the box does not pre-empt that with
+  a local rule, because the refusal is the authority's answer to a real
+  attempt. It reports it as *being delivered*, never as *expired* — a
+  delivering entry has not expired, and telling the user otherwise is a lie they
+  might act on.
+- **A delete applies the projection that delete produced.**
+  `queue_projection` re-reads after a successful write and returns it in the
+  same response, so the frontend issues no second `UserPromptQueueList`. The
+  rendered list therefore cannot disagree with the write the user just made.
+- **The box advertises exactly the keys it implements.** M004 shipped `j/k`,
+  `r`, `d`; M005 added `a`, `e`, and `[`/`]`; M006 added `s`. Naming a key this
+  widget does not implement — in the hint *or* in the empty state — is the
+  specific dishonesty the milestone plan forbids, and the test that enforces it
+  has now rejected the box twice: once when M005 landed a verb the hint did not
+  teach, and once when M006 did.
+  - **M007 adds a second guard arm to the same test.** `HINT_SCHEDULE` states
+    the duration grammar (`30s/5min/2h/1d`) *and* the empty case, because the
+    box is the only place that grammar is written down — a user who must leave
+    the box to learn `1h` has already lost the prompt they were composing. `Esc` is answered by `handle_key` but
+  deliberately absent from the hint, for the same reason `TreeDialog` omits it:
+  the modal host claims `Esc` as its universal exit before consulting the
+  widget.
+
+Two wiring facts that are easy to get wrong:
+
+- `Dialog::Queue` has **no key arms** in `handle_dialog_key_legacy`, and must
+  not get any. That router is `#[cfg(any())]`-disabled and `FocusManager` is
+  the sole key authority, so such an arm would compile and do nothing.
+  `Dialog::Queue` is also absent from `App::dock_target`, so the box is a modal
+  and never docks even though it declares `docks_as_viewer()`.
+- `close_dialog`'s `Dialog::Queue` arm cancels `DialogState::queue_delete_request`,
+  `queue_add_request`, `queue_edit_request`, `queue_reorder_request`, and (M006)
+  `queue_send_request`, so a mutation still in flight when the box closes cannot
+  rewrite a projection nobody is looking at. Each slot is separate on purpose: a
+  shared one would let a slow send-now be completed by — or overwrite — a later
+  reorder. Close does **not** requeue anything: the box has no pending human
+  decision, only a cursor.
+
+`/queue` is **blocked for observers** by omission in the fail-closed
+`is_observer_allowed_command` allowlist. No code registers it there, and
+`tests/user_prompt_queue_box.rs` proves it by executing the predicate against
+`/queue` and the M005 subcommand names, with `/stats` asserted allowed so the
+suite cannot pass against an always-false stub.
+
+#### Authoring: `a`, `e`, `[`/`]` (M005)
+
+M005 makes the box both a navigator and a text field. That is the whole hazard
+of the milestone, and the seam that manages it is
+`QueueDialog::is_text_step()`.
+
+**The guard is structural, not per-letter.** `handle_key` matches the text step
+**first, as a separate match**, and returns from it. The browsing arm is then
+unreachable while a composer is open, so a sixth action added later cannot be
+live in a text step by forgetting one guard. The alternative — `if
+!self.is_text_step()` on each action arm — is the shape that produces the
+defect: typing `d` into a prompt deletes a prompt.
+
+There is no shared `captures_text` / `wants_text` predicate on `App`. The only
+precedent is `ConnectDialog::is_text_input_step`, one method on one dialog, and
+`is_text_step()` is that method again. Opening an `App`-level predicate is an
+explicit non-goal.
+
+Text lives in the **widget**, not in `DialogState`. There is therefore no window
+in which a later `/queue` can commit text an abandoned step left behind — the
+buffer is dropped by the same unmount that drops the box.
+
+- **`a` — add.** Composes text, commits on `Enter`. The `entry_id` is minted at
+  **commit** (`start_queue_add`), not when the step opens, because
+  `entry_id` is the protocol's at-most-once key: a retry carrying the same id
+  converges on the same row instead of duplicating the user's sentence. An
+  abandoned step therefore burns no id. The response's projection is applied
+  directly — no second read — and the cursor follows the minted id.
+- **`e` — edit in place.** Seeded with the selected entry's current text, so an
+  edit starts from what the user can see on the row. It commits the entry's
+  **existing** id: minting a new one would turn "correct this prompt" into "add
+  a second prompt and orphan the first". Identity and ordinal are the daemon's
+  to hold, and the box only renders its answer.
+- **`[`/`]` — reorder earlier/later.** Not `Shift+K`/`Shift+J`: this box
+  already uses `j`/`k` for movement, and a shifted variant of the movement key
+  that does something *other* than move is a pairing people misfire.
+
+**The permutation is built from `pending` rows only.** This is the milestone's
+sharpest edge. The rendered projection contains `pending` **and** `delivering`
+rows (`list_projected_in`, `LIVE_STATUS_PREDICATE`), but `reorder` validates
+against `list_live_in`, whose `WHERE` is `OPERABLE_STATUS_PREDICATE`
+(`status = 'pending'`), and `is_permutation` demands **exact length equality**.
+A client that sends every id it rendered is refused with
+`user_prompt_queue_order_mismatch` the moment one entry is mid-delivery.
+`QueueDialog::pending_permutation` therefore permutes the operable subset and
+never computes an ordinal — the daemon owns those.
+
+**One local refusal, and it is the exception.** M004's rule is "let the daemon
+answer a real attempt". Reorder cannot follow it: with a `delivering` selection
+the permutation would be built from the pending subset, **succeed**, and reorder
+nothing — a silent no-op. So `reorder_selected` refuses locally and names
+which end it is at, via `TuiMsg::QueueReorderUnavailable`. There is no daemon
+call that can express "this particular row is not yours to move".
+
+**`order_mismatch` re-reads once and reports.** It never retries: the check is
+exact-length set equality, so a blind retry against a stale projection turns one
+refusal into a contention source. Re-reading surfaces the truth (usually another
+frontend's mutation) and the user's next `[`/`]` is built from the corrected
+order.
+
+**Refusals keep their own sentence and the user's words.** A bounds refusal
+(`entry_too_large`, `too_many_entries`, `invalid`) restores the composed text
+into the composer, because the fix is to shorten it. An ownership, delivery-state
+or expiry refusal does not — retrying cannot work there, and restoring text
+would suggest it can. The `unowned` sentence says the repair is a separate
+explicit operation outside this box and deliberately does **not** name a slash
+command, because no command registers one.
+
+**Composed text travels exactly as far as it must.** It rides in
+`UserPromptQueueAddFinished`/`EditFinished` so a refusal can restore it, and
+nowhere else: no toast, no hint, no `tracing` call. The dialog renders the
+buffer bound by width with an announced truncation.
+
+#### The duration step (M007, ADR-0039)
+
+`a` and `e` are **two** steps, not one. `Enter` on the prompt text advances to a
+duration field; `Enter` there commits. The third state — text, duration, and a
+committed box — is what the user sees.
+
+**A separate step, not an inline suffix.** The obvious cheaper design is a
+delimiter in the text (`ship the docs | 1h`). It was rejected because prompt text
+is user data the box must not reinterpret: any delimiter is a character the user
+cannot type, so `ship the docs | 1h` and `ship the docs | 1h | check the 1h
+build` are not distinguishable. A second step makes the due time a first-class,
+editable field instead, and it is what lets `e` edit an existing schedule
+rather than only new ones.
+
+**The duration step is inside `is_text_step`, not beside it.** That is the whole
+safety argument: it inherits every property that keeps a stray `d` from deleting
+a prompt while someone is typing `2d`. Its `Esc` goes **back** to the text step
+rather than cancelling, because the prompt is still in the buffer and making
+`Esc` discard it would mean a mistyped `2d` costs the whole prompt.
+
+**An unparseable duration is refused in the box, with no request.** The grammar
+is a UI-level fact the box already owns; sending a string to the daemon to be
+told "that is not a duration" spends a round trip to deliver a message the box
+can give first. A bare number is refused rather than guessed. The refusal quotes
+what the user typed — which is a duration token, never prompt text — and the
+field keeps its contents so the fix is an edit.
+
+**Rows are marked by character, not by colour.** `@2h` / `@30m` for waiting,
+`@·` for due, blank for immediate. The `@·` state is the one that earns the
+marker: "scheduled for 09:00" and "09:00 has passed and it still has not run"
+look identical otherwise, and they are very different states for a user deciding
+whether to press `s`.
+
+**Remaining time rounds up, and rolls into the next unit.** `format_remaining`
+never prints `60m`: an entry 59m59s out reads `1h`. Flooring would make a prompt
+the user scheduled "for an hour" read back as "59m" and look like an off-by-one.
+
+#### `s`: send now (M006, ADR-0036)
+
+`s` is the only queue key that reaches **into a live turn** instead of writing to
+the queue. Everything else in this box authors, reorders, or discards rows; `s`
+hands one row to a turn that already exists.
+
+**The request names the entry and nothing else.** No text, no turn id. The daemon
+loads the stored prompt — ADR-0035's durable-entry rule is what makes that safe,
+because the text cannot differ from what the user queued — and resolves the
+active turn from its **own** runtime handle. A client therefore cannot submit
+text no queue entry accounts for, and cannot steer a turn that ended a moment ago
+by naming the id it saw.
+
+**Four outcomes, not two, and that is the whole design.** The steer happens
+*before* the settlement, so "the turn refused it" and "the turn took it but the
+queue could not record that" are different states with different correct
+copy. `UserPromptQueueSendNowResult` is `Accepted`, `AcceptedNotSettled`,
+`Refused { code }`, `EntryNotFound`. Reporting the third state as an error would
+tell the user to resend a prompt that has already run — the exact duplication
+ADR-0036 forbids. Reporting it as success would hide that the row is still
+`pending`.
+
+**Six outcomes, six sentences, and no sentence promises more than acceptance.**
+`s` is a *handover*: the prompt joins the running turn's message stream. Whether
+the model reads it, believes it, or acts on it this turn is not knowable at the
+moment of acceptance, so no copy says "the model will…", "forced", or
+"guaranteed". A user told "sent" for a channel that was `Full` has been lied to;
+a user told the same for a `Closed` channel cannot tell their prompt went
+nowhere. `send_now_outcome_message` owns all of that mapping, and
+`user_prompt_queue_the_send_now_sentences_are_all_different` asserts the six are
+pairwise distinct and quote no prompt text.
+
+**Two local refusals, and they are different kinds of fact.** `delivering` is a
+fact about the *row* — it is already running as its own turn, and no retry
+changes that — so the box refuses without a round trip, exactly as reorder does.
+No-active-turn is a fact about the *box's own snapshot*
+(`session_state.active_turn_id`), and it is only a fast path: a stale snapshot
+sends a request the daemon can refuse truthfully, which is the safe direction.
+The daemon remains the authority.
+
+**Send-now is not a `QueueMutation`.** ADR-0037 deliberately excludes steering
+from the durable owner binding, so gating `s` on `ControllerScope::QueueMutation`
+would refuse the legitimate case of a principal steering its own turn in a session
+it does not own. The dispatch arm is its own handler, gated by the turn
+controller, with the queue-ownership question re-asked **inside the settlement
+transaction** — where it answers a different question ("may this principal change
+this queue?") about a different write.
+
+**The projection rides along on every outcome, refusals included.** A refusal may
+mean another frontend already moved or removed the row, and a box left showing it
+is showing something the daemon no longer holds. This is the same
+"apply the projection this write produced" rule M004 established for mutations,
+extended to the case where the write did *not* succeed.
+
+**No retry, ever.** Every refusal is a fact about the turn — full, closing,
+unsupported, not yours — and retrying a request whose answer is "definitely no"
+is how one refusal becomes a contention source.
+
+#### What a released delivery does (C001)
+
+`renumber_dense` used to displace **every row in the session, status-blind** and
+then re-densify only the client's pending rows, so a `delivering` row was pushed
+above the dense band and nothing ever wrote its ordinal back. M005 measured the
+consequence and recorded it as accepted-and-documented: the row sorted **last**,
+and a released delivery returned to `pending` at the back of the queue carrying
+`USER_PROMPT_QUEUE_RENUMBER_BAND_OFFSET` (1 000 000) instead of a dense ordinal.
+
+**C001 fixed it.** `renumber_dense` now writes the whole **live** set, folding
+the caller's desired pending order together with each non-pending live row held
+at **the rank it already had**
+(`merge_operable_into_live`, `crates/codegg-core/src/session/user_prompt_queue.rs`).
+The displacement step is unchanged — terminal rows still hold ordinals under the
+session-wide `UNIQUE`, so they still have to be pushed clear of the band — and
+the client's permutation contract is unchanged: it still sends **pending ids
+only**.
+
+The box is unaffected and stays correct: it renders the daemon's ordinal verbatim
+and never renumbers locally, which is why this was always a store defect and never
+a TUI one. A released prompt now resumes where the user put it.
+
+### Turn-submit staleness
+
+`App::turn_submit_request` is an `AsyncUiRequestState`, and
+`TuiCommand::TurnSubmissionFinished` carries its `generation` alongside the
+daemon's `request_id`. These are different questions and stay separate:
+
+- `request_id` is the **daemon's idempotency key**, derived from the submitted
+  payload. An identical retry reuses it so daemon receipts prevent replay.
+- `generation` is the **frontend's local staleness marker**.
+  `apply_turn_submission_finished` calls `finish(generation)` first and drops the
+  completion when it returns `false`.
+
+That check was missing. The old arm cleared `pending_turn_submission` only when
+the ids matched but then tore down turn state *unconditionally*, so a late
+completion from a superseded submission could still null a live turn's identity.
+`App::cancel_turn_submit` invalidates an in-flight submit on tab switch,
+reconnect, and project change — the daemon turn is not undone, it keeps running
+and its events still arrive, but the completion must not act on state the user
+has moved past. On reconnect the submitted prompt is handed back alongside it:
+the daemon may well have accepted the submit before the socket died, so the user
+resubmits explicitly, and `retry_without_message` plus daemon-side turn
+admission keep that from becoming a second transcript entry or a second turn.
 
 The stall watchdog remains the backstop for the case where the daemon accepted
 the turn and then went quiet — a different failure, and still measured by
@@ -1194,6 +1652,212 @@ build a `PanelCtx`, whose grants are `&mut`; **it writes nothing.** The frame
 must never be able to move the keyboard by describing it — a badge that forced
 `input_mode` to match what it displayed would make the state it reported into
 the state it caused.
+
+**The composer's caret is derived from the same two facts, and there is no
+`focused` flag.** `App::composer_holds_keyboard` answers "does the composer
+hold the keyboard", and `PromptWidget` has no focus flag to disagree with it:
+the widget's old `focused` field was **dead in production** — `PromptWidget::blur()`'s
+only caller in the tree was a test — so "show no cursor while another surface
+has the keyboard" was unimplementable as written, and a flag wired to a stored
+value would have reintroduced exactly the drift the mode resolution exists to
+kill.
+
+Ownership is a **function of app state**, derived in the same shape as
+`composer_input_mode` and read from the same seams. Its order mirrors
+`App::on_key`'s priority chain — the first surface that would consume a key is
+the surface that owns the keyboard:
+
+| Order | Holder | Seam | Answers |
+|---|---|---|---|
+| 1 | **mounted modal** | `App::focus_manager` | a modal owns the keyboard outright; `on_key` short-circuits to `handle_dialog_key` |
+| 2 | **focused side panel** | `App::panel_owns_keyboard` | the same condition `on_key` uses to consult the panel before the composer |
+| 3 | **the timeline overlay** | `App::ui_state.timeline_visible` | the jump-to-message picker claims the keys before the composer sees them |
+| 4 | **the editor's buffer** | `App::editor_buffer_owns_keyboard` | the editor route keeps the composer editable unless the document was explicitly focused |
+| 5 | **otherwise** | — | the composer owns the keyboard |
+
+`App::panel_owns_keyboard` is the extracted form of the `panel_active`
+condition that used to be inline in `on_key`. Extracting it is what lets the
+key chain and the caret rules read **one** derivation: a second copy of the
+panel rule is where a drift would start. The terminal box needs no arm of its
+own — it is a modal, so arm 1 already covers it. The overlays that claim only
+*some* keys — the tasks list, the completion popup, the change review — are
+deliberately absent: they let everything they do not claim fall through to the
+composer, so the composer is still where the text goes.
+
+The caret itself has exactly two shapes, and they are mutually exclusive by
+construction:
+
+| Mode | Caret | Source |
+|---|---|---|
+| **Insert** | blinking | the **terminal's own cursor**, positioned with `Frame::set_cursor_position` |
+| **Normal** | solid block | painted by `PromptWidget` at the caret cell |
+
+The blink is the terminal's, not the app's. The app runs **one** animation
+cadence (the 100 ms working-strip spinner, one `ActivityPhase` enum), and a
+second timer for a blinking caret is not allowed; ratatui hides the terminal
+cursor whenever a frame did not position it, so "position nothing" is both the
+correct and the sufficient way to show no terminal cursor. A terminal
+configured not to blink therefore shows a steady Insert cursor — the
+Insert/Normal distinction is enforced by **shape**, not by blink.
+
+`PromptWidget::caret_cell` is the single computation of "where is the caret on
+screen", used by both the painted block and the terminal-cursor positioning,
+so the two cannot disagree about the caret's position. It returns `None` when
+the caret is not on screen (its line scrolled off the top, or the area is too
+small), and a `None` caret cell means "no terminal cursor", not a panic.
+
+The rule the badge and the caret share, stated once: **when the composer holds
+the keyboard, the badge says `[INS]` exactly when the terminal cursor is
+positioned and `[NOR]` exactly when the block is painted; when the composer
+does not hold the keyboard, neither caret is present at all.** The badge
+reports the mode, and the caret reports the mode *and* the ownership, and both
+read the same derivation.
+
+**The composer owns a closed set of Normal-mode letters, and a claimed letter
+never falls through.** `src/tui/composer_claims.rs` is the single, enumerable
+statement of what the composer owns. The app's global binding map
+(`src/tui/input.rs`) is consulted only for letters the composer does **not**
+claim.
+
+The rule that makes the table worth having is the **fallthrough rule**:
+
+> A claimed letter is consumed by the composer even when the composer's verb
+> is currently a no-op. It must not silently become an unrelated app action.
+
+The interactive terminal panel already solved the same problem on a
+non-document surface, and its dispatch comment records the failure mode
+verbatim — *"a focused panel is consulted before Normal-mode actions, so an
+unclaimed `d` would silently become `OpenDiff` and never delete anything."*
+The panel's answer is to claim `d` unconditionally, even with an empty
+selection. The composer takes the same answer, and takes it **before any verb
+exists**.
+
+Every verb in the table is **reserved** today, with one exception. M004
+(motion), M005 (selection and clipboard) and M006 (undo, redo, insert
+transitions) land the behaviour. A reserved claim is still consumed, so a
+claimed letter cannot leak to an app-level action while its verb is pending.
+That is why the table is established *before* the verbs: the leak is cheapest
+to prevent now and most expensive to discover later.
+
+**`i` is the exception, and it is live.** `i` is the app's **only** route back
+to Insert mode: the transition is not a binding at all, it is the `None` arm
+of the key chain, reached when a key resolves to no action. Claiming `i` and
+leaving the verb reserved would consume the key, do nothing, and strand the
+user in Normal mode with no way to type. The verb is therefore live, and it
+is the app's **existing** gesture moved into the table — Helix `i` is
+"insert before the caret", the caret stays where it is, and the next character
+is typed at it, which is exactly what the gesture did. The table is the one
+place that says who owns the key; the `None` arm keeps the gesture for the
+surfaces the composer does not own (the editor route with its buffer
+unfocused, a focused panel, the Workspace view's chat pane).
+
+| Letter | Verb | Condition | Lands with |
+|---|---|---|---|
+| `b` | word back | always | M004 |
+| `d` | delete selection | always | M005 |
+| `e` | word end | always | M004 |
+| `i` | insert before the caret | always | **live** — the app's existing transition |
+| `j` | line down | **composer buffer has more than one line** | M004 |
+| `k` | line up | **composer buffer has more than one line** | M004 |
+| `o` | open line below | always | M006 |
+| `p` | paste | always | M005 |
+| `u` | undo | always | M006 |
+| `U` | redo | always (both encodings) | M006 |
+| `v` | select characters | always | M005 |
+| `w` | word forward | always | M004 |
+| `x` | select line | always | M005 |
+
+Three letters are **not** in the table, and each absence is deliberate.
+`space` keeps opening the help menu — ADR-0042's amendment puts the Helix
+copy gesture in the box that chord opens, so the composer claims neither
+`space` nor `y`, and one gesture has one owner. `g` keeps `GoToTop`; if a
+later milestone claims it, that milestone owns the re-spelling. `h` and `l`
+are not re-spelled: the existing actions already move the composer caret,
+which is exactly Helix `h` and `l`.
+
+`j` and `k` are the table's one **conditional** pair, and the condition is
+written on the entry rather than inferred. They are claimed only when the
+composer buffer has more than one line; on a single-line buffer they fall
+through to transcript scroll unchanged, which is why their app-level binding
+survives. A condition that is not written down is how a leak reappears: a
+claim that quietly stops applying looks exactly like a claim that was never
+made.
+
+The claim step is consulted **before** the global binding map, in the
+composer branch of the key chain, so it inherits the chain's priority: a
+mounted modal, a focused side panel, the Workspace view and the editor route
+are all consulted first. With a dialog open, a claimed letter reaches the
+dialog. The Workspace view is excluded for the same reason it owns its own
+Normal-mode keys: its dashboard filter is a different surface with a
+different composer, and a claimed letter there would stop the filter
+accepting it. The gate is the **resolved** mode and the derived ownership
+(`composer_holds_keyboard`, `composer_input_mode`) — never the raw
+`UiState::input_mode` field.
+
+A claimed **capital** letter answers to both encodings. Terminals disagree
+about whether a shifted key carries the `SHIFT` modifier, and the app already
+binds some capitals twice for that reason (`insert_panel_direction_bindings`).
+`U` follows the same convention, or the redo verb would work on one terminal
+and silently do nothing on another. A lowercase claim is the bare key only:
+the shifted spelling of a lowercase letter is a *different* character, and it
+is not the composer's.
+
+**Three app-level chords moved, and the capabilities did not.** The composer
+claimed the letters `x`, `d` and `i`, so the actions that owned them moved to
+chords that are not letters:
+
+| Action | Was | Is |
+|---|---|---|
+| stop / resume the turn | `x` | `Ctrl+Alt+X` |
+| open diff | `d` (vim map) | `Ctrl+Alt+D` |
+| focus prompt | `i` (vim map) | `Ctrl+Alt+E` |
+
+`Ctrl+Alt+<letter>` is the app's legacy-safe chord family: the terminal
+delivers `ESC` + the control byte, which crossterm reports as the letter with
+CONTROL|ALT, the same shape as the six chords that already exist. `Ctrl+Alt+I`
+is **not** a usable spelling — the terminal delivers it as `ESC` + `0x09`,
+which crossterm reports as `Tab` with ALT, so the verb would be unreachable on
+every terminal; `Ctrl+Alt+E` is the deliverable alternative. Each chord is in
+**both** maps, so the capability does not depend on which map is active, and
+each chord's `(modifiers, key)` pair is not one the table claims, so the
+composer cannot take it back.
+
+**The default map's bare `/` stays.** The composer does not claim `/`, so that
+spelling has no conflict with the claim table — ADR-0042's conflict table names
+the *vim* map's `i` as the focus-prompt conflict, and the re-spelling exists
+because the composer claims that letter. The plan's invariant is explicit: *a
+letter the composer does not claim must resolve to the same app action it
+resolves to today*, so `/` must keep resolving to `FocusPrompt`. It is also
+load-bearing beyond the action: `/` is the gesture that **enters command
+mode**, and command mode is what makes the rest of a typed slash command land
+as text. Removing it took away "type `/panels` from Normal mode and press
+Enter" — the only way back into the panel manager from a focused panel, which
+owns every key by contract (`tests/tui_side_panels.rs`).
+
+Two consequences of the move are recorded rather than hidden. `ToggleAgentRun`
+left `is_normal_only`, because its only spelling is now a chord, and a chord
+cannot be composed as text; the entry used to exist for the bare `x`. And the
+guard's rule for a re-spelled action is "not a **claimed** key" rather than "not
+a bare character": the three old letters — `x`, `d` and `i` — are all claimed,
+so the claim rule already forbids their bare spellings, while a bare spelling
+of a letter the composer does not claim is exactly what the invariant above
+requires to keep working.
+
+`scripts/check_tui_composer_key_authority.py` polices the table. It reads the
+claim table and the two binding maps, and fails when a letter is claimed
+twice, when a claimed letter can still reach an app-level action, when a
+re-spelled chord is missing from a map, when a re-spelled action has no chord
+to reach it by or still answers to a claimed key, when a capital claim misses
+an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only`
+entry. It carries a `--self-test` that injects each
+violation class, and it is wired into `scripts/verify.sh quick` and CI.
+
+The composer, the editor and the terminal panel now have three separate key
+tables. They **share** selection semantics and geometry — `helix_selection.rs`
+is one module — but they do **not** share key ownership. Each surface owns
+its own keys, and each has its own guard: the editor's
+`check_tui_editor_key_authority.py` and the composer's
+`check_tui_composer_key_authority.py` are siblings, not one guard.
 
 **The VT screen retains a bounded history, and the viewport is a controller
 concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to
@@ -2197,10 +2861,9 @@ hint: `/project-init`'s `"a: publish   Esc: cancel"` and `/shell-show`'s
 six-verb footer describe the modal box, where `Esc` really does close.
 Reusing them would re-advertise exactly the dead `Esc` the hint exists to stop
 describing. M002b retired twelve in-panel footers and four copies of a
-border-title keymap on the same reasoning, and the one widget that keeps its
-footer is `PanelPicker`, which declares `docks_as_viewer() == true` but has no
-`App::dock_target` arm and therefore never docks — its footer is its only
-affordance.
+border-title keymap on the same reasoning. The one widget that used to keep a
+footer this way — `PanelPicker` — was retired with its last caller, so there is
+no surviving exception.
 
 **The host owns the chrome, the widget owns the rows.** `render_hosted` paints
 the border and the ` ● Files ` title — the `●` being the only thing on screen
@@ -3105,7 +3768,7 @@ dialogs.
 | Dialog selection | `SelectModel`, `SelectAgent`, `SelectSession`, `SelectTheme`, `ThemePreviewChanged`, `ThemeCommit`, `ThemeRevert`, `KeybindChanged`, `SelectTemplate`, `GotoMessage`, `CopyShareUrl`, `McpAction`, `ConnectionLifecycle`, `ProviderConnectionsUpdated`, `ProviderConnectionModelsUpdated`, `OpenConnectionRotation` |
 | Dialog submit/confirm | `SubmitConnect`, `SubmitPermission`, `SubmitQuestionAnswers`, `SubmitImportPreview`, `ConfirmImport`, `ConfirmResult`, `ConfirmDeleteSession`, `ConfirmArchiveSession`, `ConfirmBulkDelete`, `ConfirmBulkArchive`, `SubmitSelectionUpdate`, `SessionSelectionUpdated` |
 | Session lifecycle | `NewSession`, `CloseSession`, `ClearSession`, `CycleAgent`, `CycleModelForward`, `CycleModelBackward`, `ForkSession`, `ForkTreeSession`, `SelectTreeSession`, `UndoDelete`, `Quit` |
-| Toggles | `ToggleSidebar`, `ToggleTodoList`, `ToggleFullscreen`, `ToggleReasoning`, `ToggleTts`, `ToggleComposerMode` |
+| Toggles | `ToggleSidebar`, `ToggleTasksList`, `ToggleFullscreen`, `ToggleReasoning`, `ToggleTts`, `ToggleComposerMode` |
 | Project tabs | `NextProjectTab`, `PreviousProjectTab`, `CloseProjectTab`, `SelectProjectTabByIndex` |
 | Research/shell/git | `ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`, `SecurityReviewJump`, `ReviewOpenDiff`, `ExternalEditor`, `CopyMessage`, `ShellInclude`, `ShellAsk`, `ShellRerun`, `ShellKill`, `RunRerun`, `RunPromote`, `RunCopyId` |
 | Workspace dashboard | `WorkspaceDashboardMove`, `WorkspaceDashboardOpen`, `WorkspaceDashboardRefresh`, `WorkspaceDashboardToggleExpand` |
@@ -3754,11 +4417,11 @@ user-facing statement of the editor's chords is `docs/tui.md` ("Editor
 language features") plus the table above. The shipped `/help` surface
 (`components::dialogs::help::HelpDialog`, fed by `input::default_help_entries`)
 lists global bindings only and names no editor chord at all, so it cannot
-drift here or there. Note also that `src/tui/components/help_overlay.rs` is
-**not** a live surface: it is absent from `components/mod.rs`, so it is never
-compiled, and its `editor_bindings()` table still advertises `Ctrl+R (redo)`
-and a `dd dw` row for bindings that do not exist. Do not read it as the
-implemented keymap.
+drift here or there. Note also that `src/tui/components/help_overlay.rs`
+existed only as dead source — it was absent from `components/mod.rs`, so it was
+never compiled, and its `editor_bindings()` table advertised `Ctrl+R (redo)`
+and a `dd dw` row for bindings that do not exist. C001 deleted it and moved its
+one unique asset, the editor key table, into `docs/tui.md`.
 
 **Selection is the shared state machine.** `tui::helix_selection::SelectionState`
 is instantiated with `EditorPoint { byte, line }` — byte offsets plus the line
@@ -4177,23 +4840,22 @@ truncation reason.
 M006-F adds the `:` command line to the editor buffer and turns `/agents`
 into a management panel.
 
-#### `/agents` opens a box, and `Enter` opens the editor
+#### `/agents` opens agents, and `Enter` opens the editor
 
-Bare `/agents` opens `PanelPickerDialog` ("which panel should this go in?")
-rather than jumping straight into the side column. Every other `/` command
-that brings up a surface has a box of its own, and a list that *is* already
-the whole answer looks like nothing happened — which is exactly the "selecting
-an agent does not appear to do anything" symptom. The text listing is still
-reachable at `/agents show` and `/agents --all`.
+Bare `/agents` opens the **agent dialog** (`Dialog::Agent`) — the same surface
+`/agent` opens. It previously opened `PanelPickerDialog` ("which panel should
+this go in?") instead, which answered a question nobody asked: someone typing
+`/agents` wants to see agents. Panel *placement* is a different question and
+stays on `/panels`.
 
-`PanelPickerDialog` shares its query/cursor/scroll/mode/keymap with the manager
-through `PanelListState` (`components/dialogs/panel_list.rs`). Two boxes that
-both list panels must agree on what `j` does, where the filter goes, and what
-`Enter` commits; the alternative is a third copy of `move_cursor`/`scroll`/
-`matches`/`mode_badge`, which is how a box and its panel drift. The cursor is
-an index into `SidePanelId::ALL`, never into the filtered view — filtering
-narrows visibility without renumbering what `Enter` acts on, pinned by
-`typing_narrows_what_is_visible_without_moving_the_highlight`.
+`PanelPickerDialog` was **retired** with that route. It had exactly one caller,
+and its selection half hard-coded `SidePanelId::Agents`, so it was a one-off
+shim for `/agents` rather than a general placement tool; leaving it in place
+would have been dead code that clippy's `-D warnings` rejects and that no
+surface could reach. Its list mechanics were never duplicated: the manager
+shares `PanelListState` (`components/dialogs/panel_list.rs`) directly, which is
+where the shared `move_cursor`/`scroll`/`matches`/`mode_badge` behavior now
+lives alone.
 
 The picker commits through the **same** `TuiMsg::SelectPanel` the manager
 emits; there is no second route into panel selection.
@@ -4503,7 +5165,7 @@ root routing.
 
 52 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
 `NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
-`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTodoList`, `ToggleSection`,
+`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTasksList`, `ToggleSection`,
 `CloseSession`, `Help`, `FocusPrompt`, `StashPrompt`, `RestorePrompt`,
 `CopyMessage`, `CycleModelForward`, `CycleModelBackward`, `ToggleReasoning`,
 `Quit`, `ForceQuit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`,
@@ -4638,9 +5300,10 @@ tui/
 │       ├── routing.rs      # Route routing helpers
 │       ├── session.rs      # SessionState (session, history, git info)
 │       ├── snapshot.rs     # Remote snapshot building
+│       ├── subagent_addressee.rs # C007: who the composer is addressed to
 │       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
 │       ├── subagents.rs    # SubagentRow projection rows + strip/buffer view state
-│       ├── tasks.rs        # Shift+T tasks overlay rows (todos, subagents, jobs)
+│       ├── tasks.rs        # Ctrl+T tasks overlay rows (todos, subagents, jobs)
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
 │       ├── view_switch.rs  # Active-view switch coordinator
 │       ├── work_orders.rs  # Task/work-order state, ComposerMode
@@ -4669,6 +5332,8 @@ tui/
 │   ├── project_picker.rs   # Project picker navigation
 │   ├── prompt.rs           # Prompt/session continuation commands
 │   ├── provider_connections.rs # Provider connection lifecycle
+│   ├── queue.rs           # /queue box: open, refresh, delete (M004); add/edit/reorder
+│   │                      # (M005); send-now (M006)
 │   ├── research.rs         # Research list runs, load run, load section
 │   ├── run_rerun.rs        # Historical run reruns
 │   ├── security.rs         # Security review dispatch
@@ -4714,11 +5379,13 @@ tui/
 │   │   ├── plugin.rs       # PluginDialog (generic plugin UI)
 │   │   ├── project_picker.rs # ProjectPickerDialog
 │   │   ├── question.rs     # QuestionDialog
+│   │   ├── queue.rs        # QueueDialog (M004 list/delete; M005 add/edit/reorder;
+│   │   │                  # M006 send-now)
 │   │   ├── research.rs     # ResearchBrowserDialog
 │   │   ├── review.rs       # ReviewDialog
 │   │   ├── run_detail.rs   # RunDetailDialog
 │   │   ├── security_review.rs # SecurityReviewDialog
-│   │   ├── session.rs      # SessionDialog
+│   │   ├── session.rs      # SessionDialog (sessions + Subagents/Jobs sections)
 │   │   ├── share.rs        # ShareDialog
 │   │   ├── source_preview.rs # SourcePreviewDialog
 │   │   ├── task_schedule.rs # TaskScheduleDialog (WorkOrder sheet)
@@ -4734,7 +5401,7 @@ tui/
 │   ├── diff.rs             # DiffViewer
 │   ├── editor.rs           # M006-A buffer widget
 │   ├── file_tree.rs        # M006-D file tree widget
-│   ├── help_overlay.rs     # Dead code (help is mode-aware via input.rs)
+│   ├── help_overlay.rs     # (removed in C001 — help is mode-aware via input.rs)
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── messages/           # MessagesWidget submodules
@@ -5038,7 +5705,11 @@ action.
   a dialog must write through `focus_manager.with_dialog_mut::<D, _>(..)`
   (or `dialog_mut`) as well. `/sessions` shipped broken for exactly this
   reason — see `reload_fills_the_painted_focus_manager_instance` in
-  `src/tui/commands/sessions.rs`.
+  `src/tui/commands/sessions.rs`. The C002 subagent/job sections obey the
+  same rule on open *and* on every live refresh
+  (`App::refresh_sessions_dialog_pending_rows`), and
+  `tests/tui_sessions_pending_sections.rs::both_instances_receive_the_sections`
+  reads the painted clone rather than the App-owned field.
 - **The terminal's own text selection is unavailable**: `EnableMouseCapture`
   (`src/tui/terminal.rs`) makes the terminal stop offering drag-select, so
   the TUI implements its own over the rendered frame buffer

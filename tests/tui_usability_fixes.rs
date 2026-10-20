@@ -1036,7 +1036,8 @@ async fn a_session_bound_before_the_command_channel_still_refreshes_git() {
     );
 }
 
-/// A turn the daemon refused must name its reason, not sit on a spinner.
+/// A turn the daemon refused must name its reason, not sit on a spinner, and
+/// must not swallow the prompt.
 ///
 /// `send_prompt` is optimistic: it stamps the session `Working`, puts the
 /// message in the transcript, and clears the composer before the daemon has
@@ -1052,7 +1053,10 @@ fn a_refused_turn_names_its_reason_instead_of_spinning_forever() {
     app.prompt_state.pending_send = true;
     app.prompt_state.prompt.set_waiting(true);
 
-    app.fail_unstarted_turn("Turn not submitted: no provider connection is bound");
+    app.fail_unstarted_turn(
+        "Turn not submitted: no provider connection is bound",
+        Some("the prompt the user actually typed"),
+    );
 
     assert_eq!(
         app.session_state.session_status,
@@ -1071,6 +1075,71 @@ fn a_refused_turn_names_its_reason_instead_of_spinning_forever() {
         app.session_state.working_since.is_none(),
         "the stall watchdog must not keep counting a turn that never started"
     );
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "the prompt the user actually typed",
+        "the optimistic clear must be undone: the user's only copy was the \
+         composer, and it is not editable from the transcript"
+    );
+}
+
+/// A submit refused *because a turn is already running* must not report that
+/// no turn is running.
+///
+/// This is the same integration surface as the test above, reached through the
+/// completion handler with a `turn_already_active` refusal. The refusal and the
+/// running turn are both true at once, and the frontend has to be able to say
+/// so.
+#[test]
+fn contention_keeps_the_running_turn_and_gives_the_prompt_back() {
+    let mut app = test_app();
+    app.session_state.active_turn_id = Some("turn-live".into());
+    app.set_session_status(codegg::tui::app::SessionStatus::Working);
+    app.status_bar.set_thinking(true, None);
+    app.prompt_state.pending_send = true;
+    app.prompt_state
+        .prompt
+        .set_text("typed during the turn".into());
+    app.pending_turn_submission = Some(codegg::tui::app::PendingTurnSubmission {
+        session_id: "s".into(),
+        request_id: "req-1".into(),
+        request_sha256: "sha".into(),
+        prompt: "typed during the turn".into(),
+    });
+    let generation = app.turn_submit_request.begin();
+
+    let applied = app.apply_turn_submission_finished(
+        "req-1",
+        generation,
+        codegg::tui::app::turn_submit::TurnSubmitOutcome::Contended {
+            code: "turn_already_active".into(),
+            message: "A turn is already active for this session".into(),
+        },
+    );
+
+    assert!(applied);
+    assert_eq!(
+        app.session_state.active_turn_id.as_deref(),
+        Some("turn-live"),
+        "a turn that is still running must keep its identity"
+    );
+    assert_eq!(
+        app.session_state.session_status,
+        codegg::tui::app::SessionStatus::Working,
+        "a session that is actively working must not read as failed"
+    );
+    assert!(app.status_bar.thinking, "the spinner keeps running");
+    assert!(
+        app.session_state.last_error.is_none(),
+        "the working-strip row gives `last_error` absolute precedence, so \
+         latching here would hide the live turn's status line"
+    );
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "typed during the turn",
+        "the refused prompt is returned for an explicit resubmit"
+    );
+    assert!(!app.prompt_state.pending_send);
 }
 
 /// A submit with no core client and no session has no carrier at all. Both

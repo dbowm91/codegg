@@ -26,6 +26,7 @@ pub mod daemon_project_init;
 pub mod daemon_projection;
 pub mod daemon_projects;
 pub mod daemon_providers;
+pub mod daemon_queue_delivery;
 pub mod daemon_refresh;
 pub mod daemon_sessions;
 pub mod daemon_shutdown;
@@ -583,6 +584,8 @@ pub(crate) fn map_app_event_to_core_event(
             agent,
             description,
             display_name,
+            profile,
+            usefulness,
             run_id,
         } => Some(CoreEvent::SubagentStarted {
             session_id,
@@ -590,6 +593,8 @@ pub(crate) fn map_app_event_to_core_event(
             agent,
             description,
             display_name,
+            profile,
+            usefulness,
             run_id,
         }),
         crate::bus::events::AppEvent::SubagentProgress {
@@ -1207,6 +1212,66 @@ mod tests {
                 assert_eq!(message, "y");
             }
             other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    /// C004: the identity fields cross the daemon boundary on this mapping.
+    ///
+    /// This is the hop a **daemon-mode** TUI depends on, and it is the default
+    /// configuration: the sole publisher writes an `AppEvent`, and this is what
+    /// turns it into the `CoreEvent` the projection adapter reads.
+    ///
+    /// It was the one link in the naming chain with no named test, and the gap
+    /// was invisible by construction — the adapter's test builds a `CoreEvent`
+    /// directly and never arrives here, while every TUI test hand-seeds a row.
+    /// Dropping `display_name` from this single match arm would therefore
+    /// remove every name from the default configuration with the suite green.
+    #[test]
+    fn subagent_started_maps_its_identity_fields_onto_the_core_event() {
+        let ev = map_app_event_to_core_event(crate::bus::events::AppEvent::SubagentStarted {
+            session_id: "s1".into(),
+            task_id: 7,
+            agent: "explore".into(),
+            description: "walking the tree".into(),
+            display_name: Some("Sally".into()),
+            profile: Some("Reconnaissance generalist.".into()),
+            usefulness: Some("Useful for broad recon.".into()),
+            run_id: Some("018f-run-7".into()),
+        })
+        .expect("SubagentStarted maps to a CoreEvent");
+
+        match ev {
+            CoreEvent::SubagentStarted {
+                task_id,
+                display_name,
+                profile,
+                usefulness,
+                run_id,
+                ..
+            } => {
+                assert_eq!(task_id, 7);
+                assert_eq!(
+                    display_name.as_deref(),
+                    Some("Sally"),
+                    "display_name dropped on the AppEvent -> CoreEvent mapping"
+                );
+                assert_eq!(
+                    profile.as_deref(),
+                    Some("Reconnaissance generalist."),
+                    "profile dropped on the AppEvent -> CoreEvent mapping"
+                );
+                assert_eq!(
+                    usefulness.as_deref(),
+                    Some("Useful for broad recon."),
+                    "usefulness dropped on the AppEvent -> CoreEvent mapping"
+                );
+                assert_eq!(
+                    run_id.as_deref(),
+                    Some("018f-run-7"),
+                    "run_id dropped on the AppEvent -> CoreEvent mapping"
+                );
+            }
+            other => panic!("expected SubagentStarted, got {other:?}"),
         }
     }
 }

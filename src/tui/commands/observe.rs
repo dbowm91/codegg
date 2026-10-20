@@ -270,7 +270,7 @@ pub(crate) fn apply_observe_subscribed(
 ///
 /// The daemon sends authoritative state at subscribe time. Without this the
 /// projection controller stays empty until some live event happens to
-/// arrive, so every derived surface — the working-strip status, the `Shift+T`
+/// arrive, so every derived surface — the working-strip status, the `Ctrl+T`
 /// overlay, the sidebar subagent list — has nothing to read and reports a
 /// busy session as idle. This is the daemon-socket counterpart of the
 /// WS-attach replay install; both must seed the controller or the frontend

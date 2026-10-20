@@ -129,6 +129,29 @@ its `session_id` did not match leaves the waiter with no sender to wake it.
 
 ### Bash Command Handling
 
+Structured native file operations (`read`, `write`, `edit`, `apply_patch`, and
+`replace`) may target the authenticated workspace or the session's private
+or explicitly shared scratch directories. Mutations inside those
+host-validated roots do not trigger the general permission default, including
+`permission.default = "ask"`.
+Stored decisions, explicit tool or path rules, and hard denials still apply.
+The broker supplies session identity; each tool resolves the CodeGG-managed
+directory and applies the same symlink-aware validator beneath that root.
+Relative paths continue to resolve from the workspace. Scratch access does
+not apply to another session, human shell, plugins, or arbitrary absolute
+paths.
+
+If a structured `write` reaches the path boundary with an absolute target under
+a recognized host temporary root, but that root is not authorized, the tool
+returns a non-authoritative recovery hint to retry under the current private
+scratch path. It does not rewrite the target or add a grant. The hint is shown
+only when the host scratch directory exists. A required original location must
+still use the normal permission path; an explicit Deny is resolved before the
+tool runs and is never converted into a scratch write. Structured reads and
+shell commands keep their existing path and execution semantics. This hint
+does not intercept shell writes: an unsandboxed FullHost process can address
+the real host temp directory, and shell syntax inspection is not containment.
+
 `check_with_args()` adds a destructive-pattern fallback for
 `ShellExec` tools. If the user's ruleset would allow the command but
 it matches a destructive pattern (`rm -rf /`, `mkfs`, `dd of=...`,
@@ -203,18 +226,20 @@ to `SandboxProfile` plus Landlock.
 
 ### Command preflight is advisory
 
-`PreflightService` runs on every `bash` call and reports findings. It carries
-authority over the command **only when it actually found something**
-(`preflight_requires_escalation`): the escalation arm must test for a finding,
-not for the preflight having run. The service is wired by default, so
-`CommandPreflightResult` is always present — testing presence escalated every
-`bash` call including clean ones.
+`PreflightService` runs on every `bash` call and reports findings. Findings
+remain advisory and may add a reason to a request already requiring approval;
+they never create an escalation solely because the service ran. The resolved
+`block_on_definite` mode is a separate caller policy: its typed `blocked` result
+is enforced consistently at the agent boundary and in direct `bash` calls.
+Other modes carry only the bounded advisory summary. The service is wired by
+default, so `CommandPreflightResult` may be present for a clean command too.
 
 That arm is also reached from `PermissionResult::Allow`, not only `Ask`, so a
-presence test silently discarded a stored `AlwaysAllow` grant: the operator's
-prior approval was outranked by an advisory scan with nothing to say. An
-advisory may add a reason to a request that is already escalating; it may never
-create one on its own, and it may never override a stored operator decision.
+presence test silently discarded a stored `AlwaysAllow` grant. An advisory may
+add a reason to a request that is already escalating; it may never create one
+on its own or override a stored operator decision. Explicit permission Deny,
+security Deny, and the separately configured `block_on_definite` policy remain
+authoritative.
 
 ## Key Types & APIs
 
@@ -625,6 +650,13 @@ a constrained snapshot. Typed Git mutation executors also retain the accepted
 context while their own Git policy remains the capability authority. The
 context records authorization inputs; it does not claim every downstream
 effect was observed or contained.
+
+For brokered calls, the immutable workspace path policy is fingerprinted from
+its trusted canonical, read, and write roots and carried with the accepted
+permission decision through each broker attempt. The broker rejects a
+changed policy identity or revision. Missing policy, workspace, decision, or
+permission revision data fails closed; identity strings and audit correlation
+IDs are not used as substitute authority.
 **M003 command outcome observability.** The command execution event correlates
 the permission receipt and decision source with the requested profile, safe
 route label, advisory risk level, and actual obtained filesystem/network

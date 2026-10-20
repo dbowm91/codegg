@@ -772,6 +772,7 @@ fn sidebar_subagent(task_id: &str, name: &str, agent: &str, status: &str) -> Sid
         name: name.to_string(),
         agent: agent.to_string(),
         status: status.to_string(),
+        profile: None,
     }
 }
 
@@ -798,6 +799,8 @@ fn seed_subagent(
         display_name: Some(name.to_string()),
         agent: agent.to_string(),
         description: "map the subsystem".to_string(),
+        profile: None,
+        usefulness: None,
         status: status.to_string(),
     }]);
 }

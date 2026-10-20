@@ -40,9 +40,15 @@ fn setup_dir() -> TempDir {
     dir
 }
 
+fn rooted_bash_tool() -> (TempDir, BashTool) {
+    let root = tempfile::tempdir().expect("BashTool workspace root");
+    let tool = BashTool::new().with_workspace_root(root.path().to_path_buf());
+    (root, tool)
+}
+
 #[tokio::test]
 async fn test_bash_tool_simple_command() {
-    let tool = BashTool::new();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({
         "command": "echo hello"
     });
@@ -68,7 +74,7 @@ async fn test_terminal_tool_simple_command() {
 
 #[tokio::test]
 async fn test_bash_tool_command_with_stderr() {
-    let tool = BashTool::new();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({
         "command": "ls /nonexistent 2>&1"
     });
@@ -78,7 +84,7 @@ async fn test_bash_tool_command_with_stderr() {
 
 #[tokio::test]
 async fn test_bash_tool_command_failure() {
-    let tool = BashTool::new();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({
         "command": "false"
     });
@@ -88,7 +94,7 @@ async fn test_bash_tool_command_failure() {
 
 #[tokio::test]
 async fn test_bash_tool_missing_command() {
-    let tool = BashTool::new();
+    let (_root, tool) = rooted_bash_tool();
     let input = serde_json::json!({});
     let result = tool.execute(input).await;
     assert!(result.is_err());
@@ -222,7 +228,7 @@ async fn test_bash_tool_benign_allow_and_allowlist_controls() {
     let dir = tempfile::tempdir().expect("benign positive marker root");
     let marker = dir.path().join("benign-positive-marker.txt");
     let command = format!("printf ok-sentinel > '{}'", marker.display());
-    let tool = BashTool::new();
+    let tool = BashTool::new().with_workspace_root(dir.path().to_path_buf());
     let result = tool
         .execute(serde_json::json!({ "command": command }))
         .await;
@@ -508,7 +514,8 @@ async fn test_bash_tool_allowed_paths_missing() {
 
 #[tokio::test]
 async fn test_bash_tool_custom_timeout() {
-    let tool = BashTool::new().with_timeout(Duration::from_secs(1));
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_timeout(Duration::from_secs(1));
     let input = serde_json::json!({
         "command": "echo quick",
         "timeout": 1
@@ -519,7 +526,8 @@ async fn test_bash_tool_custom_timeout() {
 
 #[tokio::test]
 async fn test_bash_tool_input_timeout_overrides_tool_default() {
-    let tool = BashTool::new().with_timeout(Duration::from_secs(5));
+    let (_root, tool) = rooted_bash_tool();
+    let tool = tool.with_timeout(Duration::from_secs(5));
     let result = tool
         .execute(serde_json::json!({
             "command": "sleep 2",

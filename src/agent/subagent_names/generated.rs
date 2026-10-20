@@ -10,10 +10,14 @@
 pub struct SubagentName {
     /// Display name assigned to a subagent identifier.
     pub name: &'static str,
-    /// Character description. Carried for later use as subagent context;
-    /// not rendered by the TUI today.
+    /// Character description.
+    ///
+    /// Carried on `AppEvent::SubagentStarted` at spawn and rendered on
+    /// the subagent rows. Never re-derived downstream: the projection
+    /// copies it verbatim so replay reproduces what the live view showed.
     pub profile: &'static str,
-    /// Candid operational guidance. Not rendered by the TUI today.
+    /// Candid operational guidance. Carried alongside `profile` under
+    /// the same verbatim contract, and shown in the subagent tab.
     pub usefulness: &'static str,
     /// Optional sprite identifier reserved for future TUI use.
     /// `None` until a sprite is assigned in the TOML source.

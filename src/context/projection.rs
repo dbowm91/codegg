@@ -73,6 +73,13 @@ pub fn project_tool_output(
         ProjectionStatus::Failure
     };
 
+    // `context_read` is already an authorized bounded page with an exact byte
+    // continuation. Recompressing that page would make the requested offset
+    // misleading and can point the model back at the same artifact bytes.
+    if tool_name == "context_read" {
+        return passthrough(output, success, handle, tool_name, tool_call_args);
+    }
+
     let tool_label = tool_name;
     let recoverable = !handle.is_empty();
     let header = if recoverable {
@@ -86,9 +93,32 @@ pub fn project_tool_output(
     let (model_text, summary) = match status {
         ProjectionStatus::Success => {
             let token_est = crate::context::artifact::estimate_tokens(output);
-            if token_est <= config.max_success_tokens {
+            let budget = if tool_name == "read" || tool_name == "read_file" {
+                config.max_success_tokens.max(4_000)
+            } else {
+                config.max_success_tokens
+            };
+            if token_est <= budget {
                 let text = format!("{header}\n{output}");
                 (text.clone(), text)
+            } else if tool_name == "read" || tool_name == "read_file" {
+                let preview = truncate_to_token_estimate(output, budget);
+                let last_line = preview
+                    .lines()
+                    .filter_map(|line| {
+                        let (number, _) = line.split_once(':')?;
+                        number.trim().parse::<usize>().ok()
+                    })
+                    .next_back();
+                let continuation = last_line
+                    .map(|line| format!(" Continue with read offset={}.", line.saturating_add(1)))
+                    .unwrap_or_default();
+                let stats = format!(
+                    "({token_est} estimated tokens total; showing a contiguous bounded source prefix.{continuation})"
+                );
+                let text = format!("{header}\n{preview}\n{stats}");
+                let summary = format!("{header}: {stats}");
+                (text, summary)
             } else {
                 let truncated = truncate_to_lines(output, 20);
                 let stats = format!(
@@ -409,6 +439,27 @@ fn truncate_to_lines(text: &str, max_lines: usize) -> String {
     }
 }
 
+fn truncate_to_token_estimate(text: &str, max_tokens: usize) -> String {
+    let mut end = 0usize;
+    let mut selected = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let candidate = if selected.is_empty() {
+            line.to_owned()
+        } else {
+            format!("{}\n{line}", selected.join("\n"))
+        };
+        if crate::context::artifact::estimate_tokens(&candidate) > max_tokens {
+            break;
+        }
+        selected.push(line);
+        end = index + 1;
+    }
+    if end < text.lines().count() {
+        selected.push("... (source preview continues; use the stated read offset) ...");
+    }
+    selected.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +735,60 @@ mod tests {
             .join("\n");
         let proj = project_tool_output("bash", None, &output, true, "ctx://t", &config);
         assert!(proj.model_text.contains("more lines"));
+    }
+
+    #[test]
+    fn large_source_read_keeps_a_contiguous_bounded_range_and_continuation() {
+        let config = ProjectionConfig::default();
+        let output = (1..=1_000)
+            .map(|line| format!("{line:>6}: source line {line} with representative code text"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let proj = project_tool_output(
+            "read",
+            Some(r#"{"path":"src/lib.rs","offset":1}"#),
+            &output,
+            true,
+            "ctx://tool/s/1/c",
+            &config,
+        );
+        assert!(proj.model_text.contains("    20: source line 20"));
+        assert!(proj.model_text.contains("source preview continues"));
+        assert!(proj.model_text.contains("Continue with read offset="));
+        assert!(!proj.model_text.contains("   1000: source line 1000"));
+        let visible = proj
+            .model_text
+            .lines()
+            .filter(|line| line.contains(": source line "))
+            .count();
+        assert!(
+            visible > 20,
+            "only {visible} numbered source lines were projected"
+        );
+    }
+
+    #[test]
+    fn context_read_page_is_not_recursively_compressed() {
+        let config = ProjectionConfig {
+            max_success_tokens: 1,
+            ..default_config()
+        };
+        let output = format!(
+            "Artifact handle: ctx://tool/s/1/c\n{}",
+            "requested page ".repeat(500)
+        );
+        let projected = project_tool_output(
+            "context_read",
+            Some(r#"{"handle":"ctx://tool/s/1/c","offset":0}"#),
+            &output,
+            true,
+            "",
+            &config,
+        );
+        assert!(projected.model_text.contains(&output));
+        assert!(!projected
+            .model_text
+            .contains("use context_read with this handle"));
     }
 
     #[test]

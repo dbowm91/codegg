@@ -870,6 +870,7 @@ impl BashTool {
                     canonical_workdir.as_deref(),
                     execution_timeout,
                     audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()),
+                    audit_ctx.and_then(|ctx| ctx.session_id.as_deref()),
                 )
                 .await
             {
@@ -1029,6 +1030,7 @@ mod tests {
                     Some("policy".into()),
                 ),
                 command_preflight: None,
+                scratch_scope: None,
             });
 
         let result = tool
@@ -1670,5 +1672,48 @@ mod timeout_execution_tests {
             .await
             .expect("a 2s command inside a 30s budget must succeed");
         assert!(out.contains("LONG-RUN-SURVIVED"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn session_scratch_is_shared_across_bash_invocations() {
+        let session_id = format!("scratch-trajectory-{}", uuid::Uuid::new_v4());
+        let scratch = crate::scratch::session_scratch_dir(&session_id).unwrap();
+        let mut ctx =
+            ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
+        ctx.session_id = Some(session_id);
+        let tool = rooted_bash();
+        tool.execute_inner(
+            serde_json::json!({
+                "command": "printf session-scratch-ok > \"$CODEGG_SCRATCH_DIR/trajectory.txt\""
+            }),
+            Some(&ctx),
+        )
+        .await
+        .expect("first invocation writes a session scratch artifact");
+        let output = tool
+            .execute_inner(
+                serde_json::json!({ "command": "cat \"$CODEGG_SCRATCH_DIR/trajectory.txt\"" }),
+                Some(&ctx),
+            )
+            .await
+            .expect("second invocation reads the same session scratch artifact");
+        assert!(output.contains("session-scratch-ok"), "{output}");
+        let environment = tool
+            .execute_inner(
+                serde_json::json!({
+                    "command": "printf '%s|%s|%s|%s' \"$CODEGG_SCRATCH_DIR\" \"$TMPDIR\" \"$TMP\" \"$TEMP\""
+                }),
+                Some(&ctx),
+            )
+            .await
+            .expect("managed Bash receives all scratch environment variables");
+        let values = environment
+            .lines()
+            .find(|line| line.contains('|'))
+            .expect("scratch variables are printed")
+            .split('|')
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec![scratch.to_string_lossy().as_ref(); 4]);
+        std::fs::remove_dir_all(scratch).expect("remove test-owned scratch directory");
     }
 }

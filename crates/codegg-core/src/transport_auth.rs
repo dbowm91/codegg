@@ -56,6 +56,16 @@ pub enum AuthMethod {
     /// Compatibility/bootstrap only; always maps to `LocalOwner` and MUST
     /// NOT be presented as a distinct team identity.
     BootstrapGlobalBearer,
+    /// **M003 (ADR-0038, Option B):** the queue-delivery classification.
+    ///
+    /// A statement about **how the daemon submitted a turn**, not about what
+    /// authenticated the user who queued the prompt. A delivery has no
+    /// originating connection — the owner may have queued over one transport and
+    /// the turn start hours later, with none — so recording `LocalOwner` or
+    /// `PersonalToken` here would be a fabrication about a call that never
+    /// happened. `origin_attribution.auth_method` and `audit_event.auth_method`
+    /// are unconstrained `TEXT`, so admitting this value needs no migration.
+    QueueDelivery,
     /// Harness-internal test transport. Never used by production daemons.
     InternalTest,
 }
@@ -66,6 +76,7 @@ impl AuthMethod {
             Self::LocalOwner => "local_owner",
             Self::PersonalToken => "personal_token",
             Self::BootstrapGlobalBearer => "bootstrap_global_bearer",
+            Self::QueueDelivery => "queue_delivery",
             Self::InternalTest => "internal_test",
         }
     }
@@ -75,6 +86,7 @@ impl AuthMethod {
             "local_owner" => Ok(Self::LocalOwner),
             "personal_token" => Ok(Self::PersonalToken),
             "bootstrap_global_bearer" => Ok(Self::BootstrapGlobalBearer),
+            "queue_delivery" => Ok(Self::QueueDelivery),
             "internal_test" => Ok(Self::InternalTest),
             _ => Err(TransportAuthError::Invalid(format!(
                 "unknown auth method {value:?}"
@@ -94,6 +106,13 @@ impl AuthMethod {
 pub enum TransportClass {
     Local,
     AuthenticatedRemote,
+    /// **M003 (ADR-0038, Option B):** see [`AuthMethod::QueueDelivery`].
+    ///
+    /// Deliberately not `InternalTest` and not `Local`. A delivery is not a test
+    /// harness, and it is not the local interactive owner either: it resolves a
+    /// real named principal, which is why the projection arm maps it to the
+    /// identity-resolving remote branch rather than to `local()`.
+    DaemonDelivery,
     InternalTest,
 }
 
@@ -102,6 +121,7 @@ impl TransportClass {
         match self {
             Self::Local => "local",
             Self::AuthenticatedRemote => "authenticated_remote",
+            Self::DaemonDelivery => "daemon_delivery",
             Self::InternalTest => "internal_test",
         }
     }
@@ -110,6 +130,7 @@ impl TransportClass {
         match value {
             "local" => Ok(Self::Local),
             "authenticated_remote" => Ok(Self::AuthenticatedRemote),
+            "daemon_delivery" => Ok(Self::DaemonDelivery),
             "internal_test" => Ok(Self::InternalTest),
             _ => Err(TransportAuthError::Invalid(format!(
                 "unknown transport class {value:?}"
@@ -312,6 +333,16 @@ impl AuthenticatedPrincipal {
             }
             TransportClass::InternalTest => {
                 crate::projection_replay::context::ProjectionTransportClass::InternalTest
+            }
+            // M003: a delivery principal is a real named principal, so it takes
+            // the identity-resolving branch. Mapping it to `Local` would
+            // substitute `local()` for the owner's actual id, which is exactly
+            // the lockout ADR-0038 exists to prevent. This arm is unreachable
+            // from delivery in practice — `submit_queued_prompt_turn` never
+            // projects — and `AuthenticatedRemote` is the fail-closed choice
+            // if it ever is, because it is not `is_internal_only()`.
+            TransportClass::DaemonDelivery => {
+                crate::projection_replay::context::ProjectionTransportClass::AuthenticatedRemote
             }
         };
         crate::projection_replay::context::ProjectionAccessContext::from_canonical_principal(

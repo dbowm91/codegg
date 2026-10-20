@@ -2392,3 +2392,16 @@ section, with the reason each is deferred.
 
 **A closure is not a claim that nothing is left.** It is a claim that what is
 left is *named*, and that this roadmap is not the thing that owns it.
+
+**Supplemental record.** The reconciliation of this workstream with `main` —
+the merge that brought the TUI composer Helix-parity workstream, the
+managed-agent-scratch and native-qualification correctives, the
+agent-tool-use operability corrective, the user prompt queue, and the TUI
+subagent/job visibility convergence into this branch — is recorded in
+`plans/closure/tui-editor-helix-parity/021-merge-reconciliation-status.md`.
+It is **not** a new milestone and it opens none: it adds the merged-tree
+qualification and the defect history to the evidence, and it leaves every
+milestone above, M014's ADR-0034 block, and the deferred section exactly as
+recorded. `main` touched **zero** editor-owned files, so the editor's key
+authority, prefix grammar, undo model and guard set are unchanged by the
+merge.

@@ -74,6 +74,30 @@ pub struct PromptState {
     /// on its own so a confirmation prompt cannot sit on screen forever after
     /// the user has looked away.
     pub stop_armed_at: Option<std::time::Instant>,
+    /// C007: the subagent the next composer submission is addressed to.
+    ///
+    /// Deliberately **not** an `InputTarget` variant. Arming records what the
+    /// text means; it does not move the keyboard, so the composer still owns
+    /// Enter and `input_target()` is unchanged (ADR-0041, *Neutral or
+    /// deferred*). Setting it routes the next submit to `TurnSteer` for the
+    /// controlling parent turn; clearing it restores the ordinary
+    /// `TurnSubmit` path exactly.
+    ///
+    /// Invariants, both enforced rather than assumed:
+    ///
+    /// * **A finished or detached run cannot be armed.**
+    ///   [`SubagentAddressee::from_tab`] refuses, and every arriving snapshot
+    ///   re-checks through [`reconcile_addressee`](super::reconcile_addressee).
+    /// * **It is dropped whenever a new turn starts**, because a reply aimed at
+    ///   the run of the previous turn has no meaning under the next one.
+    pub subagent_addressee: Option<super::SubagentAddressee>,
+    /// C007: the in-flight addressed reply. Its own generation, so a slow steer
+    /// cannot be completed by — or overwrite — a later one.
+    ///
+    /// Composer state rather than dialog state: there is no box to close, and
+    /// the stale rule that matters is "a newer reply was sent since", which is
+    /// exactly what this generation records.
+    pub subagent_steer_request: crate::tui::app::state::AsyncUiRequestState,
 }
 
 /// How long the stop confirmation stays armed before it lapses.
@@ -82,6 +106,14 @@ pub struct PromptState {
 /// confirmation nobody acts on does not outlive the attention it was asking
 /// for.
 pub const STOP_ARM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How many displaced drafts the prompt stash retains.
+///
+/// Every path that puts a submitted prompt back into the composer goes
+/// through [`PromptState::restore_prompt_with_stash`], so this is the single
+/// bound. It was previously a literal `100` repeated in three places, which
+/// meant the bound was three promises rather than one.
+pub const PROMPT_STASH_BOUND: usize = 100;
 
 impl PromptState {
     /// Begin one session-create continuation.  A second submit while this is
@@ -148,6 +180,42 @@ impl PromptState {
             self.retry_without_message = None;
             false
         }
+    }
+
+    /// Put a prompt the user already submitted back into the composer.
+    ///
+    /// The one restore shape in the TUI. Session-create failure, reconnect, and
+    /// a refused turn submission all lose the user's text the same way: the
+    /// composer is cleared optimistically before the daemon has accepted
+    /// anything, so every refusal has to undo that. Keeping one method means
+    /// the bounded stash and the no-duplicate-transcript rule are proved once
+    /// rather than three times.
+    ///
+    /// * A non-empty draft typed while the submission was in flight is
+    ///   displaced into the bounded stash, never dropped.
+    /// * The restored text is put back **whole**. Truncating a prompt to fit a
+    ///   bound would change what the user wrote, so the bound applies to how
+    ///   many displaced drafts are kept, never to this text.
+    /// * [`PromptState::mark_retry_without_message`] is set so resubmitting the
+    ///   restored prompt produces one user transcript entry, not two.
+    ///
+    /// An empty `prompt` is ignored: there is nothing to give back, and
+    /// restoring it would silently clear whatever the user has since typed.
+    pub fn restore_prompt_with_stash(&mut self, prompt: &str) -> bool {
+        if prompt.trim().is_empty() {
+            return false;
+        }
+        let current_draft = self.prompt.get_text();
+        if !current_draft.trim().is_empty() && current_draft != prompt {
+            if self.stashed_prompts.len() >= PROMPT_STASH_BOUND {
+                self.stashed_prompts.remove(0);
+            }
+            self.stashed_prompts.push(current_draft);
+        }
+        self.prompt.set_text(prompt.to_string());
+        self.prompt.set_waiting(false);
+        self.mark_retry_without_message(prompt.to_string());
+        true
     }
 
     /// Toggle the composer between Session and Task submission modes.

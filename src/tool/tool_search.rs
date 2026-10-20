@@ -22,6 +22,8 @@ use crate::tool_advisor::{AdvisorMode, ToolAdvisorCandidate, ToolAdvisorInput};
 /// Maximum tools returned per search so a broad query cannot move prompt
 /// bloat into the search result.
 pub const MAX_SEARCH_RESULTS: usize = 10;
+pub const MAX_SEARCH_PAGE: usize = 50;
+const MAX_QUERY_BYTES: usize = 512;
 
 async fn project_discovery_with_engine(
     engine: Arc<dyn codegg_core::decision::DecisionEngine>,
@@ -219,8 +221,8 @@ impl Tool for ToolSearchTool {
 
     fn description(&self) -> &str {
         "Search for available tools by name or description. \
-         Returns a list of tools matching the query. \
-         Use this to discover tools available for on-demand use."
+         Searches multiple words by relevance and returns compact authorized tool names. \
+         Use query='' to list tools in bounded pages, then request one exact schema by name."
     }
 
     fn set_available_tools(&mut self, tools: Vec<String>) {
@@ -244,6 +246,17 @@ impl Tool for ToolSearchTool {
                     "enum": ["summary", "schema"],
                     "description": "Use schema only after selecting one exact tool; broad searches stay compact"
                 }
+                ,"offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Zero-based result offset; use with limit to page through authorized tools"
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum compact descriptors to return (default 10, maximum 50)"
+                }
             },
             "required": ["query"]
         })
@@ -262,25 +275,25 @@ impl Tool for ToolSearchTool {
             .map(str::trim)
             .filter(|name| !name.is_empty());
         let detail = input["detail"].as_str().unwrap_or("summary");
+        let offset = input["offset"].as_u64().unwrap_or(0).min(usize::MAX as u64) as usize;
+        let limit = input["limit"]
+            .as_u64()
+            .unwrap_or(MAX_SEARCH_RESULTS as u64)
+            .clamp(1, MAX_SEARCH_PAGE as u64) as usize;
+        if query.len() > MAX_QUERY_BYTES {
+            return Err(ToolError::Execution(format!(
+                "query exceeds maximum size of {MAX_QUERY_BYTES} bytes"
+            )));
+        }
         if !matches!(detail, "summary" | "schema") {
             return Err(ToolError::Execution(
                 "detail must be either 'summary' or 'schema'".into(),
             ));
         }
 
-        // An empty query would match the whole catalog in keyword mode;
-        // return no results instead of dumping registered capability.
-        if query.trim().is_empty() {
-            return Ok(json!({
-                "status": "no_results",
-                "query": query,
-                "tools": []
-            })
-            .to_string());
-        }
-
         let results = match exact_name {
             Some(name) => self.catalog.get(name).into_iter().collect(),
+            None if query.trim().is_empty() => self.catalog.list(),
             None => self.catalog.search(query),
         };
 
@@ -297,9 +310,40 @@ impl Tool for ToolSearchTool {
                 "status": "no_results",
                 "query": query,
                 "name": exact_name,
+                "suggestion": "Try a shorter task phrase, or query='' with offset/limit to browse authorized tools.",
                 "tools": []
             })
             .to_string());
+        }
+
+        if exact_name.is_none() && query.trim().is_empty() {
+            let total_matches = filtered.len();
+            let tools: Vec<_> = filtered
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|metadata| {
+                    json!({
+                        "canonical_name": metadata.name,
+                        "name": metadata.name,
+                        "description": metadata.description,
+                        "defer_load": metadata.defer_load,
+                        "schema_available": true,
+                        "category": metadata.category,
+                        "disclosure": metadata.disclosure
+                    })
+                })
+                .collect();
+            return Ok(json!({
+                "status": "success",
+                "query": query,
+                "offset": offset,
+                "limit": limit,
+                "count": tools.len(),
+                "total_matches": total_matches,
+                "next_offset": (offset + tools.len() < total_matches).then_some(offset + tools.len()),
+                "tools": tools
+            }).to_string());
         }
 
         if exact_name.is_some() && detail == "schema" {
@@ -337,7 +381,8 @@ impl Tool for ToolSearchTool {
         // the normal discovery result set. Promotion gets a separate,
         // policy-filtered deferred universe below.
         let total_matches = filtered.len();
-        let current: Vec<_> = filtered.into_iter().take(MAX_SEARCH_RESULTS).collect();
+        let page_limit = limit.min(MAX_SEARCH_RESULTS);
+        let current: Vec<_> = filtered.into_iter().skip(offset).take(page_limit).collect();
         let deferred_allowed: Vec<_> = if self.advisor_mode == AdvisorMode::Promote {
             self.catalog
                 .deferred_tools()
@@ -595,6 +640,32 @@ mod tests {
             .expect("denied search");
         let denied: serde_json::Value = serde_json::from_str(&denied).expect("json");
         assert_eq!(denied["status"], "no_results");
+    }
+
+    #[tokio::test]
+    async fn empty_query_lists_only_allowed_tools_in_bounded_pages() {
+        let search = test_search();
+        let first = search
+            .execute(json!({"query": "", "limit": 2}))
+            .await
+            .expect("first page");
+        let first: serde_json::Value = serde_json::from_str(&first).expect("json");
+        assert_eq!(first["count"], 2);
+        assert_eq!(first["total_matches"], 3);
+        assert_eq!(first["next_offset"], 2);
+        assert!(first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["name"] != "git_read"));
+
+        let next = search
+            .execute(json!({"query": "", "offset": 2, "limit": 50}))
+            .await
+            .expect("last page");
+        let next: serde_json::Value = serde_json::from_str(&next).expect("json");
+        assert_eq!(next["count"], 1);
+        assert!(next["next_offset"].is_null());
     }
 
     #[tokio::test]

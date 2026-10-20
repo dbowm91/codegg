@@ -79,17 +79,23 @@ pub fn modern_params(params: Value) -> Value {
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
-    params.insert(
-        "_meta".to_string(),
-        json!({
-            "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
-            "io.modelcontextprotocol/clientInfo": {
-                "name": CLIENT_NAME,
-                "version": CLIENT_VERSION
-            },
-            "io.modelcontextprotocol/clientCapabilities": {}
-        }),
+    let mut meta = params
+        .remove("_meta")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    meta.insert(
+        "io.modelcontextprotocol/protocolVersion".to_string(),
+        json!(MODERN_PROTOCOL_VERSION),
     );
+    meta.insert(
+        "io.modelcontextprotocol/clientInfo".to_string(),
+        json!({"name": CLIENT_NAME, "version": CLIENT_VERSION}),
+    );
+    meta.insert(
+        "io.modelcontextprotocol/clientCapabilities".to_string(),
+        json!({}),
+    );
+    params.insert("_meta".to_string(), Value::Object(meta));
     Value::Object(params)
 }
 
@@ -249,6 +255,29 @@ pub fn to_tool_definition(tool: &McpTool, server: &str) -> ToolDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modern_params_preserves_private_request_metadata_and_owns_protocol_fields() {
+        let params = modern_params(json!({
+            "name": "repo_search",
+            "_meta": {
+                "codegg/host-local-scope": {"root": null, "token": "private-token"},
+                "io.modelcontextprotocol/protocolVersion": "attacker-value"
+            }
+        }));
+        assert_eq!(
+            params.pointer("/_meta/codegg~1host-local-scope/root"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            params.pointer("/_meta/codegg~1host-local-scope/token"),
+            Some(&json!("private-token"))
+        );
+        assert_eq!(
+            params.pointer("/_meta/io.modelcontextprotocol~1protocolVersion"),
+            Some(&json!(MODERN_PROTOCOL_VERSION))
+        );
+    }
 
     #[test]
     fn discovery_selects_modern_and_bounds_metadata() {

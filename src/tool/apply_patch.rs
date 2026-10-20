@@ -63,7 +63,7 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a unified diff patch to a file. Supports add, update, delete, and move operations."
+        "Create, update, delete, or move a workspace file. mode=create takes file contents; mode=update takes a unified diff; delete and move use their existing path/rename contracts."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -76,7 +76,7 @@ impl Tool for ApplyPatchTool {
                 },
                 "patch": {
                     "type": "string",
-                    "description": "Unified diff patch content"
+                    "description": "File contents for mode=create; unified diff for mode=update; rename header for mode=move"
                 },
                 "mode": {
                     "type": "string",
@@ -423,6 +423,24 @@ mod tests {
             .canonicalize()
             .expect("canonical nested parent");
         assert_eq!(validated, expected_parent.join("new.txt"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn malformed_update_does_not_change_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join("file.txt");
+        std::fs::write(&path, "original\n").expect("initial file");
+        let tool = ApplyPatchTool::new().with_allowed_root(temp.path().to_path_buf());
+        let error = tool
+            .execute(serde_json::json!({
+                "path":"file.txt",
+                "mode":"update",
+                "patch":"@@\n-original\n+changed"
+            }))
+            .await
+            .expect_err("malformed diff must fail");
+        assert!(error.to_string().contains("patch line 1"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "original\n");
     }
 
     #[test]

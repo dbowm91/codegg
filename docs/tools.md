@@ -88,12 +88,30 @@ system; see `docs/security-semantics.md`.
 | Git | `git_query` (model-facing), `git_read` (program-only) | Typed read-only repository facts |
 | Git mutation | `git`, `commit` | Mutating operations, routed through the risk-classified mutation executor |
 | Test and verify | `test`, `verify` | Running the project's test suite, and bounded offline `check`/`build`/`lint`/`typecheck`/`format_check` passes |
+
+`verify` defaults to an offline workspace check. Rust lint does not enable every
+workspace feature by default. For a bounded package run, pass `scope: "package"`
+and a workspace `package` name; `features` selects validated Cargo feature names
+for that package. `all_features: true` is an explicit package-only opt-in and
+can enable optional or real-server test dependencies. Unsupported project types and unknown
+workspace packages return a specific error; `verify` does not accept shell text.
 | Code intelligence | LSP-backed tools, `lsp_preview_apply` | Diagnostics, definitions, references, impact, repair |
 | Deterministic | 13 `eggsact`-backed validators | Text, config, and identifier checking |
 | Web and research | `websearch`, `webfetch`, `repo_search`, `repo_fetch`, `repo_map`, `security_search`, `research`, `research_search`, `batch_fetch`, `evidence_bundle` | Evidence-backed external lookups |
 | Higher-level workflows | `review`, `security`, `skill`, `task`, `work_order`, `goal_get`, `goal_update_progress`, `goal_request_completion`, `plan_enter`, `plan_exit`, `todowrite`, `memory_search`, `question`, `tool_search` | Delegation, planning, and discovery |
 
 Run `codegg doctor` for the live state of the subsystems behind these.
+
+For `task`, run control and task retrieval use different identities:
+`status`, `wait`, `message`, `interrupt`, and `cancel` take `run_id`; `get`
+takes `task_id` (durable string ID or legacy numeric ID). Group status/wait/
+cancel operations take `group_id`. A run ID is not accepted as a task ID.
+
+`repo_search` forwards `include_local` to Eggsearch. Local coverage follows the
+Eggsearch sidecar's configured roots; CodeGG does not currently bind those
+roots to the active session workspace. Check that the sidecar roots include
+the intended repository before treating a local miss or hit as workspace
+coverage.
 
 ## Deterministic tools (`eggsact`)
 
@@ -129,6 +147,12 @@ Thirteen tools are registered, split by whether the model sees them up front:
 | `text_security_inspect` | |
 
 `tool_search` is how the model finds the deferred half.
+
+Search accepts ordinary multiword task phrases and ranks matching names and
+descriptions deterministically. Use `query: ""` with `offset` and `limit` to
+browse compact descriptors for tools allowed in the current session. Pages
+default to 10 and cap at 50; schemas remain omitted until one exact tool name
+is requested with `detail: "schema"`.
 
 `command_preflight` and `config_preflight` are also driven from the harness
 side by the eggsact preflight service, which checks shell commands, patches,
@@ -239,6 +263,57 @@ If a sandbox profile is requested without a workspace root, bash runs without
 OS containment and that is reported as *unavailable*, never as full host
 access — the absence of a workspace never silently widens authority.
 
+Model-owned Bash and Python processes receive a private scratch directory for
+their session. Use the `CODEGG_SCRATCH_DIR` environment variable in shell
+commands, or its displayed path with the structured `read` and `write` tools,
+for temporary artifacts shared across tool calls in that session. `TMPDIR`,
+`TMP`, and `TEMP` point there for managed model processes. Writes inside the
+session workspace or scratch directory do not trigger the implicit default
+`Ask`; explicit rules still apply. Human shell commands do not receive the
+session scratch grant.
+
+Each durable subagent run gets its own private scratch directory, so sibling
+temporary files stay separate. An orchestrator can create a named shared
+scratch resource with the `task` tool and grant its opaque ID to selected
+direct children. Those children receive the shared path as
+`CODEGG_SHARED_SCRATCH_<ALIAS>`; `TMPDIR`, `TMP`, `TEMP`, and
+`CODEGG_SCRATCH_DIR` remain private to each run. A sibling without the grant
+cannot read or write the resource through structured tools, and Required
+sandboxes deny writes to ungranted sibling roots. Some native backends permit
+broad reads for tool compatibility, so scratch grants do not claim OS-level
+read confidentiality.
+
+On a native Linux host with Landlock ABI >= 3, this containment is qualified
+end to end: the granted shared root and the run's private root are writable
+while an ungranted sibling, another session's scratch, the scratch parent, an
+unrelated host temporary directory, and a symlink planted inside the workspace
+that points out of it are all refused by the kernel. The evidence is produced
+by `tests/linux_native_scratch_containment.rs`, which admits the delegated
+run through the real task, submission, and scheduler path and launches it
+through the real managed-process owner. A host that cannot obtain Landlock
+fails that qualification rather than skipping it. Other platforms are not
+covered by it.
+
+If a structured write targets a known host temp directory outside the
+authorized workspace and scratch roots, CodeGG suggests the corresponding
+path under the run's private scratch directory. The suggestion is not an
+authorization or a rewrite: the original path is left untouched, and any
+explicit permission Deny remains final. Structured reads and shell commands
+are not redirected. FullHost shell processes retain access to the real host
+temp directory unless their selected native sandbox constrains it. Revoking a
+shared resource stops new child admission; active attempt leases keep it alive.
+Unix and Windows cleanup run after the final lease releases. Both reclaim only
+the revoked shared resource beneath an opaque tombstone. Reparse points are
+quarantined on Windows; deleting a hardlink inside the tombstone only removes
+that name and leaves its outside target intact. Other unsupported platforms
+retain revoked shared scratch rather than guessing at safe recursive removal.
+Terminal delegated-run scratch is reclaimed after the child process returns.
+When a session is soft-deleted, its complete scratch tree is reclaimed after
+all durable runs and jobs are terminal; cleanup is deferred while work remains
+active and stops if the session is restored. The daemon resumes cleanup for
+deleted sessions after restart. Durable transcripts, run results, and Git
+worktrees live outside this disposable tree.
+
 ## Testing and the scheduler
 
 The `test` tool runs the project's suite through the daemon scheduler rather
@@ -262,9 +337,17 @@ See `architecture/scheduler.md`, `architecture/jobs.md`, and
 
 ## Web search and research
 
+`repo_search`, `repo_fetch`, and `repo_map` use the CodeGG-managed Eggsearch
+child for local repository retrieval. CodeGG derives one authorized workspace
+root from the accepted tool execution context for each call. If that authority
+is unavailable, local retrieval is disabled for that call; the model cannot
+choose a filesystem root. Eggsearch 0.4.4 or newer is required for this private
+host-scoped behavior. Standalone Eggsearch and explicit remote MCP connections
+do not receive CodeGG local workspace authority.
+
 CodeGG's web, repository, security, research, batch-fetch, and evidence-bundle
 tools are **wrappers** around the external `eggsearch` MCP server. Prebuilt
-installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.4.3;
+installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.4.4;
 a source install must provide it separately.
 
 ```bash

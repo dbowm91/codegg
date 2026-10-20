@@ -54,3 +54,11 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 filter = "binary(eggwork_remote_execution_live) | binary(interactive_process_attach_resume) | binary(interactive_process_sessions) | binary(interactive_terminal_tui) | binary(scheduler_cancellation) | binary(causal_observe_replay)"
 threads-required = "num-cpus"
 slow-timeout = { period = "300s", terminate-after = 1 }
+
+# This test parks one Tokio worker while coordinating a same-scope refresh.
+# Running it alongside other test processes makes its bounded yield spin
+# scheduler-sensitive; reserve the runner so it can complete deterministically.
+[[profile.ci.overrides]]
+filter = "test(same_scope_requests_coalesce_to_one_publication)"
+threads-required = "num-cpus"
+slow-timeout = { period = "300s", terminate-after = 1 }

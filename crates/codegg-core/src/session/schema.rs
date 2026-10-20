@@ -259,6 +259,18 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 79 {
         migrate_and_record(pool, 79).await?;
     }
+    if current_version < 80 {
+        migrate_and_record(pool, 80).await?;
+    }
+    if current_version < 81 {
+        migrate_and_record(pool, 81).await?;
+    }
+    if current_version < 82 {
+        migrate_and_record(pool, 82).await?;
+    }
+    if current_version < 83 {
+        migrate_and_record(pool, 83).await?;
+    }
 
     Ok(())
 }
@@ -350,6 +362,10 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             77 => migrate_v77(&mut tx).await?,
             78 => migrate_v78(&mut tx).await?,
             79 => migrate_v79(&mut tx).await?,
+            80 => migrate_v80(&mut tx).await?,
+            81 => migrate_v81(&mut tx).await?,
+            82 => migrate_v82(&mut tx).await?,
+            83 => migrate_v83(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3334,6 +3350,199 @@ async fn migrate_v79(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         )
         "#,
         "CREATE INDEX IF NOT EXISTS idx_workstream_claim_event_group ON workstream_claim_event(group_id, created_at, event_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Migration(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M002a (ADR-0035): durable, bounded, expiring user prompt queue entries.
+///
+/// Additive only. The status `CHECK` enumerates all five roadmap values, which
+/// was deliberate while three of them had no producer: SQLite cannot `ALTER` a
+/// `CHECK`, so enumerating them now avoided a create-copy-drop-rename rebuild of
+/// a durable user table later. **M003 gave all five a producer** — `delivering`
+/// on claim, `delivered` on a recorded turn, `failed` on a recorded refusal —
+/// so this constraint no longer admits an unreachable value. A `CHECK` value is
+/// a validation constraint, not a code path; it cannot execute wrongly.
+///
+/// `run_at_ms` is deliberately absent. Nothing in this milestone writes it, and
+/// M007 adds it as a nullable column through `ALTER TABLE … ADD COLUMN`, which
+/// SQLite performs in place with no rebuild.
+async fn migrate_v80(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS user_prompt_queue_entry (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            text TEXT NOT NULL,
+            text_bytes INTEGER NOT NULL CHECK (text_bytes >= 0 AND text_bytes <= 65536),
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'delivering', 'delivered', 'failed', 'expired')
+            ),
+            failure_reason TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER NOT NULL,
+            delivered_turn_id TEXT,
+            delivered_at_ms INTEGER,
+            UNIQUE (session_id, ordinal),
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_user_prompt_queue_entry_session \
+         ON user_prompt_queue_entry(session_id, status, ordinal)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// M002b (ADR-0037, Option B): the durable session-scoped queue-owner binding.
+///
+/// Additive only, and it carries **nothing but** the owner row. v80 is closed
+/// and is never edited; ADR-0037's Compatibility section moved this binding out
+/// of v80 precisely so the shipped queue migration stayed untouched.
+///
+/// The owner row is the authority for queue mutation while the session is
+/// **idle** — the case the turn-scoped controller lease structurally cannot
+/// express, because that row exists only while a turn runs. It is deliberately a
+/// second identity concept sitting beside the turn controller lease; see
+/// `architecture/core.md` for which question each one answers.
+///
+/// `revision` is the concurrency fence for ownership transfer, mirroring
+/// `session_turn_controller.revision`: a transfer carries `expected_revision`
+/// and exactly one of two concurrent transfers wins. `revision >= 0` is a
+/// validation constraint, so it cannot execute wrongly.
+///
+/// `ON DELETE CASCADE` removes the authorization with the session, so a deleted
+/// session cannot leave a dangling mutator behind.
+async fn migrate_v81(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS user_prompt_queue_owner (
+            session_id TEXT PRIMARY KEY,
+            owner_principal TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision >= 0),
+            adopted_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// M007: the optional due time for delayed queue delivery (ADR-0039).
+///
+/// This is the column v80's own comment reserved for this milestone, added
+/// through the in-place `ALTER TABLE … ADD COLUMN` that comment specified. v80
+/// and v81 are closed and are never edited.
+///
+/// **No `CHECK`, because none is needed.** A nullable column with no sentinel
+/// admits every value the writer can produce, so there is no invalid state to
+/// constrain. This matters structurally: v80's `status` CHECK cannot be altered
+/// at all by SQLite without a table rebuild, so a design that had wanted a
+/// "scheduled" status could not have got one additively.
+///
+/// **`NULL` means "no due time", not a sentinel.** A pre-v82 row reads back as
+/// an ordinary immediate entry rather than as epoch 0, which is what lets the
+/// eligibility predicate stay a single `(run_at_ms IS NULL OR run_at_ms <= ?)`
+/// with no third case to special-case.
+///
+/// The partial index backs only the *cross-session* advance sweep
+/// (`earliest_due_now` / `sessions_with_due_entries`), which is the one query
+/// that cannot be answered by v80's existing `(session_id, status, ordinal)`
+/// index. It is partial on purpose: its rows are exactly the scheduled pending
+/// entries, bounded per session by `USER_PROMPT_QUEUE_MAX_PENDING`, so a queue
+/// that never schedules anything pays nothing for it. The per-session claim
+/// still filters due-ness through v80's index, scanning at most one queue's
+/// worth of pending rows.
+async fn migrate_v82(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        &mut *tx,
+        "ALTER TABLE user_prompt_queue_entry ADD COLUMN run_at_ms INTEGER".to_string(),
+    )
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_user_prompt_queue_entry_due \
+         ON user_prompt_queue_entry(run_at_ms, session_id) \
+         WHERE status = 'pending' AND run_at_ms IS NOT NULL",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// Managed agent scratch M002: durable parent-owned resources, immutable
+/// child grant snapshots, and scheduler attempt leases.
+async fn migrate_v83(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    let has_agent_run_table: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_run')",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| StorageError::Migration(error.to_string()))?;
+    if has_agent_run_table {
+        let has_shared_scratch_column: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_run') WHERE name = 'shared_scratch_json')",
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|error| StorageError::Migration(error.to_string()))?;
+        if !has_shared_scratch_column {
+            sqlx::query(
+                "ALTER TABLE agent_run ADD COLUMN shared_scratch_json TEXT NOT NULL DEFAULT '[]'",
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Migration(error.to_string()))?;
+        }
+    }
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_scratch_resource (
+            scratch_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            owner_key TEXT NOT NULL,
+            owner_run_id TEXT,
+            alias TEXT NOT NULL CHECK (length(alias) BETWEEN 1 AND 32),
+            idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 512),
+            revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0,1)),
+            created_at INTEGER NOT NULL,
+            UNIQUE (session_id, owner_key, idempotency_key),
+            UNIQUE (session_id, owner_key, alias COLLATE NOCASE),
+            FOREIGN KEY (owner_run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_scratch_resource_owner ON agent_scratch_resource(session_id, owner_key, revoked)",
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_scratch_attempt_lease (
+            scratch_id TEXT NOT NULL,
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('private_run','shared')),
+            run_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (scratch_id, job_id, attempt_id),
+            FOREIGN KEY (run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_scratch_attempt_lease_attempt ON agent_scratch_attempt_lease(job_id, attempt_id)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

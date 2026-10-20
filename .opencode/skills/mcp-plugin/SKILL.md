@@ -53,6 +53,15 @@ to violate.
    joins `plugin_dir.join("manifest.toml")`; there is no `plugin.toml`
    discovery fallback. Every example under `examples/plugins/` ships
    `manifest.toml`.
+8. **Host-scoped Eggsearch is private managed-child metadata.** Only the
+   CodeGG-managed stdio Eggsearch connection receives the host scope token and
+   per-call workspace root in MCP request metadata. Keep the token private to
+   that connection, keep scope out of public tool schemas and arguments, and
+   send an explicit null root when accepted workspace authority is unavailable.
+   Eggsearch validates the token and isolates local retrieval state per root;
+   an explicit local-required request must fail closed when that root is absent
+   or has no matching repository. Standalone Eggsearch configuration and
+   explicit remote MCP connections retain their unscoped behavior.
 
 ## Testing
 

@@ -696,6 +696,8 @@ mod tests {
                     completed_at: None,
                     result_summary: None,
                     display_name: None,
+                    profile: None,
+                    usefulness: None,
                     run_id: None,
                 }),
             );

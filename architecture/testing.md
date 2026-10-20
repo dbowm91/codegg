@@ -428,6 +428,12 @@ are not installed. CI does not install real servers.
 `verify.sh full` uses `--features server,plugins,lsp-test-support`
 instead of `--all-features` to avoid activating `lsp-real-server-tests`.
 
+The agent-facing `verify` tool follows the same conservative rule: its default
+Cargo lint does not enable every workspace feature. A caller may select one
+workspace package and validated package features through typed fields;
+`all_features` is an explicit package-only opt-in. This does not replace
+`scripts/verify.sh quick/full`, which remain the canonical workspace checks.
+
 ### Test-support features and the provider capture seam
 
 | Feature | Crate | Enabled by | Why |

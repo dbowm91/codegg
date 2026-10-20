@@ -312,6 +312,9 @@ impl BoundedOutput {
 pub struct ProcessProvenance {
     pub job_id: String,
     pub attempt_id: String,
+    /// Host-authenticated model session, when this process belongs to an
+    /// interactive or delegated model execution. Never populated from argv.
+    pub session_id: Option<String>,
 }
 
 /// Stdin behavior for a finite managed process.
@@ -336,7 +339,13 @@ impl ProcessProvenance {
         Self {
             job_id: job_id.into(),
             attempt_id: attempt_id.into(),
+            session_id: None,
         }
+    }
+
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     fn apply(&self, command: &mut Command) {
@@ -625,7 +634,7 @@ async fn run_inner(
         output_policy,
         sandbox,
         provenance,
-        execution_authorization: _execution_authorization,
+        execution_authorization,
     } = request;
 
     if executable.is_empty() {
@@ -673,10 +682,43 @@ async fn run_inner(
         return Err(ManagedProcessError::CancelledBeforeSpawn);
     }
 
-    // Every constrained launch receives a collision-resistant 0700 scratch
-    // directory. It is the only generic writable temporary root exposed to
-    // the target and remains owned by this future until the process tree is
-    // reaped, including timeout and cancellation paths.
+    // Session identity is stamped by the model tool execution context. The
+    // child environment is rebuilt, then these trusted values are applied by
+    // the canonical process owner so ambient TMP overrides cannot win.
+    let scratch_scope = execution_authorization
+        .as_ref()
+        .and_then(|authorization| authorization.scratch_scope.as_ref());
+    let session_scratch = if let Some(scope) = scratch_scope {
+        Some(scope.private_root.clone())
+    } else {
+        provenance
+            .session_id
+            .as_deref()
+            .map(crate::scratch::session_scratch_dir)
+            .transpose()
+            .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?
+    };
+    if let Some(path) = session_scratch.as_ref() {
+        environment_policy = environment_policy
+            .with_var("CODEGG_SCRATCH_DIR", path.as_os_str())
+            .with_var("TMPDIR", path.as_os_str())
+            .with_var("TMP", path.as_os_str())
+            .with_var("TEMP", path.as_os_str());
+    }
+    if let Some(scope) = scratch_scope {
+        for shared in &scope.shared {
+            let key = format!(
+                "CODEGG_SHARED_SCRATCH_{}",
+                shared.alias.to_ascii_uppercase().replace('-', "_")
+            );
+            environment_policy = environment_policy.with_var(key, shared.path.as_os_str());
+        }
+    }
+
+    // Every constrained launch receives a collision-resistant 0700 staging
+    // directory that remains owned by this future until the process tree is
+    // reaped. Model sessions additionally receive their durable private root
+    // above; both roots are explicit in the Required launch spec.
     let mut sandbox_scratch = None;
     let mut sandbox = sandbox;
     if let SandboxRequest::Required(spec) = &mut sandbox {
@@ -697,7 +739,22 @@ async fn run_inner(
         })?;
         spec.read_paths.push(scratch_path.clone());
         spec.write_paths.push(scratch_path.clone());
-        environment_policy = environment_policy.with_var("TMPDIR", scratch_path.as_os_str());
+        if let Some(session_scratch) = session_scratch.as_ref() {
+            spec.read_paths.push(session_scratch.clone());
+            spec.write_paths.push(session_scratch.clone());
+        } else {
+            environment_policy = environment_policy
+                .with_var("CODEGG_SCRATCH_DIR", scratch_path.as_os_str())
+                .with_var("TMPDIR", scratch_path.as_os_str())
+                .with_var("TMP", scratch_path.as_os_str())
+                .with_var("TEMP", scratch_path.as_os_str());
+        }
+        if let Some(scope) = scratch_scope {
+            for shared in &scope.shared {
+                spec.read_paths.push(shared.path.clone());
+                spec.write_paths.push(shared.path.clone());
+            }
+        }
         sandbox_scratch = Some(scratch);
     }
 
@@ -1904,6 +1961,7 @@ mod tests {
                     Some("policy".into()),
                 ),
                 command_preflight: None,
+                scratch_scope: None,
             });
 
         let error = run(process)
@@ -1939,6 +1997,57 @@ mod tests {
         assert_eq!(result.stdout.to_string_lossy(), "out");
         assert_eq!(result.stderr.to_string_lossy(), "err");
         assert!(result.duration < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn delegated_scratch_keeps_temp_private_and_exposes_only_granted_aliases() {
+        let run_id = codegg_core::identity::AgentRunId::new();
+        let session_id = format!("delegated-test-{run_id}");
+        let private_root = crate::scratch::agent_run_scratch_dir(&session_id, &run_id)
+            .expect("run private scratch");
+        let scratch_id = codegg_core::identity::ScratchId::new();
+        let shared_root =
+            crate::scratch::shared_scratch_dir(&session_id, &scratch_id).expect("shared scratch");
+        let scope = crate::scratch::AgentScratchScope {
+            session_id,
+            run_id,
+            private_root: private_root.clone(),
+            shared: vec![crate::scratch::AuthorizedSharedScratchRoot {
+                scratch_id,
+                alias: "handoff".into(),
+                path: shared_root.clone(),
+            }],
+        };
+        let script = "test \"$TMPDIR\" = \"$CODEGG_SCRATCH_DIR\" && test \"$TMPDIR\" = \"$EXPECTED_PRIVATE\" && printf handed-off > \"$CODEGG_SHARED_SCRATCH_HANDOFF/item\"";
+        let mut process = request(script);
+        process.environment_policy =
+            EnvironmentPolicy::sanitized().with_var("EXPECTED_PRIVATE", private_root.as_os_str());
+        process.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Interactive,
+                    codegg_core::approval::SandboxProfile::FullHost,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed("test", None),
+                command_preflight: None,
+                scratch_scope: Some(scope),
+            });
+        let result = run(process).await.expect("managed child process succeeds");
+        assert!(
+            result.exit_status.success(),
+            "{}",
+            result.stderr.to_string_lossy()
+        );
+        assert_eq!(
+            std::fs::read_to_string(shared_root.join("item")).unwrap(),
+            "handed-off"
+        );
     }
 
     #[cfg(unix)]

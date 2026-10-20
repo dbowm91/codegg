@@ -71,6 +71,13 @@ and as the source for the migration tooling.
 - `WorkspacePathPolicy::for_workspace` — minimal path policy mirroring
   `ExecutionContext`'s allowed roots. Future phases add symlink policy,
   sandbox mode, and platform capability fields.
+- `WorkspacePathPolicy::for_root` — the same single-root policy for a root the
+  caller already owns. The bundle always builds its policy with
+  `for_workspace`, so a policy built from the same canonical root *is* that
+  policy rather than an approximation of it. A delegated child loop and the
+  in-process standalone root turn use it because neither holds a lease, and a
+  tool call whose execution context carries no path policy is refused
+  outright — see [`architecture/agent.md`](agent.md).
 
 ### Registry and policy
 

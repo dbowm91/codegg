@@ -94,6 +94,14 @@ pub struct SubAgentRequest {
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    /// The daemon-owned workspace identity this child runs under.
+    ///
+    /// A tool call is authorized against a workspace identity and a path
+    /// policy; a child that carries neither has every tool refused with
+    /// "verified tool authority is missing workspace identity". The
+    /// scheduler binds the workspace the job was admitted for, so the child
+    /// inherits it rather than inventing one.
+    pub workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     /// Shared with the owning turn when the child runs in the same workspace.
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     /// M005: parent turn sandbox ceiling (`None` = pre-M005 default
@@ -996,12 +1004,23 @@ async fn run_subagent_task_with_cancel(
         task_id,
     );
 
+    // The descriptor is read off the lease rather than through a second,
+    // caller-keyed lookup: it is by construction the entry behind the name
+    // this subagent was actually given. A fallback name yields `None`, which
+    // is carried honestly instead of substituting some other entry's profile.
+    let descriptor = name_lease.entry();
+
     GlobalEventBus::publish(AppEvent::SubagentStarted {
         session_id: session_id.clone(),
         task_id,
         agent: request.agent.clone(),
         description: request.description.clone(),
         display_name: Some(name_lease.name_owned()),
+        // Carried in the event for the same reason as the name: the projection
+        // must be a pure function of its input, so it copies these verbatim
+        // rather than re-deriving them from a name it cannot resolve.
+        profile: descriptor.map(|entry| entry.profile.to_string()),
+        usefulness: descriptor.map(|entry| entry.usefulness.to_string()),
         // The durable run id travels with the event. The TUI cannot recover it
         // by joining `task_id`: this node's `task_id` is a daemon-local `u64`
         // while `AgentRunSummary::task_id` is a UUID string, so that join can
@@ -1504,12 +1523,72 @@ async fn execute_agent_task(
         mcp_service,
         pool,
         std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
-        workspace_root,
+        workspace_root.clone(),
         subagent_session_id,
     );
+    if let Some(run_id) = request.run_id.as_ref() {
+        let runs = subagent_pool
+            .durable_agent_runs
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| "durable scratch scope requires the AgentRun store".to_string())?;
+        let run = runs
+            .get_run(run_id)
+            .await
+            .map_err(|error| format!("load delegated run scratch grants: {error}"))?
+            .ok_or_else(|| "delegated run is missing".to_string())?;
+        let task = runs
+            .get_task(&run.task_id)
+            .await
+            .map_err(|error| format!("load delegated task origin: {error}"))?
+            .ok_or_else(|| "delegated task is missing".to_string())?;
+        let mut grants = Vec::with_capacity(run.shared_scratch.len());
+        for grant in &run.shared_scratch {
+            let resource = runs
+                .get_scratch_resource(&grant.scratch_id)
+                .await
+                .map_err(|error| format!("validate delegated scratch grant: {error}"))?
+                .ok_or_else(|| "delegated scratch resource is missing".to_string())?;
+            let has_admitted_lease = runs
+                .has_scratch_attempt_lease(&grant.scratch_id, run_id)
+                .await
+                .map_err(|error| format!("validate delegated scratch lease: {error}"))?;
+            if resource.session_id != task.originating_session_id
+                || resource.owner_run_id != run.parent_run_id
+                || (resource.revoked && !has_admitted_lease)
+            {
+                return Err(
+                    "delegated scratch grant is stale or outside direct-parent authority".into(),
+                );
+            }
+            grants.push(grant.clone());
+        }
+        let scratch_scope = crate::scratch::AgentScratchScope::from_authorized_grants(
+            task.originating_session_id.clone(),
+            run_id.clone(),
+            &grants,
+        )
+        .map_err(|error| format!("provision delegated scratch: {error}"))?;
+        agent_loop.set_scratch_scope(scratch_scope);
+        agent_loop.set_peer_observation_session_id(task.originating_session_id);
+    }
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }
+    // A delegated child holds no workspace services lease, so it would
+    // otherwise reach the broker with no workspace identity and no path
+    // policy, and have every tool call refused with "verified tool
+    // authority is missing workspace ...". Inherit the identity the
+    // scheduler bound this job to, and install the policy for the root the
+    // executor bound this run to. When that root is the workspace's
+    // canonical root this is the same policy the parent turn holds.
+    if let Some(workspace_id) = request.workspace_id.clone() {
+        agent_loop.set_workspace_id(workspace_id);
+    }
+    agent_loop.set_workspace_path_policy(
+        codegg_core::workspace_services::WorkspacePathPolicy::for_root(workspace_root),
+    );
     // M005: child loop carries the narrowed sandbox ceiling; approval
     // stays Interactive (never broader than the parent without explicit
     // narrowing through the snapshot ceiling).
@@ -1603,6 +1682,17 @@ async fn execute_agent_task(
     let model_profile =
         crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
     let available_agents = agents.as_ref().clone();
+    let runtime_blocks = agent_loop
+        .scratch_scope
+        .as_ref()
+        .map(|scope| {
+            vec![crate::agent::prompt::PromptBlock::required(
+                crate::agent::prompt::PromptBlockKind::Extension,
+                "agent:scratch-scope",
+                &scope.prompt_block(),
+            )]
+        })
+        .unwrap_or_default();
     let compiled_prompt =
         crate::agent::prompt::PromptCompiler::compile(crate::agent::prompt::PromptCompilerInput {
             agent: &safe_agent,
@@ -1616,7 +1706,7 @@ async fn execute_agent_task(
             pin: None,
             execution: None,
             adapter_fingerprint: Some(&adapter.fingerprint),
-            runtime_blocks: &[],
+            runtime_blocks: &runtime_blocks,
         });
     let mut messages = vec![crate::provider::Message::System {
         content: compiled_prompt.text.into(),
@@ -1816,6 +1906,7 @@ mod admission_tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_id: None,
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,

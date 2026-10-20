@@ -3,7 +3,9 @@ use codegg::agent::r#loop::AgentLoop;
 use codegg::agent::Agent;
 use codegg::bus::events::AppEvent;
 use codegg::bus::global::GlobalEventBus;
-use codegg::config::schema::{Config, ServerConfig};
+use codegg::config::schema::{
+    Config, EggsearchConfig, SearchBackendConfig, SearchConfig, ServerConfig,
+};
 use codegg::context::InMemoryArtifactStore;
 use codegg::error::AppError;
 use codegg::permission::{PermissionChecker, PermissionLevel, PermissionRuleset};
@@ -11,6 +13,8 @@ use codegg::provider::{
     ChatEvent, ChatRequest, EventStream, Message, ModelInfo, Provider, ProviderError, TokenUsage,
     ToolCall,
 };
+use codegg::tool::apply_patch::ApplyPatchTool;
+use codegg::tool::grep::GrepTool;
 use codegg::tool::task::TaskTool;
 use codegg::tool::{Tool, ToolRegistry};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -537,6 +541,51 @@ struct ParallelTool {
     barrier: Arc<Mutex<()>>,
 }
 
+struct BatchOwnerTool {
+    name: String,
+    owner_active: Arc<AtomicUsize>,
+    owner_peak: Arc<AtomicUsize>,
+    total_active: Arc<AtomicUsize>,
+    total_peak: Arc<AtomicUsize>,
+    rendezvous: Arc<tokio::sync::Barrier>,
+}
+
+fn update_peak(peak: &AtomicUsize, current: usize) {
+    let mut seen = peak.load(Ordering::SeqCst);
+    while current > seen {
+        match peak.compare_exchange(seen, current, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => seen = actual,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for BatchOwnerTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        "Tracks the owner of a concurrent batch admission slot"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object", "properties":{}})
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        let owner_now = self.owner_active.fetch_add(1, Ordering::SeqCst) + 1;
+        let total_now = self.total_active.fetch_add(1, Ordering::SeqCst) + 1;
+        update_peak(&self.owner_peak, owner_now);
+        update_peak(&self.total_peak, total_now);
+        self.rendezvous.wait().await;
+        self.owner_active.fetch_sub(1, Ordering::SeqCst);
+        self.total_active.fetch_sub(1, Ordering::SeqCst);
+        Ok(self.name.clone())
+    }
+}
+
 impl ParallelTool {
     fn new(
         name: String,
@@ -647,7 +696,36 @@ impl Tool for QuestionTool {
     }
 }
 
-fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistry) -> AgentLoop {
+async fn attach_test_workspace_authority(
+    agent_loop: &mut AgentLoop,
+    workspace_root: &std::path::Path,
+) {
+    let workspace_registry = codegg_core::workspace::WorkspaceRegistry::load(Arc::new(
+        codegg_core::workspace::InMemoryWorkspaceStore::new(),
+    ))
+    .await
+    .expect("test workspace registry");
+    let workspace = workspace_registry
+        .get_or_register(workspace_root)
+        .await
+        .expect("register test workspace");
+    let services = codegg_core::workspace_services::WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(codegg_core::workspace_services::ProductionWorkspaceServicesFactory),
+        codegg_core::workspace_services::WorkspaceServicePolicy::default(),
+    );
+    let lease = services
+        .acquire(&workspace.id)
+        .await
+        .expect("test workspace service lease");
+    agent_loop.set_workspace_id(workspace.id.clone());
+    agent_loop.set_workspace_services_lease(lease);
+}
+
+async fn build_test_agent_loop(
+    provider: Box<dyn Provider>,
+    tool_registry: ToolRegistry,
+) -> AgentLoop {
     let agents = vec![Agent {
         git_read_only: false,
         name: "build".to_string(),
@@ -692,7 +770,11 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
 
     let config = Config::default();
 
-    AgentLoop::new(
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let mut agent_loop = AgentLoop::new(
         agents,
         provider,
         permission_checker,
@@ -701,12 +783,14 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session".to_string(),
-    )
+    );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
+    agent_loop
 }
 
-fn build_test_agent_loop_with_permissions(
+async fn build_test_agent_loop_with_permissions(
     provider: Box<dyn Provider>,
     tool_registry: ToolRegistry,
     permission_checker: PermissionChecker,
@@ -735,7 +819,11 @@ fn build_test_agent_loop_with_permissions(
 
     let config = Config::default();
 
-    AgentLoop::new(
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let mut agent_loop = AgentLoop::new(
         agents,
         provider,
         permission_checker,
@@ -744,13 +832,428 @@ fn build_test_agent_loop_with_permissions(
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session".to_string(),
+    );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
+    agent_loop
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "run only via scripts/test-eggsearch-pair.sh with the pinned Eggsearch child"]
+async fn pinned_eggsearch_agent_loop_uses_each_accepted_workspace_root() {
+    use codegg::search_backend::bootstrap::bootstrap_search_runtime;
+    use codegg::tool::repo_search::RepoSearchTool;
+
+    let binary = std::env::var("CODEGG_EGGSEARCH_BIN")
+        .expect("pair script supplies the immutable Eggsearch binary");
+    let private = tempfile::tempdir().expect("private pair test directory");
+    let config_root = private.path().join("config");
+    let egg_config_dir = config_root.join("eggsearch");
+    let config_path = egg_config_dir.join("config.toml");
+    let child_stderr = private.path().join("eggsearch.stderr");
+    let launcher = private.path().join("eggsearch-launcher.sh");
+    std::fs::create_dir_all(&egg_config_dir).expect("private Eggsearch config directory");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\nexec \"$CODEGG_EGGSEARCH_REAL_BIN\" \"$@\" 2>\"$CODEGG_EGGSEARCH_STDERR\"\n",
     )
+    .expect("write managed Eggsearch launcher");
+    use std::os::unix::fs::PermissionsExt;
+    let mut launcher_permissions = std::fs::metadata(&launcher)
+        .expect("launcher metadata")
+        .permissions();
+    launcher_permissions.set_mode(0o700);
+    std::fs::set_permissions(&launcher, launcher_permissions).expect("make launcher executable");
+    let roots = [
+        private.path().join("workspace-a"),
+        private.path().join("workspace-b"),
+    ];
+    let markers = [
+        format!("AGENT_LOOP_SCOPE_A_{}", std::process::id()),
+        format!("AGENT_LOOP_SCOPE_B_{}", std::process::id()),
+    ];
+    for (root, marker) in roots.iter().zip(markers.iter()) {
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("workspace repository directory");
+        std::fs::write(repo.join("scope_marker.rs"), marker).expect("write root-specific marker");
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .expect("git is available for the private repository fixture");
+        assert!(status.success(), "initialize private repository fixture");
+    }
+    let escaped_root = roots[0]
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    std::fs::write(
+        &config_path,
+        format!(
+            "[search]\nmode = \"off\"\ndefault_max_results = 5\nmax_results_cap = 5\nmax_query_chars = 256\ntimeout_ms = 1000\ndefault_providers = [\"duckduckgo\"]\n\n[search.providers]\nduckduckgo = true\n\n[fetch]\nenabled = false\n\n[local]\nenabled = true\nroots = [\"{escaped_root}\"]\nrespect_gitignore = true\n"
+        ),
+    )
+    .expect("write private offline Eggsearch config");
+    let mut child_env = std::collections::HashMap::new();
+    for (name, path) in [
+        ("HOME", private.path().join("home")),
+        ("XDG_CONFIG_HOME", config_root.clone()),
+        ("XDG_DATA_HOME", private.path().join("data")),
+        ("XDG_CACHE_HOME", private.path().join("cache")),
+    ] {
+        std::fs::create_dir_all(&path).expect("create isolated child environment directory");
+        child_env.insert(name.to_string(), path.to_string_lossy().into_owned());
+    }
+    child_env.insert("CODEGG_EGGSEARCH_REAL_BIN".into(), binary);
+    child_env.insert(
+        "CODEGG_EGGSEARCH_STDERR".into(),
+        child_stderr.to_string_lossy().into_owned(),
+    );
+    let config = Config {
+        search: Some(SearchConfig {
+            backend: Some(SearchBackendConfig::Eggsearch),
+            eggsearch: Some(EggsearchConfig {
+                command: Some(launcher.to_string_lossy().into_owned()),
+                args: Some(vec![
+                    "--config".into(),
+                    config_path.to_string_lossy().into_owned(),
+                    "mcp".into(),
+                    "stdio".into(),
+                ]),
+                env: Some(child_env),
+                timeout_ms: Some(30_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (runtime, report) = bootstrap_search_runtime(&config).await;
+    assert!(
+        report.connected,
+        "managed Eggsearch child connected: {:?}; stderr={}",
+        report.connection_error,
+        std::fs::read_to_string(&child_stderr).unwrap_or_default()
+    );
+
+    async fn run_search(
+        root: &std::path::Path,
+        session_id: &str,
+        marker: &str,
+        runtime: codegg::search_backend::SearchRuntimeContext,
+        mode: codegg::agent::AgentMode,
+    ) -> String {
+        let provider = ScriptedProvider::new(vec![
+            vec![
+                ChatEvent::ToolCall(ToolCall {
+                    id: format!("repo-search-{session_id}").into(),
+                    name: String::from("repo_search").into(),
+                    arguments: serde_json::json!({
+                        "query": marker,
+                        "include_local": true,
+                        "max_results": 5
+                    }),
+                }),
+                ChatEvent::Finish {
+                    stop_reason: String::from("tool_calls").into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                ChatEvent::TextDelta(String::from("search complete").into()),
+                ChatEvent::Finish {
+                    stop_reason: String::from("stop").into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ]);
+        let mut registry = ToolRegistry::new();
+        registry.register(RepoSearchTool::with_search_runtime(runtime));
+        let agents = vec![Agent {
+            git_read_only: true,
+            name: "build".into(),
+            role: None,
+            description: "Pinned Eggsearch pair qualification".into(),
+            mode,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: std::collections::HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }];
+        let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        });
+        let mut agent_loop = AgentLoop::new(
+            agents,
+            Box::new(provider.clone()),
+            permissions,
+            registry,
+            Config::default(),
+            None,
+            None,
+            Arc::new(InMemoryArtifactStore::new()),
+            root.to_path_buf(),
+            session_id.to_string(),
+        );
+        attach_test_workspace_authority(&mut agent_loop, root).await;
+        agent_loop
+            .run(make_chat_request("search the attached workspace"))
+            .await
+            .expect("ordinary AgentLoop tool call completes");
+        let requests = provider.get_requests().await;
+        let tool_output = requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .find_map(|message| match message {
+                Message::Tool { content, .. } if content.contains("providers_queried") => {
+                    Some(content.as_ref().clone())
+                }
+                _ => None,
+            })
+            .expect("model-visible repo_search result was returned through the broker");
+        tool_output
+    }
+
+    let runtime_a = runtime.clone();
+    let runtime_b = runtime.clone();
+    let (output_a, output_b) = tokio::join!(
+        run_search(
+            &roots[0],
+            "pair-session-a",
+            &markers[0],
+            runtime_a,
+            codegg::agent::AgentMode::Primary,
+        ),
+        run_search(
+            &roots[1],
+            "pair-session-b",
+            &markers[1],
+            runtime_b,
+            codegg::agent::AgentMode::Primary,
+        ),
+    );
+    assert!(
+        output_a.contains(&markers[0]),
+        "AgentLoop A missed its root marker: {output_a}"
+    );
+    assert!(
+        !output_a.contains(&markers[1]),
+        "AgentLoop A received root B bytes: {output_a}"
+    );
+    assert!(
+        output_b.contains(&markers[1]),
+        "AgentLoop B missed its root marker: {output_b}"
+    );
+    assert!(
+        !output_b.contains(&markers[0]),
+        "AgentLoop B received root A bytes: {output_b}"
+    );
+
+    let runtime_for_subagent = runtime.clone();
+    let output_a_again = run_search(
+        &roots[0],
+        "pair-session-a-switched-back",
+        &markers[0],
+        runtime,
+        codegg::agent::AgentMode::Primary,
+    )
+    .await;
+    assert!(
+        output_a_again.contains(&markers[0]),
+        "workspace A lost scope after switching away"
+    );
+    assert!(
+        !output_a_again.contains(&markers[1]),
+        "workspace B leaked after switching back"
+    );
+
+    let subagent_output = run_search(
+        &roots[1],
+        "pair-subagent-b",
+        &markers[1],
+        runtime_for_subagent,
+        codegg::agent::AgentMode::Subagent,
+    )
+    .await;
+    assert!(
+        subagent_output.contains(&markers[1]),
+        "subagent did not retain its accepted workspace root: {subagent_output}"
+    );
+    assert!(
+        !subagent_output.contains(&markers[0]),
+        "subagent received bytes from another workspace: {subagent_output}"
+    );
+}
+
+#[tokio::test]
+async fn verify_and_two_explicit_in_progress_todos_reach_the_model_through_agent_loop() {
+    use codegg::model_profile::types::TaskStatePolicy;
+    use codegg::tool::ToolRegistryOptions;
+
+    let root = tempfile::tempdir().expect("verification workspace");
+    std::fs::create_dir_all(root.path().join("src")).expect("create fixture source directory");
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname = \"trajectory-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write fixture manifest");
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "pub fn answer() -> u8 { 42 }\n",
+    )
+    .expect("write fixture source");
+    let cargo_home = root.path().join("cargo-home");
+    std::fs::create_dir_all(&cargo_home).expect("create private Cargo home");
+    struct RestoreCargoHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreCargoHome {
+        fn drop(&mut self) {
+            if let Some(previous) = self.0.take() {
+                std::env::set_var("CARGO_HOME", previous);
+            } else {
+                std::env::remove_var("CARGO_HOME");
+            }
+        }
+    }
+    let _restore_cargo_home = RestoreCargoHome(std::env::var_os("CARGO_HOME"));
+    std::env::set_var("CARGO_HOME", &cargo_home);
+
+    let todos = Arc::new(tokio::sync::Mutex::new(codegg::task_state::TodoState::new()));
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        workspace_root: Some(root.path().to_path_buf()),
+        todo_state: Some(todos.clone()),
+        todo_policy: Some(TaskStatePolicy::explicit_todo()),
+        ..Default::default()
+    });
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: String::from("trajectory-verify-lint").into(),
+                name: String::from("verify").into(),
+                arguments: serde_json::json!({
+                    "action": "lint",
+                    "scope": "package",
+                    "package": "trajectory-fixture",
+                    "timeout": 120
+                }),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: String::from("trajectory-parallel-todos").into(),
+                name: String::from("todowrite").into(),
+                arguments: serde_json::json!({
+                    "todos": [
+                        {"id": "search", "content": "Find the local implementation", "status": "in_progress"},
+                        {"id": "verify", "content": "Verify the scoped workspace", "status": "in_progress"}
+                    ]
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: String::from("tool_calls").into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta(String::from("verification and todo state recorded").into()),
+            ChatEvent::Finish {
+                stop_reason: String::from("stop").into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent_loop = AgentLoop::new(
+        vec![Agent {
+            git_read_only: false,
+            name: "build".into(),
+            role: None,
+            description: "C007 same-session workflow qualification".into(),
+            mode: codegg::agent::AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: Default::default(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }],
+        Box::new(provider.clone()),
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        }),
+        registry,
+        Config::default(),
+        None,
+        None,
+        Arc::new(InMemoryArtifactStore::new()),
+        root.path().to_path_buf(),
+        "c007-verify-todo-session".into(),
+    );
+    attach_test_workspace_authority(&mut agent_loop, root.path()).await;
+    agent_loop
+        .run(make_chat_request(
+            "verify the workspace and track two active tasks",
+        ))
+        .await
+        .expect("normal AgentLoop workflow completes");
+    let tool_results: Vec<_> = provider
+        .get_requests()
+        .await
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .filter_map(|message| match message {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => Some((tool_call_id.to_string(), content.to_string())),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        tool_results.iter().any(|(id, output)| {
+            id == "trajectory-verify-lint"
+                && output.contains("passed")
+                && output.contains("trajectory-fixture")
+        }),
+        "verify result was not truthful and model-visible: {tool_results:?}"
+    );
+    assert!(
+        tool_results.iter().any(|(id, output)| {
+            id == "trajectory-parallel-todos" && output.contains("in_progress")
+        }),
+        "explicit todo update was not model-visible: {tool_results:?}"
+    );
+
+    let state = todos.lock().await;
+    assert_eq!(state.items.len(), 2);
+    assert!(state
+        .items
+        .iter()
+        .all(|item| item.status == codegg::task_state::TodoStatus::InProgress));
 }
 
 /// Build test AgentLoop with custom config for testing config-dependent behavior.
-fn build_test_agent_loop_with_config(
+async fn build_test_agent_loop_with_config(
     provider: Box<dyn Provider>,
     tool_registry: ToolRegistry,
     permission_checker: PermissionChecker,
@@ -778,7 +1281,11 @@ fn build_test_agent_loop_with_config(
         runtime_kind: None,
     }];
 
-    AgentLoop::new(
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let mut agent_loop = AgentLoop::new(
         agents,
         provider,
         permission_checker,
@@ -787,9 +1294,11 @@ fn build_test_agent_loop_with_config(
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session".to_string(),
-    )
+    );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
+    agent_loop
 }
 
 fn make_chat_request(prompt: &str) -> ChatRequest {
@@ -1026,6 +1535,45 @@ impl Tool for ReadProbeTool {
     }
 }
 
+/// A source read whose numbered output passes through the production
+/// projection path in `AgentLoop`.
+struct LargeSourceReadTool;
+
+#[async_trait]
+impl Tool for LargeSourceReadTool {
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Reads a source file"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"],
+        })
+    }
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        Ok((1..=1_000)
+            .map(|line| format!("{line:>6}: source line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+    fn category(&self) -> codegg::tool::ToolCategory {
+        codegg::tool::ToolCategory::ReadOnly
+    }
+    fn contract(
+        &self,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> codegg::tool::contract::ToolContract {
+        let mut contract = codegg::tool::contract::ToolContract::legacy(tool_name, input_schema);
+        contract.effect_class = codegg::tool::contract::ToolEffectClass::ReadOnly;
+        contract
+    }
+}
+
 /// A mutating probe that always fails, with a process-class contract.
 struct FailingBuildTool;
 
@@ -1108,7 +1656,111 @@ fn recovery_registry() -> ToolRegistry {
     registry
 }
 
-fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider) {
+struct DeferredSchemaTool;
+
+#[async_trait]
+impl Tool for DeferredSchemaTool {
+    fn name(&self) -> &str {
+        "deferred_probe"
+    }
+    fn description(&self) -> &str {
+        "A deferred schema used by provider compatibility tests"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{}})
+    }
+    fn defer_loading(&self) -> bool {
+        true
+    }
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        Ok("unused".into())
+    }
+}
+
+#[derive(Clone)]
+struct DeferredSchemaRejectingProvider {
+    requests: Arc<Mutex<Vec<ChatRequest>>>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for DeferredSchemaRejectingProvider {
+    fn id(&self) -> &str {
+        // Deliberately claims the provider-family capability. The fake
+        // endpoint below is stricter and rejects the extension field.
+        "anthropic"
+    }
+    fn name(&self) -> &str {
+        "deferred-schema-rejecting fake gateway"
+    }
+    fn clone_box(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        self.requests.lock().await.push(request.clone());
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(ProviderError::api(
+                "400",
+                "Unsupported field defer_loading in tool definition",
+            ));
+        }
+        Ok(Box::pin(futures_util::stream::iter(vec![
+            Ok(ChatEvent::TextDelta("done".to_string().into())),
+            Ok(finish_event()),
+        ])))
+    }
+    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![ModelInfo {
+            id: "test/model".into(),
+            name: "Test Model".into(),
+            provider: "anthropic".into(),
+            context_window: 4096,
+            max_output_tokens: Some(2048),
+            supports_tools: true,
+            supports_vision: false,
+            variants: vec![],
+        }])
+    }
+}
+
+#[tokio::test]
+async fn deferred_schema_400_retries_once_without_changing_authorized_tools() {
+    let provider = DeferredSchemaRejectingProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let requests = Arc::clone(&provider.requests);
+    let mut registry = ToolRegistry::new();
+    registry.register(DeferredSchemaTool);
+    let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Allow,
+        tool_rules: vec![],
+        path_rules: vec![],
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions).await;
+    agent_loop
+        .run(make_chat_request("Use the deferred probe"))
+        .await
+        .expect("the request-only compatibility retry should complete");
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].model, requests[1].model);
+    let first_tools = requests[0].tools.as_ref().expect("initial tool surface");
+    assert!(first_tools
+        .iter()
+        .any(|tool| tool.name == "deferred_probe" && tool.defer_loading == Some(true)));
+    let fallback_tools = requests[1].tools.as_ref().expect("fallback tool surface");
+    assert!(fallback_tools
+        .iter()
+        .any(|tool| tool.name == "deferred_probe"));
+    assert!(fallback_tools
+        .iter()
+        .all(|tool| tool.defer_loading.is_none()));
+}
+
+async fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider) {
     let provider = ScriptedProvider::new(responses);
     // `PermissionChecker::new(None, None)` leaves the default level at Ask, and
     // an unanswered request parks the tool call forever — the turn never
@@ -1124,7 +1776,8 @@ fn recovery_loop(responses: Vec<Vec<ChatEvent>>) -> (AgentLoop, ScriptedProvider
         Box::new(provider.clone()),
         recovery_registry(),
         permission_checker,
-    );
+    )
+    .await;
     (agent_loop, provider)
 }
 
@@ -1141,6 +1794,71 @@ fn finish_event() -> ChatEvent {
         stop_reason: "stop".to_string().into(),
         usage: TokenUsage::default(),
     }
+}
+
+#[tokio::test]
+async fn first_use_apply_patch_create_then_grep_runs_through_agent_broker() {
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
+    let temp_dir = tempfile::tempdir_in(workspace_root.join("target"))
+        .expect("create isolated first-use workspace fixture");
+    let relative_path = temp_dir
+        .path()
+        .join("nested/new.rs")
+        .strip_prefix(&workspace_root)
+        .expect("fixture belongs to workspace")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let marker = format!("c003-first-use-marker-{}", std::process::id());
+    let absolute_path = temp_dir.path().join("nested/new.rs");
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![
+        vec![
+            tool_call_event(
+                "create-first-use-file",
+                "apply_patch",
+                serde_json::json!({
+                    "path": relative_path,
+                    "mode": "create",
+                    "patch": marker,
+                }),
+            ),
+            finish_event(),
+        ],
+        vec![
+            tool_call_event(
+                "grep-first-use-file",
+                "grep",
+                serde_json::json!({ "pattern": marker, "path": temp_dir.path() }),
+            ),
+            finish_event(),
+        ],
+        vec![finish_event()],
+    ]));
+    let provider_observer = scripted_provider.clone();
+    let mut registry = ToolRegistry::new();
+    registry.register(ApplyPatchTool::new().with_allowed_root(workspace_root.clone()));
+    registry.register(GrepTool::new().with_allowed_root(workspace_root));
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry).await;
+
+    agent_loop
+        .run(make_chat_request(
+            "Create a file, then search for its marker",
+        ))
+        .await
+        .expect("the real agent and broker path should execute both tool calls");
+
+    let contents = std::fs::read_to_string(&absolute_path).expect("created file");
+    assert_eq!(contents, marker);
+    let requests = provider_observer.get_requests().await;
+    assert!(requests.len() >= 3, "expected follow-up after both tools");
+    let second_request_text = format!("{:?}", requests[2].messages);
+    assert!(
+        second_request_text.contains(&marker),
+        "grep result should be returned to the provider: {second_request_text}"
+    );
 }
 
 /// The regression, through the real loop: one provider turn emitting a batch of
@@ -1181,7 +1899,8 @@ async fn a_batch_of_distinct_failing_commands_does_not_stall_the_turn() {
             ChatEvent::TextDelta("gave up".to_string().into()),
             finish_event(),
         ],
-    ]);
+    ])
+    .await;
     agent_loop
         .run(make_chat_request("Get the build green"))
         .await
@@ -1223,7 +1942,7 @@ async fn exploring_with_alternating_reads_and_shell_never_stalls() {
         finish_event(),
     ]);
 
-    let (mut agent_loop, provider) = recovery_loop(responses);
+    let (mut agent_loop, provider) = recovery_loop(responses).await;
     agent_loop
         .run(make_chat_request("Explore the repository"))
         .await
@@ -1236,14 +1955,13 @@ async fn exploring_with_alternating_reads_and_shell_never_stalls() {
     );
 }
 
-/// The true positive through the real loop: the identical failing call repeated
-/// must still terminate the turn, and the ladder must break out rather than
-/// consuming every scripted turn. Narrowing what counts as an incident must not
-/// make a real loop survivable.
+/// Repeated identical outcomes without a correlated state revision are unknown,
+/// not affirmative stagnation. They may trigger bounded guidance, but the turn
+/// remains governed by its ordinary hard execution budget.
 #[tokio::test]
-async fn an_identical_repeated_failure_still_stalls_the_turn() {
+async fn an_identical_repeated_failure_does_not_claim_confirmed_stagnation() {
     const SCRIPTED_TURNS: usize = 12;
-    let responses = (0..SCRIPTED_TURNS)
+    let mut responses = (0..SCRIPTED_TURNS)
         .map(|_| {
             vec![
                 tool_call_event(
@@ -1255,22 +1973,141 @@ async fn an_identical_repeated_failure_still_stalls_the_turn() {
             ]
         })
         .collect::<Vec<_>>();
+    responses.push(vec![
+        ChatEvent::TextDelta("done".to_string().into()),
+        finish_event(),
+    ]);
 
-    let (mut agent_loop, provider) = recovery_loop(responses);
+    let (mut agent_loop, provider) = recovery_loop(responses).await;
     agent_loop
         .run(make_chat_request("Fix the build"))
         .await
-        .expect("a stalled turn still returns rather than hanging");
+        .expect("unconfirmed repeated work must remain recoverable");
 
     let consumed = provider.request_count().await;
     assert!(
-        consumed < SCRIPTED_TURNS,
-        "the bounded ladder must break the turn before every scripted turn: {consumed}"
+        consumed > SCRIPTED_TURNS,
+        "the turn should continue to the scripted completion after repeated unknown outcomes: {consumed}"
     );
+}
+
+#[tokio::test]
+async fn repeated_unknown_outcomes_remain_bounded_by_the_hard_turn_limit() {
+    let responses = (0..8)
+        .map(|_| {
+            vec![
+                tool_call_event(
+                    "build-same",
+                    "probe_build",
+                    serde_json::json!({ "crate": "core" }),
+                ),
+                finish_event(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let (mut agent_loop, provider) = recovery_loop(responses).await;
+    agent_loop.set_max_turns(3);
+    agent_loop
+        .run(make_chat_request("Repeat a build observation"))
+        .await
+        .expect("hard turn exhaustion is a normal bounded completion");
+    assert_eq!(
+        provider.request_count().await,
+        3,
+        "unknown repeated outcomes must reach, then stop at, the hard turn cap"
+    );
+}
+
+#[tokio::test]
+async fn large_source_read_reaches_the_next_model_request_as_a_contiguous_page() {
+    let responses = vec![
+        vec![
+            tool_call_event(
+                "large-source-read",
+                "read",
+                serde_json::json!({ "path": "src/large.rs" }),
+            ),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("I have enough source context.".to_string().into()),
+            finish_event(),
+        ],
+    ];
+    let provider = ScriptedProvider::new(responses);
+    let mut registry = ToolRegistry::new();
+    registry.register(LargeSourceReadTool);
+    let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Allow,
+        tool_rules: vec![],
+        path_rules: vec![],
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(Box::new(provider.clone()), registry, permissions)
+            .await;
+    agent_loop
+        .run(make_chat_request("Inspect the large source file"))
+        .await
+        .expect("the source-read trajectory should complete");
+
+    let requests = provider.get_requests().await;
     assert!(
-        consumed >= 2,
-        "the identical repeat must still be detected, not ignored: {consumed}"
+        requests.len() >= 2,
+        "the provider must receive the read result"
     );
+    let tool_result = requests[1]
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            Message::Tool { content, .. } => Some(content.as_ref()),
+            _ => None,
+        })
+        .expect("the second model request must contain the source result");
+    let visible_lines = tool_result
+        .lines()
+        .filter(|line| line.contains(": source line "))
+        .collect::<Vec<_>>();
+    assert!(
+        visible_lines.len() > 20,
+        "only {} source lines reached the model",
+        visible_lines.len()
+    );
+    assert!(visible_lines[0].contains("1: source line 1"));
+    assert!(visible_lines.windows(2).all(|pair| {
+        let line_number = |line: &str| {
+            line.split_once(':')
+                .and_then(|(number, _)| number.trim().parse::<usize>().ok())
+                .expect("projected source line has a number")
+        };
+        line_number(pair[1]) == line_number(pair[0]) + 1
+    }));
+    assert!(tool_result.contains("Continue with read offset="));
+    assert!(!tool_result.contains("1000: source line 1000"));
+    let calls = requests
+        .last()
+        .expect("the completed turn has a provider request")
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Assistant { tool_calls, .. } => Some(tool_calls.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.name.as_ref() == "read")
+            .count(),
+        1,
+        "the model-visible page must avoid a forced second source read"
+    );
+    assert!(!calls
+        .iter()
+        .any(|call| call.name.as_ref() == "context_read"));
 }
 
 #[tokio::test]
@@ -1296,7 +2133,7 @@ async fn peer_evidence_arriving_during_provider_stream_fences_returned_tool_batc
         path_rules: vec![],
     });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions).await;
     let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
         Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
     agent_loop.set_run_control(
@@ -1426,7 +2263,7 @@ async fn unrelated_peer_change_does_not_fence_or_notify_member() {
         path_rules: vec![],
     });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions).await;
     let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
         Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
     agent_loop.set_run_control(
@@ -1506,7 +2343,7 @@ async fn test_agent_loop_harness_smoke_test() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     // Set unique session ID to avoid cross-test contamination
     let session_id = "test-smoke-unique-session".to_string();
@@ -1679,7 +2516,7 @@ async fn test_tool_call_turn_does_not_publish_premature_agent_finished() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider, registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry).await;
     let session_id = "test-no-premature-finish-tool-calls".to_string();
     agent_loop.set_session_id(&session_id);
     let mut event_collector = EventCollector::with_session(session_id);
@@ -1730,7 +2567,7 @@ async fn test_tool_call_turn_with_stop_finish_does_not_publish_premature_agent_f
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider, registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry).await;
     let session_id = "test-no-premature-finish-stop-after-tool".to_string();
     agent_loop.set_session_id(&session_id);
     let mut event_collector = EventCollector::with_session(session_id);
@@ -1794,7 +2631,7 @@ async fn test_post_tool_soft_stop_retries_and_continues_for_repo_task() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop
         .run(make_chat_request("Review this codebase layout"))
         .await
@@ -1846,7 +2683,7 @@ async fn test_agent_loop_harness_records_requests() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     let request = ChatRequest {
         messages: vec![codegg::provider::Message::User {
@@ -1957,7 +2794,7 @@ async fn test_agent_loop_harness_fails_without_second_call() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(provider, registry);
+    let mut agent_loop = build_test_agent_loop(provider, registry).await;
 
     let request = ChatRequest {
         messages: vec![codegg::provider::Message::User {
@@ -2020,7 +2857,8 @@ async fn test_denied_tool_produces_error_result() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
 
     let request = make_chat_request("Use denied_tool");
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -2085,7 +2923,7 @@ async fn test_missing_tool_produces_error_result() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     let request = make_chat_request("Use nonexistent_tool");
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -2160,7 +2998,7 @@ async fn test_question_tool_produces_tool_result() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
 
     // Set session ID for QuestionRegistry (Packet 3)
     agent_loop.set_session_id("test-session-123");
@@ -2265,7 +3103,7 @@ async fn test_question_tool_answer_immediately() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("test-session-immediate-q");
 
     let mut rx = GlobalEventBus::subscribe();
@@ -2350,7 +3188,8 @@ async fn test_permission_ask_answer_immediately() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_session_id("test-session-immediate-p");
 
     let perm_id = "call_p1-echo_args".to_string();
@@ -3088,7 +3927,7 @@ async fn test_follow_up_with_tool_call() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_agent_loop_with_error_config(provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(provider.clone(), registry).await;
 
     let follow_up_tx = agent_loop.follow_up_sender();
     let request = make_chat_request("Initial prompt");
@@ -3252,7 +4091,8 @@ async fn test_permission_ask_allow_once() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_session_id("perm-test-ask-allow");
 
     let perm_id = "call_allow_1-echo_args".to_string();
@@ -3353,7 +4193,8 @@ async fn test_permission_ask_deny_once() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_session_id("perm-test-ask-deny");
 
     let perm_id = "call_deny_1-echo_args".to_string();
@@ -3468,7 +4309,8 @@ async fn test_mixed_tool_ordering() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
 
     let request = make_chat_request("Use multiple tools");
     let result = agent_loop.run(request).await;
@@ -3595,7 +4437,8 @@ async fn test_max_parallel_tools_enforcement() {
         registry,
         permission_checker,
         config,
-    );
+    )
+    .await;
     agent_loop.set_session_id("max-parallel-test");
 
     // Run agent loop in background task
@@ -3628,6 +4471,233 @@ async fn test_max_parallel_tools_enforcement() {
     assert!(requests.len() >= 2, "Should have at least 2 provider calls");
     let last = requests.last().expect("Expected at least one request");
     assert_no_orphan_tool_results(&last.messages);
+}
+
+#[tokio::test]
+async fn parent_and_subagent_batches_keep_independent_permit_owners() {
+    let total_active = Arc::new(AtomicUsize::new(0));
+    let total_peak = Arc::new(AtomicUsize::new(0));
+    let rendezvous = Arc::new(tokio::sync::Barrier::new(4));
+    let parent_active = Arc::new(AtomicUsize::new(0));
+    let parent_peak = Arc::new(AtomicUsize::new(0));
+    let child_active = Arc::new(AtomicUsize::new(0));
+    let child_peak = Arc::new(AtomicUsize::new(0));
+    let mut parent_registry = ToolRegistry::new();
+    let mut child_registry = ToolRegistry::new();
+    for index in 0..2 {
+        parent_registry.register(BatchOwnerTool {
+            name: format!("parent_batch_{index}"),
+            owner_active: parent_active.clone(),
+            owner_peak: parent_peak.clone(),
+            total_active: total_active.clone(),
+            total_peak: total_peak.clone(),
+            rendezvous: rendezvous.clone(),
+        });
+        child_registry.register(BatchOwnerTool {
+            name: format!("subagent_batch_{index}"),
+            owner_active: child_active.clone(),
+            owner_peak: child_peak.clone(),
+            total_active: total_active.clone(),
+            total_peak: total_peak.clone(),
+            rendezvous: rendezvous.clone(),
+        });
+    }
+    let config = Config {
+        server: Some(ServerConfig {
+            max_parallel_tools: Some(2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let names = [
+        "parent_batch_0",
+        "parent_batch_1",
+        "subagent_batch_0",
+        "subagent_batch_1",
+    ];
+    let permission_checker = || {
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: names
+                .iter()
+                .map(|name| codegg::permission::ToolRule {
+                    tool: (*name).into(),
+                    level: PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: None,
+                })
+                .collect(),
+            path_rules: vec![],
+        })
+    };
+    let make_provider = |prefix: &str| {
+        let mut calls: Vec<_> = (0..2)
+            .map(|index| {
+                let name = format!("{prefix}_batch_{index}");
+                ChatEvent::ToolCall(ToolCall {
+                    id: format!("{prefix}-call-{index}").into(),
+                    name: name.into(),
+                    arguments: serde_json::json!({}),
+                })
+            })
+            .collect();
+        calls.push(ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        });
+        Box::new(ScriptedProvider::new(vec![
+            calls,
+            vec![
+                ChatEvent::TextDelta("done".to_string().into()),
+                ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ]))
+    };
+    let root = std::env::current_dir()
+        .expect("workspace")
+        .canonicalize()
+        .expect("canonical workspace");
+    let make_loop = |name: &str, mode: codegg::agent::AgentMode, provider, registry| {
+        AgentLoop::new(
+            vec![Agent {
+                git_read_only: false,
+                name: name.into(),
+                role: None,
+                description: name.into(),
+                mode,
+                mode_name: None,
+                model: None,
+                variant: None,
+                temperature: None,
+                top_p: None,
+                color: None,
+                steps: None,
+                system_prompt: None,
+                permissions: Default::default(),
+                hidden: false,
+                thinking_budget: None,
+                reasoning_effort: None,
+                fallback_model: None,
+                runtime_kind: None,
+            }],
+            provider,
+            permission_checker(),
+            registry,
+            config.clone(),
+            None,
+            None,
+            Arc::new(InMemoryArtifactStore::new()),
+            root.clone(),
+            format!("{name}-session"),
+        )
+    };
+    let mut parent = make_loop(
+        "build",
+        codegg::agent::AgentMode::Primary,
+        make_provider("parent"),
+        parent_registry,
+    );
+    let mut subagent = make_loop(
+        "subagent",
+        codegg::agent::AgentMode::Subagent,
+        make_provider("subagent"),
+        child_registry,
+    );
+    subagent.set_session_id("build-session");
+    attach_test_workspace_authority(&mut parent, &root).await;
+    attach_test_workspace_authority(&mut subagent, &root).await;
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            parent.run(make_chat_request("parent batch")),
+            subagent.run(make_chat_request("subagent batch")),
+        )
+    })
+    .await
+    .expect("both batches must make progress");
+    assert!(result.0.is_ok(), "parent failed: {:?}", result.0.err());
+    assert!(result.1.is_ok(), "subagent failed: {:?}", result.1.err());
+    assert_eq!(parent_peak.load(Ordering::SeqCst), 2);
+    assert_eq!(child_peak.load(Ordering::SeqCst), 2);
+    assert_eq!(total_peak.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn admitted_native_command_timeout_preserves_partial_output_in_agent_transcript() {
+    let root = std::env::current_dir()
+        .expect("workspace")
+        .canonicalize()
+        .expect("canonical workspace");
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        codegg::tool::bash::BashTool::new()
+            .with_workspace_root(root)
+            .with_sandbox_profile(
+                codegg_core::approval::SandboxProfile::FullHost,
+                &std::env::current_dir().expect("workspace"),
+            ),
+    );
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "native-timeout-partial".to_string().into(),
+                name: "bash".to_string().into(),
+                arguments: serde_json::json!({
+                    "command": "printf C006-PARTIAL-OUTPUT; sleep 5",
+                    "timeout": 1
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("observed timeout output".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent = build_test_agent_loop(Box::new(provider.clone()), registry).await;
+    agent.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        agent.run(make_chat_request("run a bounded native command")),
+    )
+    .await
+    .expect("admitted timeout should remain bounded");
+    assert!(result.is_ok(), "agent turn failed: {result:?}");
+    let requests = provider.get_requests().await;
+    assert!(
+        requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .any(|message| {
+                matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "native-timeout-partial"
+                && content.as_ref().contains("C006-PARTIAL-OUTPUT")
+                && content.as_ref().contains("timed out"))
+            }),
+        "the native timeout must reach the model with partial output: {:?}",
+        requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .filter_map(|message| match message {
+                Message::Tool {
+                    tool_call_id,
+                    content,
+                } if tool_call_id.as_ref() == "native-timeout-partial" => {
+                    Some(content.as_ref().to_string())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
 }
 
 // =============================================================================
@@ -3905,6 +4975,10 @@ async fn test_task_tool_integration_with_subagent() {
             path_rules: vec![],
         });
 
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
     let mut agent_loop = AgentLoop::new(
         agents,
         main_provider.clone(),
@@ -3914,9 +4988,10 @@ async fn test_task_tool_integration_with_subagent() {
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session-123".to_string(),
     );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn a subagent to do work");
@@ -3964,6 +5039,638 @@ async fn test_task_tool_integration_with_subagent() {
     // We can verify by trying to get a task (even if we don't know the ID,
     // the fact that the tool returned successfully means it was created)
     // For now, just verify the tool result is in the transcript (already done above)
+}
+
+#[tokio::test]
+async fn task_tool_status_get_group_and_cross_session_contracts_are_model_visible() {
+    use codegg::agent::run_control::RunControlService;
+    use codegg::tool::task::TaskStore;
+    use codegg_core::agent_run::{
+        AgentRunBudget, AgentRunStore, AgentRunTerminalOutcome, InMemoryAgentRunStore, NewAgentRun,
+        NewAgentTask,
+    };
+    use codegg_core::agent_run_group::{
+        AgentRunGroupOwner, AgentRunGroupService, NewAgentRunGroup, RunJoinPolicy,
+    };
+    use codegg_core::identity::{AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId};
+    use codegg_core::workspace::WorkspaceId;
+
+    let session = "task-contract-session";
+    let turn = "task-contract-turn";
+    let workspace = WorkspaceId::new_unchecked("task-contract-workspace");
+    let task_id = AgentTaskId::new();
+    let run_id = AgentRunId::new();
+    let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+    let _accepted = runs
+        .create_or_get(
+            NewAgentTask {
+                task_id: task_id.clone(),
+                parent_task_id: None,
+                originating_session_id: session.into(),
+                originating_turn_id: Some(turn.into()),
+                project_id: ProjectId::new(),
+                repository_id: None,
+                workspace_id: workspace.clone(),
+                requested_agent: "subagent".into(),
+                delegation_key: "task-contract-delegation".into(),
+                request_fingerprint: "task-contract-request".into(),
+                description: "completed fixture child".into(),
+            },
+            NewAgentRun {
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                depth: 1,
+                workspace_id: workspace,
+                agent_name: "subagent".into(),
+                agent_digest: Some("fixture-agent-digest".into()),
+                provider: "scripted".into(),
+                model: "fixture-model".into(),
+                authority_digest: "fixture-authority".into(),
+                budget: AgentRunBudget::default(),
+                shared_scratch: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed durable run");
+    runs.transition_task(&task_id, codegg_core::agent_run::AgentTaskStatus::Queued)
+        .await
+        .expect("queue task");
+    runs.transition(&run_id, codegg_core::agent_run::AgentRunStatus::Queued)
+        .await
+        .expect("queue run");
+    runs.transition(&run_id, codegg_core::agent_run::AgentRunStatus::Preparing)
+        .await
+        .expect("prepare run");
+    runs.transition(&run_id, codegg_core::agent_run::AgentRunStatus::Running)
+        .await
+        .expect("start run");
+    let completed = runs
+        .finish(
+            &run_id,
+            AgentRunTerminalOutcome::Completed,
+            Some("fixture-result-private-marker".into()),
+            None,
+            None,
+        )
+        .await
+        .expect("complete run");
+    let groups = AgentRunGroupService::in_memory(runs.clone());
+    let group_id = AgentRunGroupId::new();
+    groups
+        .create(NewAgentRunGroup {
+            group_id: group_id.clone(),
+            root_run_id: completed.root_run_id.clone(),
+            owner_run_id: run_id.clone(),
+            owner: AgentRunGroupOwner::Turn {
+                session_id: session.into(),
+                turn_id: turn.into(),
+            },
+            member_run_ids: vec![run_id.clone()],
+            join_policy: RunJoinPolicy::All,
+            cancel_remaining_on_satisfaction: false,
+            idempotency_key: "task-contract-group".into(),
+        })
+        .await
+        .expect("seed group");
+
+    let task_tool = TaskTool::new(
+        Arc::new(tokio::sync::Mutex::new(TaskStore::new())),
+        None,
+        Some(session.into()),
+        vec![],
+    )
+    .with_agent_run_store(runs.clone())
+    .with_run_control_opt(Some(RunControlService::in_memory(runs.clone())))
+    .with_run_group_service(Some(groups.clone()))
+    .with_turn_owner(session.into(), turn.into())
+    .with_project_context(None, None, Some(turn.into()));
+    let mut registry = ToolRegistry::new();
+    registry.register(task_tool);
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-status".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"status", "run_id":run_id}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-wait".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"wait", "run_id":run_id, "timeout_ms":10}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-get".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"get", "task_id":task_id}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-group-status".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"status_group", "group_id":group_id}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "task-group-wait".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"wait_group", "group_id":group_id, "timeout_ms":10}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("retrieval complete".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent = build_test_agent_loop(Box::new(provider.clone()), registry).await;
+    agent.set_session_id(session);
+    assert!(agent
+        .run(make_chat_request("inspect the delegated task"))
+        .await
+        .is_ok());
+    let requests = provider.get_requests().await;
+    let tool_results: Vec<_> = requests
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .filter_map(|message| match message {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => Some((tool_call_id.to_string(), content.to_string())),
+            _ => None,
+        })
+        .collect();
+    for id in [
+        "task-status",
+        "task-wait",
+        "task-get",
+        "task-group-status",
+        "task-group-wait",
+    ] {
+        assert!(
+            tool_results.iter().any(|(call_id, _)| call_id == id),
+            "missing result for {id}: {tool_results:?}"
+        );
+    }
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-get" && output.contains("fixture-result-private-marker")));
+    assert!(
+        tool_results
+            .iter()
+            .any(|(id, output)| id == "task-status" && output.contains("Status: completed")),
+        "status output was not completed: {tool_results:?}"
+    );
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-wait" && output.contains("Status: completed")));
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-group-status" && output.contains("Status: completed")));
+    assert!(tool_results
+        .iter()
+        .any(|(id, output)| id == "task-group-wait" && output.contains("Status: completed")));
+
+    let attacker_tool = TaskTool::new(
+        Arc::new(tokio::sync::Mutex::new(TaskStore::new())),
+        None,
+        Some("other-session".into()),
+        vec![],
+    )
+    .with_agent_run_store(runs.clone())
+    .with_run_control_opt(Some(RunControlService::in_memory(runs)))
+    .with_run_group_service(Some(groups))
+    .with_turn_owner("other-session".into(), "other-turn".into());
+    let mut attacker_registry = ToolRegistry::new();
+    attacker_registry.register(attacker_tool);
+    let attacker_provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "cross-session-get".to_string().into(),
+                name: "task".to_string().into(),
+                arguments: serde_json::json!({"action":"get", "task_id":task_id}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("done".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut attacker =
+        build_test_agent_loop(Box::new(attacker_provider.clone()), attacker_registry).await;
+    attacker.set_session_id("other-session");
+    assert!(attacker
+        .run(make_chat_request("try to inspect another session's task"))
+        .await
+        .is_ok());
+    let requests = attacker_provider.get_requests().await;
+    let denied = requests
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .any(|message| {
+            matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "cross-session-get"
+                && content.as_ref().contains("not found")
+                && !content.as_ref().contains("fixture-result-private-marker"))
+        });
+    assert!(
+        denied,
+        "cross-session get must return not-found without exposing task result"
+    );
+}
+
+#[tokio::test]
+async fn tool_program_foreground_and_background_run_through_agent_broker_and_scheduler() {
+    use codegg::scheduler::tool_program_executor::ToolProgramExecutor;
+    use codegg::scheduler::{
+        JobScheduler, JobSubmissionService, ResolvedSchedulerConfig, SchedulerShutdownMode,
+    };
+    use codegg::tool::tool_program::ToolProgramTool;
+    use codegg_core::jobs::{DaemonGeneration, InMemoryJobStore, JobKind, JobState, JobStore};
+    use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
+    use codegg_core::workspace_services::{
+        ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
+    };
+
+    let root = tempfile::tempdir().expect("workspace fixture");
+    let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+        .await
+        .expect("workspace registry");
+    let workspace = workspace_registry
+        .get_or_register(root.path())
+        .await
+        .expect("workspace");
+    let workspace_services = WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(ProductionWorkspaceServicesFactory),
+        WorkspaceServicePolicy::default(),
+    );
+    let workspace_lease = workspace_services
+        .acquire(&workspace.id)
+        .await
+        .expect("workspace lease");
+
+    let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let scheduler = JobScheduler::new(
+        job_store.clone(),
+        workspace_services.clone(),
+        ResolvedSchedulerConfig::default(),
+        DaemonGeneration::new_unchecked("agent-tool-program-test"),
+    );
+    let submission = JobSubmissionService::new(
+        job_store.clone(),
+        scheduler.clone(),
+        workspace_services.clone(),
+        DaemonGeneration::new_unchecked("agent-tool-program-test"),
+    );
+    scheduler
+        .register_executor_sync(Arc::new(
+            ToolProgramExecutor::default().with_submission(submission.clone()),
+        ))
+        .expect("register native Tool Program executor");
+    let scheduler_task = scheduler.spawn_run();
+
+    let mut tools = ToolRegistry::with_defaults();
+    tools.register(ToolProgramTool::new().with_submission(submission.clone()));
+    let provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "tool-program-foreground".to_string().into(),
+                name: "tool_program".to_string().into(),
+                arguments: serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "foreground"
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "tool-program-background".to_string().into(),
+                name: "tool_program".to_string().into(),
+                arguments: serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "background"
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("complete".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut agent = AgentLoop::new(
+        vec![Agent {
+            git_read_only: false,
+            name: "build".into(),
+            role: None,
+            description: "test agent".into(),
+            mode: codegg::agent::AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: Default::default(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }],
+        Box::new(provider.clone()),
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        }),
+        tools,
+        Config::default(),
+        None,
+        None,
+        Arc::new(InMemoryArtifactStore::new()),
+        root.path().to_path_buf(),
+        "tool-program-session".into(),
+    );
+    agent.set_workspace_id(workspace.id.clone());
+    agent.set_workspace_services_lease(workspace_lease);
+
+    let result = agent
+        .run(make_chat_request("run a restricted arithmetic program"))
+        .await;
+    assert!(result.is_ok(), "agent turn failed: {result:?}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let jobs = loop {
+        let jobs = job_store
+            .list_job_records(codegg_core::jobs::JobStoreQuery {
+                kinds: vec![JobKind::ToolProgram],
+                ..Default::default()
+            })
+            .await
+            .expect("list Tool Program jobs");
+        if jobs.len() == 2 && jobs.iter().all(|job| job.state.is_terminal()) {
+            break jobs;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Tool Program jobs did not reach terminal states: {jobs:?}; results: {:?}",
+            provider
+                .get_requests()
+                .await
+                .iter()
+                .flat_map(|request| request.messages.iter())
+                .filter_map(|message| match message {
+                    Message::Tool {
+                        tool_call_id,
+                        content,
+                    } => {
+                        Some((tool_call_id.to_string(), content.to_string()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(
+        jobs.len(),
+        2,
+        "expected foreground and background scheduler jobs"
+    );
+    assert!(jobs.iter().all(|job| job.state == JobState::Completed));
+    let requests = provider.get_requests().await;
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.messages.iter().any(|message| {
+                matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "tool-program-foreground"
+                && content.as_ref().contains("program status: completed"))
+            }) && requests
+                .iter()
+                .flat_map(|request| request.messages.iter())
+                .any(|message| {
+                    matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "tool-program-background"
+                && content.as_ref().contains("submitted"))
+                })),
+        "model transcript must contain the structured native result: {:?}",
+        requests
+            .iter()
+            .flat_map(|request| request.messages.iter())
+            .filter_map(|message| match message {
+                Message::Tool {
+                    tool_call_id,
+                    content,
+                } => {
+                    Some((tool_call_id.to_string(), content.to_string()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+
+    let denied_provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "tool-program-denied".to_string().into(),
+                name: "tool_program".to_string().into(),
+                arguments: serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "foreground"
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![
+            ChatEvent::TextDelta("denied as requested".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+    ]);
+    let mut denied_tools = ToolRegistry::new();
+    denied_tools.register(ToolProgramTool::new().with_submission(submission.clone()));
+    let mut denied_agent = AgentLoop::new(
+        vec![Agent {
+            git_read_only: false,
+            name: "build".into(),
+            role: None,
+            description: "test agent".into(),
+            mode: codegg::agent::AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: Default::default(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
+        }],
+        Box::new(denied_provider.clone()),
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![codegg::permission::ToolRule {
+                tool: "tool_program".into(),
+                level: PermissionLevel::Deny,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: vec![],
+        }),
+        denied_tools,
+        Config::default(),
+        None,
+        None,
+        Arc::new(InMemoryArtifactStore::new()),
+        root.path().to_path_buf(),
+        "tool-program-denied-session".into(),
+    );
+    denied_agent.set_workspace_id(workspace.id.clone());
+    denied_agent.set_workspace_services_lease(
+        workspace_services
+            .acquire(&workspace.id)
+            .await
+            .expect("denied workspace lease"),
+    );
+    assert!(denied_agent
+        .run(make_chat_request("attempt a denied Tool Program"))
+        .await
+        .is_ok());
+    let after_deny = job_store
+        .list_job_records(codegg_core::jobs::JobStoreQuery {
+            kinds: vec![JobKind::ToolProgram],
+            ..Default::default()
+        })
+        .await
+        .expect("list jobs after denied invocation");
+    assert_eq!(
+        after_deny.len(),
+        2,
+        "denied call must not create a scheduler job"
+    );
+    assert!(denied_provider
+        .get_requests()
+        .await
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .any(|message| matches!(message, Message::Tool { tool_call_id, content }
+            if tool_call_id.as_ref() == "tool-program-denied" && content.as_ref().contains("denied"))));
+
+    let manifest_registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        workspace_root: Some(root.path().to_path_buf()),
+        ..Default::default()
+    });
+    let manifest_broker = codegg::tool::broker::ToolBroker::new(&manifest_registry);
+    let manifest = codegg::tool::tool_program_context::resolve_contract_snapshot(
+        &manifest_broker,
+        &["read".to_string()],
+    )
+    .expect("resolve frozen read manifest");
+    let path_policy = submission
+        .workspace_path_policy_fingerprint_for_root(root.path())
+        .await
+        .expect("current path policy");
+    let accepted_context = || {
+        let mut context = codegg::tool::backend::ToolExecutionContext::with_backend(
+            codegg::tool::backend::ToolBackendKind::Native,
+        );
+        context.session_id = Some("tool-program-negative-session".into());
+        context.cwd = root.path().to_path_buf();
+        context.invocation_key = Some("negative-authority-fixture".into());
+        context.decision_id = Some("accepted-decision-fixture".into());
+        context.decision_outcome = Some("allowed".into());
+        context.workspace_path_policy_id = Some(path_policy.clone());
+        context.workspace_path_policy_revision = Some(path_policy.clone());
+        context.permission_policy_revision = Some("policy-fixture".into());
+        context.principal_identity = Some("fixture-agent".into());
+        context.caller_class = Some("agent".into());
+        context.max_effect_class = Some("read_only".into());
+        context.decision_issued_at = Some(chrono::Utc::now().timestamp_millis());
+        context.program_contract_snapshot = Some(manifest.clone());
+        context
+    };
+    let invalid_authorities = [
+        ("missing decision", 0),
+        ("mismatched workspace policy", 1),
+        ("revoked decision", 2),
+        ("expired decision", 3),
+    ];
+    for (case, kind) in invalid_authorities {
+        let mut context = accepted_context();
+        match kind {
+            0 => context.decision_id = None,
+            1 => context.workspace_path_policy_revision = Some("stale-policy".into()),
+            2 => context.decision_revoked_at = Some(chrono::Utc::now().timestamp_millis()),
+            3 => context.decision_expires_at = Some(chrono::Utc::now().timestamp_millis() - 1),
+            _ => unreachable!(),
+        }
+        let rejected = codegg::tool::tool_program::ToolProgramTool::new()
+            .with_submission(submission.clone())
+            .execute_structured(
+                serde_json::json!({
+                    "source": "emit(str(1 + 1))",
+                    "tools": ["read"],
+                    "execution_mode": "foreground"
+                }),
+                Some(context),
+            )
+            .await;
+        assert!(rejected.is_err(), "{case} authority must be refused");
+    }
+    let after_invalid_authorities = job_store
+        .list_job_records(codegg_core::jobs::JobStoreQuery {
+            kinds: vec![JobKind::ToolProgram],
+            ..Default::default()
+        })
+        .await
+        .expect("list jobs after invalid authority cases");
+    assert_eq!(
+        after_invalid_authorities.len(),
+        2,
+        "invalid authority must not create executable jobs"
+    );
+    scheduler
+        .shutdown(SchedulerShutdownMode::ImmediateInterrupt)
+        .await;
+    scheduler_task.abort();
 }
 
 #[tokio::test]
@@ -4113,6 +5820,10 @@ async fn test_task_tool_denied_tools_passthrough() {
         });
 
     // Build AgentLoop
+    let workspace_root = std::env::current_dir()
+        .expect("test workspace root")
+        .canonicalize()
+        .expect("canonical test workspace root");
     let mut agent_loop = AgentLoop::new(
         agents,
         main_provider.clone(),
@@ -4122,9 +5833,10 @@ async fn test_task_tool_denied_tools_passthrough() {
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
-        std::env::current_dir().expect("test workspace root"),
+        workspace_root.clone(),
         "test-session-denied".to_string(),
     );
+    attach_test_workspace_authority(&mut agent_loop, &workspace_root).await;
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn subagent with denied tools");
@@ -4338,7 +6050,7 @@ async fn test_source_structure_prompt_does_not_synthesize_bootstrap_list() {
     }];
     let scripted_provider = Box::new(ScriptedProvider::new(vec![response1]));
     let registry = ToolRegistry::with_defaults();
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("test-source-structure-bootstrap");
 
     let mut request = make_chat_request("get source code structure for this project");
@@ -4368,7 +6080,7 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
     }];
     let scripted_provider = Box::new(ScriptedProvider::new(vec![response1]));
     let registry = ToolRegistry::with_defaults();
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("test-structured-tool-calls-diagnostic");
 
     let mut rx = GlobalEventBus::subscribe();
@@ -4574,7 +6286,8 @@ async fn test_live_dispatcher_uses_execute_capture() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     let session_id = "test-live-dispatcher-uses-execute-capture".to_string();
     agent_loop.set_session_id(&session_id);
 
@@ -4695,7 +6408,8 @@ async fn test_live_dispatcher_passes_native_backend_in_context() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     let session_id = "test-live-dispatcher-native-backend".to_string();
     agent_loop.set_session_id(&session_id);
 
@@ -4744,7 +6458,7 @@ async fn test_live_dispatcher_model_output_shape_is_plain_string() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry).await;
     let session_id = "test-live-dispatcher-model-output-shape".to_string();
     agent_loop.set_session_id(&session_id);
 
@@ -5193,7 +6907,7 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
     );
 
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(scripted_provider, registry, checker);
+        build_test_agent_loop_with_permissions(scripted_provider, registry, checker).await;
     agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     agent_loop.set_session_id("shell-escalation-approval-gate");
 
@@ -5326,7 +7040,10 @@ async fn m001_secret_bearing_transport_stays_redacted_and_permanent() {
 /// Build an `Automatic`-mode loop whose reviewer is served by the same
 /// scripted provider stream (the reviewer consumes one stream response as
 /// its bounded verdict) and whose `echo_args` tool requires escalation.
-fn build_automatic_reviewer_loop(provider: Box<dyn Provider>, registry: ToolRegistry) -> AgentLoop {
+async fn build_automatic_reviewer_loop(
+    provider: Box<dyn Provider>,
+    registry: ToolRegistry,
+) -> AgentLoop {
     use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
 
     let permission_checker =
@@ -5348,7 +7065,7 @@ fn build_automatic_reviewer_loop(provider: Box<dyn Provider>, registry: ToolRegi
         ..Default::default()
     });
     let mut agent_loop =
-        build_test_agent_loop_with_config(provider, registry, permission_checker, config);
+        build_test_agent_loop_with_config(provider, registry, permission_checker, config).await;
     agent_loop.set_approval_mode(codegg_core::approval::ApprovalMode::Automatic);
     agent_loop
 }
@@ -5408,7 +7125,7 @@ async fn test_approval_automatic_reviewer_allows_without_human_prompt() {
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("auto-reviewer-allow");
     let perm_id = "call_auto_allow-echo_args".to_string();
     let mut rx = GlobalEventBus::subscribe();
@@ -5490,7 +7207,7 @@ async fn test_approval_automatic_reviewer_deny_returns_feedback_without_human() 
     let mut registry = ToolRegistry::new();
     registry.register(EchoArgsTool::new());
 
-    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry);
+    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry).await;
     agent_loop.set_session_id("auto-reviewer-deny");
     let perm_id = "call_auto_deny-echo_args".to_string();
     let mut rx = GlobalEventBus::subscribe();
@@ -5536,7 +7253,7 @@ async fn test_approval_automatic_reviewer_deny_returns_feedback_without_human() 
 
 /// Build a loop with an explicit approval mode and sandbox profile whose
 /// `echo_args` tool requires escalation.
-fn build_m007_policy_loop(
+async fn build_m007_policy_loop(
     provider: Box<dyn Provider>,
     registry: ToolRegistry,
     mode: codegg_core::approval::ApprovalMode,
@@ -5555,7 +7272,7 @@ fn build_m007_policy_loop(
             path_rules: vec![],
         });
     let mut agent_loop =
-        build_test_agent_loop_with_permissions(provider, registry, permission_checker);
+        build_test_agent_loop_with_permissions(provider, registry, permission_checker).await;
     agent_loop.set_approval_mode(mode);
     agent_loop.set_sandbox_profile(profile);
     agent_loop
@@ -5594,7 +7311,8 @@ async fn test_approval_yolo_workspace_write_skips_prompt_but_stays_sandboxed() {
         registry,
         codegg_core::approval::ApprovalMode::Yolo,
         codegg_core::approval::SandboxProfile::WorkspaceWrite,
-    );
+    )
+    .await;
     agent_loop.set_session_id("yolo-workspace-write");
     assert_eq!(
         agent_loop.sandbox_profile(),
@@ -5671,7 +7389,8 @@ async fn test_approval_yolo_explicit_deny_remains_denied() {
         scripted_provider.clone(),
         registry,
         permission_checker,
-    );
+    )
+    .await;
     agent_loop.set_approval_mode(codegg_core::approval::ApprovalMode::Yolo);
     agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     agent_loop.set_session_id("yolo-deny");

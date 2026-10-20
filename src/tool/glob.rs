@@ -143,6 +143,7 @@ impl Tool for GlobTool {
         // The old validate-against-the-process-cwd behavior had been rejecting
         // that walk outright, which masked the split.
         let canonical_search = canonical_search.clone();
+        let display_search = canonical_search.clone();
         let walk_root = canonical_search.clone();
 
         let walk = WalkBuilder::new(&walk_root)
@@ -151,38 +152,55 @@ impl Tool for GlobTool {
             .follow_links(false)
             .build();
 
-        let (matches, truncated) = tokio::task::spawn_blocking(move || {
+        let (matches, truncated, walk_error) = tokio::task::spawn_blocking(move || {
             let mut matches = Vec::new();
             let mut truncated = false;
-            for entry in walk {
-                if matches.len() >= MAX_WALK_ENTRIES {
+            let mut walk_error = None;
+            for (visited, entry) in walk.enumerate() {
+                if visited >= MAX_WALK_ENTRIES {
                     truncated = true;
                     break;
                 }
-                if let Ok(entry) = entry {
-                    if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        walk_error.get_or_insert_with(|| error.to_string());
                         continue;
                     }
-                    let path = entry.into_path();
-                    if !unrestricted && !path.starts_with(&walk_root) {
-                        continue;
-                    }
-                    if !matcher.is_match(&path) {
-                        continue;
-                    }
-                    let canonical = match path.canonicalize() {
-                        Ok(c) => c,
-                        Err(_) => continue,
-                    };
-
-                    if !unrestricted && !canonical.starts_with(&canonical_search) {
-                        continue;
-                    }
-
-                    matches.push(canonical.display().to_string());
+                };
+                if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+                    continue;
                 }
+                let path = entry.into_path();
+                if !unrestricted && !path.starts_with(&walk_root) {
+                    continue;
+                }
+                // Glob patterns are expressed relative to the requested
+                // search directory, while WalkBuilder yields absolute
+                // paths. Match against the root-relative subject so a
+                // pattern such as `scripts/verify*.sh` behaves the same
+                // regardless of the daemon's process cwd.
+                let Ok(relative) = path.strip_prefix(&walk_root) else {
+                    continue;
+                };
+                if !matcher.is_match(relative) {
+                    continue;
+                }
+                let canonical = match path.canonicalize() {
+                    Ok(c) => c,
+                    Err(error) => {
+                        walk_error.get_or_insert_with(|| error.to_string());
+                        continue;
+                    }
+                };
+
+                if !unrestricted && !canonical.starts_with(&canonical_search) {
+                    continue;
+                }
+
+                matches.push(canonical.display().to_string());
             }
-            (matches, truncated)
+            (matches, truncated, walk_error)
         })
         .await
         .map_err(|e| ToolError::Execution(format!("task join error: {}", e)))?;
@@ -191,15 +209,74 @@ impl Tool for GlobTool {
         sorted_matches.sort();
 
         if sorted_matches.is_empty() {
-            Ok(format!("No files matching '{}'", pattern))
+            if let Some(error) = walk_error {
+                Err(ToolError::Execution(format!(
+                    "glob scan under '{}' failed before finding matches: {error}",
+                    display_search.display()
+                )))
+            } else if truncated {
+                Ok(format!(
+                    "No files matching '{}' found under '{}' before the {}-entry scan limit (results may be incomplete)",
+                    pattern,
+                    display_search.display(),
+                    MAX_WALK_ENTRIES
+                ))
+            } else {
+                Ok(format!(
+                    "No files matching '{}' under '{}'",
+                    pattern,
+                    display_search.display()
+                ))
+            }
         } else {
             let mut result = format!("[{} files", sorted_matches.len());
             if truncated {
                 result.push_str(&format!(" (truncated at {} entries)", MAX_WALK_ENTRIES));
             }
+            if let Some(error) = walk_error {
+                result.push_str(&format!(" (scan warning: {error})"));
+            }
             result.push_str("]\n\n");
             result.push_str(&sorted_matches.join("\n"));
             Ok(result)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::Tool;
+
+    #[tokio::test]
+    async fn relative_pattern_matches_under_an_alternate_search_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let search_root = workspace.join("scripts");
+        std::fs::create_dir_all(search_root.join("nested")).expect("create dirs");
+        std::fs::write(search_root.join("verify.sh"), "#!/bin/sh\n").expect("fixture");
+        std::fs::write(search_root.join("nested/verify-extra.sh"), "#!/bin/sh\n")
+            .expect("nested fixture");
+
+        let tool = GlobTool::new().with_allowed_root(workspace);
+        let result = tool
+            .execute(json!({"pattern": "verify*.sh", "path": "scripts"}))
+            .await
+            .expect("glob should match relative to path");
+        assert!(result.contains("verify.sh"), "{result}");
+        assert!(!result.contains("verify-extra.sh"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn nested_relative_pattern_matches_workspace_script() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("scripts")).expect("create scripts");
+        std::fs::write(temp.path().join("scripts/verify.sh"), "#!/bin/sh\n").expect("fixture");
+        let tool = GlobTool::new().with_allowed_root(temp.path().to_path_buf());
+        let result = tool
+            .execute(json!({"pattern": "scripts/verify*.sh"}))
+            .await
+            .expect("glob should match workspace-relative path");
+        assert!(result.contains("verify.sh"), "{result}");
     }
 }

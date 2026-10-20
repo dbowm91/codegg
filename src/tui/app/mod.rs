@@ -18,6 +18,7 @@ mod plugin_effects;
 mod project_session;
 mod prompt_turn;
 mod render;
+pub mod turn_submit;
 mod types;
 
 pub(crate) use commands::send_tui;
@@ -89,7 +90,7 @@ use crate::util::fuzzy::fuzzy_score;
 use crate::util::truncate::{truncate_prefix, truncate_suffix};
 use crossterm::event::KeyEvent;
 use egglsp::{render_workflow_display, LspWorkflowInvocation, LspWorkflowRecipe};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -130,11 +131,6 @@ pub const TURN_STALL_TOOL_GRACE: Duration = Duration::from_secs(3600);
 /// Owned by [`App::ensure_tui_cmd_channel`] so startup can enqueue before the
 /// event loop is running; `run_event_loop` reuses the same channel.
 pub const TUI_CMD_CHANNEL_CAPACITY: usize = 100;
-
-/// Maximum task rows drawn when the above-input todo list is expanded.
-/// Bounds the strip so a long list cannot crowd out the chat viewport; the
-/// header always reports the true total.
-pub const MAX_TODO_STRIP_TASKS: usize = 9;
 
 /// Maximum subagent rows drawn in the working strip above the composer.
 ///
@@ -363,16 +359,15 @@ pub struct App {
     /// envelope has landed. Tracking the revision keeps the visible list
     /// monotonic instead of letting the stale snapshot win.
     pub todo_revision: u64,
-    /// Whether the above-input todo strip shows the full list or only the
-    /// one-line `n/m completed` summary. Toggled with Ctrl+T.
-    pub todo_expanded: bool,
-    /// Whether the unified tasks overlay is expanded. Toggled with Shift+T.
+    /// Whether the unified tasks overlay is expanded. Toggled with `Ctrl+T`.
     ///
-    /// Separate from [`App::todo_expanded`] because the two answer different
-    /// questions. `Ctrl+T` owns the always-visible compact progress line; this
-    /// owns the on-demand block that adds in-flight subagents and jobs beneath
-    /// it. Collapsing them would take away the one-line summary that is legible
-    /// without expanding anything.
+    /// The above-input todo strip is a separate, always-visible one-line
+    /// summary; it has no expanded form of its own. `Ctrl+T` opens *this*
+    /// block, which carries the full todo list alongside in-flight subagents
+    /// and jobs. Collapsing the two into one key is deliberate: "what is this
+    /// session waiting on" is one question, and answering it in two places
+    /// meant the compact progress line and the full list could disagree about
+    /// which todos exist.
     pub tasks_expanded: bool,
     /// Row the overlay's selection cursor rests on, as an index into the
     /// *bounded* row list the overlay actually renders.
@@ -385,6 +380,16 @@ pub struct App {
     /// `task_rows()`, so the cursor can never point at a row that truncation
     /// removed — which would make `Enter` open a subagent the user cannot see.
     pub tasks_selected: Option<usize>,
+    /// Input mode to restore when the overlay closes, when opening it moved
+    /// the app into [`InputMode::Normal`].
+    ///
+    /// `None` when the overlay was opened from Normal mode, or is closed.
+    /// The overlay's own keys (`j`/`k`/`Enter`/`Esc`) are Normal-mode gestures
+    /// on purpose — claiming bare letters while composing would break the
+    /// composer — so opening it from Insert has to take Normal mode with it,
+    /// and closing it has to give the user's mode back. Without the restore,
+    /// peeking at pending work would silently end composition mode.
+    tasks_restore_mode: Option<InputMode>,
     /// Rows the todo strip occupies on the last render pass.
     pub todo_area: Option<Rect>,
     /// Rows the unified tasks overlay occupies on the last render pass.
@@ -511,6 +516,16 @@ pub struct App {
     /// Retained envelope identity for the last failed/uncertain turn submit.
     /// An identical retry reuses this id so daemon receipts prevent replay.
     pub pending_turn_submission: Option<PendingTurnSubmission>,
+    /// Frontend-side lifecycle guard for the in-flight `turn.submit`.
+    ///
+    /// The daemon's `request_id` in [`PendingTurnSubmission`] is the
+    /// idempotency key and is derived from the request payload; this
+    /// generation is purely local and answers a different question — *is this
+    /// completion still about the submission the user is looking at?* A
+    /// superseded or cancelled submission must change nothing, so the
+    /// completion arm calls [`AsyncUiRequestState::finish`] first and drops
+    /// the completion when it returns `false`.
+    pub turn_submit_request: crate::tui::app::state::AsyncUiRequestState,
     /// Session/workspace authority captured when each human shell process
     /// starts, used to reject late output after navigation changes context.
     pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
@@ -647,7 +662,6 @@ pub struct App {
     /// tell them apart — so the picker records its intent here and the message
     /// handler spends it. Cleared on every commit, so a picker the user
     /// abandoned cannot load its content into the next panel they pick.
-    pub pending_panel_picker_subject: Option<&'static str>,
     /// User-saved `Ctrl+digit` panel bindings, loaded from `codegg.json`
     /// and written back when the manager changes one.
     ///
@@ -707,6 +721,14 @@ pub struct PendingTurnSubmission {
     pub session_id: String,
     pub request_id: String,
     pub request_sha256: String,
+    /// The prompt this submission carried.
+    ///
+    /// `send_prompt` clears the composer *before* the daemon has accepted
+    /// anything, so a refusal has no other way to hand the user's text back.
+    /// Keeping it here rather than in the completion command means the prompt
+    /// is never duplicated across a channel and never read from the composer,
+    /// which the user may have kept typing into.
+    pub prompt: String,
 }
 
 fn turn_submission_request_id(
@@ -1002,6 +1024,9 @@ impl App {
                 permission_pending: false,
                 subagent_count: 0,
                 git_sidebar: crate::tui::app::state::session::GitSidebarState::default(),
+                // M002a: the queue projection is daemon-derived and seeded
+                // empty. Nothing can enqueue an entry until M002b.
+                user_prompt_queue: Vec::new(),
             },
             prompt_state: PromptState {
                 prompt: PromptWidget::new(Arc::clone(&theme)),
@@ -1025,6 +1050,8 @@ impl App {
                 task_model_choice: None,
                 chat_seed: None,
                 stop_armed_at: None,
+                subagent_addressee: None,
+                subagent_steer_request: crate::tui::app::state::AsyncUiRequestState::default(),
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1103,6 +1130,11 @@ impl App {
                 terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
                 workspace_dashboard: None,
+                queue_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_add_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_edit_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_reorder_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_send_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -1136,9 +1168,9 @@ impl App {
             completion_scroll_offset: 0,
             todos: Vec::new(),
             todo_revision: 0,
-            todo_expanded: false,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
             sidebar_area: None,
@@ -1190,6 +1222,7 @@ impl App {
                 .unwrap_or_default(),
             pending_shell_promotions: Vec::new(),
             pending_turn_submission: None,
+            turn_submit_request: crate::tui::app::state::AsyncUiRequestState::new(),
             shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: loaded_shell_cfg
                 .as_ref()
@@ -1249,7 +1282,6 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
-            pending_panel_picker_subject: None,
             panel_hotkeys: saved_panel_hotkeys,
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -1578,6 +1610,9 @@ impl App {
                 permission_pending: false,
                 subagent_count: 0,
                 git_sidebar: crate::tui::app::state::session::GitSidebarState::default(),
+                // M002a: the queue projection is daemon-derived and seeded
+                // empty. Nothing can enqueue an entry until M002b.
+                user_prompt_queue: Vec::new(),
             },
             prompt_state: PromptState {
                 prompt: PromptWidget::new(Arc::clone(&theme)),
@@ -1601,6 +1636,8 @@ impl App {
                 task_model_choice: None,
                 chat_seed: None,
                 stop_armed_at: None,
+                subagent_addressee: None,
+                subagent_steer_request: crate::tui::app::state::AsyncUiRequestState::default(),
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1679,6 +1716,11 @@ impl App {
                 terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
                 workspace_dashboard: None,
+                queue_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_add_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_edit_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_reorder_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                queue_send_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -1712,9 +1754,9 @@ impl App {
             completion_scroll_offset: 0,
             todos: Vec::new(),
             todo_revision: 0,
-            todo_expanded: false,
             tasks_expanded: false,
             tasks_selected: None,
+            tasks_restore_mode: None,
             todo_area: None,
             tasks_area: None,
             sidebar_area: None,
@@ -1760,6 +1802,7 @@ impl App {
             shell_store: crate::shell::ShellOutputStore::new(),
             pending_shell_promotions: Vec::new(),
             pending_turn_submission: None,
+            turn_submit_request: crate::tui::app::state::AsyncUiRequestState::new(),
             shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: true,
             shell_enabled: true,
@@ -1795,7 +1838,6 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
-            pending_panel_picker_subject: None,
             panel_hotkeys: Default::default(),
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -1882,7 +1924,13 @@ impl App {
     /// therefore undo that optimistic state explicitly. Otherwise the composer
     /// sits on a spinner for a turn that does not exist, and the only thing the
     /// user ever learns is the stall watchdog's generic five-minute message.
-    pub fn fail_unstarted_turn(&mut self, reason: &str) {
+    ///
+    /// `restore_prompt` hands the submitted text back to the composer. The
+    /// optimistic clear destroyed it and the user's only copy is now in the
+    /// transcript, where editing it is not possible. Pass the prompt that was
+    /// actually submitted — not the current composer contents, which the user
+    /// may have kept typing into.
+    pub fn fail_unstarted_turn(&mut self, reason: &str, restore_prompt: Option<&str>) {
         self.session_state.working_since = None;
         self.session_state.active_turn_id = None;
         self.set_session_status(SessionStatus::Error);
@@ -1894,7 +1942,128 @@ impl App {
         // there is no in-flight turn to guard.
         self.prompt_state.pending_send = false;
         self.prompt_state.prompt.set_waiting(false);
+        if let Some(prompt) = restore_prompt {
+            self.prompt_state.restore_prompt_with_stash(prompt);
+        }
         self.report_turn_error(reason);
+    }
+
+    /// Release a submit the daemon refused **because a turn is already
+    /// running**, leaving that turn completely alone.
+    ///
+    /// This is not `fail_unstarted_turn`. No turn was unstarted here: a turn is
+    /// running on the daemon right now, and the optimistic teardown used for
+    /// every other failure actively lied about it. It cleared `active_turn_id`
+    /// and `working_since` — discarding the identity and elapsed age of a live
+    /// turn — stopped the thinking indicator, finalized the activity stream of
+    /// a turn that is still producing events, and set `Error` on a session that
+    /// is actively working.
+    ///
+    /// So this path releases only what the submit itself owns: the composer
+    /// guard, and the text the optimistic clear took away. The running turn's
+    /// state is untouched, and the refusal is reported as a toast rather than
+    /// latched through [`App::report_turn_error`] — `render_working_strip`
+    /// gives `last_error` absolute precedence, so latching would replace the
+    /// live turn's spinner and elapsed time with a stale `✗` line, which is
+    /// the same state corruption wearing a different hat.
+    ///
+    /// Contention is not a turn failure: the turn continues, so there is no
+    /// dead turn for a latched reason to explain.
+    pub fn fail_contended_turn(&mut self, reason: &str, submitted_prompt: Option<&str>) {
+        self.prompt_state.pending_send = false;
+        self.prompt_state.prompt.set_waiting(false);
+        if let Some(prompt) = submitted_prompt {
+            self.prompt_state.restore_prompt_with_stash(prompt);
+        }
+        self.messages_state.toasts.warning(reason);
+        tracing::info!(
+            target: "codegg::tui::app",
+            "turn.submit refused: a turn is already active; the active turn was left running"
+        );
+    }
+
+    /// Invalidate an in-flight `turn.submit` completion.
+    ///
+    /// The daemon turn is not undone — it keeps running and its events still
+    /// arrive — but a completion that lands after a tab switch, reconnect, or
+    /// project change must not act on state the user has moved past. Returns
+    /// the submitted prompt so a caller that is discarding the submission can
+    /// hand the user's text back; `None` when nothing was in flight.
+    pub fn cancel_turn_submit(&mut self) -> Option<String> {
+        if self.turn_submit_request.is_loading() {
+            self.turn_submit_request.cancel();
+        }
+        self.pending_turn_submission
+            .take()
+            .map(|pending| pending.prompt)
+    }
+
+    /// Apply one `turn.submit` completion.
+    ///
+    /// Returns `false` when the completion was superseded or cancelled, in
+    /// which case nothing was mutated. The staleness check is the shared
+    /// [`AsyncUiRequestState`] rather than a hand-rolled identity comparison
+    /// at the call site: this arm used to clear `pending_turn_submission` only
+    /// when the ids matched but then tore down turn state *unconditionally*,
+    /// so a late completion from a superseded submission could still null a
+    /// live turn's identity.
+    pub fn apply_turn_submission_finished(
+        &mut self,
+        request_id: &str,
+        generation: u64,
+        outcome: crate::tui::app::turn_submit::TurnSubmitOutcome,
+    ) -> bool {
+        // Local staleness first: a cancelled or superseded submission changes
+        // nothing at all, including the pending record.
+        if !self.turn_submit_request.finish(generation) {
+            return false;
+        }
+        // Then the daemon identity. This is the idempotency key, not a
+        // UI-generation marker, so it is still checked: a completion whose
+        // request id does not match the retained submission is not about the
+        // prompt this frontend is holding.
+        let submitted_prompt = match self.pending_turn_submission.as_ref() {
+            Some(pending) if pending.request_id == request_id => pending.prompt.clone(),
+            Some(_) => {
+                // A completion for a different submission's idempotency key is
+                // not about the prompt this frontend is holding. Drop it whole:
+                // clearing the retained record here would destroy the identity
+                // an identical retry needs to stay idempotent.
+                return false;
+            }
+            None => {
+                // No pending submission at all. An accepted-late completion is
+                // harmless; a failure with nowhere to restore from is reported
+                // but changes no state.
+                if let Some(reason) = outcome.failure_text() {
+                    self.report_turn_error(&reason);
+                }
+                return false;
+            }
+        };
+        self.pending_turn_submission = None;
+        match &outcome {
+            crate::tui::app::turn_submit::TurnSubmitOutcome::Accepted => true,
+            outcome => {
+                let reason = outcome
+                    .failure_text()
+                    .unwrap_or_else(|| "Turn not submitted".to_string());
+                let prompt = outcome
+                    .restores_prompt()
+                    .then_some(submitted_prompt.as_str())
+                    .filter(|prompt| !prompt.trim().is_empty());
+                if outcome.preserves_active_turn() {
+                    self.fail_contended_turn(&reason, prompt);
+                } else if outcome.reports_as_turn_failure() {
+                    // `Unexpected` reaches here too: it started no turn that
+                    // this frontend can prove, but it must not claim one is
+                    // running either, so it takes the unstarted-turn teardown
+                    // with no prompt to restore.
+                    self.fail_unstarted_turn(&reason, prompt);
+                }
+                true
+            }
+        }
     }
 
     /// Fail a turn that has produced no event for [`TURN_STALL_TIMEOUT`].
@@ -1976,6 +2145,13 @@ impl App {
                 // just announced. It was discarded here, which is why nothing
                 // in the TUI could interrupt a running agent.
                 self.session_state.active_turn_id = Some(turn_id.clone());
+                // C007: a subagent addressee belongs to the turn it was armed
+                // under. A subagent dispatched by the *previous* turn is not
+                // one this turn's agent is running, so keeping the address
+                // would let a reply written about it ride along into a turn
+                // that never owned it. Cleared silently — a turn starting is
+                // its own visible event, and a toast here would talk over it.
+                self.prompt_state.subagent_addressee = None;
                 // A fresh turn supersedes any earlier stop.
                 self.session_state.stopped_turn = false;
                 // The agent is running again, so the reason the last turn died
@@ -2306,6 +2482,22 @@ impl App {
                 self.refresh_project_catalog();
                 true
             }
+            // M003 (ADR-0038): the daemon pushes a fresh queue projection after
+            // it delivers — or fails to deliver — an entry. Before this arm the
+            // queue was read only on the session-change edge, which a delivery
+            // never produces, so an entry the user had queued would sit displayed
+            // as `pending` while its turn ran and nothing on screen would ever
+            // say it was no longer waiting.
+            E::UserPromptQueue {
+                session_id,
+                entries,
+            } => {
+                // Adopted through the same applier the load path uses, so a
+                // pushed projection and a read projection cannot diverge in how
+                // they are filtered — the superseded-session guard included.
+                self.apply_user_prompt_queue_loaded(session_id, entries, None);
+                true
+            }
             _ => false,
         }
     }
@@ -2463,6 +2655,96 @@ impl App {
                     },
                 );
             });
+    }
+
+    /// M002a (ADR-0035): refresh the daemon's prompt-queue projection for one
+    /// session.
+    ///
+    /// Follows the `load_human_shell_promotions` shape: build the request, hand
+    /// the work to the shared guarded task registry, match the typed response,
+    /// and return a typed completion command. No raw `tokio::spawn` — a
+    /// completion for a superseded session must be droppable.
+    ///
+    /// The queue reads empty until M002b lands; this exists so the projection is
+    /// already derived from the daemon rather than guessed locally when it does
+    /// not.
+    pub(crate) fn load_user_prompt_queue(&mut self, session_id: String) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            return;
+        };
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::UserPromptQueueList {
+                session_id: session_id.clone(),
+            },
+        );
+        self.task_registry
+            .spawn(TuiTaskKind::Command, "load_user_prompt_queue", async move {
+                let (entries, error) = match client.request(request).await {
+                    Ok(CoreResponse::UserPromptQueue { entries, .. }) => (entries, None),
+                    // An older daemon that does not know this request answers
+                    // with some other shape. Treat that as an absent
+                    // projection — an empty queue — not as a failure the user
+                    // needs to see.
+                    Ok(CoreResponse::Error { code, message }) => {
+                        (Vec::new(), Some(format!("{code}: {message}")))
+                    }
+                    Ok(_) => (Vec::new(), None),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::UserPromptQueueLoaded {
+                        session_id,
+                        entries,
+                        error,
+                    },
+                );
+            });
+    }
+
+    /// M002a: apply the daemon's prompt-queue projection.
+    ///
+    /// A failure leaves the previous projection intact. Clearing it would make
+    /// a dead socket indistinguishable from a genuinely empty queue, and the
+    /// user has no way to repopulate it locally — the difference is exactly
+    /// what a transient transport error should not erase.
+    pub fn apply_user_prompt_queue_loaded(
+        &mut self,
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            tracing::debug!(%error, %session_id, "could not read the prompt queue projection");
+            return;
+        }
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        if Some(session_id.as_str()) != current_session_id {
+            // A completion for a superseded session must not write into
+            // current state.
+            return;
+        }
+        self.session_state.user_prompt_queue = entries;
+        // M004: the mounted `/queue` box is a view over exactly this vector,
+        // so it is updated here rather than at each call site. Routing the
+        // read, the M003 push, and the delete response through one applier is
+        // what makes it impossible for the row-0 count and the open box to
+        // disagree about how many prompts are waiting.
+        let projection = self.session_state.user_prompt_queue.clone();
+        self.focus_manager
+            .with_dialog_mut::<crate::tui::components::dialogs::queue::QueueDialog, _>(
+                crate::tui::components::component::DialogType::Queue,
+                |dialog| dialog.set_entries(projection),
+            );
     }
 
     /// Store the latest completed security review receipt. Subsequent
@@ -2659,21 +2941,32 @@ impl App {
         }
     }
 
-    pub fn dispatch_turn_submit_request(&mut self, text: String) {
+    /// Dispatch one `turn.submit` to the daemon.
+    ///
+    /// Returns `false` when nothing was sent — no core client, no bound
+    /// session, or a payload that could not be prepared. The caller must not
+    /// then stamp `Working`: `send_prompt` ends by optimistically marking the
+    /// session busy, and that stamp used to land *after* the failure release
+    /// below, overwriting `SessionStatus::Error` and pinning the session on
+    /// `Working` for a turn that was never attempted. The optimistic teardown
+    /// was correct and its result was simply thrown away one line later.
+    pub fn dispatch_turn_submit_request(&mut self, text: String) -> bool {
         let Some(client) = self.core_client.clone() else {
             // No core client means nothing can carry this prompt. Returning
             // silently left the session pinned on `Working` for a turn that
             // was never even attempted.
             self.fail_unstarted_turn(
                 "No connection to the core daemon; the prompt was not submitted",
+                Some(&text),
             );
-            return;
+            return false;
         };
         let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone()) else {
             self.fail_unstarted_turn(
                 "No session is bound to this view; the prompt was not submitted",
+                Some(&text),
             );
-            return;
+            return false;
         };
         // Belt and braces: make sure the session filter is registered before
         // the turn starts, even when the session was bound through a path that
@@ -2701,9 +2994,10 @@ impl App {
                 Ok(agents) => agents,
                 Err(error) => {
                     tracing::error!(?error, "failed to serialize agents for turn submission");
-                    return;
+                    return false;
                 }
             };
+        let submitted_prompt = text.clone();
         let payload = CoreRequest::TurnSubmit {
             session_id: session_id.clone(),
             text,
@@ -2740,44 +3034,58 @@ impl App {
             &session_id,
             &request_sha256,
         );
+        let request = crate::core::new_request(request_id.clone(), payload);
+        // Local staleness guard, distinct from the daemon's idempotency key
+        // above. `begin()` invalidates any earlier submission's completion, so
+        // a late reply for a superseded prompt can never touch current state.
+        let generation = self.turn_submit_request.begin();
         self.pending_turn_submission = Some(PendingTurnSubmission {
             session_id,
             request_id: request_id.clone(),
             request_sha256,
+            prompt: submitted_prompt,
         });
-        let request = crate::core::new_request(request_id.clone(), payload);
+        // This submission produces two completions — the submit result and, for
+        // a turn carrying staged shell evidence, the evidence disposition — so
+        // both are sent from inside the task rather than returned from it.
+        // `spawn_tui_task` still owns the spawn, the elapsed-time trace, and
+        // the "no command sender" case; the returned `None` is deliberate.
         let tui_tx = self.tui_cmd_tx.clone();
-        tokio::spawn(async move {
-            let error = match client.request(request).await {
-                Ok(crate::protocol::core::CoreResponse::Ack) => None,
-                Ok(crate::protocol::core::CoreResponse::TurnAdmissionReceipt { .. }) => None,
-                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
-                    Some(format!("{code}: {message}"))
-                }
-                Ok(_) => Some("unexpected response to turn.submit".to_string()),
-                Err(error) => Some(error.to_string()),
-            };
-            if let Some(tx) = tui_tx {
+        crate::tui::async_cmd::spawn_tui_task(tui_tx.clone(), "turn_submit", async move {
+            // Classification happens here, once, at the only point that knows
+            // how the daemon answered. The completion arm receives a typed
+            // outcome instead of a pre-formatted string, so it can never guess
+            // from message text.
+            let outcome = crate::tui::app::turn_submit::submit(client, request).await;
+            let error = outcome.failure_text();
+            if let Some(reason) = &error {
+                // A submission failure used to be reachable only through a
+                // `debug!`, buried deep enough that a refused turn looked
+                // exactly like a slow one.
+                tracing::warn!("core facade turn.submit failed: {}", reason);
+            }
+            if let Some(tx) = &tui_tx {
+                // Order matters: the submit result explains the refusal, and
+                // the staged-evidence disposition explains what happened to the
+                // shell output that was riding along with it.
                 let _ = send_tui(
-                    &tx,
+                    tx,
                     TuiCommand::TurnSubmissionFinished {
                         request_id,
-                        error: error.clone(),
+                        generation,
+                        outcome,
                     },
                 );
                 if !promotions.is_empty() {
                     let _ = send_tui(
-                        &tx,
+                        tx,
                         TuiCommand::ShellPromotionsSubmitted { promotions, error },
                     );
                 }
-            } else if let Some(error) = error {
-                // No TUI command channel means this process cannot show
-                // anything, but `debug!` buried a submission failure so deep
-                // that a refused turn looked identical to a slow one.
-                tracing::warn!("core facade turn.submit failed: {}", error);
             }
+            None
         });
+        true
     }
 
     pub(crate) fn apply_shell_promotions_submitted(
@@ -3547,10 +3855,12 @@ impl App {
         // overlay.
         //
         // Normal mode only, and that gate is load-bearing rather than
-        // cosmetic. The overlay is opened by `Shift+T`, which is itself
-        // Normal-only, but the user switches back to Insert to keep typing
-        // while it is up. Claiming `j`/`k`/`Enter` there would break the
-        // composer outright.
+        // cosmetic. `Ctrl+T` opens the overlay from either mode and takes
+        // Normal mode with it, but the user can press `i` and go back to
+        // composing while it stays up — the composer is the thing they are
+        // actually doing. Claiming `j`/`k`/`Enter` there would break it
+        // outright, so these keys are the overlay's only while nothing is
+        // being typed.
         if self.tasks_expanded && self.ui_state.input_mode == InputMode::Normal {
             let action = crate::tui::input::handle_key_with_bindings(
                 key,
@@ -3621,10 +3931,7 @@ impl App {
         // docks it, Insert has to mean "type into the PTY". Without the
         // opt-in the keystrokes went to a composer the user was not looking
         // at, and the terminal appeared to be frozen.
-        let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
-            && self.panel_host.is_focused()
-            && (self.ui_state.input_mode == InputMode::Normal
-                || crate::tui::commands::panels::panel_claims_insert_keys(self));
+        let panel_active = self.panel_owns_keyboard();
         // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
         // ahead of the focused panel, and ahead of the binding map. It has to
         // be ahead of the panel because `h/j/k/l` are the panel's own cursor
@@ -3695,6 +4002,42 @@ impl App {
         ) && crate::tui::commands::editor::handle_editor_key(self, key)
         {
             return;
+        }
+        // M002: the composer's Normal-mode claim table. Consulted **before**
+        // the global binding map, because a claimed letter belongs to the
+        // composer and must never reach an app-level action — not even when
+        // the composer's own verb is not implemented yet. That is the
+        // fallthrough rule, and it is the whole point of the table: a
+        // reserved claim is consumed, so `d` cannot silently become
+        // `OpenDiff` while delete-selection is still pending.
+        //
+        // The step sits here, after the modal, panel, Workspace and editor
+        // branches, so a higher-priority surface still wins: with a dialog
+        // open, a claimed letter reaches the dialog, not the composer.
+        //
+        // The gate is the *resolved* mode and the derived ownership, never
+        // the raw `UiState::input_mode` field, which is forced to Normal
+        // whenever a side panel takes focus. The Workspace view is excluded
+        // for the same reason it owns its own Normal-mode keys: its
+        // dashboard filter is a different surface with a different composer,
+        // and a claimed letter there would stop the filter accepting it.
+        if !workspace_active
+            && self.composer_holds_keyboard()
+            && self.composer_input_mode() == InputMode::Normal
+        {
+            let line_count = self.prompt_state.prompt.num_lines();
+            if let Some(claim) = crate::tui::composer_claims::claim_for(key.modifiers, key.code) {
+                if claim.condition.holds(line_count) {
+                    // The claim is consumed here. A reserved verb does
+                    // nothing, and that is the point: the letter is the
+                    // composer's, so the app's action for it is not
+                    // reachable from the main buffer any more — not even
+                    // while the verb is pending. The one live verb runs
+                    // before the key is dropped.
+                    self.run_composer_claim(claim);
+                    return;
+                }
+            }
         }
         let action = handle_event_with_bindings_moded(
             crossterm::event::Event::Key(key),
@@ -3830,9 +4173,6 @@ impl App {
             Some(InputAction::ToggleTasksList) => {
                 self.toggle_tasks_list();
             }
-            Some(InputAction::ToggleTodoList) => {
-                self.toggle_todo_list();
-            }
             Some(InputAction::FocusSidebar) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::focus_workspace_chat(self);
@@ -3850,13 +4190,16 @@ impl App {
             Some(InputAction::CloseSession) => self.process_msg(TuiMsg::CloseSession),
             Some(InputAction::Help) => self.process_msg(TuiMsg::OpenHelpDialog),
             Some(InputAction::FocusPrompt) => {
+                // The composer's keyboard ownership is derived, not stored, so
+                // there is no "focus the prompt" flag to set. The only effect
+                // of this action is the command palette it opens at the start
+                // of the buffer.
                 if self.prompt_state.prompt.cursor_pos() == 0 {
                     self.ui_state.command_mode = true;
                     self.prompt_state.prompt.insert_char('/');
                     self.prompt_state.prompt.set_cursor(1);
                     self.dialog_state.command_palette.set_query("/");
                 }
-                self.process_msg(TuiMsg::FocusPrompt);
             }
             Some(InputAction::StashPrompt) => self.process_msg(TuiMsg::StashPrompt),
             Some(InputAction::RestorePrompt) => self.process_msg(TuiMsg::RestorePrompt),
@@ -3982,8 +4325,15 @@ impl App {
                 self.dialog_state.command_palette.set_query(":");
             }
             None => {
-                // In Normal mode, only 'i' switches to Insert mode
-                // All other keys pass through to their bindings (j/k for navigate, etc.)
+                // In Normal mode, only 'i' switches to Insert mode.
+                //
+                // In the main buffer this arm is no longer the route: the
+                // composer claims `i` and runs the transition itself (see
+                // `run_composer_claim`), so the gesture is reached only on
+                // the surfaces the composer does not own — the editor route
+                // with its buffer unfocused, a focused panel, the Workspace
+                // view's chat pane. All other keys pass through to their
+                // bindings (j/k for navigate, etc.).
                 if self.ui_state.input_mode == InputMode::Normal {
                     if let crossterm::event::KeyCode::Char('i') = key.code {
                         if key.modifiers == crossterm::event::KeyModifiers::NONE {
@@ -4358,11 +4708,24 @@ impl App {
                 Dialog::Session => {
                     if self.dialog_state.session_dialog.bulk_mode {
                         self.dialog_state.session_dialog.toggle_bulk_mode();
-                    } else if let Some(session) =
-                        self.dialog_state.session_dialog.selected_session()
-                    {
-                        self.set_session(session.clone());
-                        self.close_dialog();
+                    } else {
+                        // Row-type dispatch, matching the component's own
+                        // `handle_key`. This arm is `#[cfg(any())]`-disabled
+                        // today (the FocusManager-owned component is the sole
+                        // input authority); it is kept in step deliberately so
+                        // the retained source history does not contradict the
+                        // live route.
+                        match self.dialog_state.session_dialog.activate_selected() {
+                            Some(crate::tui::app::TuiMsg::SelectSession(session)) => {
+                                self.set_session(*session);
+                                self.close_dialog();
+                            }
+                            Some(msg) => {
+                                self.process_msg(msg);
+                                self.close_dialog();
+                            }
+                            None => {}
+                        }
                     }
                 }
                 Dialog::Theme => {
@@ -5073,6 +5436,32 @@ impl App {
         }
     }
 
+    /// Adopt a freshly arrived set of subagent rows and re-check the composer
+    /// addressee against them.
+    ///
+    /// The single funnel for "the projection spoke". Both the sidebar path and
+    /// the strip path route through here rather than calling
+    /// [`SubagentState::set_rows`] themselves, because the addressee rule —
+    /// drop an address whose run is no longer live — has to run on *every*
+    /// snapshot, and a second call site that forgot to call it would leave a
+    /// composer armed to a run that had left the tree.
+    ///
+    /// A snapshot that has not arrived is not evidence of emptiness and never
+    /// reaches this method, so a hiccup in the stream cannot silently disarm a
+    /// user mid-reply.
+    pub fn apply_subagent_rows(&mut self, rows: Vec<crate::tui::app::state::SubagentRow>) {
+        let cleared = crate::tui::app::state::reconcile_addressee(
+            &mut self.prompt_state.subagent_addressee,
+            &rows,
+        );
+        self.ui_state.subagents.set_rows(rows);
+        if cleared {
+            self.messages_state
+                .toasts
+                .warning("That subagent finished, so your next prompt starts a normal turn again.");
+        }
+    }
+
     fn dispatch_builtin_command(
         &mut self,
         action: crate::tui::command::BuiltinSlashAction,
@@ -5086,6 +5475,12 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
+            }
+            B::Queue => {
+                crate::tui::commands::queue::open_queue_box(self);
+            }
+            B::SubagentSend => {
+                crate::tui::commands::subagent_steer::dispatch_addressee_command(self, raw_input);
             }
             B::Reload => {
                 self.enqueue_tui_command(TuiCommand::RefreshAssets);
@@ -5229,16 +5624,21 @@ impl App {
                     .to_string();
 
                 if args.is_empty() {
-                    // Bare `/agents`: open a box, like every other `/` command
-                    // that brings up a surface, and let the user say which
-                    // panel it should go to. It used to jump straight into the
-                    // side column, so the command had no box of its own and
-                    // no way to ask where its content belonged — and a list
-                    // that is already the whole answer looks like nothing
-                    // happened. The *text* listing stays on `/agents show`
-                    // and `/agents --all` below, so nothing that was
-                    // reachable before becomes unreachable.
-                    crate::tui::commands::panels::open_panel_picker(self, "agents");
+                    // Bare `/agents` opens **agents**, the same surface `/agent`
+                    // opens. It used to open the panel picker instead — "where
+                    // should this panel live?" — which answered a question the
+                    // user did not ask: someone typing `/agents` wants to see
+                    // agents, and asking them to choose a placement first made
+                    // the command look broken.
+                    //
+                    // Panel *placement* is a real question and stays reachable
+                    // through `/panels`; the two are different questions and
+                    // should not share an entry point. Everything below here —
+                    // `/agents show`, `--all`, `diff`, `validate`, `reload` —
+                    // is unchanged, so nothing that worked before is now
+                    // harder to reach.
+                    self.ui_state.command_mode = false;
+                    self.open_dialog(Dialog::Agent);
                     return;
                 }
 
@@ -8754,7 +9154,6 @@ impl App {
                     let line = rel_y.saturating_sub(1) + self.prompt_state.prompt.scroll;
                     let column = rel_x as usize + self.prompt_state.prompt.horizontal_scroll;
                     self.prompt_state.prompt.set_cursor_at_column(line, column);
-                    self.prompt_state.prompt.focus();
                 }
             }
             ClickTarget::Sidebar => {
@@ -9012,7 +9411,9 @@ impl App {
                     }
                 }
                 Dialog::Session => {
-                    self.dialog_state.session_dialog.selected = idx;
+                    // `select_index` snaps off a section heading rather than
+                    // parking the cursor on a line `Enter` does nothing with.
+                    self.dialog_state.session_dialog.select_index(idx);
                 }
                 Dialog::Tree => {
                     let cur = self.dialog_state.tree_dialog.selected;
@@ -9082,9 +9483,9 @@ impl App {
                 }
             }
             Dialog::Session => {
-                let total = self.dialog_state.session_dialog.sessions.len();
+                let total = self.dialog_state.session_dialog.rows().len();
                 if idx < total {
-                    self.dialog_state.session_dialog.selected = idx;
+                    self.dialog_state.session_dialog.select_index(idx);
                 }
             }
             Dialog::Tree => {
@@ -9583,6 +9984,22 @@ impl App {
                 // cancelled selector can never be re-mounted with a stale
                 // cursor against a policy that has since changed.
                 self.dialog_state.policy_selector = None;
+            }
+            Dialog::Queue => {
+                // A delete still in flight when the box closes must not mutate
+                // anything afterwards. `cancel` bumps the request id, so the
+                // late completion fails `finish`/`fail` and is dropped whole —
+                // no projection write, no toast, no selection change.
+                self.dialog_state.queue_delete_request.cancel();
+                // M005: same for the three authoring mutations. Cancelling them
+                // is also what discharges acceptance criterion "closing the box
+                // with unsaved text adds nothing and edits nothing" — the box
+                // itself is dropped, so the compose buffer goes with it, and
+                // these three cancel whatever was in flight before that.
+                self.dialog_state.queue_add_request.cancel();
+                self.dialog_state.queue_edit_request.cancel();
+                self.dialog_state.queue_reorder_request.cancel();
+                self.dialog_state.queue_send_request.cancel();
             }
             _ => {}
         }
@@ -12025,6 +12442,9 @@ impl App {
         self.session_state.session = Some(sess);
         self.ensure_session_event_stream(&sess_id);
         self.load_human_shell_promotions(sess_id.clone());
+        // M002a: the queue projection is session-scoped, so it reloads on the
+        // same session-change edge as the promotion projection.
+        self.load_user_prompt_queue(sess_id.clone());
         self.ui_state
             .routes
             .navigate_to(Route::Session(sess_id.clone()));
@@ -12304,6 +12724,134 @@ impl App {
             return InputMode::Insert;
         }
         self.ui_state.input_mode
+    }
+
+    /// Whether the focused side panel owns the keyboard right now.
+    ///
+    /// This is the exact condition `App::on_key` uses to decide whether the
+    /// panel is consulted before the composer. It lives here so the key chain
+    /// and the composer's cursor rules read one derivation instead of two
+    /// copies of the same panel rule — a second copy is where a drift would
+    /// start.
+    pub(crate) fn panel_owns_keyboard(&mut self) -> bool {
+        self.panel_host.is_visible_at(self.panel_host.placement())
+            && self.panel_host.is_focused()
+            && (self.ui_state.input_mode == InputMode::Normal
+                || crate::tui::commands::panels::panel_claims_insert_keys(self))
+    }
+
+    /// Whether the composer currently holds the keyboard.
+    ///
+    /// A derived fact, in the same shape as [`Self::composer_input_mode`] and
+    /// read from the same seams. It is a function of app state, never a stored
+    /// flag: the composer's old `focused` flag was dead in production
+    /// (`PromptWidget::blur()`'s only caller was a test), and a stored copy of
+    /// this fact is exactly the drift class the mode resolution was written to
+    /// kill.
+    ///
+    /// The order mirrors `App::on_key`'s priority chain — the first surface
+    /// that would consume a key is the surface that owns the keyboard:
+    ///
+    /// 1. **A mounted modal.** `on_key` short-circuits to `handle_dialog_key`
+    ///    while the focus manager is non-empty, so a dialog owns the keyboard
+    ///    outright.
+    /// 2. **A focused side panel.** `on_key` consults the panel before the
+    ///    composer, so a selected panel owns it. This is the "another panel is
+    ///    selected" case, and it is the one the user named: the composer must
+    ///    show no cursor at all while a panel has the keyboard.
+    /// 3. **The timeline overlay.** `on_key` returns to the timeline before it
+    ///    reaches the composer, so the keystrokes are going to the
+    ///    jump-to-message picker and not to the composer.
+    /// 4. **The editor's buffer**, when it is explicitly focused — the editor
+    ///    route keeps the composer editable otherwise, and the composer owns
+    ///    the keyboard in that case.
+    /// 5. **Otherwise the composer owns it.**
+    ///
+    /// The terminal box needs no arm of its own: it is a modal, so arm 1
+    /// already covers it. The overlays that claim only *some* keys — the tasks
+    /// list, the completion popup, the change review — are deliberately not
+    /// here: they let everything they do not claim fall through to the
+    /// composer, so the composer is still where the text goes.
+    pub fn composer_holds_keyboard(&mut self) -> bool {
+        if !self.focus_manager.is_empty() {
+            return false;
+        }
+        if self.panel_owns_keyboard() {
+            return false;
+        }
+        if self.ui_state.timeline_visible {
+            return false;
+        }
+        if self.editor_buffer_owns_keyboard() {
+            return false;
+        }
+        true
+    }
+
+    /// Run a composer claim that the key chain has already matched.
+    ///
+    /// The caller has established that the composer holds the keyboard, that
+    /// the resolved mode is Normal, and that this key belongs to the claim
+    /// table. This method decides what the claim *does*.
+    ///
+    /// A **reserved** verb does nothing, and the key is still consumed. That
+    /// is the fallthrough rule: a claimed letter belongs to the composer, so
+    /// it must not become an unrelated app action while its verb is pending.
+    /// The consumption is the behaviour.
+    ///
+    /// The one live verb is `i` (Helix insert-before-caret), and it is the
+    /// app's **existing** transition — the gesture that used to live in the
+    /// `None` arm of the key chain — moved into the table so that the table
+    /// is the one place that says who owns the key. It has to be live rather
+    /// than reserved: `i` is the app's only route back to Insert mode, so a
+    /// reserved `i` would strand the user in Normal mode with no way to type.
+    /// See `crate::tui::composer_claims` for the full argument.
+    fn run_composer_claim(&mut self, claim: &crate::tui::composer_claims::ComposerClaim) {
+        use crate::tui::composer_claims::{ClaimStatus, ComposerVerb};
+        match claim.status {
+            ClaimStatus::Live => {
+                if let ComposerVerb::InsertBefore = claim.verb {
+                    // Helix `i`: insert before the caret. The caret does not
+                    // move — the next character is typed at it — which is
+                    // exactly what the old gesture did.
+                    self.ui_state.input_mode = InputMode::Insert;
+                    debug_log!("composer claim: insert before the caret");
+                    return;
+                }
+                // A live verb with no behaviour is a table/runner
+                // disagreement, and it is a programming error rather than a
+                // user error. The key is consumed, and a consumed key with
+                // no behaviour is a dead key — the defect this table exists
+                // to prevent. Say so loudly rather than swallow it.
+                tracing::warn!(
+                    verb = ?claim.verb,
+                    "a live composer verb has no behaviour; the claim table and the runner disagree"
+                );
+            }
+            ClaimStatus::Reserved => {
+                // The key is consumed and nothing happens. That is the
+                // fallthrough rule: the letter is the composer's, so it
+                // must not become an unrelated app action while its verb
+                // is pending. The consumption is the behaviour.
+                debug_log!(
+                    "composer claim consumed with no live verb: {:?} ({:?})",
+                    claim.key,
+                    claim.verb
+                );
+            }
+        }
+    }
+
+    /// Whether the open editor buffer holds the keyboard.
+    ///
+    /// The editor route keeps the ordinary composer editable unless the user
+    /// explicitly focused the document, so "the editor is open" is not enough
+    /// — the buffer has to be the focused one.
+    fn editor_buffer_owns_keyboard(&self) -> bool {
+        matches!(
+            self.ui_state.routes.current(),
+            crate::tui::route::Route::Editor
+        ) && self.editor_state.buffer_focused(self.ui_state.input_mode)
     }
 
     /// The side panel that can hold the currently open box, if any.
@@ -14027,32 +14575,36 @@ impl App {
         self.sidebar.set_todos(todos);
     }
 
-    /// Toggle the expanded/compact form of the above-input todo strip.
-    fn toggle_todo_list(&mut self) {
-        if self.todos.is_empty() {
-            // Nothing to expand; still give feedback so the key is not
-            // silently dead.
-            self.messages_state
-                .toasts
-                .info("No todo list for this session yet.");
-            return;
-        }
-        self.todo_expanded = !self.todo_expanded;
-    }
-
     /// Toggle the unified tasks overlay (todos, subagents, jobs).
     ///
-    /// Unlike `toggle_todo_list`, this one is *not* short-circuited when the
-    /// list is empty. An empty overlay is a legitimate answer — "you asked
-    /// what the session is waiting on and the answer is nothing" — and
-    /// swallowing the key would leave the user pressing a key that appears
-    /// dead. The overlay still reports the groups it found nothing in.
+    /// Not short-circuited when the list is empty. An empty overlay is a
+    /// legitimate answer — "you asked what the session is waiting on and the
+    /// answer is nothing" — and swallowing the key would leave the user
+    /// pressing a key that appears dead. The overlay still reports the groups
+    /// it found nothing in.
     pub fn toggle_tasks_list(&mut self) {
         self.tasks_expanded = !self.tasks_expanded;
         // A cursor left pointing at yesterday's row index would select
         // whatever happens to sit there now — or nothing at all — the next
         // time the overlay opens. Reopening starts at the top.
         self.tasks_selected = None;
+        if self.tasks_expanded {
+            // Opening from Insert takes Normal mode with it, because the
+            // overlay's own keys are Normal-mode gestures. Without this the
+            // overlay would open from the composer looking navigable while
+            // `j`/`k` silently typed into the prompt — the same "the feature
+            // is dead" symptom the consolidated chord existed to kill.
+            if self.ui_state.input_mode == InputMode::Insert {
+                self.tasks_restore_mode = Some(InputMode::Insert);
+                self.ui_state.input_mode = InputMode::Normal;
+            }
+        } else {
+            // Closing hands the composer back the mode it was in, not the
+            // mode the overlay borrowed.
+            if let Some(restore) = self.tasks_restore_mode.take() {
+                self.ui_state.input_mode = restore;
+            }
+        }
     }
 
     /// The overlay rows actually rendered, bounded to what fits.
@@ -14124,9 +14676,9 @@ impl App {
         if self.open_subagent_tab(&target) {
             // Opening closes the overlay: the thing the user asked to look at
             // now owns the main buffer, and leaving a selection cursor behind
-            // it would be a control they are no longer looking at.
-            self.tasks_expanded = false;
-            self.tasks_selected = None;
+            // it would be a control they are no longer looking at. Closed
+            // through the toggle so the borrowed input mode is handed back.
+            self.toggle_tasks_list();
         }
         true
     }
@@ -14147,13 +14699,11 @@ impl App {
         if self.todos.is_empty() {
             return 0;
         }
-        if !self.todo_expanded {
-            return 1;
-        }
-        // Header + as many tasks as fit, bounded so a long list cannot eat
-        // the viewport. `Ctrl+T` still reports the true totals in the header.
-        let tasks = self.todos.len().min(MAX_TODO_STRIP_TASKS) as u16;
-        tasks.saturating_add(1)
+        // Always the one-line summary. The full list lives in the tasks
+        // overlay (`Ctrl+T`), so there is no in-place expanded form to size:
+        // the strip's height is a function of *whether* a list exists and
+        // nothing else, which is what keeps row 0 stable while composing.
+        1
     }
 
     /// Rows the main buffer's subagent tab bar needs.
@@ -14272,7 +14822,7 @@ impl App {
     ///
     /// Returns 0 only when collapsed. An expanded overlay always claims at
     /// least one row, which is the "Nothing pending" line: with every group
-    /// empty there are no headers to draw, and reserving nothing made `Shift+T`
+    /// empty there are no headers to draw, and reserving nothing made `Ctrl+T`
     /// a silently dead key on an idle session — the very first thing a user
     /// tries. The height is deliberately independent of `todo_strip_height`:
     /// the overlay is on-demand, and coupling them would make expanding one
@@ -14307,6 +14857,7 @@ impl App {
                     .jobs
                     .iter()
                     .map(|job| crate::tui::app::state::tasks::JobLike {
+                        job_id: job.job_id.clone(),
                         kind: job.kind.clone(),
                         summary: job.summary.clone(),
                         state: job.state.clone(),
@@ -14316,6 +14867,91 @@ impl App {
             })
             .unwrap_or_default();
         crate::tui::app::state::tasks::build_task_rows(&todos, &self.ui_state.subagents.rows, &jobs)
+    }
+
+    /// The live subagents and jobs shown under the `/sessions` session list.
+    ///
+    /// Derived from [`App::task_rows`] rather than re-read from the snapshot,
+    /// so the liveness rule has exactly one implementation: the two surfaces
+    /// cannot disagree about which subagents or jobs exist. Headers and todos
+    /// are dropped here because the dialog builds its own section headings and
+    /// has no todo section; every other row is carried across whole, keeping
+    /// the identity (`task_id` / `job_id`) the row was created with.
+    ///
+    /// The overlay's [`crate::tui::app::state::tasks::bounded`] cap is
+    /// deliberately *not* applied. That cap exists because the overlay is
+    /// carved out of the prompt allocation and can starve its own block; a
+    /// scrolling modal has no such budget, and truncating to twelve rows here
+    /// would hide live work for no reason.
+    pub fn session_dialog_pending_rows(
+        &self,
+    ) -> (
+        Vec<crate::tui::components::dialogs::session::SubagentListRow>,
+        Vec<crate::tui::components::dialogs::session::JobListRow>,
+    ) {
+        use crate::tui::app::state::tasks::TaskRow;
+        use crate::tui::components::dialogs::session::{JobListRow, SubagentListRow};
+
+        let mut subagents = Vec::new();
+        let mut jobs = Vec::new();
+        for row in self.task_rows() {
+            match row {
+                TaskRow::Subagent {
+                    task_id,
+                    label,
+                    agent,
+                    description,
+                    profile,
+                    status,
+                } => subagents.push(SubagentListRow {
+                    task_id,
+                    label,
+                    agent,
+                    description,
+                    profile,
+                    status,
+                }),
+                TaskRow::Job {
+                    job_id,
+                    kind,
+                    summary,
+                    state,
+                    error_class,
+                } => jobs.push(JobListRow {
+                    job_id,
+                    kind,
+                    summary,
+                    state,
+                    error_class,
+                }),
+                TaskRow::Header { .. } | TaskRow::Todo { .. } => {}
+            }
+        }
+        (subagents, jobs)
+    }
+
+    /// Push the current live rows into the open `/sessions` dialog.
+    ///
+    /// A no-op unless the dialog is mounted. Like the session list itself, the
+    /// **painted** instance is the focus-manager clone, so both receive the
+    /// rows: filling only `dialog_state.session_dialog` would refresh a dialog
+    /// nobody is looking at. Cursor focus is carried by identity inside
+    /// `set_pending_rows`, so a row appearing or disappearing mid-scroll does
+    /// not slide the cursor onto a different entity.
+    pub fn refresh_sessions_dialog_pending_rows(&mut self) {
+        if !matches!(self.ui_state.dialog, Dialog::Session) {
+            return;
+        }
+        let (subagents, jobs) = self.session_dialog_pending_rows();
+        let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
+            dialog.set_pending_rows(subagents.clone(), jobs.clone());
+        };
+        apply(&mut self.dialog_state.session_dialog);
+        self.focus_manager
+            .with_dialog_mut::<crate::tui::components::dialogs::session::SessionDialog, _>(
+                crate::tui::components::component::DialogType::Session,
+                apply,
+            );
     }
 
     /// The single-character status bubble for a todo entry.
@@ -18506,6 +19142,7 @@ mod projection_adoption_tests {
             session_id: "session-1".into(),
             request_id: "submit-1".into(),
             request_sha256: "a".repeat(64),
+            prompt: "do the thing".into(),
         };
         assert_eq!(
             turn_submission_request_id(Some(&pending), "session-1", &"a".repeat(64)),
@@ -18990,6 +19627,174 @@ mod connection_rotation_tests {
         assert!(
             error.contains("empty"),
             "the dialog must make the blank field deliberate, got: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod user_prompt_queue_projection_tests {
+    //! M002a (ADR-0035): the prompt-queue read projection.
+    //!
+    //! In-crate because the apply arm is `pub(crate)`, matching
+    //! `apply_shell_promotions_loaded`. These pin the three properties that
+    //! make holding local state safe at all: it is seeded empty, a failure
+    //! leaves the previous value intact, and a completion for a superseded
+    //! session cannot write into current state.
+    //!
+    //! There is deliberately no test for a user enqueueing a prompt. Nothing in
+    //! this milestone can produce one.
+
+    use super::*;
+    use crate::protocol::core::UserPromptQueueEntryDto;
+
+    fn bound_session(id: &str) -> crate::session::Session {
+        crate::session::Session {
+            id: id.into(),
+            project_id: String::new(),
+            workspace_id: None,
+            parent_id: None,
+            slug: String::new(),
+            directory: String::new(),
+            title: String::new(),
+            version: String::new(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+            agent: None,
+            model: None,
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        }
+    }
+
+    fn entry(id: &str, ordinal: i64, text: &str) -> UserPromptQueueEntryDto {
+        UserPromptQueueEntryDto {
+            id: id.to_owned(),
+            ordinal,
+            text: text.to_owned(),
+            text_bytes: text.len(),
+            status: "pending".to_owned(),
+            created_at_ms: 1_700_000_000_000,
+            expires_at_ms: 1_700_000_000_000 + 604_800_000,
+            run_at_ms: None,
+        }
+    }
+
+    /// An absent projection reads as an empty queue, not as an error and not as
+    /// a populated local cache.
+    #[test]
+    fn user_prompt_queue_projection_seeds_empty_and_applies_absent_response() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "the projection must seed empty — the frontend owns no queue state"
+        );
+
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded("s-1".to_owned(), Vec::new(), None);
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "an absent projection must read as an empty queue"
+        );
+    }
+
+    /// The failure path must leave the previous value intact. Clearing it would
+    /// make a dead socket indistinguishable from a genuinely empty queue, and
+    /// the user has no way to repopulate it locally.
+    #[test]
+    fn user_prompt_queue_projection_failure_preserves_previous_value() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            vec![entry("entry-1", 0, "already loaded")],
+            None,
+        );
+        assert_eq!(app.session_state.user_prompt_queue.len(), 1);
+
+        // A transport error, then a daemon refusal: neither may clear it.
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            Vec::new(),
+            Some("connection reset".to_owned()),
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue.len(),
+            1,
+            "a failed load must not clear the previous projection"
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue[0].text,
+            "already loaded"
+        );
+
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            Vec::new(),
+            Some("user_prompt_queue_unavailable: no pool".to_owned()),
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue.len(),
+            1,
+            "a daemon refusal must not clear the previous projection"
+        );
+    }
+
+    /// A completion for a superseded session must not write into current state.
+    /// This is the stale-generation half of the shared guarded task shape.
+    #[test]
+    fn user_prompt_queue_projection_drops_superseded_session_completion() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-2"));
+        app.apply_user_prompt_queue_loaded("s-1".to_owned(), vec![entry("stale", 0, "old")], None);
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "a completion for a superseded session must be dropped"
+        );
+
+        app.apply_user_prompt_queue_loaded(
+            "s-2".to_owned(),
+            vec![entry("entry-2", 0, "current")],
+            None,
+        );
+        assert_eq!(app.session_state.user_prompt_queue.len(), 1);
+        assert_eq!(app.session_state.user_prompt_queue[0].id, "entry-2");
+    }
+
+    /// Ordinal order is the daemon's; the frontend preserves it rather than
+    /// re-sorting, so what a user eventually sees is the daemon's total order.
+    #[test]
+    fn user_prompt_queue_projection_preserves_daemon_ordinal_order() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            vec![
+                entry("entry-0", 0, "first"),
+                entry("entry-1", 1, "second"),
+                entry("entry-2", 2, "third"),
+            ],
+            None,
+        );
+        assert_eq!(
+            app.session_state
+                .user_prompt_queue
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["entry-0", "entry-1", "entry-2"]
         );
     }
 }

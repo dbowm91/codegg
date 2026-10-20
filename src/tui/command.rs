@@ -288,6 +288,15 @@ pub enum BuiltinSlashAction {
     PluginDoctor,
     PluginRemove,
     PluginInstall,
+    /// M004: open the session's waiting-prompt box.
+    Queue,
+    /// C007: address the next prompt to one subagent (`/subagent-send`), or
+    /// clear that address (`/subagent-send off`).
+    ///
+    /// A command rather than a key on purpose. C007 §5 binds no new chord:
+    /// arming is a mode the user must be able to see, name, and undo from
+    /// the palette, and a key would give it none of those.
+    SubagentSend,
 }
 
 /// Typed executable authority for a registry entry.
@@ -617,6 +626,20 @@ impl CommandRegistry {
                 .with_description("View rate limits and quota"),
             Command::new("/stats", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::TuiStats))
                 .with_description("View session analytics and cost breakdown"),
+            Command::new("/queue", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Queue))
+                .with_description(
+                    "Open this session's waiting-prompt box: j/k move, r refresh, a add, \
+                     e edit, [ ] reorder, d delete, s send now",
+                ),
+            Command::new(
+                "/subagent-send",
+                CommandCategory::Session,
+                CommandAction::Builtin(BuiltinSlashAction::SubagentSend),
+            )
+            .with_description(
+                "Address the next prompt to a running subagent (/subagent-send <name or task \
+                 id>), or clear it (/subagent-send off)",
+            ),
             Command::new("/tui", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tui))
                 .with_aliases(&["fullscreen"])
                 .with_description("Toggle fullscreen mode"),
@@ -1192,7 +1215,17 @@ mod tests {
         // of `⇧S` that stays typeable mid-prompt); 159th and 158th are
         // `/terminal` (bare interactive terminal box) and `/terminal-clear`.
         // Keep `architecture/command.md` counts in sync when adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 164);
+        //
+        // This number moved 164 -> 165 for **M004's `/queue`**, which was
+        // registered without updating this pin or `architecture/command.md`.
+        // Both are now in step; the tripwire itself is unchanged.
+        //
+        // 165 -> 166 for **C007's `/subagent-send`**. Two pins guard this
+        // number and they live in different files — this one and
+        // `architecture/command.md` via `command_docs_count_matches_registry`.
+        // Updating only the doc, as the M004 note's wording invites, leaves the
+        // build red here with no indication which of the two drifted.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 166);
     }
 
     #[test]
@@ -1341,9 +1374,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn command_docs_builtin_slash_action_variant_count_matches_source() {
+        // `command_docs_count_matches_registry` above can only see the
+        // registry total: its regexes match `(\d+)\s+(hardcoded|built-in|total)`
+        // and `[Cc]ount is (\d+)`, and a `BuiltinSlashAction` **variant** count
+        // is neither. That blind spot is not hypothetical — the document
+        // carried 156, then 157, then 158, and the body separately claimed 149
+        // while this paragraph claimed 158, with the suite green throughout.
+        //
+        // The source of truth is `all_builtin_variants`, which
+        // `every_builtin_action_is_referenced_by_a_canonical_command` already
+        // proves exhaustive and equal to the registry's distinct variants.
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let doc = manifest.join("architecture/command.md");
+        let text = std::fs::read_to_string(&doc).expect("architecture/command.md must be readable");
+        let expected = all_builtin_variants().len();
+        let re = regex::Regex::new(r"`BuiltinSlashAction`[\s\S]{0,120}?\((\d+) variants")
+            .expect("variant count regex");
+        let mut claims = 0usize;
+        for cap in re.captures_iter(&text) {
+            claims += 1;
+            let claimed: usize = cap[1].parse().expect("count parses");
+            assert_eq!(
+                claimed, expected,
+                "architecture/command.md claims BuiltinSlashAction has {claimed} \
+                 variants; the enum has {expected}"
+            );
+        }
+        assert!(
+            claims > 0,
+            "command.md must state the BuiltinSlashAction variant count"
+        );
+    }
+
     fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
         use BuiltinSlashAction as B;
         vec![
+            // M004: `/queue`. The variant was added to the enum and to the
+            // registry but omitted here, so this test failed to notice it.
+            B::Queue,
+            // C007: `/subagent-send`. Same reason the comment above records.
+            B::SubagentSend,
             B::ProjectInit,
             B::Reload,
             B::Skills,

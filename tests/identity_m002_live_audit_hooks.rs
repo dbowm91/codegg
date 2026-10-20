@@ -176,8 +176,10 @@ async fn bash_shell_success_emits_one_structural_event() {
                 Some("policy-r9".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
     let tool = codegg::tool::bash::BashTool::new()
+        .with_workspace_root(Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf())
         .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, &ctx.cwd);
     let out = tool
         .execute_structured(serde_json::json!({"command": "echo m002-ok"}), Some(ctx))
@@ -294,11 +296,14 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
                 Some("policy-r10".into()),
             ),
             command_preflight: None,
+            scratch_scope: None,
         });
-    let tool = codegg::tool::bash::BashTool::new().with_sandbox_profile(
-        codegg_core::approval::SandboxProfile::WorkspaceWrite,
-        root.path(),
-    );
+    let tool = codegg::tool::bash::BashTool::new()
+        .with_sandbox_profile(
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            root.path(),
+        )
+        .with_workspace_root(root.path().to_path_buf());
     let out = tool
         .execute_structured(
             serde_json::json!({
@@ -373,7 +378,9 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
 #[tokio::test(flavor = "current_thread")]
 async fn bash_failure_timeout_and_denial_matrix() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
+    let tool = codegg::tool::bash::BashTool::new().with_workspace_root(
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+    );
 
     // Failure: real dispatch, nonzero exit, distinguishable outcome.
     let ctx = tool_ctx(&pool, "corr-bash-fail", "inv-bash-fail");
@@ -445,7 +452,9 @@ async fn bash_failure_timeout_and_denial_matrix() {
 #[tokio::test(flavor = "current_thread")]
 async fn bash_retry_with_same_invocation_key_does_not_duplicate() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
+    let tool = codegg::tool::bash::BashTool::new().with_workspace_root(
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+    );
     for _ in 0..2 {
         // One logical idempotent invocation, replayed: same key,
         // same command, same terminal outcome.
@@ -484,7 +493,9 @@ async fn bash_retry_with_same_invocation_key_does_not_duplicate() {
 #[tokio::test(flavor = "current_thread")]
 async fn terminal_direct_native_process_path_emits_once() {
     let pool = test_pool().await;
-    let tool = codegg::tool::terminal::TerminalTool::new();
+    let tool = codegg::tool::terminal::TerminalTool::new().with_workdir(
+        std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).expect("test workspace root"),
+    );
     let ctx = tool_ctx(&pool, "corr-terminal", "inv-terminal");
     let out = tool
         .execute_structured(

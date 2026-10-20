@@ -22,6 +22,7 @@ pub mod restore;
 pub mod routing;
 pub mod session;
 pub mod snapshot;
+pub mod subagent_addressee;
 pub mod subagent_tabs;
 pub mod subagents;
 pub mod tasks;
@@ -71,6 +72,9 @@ pub use routing::{
     UiRouteToken, MAX_TAB_HEALTH_SUMMARY_LEN, MAX_TAB_LAST_ERROR_LEN, MAX_TAB_UNREAD_DISPLAY,
 };
 pub use session::{RunningTool, SessionState};
+pub use subagent_addressee::{
+    reconcile_addressee, SubagentAddressee, MAX_ADDRESSED_DESCRIPTION_CHARS,
+};
 pub use subagent_tabs::{
     bar_width, fit_bar_tabs, SubagentBarTab, SubagentTabId, SubagentTabLiveness, SubagentTabState,
     SubagentTabs, BAR_ELLIPSIS, BAR_SEPARATOR, MAIN_TAB_LABEL, MAX_OPEN_SUBAGENT_TABS,

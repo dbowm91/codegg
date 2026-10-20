@@ -57,6 +57,11 @@ Deterministic token estimation. See [Related Docs](#related-docs).
 4. **Model sees** projected text with optional `ctx://` handle.
 5. **Model recovers** full content via `context_read` tool.
 
+`context_read` returns one exact UTF-8-safe page (20,000 bytes by default,
+64,000 maximum) and an explicit next byte offset. Its result bypasses another
+projection pass, preventing a page from being compressed into an inaccessible
+preview.
+
 ### Handle Format
 
 `ctx://tool/{session_id}/{turn_index}/{tool_call_id}`
@@ -85,8 +90,11 @@ When `project_tool_output()` is called:
 2. **Extract metadata**: touched files, commands run, test results,
    errors.
 3. **Project output**:
-   - **Success**: pass through if ≤ `max_success_tokens`, else
-     truncate to 20 lines with token count summary.
+   - **Success**: pass through if ≤ `max_success_tokens`, else use the
+     generic 20-line preview. Source `read` results instead preserve a
+     contiguous prefix up to at least 4,000 estimated tokens and disclose the
+     next line offset. A `context_read` result is already an exact bounded
+     artifact page, so it is not projected a second time.
    - **Failure**: collect high-priority lines (errors, panics,
      tracebacks — deduplicated, capped 30) and medium-priority
      lines (warnings, test results — deduplicated, capped 20).

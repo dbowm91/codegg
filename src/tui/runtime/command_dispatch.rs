@@ -1984,36 +1984,105 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             app.apply_shell_promotions_loaded(session_id, workspace_id, promotions, error);
         }
+        TuiCommand::UserPromptQueueLoaded {
+            session_id,
+            entries,
+            error,
+        } => {
+            app.apply_user_prompt_queue_loaded(session_id, entries, error);
+        }
+        TuiCommand::UserPromptQueueDeleteFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+        } => {
+            crate::tui::commands::queue::apply_queue_delete_finished(
+                app, request_id, session_id, entries, code, error,
+            );
+        }
+        TuiCommand::UserPromptQueueAddFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+            entry_id,
+            text,
+        } => {
+            crate::tui::commands::queue::apply_queue_add_finished(
+                app, request_id, session_id, entries, code, error, entry_id, text,
+            );
+        }
+        TuiCommand::UserPromptQueueEditFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+            entry_id,
+            text,
+        } => {
+            crate::tui::commands::queue::apply_queue_edit_finished(
+                app, request_id, session_id, entries, code, error, entry_id, text,
+            );
+        }
+        TuiCommand::UserPromptQueueReorderFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+        } => {
+            crate::tui::commands::queue::apply_queue_reorder_finished(
+                app, request_id, session_id, entries, code, error,
+            );
+        }
+        TuiCommand::UserPromptQueueSendNowFinished {
+            request_id,
+            session_id,
+            entries,
+            outcome,
+            error,
+        } => {
+            crate::tui::commands::queue::apply_queue_send_now_finished(
+                app, request_id, session_id, entries, outcome, error,
+            );
+        }
+        TuiCommand::SubagentSteerFinished {
+            request_id,
+            addressee,
+            body,
+            code,
+            error,
+        } => {
+            crate::tui::commands::subagent_steer::apply_subagent_steer_finished(
+                app, request_id, addressee, body, code, error,
+            );
+        }
         TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
             app.apply_shell_promotions_submitted(&promotions, error);
         }
-        TuiCommand::TurnSubmissionFinished { request_id, error } => {
-            let is_current = app
-                .pending_turn_submission
-                .as_ref()
-                .is_some_and(|pending| pending.request_id == request_id);
-            match error {
-                None => {
-                    if is_current {
-                        app.pending_turn_submission = None;
-                    }
-                }
-                Some(message) => {
-                    // The daemon refused the submit, or the socket is gone.
-                    // This arm used to discard the reason entirely: the only
-                    // thing that recorded it was a `tracing::debug!`, so the
-                    // composer kept its message in the transcript, stayed
-                    // pinned on `Working`, and produced no output and no error
-                    // until the 5-minute stall watchdog fired with a generic
-                    // "the core produced no event". The user had a named reason
-                    // in hand the whole time and it was thrown away. Report it
-                    // now, and release the composer so a retry is possible.
-                    if is_current {
-                        app.pending_turn_submission = None;
-                    }
-                    app.fail_unstarted_turn(&format!("Turn not submitted: {message}"));
-                }
-            }
+        TuiCommand::TurnSubmissionFinished {
+            request_id,
+            generation,
+            outcome,
+        } => {
+            // The daemon refused the submit, the socket is gone, or a turn was
+            // already running. This arm used to discard the reason entirely:
+            // the only thing that recorded it was a `tracing::debug!`, so the
+            // composer kept its message in the transcript, stayed pinned on
+            // `Working`, and produced no output and no error until the 5-minute
+            // stall watchdog fired with a generic "the core produced no
+            // event". Worse, it treated every refusal as a turn that never
+            // started, so `turn_already_active` nulled the identity and elapsed
+            // age of a turn that was still running and reported an error state
+            // for a session that was actively working.
+            //
+            // The typed outcome now decides which of those is true, and a
+            // superseded or cancelled completion changes nothing at all.
+            app.apply_turn_submission_finished(&request_id, generation, outcome);
         }
         TuiCommand::TurnCancelRequested {
             session_id,

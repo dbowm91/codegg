@@ -466,6 +466,12 @@ impl BrokerCallback for BrokerAdapter {
                 .grant
                 .as_ref()
                 .map(|g| g.workspace_path_policy_id.clone()),
+            // The accepted policy identity is content-addressed from its
+            // effective roots, so it is also the stable policy revision.
+            workspace_path_policy_revision: self
+                .grant
+                .as_ref()
+                .map(|grant| grant.workspace_path_policy_id.clone()),
             allowed_tools: self
                 .allowed_tools
                 .as_ref()

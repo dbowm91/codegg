@@ -121,6 +121,114 @@ macro_rules! structured_eggsearch_dispatch {
 }
 
 impl SearchRuntimeContext {
+    /// Execute local-capable repository search with the invocation's
+    /// daemon-authorized workspace root. `None` explicitly disables local
+    /// retrieval on the managed child and cannot fall back to static roots.
+    pub async fn dispatch_repo_search_host_scoped(
+        &self,
+        input: &Value,
+        root: Option<&std::path::Path>,
+    ) -> Result<StructuredSearchResult, ToolError> {
+        if !matches!(self.config.backend(), SearchBackendConfig::Eggsearch) {
+            return Err(ToolError::Execution(
+                "repo_search requires the eggsearch backend".into(),
+            ));
+        }
+        let svc = self.mcp();
+        let server = self.server_name();
+        eggsearch::ensure_tool_available_with_service(
+            svc.as_ref(),
+            &server,
+            "repo_search",
+            "repo_search",
+        )?;
+        let result = eggsearch::call_repo_search_structured_with_host_scope(
+            svc.as_ref(),
+            &server,
+            input,
+            self.config.max_repo_search_output_chars(),
+            eggsearch_timeout_ms(&self.config, ToolTimeoutKind::Default),
+            Some(root),
+        )
+        .await?;
+        Ok(StructuredSearchResult {
+            output: result.output,
+            value: result.value,
+            truncated: result.truncated,
+            success: result.success,
+        })
+    }
+
+    pub async fn dispatch_repo_fetch_host_scoped(
+        &self,
+        input: &Value,
+        root: Option<&std::path::Path>,
+    ) -> Result<StructuredSearchResult, ToolError> {
+        if !matches!(self.config.backend(), SearchBackendConfig::Eggsearch) {
+            return Err(ToolError::Execution(
+                "repo_fetch requires the eggsearch backend".into(),
+            ));
+        }
+        let svc = self.mcp();
+        let server = self.server_name();
+        eggsearch::ensure_tool_available_with_service(
+            svc.as_ref(),
+            &server,
+            "repo_fetch",
+            "repo_fetch",
+        )?;
+        let result = eggsearch::call_repo_fetch_structured_with_host_scope(
+            svc.as_ref(),
+            &server,
+            input,
+            self.config.max_repo_fetch_output_chars(),
+            eggsearch_timeout_ms(&self.config, ToolTimeoutKind::Default),
+            Some(root),
+        )
+        .await?;
+        Ok(StructuredSearchResult {
+            output: result.output,
+            value: result.value,
+            truncated: result.truncated,
+            success: result.success,
+        })
+    }
+
+    pub async fn dispatch_repo_map_host_scoped(
+        &self,
+        input: &Value,
+        root: Option<&std::path::Path>,
+    ) -> Result<StructuredSearchResult, ToolError> {
+        if !matches!(self.config.backend(), SearchBackendConfig::Eggsearch) {
+            return Err(ToolError::Execution(
+                "repo_map requires the eggsearch backend".into(),
+            ));
+        }
+        let svc = self.mcp();
+        let server = self.server_name();
+        eggsearch::ensure_tool_available_with_service(
+            svc.as_ref(),
+            &server,
+            "repo_map",
+            "repo_map",
+        )?;
+        let result = eggsearch::call_repo_map_structured_with_host_scope(
+            svc.as_ref(),
+            &server,
+            input,
+            self.config.max_repo_map_output_chars(),
+            eggsearch_timeout_ms(&self.config, ToolTimeoutKind::Default),
+            Some(root),
+        )
+        .await?;
+        Ok(StructuredSearchResult {
+            output: result.output,
+            value: result.value,
+            truncated: result.truncated,
+            success: result.success,
+        })
+    }
+
     /// Run a native `websearch` call against the configured backend.
     ///
     /// Returns the framed, capped output. The caller is responsible for

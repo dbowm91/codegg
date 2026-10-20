@@ -248,6 +248,21 @@ impl SubagentNameLease {
     pub fn task_id(&self) -> u64 {
         self.task_id
     }
+
+    /// The pool entry behind **this lease's own name**, if there is one.
+    ///
+    /// The descriptor has to be the entry the name was leased from, so the
+    /// lookup is bound to `self.name` rather than to a name the caller passes
+    /// in: a second lookup keyed on anything else is exactly the attribution
+    /// defect C001 already recorded once, where a row's name and its identity
+    /// could come from different sources.
+    ///
+    /// `None` for a name that did not come from the pool is the honest answer
+    /// rather than a wrong attribution — a caller carries `None` and renders
+    /// the fallback it renders today.
+    pub fn entry(&self) -> Option<&'static SubagentName> {
+        pool_entry(&self.name)
+    }
 }
 
 impl Drop for SubagentNameLease {
@@ -304,6 +319,114 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), names.len(), "duplicate name in {names:?}");
+    }
+
+    #[test]
+    fn a_lease_yields_the_entry_behind_its_own_name() {
+        // C005: the publisher has no other source for a descriptor, so this is
+        // the assertion that the descriptor a subagent row shows belongs to
+        // the name that subagent was actually given.
+        let registry = registry();
+        let lease = SubagentNameLease::acquire(Arc::clone(&registry), 1);
+        let entry = lease
+            .entry()
+            .expect("a leased name resolves to a pool entry");
+        assert_eq!(entry.name, lease.name(), "descriptor/name mismatch");
+        assert_eq!(lease.entry().map(|e| e.profile), Some(entry.profile));
+        assert_eq!(lease.entry().map(|e| e.usefulness), Some(entry.usefulness));
+    }
+
+    /// A suffixed lease resolves to the **same** entry as its base name.
+    ///
+    /// The suffix is a disambiguator for concurrent leases, not a different
+    /// agent: `Sally-2` must not acquire a second personality, and the numeric
+    /// suffix must never appear in the descriptor.
+    #[test]
+    fn a_suffixed_lease_resolves_to_the_same_entry_as_its_base() {
+        let base = SUBAGENT_NAMES[0];
+        let suffixed = format!("{}-2", base.name);
+        assert_eq!(
+            pool_entry(&suffixed).map(|e| e.profile),
+            Some(base.profile),
+            "a suffixed name must resolve to its base entry's descriptor"
+        );
+        assert_eq!(
+            pool_entry(&suffixed).map(|e| e.usefulness),
+            Some(base.usefulness)
+        );
+    }
+
+    /// A name that never came from the pool yields **no** descriptor.
+    ///
+    /// The honest answer. Substituting some other entry's profile would put one
+    /// subagent's personality on another's row, which is the defect this whole
+    /// lookup exists to prevent.
+    #[test]
+    fn a_name_outside_the_pool_yields_no_descriptor() {
+        assert!(pool_entry("NotAPoolName").is_none());
+        assert!(pool_entry("").is_none());
+        // A hyphen that is not a numeric suffix is part of the name, not a
+        // variant marker: `Sally-Bob` must not resolve to `Sally`.
+        assert!(pool_entry(&format!("{}-Bob", SUBAGENT_NAMES[0].name)).is_none());
+    }
+
+    /// Every curated entry's descriptor must fit the projection's named cap.
+    ///
+    /// Without this, someone could author a longer profile and the projection
+    /// would silently truncate it in production — a descriptor that reads as a
+    /// sentence ending mid-word on some machines and not others.
+    #[test]
+    fn no_curated_descriptor_exceeds_the_projection_cap() {
+        use codegg_protocol::projection::limits::MAX_PROJECTION_DESCRIPTOR_BYTES;
+
+        for entry in SUBAGENT_NAMES {
+            assert!(
+                entry.profile.len() <= MAX_PROJECTION_DESCRIPTOR_BYTES,
+                "{}: profile is {} bytes, cap is {MAX_PROJECTION_DESCRIPTOR_BYTES}",
+                entry.name,
+                entry.profile.len()
+            );
+            assert!(
+                entry.usefulness.len() <= MAX_PROJECTION_DESCRIPTOR_BYTES,
+                "{}: usefulness is {} bytes, cap is {MAX_PROJECTION_DESCRIPTOR_BYTES}",
+                entry.name,
+                entry.usefulness.len()
+            );
+        }
+    }
+
+    /// A full turn's worth of the largest descriptors stays inside the
+    /// asserted per-snapshot budget.
+    ///
+    /// The enforced ceiling is derived from the caps so it holds for *any*
+    /// input; this asserts the number the pool actually produces, so the
+    /// budget is a measurement with a claim attached rather than an assertion
+    /// about a constant.
+    #[test]
+    fn a_turn_of_the_largest_curated_descriptors_fits_the_snapshot_budget() {
+        use codegg_protocol::projection::limits::{
+            MAX_PROJECTION_DESCRIPTOR_BYTES, MAX_PROJECTION_SUBAGENTS,
+            MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES,
+        };
+
+        let largest = SUBAGENT_NAMES
+            .iter()
+            .map(|e| e.profile.len() + e.usefulness.len())
+            .max()
+            .expect("a non-empty pool");
+        // Every individual descriptor is inside the per-field cap, so the
+        // whole-node figure cannot exceed twice it.
+        assert!(
+            largest <= MAX_PROJECTION_DESCRIPTOR_BYTES * 2,
+            "the largest curated node is {largest} bytes, above two caps"
+        );
+
+        let worst_case = MAX_PROJECTION_SUBAGENTS * largest;
+        assert!(
+            worst_case <= MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES,
+            "a full tree of the largest curated descriptors grows a snapshot by \
+             {worst_case} B, over the {MAX_PROJECTION_SUBAGENT_DESCRIPTOR_BYTES} B budget"
+        );
     }
 
     #[test]

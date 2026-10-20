@@ -203,10 +203,10 @@ from either:
 The eggsearch adapter uses `call_tool_structured` to retain machine-
 readable evidence before display caps are applied.
 
-### Eggsearch 0.4.3 compatibility policy
+### Eggsearch 0.4.4 compatibility policy
 
-The stable eggsearch facade is audited against eggsearch `0.4.3` (tag
-`v0.4.3`, immutable commit `5e7b853e7eebf29c58f84959805c8774279d7ea4`).
+The stable eggsearch facade is audited against eggsearch `0.4.4` at immutable
+commit `32f48bb57a43274d763c7f9ba919eab84d125edc`.
 CodeGG exposes the provider-neutral additive controls that fit its ownership
 boundary: search `excerpt_count` (`0..=3`), web-fetch `focus` and
 its bounded extraction controls, and fetch `cache_policy` plus the
@@ -216,9 +216,9 @@ the structured result retains warnings, provider/retrieval state, trust
 markers, stable IDs, suggested fetches, and next actions; its existing
 bounded/trust-framed text remains the model-facing projection. `response_detail`
 is not a user-facing option, and next actions are data only—CodeGG never
-auto-executes them. Retained provider hints map to the exact v0.4.3 inventory;
+auto-executes them. Retained provider hints map to the exact v0.4.4 inventory;
 unknown and retired explicit values fail before dispatch. The pinned CodeGG
-development contract is v0.4.3. Its pair gate launches one real pinned MCP
+development contract is v0.4.4. Its pair gate launches one real pinned MCP
 process with an explicit private `search.mode = "off"` config, scoped local
 root, and cleared credentials. Native web and security wrappers assert tagged
 policy errors; native `repo_search(include_local=true)` proves private local

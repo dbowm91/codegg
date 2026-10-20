@@ -68,6 +68,51 @@ into a second source of truth.
    SHA-256 for `WorkingFile` entries on a `Checkpoint`. Note the boundary:
    `CheckpointStore::save`/`load` themselves do not verify checksums, and
    nothing in-tree calls `verify_file` yet.
+7. **`renumber_dense` writes the whole live set, holding non-pending rows at
+   their existing rank.** A `delivering` row keeps the **slot** it occupied —
+   never pinned to the head, never swept to the tail. Pinning a released entry
+   to an end *is* the defect this rule exists to prevent, so "tidy it up by
+   pinning" is the wrong fix wearing a right-looking shape.
+   - Why: a client may only name **operable** (`pending`) rows, so a
+     `delivering` row is unplaced by definition. The daemon decides its slot by
+     preserving rank, which is what makes `release_delivery` and
+     `resolve_stranded_delivery(Retry)` order-neutral.
+   - The **displacement step stays**: it is status-blind and session-wide on
+     purpose. Terminal rows are not live but still hold ordinals under a
+     session-wide `UNIQUE (session_id, ordinal)`, so they must still be pushed
+     clear of the dense band. It looks redundant once the merge covers every
+     live row; it is not.
+   - `retry_failed` is the one return path the merge does **not** reach — it
+     revives a row that was terminal during the reorder. Where such a row
+     belongs is an open maintainer decision; do not pick one in passing.
+   - Live ordinals are **not** globally dense: a row going terminal leaves a
+     hole only the next reorder or delete closes, and `add` appends over
+     `MAX(ordinal)` across all rows. Do not assert global density as an
+     invariant.
+8. **`mark_steer_delivered` is the only `delivered` transition with no claim, so
+   it is guarded on `status = 'pending'` for the same reason `mark_delivered` is.**
+   A row already `delivering` is running as its **own** turn; settling it as
+   steered too would record one prompt delivered twice.
+   - Its authority check is **settlement** authority, not steering authority.
+     ADR-0037 excludes steering from the durable owner binding, so the handover
+     is gated by the turn controller — but this write changes the queue, so
+     `authorize_owned_queue` runs inside the transaction. Do not "simplify" it
+     away, and do not route the handover through `ControllerScope::QueueMutation`.
+   - Every non-winning case returns the **same typed vocabulary as `delete`**.
+     One reason set across settlement paths, not one per method.
+   - `mark_steer_delivered` writes no ordinal. A settlement that renumbered would
+     silently reorder everything still waiting behind the steered entry.
+9. **A nullable optional column is `NULL`, never a sentinel.** `run_at_ms`
+   (v82, ADR-0039) means "no due time". A backfill of `0` would be
+   indistinguishable from a real due time in the delivery predicate (`0 <= now`
+   is true, so the row is immediately due) while rendering every pre-existing row
+   as scheduled — a claim that is *correct in the query* and *wrong to the user*.
+   The v81 -> v82 upgrade test asserts `NULL` for exactly this reason.
+   - The whole due-time validity rule is one function, `validate_run_at`, shared
+     by `add` and `edit`. Refuses a due time at or beyond the entry's own expiry;
+     accepts one in the past (the user has already passed it). Refusing rather
+     than clamping is the point: clamping schedules an entry for its expiry,
+     where it is due only once it has already expired.
 
 ## Static Guards
 

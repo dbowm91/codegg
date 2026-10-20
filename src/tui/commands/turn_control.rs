@@ -36,7 +36,11 @@ const START_PROMPT: &str = "Continue where you left off.";
 /// One spelling shared by the strip, the confirmation, and the dispatch call:
 /// three independently typed labels are three chances for the hint to name a
 /// key the user cannot find.
-pub(crate) const STOP_KEY_LABEL: &str = "x";
+///
+/// The spelling is the chord, not the old bare `x`: ADR-0042 gave the bare
+/// letter to the composer's Helix line-select, so the action moved to
+/// `Ctrl+Alt+X` and the hint has to name the key that actually works.
+pub(crate) const STOP_KEY_LABEL: &str = "Ctrl+Alt+X";
 
 /// Stop the running turn.
 ///

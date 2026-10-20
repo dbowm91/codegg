@@ -35,8 +35,10 @@ driven by CodeGG itself and are not shown in the normal picker; select them
 explicitly if you need to.
 
 Switch agents in the TUI with `/agent <name>` or by mentioning one with
-`@<name>`; `/agents` lists and manages them, including `show`, `diff`, and
-`validate` for a named agent.
+`@<name>`. Bare `/agent` or `/agents` opens the agent picker; `/agents` also
+manages them, with `show`, `diff`, and `validate` for a named agent. Choosing
+*where* an agent list is docked is a separate question, and `/panels` is where
+you answer it.
 
 ### The generated file
 

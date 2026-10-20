@@ -668,14 +668,117 @@ pub enum TuiCommand {
         promotions: Vec<crate::protocol::core::HumanShellPromotionDto>,
         error: Option<String>,
     },
+    /// M002a (ADR-0035): the daemon's prompt-queue projection for one session.
+    ///
+    /// Carries an explicit `error` rather than only the list so the apply arm
+    /// can tell a failed read (keep the previous projection) from an empty
+    /// queue (replace it).
+    UserPromptQueueLoaded {
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        error: Option<String>,
+    },
+    /// M004: the daemon's answer to `UserPromptQueueDelete`.
+    ///
+    /// On success `entries` is the projection the **delete itself produced**
+    /// (`queue_projection` re-reads after a successful write), so the box
+    /// applies it instead of issuing a second read — one round trip, and the
+    /// rendered list cannot disagree with the write that produced it.
+    ///
+    /// `code` is carried separately from `error` because a `delivering` refusal
+    /// needs its own sentence: it is not a missing entry, and reporting it as
+    /// one would tell the user their prompt expired because a turn started.
+    /// `error` is the human-facing message and is already bounded; no prompt
+    /// text is ever placed in it.
+    UserPromptQueueDeleteFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+    },
+    /// M005: an add finished. Carries the minted `entry_id` so the cursor can
+    /// follow the row it created, and the `text` so a bounds refusal can put
+    /// the user's own words back in the composer.
+    UserPromptQueueAddFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+        entry_id: String,
+        text: String,
+    },
+    /// M005: an edit finished. `entry_id` is the pre-existing identity — an
+    /// edit never mints one.
+    UserPromptQueueEditFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+        entry_id: String,
+        text: String,
+    },
+    /// M005: a reorder finished. `order_mismatch` here means the projection
+    /// moved underneath the client, which the applier re-reads once rather
+    /// than retrying.
+    UserPromptQueueReorderFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+    },
+    /// M006: a send-now finished. Carries the daemon's **outcome** rather than a
+    /// wire `code` — a refusal arrives inside a successful response, because the
+    /// attempt itself always resolves and only its result varies.
+    UserPromptQueueSendNowFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<crate::protocol::core::UserPromptQueueEntryDto>,
+        outcome: Option<crate::protocol::core::UserPromptQueueSendNowResult>,
+        error: Option<String>,
+    },
+    /// C007: an addressed reply reached — or failed to reach — the turn that
+    /// owns the addressed subagent.
+    ///
+    /// Carries the daemon's **code** rather than its prose. `TurnSteer` answers
+    /// `CoreResponse::Error { code, message }`, and the frontend renders through
+    /// the queue's shared refusal vocabulary so the two steering paths cannot
+    /// drift; the daemon's own sentence is only kept as a transport-error
+    /// fallback, and is scrubbed of turn ids first.
+    SubagentSteerFinished {
+        request_id: u64,
+        /// The name shown to the user, so the toast can say what it addressed.
+        addressee: String,
+        /// The user's own words, exactly as typed.
+        ///
+        /// Carried so a **refusal** can put them back. A bare addressed reply has
+        /// no durable queue behind it — the daemon hands it to the loop's
+        /// steering channel and stores nothing — so the composer is the only
+        /// copy that will ever exist. Clearing it on dispatch and not carrying
+        /// it here would destroy the text on every refusal.
+        body: String,
+        code: Option<String>,
+        error: Option<String>,
+    },
     /// A normal next turn accepted or rejected staged shell evidence.
     ShellPromotionsSubmitted {
         promotions: Vec<(uuid::Uuid, u64)>,
         error: Option<String>,
     },
+    /// A `TurnSubmit` request finished.
+    ///
+    /// Carries a typed outcome rather than a formatted string: the completion
+    /// arm has to tell contention (a turn is running, so turn state must be
+    /// left alone) from a dead socket and from a daemon refusal, and it cannot
+    /// do that by parsing prose. `generation` is the frontend's local
+    /// staleness marker; `request_id` stays the daemon's idempotency key.
     TurnSubmissionFinished {
         request_id: String,
-        error: Option<String>,
+        generation: u64,
+        outcome: crate::tui::app::turn_submit::TurnSubmitOutcome,
     },
     /// A `TurnCancel` request finished. Carries the addressed turn so a
     /// completion for a turn that has already been superseded is dropped

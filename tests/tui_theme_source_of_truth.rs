@@ -57,7 +57,6 @@ use codegg::tui::components::component::Component;
 use codegg::tui::components::dialogs::diff::DiffDialog;
 use codegg::tui::components::dialogs::keybind::KeybindDialog;
 use codegg::tui::components::dialogs::mcp::{McpDialog, McpServerInfo, McpToolInfo};
-use codegg::tui::components::dialogs::panel_picker::PanelPickerDialog;
 use codegg::tui::components::dialogs::plan::PlanDialog;
 use codegg::tui::components::dialogs::plugin::PluginDialog;
 use codegg::tui::components::dialogs::research::ResearchBrowserDialog;
@@ -322,14 +321,6 @@ fn task_view_dialog(_theme: &Arc<Theme>) -> Box<dyn Component> {
     Box::new(TaskViewDialog::new("proj".into()))
 }
 
-fn panel_picker_dialog(theme: &Arc<Theme>) -> Box<dyn Component> {
-    Box::new(PanelPickerDialog::new(
-        Arc::clone(theme),
-        SidePanelId::Files,
-        "widget",
-    ))
-}
-
 // ---------------------------------------------------------------- the widgets
 
 /// `mcp` carried 46 reads of a cached theme and was **not** stale, because
@@ -399,11 +390,6 @@ fn the_boxes_that_already_read_the_seam_theme_pass_this_check() {
         task_view_dialog,
         SidePanelId::TaskView,
         "TaskViewDialog (control)",
-    );
-    check(
-        panel_picker_dialog,
-        SidePanelId::Files,
-        "PanelPickerDialog (control)",
     );
 }
 

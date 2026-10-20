@@ -6,8 +6,11 @@
 schema-free descriptors so selecting among large tools does not inflate the
 context window. An exact selected name can request `detail: "schema"`; the
 response is resolved from the live catalog after the current policy and
-hidden-tool checks. The expanded schema is descriptive only; calls still
-enter through `ToolBroker`.
+hidden-tool checks. Multiword queries are token-ranked with stable name
+tie-breaks. An empty query lists only policy-allowed descriptors in bounded
+`offset`/`limit` pages (default 10, maximum 50); no schemas are included until
+one exact name is selected. The expanded schema is descriptive only; calls
+still enter through `ToolBroker`.
 
 `git_query` is the model-facing deferred read facade for bounded status, diff,
 log, and branch inspection. It delegates to `GitReadTool`, while `git` retains
@@ -207,6 +210,10 @@ The daemon-owned workspace service lease supplies the canonical
 native execution, post-capture, and persistence, so independent sessions
 produce a coherent serial checkpoint history without a daemon-global lock.
 
+The regular-tool semaphore is local to one provider response. Its admission
+deadline is separate from each call's execution timeout and does not stand in
+for a scheduler permit or imply cross-agent capacity.
+
 See `architecture/snapshot.md` for the `EditCheckpoint` storage
 contract and `architecture/agent.md` for the `ToolBatchExecutor`
 ownership.
@@ -316,7 +323,7 @@ Four questions have four different owners; do not conflate them.
 |---|---|---|
 | Registered? | `ToolRegistry::with_options` | Full capability set; includes deferred + hidden stubs. The live `ToolCatalog` shares this lifecycle. |
 | Advertised now? | Resolved surface + provider deferral | Immediate definitions for this turn; deferred flagged via `defer_loading`. See `src/tool/disclosure.rs`. |
-| Discoverable? | `ToolCatalog` + `tool_search` | Deferred but policy-allowed tools with canonical name, category, risk, disclosure metadata. The catalog is live for late registration, results are deterministic, capped at 10, and empty queries return none. |
+| Discoverable? | `ToolCatalog` + `tool_search` | Policy-allowed tools with canonical name, category, risk, disclosure metadata. The catalog is live for late registration, results are deterministic, searches return at most 10 by default, and empty-query browsing is paged at up to 50. |
 | Callable? | `ToolBroker` + permission + contracts | Disclosure never widens authority; denied/hidden tools stay non-callable. |
 
 Operator views (`/tool-backends`, diagnostics) report registered
@@ -347,7 +354,7 @@ advertised):
 | **read** | Core | `read.rs` | Read file contents with line numbers. Images/PDFs as base64. |
 | **write** | Core | `write.rs` | Create or overwrite files with auto-formatting. |
 | **edit** | Core | `edit.rs` | Surgical search-and-replace with 8 matching strategies. |
-| **glob** | Core | `glob.rs` | Find files matching glob patterns (gitignore-compliant). |
+| **glob** | Core | `glob.rs` | Find files matching patterns relative to the validated search directory (gitignore-compliant); results are canonical paths. |
 | **grep** | Core | `grep.rs` | Regex content search with bounded workers and path-ordered output. |
 | **list** | Core | `list.rs` | Directory tree listing, limited to 300 files. |
 | **task** | Core | `task.rs` | Spawn subagents. Supports spawn/get actions. |
@@ -380,7 +387,7 @@ advertised):
 | **plan_enter** | Core | `plan.rs` | Enter plan mode (reduced toolset). |
 | **plan_exit** | Core | `plan.rs` | Exit plan mode. |
 | **invalid** | Hidden | `invalid.rs` | Catch-all for malformed tool calls. Registered but never in definitions/discovery. |
-| **tool_search** | Core | `tool_search.rs` | On-demand tool discovery via catalog search. Returns canonical name, category, risk, disclosure; capped at 10; empty queries return none. |
+| **tool_search** | Core | `tool_search.rs` | On-demand discovery via multiword catalog ranking. Returns compact authorized descriptors, capped at 10 by default; empty queries browse authorized results in bounded pages. Exact names can request one schema. |
 
 ### Conditional: Eggsearch Wrappers (7 tools)
 
@@ -784,6 +791,17 @@ describing caller policy, effect class, idempotency, retry/cache, and
 projection policy. See [tool_broker.md](tool_broker.md).
 
 ## Security Considerations
+
+### Repository retrieval workspace authority
+
+Local repository retrieval is scoped from the accepted `ToolExecutionContext`
+only when it carries an allowed decision, session, decision identifier and
+workspace path-policy identity/revision. The root comes from that trusted
+context's resolved `cwd`; model arguments never select it. Missing or
+incomplete context sends an explicit disabled scope to the CodeGG-managed
+Eggsearch child. The child authenticates private metadata and isolates its
+bounded inventory view per root. This does not add file-level ACL semantics;
+workspace path policy must authorize the selected root as a whole.
 
 1. **Path validation**: All file paths validated before access
 2. **Symlink protection**: `check_path_for_symlinks()` rejects symlinks

@@ -236,16 +236,10 @@ fn apply_prompt_session_failure(
     error: &str,
 ) {
     app.prompt_state.clear_session_submit();
-    let current_draft = app.prompt_state.prompt.get_text();
-    if !current_draft.trim().is_empty() && current_draft != prompt {
-        if app.prompt_state.stashed_prompts.len() >= 100 {
-            app.prompt_state.stashed_prompts.remove(0);
-        }
-        app.prompt_state.stashed_prompts.push(current_draft);
-    }
-    app.prompt_state.prompt.set_text(prompt.clone());
-    app.prompt_state.prompt.set_waiting(false);
-    app.prompt_state.mark_retry_without_message(prompt);
+    // One restore shape, shared with the refused-submit path: the composer was
+    // cleared optimistically, so the user's text has to come back whole and
+    // must not duplicate its transcript entry on retry.
+    app.prompt_state.restore_prompt_with_stash(&prompt);
     app.prompt_state.pending_send = false;
     app.session_state.session_status = crate::tui::app::SessionStatus::Error;
     app.messages_state

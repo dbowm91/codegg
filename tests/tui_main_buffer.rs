@@ -432,6 +432,8 @@ fn active_subagents_are_listed_with_their_task_and_status() {
     app.session_state.session_status = SessionStatus::Working;
     app.ui_state.subagents.set_rows(vec![
         SubagentRow {
+            profile: None,
+            usefulness: None,
             task_id: "1".into(),
             run_id: None,
             display_name: Some("Sally".into()),
@@ -440,6 +442,8 @@ fn active_subagents_are_listed_with_their_task_and_status() {
             status: "running".into(),
         },
         SubagentRow {
+            profile: None,
+            usefulness: None,
             task_id: "2".into(),
             run_id: None,
             display_name: Some("Greg".into()),
@@ -465,6 +469,8 @@ fn a_long_fan_out_is_truncated_with_an_honest_count() {
     app.ui_state.subagents.set_rows(
         (0..12)
             .map(|i| SubagentRow {
+                profile: None,
+                usefulness: None,
                 task_id: i.to_string(),
                 run_id: None,
                 display_name: None,
@@ -497,6 +503,8 @@ fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
     app.session_state.session_status = SessionStatus::Idle;
     app.ui_state.subagents.set_rows(vec![
         SubagentRow {
+            profile: None,
+            usefulness: None,
             task_id: "t1".into(),
             run_id: None,
             display_name: None,
@@ -505,6 +513,8 @@ fn a_main_agent_waiting_on_subagents_does_not_read_as_idle() {
             status: "running".into(),
         },
         SubagentRow {
+            profile: None,
+            usefulness: None,
             task_id: "t2".into(),
             run_id: None,
             display_name: None,
@@ -538,6 +548,8 @@ fn an_actually_idle_session_still_reads_idle() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        profile: None,
+        usefulness: None,
         task_id: "t1".into(),
         run_id: None,
         display_name: None,
@@ -666,6 +678,8 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        profile: None,
+        usefulness: None,
         task_id: "7".into(),
         run_id: Some("run-7".into()),
         display_name: Some("Sally".into()),
@@ -707,6 +721,8 @@ fn clicking_the_throbber_row_opens_nothing() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        profile: None,
+        usefulness: None,
         task_id: "7".into(),
         run_id: None,
         display_name: None,
@@ -729,6 +745,8 @@ fn the_strip_is_hit_tested_before_the_composer() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Working;
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        profile: None,
+        usefulness: None,
         task_id: "7".into(),
         run_id: None,
         display_name: None,
@@ -992,16 +1010,20 @@ fn a_working_turn_names_the_key_that_stops_it() {
 #[test]
 fn the_stop_confirmation_is_visible_between_the_two_presses() {
     let mut app = test_app();
-    // A fresh app composes (Insert), and bare-char bindings are Normal-mode
-    // only so `x` can never shadow a letter being typed. Reaching for the stop
-    // key therefore means leaving Insert first.
+    // The stop key is a chord (`Ctrl+Alt+X`) since ADR-0042 gave the bare `x`
+    // to the composer. A chord cannot be composed as text, so it needs no
+    // mode gate — but the app is put in Normal mode anyway, because that is
+    // where the user reaches for it.
     app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
     app.session_state.session_status = SessionStatus::Working;
 
     // First press: arm, and say what completes it. Without this the second
     // press looks like a no-op and the key reads as broken.
     let _ = render_to_buffer(&mut app, 100, 30);
-    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.on_key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ));
     assert!(
         app.prompt_state.stop_armed_at.is_some(),
         "one press must arm, not stop"
@@ -1098,6 +1120,8 @@ fn a_saturated_overlay_never_squeezes_the_transcript_below_its_floor() {
         app.ui_state.subagents.set_rows(
             (0..10)
                 .map(|i| SubagentRow {
+                    profile: None,
+                    usefulness: None,
                     task_id: i.to_string(),
                     run_id: None,
                     display_name: Some(format!("Sally{i}")),
@@ -1138,6 +1162,8 @@ fn the_overlay_appears_when_the_pane_has_room_for_it() {
         priority: "high".into(),
     }]);
     app.ui_state.subagents.set_rows(vec![SubagentRow {
+        profile: None,
+        usefulness: None,
         task_id: "1".into(),
         run_id: None,
         display_name: Some("Sally".into()),
@@ -1229,10 +1255,82 @@ fn subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
         task_id: task_id.into(),
         run_id: Some(format!("run-{task_id}")),
         display_name: Some(name.into()),
+        profile: None,
+        usefulness: None,
         agent: "explore".into(),
         description: format!("work for {task_id}"),
         status: status.into(),
     }
+}
+
+/// The same row as the projection delivers it once descriptors exist.
+fn described_subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
+    SubagentRow {
+        profile: Some("Reconnaissance generalist.".into()),
+        usefulness: Some("Useful for broad recon.".into()),
+        ..subagent(task_id, name, status)
+    }
+}
+
+/// C005: the subagent tab is the one surface that carries Task **and** Agent.
+///
+/// That is what lets the one-line rows spend their single slot on the
+/// descriptor without losing the task, so the trade only holds while the tab
+/// really renders both. This test pins that.
+#[test]
+fn the_subagent_tab_shows_the_task_and_the_descriptor_together() {
+    let mut app = app_with_subagents(vec![described_subagent("2", "Sally", "running")]);
+    app.open_subagent_tab("2");
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+
+    assert!(
+        text.contains("work for 2"),
+        "the tab dropped the task description"
+    );
+    assert!(
+        text.contains("Reconnaissance generalist."),
+        "the tab dropped the descriptor"
+    );
+    assert!(
+        text.contains("Useful for broad recon."),
+        "the tab dropped the operational guidance"
+    );
+    assert!(text.contains("Agent"), "no Agent section heading: {text}");
+}
+
+/// A tab opened on a node recorded before descriptors existed still renders,
+/// with no empty `Agent` heading over an empty body.
+#[test]
+fn the_subagent_tab_omits_the_agent_section_without_a_descriptor() {
+    let mut app = app_with_subagents(vec![subagent("2", "Sally", "running")]);
+    app.open_subagent_tab("2");
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+
+    assert!(text.contains("work for 2"), "the task is still shown");
+    assert!(
+        !text.contains("Reconnaissance generalist."),
+        "no descriptor was carried, so none may be invented"
+    );
 }
 
 fn app_with_subagents(rows: Vec<SubagentRow>) -> App {
@@ -1540,4 +1638,133 @@ fn the_overlay_cursor_never_rests_on_a_row_that_was_truncated_away() {
             "the cursor pointed past the bounded rows"
         );
     }
+}
+
+// ── C007: addressing the composer to a running subagent ─────────────
+
+/// Arm one row, the way `/subagent-send <task id>` does.
+fn armed_to(app: &mut App, task_id: &str) -> bool {
+    codegg::tui::commands::subagent_steer::arm_addressee(app, task_id)
+}
+
+fn composer_text(app: &mut App) -> String {
+    buffer_text(&render_to_buffer(app, 100, 30))
+}
+
+/// The composer badge names the subagent, and stops naming the agent.
+///
+/// The single destination badge is the whole safety mechanism here: `[LLM]`
+/// beside `[TO Sally]` would be two claims about one keypress and the wrong
+/// one, because Enter does not start a turn while armed.
+#[test]
+fn addressing_a_running_subagent_names_it_as_the_composer_destination() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert!(armed_to(&mut app, "1"));
+    let text = composer_text(&mut app);
+    assert!(
+        text.contains("[TO Sally]"),
+        "the badge must name the addressed run: {text}"
+    );
+    assert!(
+        !text.contains("[LLM]"),
+        "a second destination badge would misreport where Enter goes: {text}"
+    );
+    assert!(
+        text.contains("about Sally"),
+        "the placeholder states the same thing: {text}"
+    );
+}
+
+/// The addressee survives a re-render and a snapshot that still reports the
+/// run as live. A user typing a long reply across several refreshes must not
+/// silently have it become an ordinary prompt.
+#[test]
+fn an_addressee_survives_a_snapshot_that_still_reports_its_run_as_running() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert!(armed_to(&mut app, "1"));
+    app.apply_subagent_rows(vec![subagent("1", "Sally", "running")]);
+    assert!(app.prompt_state.subagent_addressee.is_some());
+    assert!(composer_text(&mut app).contains("[TO Sally]"));
+}
+
+/// A run that finished but is **still in the tree** must clear the addressee.
+/// A presence check alone would keep it armed, and the reply would then be
+/// steered into a live turn on behalf of a task that is already done.
+#[test]
+fn a_finished_run_clears_the_addressee_even_while_it_is_still_in_the_tree() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert!(armed_to(&mut app, "1"));
+    app.apply_subagent_rows(vec![subagent("1", "Sally", "completed")]);
+    assert!(
+        app.prompt_state.subagent_addressee.is_none(),
+        "a finished run cannot stay addressed"
+    );
+    assert!(
+        composer_text(&mut app).contains("[LLM]"),
+        "the badge falls back to the ordinary destination"
+    );
+}
+
+/// The other invalidation: the run left the tree entirely.
+#[test]
+fn a_run_that_leaves_the_tree_clears_the_addressee() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert!(armed_to(&mut app, "1"));
+    app.apply_subagent_rows(Vec::new());
+    assert!(app.prompt_state.subagent_addressee.is_none());
+}
+
+/// A subagent dispatched by the previous turn is not one this turn's agent is
+/// running, so a turn start drops the address rather than carrying it forward.
+#[test]
+fn a_new_turn_clears_the_addressee() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert!(armed_to(&mut app, "1"));
+    app.apply_core_event(codegg::protocol::core::CoreEvent::TurnStarted {
+        session_id: "session-1".to_string(),
+        turn_id: "turn-2".to_string(),
+    });
+    assert!(
+        app.prompt_state.subagent_addressee.is_none(),
+        "a reply aimed at the previous turn's run has no meaning here"
+    );
+}
+
+/// I5: addressing a run cancels nothing. No request leaves the frontend at all
+/// for an arm, so there is no path by which arming could interrupt, evict, or
+/// cancel the run it names.
+#[test]
+fn addressing_a_subagent_issues_no_request_at_all() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert!(armed_to(&mut app, "1"));
+    // The fake client records every request; an arm must add nothing to it.
+    assert!(
+        !app.session_state.stopped_turn,
+        "arming must not stop anything"
+    );
+    assert!(app.session_state.active_turn_id.is_none());
+}
+
+/// A finished run cannot be armed in the first place, so a user who races the
+/// projection gets a sentence rather than a silently inert badge.
+#[test]
+fn a_finished_run_refuses_to_arm() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "completed")]);
+    assert!(!armed_to(&mut app, "1"));
+    assert!(app.prompt_state.subagent_addressee.is_none());
+}
+
+/// `/subagent-send off` is the undo, and it is a command rather than a key so
+/// a user who armed by mistake is never stuck with a mode they cannot clear.
+#[test]
+fn the_off_form_clears_the_addressee() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert!(armed_to(&mut app, "1"));
+    app.ui_state.command_mode = true;
+    for c in "/subagent-send off".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.prompt_state.subagent_addressee.is_none());
+    assert!(composer_text(&mut app).contains("[LLM]"));
 }

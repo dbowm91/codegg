@@ -127,6 +127,66 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   `ui_state.dialog` is a derived compatibility discriminator, while
   `active_dialog_type()` controls modal lifecycle.
 
+### M004 `/queue` box
+
+`components/dialogs/queue.rs`, mounted by `commands::queue::open_queue_box`.
+Rules that are easy to break and hard to notice:
+
+- **The box renders, it does not decide.** It must never sort, filter, or
+  reorder `SessionState::user_prompt_queue`; the daemon owns the ordinal.
+  Selection follows `entry_id` across a fresh projection, not the index —
+  index-keyed selection slides the cursor onto a different prompt when a row
+  disappears, and the `d` after that deletes something the user never selected.
+- **Advertise only keys `handle_key` implements.** M004 owns `j/k`, `r`, `d`;
+  M005 adds `a`, `e`, `[`/`]`. Naming one that does not exist in the hint *or*
+  in `EMPTY_STATE` teaches a dead key. `Esc` is handled but deliberately not
+  hinted, like `TreeDialog`, because the modal host claims `Esc` first.
+- **A `delivering` row is listed and offered to `d`.** The daemon refuses it
+  with `user_prompt_queue_entry_delivering` and the box reports it as *being
+  delivered*, never as *expired* — a delivering entry has not expired.
+- **A mutation applies its own response's projection.** `queue_projection`
+  returns the post-write projection in the write's response; `commands::queue`
+  must never follow it with a `UserPromptQueueList`.
+- **Do not add key arms to `handle_dialog_key_legacy`** for a new `Dialog`
+  variant. It is `#[cfg(any())]`-disabled and `FocusManager` is the sole key
+  authority, so such an arm compiles and does nothing.
+- `close_dialog`'s `Dialog::Queue` arm cancels
+  `DialogState::queue_delete_request` (and M005's add/edit/reorder states) so a
+  late completion mutates nothing. It must **not** call
+  `requeue_open_permission` — the box has a cursor, not a pending human
+  decision.
+- `/queue` is blocked for observers by **omission** in the fail-closed
+  `is_observer_allowed_command` allowlist. Do not add it, and do not add the
+  M005 actions either.
+
+### M005 `/queue` authoring
+
+Same file; the box is now also a text field. Three rules carry the milestone:
+
+- **Guard the text step structurally, not per letter.** `handle_key` matches
+  `is_text_step()` **first, as a separate match**, and returns from it, so the
+  browsing arm is unreachable while a composer is open. A per-arm
+  `if !self.is_text_step()` is the shape that eventually ships a sixth action
+  with a missing guard — and typing `d` into a prompt then deletes a prompt.
+  Copy `ConnectDialog::is_text_input_step`'s shape; do **not** open a shared
+  `App`-level `captures_text` predicate.
+- **Reorder's permutation is built from `pending` rows only.** The projection
+  carries `pending` *and* `delivering`, but `reorder` checks the permutation
+  against `status = 'pending'` with exact length equality, so naming a
+  delivering row earns `user_prompt_queue_order_mismatch`.
+- **`order_mismatch` re-reads once and reports — never a retry loop.** The
+  check is a length-equality set compare, so blind retrying against a stale
+  projection is a contention source.
+
+Two deliberate asymmetries, both load-bearing:
+
+- M004 lets the daemon refuse a `d` on a `delivering` row. Reorder **cannot**:
+  the permutation would omit that row, succeed, and reorder nothing. So
+  `reorder_selected` refuses locally and names which end it is at.
+- The `unowned` refusal says the repair is a separate explicit operation
+  outside this box, and does **not** name a slash command — none is registered.
+  Naming one would be this milestone's own version of the dead-key lie.
+
 ## Connection dialog model pane
 
 The model pane is scoped to one connection. `start_selection_refresh` must
@@ -974,13 +1034,56 @@ model to the wrong connection.
   clears the composer before the daemon acknowledges anything. So every path
   where acceptance fails must undo that explicitly, or the user watches an
   eternal spinner and learns nothing for five minutes. The three carriers are
-  `TuiCommand::TurnSubmissionFinished { error }` (daemon refused it or the
+  `TuiCommand::TurnSubmissionFinished { outcome }` (daemon refused it or the
   socket is dead), and `dispatch_turn_submit_request`'s no-core-client and
-  no-session early returns. Route all of them through
-  `App::fail_unstarted_turn`, which clears `working_since` (so the watchdog
-  stops counting a turn that never started), sets `Error`, stops the thinking
-  indicator, and **releases `pending_send` so a retry is possible**. Never
-  record a submission failure in a log line and return; the log is not the UI.
+  no-session early returns. Route them through
+  `App::apply_turn_submission_finished` / `App::fail_unstarted_turn`, which
+  clear `working_since` (so the watchdog stops counting a turn that never
+  started), set `Error`, stop the thinking indicator, and **release
+  `pending_send` so a retry is possible**. Never record a submission failure in
+  a log line and return; the log is not the UI.
+- **A turn already running is not an unstarted turn — do not tear it down.**
+  `turn_already_active` (both the in-memory collision and the ADR-0007
+  controller-lease conflict) means a turn is *running*. Sending it through
+  `fail_unstarted_turn` nulled `active_turn_id` and `working_since`, stopped the
+  spinner, and set `Error` on a session that was actively working — the UI
+  asserting the opposite of the truth while the user waits.
+  `App::fail_contended_turn` releases only what the submit owns (the composer
+  guard and the text) and reports a warning toast. It deliberately does **not**
+  call `report_turn_error`: row 0 gives `last_error` absolute precedence, so
+  latching would hide the live turn's spinner and elapsed time behind a stale
+  `✗`. Contention is not a turn failure — the turn continues.
+- **Classify a refusal before consuming any state.**
+  `src/tui/app/turn_submit.rs` is the one seam that reads a `turn.submit`
+  result, and it produces a typed `TurnSubmitOutcome` the completion arm applies
+  as data. Two rules keep it honest: an **unknown daemon code classifies as
+  `Rejected`**, not `Unexpected` — `Rejected` is the only class that keeps the
+  user's text, and the daemon grows refusal codes; `CONTENTION_CODES` is an
+  exact allowlist, never a default or a resemblance match. `Unexpected` is
+  reserved for a response *shape* the frontend cannot read, and does not
+  restore the prompt, because that submit may already have been accepted.
+  Do not re-derive a class by matching message text at a second site.
+- **Give the user's text back on a recoverable refusal.**
+  `send_prompt`'s optimistic clear means the composer held the only editable
+  copy. Use `PromptState::restore_prompt_with_stash` — one shared shape, already
+  used by session-create failure and reconnect — so the newer draft is displaced
+  into the bounded stash and `mark_retry_without_message` suppresses the
+  duplicate transcript entry on resubmission. The bound applies to how many
+  drafts are kept, **never** to the restored text: truncating would change what
+  the user wrote. Carry the prompt in `PendingTurnSubmission::prompt`; never
+  re-read it from the composer, which the user may have kept typing into.
+  **Never resubmit on the user's behalf** — handing the text back is the whole
+  recovery, and anything more is an unapproved queue.
+- **Keep the daemon idempotency key and the local staleness marker separate.**
+  `PendingTurnSubmission::request_id` is the daemon's receipt key and its
+  derivation must not change. `App::turn_submit_request`'s generation answers a
+  different question — *is this completion still about the submission the user is
+  looking at?* — and `apply_turn_submission_finished` calls
+  `finish(generation)` **first** and drops the completion on `false`. Without
+  that, a late completion from a superseded submission still nulled a live turn's
+  identity: the old arm guarded only the `pending_turn_submission` clear and
+  then tore down turn state unconditionally. `App::cancel_turn_submit`
+  invalidates on tab switch / reconnect / project change.
 - **Never attribute a refusal to a component that is not at fault.** A missing
   dependency is not a diagnosis. `app.core_client` being `None` means two
   different things depending on the transport: on the socket-daemon frontend it
@@ -1196,6 +1299,76 @@ model to the wrong connection.
   can answer the other — a box is not a side panel, and a panel is not a dialog.
   It is a **pure read**: a badge that forced `input_mode` to match what it
   displays turns the state it reports into the state it causes.
+- **The composer's caret is derived, and `PromptWidget` has no `focused` flag.**
+  `App::composer_holds_keyboard` answers "does the composer hold the keyboard",
+  in the same shape as `composer_input_mode` and over the same seams. Its order
+  mirrors `App::on_key`'s priority chain: a mounted modal owns the keyboard, then
+  a focused side panel (`App::panel_owns_keyboard` — the extracted `panel_active`
+  condition, so the key chain and the caret rules read **one** derivation), then
+  the editor's buffer when it is explicitly focused; otherwise the composer owns
+  it. The old `focused` field was **dead in production** (`PromptWidget::blur()`'s
+  only caller was a test), so "no cursor while another surface has the keyboard"
+  was unimplementable as written. Do not reintroduce a stored flag: a copy of
+  this fact can drift from the badge, which is the defect class the mode
+  resolution exists to kill.
+- **Two carets, mutually exclusive, and the blink is the terminal's.**
+  Insert mode positions the **terminal's own cursor** at the caret with
+  `Frame::set_cursor_position` (never the deprecated `Frame::set_cursor`); Normal
+  mode paints a solid block instead. Both read
+  `PromptWidget::caret_cell`, the single computation of where the caret is on
+  screen, so the two cannot disagree. The app runs **one** animation cadence
+  (the 100 ms working strip), so a blinking caret must come from the terminal —
+  ratatui hides the terminal cursor whenever a frame did not position it, so
+  "position nothing" is how the composer shows no cursor at all. The rule the
+  badge and the caret share: **when the composer holds the keyboard, `[INS]`
+  means the terminal cursor is positioned and `[NOR]` means the block is
+  painted; when it does not, neither caret is present.**
+- **The composer owns a closed set of Normal-mode letters, and a claimed
+  letter never falls through.** `src/tui/composer_claims.rs` is the single
+  table; the app's binding map is consulted only for letters the composer does
+  not claim. A claimed letter is consumed **even when its verb is not
+  implemented yet** — that is the fallthrough rule, and it is the whole point
+  of the table: a reserved claim that leaks becomes an unrelated app action
+  (the terminal panel records the failure verbatim: an unclaimed `d` silently
+  became `OpenDiff`). The claim step runs **before** the binding map, inside
+  the composer branch of the key chain, so a modal, a focused panel, the
+  Workspace view and the editor route are all consulted first. The gate is
+  the *resolved* mode plus `App::composer_holds_keyboard`, never the raw
+  `UiState::input_mode`. A condition on a claim must be written on the entry
+  (`j`/`k` are the one conditional pair): an implicit conditional is how a
+  leak reappears. A claimed **capital** answers to both encodings
+  (`Char('U')` with `SHIFT` and with `NONE`), like the app's
+  `insert_panel_direction_bindings`; a lowercase claim is the bare key only.
+- **A consumed claim that does nothing is a dead key — never claim a letter
+  the app needs to keep working.** `i` is the app's **only** route back to
+  Insert mode (it is the `None` arm of the key chain, not a binding), so its
+  verb is **live**: it runs the transition the app already had, and the table
+  is where that ownership now lives. A reserved `i` would swallow the key,
+  do nothing, and leave the user in Normal mode with no way to type. When a
+  verb is promoted from reserved to live, the runner in
+  `App::run_composer_claim` is where the behaviour goes — not the binding
+  map — and the `None` arm keeps the gesture only for the surfaces the
+  composer does not own.
+- **A letter the composer claims is not available to the app.** The three
+  app-level actions that owned `x`, `d` and `i` moved to `Ctrl+Alt+X`,
+  `Ctrl+Alt+D` and `Ctrl+Alt+E`, in **both** maps. `Ctrl+Alt+<letter>` is the
+  legacy-safe family: the terminal delivers `ESC` + the control byte, which
+  crossterm reports as the letter with CONTROL|ALT. `Ctrl+Alt+I` is **not**
+  usable — `ESC` + `0x09` arrives as `Tab` with ALT. A chord's `(modifiers,
+  key)` pair must not be one the table **claims**: a claim is matched on the
+  exact modifier set, so `Ctrl+Alt+X` is not the claim for the bare `x` and the
+  composer does not take the chord back — but a chord spelled with a modifier
+  set the table claims would be swallowed. When an action's only spelling
+  becomes a chord, it must leave `is_normal_only`: a chord cannot be composed
+  as text, so gating it out of Insert mode would take the action out of the
+  mode the app boots in. **A bare spelling of a letter the composer does *not*
+  claim is not a re-spelling violation.** The default map's `/` for
+  focus-prompt is the live example: `/` is not claimed, so the plan's
+  invariant — *a letter the composer does not claim must resolve to the same
+  app action it resolves to today* — requires it to keep working, and it is
+  the gesture that enters command mode, which is what makes the rest of a
+  typed slash command land. Removing it broke the only route back into the
+  panel manager from a focused panel.
 - **Never make one key answer two questions.** `Esc` used to be both "leave
   insert" and "pass an escape byte through", disambiguated by a hidden
   `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's
@@ -1309,13 +1482,15 @@ model to the wrong connection.
 
 ## Static Guards
 
-Both guards fail `verify.sh quick` and the CI `verify` job. Read them before
-adding TUI code - they are the executable form of the invariants above.
+Every guard in the table below fails `verify.sh quick` and the CI `verify` job.
+Read them before adding TUI code - they are the executable form of the
+invariants above.
 
 | Script | Enforces |
 |---|---|
 | `python3 scripts/check_tui_project_authority.py` | Scans `tui/app/state/**`, `tui/app/mod.rs`, `tui/commands/**`, `tui/runtime/**`, `tui/command.rs`, and `tui/components/dialogs/command.rs`; rejects `session_state.project_dir` and `std::env::current_dir()` as project authority. Only clearly marked bootstrap boundaries and test fixtures are exempt. |
 | `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
+| `python3 scripts/check_tui_composer_key_authority.py` | Reads the composer's claim table (`src/tui/composer_claims.rs`) and the two binding maps, and fails when a letter is claimed twice, when a claimed letter can still reach an app-level action, when a re-spelled chord is missing from a map, when a re-spelled action has no chord to reach it by or still answers to a claimed key, when a capital claim misses an encoding, and when a claimed key bound under `SHIFT` has no `is_normal_only` entry. Carries a `--self-test` that injects each violation class. |
 | `python3 scripts/check_tui_editor_key_authority.py` | Scans the editor's dispatch stages and rejects a chord claimed twice, a chord claimed by a later stage after an earlier one took it, and a shadowed arm. The conflict model is the **exact modifier bitmask**, so `ALT` and `ALT \| SHIFT` are disjoint. `--self-test` runs ten cases, including one the guard cannot resolve — that must be an error, not a pass. |
 | `python3 scripts/check_tui_editor_prefix_state.py` | Rejects a second pending-prefix mechanism: the presentation must hold exactly one, typed `EditorPrefix`. A grammar that wants a second level puts it in the **variant** (`EditorPrefix::MatchArg`), not in a second field. |
 | `python3 scripts/check_tui_editor_leaf_authority.py` | Polices the editor's **leaf tables**: no duplicated glyph inside one table, every glyph printable ASCII, one glyph per prefix across that prefix's tables, no leaf behind a guard-block chord, and no table no prefix binds. Reads the guard-block chords through the key-authority guard. `--self-test` runs nine synthetic cases through the same analysis the real check uses. |

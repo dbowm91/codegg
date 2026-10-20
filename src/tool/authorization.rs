@@ -8,6 +8,9 @@ use crate::permission::{approval::ExecutionPolicySnapshot, PermissionDecisionRec
 /// result. It is advisory and never grants or denies resource authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPreflightResult {
+    /// True only when the configured preflight caller policy requires refusal.
+    /// Findings by themselves remain advisory and never confer authority.
+    pub blocked: bool,
     pub summary: Option<String>,
 }
 
@@ -17,4 +20,6 @@ pub struct ExecutionAuthorizationContext {
     pub snapshot: ExecutionPolicySnapshot,
     pub receipt: PermissionDecisionReceipt,
     pub command_preflight: Option<CommandPreflightResult>,
+    /// Host-authorized durable run scratch. Never accepted from tool arguments.
+    pub scratch_scope: Option<crate::scratch::AgentScratchScope>,
 }

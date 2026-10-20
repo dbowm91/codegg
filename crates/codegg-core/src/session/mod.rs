@@ -14,6 +14,7 @@ pub mod schema;
 pub mod selection_catalog;
 pub mod state;
 pub mod status;
+pub mod user_prompt_queue;
 
 pub mod import;
 pub mod models;
@@ -50,6 +51,14 @@ pub use state::TuiSessionState;
 pub use store::{
     escape_sql_like, generate_slug, ConfirmExistingEvent, EventStore, MessageStore, PartStore,
     PermissionStore, SessionStore, TodoStore, UsageStore,
+};
+pub use user_prompt_queue::{
+    UserPromptQueueDeliveryClaim, UserPromptQueueDeliveryResolution, UserPromptQueueEntryRecord,
+    UserPromptQueueError, UserPromptQueueLiveEntry, UserPromptQueueOwnerRecord,
+    UserPromptQueueOwnership, UserPromptQueueStatus, UserPromptQueueStore,
+    USER_PROMPT_QUEUE_MAX_ENTRY_BYTES, USER_PROMPT_QUEUE_MAX_PENDING,
+    USER_PROMPT_QUEUE_MAX_RECONCILE, USER_PROMPT_QUEUE_MAX_RETAINED_PER_SESSION,
+    USER_PROMPT_QUEUE_RENUMBER_BAND_OFFSET, USER_PROMPT_QUEUE_TTL_MS,
 };
 
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,

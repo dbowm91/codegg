@@ -313,6 +313,21 @@ pub enum AppEvent {
         /// the subagent finishes. Travels in the event so projection replay
         /// is deterministic; never re-minted downstream.
         display_name: Option<String>,
+        /// The leased pool entry's character description, e.g. Greg's
+        /// "Generalist who has seen something like this before".
+        ///
+        /// Travels in the event for the same reason as `display_name`: the
+        /// projection is a pure function of its input, so it copies this
+        /// verbatim and never re-derives it from a name it cannot resolve.
+        /// `None` when the name was not drawn from the pool, or when the node
+        /// predates descriptors.
+        profile: Option<String>,
+        /// The leased pool entry's candid operational guidance.
+        ///
+        /// Carried alongside `profile` for the same determinism reason. The
+        /// subagent row renders `profile`; this is the operational half, held
+        /// on the node so a consumer that can address a subagent has it.
+        usefulness: Option<String>,
         /// Durable run id when the subagent is scheduler-owned.
         run_id: Option<String>,
     },

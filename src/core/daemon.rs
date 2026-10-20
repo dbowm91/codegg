@@ -142,6 +142,18 @@ pub struct CoreDaemon {
     /// unattached daemons) means notify-only: hints still publish, wakes
     /// never evaluate. Fail-closed by construction.
     pub(crate) idle_wake_cell: Arc<std::sync::OnceLock<std::sync::Weak<CoreDaemon>>>,
+    /// M007 (ADR-0039): wakes the queue advance task when a due time is set or
+    /// cleared.
+    ///
+    /// This is what lets the task **park** instead of poll. A parked task has no
+    /// deadline to wait for, so it can only learn that a schedule appeared from
+    /// the write that created one — a `notify_one()` stored as a permit if the
+    /// task is mid-pass, so a schedule made during an advance pass is not lost.
+    ///
+    /// `Notify` rather than a `watch` channel on purpose: the payload here is
+    /// "recompute", never a value, and a coalescing watch would hold a `Notify`
+    /// under a mutex for no gain.
+    pub(crate) queue_schedule_changed: Arc<tokio::sync::Notify>,
     /// Total events the event bridge was forced to drop because the
     /// broadcast receiver lagged behind publishers. Exposed for metrics
     /// and the request to manually resync after a sustained spike.
@@ -3058,6 +3070,14 @@ impl CoreDaemon {
             | CoreRequest::SessionPromptSubmit { session_id, .. }
             | CoreRequest::HumanShellPromotionStage { session_id, .. }
             | CoreRequest::HumanShellPromotionsGet { session_id }
+            | CoreRequest::UserPromptQueueList { session_id }
+            | CoreRequest::UserPromptQueueAdd { session_id, .. }
+            | CoreRequest::UserPromptQueueEdit { session_id, .. }
+            | CoreRequest::UserPromptQueueDelete { session_id, .. }
+            | CoreRequest::UserPromptQueueReorder { session_id, .. }
+            | CoreRequest::UserPromptQueueAdopt { session_id }
+            | CoreRequest::UserPromptQueueTransfer { session_id, .. }
+            | CoreRequest::UserPromptQueueSendNow { session_id, .. }
             | CoreRequest::TurnCancel { session_id, .. }
             | CoreRequest::TurnSteer { session_id, .. }
             | CoreRequest::SessionControlGet { session_id }
@@ -4674,7 +4694,9 @@ mod tests {
                 max_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_READ_BYTES,
             },
         };
-        for _ in 0..30 {
+        // The standalone process is intentionally asynchronous; give slow
+        // CI hosts time to start and publish its first bounded output chunk.
+        for _ in 0..500 {
             let response = daemon
                 .handle_request(crate::core::new_request(
                     "standalone-shell-read".into(),
@@ -5018,7 +5040,7 @@ mod tests {
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: directory.clone(),
+                directory,
                 title: Some("Test".into()),
                 project_id: Some(project_id),
                 workspace_id: Some(workspace_id),
@@ -6018,14 +6040,21 @@ mod tests {
     impl PromptSubmitCredentialHome {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("temporary credential home");
-            let config_home = dir.path().join("config");
+            // `tempfile` may return a path below macOS's symlinked `/var`.
+            // Scratch intentionally refuses symlinked roots, so use the real
+            // path as HOME for dirs::cache_dir() and credential storage.
+            let home = dir.path().canonicalize().expect("canonical temporary home");
+            let config_home = home.join("config");
             std::fs::create_dir_all(&config_home).expect("create temporary config home");
+            // macOS resolves dirs::cache_dir() below HOME/Library/Caches.
+            std::fs::create_dir_all(home.join("Library/Caches"))
+                .expect("create temporary cache home");
             let names = ["HOME", "XDG_CONFIG_HOME", "APPDATA"];
             let previous = names
                 .into_iter()
                 .map(|name| (name, std::env::var_os(name)))
                 .collect();
-            std::env::set_var("HOME", dir.path());
+            std::env::set_var("HOME", &home);
             std::env::set_var("XDG_CONFIG_HOME", &config_home);
             std::env::set_var("APPDATA", &config_home);
             Self {

@@ -138,11 +138,29 @@ jobs:
       - name: TUI transport-authority guard
         run: python3 scripts/check_tui_transport_authority.py
 
+      - name: Subagent name-pool isolation self-test
+        run: python3 scripts/check_tui_subagent_name_pool_isolation.py --self-test
+
+      - name: Subagent name-pool isolation guard
+        run: python3 scripts/check_tui_subagent_name_pool_isolation.py
+
+      - name: Composer key-ownership self-test
+        run: python3 scripts/check_tui_composer_key_authority.py --self-test
+
+      - name: Composer key-ownership guard
+        run: python3 scripts/check_tui_composer_key_authority.py
+
       - name: HTTP route disposition guard
         run: python3 scripts/check_http_route_disposition.py
 
       - name: Audit coverage guard
         run: python3 scripts/check_audit_coverage.py
+
+      - name: Queue delivery callsite guard
+        run: python3 scripts/check_queue_delivery_callsites.py
+
+      - name: Queue write transaction shape guard
+        run: python3 scripts/check_queue_write_transaction_shape.py
 
       - name: Scheduler bypass guard
         run: python3 scripts/check_scheduler_bypass.py

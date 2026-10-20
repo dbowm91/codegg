@@ -108,6 +108,7 @@ pub mod chat_browser;
 pub mod command;
 pub mod commands;
 pub mod components;
+pub mod composer_claims;
 pub mod file_diff;
 pub mod file_icons;
 pub mod helix_selection;
@@ -530,8 +531,11 @@ mod shell_dispatch_tests {
             .expect("acceptance completion arrives")
             .expect("completion command")
         {
-            TuiCommand::TurnSubmissionFinished { error, .. } => {
-                assert!(error.is_none());
+            TuiCommand::TurnSubmissionFinished { outcome, .. } => {
+                assert!(
+                    !outcome.is_failure(),
+                    "the daemon accepted the turn: {outcome:?}"
+                );
             }
             other => panic!("unexpected turn completion command: {other:?}"),
         }
@@ -1118,6 +1122,29 @@ mod async_cmd_tests {
         apply_task_operation_finished, apply_tasks_listed, apply_worktree_listed,
     };
     use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct RecordingTurnSubmitClient(std::sync::Mutex<Vec<crate::protocol::core::CoreRequest>>);
+
+    #[async_trait::async_trait]
+    impl crate::core::CoreClient for RecordingTurnSubmitClient {
+        async fn request(
+            &self,
+            request: crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>,
+        ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+            self.0.lock().unwrap().push(request.payload);
+            Ok(crate::protocol::core::CoreResponse::Ack)
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
 
     fn make_test_app() -> App {
         App::new_for_testing("/tmp".into())
@@ -2129,6 +2156,10 @@ mod async_cmd_tests {
         app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
             endpoint: "unix:///tmp/core.sock".into(),
         };
+        // Socket-daemon mode carries requests through CoreClient. Keep the
+        // client present even though this fixture has no event loop to execute
+        // the eventual async request.
+        app.set_core_client(std::sync::Arc::new(crate::core::InprocCoreClient::default()));
         let mut tab = crate::tui::app::state::ProjectTabState::empty(
             crate::tui::app::state::ProjectTabId::new(),
             "test".into(),
@@ -2139,11 +2170,15 @@ mod async_cmd_tests {
         app
     }
 
-    #[test]
-    fn socket_daemon_mode_never_takes_the_remote_input_path() {
+    #[tokio::test]
+    async fn socket_daemon_mode_never_takes_the_remote_input_path() {
         let mut app = socket_daemon_app_with_tab();
         // The socket path owns a core client, never a remote TUI channel.
         assert!(app.remote_send_tx.is_none());
+        let client = std::sync::Arc::new(RecordingTurnSubmitClient::default());
+        app.attach_core_client(client.clone());
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+        app.tui_cmd_tx = Some(command_tx);
         // Pre-existing session: submit straight into it.
         app.session_state.session = Some(crate::session::Session {
             id: "shell-test-session".into(),
@@ -2168,6 +2203,27 @@ mod async_cmd_tests {
             SessionStatus::Error,
             "a bound session must submit instead of erroring"
         );
+
+        let command = tokio::time::timeout(std::time::Duration::from_secs(1), command_rx.recv())
+            .await
+            .expect("the core submission should finish")
+            .expect("the UI command channel should remain open");
+        assert!(matches!(
+            command,
+            crate::tui::app::TuiCommand::TurnSubmissionFinished {
+                outcome: crate::tui::app::turn_submit::TurnSubmitOutcome::Accepted,
+                ..
+            }
+        ));
+        let requests = client.0.lock().unwrap();
+        assert!(matches!(
+            requests.as_slice(),
+            [crate::protocol::core::CoreRequest::TurnSubmit {
+                session_id,
+                text,
+                ..
+            }] if session_id == "shell-test-session" && text == "hello"
+        ));
     }
 
     #[test]
