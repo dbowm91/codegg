@@ -233,6 +233,15 @@ and a launch-site primitive, so a launcher is a writer root on its own
 account. The manifest went from 39 declared roots to 49, and the guard's
 detected writer modules from 20 to 30.
 
+The 48 and the 49 do not contradict each other, and the relationship is worth
+stating because it is easy to misread. C001's **matrix** has 48 rows, one per
+*writer sink*, and each row names its "final effect owner" inside the row's
+prose. The **manifest** declares *roots* — a tool or a module — and a single
+sink can name an owner that no manifest entry named. The manifest's 39 roots
+were the tools and modules the guard could see; the ten launchers are the
+owners those rows pointed at. The matrix is unchanged, because the sinks did
+not change: what changed is that their owners are now declared.
+
 **Guard non-vacuity was proved on the real tree.** Removing the
 `module.managed_process` manifest entry made the guard fail with
 `writer module 'src/managed_process.rs' has no disposition`; adding
