@@ -683,6 +683,20 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
         description: "M006 deterministic worker".into(),
         mode: AgentMode::Subagent,
         model: Some("held/model".into()),
+        git_read_only: true,
+        permissions: [
+            "write",
+            "edit",
+            "apply_patch",
+            "replace",
+            "terminal",
+            "bash",
+            "commit",
+            "lsp_preview_apply",
+        ]
+        .into_iter()
+        .map(|tool| (tool.to_string(), "deny".to_string()))
+        .collect(),
         hidden: false,
         ..Default::default()
     };
@@ -696,7 +710,13 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
         )
         .await,
     );
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), Some(worker_pool), None));
+    let daemon = Arc::new(CoreDaemon::with_deps(
+        crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool.clone(),
+            Some(worker_pool),
+            None,
+        ),
+    ));
     daemon.start_event_bridge();
 
     let root = tempfile::tempdir().expect("workspace root");
@@ -741,6 +761,12 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
         crate::protocol::core::CoreResponse::Session { session } => session,
         other => panic!("session creation failed: {other:?}"),
     };
+    daemon.bind_runtime(
+        &session.id,
+        workspace.clone(),
+        project.project_id.as_str().to_string(),
+        root.path().to_path_buf(),
+    );
     let submission = daemon
         .deps
         .submission
@@ -785,9 +811,47 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
         .await
         .expect("scheduler accepts real worker job");
 
-    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+    if tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
-        .expect("worker reaches provider latch");
+        .is_err()
+    {
+        let stored = daemon
+            .deps
+            .job_store
+            .get_job(&job.job_id)
+            .await
+            .expect("read worker job after provider-latch timeout")
+            .expect("worker job remains durable after provider-latch timeout");
+        let attempts = daemon
+            .deps
+            .job_store
+            .list_attempts(&job.job_id)
+            .await
+            .expect("read worker attempts after provider-latch timeout");
+        panic!(
+            "worker did not reach provider latch: job state {:?}, attempts {attempts:#?}",
+            stored.state
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = daemon
+                .projection_snapshot_for_session(
+                    &session.id,
+                    project.project_id.as_str(),
+                    workspace.id.as_str(),
+                )
+                .await;
+            if snapshot.subagents.iter().any(|child| {
+                child.status == crate::protocol::projection::dto::AgentTreeStatus::Running
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("daemon projection records the held worker before late attachment");
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(64);
     let mut app = crate::tui::app::App::new_for_testing(root.path().to_string_lossy().into_owned());
     app.tui_cmd_tx = Some(command_tx);
@@ -945,7 +1009,9 @@ async fn late_socket_tui_attaches_to_held_real_scheduled_subagent() {
     })
     .await
     .expect("real child lifecycle reaches a projected terminal state");
-    let restarted = Arc::new(CoreDaemon::new(Some(pool), None, None));
+    let restarted = Arc::new(CoreDaemon::with_deps(
+        crate::core::runtime_deps::CoreRuntimeDeps::with_jobs(pool, None, None),
+    ));
     restarted
         .initialize_recovery_sequence()
         .await
