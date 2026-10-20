@@ -356,6 +356,38 @@ fast path).
 CI uses default features, bounded resources. Optional feature, plugin,
 example, LSP, and cross-platform checks remain local.
 
+### Live Eggwork fixture trust
+
+The live qualification (`tests/eggwork_remote_execution_live.rs`) starts a
+real Eggwork node as a bounded subprocess. The pinned node resolves its
+sandbox helper as a sibling of its own executable and **refuses a helper it
+cannot trust**: the helper must be executable, owned by the invoking user,
+and neither it nor any directory above it may be group- or world-writable.
+An untrusted helper makes the node drop
+`isolation.landlock.workspace-rw.v1`, and every required-isolation run is
+then refused by the executor.
+
+Cargo installs build artifacts with the *process umask* and does not narrow
+them, and `tempfile` creates its directories the same way. On a host with a
+permissive umask (`0002` is common on shared workstations) the helper and its
+directory therefore land group-writable, the node refuses them, and the
+live isolation qualifications fail on a tree, a fixture, and a code base
+that are all identical to a green run. The outcome followed the operator's
+umask instead of the product.
+
+The qualification therefore **stages** the node and the helper in a private
+directory before starting the node: the staging directory is set to `0700`,
+the helper is placed there as an independent copy with mode `0755`, and the
+node is started from that directory. The trust chain then depends on the
+fixture alone — the staged directory, and the system temp root above it
+(sticky and root-owned, which the trust check exempts) — and not on the
+build tree's own modes or on the umask. The build artifacts are left
+untouched; the prebuild script only has to produce them, not trust them.
+
+`a_staged_sandbox_helper_is_trusted_whatever_the_umask` pins the contract:
+the mirror of the node's trust check rejects a group-writable helper in a
+group-writable directory, and accepts the staged pair.
+
 ### CI economy policy
 
 Four deliberate deviations from the local defaults, all confined to the
