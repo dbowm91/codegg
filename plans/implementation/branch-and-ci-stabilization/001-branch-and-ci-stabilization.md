@@ -191,6 +191,38 @@ No fail-closed path is weakened: the refusal of an unsafe cache root is
 unchanged, and it is now a **tested contract** rather than an accident of the
 host.
 
+**WP-H — Make the branch pass the CI clippy step.** `ci.yml` runs
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, and this
+branch had never been observed in a hosted run — `ci.yml` runs on pull
+requests and on pushes to `main`, and no pull request had been opened for this
+branch. Four lints in branch-owned code would have failed that step: a
+`let...else` that returns `Option` in C007's startup reconciler, a same-type
+`.into()` and the redundant closure around it in the publisher, the
+`#[must_use]` the async-trait expansion injects in the staging trait, and a
+needless `to_vec`/`&` round trip in the scheduler executor. All four are
+mechanical and behaviour-preserving. The two `let...else` patterns on `main`
+are **not** affected — they sit in functions that return `()`, where the `?`
+operator does not apply — so the branch does not diverge from `main` for a
+lint `main` does not trip.
+
+**WP-I — Preserve the work the remote branch carried past the rebase base.**
+The remote branch was two commits ahead of the rebase base `d251b11c`:
+`32611c8d` ("register Linux sandbox admission follow-up correctives") and
+`5019fb26` ("correct section references in Linux handoff packet"). They add a
+parallel planning packet — the *Linux Sandbox Admission — Post-Review
+Corrective Addendum* with its own C001/C002/C003 — and a force-push without
+them would have destroyed it. Both are replayed onto the rebased branch; the
+only conflict was a registry insertion, resolved by keeping every row from
+both sides. See §3.10 of the closure.
+
+**WP-J — Dispose of the stray `plans/.mutate-probe`.** The branch carried a
+tracked file of 295 lines of the single character `x`. The parallel packet
+above asks for its disposition and sanctions removal "only with
+provenance/test confirmation, never by guessing". The provenance is a commit
+whose subject describes recording a sweep result, the content carries no
+information, nothing in the repository reads it, and it is absent from `main`.
+It is removed, with the evidence recorded in the closure's §3.9.
+
 ## 8. Failure, cancellation, restart, contention semantics
 
 - A history surgery must not change the tree. The correction is verified by

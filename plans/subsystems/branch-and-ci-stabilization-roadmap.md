@@ -260,6 +260,19 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   root for a local `cargo run`, which is a product behaviour change outside
   this milestone, and it would have placed the scratch root inside the
   repository, which several qualifications grant as their workspace root.
+- **Decision point: what to do with the stray `plans/.mutate-probe`.** The
+  parallel packet asks for its disposition and forbids guessing. Resolved in
+  favour of removal, on evidence rather than on appearance: the file is 295
+  lines of the single character `x`, it was added by a commit whose subject
+  describes recording a sweep result, nothing in the repository reads it, and
+  it is absent from `main`. The removal is recorded in the closure with that
+  evidence, so a reviewer can check the reasoning rather than take it on
+  trust.
+- **Decision point: what to do with the two commits the remote branch carried
+  past the rebase base.** Resolved in favour of replaying them onto the
+  rebased branch rather than force-pushing over them. They are the owner's
+  parallel planning packet, and a force push that dropped them would have
+  destroyed work this milestone never saw.
 
 ## 11. Completion definition
 

@@ -1884,10 +1884,7 @@ mod tests {
         let attempts = std::sync::atomic::AtomicUsize::new(0);
         let fingerprint = |_path: &Path| -> std::io::Result<[u8; 32]> {
             attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "object store unreadable",
-            ))
+            Err(std::io::Error::other("object store unreadable"))
         };
 
         let result = prepare_private_object_view_with(
@@ -1905,7 +1902,7 @@ mod tests {
         );
         assert_eq!(
             attempts.load(std::sync::atomic::Ordering::SeqCst),
-            OBJECT_VIEW_SNAPSHOT_ATTEMPTS as usize,
+            OBJECT_VIEW_SNAPSHOT_ATTEMPTS,
             "the refusal must come after the bounded attempts, not before the first one"
         );
     }

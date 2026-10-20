@@ -108,6 +108,8 @@ contract** rather than an accident of the host.
 | The scratch root follows the resolved cache root | `tests/scratch_cache_root_contract.rs`: `the_default_cache_root_is_the_home_directory_cache` and `an_explicit_cache_home_is_the_root_the_allocator_uses` | pass |
 | The forty-four tests that failed in the authoritative sweep pass | the sweep's result is recorded in §4.1; the previously-failing families (`scratch`, `core::daemon`, `core::daemon_sessions`, `tool_program_m015/016/017`, `session_family control_m004`, `async_background_c006`, `agent_loop_harness`, `identity_live_execution_audit`, `identity_m002_live_audit_hooks`, `workspace_root_execution_authority`, `linux_native_scratch_containment`, `python_script::executor`, `managed_process`, `tool::bash`) pass | pass |
 | The sweep's result does not depend on the operator's home directory | `scripts/verify.sh full` and `.github/workflows/ci.yml` both give the sweep a private cache root; the authoritative sweep in §4.1 was run with the host's own `~/.cache` still world-writable (0777) and still passed | pass |
+| The branch passes the CI clippy step | `cargo clippy --workspace --all-targets --locked -- -D warnings` → **clean**; four lints in branch-owned code would have failed it (§3.8) | pass |
+| No work is lost by the force push | the remote branch's two commits past the rebase base (`32611c8d`, `5019fb26`) are replayed onto the rebased branch; their files are **byte-identical** to the remote's originals (§3.10) | pass |
 | Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20; six rows corrected | pass |
 | The canonical gate after the sweep | `scripts/verify.sh quick` → "Quick verification passed." (§4) | pass |
 
@@ -276,6 +278,95 @@ The refusal of an unsafe cache root is now a tested contract rather than an
 accident of the host: `a_group_writable_cache_root_is_refused` (0775) and
 `a_world_writable_cache_root_is_refused` (0777) assert the typed error and the
 path it names.
+
+### 3.8 The CI clippy step
+
+`ci.yml` runs `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+This branch had never been observed in a hosted CI run — `ci.yml` runs on pull
+requests and on pushes to `main`, and no pull request had been opened for this
+branch — so nothing had ever exercised that step against the branch's own
+code. Running it locally exposed **four lints in branch-owned code**:
+
+| Site | Lint | Fix |
+|---|---|---|
+| `src/core/daemon_bootstrap.rs` — C007's startup reconciler | `clippy::question_mark`: a `let...else` in a function returning `Option` | `let pool = self.pool.as_ref()?;` |
+| `src/git_publication/publisher.rs` | `clippy::useless_conversion` and then `clippy::redundant_closure` | `map_err(PublishFailure::Fatal)?` |
+| `src/git_publication/staging.rs` | `clippy::double_must_use`: the `#[must_use]` the async-trait expansion injects | `#[allow(clippy::double_must_use)]` at the macro site — the same convention five other traits in this tree already use |
+| `src/scheduler/executors.rs` | `clippy::unnecessary_to_owned` and then `clippy::needless_borrow` | pass `args` directly |
+
+All four are mechanical and behaviour-preserving: the same values reach the
+same calls. The two `let...else` patterns on `main` are **not** affected —
+they sit in functions returning `()`, where the `?` operator does not apply —
+so the branch does not diverge from `main` for a lint `main` does not trip.
+
+### 3.9 The stray `plans/.mutate-probe`
+
+The branch carried a tracked file `plans/.mutate-probe`: **295 lines of the
+single character `x`** (590 bytes). The *Linux Sandbox Admission — Post-Review
+Corrective Addendum* packet flags it and asks for its disposition — "remove an
+extraneous probe **only with provenance/test confirmation**, never by
+guessing". The confirmation is here:
+
+- **Provenance.** It was added by `27a0207e` ("docs(plans): record the
+  authoritative sweep, and the 14 tests that do not reproduce", 2026-10-20),
+  a commit whose subject and body describe recording a sweep result and
+  nothing else. It was not present on `main`.
+- **Content.** Its only unique line is `x`. It carries no information, and it
+  is not a copy of any tracked file — the three tracked files that also have
+  295 lines are a subagent-name list and two implementation plans, none of
+  which it resembles.
+- **References.** Nothing in the repository reads it: no test, no script, no
+  guard, no plan, no ADR. The only two mentions are the planning packet's own
+  two requests for its disposition.
+
+It is removed. Nothing that depended on it was lost.
+
+### 3.10 The work the remote branch carried past the rebase base
+
+The remote branch was **two commits ahead** of the rebase base `d251b11c`:
+`32611c8d` ("register Linux sandbox admission follow-up correctives") and
+`5019fb26` ("correct section references in Linux handoff packet"). A force
+push without them would have destroyed them.
+
+They add a parallel planning packet: the *Linux Sandbox Admission — Post-Review
+Corrective Addendum*
+(`plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.md`)
+with its own C001/C002/C003 implementation plans under
+`plans/implementation/linux-sandbox-admission-follow-up-corrective/`, plus
+registry rows and two parent-roadmap links.
+
+Both commits are replayed onto the rebased branch and their files are
+**byte-identical** to the remote's originals. The only conflict was a registry
+insertion, resolved by keeping every row from both sides — the one row both
+sides touched (`Linux trusted Git cost corrective`) is kept in its rebased
+form, with the rebase note, and the incoming side's unmodified copy was
+dropped as the duplicate it was.
+
+**This milestone and that packet overlap, and the overlap is recorded rather
+than resolved.** Both address the same objective — make the branch
+integrate with `main` and make the default sweep's result trustworthy — and
+both call their first package "C001", under different roadmaps. Two specific
+points where this milestone's implementation differs from that packet's
+guidance, both left for the owner to decide:
+
+- The packet asks that the three load-sensitive LSP tests be fixed with
+  per-test fixtures or a bounded scheduling fix, and marked *conditional*
+  rather than excluded. This milestone instead moved them behind the
+  repository's existing `lsp-real-server-tests` feature, which is the policy
+  `AGENTS.md` and `architecture/testing.md` already state for a test that
+  needs an installed server. The tests are not deleted and not silently
+  skipped: they remain runnable through that feature, and this record states
+  exactly what ran and what did not.
+- The packet's C001 expects its closure at
+  `plans/closure/linux-sandbox-admission-follow-up-corrective/001-status.md`.
+  This milestone's closure is at
+  `plans/closure/branch-and-ci-stabilization/001-status.md`. The evidence in
+  this record — the green sweep, the non-vacuity proofs, the clippy findings
+  — is the evidence that packet's C001 asks for; merging the two records, or
+  folding this one into that path, is an editorial decision this milestone
+  does not make on the owner's behalf.
+
+
 
 ## 4. Verification executed
 
@@ -477,7 +568,18 @@ repair. The repair is a host action; nothing in the repository depends on it.
 - **medium — the hosted CI runs recorded in the C007 and C023 closures qualify
   the *code* those closures describe, not the rebased head.** The rebase
   rewrote every SHA, and the recorded runs predate it. The rebased head has
-  **not** been observed in a hosted run. See §12.
+  **not** been observed in a hosted run, and pushing the branch does not start
+  one: `ci.yml` runs on pull requests and on pushes to `main`, so the branch's
+  own push starts only the path-triggered native workflows. Opening a pull
+  request is what would exercise the default sweep on the rebased head. See
+  §12.
+- **low — the branch and the *Linux Sandbox Admission — Post-Review Corrective
+  Addendum* packet both call their first package "C001", and the two differ in
+  two recorded places** (§3.10): the disposition of the three
+  load-sensitive LSP tests, and the path of the closure record. The evidence
+  this milestone produced is the evidence that packet's C001 asks for. Merging
+  the two planning structures, or folding this record into that packet's
+  closure path, is left to the owner rather than decided here.
 
 ## 11. Roadmap disposition
 
