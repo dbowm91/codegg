@@ -353,6 +353,98 @@ exit 0, `scripts/verify.sh quick` "Quick verification passed.", workspace sweep
 sweep re-observed green on the head after WP-M (**15755 run, 15755 passed, 8
 skipped**).
 
+**WP-P — The third reconciliation, with `main` at `28724bd83` (2026-10-21).**
+`main` advanced again — PR #152, the M007 scratch retention sweep — and the pull
+request was `CONFLICTING` again. Reconciled by a third merge, for the same
+reason as WP-M.
+
+**This advance landed on the branch's own scratch surface, and it is the first
+reconciliation whose conflict is in product code rather than in documentation.**
+`main`'s M007 added `src/core/scratch_sweep.rs` (1576 lines),
+`tests/scratch_retention_sweep.rs` (946 lines), and 389 changed lines in
+`src/scratch.rs` — and the branch's own §3.7 work, the private cache root, lives
+in that same file.
+
+**Three conflicted files.** `src/scratch.rs` conflicted in **one hunk**, and the
+resolution keeps all three parts:
+
+- the branch's `current_owner_uid()` — the owner identity the private cache
+  root is validated against;
+- `main`'s `scratch_cache_root()` — M007's single source for the cache root,
+  which carries the thread-local test override the retention sweep needs, so a
+  test never reclaims the developer's own scratch;
+- the branch's `ensure_private_cache_root(...)` — the private creation that
+  keeps the process umask out of the picture.
+
+`main`'s other three `scratch_cache_root()` call sites are read-only resolvers
+that create nothing, so the private creation is needed at exactly one site — the
+one the conflict is at. Dropping the branch's part here would put `main`'s
+umask-following creation back, and whether the product could run at all would
+depend on the operator's umask instead of on the product.
+
+`architecture/authorization.md` and `architecture/overview.md` also conflicted,
+both documentation. `network_intent_set` (this branch) and `main`'s
+`scratch_reclaim` are **both** kept.
+
+**This advance is not count-neutral.** Four rows of the published counts moved:
+`CoreRequest` variants 261 → **262** (238 struct + 24 unit), `CoreResponse`
+variants 170 → **171**, authorized operations 245 → **246**, integration test
+files 285 → **286**. The enum-variant measure was calibrated against the
+pre-merge tree before it was applied to the merged tree, as in WP-O.
+
+**And one cross-file pairing the merge cannot see** — the same class as §3.14.
+`main`'s new `src/core/scratch_sweep.rs` builds a `JobPayload::Test` without the
+`sandbox_profile` and `network_intent` fields this branch added, so the merged
+tree did not compile:
+
+```
+error[E0063]: missing fields `network_intent` and `sandbox_profile`
+in initializer of `codegg_core::jobs::JobPayload`
+   --> src/core/scratch_sweep.rs:896:22
+```
+
+The fields are filled with the branch's established values — `None` and
+`NetworkIntent::LegacyUnrestricted`, the enum's default — so the fixture behaves
+exactly as the other `JobPayload::Test` sites on this branch behave, and no
+test's behaviour changes. Fixed in `842665094`.
+
+**WP-Q — The fourth reconciliation, with `main` at `c93211542` (2026-10-21).**
+`main` advanced again — PR #153, the TUI subagent presentation and name-allocation
+workstream (P001–P004) — and the pull request was `CONFLICTING` again.
+Reconciled by a fourth merge.
+
+**This is the first reconciliation whose conflict set contains no product code.**
+`plans/registry.md` was the **only** conflicted file; both sides' content is
+disjoint rows — this branch's three Linux-sandbox-admission corrective rows
+against `main`'s four TUI-subagent-presentation rows — so the resolution is a
+union and no row is lost.
+
+**No source file was changed by both sides.** The intersection of the two sides'
+changed-file sets is `architecture/tui.md`, `docs/tui.md`, and `plans/registry.md`
+— all documentation — so this merge introduced **no new cross-file pairing**,
+and the compile-level proof had no new pairing to find beyond the ordinary
+workspace check.
+
+**This advance is count-neutral.** The calibrated measure reproduces
+262 / 171 / 246 / 286 **exactly** on the four-times-merged tree, so no published
+count row moved, and `scripts/generate_subagent_names.py --check` passes on the
+merged tree.
+
+**The verification plan was pruned, and the pruning is on the record.** The
+worktree's `target/` was cold at the start of this pass, so a local
+full-workspace sweep means compiling and linking roughly 290 integration test
+binaries from scratch; the earlier attempt on the thrice-merged tree was killed
+with **signal 9** during `rustc` codegen, with Cargo exiting 101 — a
+host-resource kill during compilation, not a test failure. Meanwhile
+`.github/workflows/ci.yml` runs `cargo nextest run --workspace --locked --profile
+ci` on the pull request's own head, on dedicated runners, as the pull request's
+own required check — so the hosted run is the **authoritative** full-suite
+evidence, and is strictly better than a local copy of it. The local suite was
+narrowed to the changed surface: the `codegg` library test binary, 13
+integration binaries each mapping to a file this branch changed, and the four
+crates this branch changed in full. §13 records that the full sweep was not run
+locally on this tree, and the closure records the same fact.
+
 ## 8. Failure, cancellation, restart, contention semantics
 
 - A history surgery must not change the tree. The correction is verified by

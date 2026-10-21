@@ -234,6 +234,50 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   pre-merge tree's published values before it was applied to the merged tree.
   The twice-merged tree's sweep is green at **15771/15771** and its
   feature-enabled tier at **12512/12512**. See §3.17 of the closure.
+- **Reconciliation with `main` at `28724bd83` — 2026-10-21 (recorded, not
+  silent).** `main` advanced again — PR #152, the M007 scratch retention sweep —
+  and the pull request was `CONFLICTING` again. Reconciled by a third **merge**.
+  This is the first reconciliation whose conflict set reaches **product code**:
+  `src/scratch.rs` conflicted, and the resolution is a three-part union — the
+  branch's `current_owner_uid()`, `main`'s `scratch_cache_root()` resolver, and
+  the branch's `ensure_private_cache_root(...)` private creation — because
+  dropping the branch's part would put `main`'s umask-following creation back.
+  This advance is **not** count-neutral: **four** published rows moved and were
+  re-derived against their own listed `Source` — `CoreRequest` variants 261 →
+  **262** (238 struct + 24 unit), `CoreResponse` variants 170 → **171**,
+  authorized operations 245 → **246**, integration test files 285 → **286**. The
+  merge also created a **cross-file pairing no file comparison can see**:
+  `main`'s new `src/core/scratch_sweep.rs` builds a `JobPayload::Test` without
+  the `sandbox_profile` and `network_intent` fields this branch added, so the
+  merged tree did not compile until `842665094` filled them. See §3.19 of the
+  closure.
+- **Reconciliation with `main` at `c93211542` — 2026-10-21 (recorded, not
+  silent).** `main` advanced again — PR #153, the TUI subagent presentation and
+  name-allocation workstream (P001–P004) — and the pull request was
+  `CONFLICTING` again. Reconciled by a fourth **merge**. This is the first
+  reconciliation whose conflict set contains **no product code at all**:
+  `plans/registry.md` was the only conflicted file, and both sides' content is
+  disjoint rows, so the resolution is a union. **No source file was changed by
+  both sides** — the intersection of the two sides' changed-file sets is
+  `architecture/tui.md`, `docs/tui.md`, and `plans/registry.md`, all
+  documentation — so this merge introduced **no new cross-file pairing**. This
+  advance **is** count-neutral: the calibrated measure reproduces 262 / 171 /
+  246 / 286 exactly, so no published row moved. See §3.20 of the closure.
+- **The verification plan was pruned, deliberately and on the record — 2026-10-21.**
+  This linked worktree's build cache was **cold** at the start of the fourth
+  reconciliation, so a local full-workspace sweep means compiling and linking
+  roughly 290 integration test binaries from scratch; the earlier attempt on
+  the thrice-merged tree was killed with **signal 9** during `rustc` codegen
+  (Cargo exit 101) — a host-resource kill during compilation, not a test
+  failure. `.github/workflows/ci.yml` runs
+  `cargo nextest run --workspace --locked --profile ci` on the pull request's
+  own head, on dedicated runners, as the pull request's own required check — so
+  the hosted run is the **authoritative** full-suite evidence and is strictly
+  better than a local copy of it. The local suite was narrowed to the changed
+  surface: the `codegg` library test binary, 13 integration binaries each
+  mapping to a file this branch changed, and the four crates this branch
+  changed in full. **The full workspace sweep was not run locally on this
+  tree**, and the closure says so. See §3.20.1 of the closure.
 - **Hosted evidence — 2026-10-21 (recorded, not silent).** The default sweep
   and the five native workflows ran on the rebased head and **concluded
   green**: the hosted default sweep reports **15733 tests run: 15733 passed, 8
@@ -273,6 +317,9 @@ milestone depends on C001 for correctness; C001 exists so that the work that
 - The workspace sweep: `cargo nextest run --workspace --locked --profile ci`,
   run quiescent — never while editing files or running Git commands in the
   worktree.
+- The full-workspace sweep is obtained on **hosted CI**, on dedicated runners,
+  for the reasons §7 records; locally the suite is narrowed to the changed
+  surface. A local run and a hosted run are never reported as each other.
 - Each fix carries a regression test that is **provably non-vacuous**: the
   test must fail against the pre-fix behaviour, not merely pass against the
   post-fix behaviour.
@@ -345,6 +392,21 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   a prerequisite for the hosted evidence, not merely a tidiness step**, and a
   `workflow_dispatch` against the branch head remains the way to obtain the
   evidence while a pull request still conflicts.
+- **Decision point (2026-10-21): where the full workspace sweep runs.** The
+  branch's local worktree has a **cold** build cache, so a local full-workspace
+  sweep means compiling and linking roughly 290 integration test binaries from
+  scratch — the milestone's largest time cost, and one that was killed by the
+  host during compilation. `.github/workflows/ci.yml` already runs exactly that
+  command on the pull request's own head, on dedicated runners, as the pull
+  request's own required check. Resolved in favour of treating the **hosted run
+  as the authoritative full-suite evidence** and narrowing the local suite to
+  the changed surface — the `codegg` library test binary, 13 integration
+  binaries each mapping to a file this branch changed, and the four crates this
+  branch changed in full. This does not weaken any gate: the hosted job runs
+  the same command `scripts/verify.sh full` runs, over the same workspace, on
+  hardware this milestone does not share. The give-up is recorded rather than
+  hidden: the closure states that the full sweep was not run locally on this
+  tree, and the claim for this head rests on the hosted run.
 - **Decision point: how to treat a transient object-store read failure.**
   Resolved in favour of retrying inside the existing bounded attempts, because
   the bound already exists for exactly this class of event and a persistent
@@ -414,4 +476,4 @@ This roadmap is complete when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped, and re-observed green on the next head at 15755/15755; the branch is reconciled with `main` at `84aa47528` and carries its tip as a direct ancestor) | |
+| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped, re-observed green at 15755/15755 on the first reconciled head and at 15771/15771 on the twice-merged head; the branch is reconciled with `main` at `c93211542` and carries its tip as a direct ancestor, through four merges — `2a0bae08f`, `84aa47528`, `28724bd83`, `c93211542`) | |

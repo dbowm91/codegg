@@ -876,6 +876,150 @@ feature branches — the same spec, the same step, the same timeout. It is a
 recorded rather than fixed here: `main`'s Desktop E2E is not this milestone's
 work, and this branch does not own the desktop app's session trajectory.
 
+### 3.19 The third reconciliation, with `main` at `28724bd83`
+
+`main` advanced again while the second reconciliation was being verified and
+recorded — **PR #152**, the M007 scratch retention sweep, moving `main` from
+`84aa47528` to `28724bd83`. Reconciled by a third **merge**, for the same
+reason as the first two.
+
+**This advance lands directly on the branch's scratch surface**, and it is the
+first reconciliation whose conflict is in product code rather than in
+documentation. `main`'s M007 added `src/core/scratch_sweep.rs` (1576 lines),
+`tests/scratch_retention_sweep.rs` (946 lines), and 389 changed lines in
+`src/scratch.rs` — and the branch's own §3.7 work (the private cache root)
+lives in that same file.
+
+**Three conflicted files.**
+
+`src/scratch.rs` — **one hunk**, at the session scratch root's resolution.
+The two sides each hold something the other needs, and the resolution keeps
+all three parts:
+
+- the branch's `current_owner_uid()` — the owner identity the private cache
+  root is validated against;
+- `main`'s `scratch_cache_root()` — M007's single source for the cache root,
+  which carries the **thread-local test override** the retention sweep needs,
+  so a test never reclaims the developer's own scratch;
+- the branch's `ensure_private_cache_root(...)` — the private creation that
+  keeps the process umask out of the picture.
+
+Dropping the branch's part here would put `main`'s umask-following creation
+back: the allocator would create a group-writable root and then refuse it, and
+whether the product could run at all would depend on the operator's umask
+instead of on the product. That is exactly the defect `3e722a878` fixed, and
+it is **not** reintroduced here. `main`'s other three `scratch_cache_root()`
+call sites are read-only resolvers that create nothing, so the private
+creation is needed at exactly one site — the one the conflict is at.
+
+`architecture/authorization.md` — the operations table. This branch's
+`network_intent_set` and `main`'s `scratch_reclaim` are **both** kept.
+
+`architecture/overview.md` — the "Verified counts" table. Four rows move, each
+re-measured against its own listed `Source` on the merged tree: `CoreRequest`
+variants 261 → **262** (238 struct + 24 unit), `CoreResponse` variants 170 →
+**171**, authorized operations 245 → **246**, integration test files 285 →
+**286**. The directory tree's "Integration tests (285 files)" becomes 286. The
+remaining rows were re-measured and did not move. The enum-variant measure
+was calibrated against the tree those values were published against before it
+was applied to the merged tree.
+
+**And one cross-file pairing the merge cannot see** — the same class as §3.14.
+`main`'s new `src/core/scratch_sweep.rs` builds a `JobPayload::Test` without
+the `sandbox_profile` and `network_intent` fields this branch added, so the
+merged tree did not compile:
+
+```
+error[E0063]: missing fields `network_intent` and `sandbox_profile`
+in initializer of `codegg_core::jobs::JobPayload`
+   --> src/core/scratch_sweep.rs:896:22
+```
+
+The fields are filled with the branch's established values — `None` and
+`NetworkIntent::LegacyUnrestricted`, the enum's default — so the fixture
+behaves exactly as the other `JobPayload::Test` sites on this branch behave,
+and no test's behaviour changes.
+
+**This is the class a rebase cannot see, and the class a *file-level* proof
+cannot see either**: a pairing between a file one side added and a type the
+other side extended. It is found by compiling the merged tree, which is why
+the compile-level proof is a separate step and not a formality.
+
+### 3.20 The fourth reconciliation, with `main` at `c93211542`
+
+`main` advanced again — **PR #153**, the TUI subagent presentation and
+name-allocation workstream (P001–P004) — and the pull request conflicted once
+more. Reconciled by a fourth **merge**, for the same reason as the first three.
+
+**This was the cheapest of the four reconciliations, and the reason is worth
+recording: it is the first one whose conflict set contains no product code at
+all.**
+
+`plans/registry.md` was the **only** conflicted file. Both sides' content is
+disjoint rows — this branch's three Linux-sandbox-admission corrective rows
+against `main`'s four TUI-subagent-presentation rows — so the resolution is a
+union, and no row is lost.
+
+**No source file was changed by both sides.** The intersection of the two
+sides' changed-file sets is three files, all documentation:
+
+- `architecture/tui.md`
+- `docs/tui.md`
+- `plans/registry.md`
+
+So this merge introduced **no new cross-file pairing** — the class §3.14 and
+§3.19 are about. That is a *measured* result, not an assumption. The pairing
+class is invisible to file comparison, which is why the compile-level proof is
+still required; but here the compile-level proof had no new pairing to find
+beyond the ordinary workspace check.
+
+**No published count moved.** The same calibrated measure that produced
+262 / 171 / 246 / 286 on the thrice-merged tree reproduces those values
+**exactly** on the four-times-merged tree, so §4's table is unchanged by this
+reconciliation. `assets/subagent-names/names.toml` did change, and the file it
+produces is generated rather than hand-written:
+`python3 scripts/generate_subagent_names.py --check` passes on the merged
+tree (46 names).
+
+#### 3.20.1 The verification plan was pruned, deliberately and on the record
+
+This pass is where the milestone's largest time cost was found, and addressed.
+
+**The worktree's build cache was cold.** The earlier reconciliations had left
+their compiled artifacts in the *primary* checkout; this linked worktree
+carried no `target/` of its own at the start of this pass. A local
+full-workspace sweep therefore means compiling and linking roughly **290
+integration test binaries** from scratch, which on this host is by a wide
+margin the most expensive step in the milestone. The earlier attempt at it on
+the thrice-merged tree was killed with **signal 9** while `rustc` was doing
+codegen for the `codegg` library test and `presence_m001_leases`, with Cargo
+exiting 101 — a host-resource kill during compilation, **not** a test failure.
+It is recorded as such.
+
+**Hosted CI is the authoritative full-suite evidence, and it is better evidence
+than a local sweep.** `.github/workflows/ci.yml` runs
+`cargo nextest run --workspace --locked --profile ci` on the pull request's own
+head, on dedicated runners, as the pull request's own required check. That
+artifact covers the whole workspace — every one of the integration binaries —
+on hardware this milestone does not have to share with anything else. The
+local sweep was not a second copy of that evidence; it was a slower, weaker
+copy of it.
+
+**The local suite was therefore narrowed to the changed surface**, and the
+narrowing is specified rather than implied:
+
+| What | Where it runs | What it proves |
+|---|---|---|
+| `codegg` library test binary | local | `scratch`, `core::scratch_sweep`, `scheduler::schedule_materializer`, `tui::command`, `agent::progress_recovery`, `agent::subagent_names`, and the `tui::app` modules — the surfaces both sides of this merge touched |
+| 13 integration binaries | local | each maps to a file this branch changed |
+| `codegg-core`, `codegg-protocol`, `egggit`, `egglsp` | local, in full | the four crates this branch changed |
+| Full workspace sweep | **hosted CI** | the complete workspace, on dedicated runners |
+| Windows launcher workflow | **hosted** | the branch's own Windows scratch contract, on a Windows runner |
+
+**What this gives up is stated, not hidden.** The full workspace sweep was
+**not** run locally on the four-times-merged tree. §13 records that plainly,
+and the claim for this head rests on the hosted run.
+
 ## 4. Verification executed
 
 Local, on the final tree, in this order.
