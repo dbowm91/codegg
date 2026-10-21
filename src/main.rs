@@ -681,6 +681,23 @@ enum DaemonCommand {
         #[arg(long, default_value = "50")]
         lines: usize,
     },
+    /// Show the daemon's scratch usage census
+    ///
+    /// A read-only measurement of the daemon-owned per-user scratch tree:
+    /// sizes, counts, ages, and the reclaim validator's own verdict. It
+    /// reclaims nothing and never reports file content or a session
+    /// identity.
+    ScratchUsage {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Emit machine-readable JSON instead of the human table
+        #[arg(long)]
+        json: bool,
+        /// Walk the scratch tree now instead of reporting the last census
+        #[arg(long)]
+        refresh: bool,
+    },
     /// Attach to a running daemon via local Unix socket.
     /// Canonical spelling; top-level `attach-daemon` remains as a hidden
     /// compatibility alias. Distinct from the feature-gated remote HTTP
@@ -700,6 +717,84 @@ enum DaemonCommand {
 
 fn resolve_endpoint(endpoint: Option<String>) -> String {
     codegg::core::instance::DaemonPaths::resolve_for_endpoint(endpoint.as_deref()).endpoint_uri()
+}
+
+/// Bounded wait for a scratch usage census response.
+///
+/// The socket client has no request timeout of its own, so the CLI applies
+/// one: an operator command must fail with a message rather than hang
+/// against a daemon that never answers.
+const SCRATCH_USAGE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Bounded wait for the best-effort scratch usage line in `daemon status`.
+///
+/// Shorter than the explicit command's timeout: this line is an addition
+/// to the status output, so a slow daemon must not hold the command open.
+const SCRATCH_USAGE_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `codegg daemon scratch-usage` — print the daemon's scratch usage census.
+async fn cmd_daemon_scratch_usage(
+    endpoint: Option<String>,
+    json: bool,
+    refresh: bool,
+) -> Result<(), AppError> {
+    let ep = resolve_endpoint(endpoint);
+    let client = codegg::core::transport::SocketCoreClient::connect(&ep).await?;
+    let request = codegg::core::new_request(
+        format!("scratch-usage-{}", uuid::Uuid::new_v4()),
+        CoreRequest::ScratchUsage { refresh },
+    );
+    let response = tokio::time::timeout(SCRATCH_USAGE_REQUEST_TIMEOUT, client.request(request))
+        .await
+        .map_err(|_| {
+            AppError::Other(anyhow::anyhow!(
+                "timed out after {}s waiting for the scratch usage census",
+                SCRATCH_USAGE_REQUEST_TIMEOUT.as_secs()
+            ))
+        })??;
+    let CoreResponse::ScratchUsage { report } = response else {
+        return Err(AppError::Other(anyhow::anyhow!(
+            "daemon returned an unexpected response to a scratch usage request"
+        )));
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        print!(
+            "{}",
+            codegg::core::daemon_scratch::format_scratch_usage_report(&report, now_ms)
+        );
+    }
+    Ok(())
+}
+
+/// Fetch the one-line scratch usage summary for `codegg daemon status`.
+///
+/// Best-effort by design: a daemon that predates the census request, or
+/// one that is busy, omits the line rather than failing the status command.
+async fn fetch_scratch_usage_summary(
+    client: &codegg::core::transport::SocketCoreClient,
+) -> Option<String> {
+    let request = codegg::core::new_request(
+        format!("scratch-usage-{}", uuid::Uuid::new_v4()),
+        CoreRequest::ScratchUsage { refresh: false },
+    );
+    let Ok(response) =
+        tokio::time::timeout(SCRATCH_USAGE_STATUS_TIMEOUT, client.request(request)).await
+    else {
+        return None;
+    };
+    let Ok(response) = response else {
+        return None;
+    };
+    let CoreResponse::ScratchUsage { report } = response else {
+        return None;
+    };
+    Some(codegg::core::daemon_scratch::format_scratch_usage_summary(
+        &report,
+        chrono::Utc::now().timestamp_millis(),
+    ))
 }
 
 /// Attach the TUI to a running daemon over the local Unix socket.
@@ -900,6 +995,56 @@ mod edit_command_tests {
     fn edit_target_prefers_an_explicit_path() {
         let target = edit_target_path(Some("/tmp/explicit.jsonc"), false).unwrap();
         assert_eq!(target, PathBuf::from("/tmp/explicit.jsonc"));
+    }
+
+    /// M006: the scratch usage command parses, and its flags are explicit.
+    #[test]
+    fn scratch_usage_subcommand_parses_its_flags() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "codegg",
+            "daemon",
+            "scratch-usage",
+            "--json",
+            "--refresh",
+            "--endpoint",
+            "/tmp/codegg-test.sock",
+        ])
+        .expect("scratch-usage parses");
+        match cli.command {
+            Some(Commands::Daemon {
+                command:
+                    DaemonCommand::ScratchUsage {
+                        endpoint,
+                        json,
+                        refresh,
+                    },
+            }) => {
+                assert_eq!(endpoint.as_deref(), Some("/tmp/codegg-test.sock"));
+                assert!(json);
+                assert!(refresh);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // The defaults are the held report and the human table.
+        let cli = Cli::try_parse_from(["codegg", "daemon", "scratch-usage"])
+            .expect("scratch-usage parses with no flags");
+        match cli.command {
+            Some(Commands::Daemon {
+                command:
+                    DaemonCommand::ScratchUsage {
+                        endpoint,
+                        json,
+                        refresh,
+                    },
+            }) => {
+                assert!(endpoint.is_none());
+                assert!(!json);
+                assert!(!refresh);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
@@ -1696,6 +1841,15 @@ async fn main() -> Result<(), AppError> {
                                     println!("  Uptime: {}s", uptime_secs);
                                     println!("  Active sessions: {}", active_sessions.len());
                                     println!("  Connected clients: {}", connected_clients.len());
+                                    // M006: one added line summarising the
+                                    // daemon's scratch usage. A daemon that
+                                    // does not know the request simply omits
+                                    // the line.
+                                    if let Some(scratch) =
+                                        fetch_scratch_usage_summary(&client).await
+                                    {
+                                        println!("  {}", scratch);
+                                    }
                                     for s in &active_sessions {
                                         println!(
                                             "    Session: {} ({})",
@@ -1728,6 +1882,13 @@ async fn main() -> Result<(), AppError> {
                             }
                         }
                     }
+                }
+                DaemonCommand::ScratchUsage {
+                    endpoint,
+                    json,
+                    refresh,
+                } => {
+                    cmd_daemon_scratch_usage(endpoint.clone(), *json, *refresh).await?;
                 }
                 DaemonCommand::Attach {
                     endpoint,

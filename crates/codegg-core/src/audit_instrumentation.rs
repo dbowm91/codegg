@@ -782,6 +782,13 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // classification rather than emitting per-poll audit events. Denial
     // *is* audited upstream by `authorize_request`.
     "node_telemetry_read",
+    // M006: the scratch usage census is a read-only operator view of the
+    // local user's own scratch tree. It is capability-gated, discloses
+    // inert size and count metadata, and mutates nothing — no file, no
+    // tombstone, no job, no queue — so it shares the reads' classification
+    // rather than emitting per-refresh audit events. Denial *is* audited
+    // upstream by `authorize_request`.
+    "scratch_usage",
     "memory_forget",
     "memory_list",
     "memory_remember",

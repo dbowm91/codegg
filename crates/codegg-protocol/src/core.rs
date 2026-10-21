@@ -7,7 +7,7 @@ use crate::dto::{
     ProjectDeleteRequestDto, ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto,
     ProjectSummaryDto, ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto,
     RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto,
-    ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
+    ScheduleSummaryDto, ScratchUsageReportDto, SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -1386,6 +1386,14 @@ pub enum CoreResponse {
     /// that could not be read still appears, with a bounded diagnostic.
     NodeTelemetry {
         nodes: Vec<NodeTelemetryDto>,
+    },
+    /// The measured state of the daemon's per-user scratch tree (M006).
+    ///
+    /// A read-only census: counts, sizes, ages, the opaque tree digest, and
+    /// the reclaim validator's own verdict. It carries no absolute path, no
+    /// session identity, and no file content.
+    ScratchUsage {
+        report: ScratchUsageReportDto,
     },
     ModelsSnapshot {
         current_model: Option<String>,
@@ -2813,6 +2821,19 @@ pub enum CoreRequest {
         /// The `[eggwork.nodes]` table key to read, or every node.
         #[serde(default)]
         node_id: Option<String>,
+    },
+    /// The measured state of the daemon's per-user scratch tree (M006).
+    ///
+    /// The request carries no path, no session identity, and no scope: the
+    /// daemon always reports the single scratch root it owns, so a caller
+    /// cannot select which tree is measured.
+    ScratchUsage {
+        /// Walk the tree now instead of returning the last completed report.
+        ///
+        /// The daemon serialises walks, so two callers asking for a fresh
+        /// walk cannot walk the tree concurrently.
+        #[serde(default)]
+        refresh: bool,
     },
     /// Wait for one durable job completion without giving the client direct
     /// access to scheduler internals.

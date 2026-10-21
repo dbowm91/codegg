@@ -167,6 +167,18 @@ pub struct CoreDaemon {
     /// broadcast receiver lagged behind publishers. Exposed for metrics
     /// and the request to manually resync after a sustained spike.
     pub dropped_event_bridge_events: std::sync::atomic::AtomicU64,
+    /// M006: the daemon-held scratch usage census.
+    ///
+    /// The last completed report is refreshed on an internal cadence, off
+    /// the hot path: no tool call, permission check, turn admission, or
+    /// scheduler decision walks the tree. A failed walk keeps the previous
+    /// report, so the operator sees the last good measurement and its age.
+    pub scratch_usage_refresher: Arc<super::daemon_scratch::ScratchUsageRefresher>,
+    /// Handle for the background scratch usage refresh task. Held to keep
+    /// the task alive; `None` when no Tokio runtime was available at
+    /// construction.
+    pub(crate) _scratch_usage_handle:
+        Option<tokio::task::JoinHandle<Result<(), tokio::task::JoinError>>>,
 }
 
 // M003: construction lives in `super::daemon_construct` (`with_deps`,
@@ -4046,6 +4058,12 @@ impl CoreDaemon {
                     authz_decision,
                 ))
                 .await
+            }
+            // M006: the scratch usage census. The handler serves the
+            // daemon-held report; the walk itself happens on the refresh
+            // cadence, never inside a request path.
+            super::daemon_family::DaemonRequestFamily::Scratch => {
+                Box::pin(self.handle_scratch_usage_request(payload)).await
             }
             super::daemon_family::DaemonRequestFamily::Documents => {
                 Box::pin(self.handle_document_request(payload, trusted_client_id)).await

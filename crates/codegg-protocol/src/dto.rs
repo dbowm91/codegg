@@ -747,6 +747,108 @@ pub struct NodeTelemetryDto {
     pub diagnostic: Option<String>,
 }
 
+/// Why the reclaim validator would refuse an entry (M006).
+///
+/// This is the wire form of the rule the daemon's reclaim path itself
+/// applies, so the reported verdict cannot disagree with the behaviour it
+/// describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScratchReclaimRefusalDto {
+    /// The entry is a symlink, or — on Windows — a reparse point.
+    Link,
+    /// The entry is neither a regular file nor a directory.
+    NotRegular,
+    /// The regular file carries more than one hard link.
+    MultiplyLinked,
+    /// The entry's metadata could not be read.
+    Unreadable,
+}
+
+/// The bounded walk budget that produced a census (M006).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScratchCensusBudgetDto {
+    /// Maximum number of filesystem entries visited across the whole walk.
+    pub max_entries: usize,
+    /// Maximum directory depth below the sessions root.
+    pub max_depth: usize,
+    /// Maximum number of refusal paths reported per tree.
+    pub max_paths_per_tree: usize,
+    /// Maximum number of trees reported.
+    pub max_trees: usize,
+}
+
+/// One tree's measured usage (M006).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScratchTreeUsageDto {
+    /// The opaque tree digest — the directory name.
+    ///
+    /// Never a session id: the mapping is one-way by design, and the census
+    /// does not invert it.
+    pub digest: String,
+    /// Total bytes of the regular files observed.
+    pub total_bytes: u64,
+    /// Number of regular files observed.
+    pub file_count: u64,
+    /// Number of directories observed.
+    pub dir_count: u64,
+    /// Number of symlinks (or Windows reparse points) observed.
+    pub link_count: u64,
+    /// Number of multiply-linked regular files observed.
+    pub multiply_linked_count: u64,
+    /// Number of entries that are neither a regular file nor a directory.
+    pub non_regular_count: u64,
+    /// Number of entries whose metadata could not be read.
+    pub unreadable_count: u64,
+    /// Number of entries that vanished between listing and inspection.
+    pub vanished_entries: u64,
+    /// Oldest modification time observed, in epoch milliseconds.
+    pub oldest_modified_ms: Option<i64>,
+    /// Newest modification time observed, in epoch milliseconds.
+    pub newest_modified_ms: Option<i64>,
+    /// Whether the reclaim validator would accept this tree as observed.
+    ///
+    /// Absent when the verdict could not be established — the tree vanished
+    /// mid-walk, or the walk was truncated before the tree was fully read.
+    /// A partial walk never claims a tree is reclaimable.
+    pub reclaimable: Option<bool>,
+    /// The rules that refuse this tree, in discovery order.
+    pub refusal_rules: Vec<ScratchReclaimRefusalDto>,
+    /// Bounded relative paths (inside the tree) that triggered a refusal.
+    pub refusal_paths: Vec<String>,
+    /// `true` when the tree itself vanished during the walk.
+    pub vanished: bool,
+    /// `true` when a budget stopped the walk before the tree was fully read.
+    pub truncated: bool,
+}
+
+/// The measured state of the per-user scratch tree (M006).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScratchUsageReportDto {
+    /// One entry per managed session tree that was inspected.
+    pub trees: Vec<ScratchTreeUsageDto>,
+    /// Number of trees reported.
+    pub tree_count: usize,
+    /// Total bytes across every reported tree.
+    pub total_bytes: u64,
+    /// Oldest modification time observed, in epoch milliseconds.
+    pub oldest_modified_ms: Option<i64>,
+    /// Newest modification time observed, in epoch milliseconds.
+    pub newest_modified_ms: Option<i64>,
+    /// `true` when a budget stopped the walk.
+    pub truncated: bool,
+    /// Reclaim tombstones found under the sessions root.
+    pub quarantined_tree_count: usize,
+    /// Entries under the sessions root that are not managed trees.
+    pub unrecognized_entry_count: usize,
+    /// The budget that was in force for this walk.
+    pub budget: ScratchCensusBudgetDto,
+    /// When the walk completed, in epoch milliseconds.
+    pub generated_at_ms: i64,
+    /// Non-fatal problems observed during the walk.
+    pub anomalies: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1743,5 +1845,80 @@ mod execution_target_tests {
         assert_eq!(json["memory_bytes"]["value"], 1024);
         let decoded: RemoteResourceLimitsDto = serde_json::from_value(json).unwrap();
         assert_eq!(decoded, limits);
+    }
+}
+
+#[cfg(test)]
+mod scratch_usage_tests {
+    use super::*;
+    use crate::core::{CoreRequest, CoreResponse};
+
+    /// The census request is additive and carries no path and no scope.
+    #[test]
+    fn the_scratch_usage_request_has_a_stable_wire_form() {
+        let json = serde_json::to_string(&CoreRequest::ScratchUsage { refresh: true }).unwrap();
+        assert_eq!(json, r#"{"type":"scratch_usage","refresh":true}"#);
+
+        let decoded: CoreRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            decoded,
+            CoreRequest::ScratchUsage { refresh: true }
+        ));
+    }
+
+    /// `refresh` defaults to false, so an older client that omits it asks
+    /// for the held report instead of forcing a walk.
+    #[test]
+    fn the_scratch_usage_request_defaults_to_the_held_report() {
+        let decoded: CoreRequest = serde_json::from_str(r#"{"type":"scratch_usage"}"#).unwrap();
+        assert!(matches!(
+            decoded,
+            CoreRequest::ScratchUsage { refresh: false }
+        ));
+    }
+
+    /// The response carries the report under a typed tag.
+    #[test]
+    fn the_scratch_usage_response_has_a_stable_wire_form() {
+        let report = ScratchUsageReportDto {
+            tree_count: 1,
+            total_bytes: 12,
+            generated_at_ms: 1_000,
+            trees: vec![ScratchTreeUsageDto {
+                digest: "a".repeat(64),
+                file_count: 2,
+                total_bytes: 12,
+                reclaimable: Some(true),
+                ..ScratchTreeUsageDto::default()
+            }],
+            ..ScratchUsageReportDto::default()
+        };
+        let json = serde_json::to_string(&CoreResponse::ScratchUsage {
+            report: report.clone(),
+        })
+        .unwrap();
+        assert!(
+            json.starts_with(r#"{"type":"scratch_usage","report":"#),
+            "{json}"
+        );
+
+        let decoded: CoreResponse = serde_json::from_str(&json).unwrap();
+        match decoded {
+            CoreResponse::ScratchUsage { report: decoded } => assert_eq!(decoded, report),
+            other => panic!("expected a scratch usage response, got {other:?}"),
+        }
+    }
+
+    /// The reclaim refusal has a stable, snake_case wire form.
+    #[test]
+    fn the_reclaim_refusal_has_a_stable_wire_form() {
+        assert_eq!(
+            serde_json::to_string(&ScratchReclaimRefusalDto::MultiplyLinked).unwrap(),
+            r#""multiply_linked""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ScratchReclaimRefusalDto::NotRegular).unwrap(),
+            r#""not_regular""#
+        );
     }
 }

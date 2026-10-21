@@ -731,6 +731,17 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::NodeTarget),
         ),
+        // M006: the scratch usage census reads the metadata of the local
+        // user's own scratch tree. It carries no project locator, so it is
+        // opaque: every principal other than the local owner fails closed
+        // on the missing scope. `file.read` describes the narrowest thing
+        // the census does — it reads file names and sizes inside a
+        // filesystem tree, and never file content.
+        R::ScratchUsage { .. } => OperationDescriptor::new(
+            "scratch_usage",
+            ScopeKind::Opaque,
+            Some(Capability::FileRead),
+        ),
         R::JobWait { .. } => {
             OperationDescriptor::new("job_wait", ScopeKind::ViaJob, Some(Capability::SessionRead))
         }
@@ -1844,6 +1855,7 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::SchedulerSnapshot,
         R::NodeTelemetry { node_id: None },
+        R::ScratchUsage { refresh: false },
         R::JobWait {
             job_id: String::new(),
             timeout_ms: None,

@@ -154,6 +154,13 @@ pub struct CoreRuntimeDeps {
     /// The service is independent of job dispatch: it exists whether or not
     /// the scheduler is enabled, and reading it never touches the queue.
     pub node_telemetry: Option<Arc<crate::scheduler::eggwork_telemetry::NodeTelemetryService>>,
+    /// M006: the sessions root the scratch usage census measures.
+    ///
+    /// `None` means the daemon's own per-user scratch root. A caller may
+    /// point the census at another root so a test can measure a fixture
+    /// tree; the census never chooses the root from a request, so this
+    /// seam cannot be steered by a client.
+    pub scratch_usage_root: Option<std::path::PathBuf>,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -185,6 +192,7 @@ impl Clone for CoreRuntimeDeps {
             connection_manager: self.connection_manager.clone(),
             remote_target_policy: self.remote_target_policy.clone(),
             node_telemetry: self.node_telemetry.clone(),
+            scratch_usage_root: self.scratch_usage_root.clone(),
         }
     }
 }
@@ -213,6 +221,17 @@ impl CoreRuntimeDeps {
         service: Arc<crate::scheduler::eggwork_telemetry::NodeTelemetryService>,
     ) -> Self {
         self.node_telemetry = Some(service);
+        self
+    }
+
+    /// M006: point the scratch usage census at `root` instead of the
+    /// daemon's own per-user scratch root.
+    ///
+    /// The census always measures the root it is given; a client request
+    /// cannot select one. This seam exists so a test can measure a fixture
+    /// tree.
+    pub fn with_scratch_usage_root(mut self, root: std::path::PathBuf) -> Self {
+        self.scratch_usage_root = Some(root);
         self
     }
 
@@ -325,6 +344,7 @@ impl CoreRuntimeDeps {
             connection_manager: None,
             remote_target_policy: None,
             node_telemetry: None,
+            scratch_usage_root: None,
         }
     }
 
@@ -376,6 +396,7 @@ impl CoreRuntimeDeps {
             connection_manager: None,
             remote_target_policy: None,
             node_telemetry: None,
+            scratch_usage_root: None,
         }
     }
 
@@ -446,6 +467,7 @@ impl CoreRuntimeDeps {
             connection_manager,
             remote_target_policy: None,
             node_telemetry: None,
+            scratch_usage_root: None,
         }
     }
 

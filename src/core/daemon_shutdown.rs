@@ -69,6 +69,11 @@ impl CoreDaemon {
         if let Some(handle) = self._idle_completion_handle.take() {
             handle.abort();
         }
+        // M006 scratch usage census: abort the refresh task. A cancelled
+        // walk leaves the previous report in place and is not an error.
+        if let Some(handle) = self._scratch_usage_handle.take() {
+            handle.abort();
+        }
     }
 
     /// Canonical shutdown phase names in execution order.

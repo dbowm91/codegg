@@ -23,10 +23,12 @@
 //! | `chat` | `daemon.rs::handle_chat_request` (pre-router, boxed) | durable project chat channels/messages/actions |
 //! | `team` | `daemon_team.rs::handle_team_request` (pre-router, boxed) | canonical project membership + LocalOwner principal/device-token administration |
 //! | `interactive` | `daemon.rs::run_interactive_request` (pre-router, spawned task) | bounded attach/resume over the scheduler admission controller |
+//! | `human_shell` | `daemon_human_shell.rs::handle_human_shell_request` (pre-router, boxed) | bounded human-shell run lifecycle over the daemon-owned human-shell service |
 //! | `work_orders` | `daemon_work_orders.rs::handle_work_order_request` (pre-router, boxed) | durable project work orders/occurrences/lanes (M001: no execution) |
 //! | `documents` | `daemon_documents.rs::handle_document_request` | ephemeral editor documents, writer leases, snapshots, and changes |
 //! | `project_init` | `daemon_project_init.rs::handle_project_init_request` | bounded project instruction draft and guarded root publication |
 //! | `lsp` | `daemon_lsp.rs::handle_lsp_request` | M006-B: bounded LSP reads and the authoritative diagnostics pull over the daemon-owned `LspService` |
+//! | `scratch` | `daemon_scratch.rs::handle_scratch_usage_request` | M006: the read-only scratch usage census over the daemon-owned scratch tree |
 
 use crate::protocol::core::CoreRequest;
 
@@ -52,6 +54,10 @@ pub enum DaemonRequestFamily {
     /// M006-B. Read authority only: `LspPreviewApply` stays in `Goals` so the
     /// ADR-0008 write path keeps its existing owner and is not disturbed.
     Lsp,
+    /// M006. The read-only scratch usage census over the daemon-owned
+    /// scratch tree. It measures; it never reclaims, and the walk runs on
+    /// the daemon's refresh cadence rather than on a request path.
+    Scratch,
 }
 
 impl DaemonRequestFamily {
@@ -188,6 +194,10 @@ impl DaemonRequestFamily {
             CoreRequest::ScheduleResume { .. } => Self::Jobs,
             CoreRequest::SchedulerSnapshot => Self::Jobs,
             CoreRequest::NodeTelemetry { .. } => Self::Jobs,
+            // M006: the scratch usage census is a daemon-owned measurement
+            // over the per-user scratch tree. It is not a job, a queue
+            // mutation, or a scheduler surface.
+            CoreRequest::ScratchUsage { .. } => Self::Scratch,
             CoreRequest::TaskDelete { .. } => Self::Jobs,
             CoreRequest::TaskList => Self::Jobs,
             CoreRequest::TaskSchedule { .. } => Self::Jobs,
@@ -357,6 +367,7 @@ impl DaemonRequestFamily {
                 "src/core/daemon_project_init.rs::handle_project_init_request"
             }
             Self::Lsp => "src/core/daemon_lsp.rs::handle_lsp_request",
+            Self::Scratch => "src/core/daemon_scratch.rs::handle_scratch_usage_request",
         }
     }
 }

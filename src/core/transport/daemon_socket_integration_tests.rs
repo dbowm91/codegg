@@ -3635,3 +3635,118 @@ async fn socket_f6_typed_peer_error_recovery_converges_25_cycles() {
         drop(socket_dir);
     }
 }
+
+// ── M006: the scratch usage census over the real socket ───────────────────
+
+/// Complete the client hello handshake without subscribing to anything, so
+/// a plain request can be sent on the same byte stream.
+async fn scratch_usage_handshake(
+    stream: UnixStream,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+) {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    let hello = CoreFrame::ClientHello(ClientHello {
+        client_name: "scratch-usage-test".to_string(),
+        client_kind: ClientKind::Automation,
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        capabilities: ClientCapabilities {
+            visual_notifications: false,
+            desktop_notifications: false,
+            audio: false,
+            tts: false,
+            multi_session_view: false,
+            plugin_ui_dialog: false,
+            plugin_ui_toast: false,
+            plugin_ui_panel: false,
+            plugin_ui_status_item: false,
+            plugin_ui_table: false,
+            plugin_ui_markdown: false,
+            plugin_ui_code: false,
+            plugin_ui_progress: false,
+            workspace_registration: false,
+            project_catalog: false,
+            session_projection: false,
+        },
+    });
+    write_half
+        .write_all(serde_json::to_string(&hello).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    let client_id = match read_frame(&mut reader).await {
+        Some(CoreFrame::ServerHello(sh)) => sh.client_id,
+        other => panic!("expected ServerHello, got {:?}", other),
+    };
+    (reader, write_half, client_id)
+}
+
+/// The daemon serves the scratch usage census over the real socket, with the
+/// report the census actually measured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_scratch_usage_census_is_served_over_the_socket() {
+    use crate::core::runtime_deps::CoreRuntimeDeps;
+    use crate::protocol::core::CoreRequest;
+
+    let scratch_root = tempfile::tempdir().expect("temp scratch root");
+    let tree = scratch_root.path().join("a".repeat(64));
+    std::fs::create_dir_all(&tree).expect("fixture tree");
+    std::fs::write(tree.join("a.txt"), b"hello").expect("fixture file");
+
+    let daemon = Arc::new(CoreDaemon::with_deps(
+        CoreRuntimeDeps::new(None, None, None)
+            .with_scratch_usage_root(scratch_root.path().to_path_buf()),
+    ));
+    let (socket_path, socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect scratch usage client");
+    let (mut reader, mut writer, _client_id) = scratch_usage_handshake(stream).await;
+
+    let request_id = "scratch-usage-socket".to_string();
+    let request = CoreFrame::Request(crate::core::new_request(
+        request_id.clone(),
+        CoreRequest::ScratchUsage { refresh: true },
+    ));
+    writer
+        .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer.write_all(b"\n").await.unwrap();
+    writer.flush().await.unwrap();
+
+    let report = match read_frame(&mut reader).await.expect("a response frame") {
+        CoreFrame::Response {
+            request_id: response_id,
+            response,
+        } if response_id == request_id => match *response {
+            crate::protocol::core::CoreResponse::ScratchUsage { report } => report,
+            other => panic!("expected a scratch usage report, got {other:?}"),
+        },
+        other => panic!("expected a scratch usage response, got {other:?}"),
+    };
+
+    assert_eq!(report.tree_count, 1, "the census measured the fixture tree");
+    assert_eq!(report.trees[0].file_count, 1);
+    assert_eq!(report.trees[0].total_bytes, 5);
+    assert_eq!(report.trees[0].reclaimable, Some(true));
+    assert!(
+        !report
+            .anomalies
+            .iter()
+            .any(|anomaly| anomaly.contains(&scratch_root.path().to_string_lossy().to_string())),
+        "the report never carries the host path: {:?}",
+        report.anomalies
+    );
+
+    drop(reader);
+    drop(writer);
+    abort_server(server_handle).await;
+    drop(socket_dir);
+}

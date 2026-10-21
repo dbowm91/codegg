@@ -741,6 +741,24 @@ impl CoreDaemon {
             None
         };
 
+        // M006: the daemon-held scratch usage census. The refresh runs on
+        // its own cadence and never on a request path, so a tool call or a
+        // permission check performs no size traversal.
+        let scratch_usage_state = Arc::new(parking_lot::RwLock::new(
+            super::daemon_scratch::ScratchUsageState::default(),
+        ));
+        let scratch_usage_refresher = Arc::new(match deps.scratch_usage_root.clone() {
+            Some(root) => {
+                super::daemon_scratch::ScratchUsageRefresher::with_root(scratch_usage_state, root)
+            }
+            None => super::daemon_scratch::ScratchUsageRefresher::new(scratch_usage_state),
+        });
+        let scratch_usage_handle = tokio::runtime::Handle::try_current().ok().map(|handle| {
+            handle.spawn(super::daemon_scratch::spawn_scratch_usage_refresh(
+                scratch_usage_refresher.clone(),
+            ))
+        });
+
         Self {
             daemon_id,
             generation,
@@ -786,6 +804,8 @@ impl CoreDaemon {
             _idle_completion_handle: idle_completion_handle,
             idle_wake_cell,
             dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
+            scratch_usage_refresher,
+            _scratch_usage_handle: scratch_usage_handle,
             // M002: share the scheduler's admission controller so
             // interactive spawns draw from the same process-slot
             // accounting as durable work (M001 permit contract).
