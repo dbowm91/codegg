@@ -327,3 +327,51 @@ This record adds to, and does not rewrite, the evidence history:
   stays the selected runtime frontier.
 - The M003 historical closure in `plans/closure/managed-agent-scratch/` is
   unchanged.
+
+## 11. Factual correction — §6's two live observations came from different permission policies (2026-10-21)
+
+§6 places two observations next to each other without stating that they came
+from **different permission policies**, which lets a reader take them as one
+trajectory. This section separates them. The historical §6 text is **not**
+rewritten; this record "adds to, and does not rewrite, the evidence history"
+(§10).
+
+**The session evidence in §6 ran under a permissive policy.** Session
+`3bfab29a` observed the tool-level hint and the model's successful retry at the
+suggested scratch path while the isolated configuration carried
+
+```json
+"permission": { "default": "allow", "write": "allow" }
+```
+
+Under that policy the write to the host temp root was **allowed outright**, and
+the actionable message came from the write tool's own boundary refusal, not
+from anything the permission layer did.
+
+**The usability observation in §6 describes the default policy.** Under
+`permission.default = "ask"` with no explicit rule, the same write instead
+raises a *human approval prompt*. That observation was taken in a different
+session, `2164790b`, which parked on an unanswered human decision and failed
+after eleven minutes.
+
+**So the two halves of §6 are not one story.** The usability observation is a
+true and useful statement about the default policy: a model that wants `/tmp`
+parks on a person instead of receiving an actionable suggestion. The session
+evidence printed immediately above it does **not** illustrate that observation,
+because it was collected under a policy where the write was permitted.
+
+**What changed afterwards, and where the corrected evidence now lives.** M005
+implemented the redirect offer — the model is answered with the actionable
+scratch path *before* the human is asked, and only a repeated identical
+attempt reaches the human. M005's closure record states this distinction
+explicitly in its §13, and its §4 records the live observation that closes the
+gap **under the default policy**: two sessions in which the first attempt was
+answered with the guidance and published no `permission_pending`, a third in
+which a repeated identical attempt published `permission_pending`, and two
+further sessions reproducing the behaviour on a second model and a second wire
+surface. See `plans/closure/managed-agent-scratch/005-status.md`.
+
+The behaviour M003's §6 reported is therefore **still accurate as a
+description of the pre-M005 product**, and the usability gap it identified is
+**closed by M005**. The correction here is to the *pairing*, not to either
+observation.

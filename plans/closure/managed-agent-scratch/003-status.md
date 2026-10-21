@@ -212,3 +212,77 @@ What remains unqualified, and what this correction does **not** change:
 - The historical Windows cleanup evidence (workflow `39262822248`, 11/11
   lifecycle; 8/8 launcher) remains **lifecycle** evidence and is still not
   containment evidence.
+
+## 16. Factual correction — Windows shared cleanup, the residual Windows condition, and the successor milestones (2026-10-21)
+
+This section corrects the record's **scope** statements about shared-scratch
+cleanup on non-Unix platforms, and its **successor** statement. It is a
+factual correction; the historical findings, the date-specific failed
+assertions, the macOS-only evidence base, and the original conditional
+disposition are **not** rewritten.
+
+**What changed, stated plainly.** Windows shared-scratch cleanup is
+**implemented and qualified**. The commits on `main` that delivered it are
+`5905a2bb` ("fix(scratch): reclaim revoked resources safely on Windows"), which
+added the Windows reclaimer and the owner-validated tombstone path shared with
+the Unix implementation, and `3cb5b20c` ("test(scratch): create Windows reparse
+point natively"), which added the native reparse-point fixture.
+
+**A correction to §14's commit identifiers.** §14 names `f97db619` and
+`3051ffb9` for those two changes. Neither identifier resolves in this
+repository; the commits that are on `main` and carry those two subjects are
+`5905a2bb` and `3cb5b20c`. The two earlier identifiers are not used here, and
+§14's text is left intact as the historical record it is. The Windows process-launcher
+workflow passed the managed-scratch lifecycle step in run
+[39227777443](https://github.com/dbowm91/codegg/actions/runs/39227777443) with
+11/11 lifecycle tests and 8/8 process-launcher tests, and the integrated-head
+qualification is recorded in M004's closure record at
+`plans/closure/managed-agent-scratch/004-status.md`. §14 already stated this
+for the cleanup implementation; this section extends the correction to the
+individual statements that §14 did not enumerate.
+
+**The following statements are superseded and must not be read as current:**
+
+| Location | Superseded statement | Correct reading |
+|---|---|---|
+| §1 | "On non-Unix platforms cleanup returns a typed unavailable error and retains revoked data" | That is now true only for `not(any(unix, windows))`. On Windows the reclaimer runs. |
+| §2 | the `Windows compile/runtime and safe cleanup` row's "Cleanup is disabled on non-Unix targets" | The cleanup implementation is present on Windows and platform-tested. What was unqualified then — and still is — the **native sandbox containment** half. |
+| §4 | "Non-Unix cleanup returns `ScratchError::CleanupUnavailable` without mutating the shared resource" | True for `not(any(unix, windows))` only. |
+| §5 | "Windows/non-Unix cleanup is disabled rather than claiming unverified link safety" | The link-safety claim is made and qualified on both Unix and Windows. |
+| §7 | "Non-Unix callers receive a typed deferred-cleanup error; revoked data is retained there" | True for `not(any(unix, windows))` only. The "no global collector" half of that paragraph remains true. |
+| §9 | "Documentation distinguishes the advisory structured-write hint, FullHost shell behavior, Unix cleanup and non-Unix retention" | The documentation now states that **Unix and Windows** cleanup run after the final lease releases (`docs/tools.md`, `architecture/security.md`). |
+
+**§10's MEDIUM finding, restated accurately.** Its *finding* and *impact*
+statements are superseded: revoked shared scratch does **not** remain on disk
+on Windows. Its *required action* is **partially discharged** — the first
+clause ("keep cleanup disabled until stable hardlink/reparse inspection is
+available at MSRV") is satisfied, because that inspection shipped. The second
+clause ("and Windows native qualification passes") is **not** satisfied and
+remains the genuine open item.
+
+**The one condition that actually remains open** is the **Windows native
+Required-sandbox filesystem-containment backend**, which does not exist. C002
+stopped at its own work-package-A condition and is recorded as a blocked
+closure at
+`plans/closure/managed-agent-scratch-native-qualification-corrective/002-status.md`.
+That condition is a **backend-availability** fact, not a cleanup fact, and it
+is unchanged by this correction. The operator has deferred it to a separate
+workstream.
+
+**§11's successor statement is superseded.** It read that the conditions "do
+not block already-registered downstream work because no M004 or other
+successor plan exists in this workstream" and that "the managed-agent-scratch
+roadmap has no newly eligible milestone". Both were true when written and are
+now history. The successors are:
+
+- **M004** — session and agent-private scratch reclamation, **closed**
+  (`plans/closure/managed-agent-scratch/004-status.md`).
+- **M005** — the temp-root redirect offer before the human is asked,
+  **closed** (`plans/closure/managed-agent-scratch/005-status.md`), with the
+  live observation recorded in its §4 and §13.
+- **M006** — the scratch usage census and operator visibility, **ready**
+  (`plans/implementation/managed-agent-scratch/006-scratch-usage-census-and-operator-visibility.md`).
+
+**M003 remains conditionally closed**, and only on the Windows native
+Required-sandbox containment condition. Its conditional status, its remaining
+platform condition, and the ownership of that condition are unchanged.
