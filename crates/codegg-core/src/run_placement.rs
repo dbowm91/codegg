@@ -78,7 +78,20 @@ impl RunPlacement {
 /// containment record is not a missing feature; it is the reason the feature
 /// is off, and it is reported as such rather than silently degrading to
 /// "probably fine".
-pub const QUALIFIED_SHARED_CHECKOUT_PLATFORMS: &[&str] = &["linux"];
+///
+/// * `linux` — Landlock. Qualified by `tests/linux_native_scratch_containment.rs`.
+/// * `macos` — Seatbelt. Qualified by
+///   `tests/macos_native_shared_checkout_containment.rs`, on a native macOS
+///   runner: the backend is obtained and a confined process cannot write
+///   into a checkout outside its own roots. That fixture **fails** a host
+///   that cannot obtain Seatbelt rather than skipping it, so a skipped
+///   qualification can never be mistaken for a passed one.
+///
+/// Windows is **not** listed, and the reason is different from macOS's: no
+/// filesystem-enforcement backend is registered for Windows at all, so the
+/// profile is refused there for want of a capability rather than for want of
+/// a measurement. No CI run could produce the missing evidence.
+pub const QUALIFIED_SHARED_CHECKOUT_PLATFORMS: &[&str] = &["linux", "macos"];
 
 /// Whether the CodeGG-mediated shared checkout profile is available here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

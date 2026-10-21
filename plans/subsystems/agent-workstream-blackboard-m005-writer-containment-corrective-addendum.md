@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective Addendum — Restricted Shared Checkout
 
-Status: active planning; C001–C005 closed; C006 conditionally closed. The shared checkout is now an opt-in, platform-gated path (Linux qualified; macOS and Windows disabled with a named reason).
+Status: active planning; C001–C005 closed; C006 conditionally closed. The shared checkout is now an opt-in, platform-gated path (Linux and macOS qualified on native containment evidence; Windows disabled with a named reason — it has no filesystem-enforcement backend at all).
 
 Planning baseline: branch plan/agent-workstream-m005-writer-audit inspected 2026-10-19, main ancestor 61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649. Revalidate exact branch head and mainline status before any implementation.
 

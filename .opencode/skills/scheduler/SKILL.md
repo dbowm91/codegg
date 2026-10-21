@@ -300,11 +300,10 @@ instead of getting an isolated one of its own.
 - **The profile is platform-gated.** `shared_checkout_availability()` is off
   on any platform without native containment evidence, and the refusal names
   the platform. Do not add a platform to
-  `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` without the evidence behind it. The two
-  disabled platforms are disabled for different reasons: macOS lacks a
-  *measurement* (Seatbelt is a registered backend here; a hosted macOS lane
-  qualifies it), Windows lacks a *backend* — no filesystem-enforcement backend
-  is registered for Windows at all.
+  `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` without the evidence behind it. Linux
+  and macOS are qualified; Windows is disabled for a different kind of reason
+  — it lacks a *backend*, because no filesystem-enforcement backend is
+  registered for Windows at all, so no run could produce the evidence.
 - **Do not make the scheduler decide to share.** The scheduler carries the
   placement; it does not derive one. `scripts/check_shared_checkout.py` is the
   guard for the contract's landmarks, the opt-in default and the C005

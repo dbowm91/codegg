@@ -207,7 +207,7 @@ refusal never kills the process: its lifetime belongs to its own owner.
 The profile is gated by a compile-time table:
 
 ```rust
-pub const QUALIFIED_SHARED_CHECKOUT_PLATFORMS: &[&str] = &["linux"];
+pub const QUALIFIED_SHARED_CHECKOUT_PLATFORMS: &[&str] = &["linux", "macos"];
 ```
 
 A platform with no native containment evidence has the profile **disabled**,
@@ -217,9 +217,17 @@ operator cannot turn the profile on for a platform that has no evidence.
 
 | Platform | Native containment evidence | Profile | Status |
 |---|---|---|---|
-| Linux | present in this tree | **available** | qualified |
-| macOS | Seatbelt is a registered, applying backend; the qualification lane was added on 2026-10-21 | **disabled** | refusal stands until the lane's result is read; narrow follow-up §5.1 |
+| Linux | Landlock, qualified in this tree | **available** | qualified |
+| macOS | Seatbelt, qualified on a native macOS runner (lane run `39616896281`, 2026-10-21) | **available** | qualified |
 | Windows | **no filesystem-enforcement backend is registered at all** | **disabled** | refused with a reason; the gap is a capability, not an evidence gap — §5.1 |
+
+The macOS qualification is `tests/macos_native_shared_checkout_containment.rs`
+on a native macOS runner: the backend is obtained, it is Seatbelt, and a
+process launched through the real `ManagedProcessService` under a real
+`SandboxRequest::Required` can write inside its own roots and **cannot**
+write into a checkout outside them. The fixture *fails* a host that cannot
+obtain Seatbelt rather than skipping it, so a skipped qualification can never
+be read as a passed one.
 
 **What is claimed on Linux, and what is not.** The qualification covers the
 *mediation*: the placement, the group authorization, the permit's mutual
@@ -234,13 +242,13 @@ writing to the checkout. That limit is C005's, and it is not narrowed here.
 
 ### 5.1 macOS and Windows native containment evidence
 
-**Status:** open, narrow, and now **split by cause** (re-measured 2026-10-21).
+**Status:** **macOS closed; Windows open and unreachable.**
 
-**macOS — an evidence gap, and the evidence can be produced.** macOS's native
-backend is Seatbelt's, it *is* a registered backend in this tree, and it *is*
-applied by the shipped helper. What was missing was a lane that ever runs it:
-`tests/sandbox_containment.rs` carries Seatbelt arms that had never been
-executed on a macOS host. Two things were added on 2026-10-21:
+**macOS — closed.** macOS's native backend is Seatbelt's, it *is* a registered
+backend in this tree, and it *is* applied by the shipped helper. What was
+missing was a lane that ever runs it: `tests/sandbox_containment.rs` carries
+Seatbelt arms that had never been executed on a macOS host. Two things were
+added on 2026-10-21:
 
 * `tests/macos_native_shared_checkout_containment.rs` — a whole-file
   `#![cfg(target_os = "macos")]` fixture that qualifies the dimension the
@@ -254,9 +262,11 @@ executed on a macOS host. Two things were added on 2026-10-21:
   that runs that fixture, the C006 suite and the containment matrix on a
   native macOS runner, and uploads the logs as an artifact.
 
-Until that lane's result is read, the gate keeps macOS disabled. Adding
-`macos` to `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` is a recorded decision with
-that evidence behind it, never a quiet edit.
+The lane run **`39616896281`** (2026-10-21, head `ec1816ad8`) passed: the
+native containment fixture 2/2, the C006 suite 16/16, and the containment
+matrix 16/16 on a native macOS runner. `macos` was therefore added to
+`QUALIFIED_SHARED_CHECKOUT_PLATFORMS` — a recorded decision with that
+evidence behind it, not a quiet edit.
 
 **Windows — a capability gap, not an evidence gap.** No filesystem-enforcement
 backend is registered for Windows at all, so a constrained request is refused
@@ -331,6 +341,20 @@ executor marker — and proves each is reported. The guard is wired into
   ran **4,449 tests: 4,448 passed, 1 failed**. The single failure was
   `tool_advisor::causal_frontier::tests::m003_checked_in_receipt_matches_recomputation`,
   and it was a **real regression this branch had introduced** — see §8.4.
+  (nextest stops at the first failure by default, so that run never reached
+  the integration test binaries; the second run below did.)
+* **Hosted CI (second)** — `CI / verify` run **`39616654598`** on head
+  `ec1816ad8`. The receipt test now passes and the run reached the
+  integration binaries: **9,782 tests run, 9,781 passed, 1 failed**, the
+  failure being `scheduler_contention::different_exclusivity_keys_run_in_parallel`,
+  which is **pre-existing on this branch and not C006's** — see §8.5.
+* **Hosted Windows** — `Windows native probe contract` run **`39616650957`**
+  on head `ec1816ad8`: **success**. The branch now compiles and its native
+  probe matrix passes on a Windows runner.
+* **Hosted macOS** — `Shared checkout macOS qualification` run
+  **`39616896281`** on head `ec1816ad8`: **success**. The native containment
+  fixture 2/2, the C006 suite 16/16, and the containment matrix 16/16 on a
+  native macOS runner. See §5.1.
 * `scripts/verify.sh quick` — pass (exit 0).
 * `cargo fmt --all -- --check` — pass.
 * `cargo clippy --workspace --all-targets -- -D warnings` — pass.
@@ -350,7 +374,7 @@ executor marker — and proves each is reported. The guard is wired into
 
 * **A full-workspace nextest sweep on this host** could not complete:
   another session's `cargo nextest run --workspace --locked --profile ci`
-  holds the cargo lock and the load is ~10. The hosted run above is the
+  holds the cargo lock and the load is ~10. The hosted runs above are the
   full-workspace evidence, and the scoped suites are the local evidence.
 * **No macOS or Windows run was possible on this host.** The macOS lane
   (§5.1) exists to produce that evidence on a hosted runner; Windows has no
@@ -432,16 +456,34 @@ Both are recorded because they are the reason a full-workspace hosted run is
 not a formality. C005 was committed with no hosted CI run at all, and two
 platform-specific defects shipped with it.
 
+### 8.5 The failure that is not C006's
+
+The second hosted run's single failure is
+`scheduler_contention::different_exclusivity_keys_run_in_parallel`: two jobs
+with *different* exclusivity keys must run concurrently, and the test's
+`Barrier::new(2)` makes each of them wait for the other, so a scheduler that
+serialises them trips the test's five-second budget.
+
+That is the per-workspace build admission — M007's feature, not M005's. The
+branch's own M007 implementation is what the test is measuring, and the test
+fails at the branch's **pre-session** head as well, so it is pre-existing on
+this branch rather than something C006 introduced. `main` has since reworked
+`src/scheduler/admission.rs` substantially (it is one of the files that
+conflicts on merge), so the branch's copy of that area is behind `main`'s —
+which is one more reason the branch needs its merge reconciliation before it
+is offered as a PR.
+
 ---
 
 ## 9. Known limits and non-claims
 
-1. **macOS and Windows are disabled.** The gate keeps the profile off any
-   platform without native containment evidence. Adding a platform to
+1. **Windows is disabled.** The gate keeps the profile off any platform
+   without native containment evidence. Adding a platform to
    `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` is a recorded decision with
-   evidence behind it, never a quiet edit. The two platforms are disabled for
-   different reasons and §5.1 now says which is which: macOS lacks a
-   *measurement* (a lane now exists), Windows lacks a *backend*.
+   evidence behind it, never a quiet edit — and macOS was added on exactly
+   that basis (§5.1). Windows is disabled for the stronger reason: it has no
+   filesystem-enforcement backend at all, so the evidence cannot be produced
+   by any run.
 2. **A live two-agent race is not claimed.** The carrier is composed and
    proven (§8.3); two live agents issuing real writes inside one daemon
    process are not, and that is a narrow follow-up.

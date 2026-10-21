@@ -549,7 +549,7 @@ The shared profile is available only where there is native containment
 evidence:
 
 ```rust
-pub const QUALIFIED_SHARED_CHECKOUT_PLATFORMS: &[&str] = &["linux"];
+pub const QUALIFIED_SHARED_CHECKOUT_PLATFORMS: &[&str] = &["linux", "macos"];
 ```
 
 A platform with no evidence has the profile **disabled**, and the refusal
@@ -581,14 +581,13 @@ reported.
   profile stays off by default and off on any platform without native
   containment evidence.
 - **Not a shared profile on every platform.** The gate qualifies Linux and
-  **disables** macOS and Windows with a named reason. Adding a platform is a
-  recorded decision with evidence behind it. The two platforms are disabled
-  for different reasons, and the distinction matters: **macOS** lacks a
-  *measurement* — Seatbelt is a registered, applying backend here, and a
-  hosted macOS lane plus a macOS whole-file native fixture exist to produce
-  the evidence — while **Windows** lacks a *capability*, because no
-  filesystem-enforcement backend is registered for Windows at all, so no run
-  could produce the evidence.
+  macOS and **disables** Windows with a named reason. Adding a platform is a
+  recorded decision with evidence behind it, and macOS joined the table on
+  the hosted lane run `39616896281` (2026-10-21), which observed Seatbelt
+  obtained and a confined process unable to write outside its own roots on a
+  native macOS runner. Windows is disabled for a different kind of reason:
+  it lacks a *capability*, because no filesystem-enforcement backend is
+  registered for Windows at all, so no run could produce the evidence.
 - **Not a claim of descendant quiescence.** No platform is claimed to have
   no process writing into the checkout. C005's preflight refuses the
   *reservation* while a persistent process is live in it; it does not stop

@@ -249,12 +249,12 @@ change-triggered (`ls scripts/check_*` for the full list):
   group is refused whatever scope it is handed, because the fence resolves
   the run's scope from the run's **own durable record**, never from a
   caller-supplied path), and the profile is **platform-gated** — Linux is
-  qualified, macOS and Windows are disabled with a named reason, and the gate
-  is a compile-time table rather than a runtime flag. The two are disabled for
-  different reasons: macOS lacks a *measurement* (Seatbelt is a registered
-  backend here, and a hosted macOS lane qualifies it), Windows lacks a
-  *backend* — no filesystem-enforcement backend is registered for it at all,
-  so no CI run could produce the evidence.
+  qualified, Windows is disabled with a named reason, and the gate is a
+  compile-time table rather than a runtime flag. The two are not symmetric:
+  macOS is qualified on a hosted lane's evidence (Seatbelt obtained, and a
+  confined process unable to write outside its own roots), while Windows
+  lacks a *backend* — no filesystem-enforcement backend is registered for it
+  at all, so no CI run could produce the evidence.
 - The **build quota** is admission, and it is not the writer permit. M007
   replaced the legacy *global* `exclusive:workspace-mutation` key on the
   `Build`/`Format` profiles with a **counted, workspace-scoped** quota
