@@ -475,9 +475,18 @@ async fn no_panel_focused_advertises_no_keys() {
     let hints = app
         .composer_hint_text()
         .expect("the composer holds the keyboard, so its own verbs are named");
+    // The row is the **composer's** row: it names the composer's own verbs —
+    // "Esc normal" while the composer is in Insert, the claimed keys plus
+    // "space help" in Normal. It does not name them with a prefix any more:
+    // the badge above the input box owns the mode and the surface name.
     assert!(
-        hints.contains("COMP"),
-        "the row names the surface that holds the keyboard: {hints}"
+        hints.contains("Esc normal") || hints.contains("space help"),
+        "the row names the composer's own verbs: {hints}"
+    );
+    assert!(
+        !hints.contains("COMP") && !hints.contains("NOR") && !hints.contains("INS"),
+        "the row carries keys only: the badge above the input box owns the \
+         mode and the surface name: {hints}"
     );
     for verb in [
         "jk move", "r reply", "e edit", "X redact", "TERM ·", "panel",
@@ -575,7 +584,7 @@ async fn an_unbound_panel_advertises_nothing_and_takes_no_focus() {
          on the panel's behalf: {hints}"
     );
     assert!(
-        hints.contains("COMP"),
+        hints.contains("space help"),
         "the row names the composer instead: {hints}"
     );
     assert_eq!(

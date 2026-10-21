@@ -2139,17 +2139,35 @@ impl App {
                 .unwrap_or_default(),
         };
         let input_mode = self.composer_input_mode();
-        let mode_span_style = match input_mode {
-            InputMode::Insert => Style::default()
-                .fg(self.ui_state.theme.secondary)
-                .add_modifier(Modifier::BOLD),
-            InputMode::Normal => Style::default()
-                .fg(self.ui_state.theme.primary)
-                .add_modifier(Modifier::BOLD),
+        // The editor's **select** mode is a third state the two input modes do
+        // not cover: the keyboard is still in the Helix verbs, but a movement
+        // now *grows* the held selection instead of dropping it.
+        //
+        // The reader has to be able to see it, because the difference is
+        // invisible until a movement goes the other way — and it is the
+        // difference between "my selection vanished" and "my selection grew".
+        let selecting = self.editor_state.mode() == crate::tui::editor::EditorMode::Select;
+        let mode_span_style = if selecting {
+            Style::default()
+                .fg(self.ui_state.theme.warning)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            match input_mode {
+                InputMode::Insert => Style::default()
+                    .fg(self.ui_state.theme.secondary)
+                    .add_modifier(Modifier::BOLD),
+                InputMode::Normal => Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            }
         };
-        let mode_label = match input_mode {
-            InputMode::Insert => "[INS]",
-            InputMode::Normal => "[NOR]",
+        let mode_label = if selecting {
+            "[SEL]"
+        } else {
+            match input_mode {
+                InputMode::Insert => "[INS]",
+                InputMode::Normal => "[NOR]",
+            }
         };
         // An armed chat reply/edit is a *third* state neither badge covers:
         // `[CHAT]` says the destination but not that Enter will thread or

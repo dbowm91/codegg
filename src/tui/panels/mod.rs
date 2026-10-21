@@ -2494,7 +2494,7 @@ mod tests {
             !hint.contains("i act"),
             "the host's generic line describes a verb `/files` does not have, got {hint:?}"
         );
-        for verb in ["enter open", "l/→ root at dir", "^d/^u page"] {
+        for verb in ["enter open", "l/→ peek into dir", "^d/^u page"] {
             assert!(hint.contains(verb), "missing {verb:?} in {hint:?}");
         }
     }

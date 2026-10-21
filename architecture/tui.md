@@ -1967,13 +1967,30 @@ because they are the same rule, and the module's own test asserts they agree
 byte for byte over every offset of the same text — including non-ASCII text,
 where the two adapters used to disagree.
 
-The word **policy** is one function, `is_word_byte`: ASCII alphanumerics, `_`,
-and every byte `>= 0x80`. The last part is what lets a scan classify a
-multi-byte character without decoding it — but the scan must read that
-character's **first** byte, not one byte at `offset`: a one-byte read needs a
-character boundary at *both* ends, so it is `Err` for the first byte of a
-multi-byte character as much as for its interior. The editor's private copy of
-that rule is deleted, so there is one.
+The word **policy** is one function, `classify_byte`, and it is **three-way**:
+word content, punctuation, and whitespace. That split is Helix's, and upstream's
+own test is named for the rule: *"the alphanumeric `.!,` and `.?=` punctuation
+are considered 'words' for the purposes of word motion"*. A two-way predicate
+cannot express it — it has nowhere to put punctuation, so punctuation reads as a
+separator, and `e` steps over a whole `.b.` region and then stalls on the letter
+it landed on.
+
+Word content is ASCII alphanumerics, `_`, and every byte `>= 0x80`. The last
+part is what lets a scan classify a multi-byte character without decoding it —
+but the scan must read that character's **first** byte, not one byte at
+`offset`: a one-byte read needs a character boundary at *both* ends, so it is
+`Err` for the first byte of a multi-byte character as much as for its interior.
+The editor's private copy of that rule is deleted, so there is one.
+
+A **run** is a maximal sequence of one class, and the run primitives —
+`word_run_at`, `next_word_run`, `prev_word_run`, `word_end_run`, `word_bounds`
+— are what the motions resolve against. `e` lands on a word's **last
+character** and always advances: a caret already on a word's last byte moves on
+to the next word rather than standing still, which is the defect that made a
+held `e` freeze. `b` lands on a word's **first character**. The editor selects
+the landed word, with the selection's head on the caret and its anchor on the
+word's other end — so `b` produces a backwards selection and the highlighted
+span is the word either way.
 
 `move_vertical` takes the column a vertical run should aim for as an
 `Option<usize>`, because that is what makes `j` onto a short line and back up
@@ -2743,27 +2760,41 @@ in all three.
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
 | `Enter` on a directory | expand/collapse **in place** — the cursor does not move |
-| `l` / `→` | **make that directory the listing's root** and list its contents |
-| `h` / `←` | **back one level**: leave the current root; at the workspace root, collapse an open directory in place, otherwise step to the parent row |
+| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it |
+| `h` / `←` | **back one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
 | `Enter` on a file | open it in the editor |
+| `i` | type a **filter** into the pane — the rows narrow as you type |
 | `r` | re-walk the current root |
 | `Esc` | close |
 
 Enter and `l` are deliberately different verbs: Enter reveals contents and
-leaves the cursor where the user put it, while `l` moves the *pane*. Making a
-directory the root means the listing has a top level again, so entering a
-deeply nested structure is the same operation at every depth — there is no
-"walked down six expanded folders" mode to keep coherent, and no cursor that
-has to survive a relist.
+leaves the cursor where the user put it, while `l` moves the *cursor into* the
+directory without moving the *pane*.
+
+**`l` peeks; it does not re-root.** A directory whose children are still
+inside the listing window is expanded **in place** and the cursor moves into
+it, so the parent and the siblings stay on screen and the reader can see where
+they are. Only a directory at the window's edge — the daemon's listing
+reaches three levels — slides the scope to the directory's **parent**: the
+directory stays selected and expanded in place, and everything above the
+parent is dropped. `h` is the mirror: from inside a directory it moves the
+cursor to the parent row and collapses that directory; from a top-level row it
+slides the scope up one level, with the old scope root expanded in the new
+scope; at the workspace root it collapses the selected directory in place, so
+the key is never dead. The pair reads as a horizontal Helix motion — `l` goes
+right (deeper), `h` goes left (shallower).
+
+The **scope** therefore carries the absolute depth while the **indent** stays
+relative to it (`FileTreeState::display_depth`), so a deep scope does not
+flatten into a wall of guides; the breadcrumb in the title is what says how
+deep the reader is.
 
 That also means the pane has **one** keyboard axis for scope
 (`FileTreeState::root_history`, whose last entry is the current root) rather
-than a prefix field and an expansion set that can disagree. `h` pops the
-chain and lands the cursor on the directory just left behind, so stepping
-out and back in returns to the same place. A jump deeper than one level keeps
-the ancestry (`h` walks back out along the way it came); a jump outside the
-current root resets it, because a chain claiming the pane arrived from a
-directory it never listed would make `h` go somewhere unpredictable.
+than a prefix field and an expansion set that can disagree. `h` walks back out
+along the way it came; a jump outside the current root resets the chain,
+because a chain claiming the pane arrived from a directory it never listed
+would make `h` go somewhere unpredictable.
 
 Re-rooting is a **daemon round-trip**, not a local filter. The scope travels
 as `WorkspaceDirectoryListRequestDto::prefix`, the daemon walks that subtree
@@ -4282,7 +4313,7 @@ a CodeGG convention, not a Helix behaviour — in Helix all four are the same
 movement — and it is recorded as one.
 
 The cursor's position is **observable**: while it is not at the tip, the
-editor's banner row says `history <at>/<of>`, and at the tip it says
+editor's bottom status row says `history <at>/<of>`, and at the tip it says
 nothing, so the ordinary case draws exactly what it drew before the cursor
 existed. A cursor nobody can see is a rename.
 
@@ -4638,15 +4669,20 @@ optimisation:
 
 | Helper | Classifier | Helix |
 |---|---|---|
-| `word_forward` / `word_backward` / `word_end` | `is_word_byte`: ASCII alphanumeric, `_`, or `>= 0x80` | `w` / `b` / `e` |
+| `word_forward` / `word_backward` / `word_end` | `classify_byte`: word content (ASCII alphanumeric, `_`, or `>= 0x80`), punctuation, whitespace | `w` / `b` / `e` |
 | `long_word_forward` / `long_word_backward` / `long_word_end` | `is_long_word_byte`: anything that is not ASCII whitespace | `W` / `B` / `E` |
 | `first_non_whitespace` | ASCII whitespace, bounded by `bounded_prefix_end` | `gs` |
 
-`is_word_byte`'s `>= 0x80` clause is deliberate for its own scanner: it lets a
+`classify_byte`'s `>= 0x80` clause is deliberate for its own scanner: it lets a
 scan classify a multi-byte character without decoding it. It is **wrong** for a
 WORD, because it would make every non-ASCII byte and every ASCII punctuation
 mark part of the same word as its neighbours — collapsing `W` onto `w` on
 precisely the text where the distinction matters.
+
+Punctuation is a third class rather than a separator, and that is the whole of
+the difference between this editor's `e` and a stalling one: a punctuation run
+is a word in its own right, so `e` walks it like any other and never stands
+still inside it.
 
 **All six scanners classify with `leading_byte`, never a one-byte read.**
 `read_bytes(offset, offset + 1)` needs a character boundary at *both* ends, so
@@ -4742,7 +4778,7 @@ measured *from the cursor* — `[cursor, cursor + MAX)` forward,
 `[cursor - MAX, cursor)` back — because a find jumps toward a target rather than
 enumerating the document. `FindOutcome` keeps `Absent` (the whole direction was
 scanned) distinct from `Bounded` (the window ran out), and `FindNote` renders the
-difference in the banner row. Reporting both as "not found" would be a search
+difference in the bottom status row. Reporting both as "not found" would be a search
 that lies by omission, which is the `search_partial` defect one layer down.
 
 **Read in aligned chunks, never a byte at a time.** `DocumentSnapshot::read_bytes`
@@ -5072,6 +5108,115 @@ dispatch chain is arranged to make impossible. The chord and the
 The capability survived the rebinding. The *keystroke* did not, which is the
 observable cost, and it is why `scripts/check_tui_editor_key_authority.py`
 now asserts the two remaining guard-block chords by name instead of three.
+
+### The editor's Helix UX surface
+
+The editor's chrome, motions, and selection policy, after the Helix UX
+improvement roadmap (`plans/subsystems/tui-editor-helix-ux-improvement-roadmap.md`).
+
+**One bottom row.** `CHROME_ROWS` is `1`. The block's top border carries **no
+label** — it used to carry `{path} · {mode} · {status}`, and all three moved:
+the path and the status to the single bottom row, the mode to the badge above
+the input box. The bottom row has a **left slot** (the file's path, or the
+modal `:`/`/` line when one is open) and a **right slot** (the status cluster).
+The line number and the column are gone: they restated the caret, which is
+already on screen.
+
+**The cluster reads as one story, left to right.** The **persistent signals**
+come first — the modified state, the scope badge, writable or read-only, the
+LSP semantic-coverage note, the "line too long" marker — then the **transient
+disclosure** (the find note, the search count, the history position), then the
+**notice**, then the **armed prefix**. The armed prefix is **last**, at the far
+right of the row: it is the one element that appears and disappears on its
+own, so it gets a home nothing else competes for, and "did my `g` register?" is
+a question that has to be answered at a glance.
+
+**The two slots never overlap, and the cluster is fitted by rank.** The path
+keeps what it needs up to a third of the row and the cluster takes the rest;
+when the cluster still does not fit, `fit_cluster` drops the **least important
+group** first (`ClusterWeight` in `src/tui/components/editor.rs`) — busy, then
+the modified state, then the writability marker, then the scope badge, then the
+disclosure — and a group that is still too wide on its own is cut from the
+**right**, because the head of a sentence is the part that answers the question
+("3 matches · partial" beats "· n/N next/prev"). A caveat ("line too long",
+"highlighting truncated") outranks all of them: dropping a caveat is not a
+smaller truth but a **misleading** one — a truncated prefix that reads as the
+whole line is worse than a missing footnote.
+
+**The `:` line takes the bottom row**, and the path is erased while it is open,
+because the reader is looking at what they are typing. The command's fuzzy
+match list renders as a **floating overlay** on the row above rather than as an
+allocated row: allocating one would change the text area's height, which
+changes the visible line count, which re-resolves the viewport and can move the
+caret's screen row under the reader's first keystroke.
+
+**The scrollbar** renders in the column the viewport has always reserved —
+`text_columns = area_width - gutter - 1` — and which nothing ever drew in. The
+thumb is sized by how much of the document is visible and placed by where the
+view starts, so it maps the document rather than pointing at the caret.
+
+**`scrolloff` is 5** (`editor::SCROLL_OFF`), Helix's `editor.scrolloff` default.
+The one reveal rule lives in `editor::reveal_cursor`: the caret rests between
+row `scrolloff` and row `H - scrolloff - 1`, so the page stands still while the
+caret walks the last few rows and moves only when the caret would leave the
+margin. At the two ends of the document the margin gives way, so the caret can
+reach the first and last lines. `resolve_viewport` uses the same rule, so a
+jump to a match lands where a jump to the end of the buffer lands.
+
+**A page is a page.** `PageDown`/`PageUp` are their own commands; `Ctrl+d` and
+`Ctrl+u` are half of one. They used to be the same motion behind two names, so
+`PageDown` moved half a screen. A page moves the **view** by a page and the
+caret with it, so the caret keeps its screen row — and the page is measured
+against the **real** pane height, which the renderer publishes on the
+presentation, not against a fixed guess.
+
+**View mode** (`z`) is the one grammar whose leaves move the *view* rather than
+the caret: `c` centres, `t` and `b` align the top and the bottom, `j` and `k`
+scroll a line at a time. The view offset rides on the presentation and any
+caret motion re-attaches the view. `gt`/`gc`/`gb` are bound goto leaves: the
+caret moves to the top, the middle, and the bottom of the **screen**. They were
+on the omission list because they resolve against the real viewport, which is
+what the renderer now publishes.
+
+**`:50` jumps to a line.** `EditorCommandName::GotoLine` is in the `:`
+registry, and the parser recognises a **numeric** line *before* it looks for a
+name — `:50` has no name to match. The completion path short-circuits the
+fuzzy matcher for a numeric query, because "5" is a subsequence of
+"split-regex" and of "complete", so `:5` used to offer those two ahead of the
+line jump the reader asked for. The number is one-based, and `:0` is refused
+rather than clamped.
+
+**`SEL` is a mode, and the badge says so.** `EditorMode` gains `Select`; `v`
+enters it and arms a character selection, and `v` again or `Esc` leaves it and
+drops the selection. Outside select mode a movement **drops** a held selection;
+inside it a movement grows it. A selection that outlives the movement that
+made it reads as "something is still selected" long after the reader thought it
+was gone. The composer badge reads `[NOR]`, `[INS]`, or `[SEL]`.
+
+**`e` and `b` select the word they land on.** The selection's head is on the
+caret and its anchor on the word's other end, so `b` produces a backwards
+selection and the highlighted span is the word either way. `w` does not select:
+it is a positioning motion, and a reader who pressed it wanted to be
+somewhere rather than to have a word highlighted.
+
+**`x` on an empty line highlights the line.** A line-mode selection is a
+*row* fact, and the byte range of an empty line is a single terminator byte the
+row has no cell for — so the range alone cannot say "this row is selected".
+`editor::line_selection_covers_line` answers that, and the renderer paints the
+row's whole background.
+
+**`space ?` opens the keymap box** — the editor's own catalogue of its keys, in
+its bottom-right corner. It used to open the `:` command palette, but the `:`
+line is the command matcher and the palette was a second way to reach the same
+commands, so the key that was supposed to answer "what can I press here?"
+answered a different question. The box is a floating overlay: it covers the
+corner of the text area rather than taking rows away from the document.
+
+**The composer's hint row carries keys only.** It no longer repeats the
+`COMP`/`NOR`/`INS` prefix — the badge directly above the input box already says
+it — and the row is **removed** while the editor is the active surface, because
+the editor has a keymap of its own and two surfaces claiming the same keys is
+how a keymap becomes a lie.
 
 ### Project-scoped file tree (M006-D)
 
@@ -6521,7 +6666,7 @@ wall-clock time.
 A line past the per-line budget renders its prefix as plain text (no
 per-token spans, which would cost the whole line) with a warning-styled
 `…[too long]` row suffix; rows past the frame budget render as the marker
-alone with zero content bytes read. The banner adds `line too long —
+alone with zero content bytes read. The status row adds `line too long —
 showing prefix` when the cursor line or cursor column is past the window, so
 a truncated frame is never presented as complete. Cursor and selection byte
 offsets stay exact; horizontal motion past the prefix clamps to the prefix

@@ -141,6 +141,9 @@ LEAF_PREFIXES = {
     "Space": ("space", " "),
     "Match": ("m", " "),
     "Goto": ("g", ""),
+    # View mode. The prefix's own text is `z` and its leaves follow it
+    # directly — `zc`, `zt`, `zb`, `zj`, `zk`.
+    "View": ("z", ""),
     "OpenBracket": ("[", ""),
     "CloseBracket": ("]", ""),
 }
