@@ -1,6 +1,6 @@
 # Harness Lab Post-Pilot Corrective Addendum
 
-Status: active planning — C001 and C002 ready; C003 and C004 dependency-blocked
+Status: active planning — C001 and C002 closed; C003 dependency-discharged but awaiting live-provider authorization; C004 blocked on C003
 
 Supersedes: **no original closure**. The historical M001–M003 strict closures remain intact. M004 and M005 stay **conditionally closed** until their outstanding evidence is discharged. See `plans/subsystems/harness-lab-roadmap.md`, `plans/closure/harness-lab/004-status.md`, `005-status.md`.
 
@@ -61,16 +61,16 @@ C002 scoring/holdout + resume correctness ───────────┘  
 ## 5. Milestones
 
 ### C001 — Failure-path diagnostics and budget-stop authority
-Class: invariant/capability. Plan: `plans/implementation/harness-lab-post-pilot-corrective/001-failed-turn-evidence-and-budget-authority.md`. **Ready.** Resolve F001/F002. Failure classified with safe evidence and usage provenance. An actual enforceable live-budget source is required before resuming user-approved pilot; otherwise the correct output is `BLOCKED: usage_unverifiable`. No model call needed for deterministic closure.
+Class: invariant/capability. Plan: `plans/implementation/harness-lab-post-pilot-corrective/001-failed-turn-evidence-and-budget-authority.md`. **Closed** — `plans/closure/harness-lab-post-pilot-corrective/001-status.md`. F001/F002 resolved: every failure terminal carries an allowlisted `TurnFailureCategory` and an explicit usage provenance, and a live trial must pass the fail-closed budget admission preflight before it starts. Failure classified with safe evidence and usage provenance. An actual enforceable live-budget source is required before resuming user-approved pilot; otherwise the correct output is `BLOCKED: usage_unverifiable`. No model call needed for deterministic closure.
 
 ### C002 — Independent score contract and exact candidate resume
-Class: invariant/infrastructure. Plan: `plans/implementation/harness-lab-post-pilot-corrective/002-scoring-and-resumable-qualification.md`. **Ready.** Resolve F003/F004 implementation correctness. Add versioned criterion types: correctness failure recovery, reliability/efficiency paired objective with adequate evidence, and explicit negative-control preservation. Prove full child + outer checkpoint interrupted evaluation and no double-counted attempts.
+Class: invariant/infrastructure. Plan: `plans/implementation/harness-lab-post-pilot-corrective/002-scoring-and-resumable-qualification.md`. **Closed** — `plans/closure/harness-lab-post-pilot-corrective/002-status.md`. F003/F004 resolved: acceptance runs through a versioned score contract with protected negative controls and an explicit `insufficient_evidence` outcome, the comparator refuses an incomplete or identity-mismatched pairing, and an interrupted attempt is recorded as `interrupted_unknown` with no duplicate rows on resume. Add versioned criterion types: correctness failure recovery, reliability/efficiency paired objective with adequate evidence, and explicit negative-control preservation. Prove full child + outer checkpoint interrupted evaluation and no double-counted attempts.
 
 ### C003 — End-to-end OpenCode correction and independent acceptance
-Class: capability. Plan: `plans/implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md`. **Blocked** on C001/C002. Resolve F005 and complete independent restart/accepted-fix receipts. First establish deterministic seeded-regression control to prove acceptance wiring (labeled synthetic); then run optional authenticated OpenCode on a **real externally verified harness defect** within approved bounds. If no genuine defect exists, report blocked rather than invent a production improvement. Code stays in a candidate worktree; no auto-merge.
+Class: capability. Plan: `plans/implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md`. **C001/C002 dependency discharged.** The remaining blocker is a live-provider authorization decision, not a code dependency: an approved model route with C001-verified spend authority, a re-pinned installed OpenCode CLI (`improve.py` still pins `1.19.0`; the installed CLI reports `1.19.3`), and a genuine externally observed harness defect. Resolve F005 and complete independent restart/accepted-fix receipts. First establish deterministic seeded-regression control to prove acceptance wiring (labeled synthetic); then run optional authenticated OpenCode on a **real externally verified harness defect** within approved bounds. If no genuine defect exists, report blocked rather than invent a production improvement. Code stays in a candidate worktree; no auto-merge.
 
 ### C004 — Sustained tool-rich ACP qualification and remaining model pair
-Class: capability. Plan: `plans/implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md`. **Blocked** on C003 for final autonomy claim. Resolve F006, complete Task 2 only with an enforceable approved usage budget, exercise 30–60 minute tool-rich real model tasks with deterministic verifiers and failure/latency/error/cost provenance, and record holdout/variance over repeated trials. Maintain no-cost CI fixtures.
+Class: capability. Plan: `plans/implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md`. **Blocked** on C003 for final autonomy claim. The C001 precondition for the Task 2 provider pair is now discharged, so its remaining blocker is the approved usage budget. Resolve F006, complete Task 2 only with an enforceable approved usage budget, exercise 30–60 minute tool-rich real model tasks with deterministic verifiers and failure/latency/error/cost provenance, and record holdout/variance over repeated trials. Maintain no-cost CI fixtures.
 
 ## 6. Cross-cutting requirements
 
@@ -99,7 +99,7 @@ Final completion requires truthful failed-turn evidence or authoritative stop, c
 
 | Milestone | Status | Plan | Closure | Blocker |
 |---|---|---|---|---|
-| C001 | ready | `implementation/harness-lab-post-pilot-corrective/001-failed-turn-evidence-and-budget-authority.md` | — | none |
-| C002 | ready | `implementation/harness-lab-post-pilot-corrective/002-scoring-and-resumable-qualification.md` | — | none |
-| C003 | blocked | `implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md` | — | hard: C001+C002 |
-| C004 | blocked | `implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md` | — | hard: C003 for final claim; C001 for Task 2 pilot |
+| C001 | closed | `implementation/harness-lab-post-pilot-corrective/001-failed-turn-evidence-and-budget-authority.md` | `closure/harness-lab-post-pilot-corrective/001-status.md` | none |
+| C002 | closed | `implementation/harness-lab-post-pilot-corrective/002-scoring-and-resumable-qualification.md` | `closure/harness-lab-post-pilot-corrective/002-status.md` | none |
+| C003 | unblocked (dependency discharged) | `implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md` | — | live-provider authorization: an approved model route with C001-verified spend authority, a re-pinned installed OpenCode CLI, and a genuine observed defect |
+| C004 | blocked | `implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md` | — | hard: C003 strict closure for the final autonomy claim; C001 discharged, so Task 2's remaining blocker is the approved usage budget |
