@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 pub mod backend;
 pub mod guarantee;
+pub mod host_admission;
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod linux_launch;

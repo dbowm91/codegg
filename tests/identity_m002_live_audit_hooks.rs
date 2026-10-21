@@ -1148,9 +1148,13 @@ async fn bash_routed_git_mutation_emits_single_git_event() {
     // Typed active routing validates the repo against the workspace,
     // so the fixture repo lives under the package working directory
     // (mirrors the row_5c fixture); it is removed before and after.
+    //
+    // The fixture directory carries the process id, so two concurrent test
+    // processes never share — or `remove_dir_all` — each other's repository.
     let repo_root = std::env::current_dir()
         .expect("cwd")
-        .join(".codegg/test_tmp/m002-routed-git");
+        .join(".codegg/test_tmp")
+        .join(format!("m002-routed-git_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo_root);
     std::fs::create_dir_all(&repo_root).expect("create fixture repo");
     init_repo(&repo_root);

@@ -76,6 +76,9 @@ run_quick() {
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
+    echo "==> python3 scripts/check_network_intent_owner_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_network_intent_owner_wiring.py)
+
     echo "==> python3 scripts/check_tui_project_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_project_authority.py)
 

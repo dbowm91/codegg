@@ -806,9 +806,18 @@ async fn row_5c_bash_typed_git_mutation_active() {
     // Create a temp git repo inside `.codegg/test_tmp/` so it lives
     // inside the workspace and the active-routing validator does not
     // reject for `OutsideWorkspace`.
+    //
+    // The fixture directory carries the process id, so two concurrent test
+    // processes never share — or `remove_dir_all` — each other's repository.
+    // A fixed name would make this test depend on being the only writer of
+    // that path.
     let repo_root = std::env::current_dir()
         .expect("cwd")
-        .join(".codegg/test_tmp/row_5c_unified_git_mutation");
+        .join(".codegg/test_tmp")
+        .join(format!(
+            "row_5c_unified_git_mutation_{}",
+            std::process::id()
+        ));
     let _ = fs::remove_dir_all(&repo_root);
     fs::create_dir_all(&repo_root).expect("create temp repo dir");
     let init = Command::new("git")
