@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import time
+from typing import Optional
 
 from .supervisor import HarnessError, run_smoke, run_tool_trial
 from . import budget
@@ -129,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         # The budget admission gate runs before anything else so a live trial
         # that cannot prove an enforceable cap never reaches a provider, a
         # daemon, or a subprocess.
-        _require_budget_admission(args)
+        admitted_budget = _require_budget_admission(args)
+        spend_guard = None if admitted_budget is None else budget.SpendGuard(admitted_budget)
         if args.command == "doctor":
             binary = _binary(args.binary)
             print(json.dumps({"ok": True, "binary": str(binary), "sha256": _sha256(binary)}, sort_keys=True))
@@ -331,6 +333,22 @@ def main(argv: list[str] | None = None) -> int:
                             result["ok"] = False
                             exhausted = True
                             break
+                        if spend_guard is not None:
+                            # The provider-request cap is enforced BEFORE the
+                            # trial starts, so a run never crosses the ceiling
+                            # and stops afterwards.
+                            try:
+                                spend_guard.admit()
+                            except budget.BudgetExhausted as error:
+                                result["unattempted_task_ids"] = sorted({item["task_id"] for item in cases
+                                                                           if item["task_id"] not in
+                                                                           {trial.get("task_id") for trial in result["trials"]}})
+                                result["budget_exhausted"] = "max_provider_requests"
+                                result["budget_error"] = str(error)
+                                result["budget"] = spend_guard.as_dict()
+                                result["ok"] = False
+                                exhausted = True
+                                break
                         try:
                             trial = run_tool_trial(binary, case.get("profile", args.profile), min(args.timeout, remaining, case.get("timeout_seconds", args.timeout)),
                                                    bool(case.get("deny_bash", args.deny_bash)), args.ledger,
@@ -348,6 +366,13 @@ def main(argv: list[str] | None = None) -> int:
                             trial = {"ok": False, "task_id": case["task_id"], "repeat": repeat,
                                      "failure_type": type(error).__name__}
                         result["trials"].append(trial)
+                        if spend_guard is not None:
+                            usage = trial.get("codegg_usage") or {}
+                            spend_guard.observe(
+                                provider_requests=int(trial.get("provider_calls") or 0),
+                                input_tokens=int(usage.get("input_tokens") or 0),
+                                output_tokens=int(usage.get("output_tokens") or 0))
+                            result["budget"] = spend_guard.as_dict()
                         terminal = trial.get("ledger_manifest", {}).get("terminal")
                         expected_terminal = case.get("expected_terminal", "passed")
                         trial["expected_terminal_matched"] = terminal == expected_terminal
@@ -398,19 +423,21 @@ def _budget_admission(path: Path | None) -> budget.BudgetAdmission:
     return budget.admit_budget(_budget_policy(path))
 
 
-def _require_budget_admission(args: argparse.Namespace) -> None:
+def _require_budget_admission(args: argparse.Namespace) -> Optional[budget.BudgetPolicy]:
     """Fail closed before a live trial starts.
 
     Runs before any provider request, daemon spawn, or subprocess launch, so a
     trial that cannot prove an enforceable cap never reaches the provider.
+    Returns the admitted policy so the caller can enforce it during the run.
     """
     if not getattr(args, "live_provider", False):
-        return
+        return None
     admission = _budget_admission(getattr(args, "budget", None))
     if admission.status != budget.STATUS_ADMITTED:
         raise HarnessError(
             "budget admission refused before the trial started: "
             + json.dumps(admission.as_dict(), sort_keys=True))
+    return _budget_policy(getattr(args, "budget", None))
 
 
 def _sha256(path: Path) -> str:

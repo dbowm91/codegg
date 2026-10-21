@@ -1,6 +1,6 @@
 # Harness Lab Post-Pilot Corrective Addendum
 
-Status: active planning — C001 and C002 closed; C003 dependency-discharged but awaiting live-provider authorization; C004 blocked on C003
+Status: conditionally closed — C001 and C002 closed; C003 and C004 offline preparation closed, with both live halves awaiting live-provider authorization
 
 Supersedes: **no original closure**. The historical M001–M003 strict closures remain intact. M004 and M005 stay **conditionally closed** until their outstanding evidence is discharged. See `plans/subsystems/harness-lab-roadmap.md`, `plans/closure/harness-lab/004-status.md`, `005-status.md`.
 
@@ -101,5 +101,5 @@ Final completion requires truthful failed-turn evidence or authoritative stop, c
 |---|---|---|---|---|
 | C001 | closed | `implementation/harness-lab-post-pilot-corrective/001-failed-turn-evidence-and-budget-authority.md` | `closure/harness-lab-post-pilot-corrective/001-status.md` | none |
 | C002 | closed | `implementation/harness-lab-post-pilot-corrective/002-scoring-and-resumable-qualification.md` | `closure/harness-lab-post-pilot-corrective/002-status.md` | none |
-| C003 | unblocked (dependency discharged) | `implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md` | — | live-provider authorization: an approved model route with C001-verified spend authority, a re-pinned installed OpenCode CLI, and a genuine observed defect |
-| C004 | blocked | `implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md` | — | hard: C003 strict closure for the final autonomy claim; C001 discharged, so Task 2's remaining blocker is the approved usage budget |
+| C003 | conditionally closed (dependency discharged) | `implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md` | `closure/harness-lab-post-pilot-corrective/003-status.md` | live-provider authorization: an approved model route with C001-verified spend authority, and a genuine observed defect. The OpenCode CLI pin now names the actually installed 1.19.3 and the bounded compile-correction mechanic is qualified against a labelled fault injection |
+| C004 | conditionally closed (offline preparation closed) | `implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md` | `closure/harness-lab-post-pilot-corrective/004-status.md` | hard: C003 strict closure for the final autonomy claim; the offline taxonomy, loader, isolation guard and one materialized case are closed, and Task 2's remaining blocker is the approved usage budget |

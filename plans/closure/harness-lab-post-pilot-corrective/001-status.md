@@ -142,6 +142,32 @@ path and before any trial function is reached. `budget-check` is a
 standalone, provider-free subcommand that prints the decision and exits `0`
 when admitted and `2` when refused.
 
+### 3.3.1 The admitted caps are enforced, not merely declared
+
+An admission gate that admits a cap nothing enforces is an advisory wearing a
+safety gate's clothes, so the enforcement side ships with the admission side.
+
+`budget.SpendGuard` enforces the caps the gate admitted:
+
+- **`max_provider_requests` is enforced before work starts.** A trial that
+  would cross the ceiling is refused rather than started and stopped
+  afterwards. The projected requests are **reserved** on admission, so a
+  trial that fails before its usage is observed still counts against the cap.
+  That direction is deliberate: an over-count stops the run early, while an
+  under-count would let a run exceed its ceiling.
+- **`token_limit` and `cost_limit_usd` are observed after the fact**, so they
+  bound the run to within one trial's overshoot — the trial that crosses the
+  ceiling finishes, and no further trial starts. That overshoot is inherent
+  to observing a usage figure after the response, and it is reported in the
+  receipt rather than hidden.
+
+A controller-enforced **cost** cap additionally requires an **observable**
+provider cost: `cost_observable` must be explicitly `true`, because the
+controller can only hold a dollar ceiling it can measure. A route that
+reports no cost — the OpenCode Go route in the pilot reported none — cannot
+be enforced against a dollar ceiling, and a guessed price must never stand
+in. Such a policy is refused with `missing_source == "cost_limit_usd"`.
+
 ### 3.4 Provider-free fault injection
 
 `dev/harness_lab/provider_fixture.py` can now fail after a metered

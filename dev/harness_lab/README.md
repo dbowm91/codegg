@@ -173,6 +173,7 @@ A budget policy is a JSON object with at least one enforceable hard cap:
 | `token_limit` | Maximum provider tokens for the trial. |
 | `cost_limit_usd` | Maximum spend. Requires `cost_enforcement`. |
 | `cost_enforcement` | `controller_enforced` or `provider_enforced`. Never inferred. |
+| `cost_observable` | Whether the route reports a cost at all. A `controller_enforced` cost cap requires this to be `true`. |
 | `max_provider_requests` | Maximum provider requests. `1` is valid. |
 | `max_wallclock_seconds` | Maximum wall-clock seconds. |
 | `provider_quota` | A provider-authoritative ceiling: `source`, `enforceable`, `retry_safe`, `scope`. |
@@ -182,15 +183,28 @@ what could not be verified: `token_limit`, `cost_limit_usd`,
 `max_provider_requests`, `max_wallclock_seconds`, `provider_quota`, or
 `provider_quota_retry_safety`.
 
-Two rules are strict on purpose:
+Three rules are strict on purpose:
 
 - **A cost cap with no stated enforcement is refused.** A guessed or locally
   estimated price is never treated as an enforceable spend limit, and a
   requested-but-unenforceable cap refuses the trial rather than being silently
   ignored.
+- **A controller-enforced cost cap needs an observable cost.** The controller
+  can only hold a dollar ceiling it can measure, so `cost_observable` must be
+  `true`. A route that reports no cost cannot be enforced against one.
 - **A provider quota must be retry-safe.** A ceiling that resets on a provider
   retry does not bound the trial, so it is refused with
   `provider_quota_retry_safety`.
+
+### What "enforceable" means at run time
+
+The gate and the run agree. `max_provider_requests` is enforced **before** a
+trial starts: a trial that would cross the ceiling is refused, and the
+projected requests are reserved so a trial that fails before its usage is
+observed still counts. `token_limit` and `cost_limit_usd` are observed after
+the fact, so they bound the run to within one trial's overshoot — the trial
+that crosses the ceiling finishes and no further trial starts. The observed
+spend is reported in the run receipt under `budget`.
 
 ## Failed-turn evidence
 

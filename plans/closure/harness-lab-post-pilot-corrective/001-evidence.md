@@ -118,18 +118,39 @@ $ python3 -m dev.harness_lab tool-trial --binary /nonexistent --profile workspac
 exit=2
 ```
 
-## 4. Python — full harness suite
+## 4. Python — the admitted caps are enforced
 
 ```
-$ python3 -m unittest discover -s dev/harness_lab/tests
-................................................................................
-----------------------------------------------------------------------
-Ran 112 tests in 3.304s
+$ python3 -m unittest dev.harness_lab.tests.test_budget.SpendGuardTests
+Ran 9 tests in 0.004s
 
 OK
 ```
 
-## 5. Workspace guards
+| Requirement | Test |
+|---|---|
+| The provider-request cap refuses work **before** it starts | `test_the_provider_request_cap_is_refused_before_the_work_starts` |
+| A projected request is reserved until it is observed | `test_an_admitted_request_is_reserved_until_it_is_observed` |
+| An observed count replaces the reservation | `test_an_observed_count_replaces_the_reservation` |
+| The projected request is counted against the cap | `test_the_provider_request_cap_counts_the_projected_request` |
+| The token cap stops further work after it is crossed | `test_the_token_cap_stops_further_work_after_it_is_crossed` |
+| An unobserved cost is not reported as zero | `test_an_unobserved_cost_is_not_reported_as_zero` |
+| A controller-enforced cost cap needs an observable cost | `test_a_controller_enforced_cost_cap_needs_an_observable_cost` |
+| A provider-enforced cost cap needs no observable cost | `test_a_provider_enforced_cost_cap_needs_no_observable_cost` |
+| The observed spend is JSON-serializable | `test_the_observed_spend_is_json_serializable` |
+
+## 5. Python — full harness suite
+
+```
+$ python3 -m unittest discover -s dev/harness_lab/tests
+..............................................................................................
+----------------------------------------------------------------------
+Ran 126 tests in 5.570s
+
+OK
+```
+
+## 6. Workspace guards
 
 `scripts/verify.sh quick` exits 0, including: the agent schema, core/client/
 desktop boundaries, sandbox, execution-ownership, TUI authority,

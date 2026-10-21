@@ -65,6 +65,7 @@ CAP_PRIORITY: Tuple[str, ...] = (
 )
 
 _POLICY_KEYS = frozenset({
+    "cost_observable",
     "token_limit",
     "cost_limit_usd",
     "cost_enforcement",
@@ -118,6 +119,12 @@ class BudgetPolicy:
     max_provider_requests: Optional[int] = None
     max_wallclock_seconds: Optional[float] = None
     provider_quota: Optional[ProviderQuota] = None
+    #: Whether the provider route reports a cost at all. A controller-enforced
+    #: cost cap is only enforceable when the cost is observable; a route that
+    #: reports no cost cannot be held to a dollar ceiling the controller
+    #: measures. Absent means "not declared", which is not a claim that cost
+    #: is unobservable.
+    cost_observable: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +165,102 @@ def _numeric_fault(value: Any, *, integral: bool) -> Optional[str]:
     if value <= 0:
         return "must be greater than zero"
     return None
+
+
+class BudgetExhausted(RuntimeError):
+    """An enforced cap refused further provider work.
+
+    This is the enforcement side of the admission gate. A cap that is
+    declared but never enforced is an advisory, and an advisory must not be
+    presented as a safety gate.
+    """
+
+
+@dataclass
+class SpendGuard:
+    """Enforce the caps the admission gate admitted.
+
+    ``max_provider_requests`` is enforced before work starts: a trial that
+    would cross the ceiling is refused rather than started and then stopped.
+
+    ``token_limit`` and ``cost_limit_usd`` are observed after the fact, so
+    they bound the run to within one trial's overshoot: the trial that
+    crosses the ceiling is allowed to finish, and no further trial starts.
+    That overshoot is inherent to observing a usage figure after the
+    response, and it is reported rather than hidden.
+    """
+
+    policy: BudgetPolicy
+    provider_requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    cost_observed: bool = False
+    exhausted_cap: Optional[str] = None
+    _outstanding: int = 0
+
+    def admit(self, projected_provider_requests: int = 1) -> None:
+        """Refuse to start provider work that would cross a cap.
+
+        The projected requests are **reserved** on admission, so a trial that
+        fails before its usage is observed still counts against the cap. That
+        direction is deliberate: an over-count stops the run early, while an
+        under-count would let a run exceed its ceiling.
+        """
+        if self.exhausted_cap is not None:
+            raise BudgetExhausted(
+                f"the {self.exhausted_cap} cap is exhausted; refusing further provider work")
+        limit = self.policy.max_provider_requests
+        if limit is not None and self.provider_requests + projected_provider_requests > limit:
+            self.exhausted_cap = MISSING_MAX_PROVIDER_REQUESTS
+            raise BudgetExhausted(
+                f"the max_provider_requests cap of {limit} is exhausted; "
+                f"refusing a request that would make {self.provider_requests + projected_provider_requests}")
+        self.provider_requests += projected_provider_requests
+        self._outstanding = projected_provider_requests
+
+    def observe(self, *, provider_requests: int = 0, input_tokens: int = 0,
+                output_tokens: int = 0, total_tokens: Optional[int] = None,
+                cost_usd: Optional[float] = None) -> None:
+        """Record the provider usage observed for a finished trial.
+
+        The reservation made by the matching ``admit`` is replaced by the
+        observed request count, so a trial that used more requests than
+        projected still counts in full.
+        """
+        if self._outstanding:
+            self.provider_requests += provider_requests - self._outstanding
+            self._outstanding = 0
+        else:
+            self.provider_requests += provider_requests
+        self.input_tokens += max(0, input_tokens)
+        self.output_tokens += max(0, output_tokens)
+        self.total_tokens += max(0, total_tokens if total_tokens is not None
+                                 else input_tokens + output_tokens)
+        if cost_usd is not None:
+            self.cost_observed = True
+            self.cost_usd += cost_usd
+        if self.exhausted_cap is None:
+            self.exhausted_cap = self._crossed_cap()
+
+    def _crossed_cap(self) -> Optional[str]:
+        limit = self.policy.token_limit
+        if limit is not None and self.total_tokens >= limit:
+            return MISSING_TOKEN_LIMIT
+        cost_limit = self.policy.cost_limit_usd
+        if cost_limit is not None and self.cost_observed and self.cost_usd >= cost_limit:
+            return MISSING_COST_LIMIT
+        return None
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serializable view of the observed spend."""
+        return {"provider_requests": self.provider_requests,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.total_tokens,
+                "cost_usd": None if not self.cost_observed else self.cost_usd,
+                "exhausted_cap": self.exhausted_cap}
 
 
 def admit_budget(policy: BudgetPolicy) -> BudgetAdmission:
@@ -205,6 +308,17 @@ def admit_budget(policy: BudgetPolicy) -> BudgetAdmission:
                     name,
                     "cost enforcement is not stated; "
                     "controller_enforced or provider_enforced is required",
+                ))
+                continue
+            if enforcement == "controller_enforced" and policy.cost_observable is not True:
+                # The controller can only hold a dollar ceiling it can
+                # measure. A route that reports no cost cannot be enforced
+                # against one, and a guessed price must never stand in.
+                unusable.append((
+                    index,
+                    name,
+                    "controller_enforced cost requires an observable provider cost; "
+                    "the route reports none, so the cap cannot be enforced",
                 ))
                 continue
             enforced.append(name)
@@ -378,6 +492,10 @@ def budget_policy_from_mapping(mapping: Mapping[str, Any]) -> BudgetPolicy:
     quota_value = mapping.get("provider_quota")
     quota = None if quota_value is None else _parse_provider_quota(quota_value)
 
+    cost_observable = mapping.get("cost_observable")
+    if cost_observable is not None and not isinstance(cost_observable, bool):
+        raise ValueError("cost_observable must be a boolean or null")
+
     return BudgetPolicy(
         token_limit=_parse_optional_int(mapping.get("token_limit"), "token_limit"),
         cost_limit_usd=_parse_optional_number(mapping.get("cost_limit_usd"), "cost_limit_usd"),
@@ -389,4 +507,5 @@ def budget_policy_from_mapping(mapping: Mapping[str, Any]) -> BudgetPolicy:
             mapping.get("max_wallclock_seconds"), "max_wallclock_seconds"
         ),
         provider_quota=quota,
+        cost_observable=cost_observable,
     )

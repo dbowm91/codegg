@@ -8,8 +8,9 @@ import pathlib
 import unittest
 
 import dev.harness_lab.budget as budget_module
-from dev.harness_lab.budget import (BudgetPolicy, ProviderQuota, STATUS_ADMITTED,
-                                    STATUS_UNVERIFIABLE, admit_budget,
+from dev.harness_lab.budget import (BudgetExhausted, BudgetPolicy, ProviderQuota,
+                                    STATUS_ADMITTED, STATUS_UNVERIFIABLE,
+                                    SpendGuard, admit_budget,
                                     budget_policy_from_mapping)
 
 
@@ -65,7 +66,7 @@ class BudgetAdmissionTests(unittest.TestCase):
         self.assertNotIn("cost_limit_usd", result.enforced_caps)
 
     def test_cost_limit_with_controller_enforcement_is_admitted(self) -> None:
-        result = admit_budget(BudgetPolicy(cost_limit_usd=2.5, cost_enforcement="controller_enforced"))
+        result = admit_budget(BudgetPolicy(cost_limit_usd=2.5, cost_enforcement="controller_enforced", cost_observable=True))
         self.assertEqual(result.status, STATUS_ADMITTED)
         self.assertEqual(result.enforced_caps, ("cost_limit_usd",))
 
@@ -175,6 +176,7 @@ class BudgetAdmissionTests(unittest.TestCase):
             "token_limit": 20000,
             "cost_limit_usd": 1.25,
             "cost_enforcement": "controller_enforced",
+            "cost_observable": True,
             "max_provider_requests": 3,
             "max_wallclock_seconds": 900,
             "provider_quota": {"source": "provider_account_quota", "enforceable": True,
@@ -249,3 +251,76 @@ class BudgetAdmissionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpendGuardTests(unittest.TestCase):
+    """The enforcement side of the admission gate.
+
+    A declared cap that nothing enforces is an advisory, and an advisory must
+    not be presented as a safety gate. These tests prove the caps the gate
+    admits are actually enforced during a run.
+    """
+
+    def test_a_controller_enforced_cost_cap_needs_an_observable_cost(self) -> None:
+        result = admit_budget(BudgetPolicy(cost_limit_usd=2.5,
+                                            cost_enforcement="controller_enforced"))
+        self.assertEqual(result.status, STATUS_UNVERIFIABLE)
+        self.assertEqual(result.missing_source, "cost_limit_usd")
+        self.assertIn("observable", result.detail["reason"])
+
+    def test_a_provider_enforced_cost_cap_needs_no_observable_cost(self) -> None:
+        result = admit_budget(BudgetPolicy(cost_limit_usd=2.5,
+                                            cost_enforcement="provider_enforced"))
+        self.assertEqual(result.status, STATUS_ADMITTED)
+
+    def test_the_provider_request_cap_is_refused_before_the_work_starts(self) -> None:
+        guard = SpendGuard(BudgetPolicy(max_provider_requests=2))
+        guard.admit()
+        guard.observe(provider_requests=1)
+        guard.admit()
+        self.assertEqual(guard.provider_requests, 2)
+        with self.assertRaises(BudgetExhausted) as caught:
+            guard.admit()
+        self.assertIn("max_provider_requests", str(caught.exception))
+        self.assertEqual(guard.exhausted_cap, "max_provider_requests")
+
+    def test_an_admitted_request_is_reserved_until_it_is_observed(self) -> None:
+        """A trial that fails before its usage is observed still counts."""
+        guard = SpendGuard(BudgetPolicy(max_provider_requests=1))
+        guard.admit()
+        self.assertEqual(guard.provider_requests, 1)
+        with self.assertRaises(BudgetExhausted):
+            guard.admit()
+
+    def test_an_observed_count_replaces_the_reservation(self) -> None:
+        guard = SpendGuard(BudgetPolicy(max_provider_requests=4))
+        guard.admit()
+        guard.observe(provider_requests=3)
+        self.assertEqual(guard.provider_requests, 3)
+
+    def test_the_provider_request_cap_counts_the_projected_request(self) -> None:
+        guard = SpendGuard(BudgetPolicy(max_provider_requests=1))
+        with self.assertRaises(BudgetExhausted):
+            guard.admit(projected_provider_requests=2)
+
+    def test_the_token_cap_stops_further_work_after_it_is_crossed(self) -> None:
+        guard = SpendGuard(BudgetPolicy(token_limit=100))
+        guard.observe(input_tokens=60, output_tokens=45)
+        self.assertEqual(guard.total_tokens, 105)
+        self.assertEqual(guard.exhausted_cap, "token_limit")
+        with self.assertRaises(BudgetExhausted):
+            guard.admit()
+
+    def test_an_unobserved_cost_is_not_reported_as_zero(self) -> None:
+        guard = SpendGuard(BudgetPolicy(token_limit=1000))
+        guard.observe(input_tokens=10, output_tokens=5)
+        self.assertIsNone(guard.as_dict()["cost_usd"])
+        self.assertFalse(guard.cost_observed)
+
+    def test_the_observed_spend_is_json_serializable(self) -> None:
+        guard = SpendGuard(BudgetPolicy(token_limit=1000, max_provider_requests=4))
+        guard.observe(provider_requests=1, input_tokens=10, output_tokens=5, cost_usd=0.25)
+        payload = guard.as_dict()
+        self.assertEqual(json.dumps(payload, sort_keys=True), json.dumps(payload, sort_keys=True))
+        self.assertEqual(payload["total_tokens"], 15)
+        self.assertEqual(payload["cost_usd"], 0.25)
