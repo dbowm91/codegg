@@ -2492,8 +2492,19 @@ async fn real_tui_rollback_invariants_on_writer_closed_impl() {
     wait_projection_subscription_count(&daemon, 0).await;
     // Wait for connection tasks to complete — the send task may still be
     // draining after the subscription count returns to zero.
+    //
+    // The wait must cover **every** counter `assert_all_at_baseline` checks.
+    // It previously waited for the send, receive, and raw-event completions
+    // but not for the request-handler completion, while `assert_all_at_baseline`
+    // asserts that the request handler completed exactly once as soon as the
+    // TUI task set exists. The flag is set when the task set is *constructed*,
+    // not when the handler finishes, so the assertion raced the handler and
+    // failed roughly half the time on an otherwise idle host.
     timeout(Duration::from_millis(500), async {
-        while probe.send_count() == 0 || probe.receive_count() == 0 || probe.raw_event_count() == 0
+        while probe.send_count() == 0
+            || probe.receive_count() == 0
+            || probe.raw_event_count() == 0
+            || probe.request_handler_count() == 0
         {
             tokio::task::yield_now().await;
         }
