@@ -111,6 +111,25 @@ pub struct ToolProgramExecutionContext {
     pub provider_model: Option<String>,
     pub backend_policy: String,
     pub correlation_id: String,
+    /// M005/C002: the accepted filesystem profile ceiling that bounds this
+    /// invocation and every job it delegates.
+    ///
+    /// A delegated child job inherits it as a ceiling. It may narrow it, but
+    /// it can never widen it back to an uncontained launch. `None` means the
+    /// invocation carried no profile ceiling, which is the historical
+    /// pre-M005 meaning and is preserved for payloads that predate it.
+    #[serde(default)]
+    pub sandbox_profile: Option<crate::approval::SandboxProfile>,
+    /// M005/C002: the authenticated per-principal network intent accepted for
+    /// this invocation.
+    ///
+    /// Network intent is an independent axis: it is never implied by the
+    /// filesystem profile. A delegated child job inherits it and may narrow
+    /// it, but it can never widen it back to `LegacyUnrestricted`. The default
+    /// is the historical `LegacyUnrestricted` meaning, preserved for payloads
+    /// that predate it.
+    #[serde(default)]
+    pub network_intent: crate::approval::NetworkIntent,
 }
 
 fn default_tool_program_context_version() -> u16 {
@@ -310,7 +329,7 @@ impl ToolProgramExecutionContext {
     /// digest in the replay fingerprint.
     pub fn compute_digest(&self) -> String {
         let fields = format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.schema_version,
             self.workspace_path_policy_id,
             self.session_id.as_deref().unwrap_or(""),
@@ -323,6 +342,13 @@ impl ToolProgramExecutionContext {
             self.policy_revision.as_deref().unwrap_or(""),
             self.principal_ref.as_deref().unwrap_or(""),
             self.contract_snapshot_json,
+            // M005/C002: the delegated-execution ceiling is part of the
+            // replay-safety surface. A context whose policy changed must not
+            // share a digest with the one it replaced.
+            self.sandbox_profile
+                .map(|profile| profile.as_str())
+                .unwrap_or(""),
+            self.network_intent.as_str(),
         );
         format!("{:x}", sha2::Sha256::digest(fields.as_bytes()))
     }

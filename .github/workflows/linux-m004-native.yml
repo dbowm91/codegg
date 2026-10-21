@@ -11,6 +11,12 @@ on:
       - 'src/lsp/**'
       - 'src/agent/turn_runtime.rs'
       - 'src/tool/mod.rs'
+      # C002: the Tool Program delegated-child route carries the accepted
+      # network intent and sandbox ceiling. A change to either the tool
+      # boundary that stamps them or the executor that binds them must be
+      # able to trigger this qualification job.
+      - 'src/tool/tool_program.rs'
+      - 'src/tool/tool_program_context.rs'
       # M005 owner surface: the network intent, the durable payloads that
       # carry it, and every launch owner that has to refuse when it cannot
       # honor an offline request. A change to any of these must be able to
@@ -58,6 +64,12 @@ on:
       - 'src/lsp/**'
       - 'src/agent/turn_runtime.rs'
       - 'src/tool/mod.rs'
+      # C002: the Tool Program delegated-child route carries the accepted
+      # network intent and sandbox ceiling. A change to either the tool
+      # boundary that stamps them or the executor that binds them must be
+      # able to trigger this qualification job.
+      - 'src/tool/tool_program.rs'
+      - 'src/tool/tool_program_context.rs'
       # M005 owner surface: the network intent, the durable payloads that
       # carry it, and every launch owner that has to refuse when it cannot
       # honor an offline request. A change to any of these must be able to

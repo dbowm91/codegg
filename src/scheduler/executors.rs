@@ -447,9 +447,20 @@ impl JobExecutor for ManagedArgvExecutor {
             // The durable route rebuilds the same containment the direct route
             // would have used. A constrained job whose host cannot provide it
             // fails closed here instead of running uncontained.
-            let Some(config) =
-                crate::security::sandbox::sandbox_config_for_profile(profile, &ctx.workspace_root)
-            else {
+            //
+            // M005/C002: the config comes from the shared durable-payload
+            // helper, which requests the M004 process/filesystem tier for an
+            // offline intent *while the config is still being built*. That
+            // ordering is the whole point: the tier's protected mount view
+            // captures the path identities the helper re-verifies at launch,
+            // and the owner can only turn the offline flag on after the spec
+            // exists. Asking for the tier afterwards produced a spec with no
+            // captured identity, and the launch failed closed.
+            let Some(config) = crate::security::sandbox::sandbox_config_for_durable_payload(
+                profile,
+                &ctx.workspace_root,
+                network_intent,
+            ) else {
                 return failure_completion(
                     started,
                     ExecutorStatus::Failed,

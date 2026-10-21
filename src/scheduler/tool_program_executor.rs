@@ -268,6 +268,19 @@ pub struct BrokerAdapter {
     grant: Option<codegg_core::jobs::ToolAuthorityGrant>,
     deadline: Option<tokio::time::Instant>,
     artifact_store: Option<Arc<dyn crate::context::ContextArtifactStore>>,
+    /// M005/C002: the accepted filesystem profile ceiling that bounds every
+    /// job this program delegates.
+    ///
+    /// A delegated child job inherits it as a ceiling. The child may narrow
+    /// it; it can never widen it back to an uncontained launch.
+    execution_ceiling_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005/C002: the accepted network intent that bounds every job this
+    /// program delegates.
+    ///
+    /// Network intent is an independent axis and is never implied by the
+    /// filesystem profile. A delegated child job inherits it and may narrow
+    /// it; it can never widen it back to `LegacyUnrestricted`.
+    execution_ceiling_intent: codegg_core::approval::NetworkIntent,
     /// M013-C-34: Track submitted child job results for artifact handles.
     child_results: std::sync::Mutex<Vec<ChildJobTracking>>,
     /// M005 corrective C005: the process admission policy the Tool Program
@@ -324,6 +337,8 @@ impl BrokerAdapter {
             grant: None,
             deadline: None,
             artifact_store: None,
+            execution_ceiling_profile: None,
+            execution_ceiling_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             child_results: std::sync::Mutex::new(Vec::new()),
             process_admission: None,
         }
@@ -424,6 +439,22 @@ impl BrokerAdapter {
         self
     }
 
+    /// M005/C002: bind the accepted execution ceiling that bounds every job
+    /// this program delegates.
+    ///
+    /// The ceiling comes from the accepted invocation context, so it is
+    /// daemon-accepted authority rather than anything the program or the
+    /// model supplied.
+    pub fn with_execution_ceiling(
+        mut self,
+        profile: Option<codegg_core::approval::SandboxProfile>,
+        intent: codegg_core::approval::NetworkIntent,
+    ) -> Self {
+        self.execution_ceiling_profile = profile;
+        self.execution_ceiling_intent = intent;
+        self
+    }
+
     /// M005 corrective C005: install the inherited process admission
     /// policy.
     pub fn with_process_admission(
@@ -433,6 +464,148 @@ impl BrokerAdapter {
         self.process_admission = policy;
         self
     }
+}
+
+/// M005/C002: build the delegated child job's payload.
+///
+/// The child job inherits the parent's accepted execution ceiling. The child
+/// requests no policy of its own, so the effective policy is the parent's,
+/// narrowed (never widened) against whatever the child does request.
+///
+/// Before C002 this payload hard-coded `network_intent: LegacyUnrestricted`
+/// and `sandbox_profile: None`, so a principal that had accepted offline
+/// execution still got a delegated child job with host network.
+pub fn child_job_payload(
+    config: &codegg_core::tool_program::child_job::ChildJobConfig,
+    resolved_cwd: &Option<String>,
+    ceiling_profile: Option<codegg_core::approval::SandboxProfile>,
+    ceiling_intent: codegg_core::approval::NetworkIntent,
+) -> (
+    codegg_core::jobs::JobKind,
+    codegg_core::jobs::JobPayload,
+    Option<std::time::Duration>,
+) {
+    use codegg_core::approval::NetworkIntent;
+    use codegg_core::jobs::{JobKind, JobPayload};
+    use codegg_core::tool_program::child_job::ChildJobConfig;
+
+    let (child_profile, child_intent) = narrow_child_ceiling(
+        ceiling_profile,
+        ceiling_intent,
+        None,
+        NetworkIntent::LegacyUnrestricted,
+    );
+
+    match config {
+        ChildJobConfig::Test(cfg) => {
+            let argv = vec!["cargo".into(), "test".into()];
+            let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+            (
+                JobKind::Test,
+                JobPayload::Test {
+                    command: "cargo test".into(),
+                    argv,
+                    cwd: resolved_cwd.clone(),
+                    scope: cfg.scope.clone(),
+                    parent_run_id: None,
+                    sandbox_profile: child_profile,
+                    network_intent: child_intent,
+                },
+                timeout,
+            )
+        }
+        ChildJobConfig::Build(cfg) => {
+            let argv = cfg
+                .argv
+                .clone()
+                .unwrap_or_else(|| vec!["cargo".into(), "build".into()]);
+            let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+            (
+                JobKind::Build,
+                JobPayload::ManagedArgv {
+                    argv,
+                    cwd: resolved_cwd.clone(),
+                    sandbox_profile: child_profile,
+                    network_intent: child_intent,
+                },
+                timeout,
+            )
+        }
+        ChildJobConfig::Lint(cfg) => {
+            let argv = cfg.argv.clone().unwrap_or_else(|| {
+                vec![
+                    "cargo".into(),
+                    "clippy".into(),
+                    "--".into(),
+                    "-D".into(),
+                    "warnings".into(),
+                ]
+            });
+            let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+            (
+                JobKind::Lint,
+                JobPayload::ManagedArgv {
+                    argv,
+                    cwd: resolved_cwd.clone(),
+                    sandbox_profile: child_profile,
+                    network_intent: child_intent,
+                },
+                timeout,
+            )
+        }
+        ChildJobConfig::Format(cfg) => {
+            let argv = cfg.argv.clone().unwrap_or_else(|| {
+                vec!["cargo".into(), "fmt".into(), "--".into(), "--check".into()]
+            });
+            let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+            (
+                JobKind::Format,
+                JobPayload::ManagedArgv {
+                    argv,
+                    cwd: resolved_cwd.clone(),
+                    sandbox_profile: child_profile,
+                    network_intent: child_intent,
+                },
+                timeout,
+            )
+        }
+    }
+}
+
+/// M005/C002: narrow a delegated child job's requested execution policy
+/// against the parent's accepted ceiling.
+///
+/// The child never widens the parent. A child that asks for the wider
+/// network intent keeps only the parent's narrower one, and a child that
+/// asks for the wider filesystem profile keeps only the parent's more
+/// contained one. The two axes are narrowed independently: an offline
+/// intent is never satisfied by a narrower filesystem profile, and a
+/// narrower filesystem profile never implies an offline intent.
+fn narrow_child_ceiling(
+    parent_profile: Option<codegg_core::approval::SandboxProfile>,
+    parent_intent: codegg_core::approval::NetworkIntent,
+    child_profile: Option<codegg_core::approval::SandboxProfile>,
+    child_intent: codegg_core::approval::NetworkIntent,
+) -> (
+    Option<codegg_core::approval::SandboxProfile>,
+    codegg_core::approval::NetworkIntent,
+) {
+    use codegg_core::approval::NetworkIntent;
+    let profile = match (parent_profile, child_profile) {
+        (Some(parent), Some(child)) => Some(parent.narrow(child)),
+        (Some(parent), None) => Some(parent),
+        (None, child) => child,
+    };
+    // Offline is the narrower intent, so the effective intent is offline when
+    // either side asks for it.
+    let intent = if parent_intent == NetworkIntent::OfflineRequired
+        || child_intent == NetworkIntent::OfflineRequired
+    {
+        NetworkIntent::OfflineRequired
+    } else {
+        NetworkIntent::LegacyUnrestricted
+    };
+    (profile, intent)
 }
 
 #[async_trait]
@@ -581,81 +754,20 @@ impl BrokerCallback for BrokerAdapter {
             .resolve_cwd(&self.cwd)
             .map_err(InterpreterError::BrokerError)?;
 
-        // Build the NewJob based on operation type
-        let (kind, payload, timeout) = match &request.config {
-            ChildJobConfig::Test(cfg) => {
-                let argv = vec!["cargo".into(), "test".into()];
-                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
-                (
-                    codegg_core::jobs::JobKind::Test,
-                    codegg_core::jobs::JobPayload::Test {
-                        command: "cargo test".into(),
-                        argv,
-                        cwd: resolved_cwd.clone(),
-                        scope: cfg.scope.clone(),
-                        parent_run_id: None,
-                        sandbox_profile: None,
-                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                    },
-                    timeout,
-                )
-            }
-            ChildJobConfig::Build(cfg) => {
-                let argv = cfg
-                    .argv
-                    .clone()
-                    .unwrap_or_else(|| vec!["cargo".into(), "build".into()]);
-                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
-                (
-                    codegg_core::jobs::JobKind::Build,
-                    codegg_core::jobs::JobPayload::ManagedArgv {
-                        argv,
-                        cwd: resolved_cwd.clone(),
-                        sandbox_profile: None,
-                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                    },
-                    timeout,
-                )
-            }
-            ChildJobConfig::Lint(cfg) => {
-                let argv = cfg.argv.clone().unwrap_or_else(|| {
-                    vec![
-                        "cargo".into(),
-                        "clippy".into(),
-                        "--".into(),
-                        "-D".into(),
-                        "warnings".into(),
-                    ]
-                });
-                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
-                (
-                    codegg_core::jobs::JobKind::Lint,
-                    codegg_core::jobs::JobPayload::ManagedArgv {
-                        argv,
-                        cwd: resolved_cwd.clone(),
-                        sandbox_profile: None,
-                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                    },
-                    timeout,
-                )
-            }
-            ChildJobConfig::Format(cfg) => {
-                let argv = cfg.argv.clone().unwrap_or_else(|| {
-                    vec!["cargo".into(), "fmt".into(), "--".into(), "--check".into()]
-                });
-                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
-                (
-                    codegg_core::jobs::JobKind::Format,
-                    codegg_core::jobs::JobPayload::ManagedArgv {
-                        argv,
-                        cwd: resolved_cwd.clone(),
-                        sandbox_profile: None,
-                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                    },
-                    timeout,
-                )
-            }
-        };
+        // M005/C002: the delegated child job inherits the parent's accepted
+        // execution ceiling. The child requests no policy of its own, so the
+        // effective policy is the parent's, narrowed (never widened) against
+        // whatever the child does request.
+        //
+        // Before this, the child payload hard-coded an unrestricted intent
+        // and no filesystem profile, so a principal that had accepted
+        // offline execution still got a child job with host network.
+        let (kind, payload, timeout) = child_job_payload(
+            &request.config,
+            &resolved_cwd,
+            self.execution_ceiling_profile,
+            self.execution_ceiling_intent,
+        );
 
         // Create submission key for idempotency
         let config_hash = {
@@ -1769,7 +1881,16 @@ impl JobExecutor for ToolProgramExecutor {
                 None,
             )
             .with_grant(grant)
-            .with_deadline(wall_deadline);
+            .with_deadline(wall_deadline)
+            // M005/C002: bind the accepted execution ceiling so every job
+            // this program delegates inherits it. The ceiling travels in the
+            // accepted invocation context, so it survives a restart and a
+            // replay: a delegated child job cannot be widened after the
+            // fact.
+            .with_execution_ceiling(
+                execution_context.sandbox_profile,
+                execution_context.network_intent,
+            );
 
         // A terminal result is the commit point. If the daemon died after
         // that commit but before the attempt/notification transition, a new
