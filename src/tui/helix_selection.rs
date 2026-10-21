@@ -378,6 +378,26 @@ impl<P: SelectionPoint> SelectionState<P> {
         self.normalize();
     }
 
+    /// Replace the held set with one character selection spanning
+    /// `anchor..=head`.
+    ///
+    /// The auto-selection a word motion needs: the motion already knows which
+    /// word it landed on, and this is that word's extent. It **replaces** the
+    /// held set rather than adding to it, because the word is the whole of
+    /// what the reader asked for — a selection that also covered the previous
+    /// word would be a different thing every time the key was held.
+    ///
+    /// The cursor is left alone. The caller that knows where the cursor
+    /// belongs sets it with [`Self::set_cursor`], which is the one relocation
+    /// that does not drag the selection's head along with it.
+    pub fn select_char_range(&mut self, anchor: P, head: P) {
+        let mut selection = Selection::new(anchor, SelectionMode::Char);
+        selection.head = head;
+        self.selections = vec![selection];
+        self.primary = 0;
+        self.normalize();
+    }
+
     /// Arm whole-line selection at the cursor (`x`), growth enabled.
     pub fn select_line(&mut self) {
         if self.selections.is_empty() {

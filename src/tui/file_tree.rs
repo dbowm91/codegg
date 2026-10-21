@@ -29,10 +29,17 @@
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+
 use crate::directory_listing::{
     LISTING_IGNORED_DIRS, MAX_LISTING_DEPTH, MAX_LISTING_EXAMINED, MAX_LISTING_NAME_BYTES,
     MAX_LISTING_NODES,
 };
+use crate::tui::theme::Theme;
 
 /// Maximum directory depth **embedded** in one listing, counted from the
 /// workspace root at `0`.
@@ -223,6 +230,70 @@ pub struct TreeRow {
     pub kind: TreeNodeKind,
     /// Directories are open when they are in the expansion set.
     pub expanded: bool,
+}
+
+/// The panel's live-filter field.
+///
+/// The pane had no text-input surface of its own before the filter: the
+/// composer is the *app's* input and the tree is a navigator. This is the
+/// panel's input — a single line the filter is typed into, with a caret.
+///
+/// It is deliberately not a second buffer of anything: it holds the filter
+/// text (a few characters, owned by
+/// [`crate::tui::app::state::file_tree::FileTreeState::filter`]) and
+/// nothing else. The caret is drawn as a block at the end of the text,
+/// because the field is a single line the filter is typed into and the
+/// panel's keymap has no caret-movement verb.
+///
+/// The pane renderer draws this; the tree's key handler types into it. The
+/// field is panel-local: the composer badge reports the app-level mode, so
+/// a filter being typed is never reported as the composer being in Insert.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TreeFilterField<'a> {
+    /// The filter text, exactly as typed.
+    pub query: &'a str,
+    /// Whether the field is the active input (the panel is in insert mode).
+    pub active: bool,
+}
+
+impl<'a> TreeFilterField<'a> {
+    /// The field for a given filter text and panel mode.
+    pub fn new(query: &'a str, active: bool) -> Self {
+        Self { query, active }
+    }
+
+    /// Whether the field would draw anything worth a row.
+    ///
+    /// An inactive field with no text is not drawn at all, so the pane keeps
+    /// the row for the listing instead of showing an empty input.
+    pub fn is_visible(&self) -> bool {
+        self.active || !self.query.is_empty()
+    }
+
+    /// The line to draw: a label, the filter text, and the caret.
+    pub fn line(&self, theme: &Theme) -> Line<'static> {
+        let label = Style::default().fg(theme.muted);
+        let text = Style::default().fg(theme.foreground);
+        let caret = Style::default()
+            .fg(theme.primary)
+            .add_modifier(Modifier::BOLD);
+        let mut spans = vec![Span::styled("filter ", label)];
+        if !self.query.is_empty() {
+            spans.push(Span::styled(self.query.to_string(), text));
+        }
+        if self.active {
+            spans.push(Span::styled("█", caret));
+        }
+        Line::from(spans)
+    }
+
+    /// Draw the field into `area`.
+    ///
+    /// The pane renderer reserves one row of the pane's inner area for the
+    /// field when [`Self::is_visible`] is true, and hands that row here.
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        frame.render_widget(Paragraph::new(self.line(theme)), area);
+    }
 }
 
 /// Flatten a listing into the visible rows for the current expansion set.
@@ -833,6 +904,43 @@ mod tests {
         assert_eq!(
             listing.truncated_reason.as_deref(),
             Some("tree walk cancelled")
+        );
+    }
+
+    /// The panel's filter field draws what was typed and, while it is the
+    /// active input, a caret.
+    #[test]
+    fn the_filter_field_draws_the_text_and_the_caret() {
+        let theme = Theme::default();
+        let drawn = |field: &TreeFilterField<'_>| {
+            field
+                .line(&theme)
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        let active = TreeFilterField::new("ma", true);
+        assert!(active.is_visible());
+        let text = drawn(&active);
+        assert!(
+            text.contains("ma"),
+            "the filter text is drawn, got {text:?}"
+        );
+        assert!(text.contains('█'), "the active field shows a caret");
+
+        let idle = TreeFilterField::new("ma", false);
+        assert!(idle.is_visible(), "a filter that is set is still shown");
+        assert!(
+            !drawn(&idle).contains('█'),
+            "an inactive field shows no caret"
+        );
+
+        let empty = TreeFilterField::new("", false);
+        assert!(
+            !empty.is_visible(),
+            "an empty, inactive field must not cost the pane a row"
         );
     }
 }

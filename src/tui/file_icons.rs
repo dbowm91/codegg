@@ -734,19 +734,22 @@ mod tests {
         );
 
         assert!(state.set_root_prefix("src"));
-        // A real `l` re-walk restarts the depth count at the subtree, so the
-        // scoped listing's top level carries the same number the workspace
-        // root's top level carries — which is exactly what used to make a
-        // scoped listing render identically to the root.
+        // The indent is **relative to the scope**. A subtree walk restarts the
+        // depth count at the subtree, so a scoped listing's top level carries
+        // the same number the workspace root's top level carries — and adding
+        // the scope's own depth back on top of it is what used to make a
+        // scoped listing render identically to the root, and what flattened
+        // every deep scope to the same cap.
         let scoped = vec![row("src/lib.rs", "lib.rs", 1)];
         assert_eq!(
             state.indent_for(&scoped, 0).depth,
-            2,
-            "a subtree walk restarts the count; the scope has to be added back"
+            1,
+            "the indent is relative to the scope, so the scope's own depth is \
+             not added back"
         );
         assert_eq!(
             tree_indent(&state, &scoped, 0, 40),
-            "│  └─ ",
+            "└─ ",
             "the scope itself is the parent, so its only child closes the level"
         );
     }

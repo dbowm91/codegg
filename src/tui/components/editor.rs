@@ -38,9 +38,135 @@ use codegg_document::DocumentSnapshot;
 use crate::tui::editor::{self, EditorMode, EditorPrefix, EditorViewport};
 use crate::tui::theme::Theme;
 
-/// Rows of chrome reserved above the text: the state banner and the
-/// current-line/column readout.
-const CHROME_ROWS: u16 = 2;
+/// Rows of chrome reserved at the **bottom** of the editor block.
+///
+/// One row, and only one. It carries the **path on the left** and the
+/// **status cluster on the right**.
+///
+/// It used to be two: a banner row and a coordinate readout. The readout's
+/// line and column were the cursor restated, and everything else it carried
+/// moved down here. The banner row went with them — the disclosures it held
+/// (the pending prefix, the find note, the notice) are transient, and a
+/// transient signal belongs in the row that is always there rather than in a
+/// row that has to be allocated to hold it.
+const CHROME_ROWS: u16 = 1;
+
+/// How readily a chrome-cluster element may be dropped when the row is too
+/// narrow to hold all of it.
+///
+/// Higher survives longer, and the order is a reading of *what hurts most to
+/// lose*:
+///
+/// - **busy** is self-evident — the reader can see the work happening;
+/// - the **modified** state is a status, not a safety signal;
+/// - the **writability** marker and the **scope badge** say what an edit
+///   *here* will do, which is why they outrank the status word;
+/// - the **disclosure** is what just happened;
+/// - a **caveat** ("line too long", "highlighting truncated") outranks even
+///   that, because dropping it is not a smaller truth — it is a *misleading*
+///   one: a truncated prefix that looks like the whole line is worse than a
+///   missing footnote;
+/// - the **notice** and the **armed prefix** are the two things that must be
+///   on screen at the instant they happen.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum ClusterWeight {
+    Busy,
+    Modified,
+    Writable,
+    Scope,
+    Disclosure,
+    Caveat,
+    Notice,
+    Prefix,
+}
+
+/// One element of the chrome cluster: a weight, and the spans it draws.
+struct ClusterGroup<'a> {
+    weight: ClusterWeight,
+    spans: Vec<Span<'a>>,
+}
+
+impl<'a> ClusterGroup<'a> {
+    /// A group that draws one string.
+    fn one(weight: ClusterWeight, text: String, style: Style) -> Self {
+        Self {
+            weight,
+            spans: vec![Span::styled(text, style)],
+        }
+    }
+
+    /// The group's display width.
+    fn width(&self) -> usize {
+        self.spans.iter().map(|span| span.width()).sum()
+    }
+}
+
+/// Fit the chrome cluster into `budget` columns, dropping what matters least.
+///
+/// The row has one line and a fixed width, and the cluster is a set of
+/// answers that do not all fit in it. Something has to go, and the question
+/// is *what*.
+///
+/// The answer is a **rank**, not a position: the least important group is
+/// dropped first, whatever order it was rendered in. A cluster that dropped
+/// from one end would take the scope badge before the "line too long"
+/// footnote, or the armed prefix before the note that explains it, and both
+/// are worse than the other.
+///
+/// A group that is still too wide on its own is **cut from the right** rather
+/// than dropped: "3 matches · partial · n/N next/prev" is worth more as
+/// "3 matches · partial…" than as nothing at all, because the head of a
+/// sentence is the part that answers the question.
+///
+/// The armed prefix is the highest rank, so it is the last thing to go and
+/// the first thing to survive.
+fn fit_cluster(mut groups: Vec<ClusterGroup<'_>>, budget: usize) -> Vec<Span<'_>> {
+    let width = |groups: &[ClusterGroup<'_>]| groups.iter().map(ClusterGroup::width).sum::<usize>();
+    while groups.len() > 1 && width(&groups) > budget {
+        // The lowest rank goes first; among equals the leftmost, so what is
+        // left is the right end of the row.
+        let victim = groups
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, group)| group.weight)
+            .map(|(index, _)| index)
+            .expect("the loop keeps at least one group");
+        groups.remove(victim);
+    }
+    if groups.len() == 1 && groups[0].width() > budget {
+        let weight = groups[0].weight;
+        let cut = cut_group(&groups[0], budget);
+        groups.clear();
+        groups.push(ClusterGroup { weight, spans: cut });
+    }
+    groups.into_iter().flat_map(|group| group.spans).collect()
+}
+
+/// Cut a group down to `budget` columns, keeping the head of it.
+///
+/// The head is the part that answers the question: the count of a search, the
+/// bound of a find, the wording of an error. The tail is the part that can
+/// be guessed.
+fn cut_group<'a>(group: &ClusterGroup<'a>, budget: usize) -> Vec<Span<'a>> {
+    let mut out: Vec<Span<'_>> = Vec::new();
+    let mut used = 0usize;
+    for span in &group.spans {
+        let width = span.width();
+        if used + width <= budget {
+            out.push(span.clone());
+            used += width;
+            continue;
+        }
+        // This span straddles the budget: cut it, and stop.
+        let remaining = budget.saturating_sub(used);
+        if remaining > 0 {
+            let text = crate::tui::wrap::ellipsize_to_width(&span.content, remaining);
+            out.push(Span::styled(text, span.style));
+        }
+        break;
+    }
+    out
+}
 
 /// Document editor view.
 ///
@@ -112,23 +238,45 @@ pub struct EditorWidget<'a> {
     pub theme: Arc<Theme>,
 }
 
+/// The editor's own keys, as the keymap box lists them.
+///
+/// The editor's **own** verbs, not the whole application's: the box answers
+/// "what can I press *in here*", and a list that also carried the composer's
+/// and the panels' keys would answer a different question.
+///
+/// The descriptions are short on purpose. The box is a corner overlay, and a
+/// box whose rows are wide enough to need truncating names some of the keys
+/// and not others — which is worse than no box at all.
+const EDITOR_KEYMAP: &[(&str, &str)] = &[
+    ("e / b", "word end / start — selects the word"),
+    ("w", "next word start"),
+    ("v", "select mode — movement extends"),
+    ("x", "select the line"),
+    ("d / y", "delete / yank the selection"),
+    ("u / Ctrl-r", "undo / redo"),
+    (":", "command line — matches as you type"),
+    ("/", "search"),
+    ("n / N", "next / previous match"),
+    ("Ctrl-d / Ctrl-u", "half a page down / up"),
+    ("PgDn / PgUp", "a full page down / up"),
+    ("z c / t / b", "view: centre / top / bottom"),
+    ("g g / g G", "start / end of the buffer"),
+    ("g t / c / b", "top / middle / bottom of screen"),
+    ("space ?", "this box"),
+    ("Esc", "leave select mode / cancel"),
+];
+
 impl EditorWidget<'_> {
     /// Paint the editor into `area`.
     pub fn render(mut self, frame: &mut Frame, area: Rect) {
         let theme = Arc::clone(&self.theme);
         let focused = self.buffer_focused;
-        let title = format!(
-            " {} · {} · {}{} ",
-            self.path,
-            // NOR/INS, the same two-letter badge every other surface shows.
-            // The old title spelled out NORMAL/INSERT and then added
-            // `[composer]`, so one surface carried two mode vocabularies.
-            if focused { "INS" } else { "NOR" },
-            self.status,
-            if self.busy { " · working…" } else { "" },
-        );
+        // The block's top border carries **no label**. It used to carry
+        // `{path} · {mode} · {status}`, and all three moved: the path and the
+        // status to the single bottom row, the mode to the badge above the
+        // input box. An empty border is the honest result — every signal the
+        // title carried is still on screen, and none of it is on screen twice.
         let block = Block::default()
-            .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if focused { theme.primary } else { theme.border }))
             .style(Style::default().bg(theme.background));
@@ -144,256 +292,419 @@ impl EditorWidget<'_> {
             width: inner.width,
             height: inner.height.saturating_sub(CHROME_ROWS),
         };
-        self.render_banner(frame, inner);
+        self.render_chrome(frame, inner);
         if text_area.height > 0 {
             self.render_text(frame, text_area);
         }
+        // After the text: the match list is a floating overlay, and an overlay
+        // painted before the document would be painted over by it.
+        self.render_command_matches(frame, text_area);
+        self.render_keymap_overlay(frame, text_area);
         self.render_lsp_panel(frame, area);
         self.render_completion_popup(frame, area);
     }
 
-    /// State banner plus the cursor readout, on the bottom `CHROME_ROWS`.
-    fn render_banner(&self, frame: &mut Frame, inner: Rect) {
+    /// The editor's **keymap box** — its own catalogue of its keys, in the
+    /// bottom-right corner.
+    ///
+    /// A floating overlay: it covers the corner of the text area rather than
+    /// taking rows away from the document, so opening it does not reflow the
+    /// text under the reader.
+    fn render_keymap_overlay(&self, frame: &mut Frame, text_area: Rect) {
+        if !self.presentation.keymap_overlay {
+            return;
+        }
         let theme = Arc::clone(&self.theme);
-        let line_number = editor::cursor_line(self.snapshot, self.cursor_byte) + 1;
-        let column = editor::display_column(self.snapshot, self.cursor_byte) + 1;
-        let plural = if self.search_count == 1 { "" } else { "es" };
-        let pending = self.pending_prefix.display();
-        let pending = if pending.is_empty() {
-            String::new()
-        } else {
-            format!(" {pending}")
+        let key_width = EDITOR_KEYMAP
+            .iter()
+            .map(|(keys, _)| keys.chars().count())
+            .max()
+            .unwrap_or(0);
+        let desc_width = EDITOR_KEYMAP
+            .iter()
+            .map(|(_, desc)| desc.chars().count())
+            .max()
+            .unwrap_or(0);
+        let width = (key_width + desc_width + 4).min(text_area.width as usize) as u16;
+        let height = (EDITOR_KEYMAP.len() + 2).min(text_area.height as usize) as u16;
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rect = Rect {
+            x: text_area.x + text_area.width - width,
+            y: text_area.y + text_area.height - height,
+            width,
+            height,
         };
-        // The find disclosure rides on the same row as the pending
-        // indicator, because it answers the same question — "what did my
-        // last keystroke do?" — and a second status line would compete with
-        // the one the reader is already looking at. Empty when the last find
-        // landed, which is the overwhelmingly common case, so an ordinary
-        // keystroke draws exactly what it drew before this existed.
-        let find = if self.find_note.is_empty() {
-            String::new()
-        } else {
-            format!("  · {}", self.find_note)
-        };
-        // Where the history cursor is standing, when it is not at the tip.
-        //
-        // A time cursor nobody can see is a rename, so the position is
-        // disclosed whenever the reader is standing somewhere other than the
-        // newest change — that is exactly the state an `Alt-u` leaves behind,
-        // and the state in which "is this the newest change?" is worth
-        // answering. At the tip, which is the overwhelmingly common case, it
-        // says nothing, so an ordinary editing session draws exactly what it
-        // drew before this existed.
-        let history = match self.presentation.history_position() {
-            Some((position, length)) => format!("  · history {position}/{length}"),
-            None => String::new(),
-        };
-        // The `:` line replaces the status text while it is open. It owns
-        // the banner row because that row is what the user is looking at
-        // when they typed `:`, and a separate floating line would read as a
-        // different surface than the one holding the keyboard.
-        //
-        // `/` gets the same row for the same reason: it is a modal input
-        // line on this surface, so it belongs where `:` lives rather than
-        // inventing a second place to look. Both also suppress the find
-        // disclosure: those lines own the keyboard and the row, and a note
-        // about a find that happened before them would read as an answer to
-        // a question nobody is asking.
-        let (banner_text, banner_style) = if self.search_active {
-            (
-                format!("/{}_", self.search_line),
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else if self.command_active {
-            (
-                format!(":{}_", self.command_line),
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else if let Some(notice) = self.notice {
-            (
-                format!("{notice}{history}{find}{pending}"),
-                Style::default().fg(theme.error),
-            )
-        } else if !self.writable {
-            (
-                format!("{}{history}{find}{pending}", self.status),
-                Style::default().fg(theme.warning),
-            )
-        } else {
-            (
-                format!("{}{history}{find}{pending}", self.status),
-                Style::default().fg(theme.muted),
-            )
-        };
-        let first = Line::from(Span::styled(banner_text, banner_style));
-        let second = if self.search_active || self.search_count > 0 {
-            // The live match count sits next to the cursor readout, which is
-            // where the reader is already looking, and it survives viewport
-            // scrolling in a way an overlay on the text would not.
-            let mut spans = vec![Span::styled(
-                format!("ln {line_number}  col {column}  "),
-                Style::default().fg(theme.muted),
-            )];
-            if self.search_line.is_empty() {
-                // A `/` with nothing typed yet is not a failed search.
-                spans.push(Span::styled(
-                    "type to search",
-                    Style::default().fg(theme.muted),
-                ));
-            } else if self.search_count == 0 {
-                spans.push(Span::styled("no matches", Style::default().fg(theme.error)));
-            } else {
-                spans.push(Span::styled(
-                    format!("{} match{}", self.search_count, plural),
-                    Style::default().fg(theme.warning),
-                ));
-            }
-            if self.search_partial {
-                // Never let a truncated match list read as a complete one.
-                spans.push(Span::styled(
-                    "  · partial",
-                    Style::default().fg(theme.warning),
-                ));
-            }
-            if !self.search_active && self.search_count > 0 {
-                spans.push(Span::styled(
-                    "  · n/N next/prev",
-                    Style::default().fg(theme.muted),
-                ));
-            }
-            Line::from(spans)
-        } else if self.command_active {
-            // One row of fuzzy matches, inlined after the cursor readout.
-            // A separate overlay would cover the document the command is
-            // about to act on, which is the one thing the user needs to see
-            // while choosing between `:w` and `:wq`.
-            let matches = editor::complete_editor_command(self.command_line);
-            let mut spans = vec![Span::styled(
-                format!("ln {line_number}  col {column}  "),
-                Style::default().fg(theme.muted),
-            )];
-            if matches.is_empty() {
-                spans.push(Span::styled(
-                    "no matching command",
-                    Style::default().fg(theme.error),
-                ));
-            }
-            for (index, candidate) in matches.iter().enumerate() {
-                if index > 0 {
-                    spans.push(Span::raw("  "));
-                }
-                let selected = index == self.command_selection;
-                let command = candidate.command;
-                spans.push(Span::styled(
-                    format!(":{}", command.spec()),
-                    if selected {
+        let lines: Vec<Line> = EDITOR_KEYMAP
+            .iter()
+            .map(|(keys, desc)| {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {keys:>key_width$}  "),
                         Style::default()
-                            .fg(theme.background)
-                            .bg(theme.primary)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.foreground)
-                    },
-                ));
-                spans.push(Span::styled(
-                    format!(" {}", command.help()),
-                    Style::default().fg(theme.muted),
-                ));
-            }
-            Line::from(spans)
-        } else {
-            let mut spans = vec![
-                Span::styled(
-                    format!("ln {line_number}"),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled("  ", Style::default()),
-                Span::styled(format!("col {column}"), Style::default().fg(theme.muted)),
-                Span::styled("  ", Style::default()),
-                // Always show which root this document is confined to. The
-                // difference is invisible in the path itself (`build.toml`
-                // reads the same at either scope) but it decides who sees
-                // the edit, so it must not be something the user has to
-                // remember.
-                Span::styled(
-                    format!(
-                        "[{}]  ",
-                        crate::tui::commands::agent_editor::scope_label(self.scope)
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Style::default().fg(if self.scope.is_global_agent() {
-                        theme.warning
-                    } else {
-                        theme.muted
-                    }),
-                ),
-                Span::styled(
-                    if !self.writable {
-                        "read-only — edits refused".to_string()
-                    } else if crate::tui::commands::agent_editor::is_agent_config_path(
-                        self.path, self.scope,
-                    ) {
-                        // In an agent file the interesting command is the one
-                        // that publishes the agent, so say so here rather
-                        // than making the user read `/help` for it.
-                        crate::tui::commands::agent_editor::AGENT_EDITOR_HINT.to_string()
-                    } else {
-                        "writable".to_string()
-                    },
-                    Style::default().fg(if self.writable {
-                        theme.muted
-                    } else {
-                        theme.warning
-                    }),
-                ),
-            ];
-            // A truncated or partially validated semantic result is never
-            // represented as complete coverage. The signal lives in the
-            // status row so it survives viewport scrolling and narrow
-            // clipping of the text itself.
-            if let Some(note) = self.lsp.semantic_coverage_note() {
-                spans.push(Span::styled("  ", Style::default()));
-                spans.push(Span::styled(
-                    format!("· {note}"),
-                    Style::default().fg(theme.warning),
-                ));
-            }
-            // C002: a huge line under the cursor renders from its 32 KiB
-            // prefix with a `…[too long]` marker on the row itself. The
-            // banner repeats the signal so the degradation is visible even
-            // when the row marker scrolls out of view; other huge lines in
-            // the viewport carry their own row markers.
-            if editor::line_is_truncated(
-                self.snapshot,
-                editor::cursor_line(self.snapshot, self.cursor_byte),
-            ) || editor::display_column_truncated(self.snapshot, self.cursor_byte)
-            {
-                spans.push(Span::styled("  ", Style::default()));
-                spans.push(Span::styled(
-                    "· line too long — showing prefix",
-                    Style::default().fg(theme.warning),
-                ));
-            }
-            Line::from(spans)
-        };
-        let rows = Rect {
+                    Span::styled(desc.to_string(), Style::default().fg(theme.foreground)),
+                ])
+            })
+            .collect();
+        let block = Block::default()
+            .title(" keymap ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            inner,
+        );
+    }
+
+    /// The editor's single bottom row: the path on the left, the status
+    /// cluster on the right.
+    ///
+    /// The left slot is the **input** slot. When the `:` or `/` line is open
+    /// it holds that line and the path is erased: the reader is looking at
+    /// what they are typing, and a path beside it is a second answer to a
+    /// question nobody asked.
+    ///
+    /// The right slot is the **cluster**: the persistent signals, then the
+    /// transient disclosure, then the notice, then the armed prefix. It is
+    /// right-aligned rather than wrapped, so the row is always exactly one
+    /// row tall and the text area never changes height.
+    ///
+    /// The two slots **never overlap**. The cluster is fitted to what the
+    /// path leaves — the path keeps up to a third of the row, and the cluster
+    /// takes the rest — and when even that is not enough, the cluster drops
+    /// its least important element rather than running over the path. A
+    /// status row painted on top of the path is two half-legible surfaces
+    /// where one legible one was asked for.
+    fn render_chrome(&self, frame: &mut Frame, inner: Rect) {
+        let theme = Arc::clone(&self.theme);
+        let row = Rect {
             x: inner.x,
             y: inner.y + inner.height.saturating_sub(CHROME_ROWS),
             width: inner.width,
             height: CHROME_ROWS.min(inner.height),
         };
+        if row.height == 0 || row.width == 0 {
+            return;
+        }
+        let available = row.width as usize;
+        // The path keeps what it needs, up to a third of the row. It is the
+        // least urgent thing on the row — it does not change — but a path
+        // squeezed to one column is a path nobody can read either.
+        let (left_text, left_style) = self.chrome_input();
+        let path_width = unicode_width::UnicodeWidthStr::width(left_text.as_str());
+        let path_share = path_width.min((available / 3).max(1));
+        let cluster_budget = available.saturating_sub(path_share).saturating_sub(1);
+        let right = fit_cluster(self.chrome_cluster(&theme), cluster_budget);
+        let right_width = right.iter().map(|span| span.width()).sum::<usize>();
+        let left_budget = available.saturating_sub(right_width + 1).max(1);
+        let left_text = crate::tui::wrap::ellipsize_to_width(&left_text, left_budget);
         // Themed like the text area. The block paints its background first,
         // but anything the user has typed into the composer underneath can
-        // leave the terminal's own default behind on these two rows, and a
-        // status line in a different colour than the document reads as two
+        // leave the terminal's own default behind on this row, and a status
+        // line in a different colour than the document reads as two
         // different surfaces.
         frame.render_widget(
-            Paragraph::new(vec![first, second])
+            Paragraph::new(Line::from(Span::styled(left_text, left_style)))
                 .style(Style::default().bg(theme.background).fg(theme.foreground)),
-            rows,
+            Rect {
+                width: left_budget.min(available) as u16,
+                ..row
+            },
+        );
+        if right_width == 0 {
+            return;
+        }
+        let right_x = row.x + (available - right_width) as u16;
+        frame.render_widget(
+            Paragraph::new(Line::from(right))
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            Rect {
+                x: right_x,
+                width: right_width.min(available) as u16,
+                ..row
+            },
+        );
+    }
+
+    /// The left slot of the bottom row: the modal input line when one is
+    /// open, and the file's path when none is.
+    fn chrome_input(&self) -> (String, Style) {
+        let theme = Arc::clone(&self.theme);
+        if self.search_active {
+            return (
+                format!("/{}_", self.search_line),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        if self.command_active {
+            return (
+                format!(":{}_", self.command_line),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        (self.path.to_string(), Style::default().fg(theme.muted))
+    }
+
+    /// The right slot of the bottom row, in the order it is read.
+    ///
+    /// The row is one story, left to right: **where am I** (the persistent
+    /// signals), **what just happened** (the transient disclosure), **what is
+    /// wrong** (the notice), **what am I about to press** (the armed prefix).
+    ///
+    /// The persistent signals come first because they never move: the
+    /// **modified** state, the scope the document is confined to, writable or
+    /// read-only, the LSP semantic coverage, and the "line too long" marker.
+    /// The line number and the column are gone — they restated the cursor,
+    /// which is already on screen.
+    ///
+    /// The armed prefix comes **last**, at the far right of the row. It is the
+    /// one element that appears and disappears on its own, so it gets a home
+    /// nothing else competes for: the reader's eye arrives at the end of the
+    /// row after reading the state, and the prefix is what they are waiting
+    /// to see. A prefix in the middle of the cluster would have to be looked
+    /// for among the words around it, and "did my `g` register?" is a question
+    /// that has to be answered at a glance.
+    fn chrome_cluster(&self, theme: &Theme) -> Vec<ClusterGroup<'_>> {
+        // A modal line **owns** the row. The reader is looking at what they
+        // are typing, and a cluster of status beside it is a second answer to
+        // a question nobody asked — and the row is only one row tall.
+        if self.search_active || self.command_active {
+            return Vec::new();
+        }
+        let mut groups: Vec<ClusterGroup<'_>> = Vec::new();
+        // ── The persistent cluster ──────────────────────────────────────
+        // A **notice** replaces the persistent signals rather than joining
+        // them. A surfaced error ("edit queue is full") is more urgent than
+        // the dirty state, and a row that says both is a row that says
+        // neither clearly.
+        let notice = self.notice;
+        if notice.is_none() {
+            if self.busy {
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Busy,
+                    "working… ".to_string(),
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            // The **modified** state, moved down from the title rather than
+            // dropped: it is the only unsaved-changes signal the editor has.
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Modified,
+                format!("{} ", self.status),
+                Style::default().fg(theme.muted),
+            ));
+            // Always show which root this document is confined to. The difference
+            // is invisible in the path itself (`build.toml` reads the same at
+            // either scope) but it decides who sees the edit, so it must not be
+            // something the user has to remember.
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Scope,
+                format!(
+                    "[{}] ",
+                    crate::tui::commands::agent_editor::scope_label(self.scope)
+                ),
+                Style::default().fg(if self.scope.is_global_agent() {
+                    theme.warning
+                } else {
+                    theme.muted
+                }),
+            ));
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Writable,
+                if !self.writable {
+                    "read-only — edits refused ".to_string()
+                } else if crate::tui::commands::agent_editor::is_agent_config_path(
+                    self.path, self.scope,
+                ) {
+                    // In an agent file the interesting command is the one that
+                    // publishes the agent, so say so here rather than making the
+                    // user read `/help` for it.
+                    format!("{} ", crate::tui::commands::agent_editor::AGENT_EDITOR_HINT)
+                } else {
+                    "writable ".to_string()
+                },
+                Style::default().fg(if self.writable {
+                    theme.muted
+                } else {
+                    theme.warning
+                }),
+            ));
+            // A truncated or partially validated semantic result is never
+            // represented as complete coverage.
+            if let Some(note) = self.lsp.semantic_coverage_note() {
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Caveat,
+                    format!("· {note} "),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            // C002: a huge line under the cursor renders from its 32 KiB prefix
+            // with a `…[too long]` marker on the row itself. The chrome repeats
+            // the signal so the degradation is visible even when the row marker
+            // scrolls out of view.
+            if editor::line_is_truncated(
+                self.snapshot,
+                editor::cursor_line(self.snapshot, self.cursor_byte),
+            ) || editor::display_column_truncated(self.snapshot, self.cursor_byte)
+            {
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Caveat,
+                    "· line too long — showing prefix ".to_string(),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+        }
+        // ── The transient disclosure ────────────────────────────────────
+        // It answers "what did my last keystroke do?" — the find that landed,
+        // the search that matched, the history cursor that moved. It is one
+        // group: the count of a search and its "partial" marker are one
+        // answer, and dropping half of it would say "3 matches" about a
+        // search that only found part of them.
+        let mut disclosure: Vec<Span<'_>> = Vec::new();
+        if self.search_active || self.search_count > 0 {
+            let plural = if self.search_count == 1 { "" } else { "es" };
+            if self.search_line.is_empty() {
+                // A `/` with nothing typed yet is not a failed search.
+                disclosure.push(Span::styled(
+                    "type to search ".to_string(),
+                    Style::default().fg(theme.muted),
+                ));
+            } else if self.search_count == 0 {
+                disclosure.push(Span::styled(
+                    "no matches ".to_string(),
+                    Style::default().fg(theme.error),
+                ));
+            } else {
+                disclosure.push(Span::styled(
+                    format!("{} match{} ", self.search_count, plural),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            if self.search_partial {
+                // Never let a truncated match list read as a complete one.
+                disclosure.push(Span::styled(
+                    "· partial ".to_string(),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            if !self.search_active && self.search_count > 0 {
+                disclosure.push(Span::styled(
+                    "· n/N next/prev ".to_string(),
+                    Style::default().fg(theme.muted),
+                ));
+            }
+        } else if !self.find_note.is_empty() {
+            disclosure.push(Span::styled(
+                format!("· {} ", self.find_note),
+                Style::default().fg(theme.muted),
+            ));
+        } else if let Some((position, length)) = self.presentation.history_position() {
+            // A time cursor nobody can see is a rename, so the position is
+            // disclosed whenever the reader is standing somewhere other than
+            // the newest change.
+            disclosure.push(Span::styled(
+                format!("· history {position}/{length} "),
+                Style::default().fg(theme.muted),
+            ));
+        }
+        if !disclosure.is_empty() {
+            groups.push(ClusterGroup {
+                weight: ClusterWeight::Disclosure,
+                spans: disclosure,
+            });
+        }
+        if let Some(notice) = notice {
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Notice,
+                format!("{notice} "),
+                Style::default().fg(theme.error),
+            ));
+        }
+        // The armed prefix is **last**: it is the one thing that must be
+        // visible at the instant the key is pressed, and the end of the row
+        // is where a reader's eye arrives after reading what came before.
+        let pending = self.pending_prefix.display();
+        if !pending.is_empty() {
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Prefix,
+                format!("{pending} "),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        groups
+    }
+
+    /// The `:` command's fuzzy match list, floating on the row **above** the
+    /// command line.
+    ///
+    /// It is an overlay rather than an allocated row on purpose: allocating
+    /// one would change the text area's height, which changes the visible
+    /// line count, which re-resolves the viewport and can move the cursor's
+    /// screen row. The reader's first keystroke on the `:` line would then
+    /// reflow the document under them. An overlay covers one row of text
+    /// instead, and the text area's height never changes.
+    fn render_command_matches(&self, frame: &mut Frame, text_area: Rect) {
+        if !self.command_active || text_area.height == 0 {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let matches = editor::complete_editor_command(self.command_line);
+        let mut spans: Vec<Span<'_>> = Vec::new();
+        if matches.is_empty() {
+            spans.push(Span::styled(
+                "no matching command",
+                Style::default().fg(theme.error),
+            ));
+        }
+        for (index, candidate) in matches.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::raw("  "));
+            }
+            let selected = index == self.command_selection;
+            let command = candidate.command;
+            spans.push(Span::styled(
+                format!(":{}", command.spec()),
+                if selected {
+                    Style::default()
+                        .fg(theme.background)
+                        .bg(theme.primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.foreground)
+                },
+            ));
+            spans.push(Span::styled(
+                format!(" {}", command.help()),
+                Style::default().fg(theme.muted),
+            ));
+        }
+        let row = Rect {
+            x: text_area.x,
+            y: text_area.y + text_area.height - 1,
+            width: text_area.width,
+            height: 1,
+        };
+        frame.render_widget(Clear, row);
+        frame.render_widget(
+            Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            row,
         );
     }
 
@@ -506,6 +817,58 @@ impl EditorWidget<'_> {
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
             area,
+        );
+        self.render_scrollbar(frame, area, &viewport);
+    }
+
+    /// The scrollbar, in the column the viewport already reserves for it.
+    ///
+    /// The column was always reserved — `text_columns` subtracts one, and
+    /// the field doc has always said "after the gutter and scrollbar" — and
+    /// nothing ever drew in it. The editor therefore looked like it had no
+    /// scrollbar at all, and "how far down am I" had no answer on screen.
+    ///
+    /// The thumb is sized by how much of the document is visible and placed
+    /// by where the view starts, so it is a **map** of the document rather
+    /// than an indicator of the cursor: a reader who has scrolled away from
+    /// the cursor still sees where they are.
+    fn render_scrollbar(&self, frame: &mut Frame, area: Rect, viewport: &EditorViewport) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let total = self.snapshot.len_lines().max(1);
+        let visible = (viewport.visible_lines as usize).max(1);
+        let track = area.height as usize;
+        // The thumb is never shorter than a row, or a document that fits on
+        // screen would have no scrollbar to see at all.
+        let thumb = visible.min(total).clamp(1, track);
+        let max_first = total.saturating_sub(visible);
+        let first = viewport.first_line.min(max_first);
+        let offset = if max_first == 0 {
+            0
+        } else {
+            first * (track - thumb) / max_first
+        };
+        let thumb_style = Style::default().fg(theme.primary);
+        let track_style = Style::default().fg(theme.border);
+        let lines: Vec<Line> = (0..track)
+            .map(|row| {
+                let in_thumb = row >= offset && row < offset + thumb;
+                Line::from(Span::styled(
+                    if in_thumb { "█" } else { "│" },
+                    if in_thumb { thumb_style } else { track_style },
+                ))
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background)),
+            Rect {
+                x: area.x + area.width - 1,
+                y: area.y,
+                width: 1,
+                height: area.height,
+            },
         );
     }
 
@@ -1113,6 +1476,15 @@ impl EditorWidget<'_> {
         let Ok(line) = self.snapshot.read_bytes(start, end) else {
             return vec![];
         };
+        // Is this **row** selected?
+        //
+        // A line-mode selection is a row-level fact, and the byte range of an
+        // empty line is a single terminator byte the row has no cell for. So
+        // the range alone cannot say "this row is selected", and `x` on an
+        // empty line highlighted nothing at all.
+        let row_selected = self.presentation.selections.iter().any(|selection| {
+            editor::line_selection_covers_line(self.snapshot, selection, line_index)
+        });
         let mut display = 0usize;
         let mut visible_start = line.len();
         let mut visible_end = line.len();
@@ -1239,7 +1611,7 @@ impl EditorWidget<'_> {
         let extra_head_style = self.extra_head_style();
         boundaries.sort_unstable();
         boundaries.dedup();
-        boundaries
+        let mut spans: Vec<Span<'static>> = boundaries
             .windows(2)
             .filter_map(|pair| {
                 let range = pair[0]..pair[1];
@@ -1267,11 +1639,12 @@ impl EditorWidget<'_> {
                 // Membership is over the whole **set**: a byte inside any
                 // member is selected, which is what makes two separate
                 // highlighted regions read as two selections.
-                let selected = selection.iter().any(|member| {
-                    let from = member.start.saturating_sub(start);
-                    let to = member.end.saturating_sub(start);
-                    from < range.end && to > range.start
-                });
+                let selected = row_selected
+                    || selection.iter().any(|member| {
+                        let from = member.start.saturating_sub(start);
+                        let to = member.end.saturating_sub(start);
+                        from < range.end && to > range.start
+                    });
                 let searched = search_ranges
                     .iter()
                     .any(|found| found.start <= range.start && found.end >= range.end);
@@ -1321,7 +1694,26 @@ impl EditorWidget<'_> {
                 };
                 Some(Span::styled(text, style))
             })
-            .collect()
+            .collect();
+        if row_selected {
+            // The **whole row** is selected, not just the text on it. The
+            // selection background runs to the end of the text area, so an
+            // empty line — which has no text at all — is still visibly
+            // selected rather than looking untouched.
+            let painted: usize = spans.iter().map(|span| span.width()).sum();
+            let filler = (viewport.text_columns as usize).saturating_sub(painted);
+            if filler > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(filler),
+                    base.patch(
+                        Style::default()
+                            .bg(self.theme.selection)
+                            .fg(self.theme.foreground),
+                    ),
+                ));
+            }
+        }
+        spans
     }
 
     /// The cell a byte offset occupies on this row, as a line-relative byte
@@ -1698,6 +2090,21 @@ mod tests {
             .collect()
     }
 
+    /// The rendered rows of a painted frame, as plain text.
+    ///
+    /// The same view [`render`] returns, read back from a buffer a test also
+    /// wants the **styles** of — so a test can assert on the glyphs and on the
+    /// paint at the same time.
+    fn lines_of(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     fn paint(text: &str, width: u16, height: u16, cursor: usize) -> String {
         render(text, width, height, cursor, defaults()).join("\n")
     }
@@ -1795,10 +2202,10 @@ mod tests {
         }
     }
 
-    /// Buffer row of the first chrome row: the status text, or the `:` / `/`
-    /// line while one is open.
+    /// Buffer row of the editor's single chrome row: the path and the status
+    /// cluster, or the `:` / `/` line while one is open.
     const fn banner_row(height: u16) -> u16 {
-        height - 3
+        height - 2
     }
 
     /// Every painted body cell, in reading order.
@@ -1827,8 +2234,9 @@ mod tests {
     /// 3-column line-number gutter.
     const TEXT_X: u16 = 4;
 
-    /// Buffer row of the second chrome row: the `ln N col M` readout, which
-    /// also carries the search match count.
+    /// Buffer row of the editor's chrome row. There is **one**: the line
+    /// number and the column are gone, and the search match count rides on
+    /// the cluster with everything else.
     const fn readout_row(height: u16) -> u16 {
         height - 2
     }
@@ -1850,6 +2258,108 @@ mod tests {
             mode: crate::tui::helix_selection::SelectionMode::Char,
             growing: false,
         }
+    }
+
+    /// A held **line** selection over `line_index`, as the renderer resolves
+    /// it.
+    ///
+    /// The line selection is a row-level fact: an empty line's byte range is
+    /// a single terminator byte the row has no cell for, so the renderer
+    /// cannot learn "this row is selected" from the range alone.
+    fn line_selection_over(
+        snapshot: &codegg_document::DocumentSnapshot,
+        line_index: usize,
+    ) -> crate::tui::helix_selection::Selection<editor::EditorPoint> {
+        let byte = editor::line_start(snapshot, line_index).unwrap_or(0);
+        crate::tui::helix_selection::Selection {
+            anchor: editor::EditorPoint {
+                byte,
+                line: line_index,
+            },
+            head: editor::EditorPoint {
+                byte,
+                line: line_index,
+            },
+            mode: crate::tui::helix_selection::SelectionMode::Line,
+            growing: false,
+        }
+    }
+
+    /// `x` on an **empty** line has to look selected.
+    ///
+    /// An empty line has no bytes to tint, so a renderer that resolves
+    /// "selected" from the byte range paints nothing at all: the reader
+    /// presses `x` on a blank line and the line does not change. The row
+    /// question — "is this **row** selected?" — is a different question from
+    /// the byte question, and it is the one that decides what the reader sees.
+    #[test]
+    fn a_line_selection_paints_an_empty_row_across_its_whole_width() {
+        let theme = Theme::default();
+        // Line 1 is empty: "alpha", "", "beta".
+        let snapshot = DocumentBuffer::new("alpha\n\nbeta").snapshot();
+        let buffer = render_buffer(
+            "alpha\n\nbeta",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                selections: vec![line_selection_over(&snapshot, 1)],
+                ..defaults()
+            },
+        );
+        // The selection background runs to the end of the text area, so the
+        // blank row reads as selected instead of untouched.
+        //
+        // `body_style` counts rows **within the text area**, so the editor's
+        // second line is row 1 and its first is row 0.
+        let row = 1;
+        let painted = (0..20)
+            .map(|column| body_style(&buffer, row, column))
+            .filter(|style| style.bg == theme.selection)
+            .count();
+        assert!(
+            painted >= 10,
+            "the empty row must carry the selection background across its \
+             width, got {painted} tinted cells: {buffer:?}"
+        );
+        // And the line above it — not selected — must not be tinted.
+        let untouched = (0..5)
+            .map(|column| body_style(&buffer, 0, column))
+            .filter(|style| style.bg == theme.selection)
+            .count();
+        assert_eq!(
+            untouched, 0,
+            "a line that is not selected must not be tinted: {buffer:?}"
+        );
+    }
+
+    /// The row-level question must not leak into the byte-level one: a
+    /// character selection still highlights only the bytes it covers.
+    #[test]
+    fn a_character_selection_still_highlights_only_its_bytes() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta").snapshot();
+        let buffer = render_buffer(
+            "alpha beta",
+            30,
+            8,
+            5,
+            Options {
+                buffer_focused: false,
+                selections: vec![selection_over(&snapshot, 0..5)],
+                ..defaults()
+            },
+        );
+        let selected = (0..10)
+            .map(|column| body_style(&buffer, 0, column))
+            .filter(|style| style.bg == theme.selection)
+            .count();
+        assert_eq!(
+            selected, 5,
+            "a character selection tints its own bytes and nothing else: \
+             {buffer:?}"
+        );
     }
 
     #[test]
@@ -1933,7 +2443,10 @@ mod tests {
         assert!(joined.contains("alpha"), "{joined}");
         assert!(joined.contains("beta"), "{joined}");
         assert!(joined.contains("gamma"), "{joined}");
-        assert!(joined.contains("ln 1"), "{joined}");
+        assert!(
+            !joined.contains("ln 1"),
+            "the line number is gone from the chrome: {joined}"
+        );
     }
 
     #[test]
@@ -1948,12 +2461,11 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_cursor_scrolls_the_viewport_and_updates_the_readout() {
+    fn moving_the_cursor_scrolls_the_viewport() {
         let text = (0..50).map(|i| format!("line{i}\n")).collect::<String>();
         let offset = text.find("line40").unwrap();
         let joined = paint(&text, 30, 8, offset);
         assert!(joined.contains("line40"), "{joined}");
-        assert!(joined.contains("ln 41"), "{joined}");
     }
 
     #[test]
@@ -2023,19 +2535,15 @@ mod tests {
         }
     }
 
-    /// The status banner is the row directly above the line/column
-    /// readout. Locating it by the readout keeps the assertion independent
-    /// of block borders and chrome height, and keeps it off the title,
-    /// which always carries the status.
+    /// The editor's single chrome row: the path on the left, the status
+    /// cluster on the right.
+    ///
+    /// It is the **last** row of the block, so the assertion does not depend
+    /// on the chrome height or on where the block's borders are.
     fn banner(lines: &[String]) -> String {
-        let readout = lines
-            .iter()
-            .position(|line| line.contains("ln "))
-            .unwrap_or(lines.len());
-        lines
-            .get(readout.saturating_sub(1))
-            .cloned()
-            .unwrap_or_default()
+        // The last rendered line is the block's **bottom border**; the
+        // chrome row is the one inside it.
+        lines.iter().rev().nth(1).cloned().unwrap_or_default()
     }
 
     #[test]
@@ -2434,44 +2942,27 @@ mod tests {
     }
 
     #[test]
-    fn the_title_reports_nor_or_ins_and_nothing_else() {
-        // One mode vocabulary across every surface. The title used to spell
-        // out NORMAL/INSERT *and* add `[composer]`/`[buffer]`, so the editor
-        // carried a second way of naming the same fact — and `[composer]` named
-        // an axis that no longer exists.
-        let normal = render(
-            "content",
-            60,
-            8,
-            0,
-            Options {
-                buffer_focused: false,
-                ..defaults()
-            },
-        )
-        .join("\n");
-        assert!(normal.contains("NOR"), "{normal}");
-        assert!(!normal.contains("NORMAL"), "{normal}");
-        assert!(!normal.contains("composer"), "{normal}");
-
-        let insert = render(
-            "content",
-            60,
-            8,
-            0,
-            Options {
-                buffer_focused: true,
-                ..defaults()
-            },
-        )
-        .join("\n");
-        assert!(insert.contains("INS"), "{insert}");
-        assert!(!insert.contains("INSERT"), "{insert}");
-        assert!(!insert.contains("buffer"), "{insert}");
+    fn the_title_carries_nothing() {
+        // The title used to spell out NORMAL/INSERT *and* add
+        // `[composer]`/`[buffer]`, so the editor carried a second way of
+        // naming the same fact — and `[composer]` named an axis that no
+        // longer exists.
+        //
+        // It carries **nothing** now. The path and the status moved to the
+        // single bottom row, and the mode is the badge above the input box's
+        // job: one vocabulary, one surface, one copy.
+        let joined = render("content", 60, 8, 0, defaults()).join("\n");
+        let title = joined.lines().next().unwrap_or_default();
+        assert!(!title.contains("NOR"), "{title}");
+        assert!(!title.contains("INS"), "{title}");
+        assert!(!title.contains("NORMAL"), "{title}");
+        assert!(!title.contains("INSERT"), "{title}");
+        assert!(!title.contains("composer"), "{title}");
+        assert!(!title.contains("buffer"), "{title}");
     }
 
     #[test]
-    fn a_busy_operation_is_marked_in_the_title() {
+    fn a_busy_operation_is_marked_in_the_status_row() {
         let joined = render(
             "content",
             60,
@@ -2484,6 +2975,31 @@ mod tests {
         )
         .join("\n");
         assert!(joined.contains("working"), "{joined}");
+    }
+
+    /// The chrome row's **armed prefix indicator**, read back from the frame.
+    ///
+    /// The armed prefix is the only thing the chrome row paints in the
+    /// primary + bold style, so this is the indicator itself rather than a
+    /// guess at it from the row's text.
+    ///
+    /// A text-level guess cannot work here. The row carries the scope badge
+    /// (`[project]`) and the writable marker, and a substring search for the
+    /// indicator's glyph finds *those* instead of the indicator: `[` is in the
+    /// badge, `t` is in "project" and in "writable", `m` is in "read-only —
+    /// edits refused". The check that matters is "is a prefix armed?", and only
+    /// the style can answer it.
+    fn armed_indicator(buffer: &ratatui::buffer::Buffer, height: u16) -> String {
+        let theme = Theme::default();
+        let row = banner_row(height);
+        let mut text = String::new();
+        for x in 0..buffer.area.width {
+            let cell = &buffer[(x, row)];
+            if cell.fg == theme.primary && cell.modifier.contains(Modifier::BOLD) {
+                text.push_str(cell.symbol());
+            }
+        }
+        text.trim().to_string()
     }
 
     /// Every armed prefix puts something different on screen, and an idle editor
@@ -2520,7 +3036,7 @@ mod tests {
             EditorPrefix::MatchArg(editor::MatchArg::AroundObject),
             EditorPrefix::MatchArg(editor::MatchArg::InnerObject),
         ] {
-            let lines = render(
+            let buffer = render_buffer(
                 "content",
                 60,
                 8,
@@ -2530,36 +3046,18 @@ mod tests {
                     ..defaults()
                 },
             );
-            let banner = banner(&lines);
+            let banner = banner(&lines_of(&buffer));
+            let indicator = armed_indicator(&buffer, 8);
             if prefix == EditorPrefix::Idle {
-                for armed in [
-                    EditorPrefix::Goto,
-                    EditorPrefix::Space,
-                    EditorPrefix::OpenBracket,
-                    EditorPrefix::CloseBracket,
-                    EditorPrefix::FindNext,
-                    EditorPrefix::FindPrevious,
-                    EditorPrefix::FindTillNext,
-                    EditorPrefix::FindTillPrevious,
-                    EditorPrefix::Match,
-                    EditorPrefix::MatchArg(editor::MatchArg::SurroundAdd),
-                    EditorPrefix::MatchArg(editor::MatchArg::SurroundDelete),
-                    EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceFrom),
-                    EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceTo('(')),
-                    EditorPrefix::MatchArg(editor::MatchArg::AroundObject),
-                    EditorPrefix::MatchArg(editor::MatchArg::InnerObject),
-                ] {
-                    assert!(
-                        !banner.contains(armed.display().as_ref()),
-                        "an idle editor must not show {armed:?}'s indicator {:?}: {banner:?}",
-                        armed.display()
-                    );
-                }
-            } else {
                 assert!(
-                    banner.contains(prefix.display().as_ref()),
-                    "{prefix:?} renders {:?} but the banner reads {banner:?}",
-                    prefix.display()
+                    indicator.is_empty(),
+                    "an idle editor must not show an indicator: {banner:?}"
+                );
+            } else {
+                assert_eq!(
+                    indicator,
+                    prefix.display().as_ref(),
+                    "{prefix:?} must render its own indicator, not another one: {banner:?}"
                 );
             }
             for (earlier, earlier_banner) in &seen {
