@@ -76,6 +76,9 @@ pub struct CoreDaemon {
     /// its whole lifetime; it is a pure background measurement and owns no
     /// authority.
     pub _scratch_census_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The M007 scratch retention sweep. Held so the daemon keeps it alive
+    /// for its whole lifetime.
+    pub _scratch_sweep_handle: Option<tokio::task::JoinHandle<()>>,
     /// Provider Connections Milestone 3: daemon-owned session selection
     /// service. Reads and writes the connection/model selection on the
     /// session row through the typed core crate; never mutates provider
@@ -4074,7 +4077,7 @@ impl CoreDaemon {
             // M006: the scratch census is measurement only. It reads the
             // daemon's own disposable cache and mutates nothing.
             super::daemon_family::DaemonRequestFamily::Scratch => {
-                Box::pin(self.handle_scratch_request(payload)).await
+                Box::pin(self.handle_scratch_request(payload, authority, authz_decision)).await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

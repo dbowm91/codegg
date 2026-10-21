@@ -126,13 +126,16 @@ pub enum AuditAction {
     AuditQuery,
     WorkOrderLifecycle,
     HumanShellRun,
+    /// M007: the operator disposition removed one of the daemon's own
+    /// disposable scratch trees.
+    ScratchReclaim,
     #[serde(other)]
     Unknown,
 }
 
 impl AuditAction {
     /// Every known action in canonical order.
-    pub const ALL: [&'static str; 27] = [
+    pub const ALL: [&'static str; 28] = [
         "authentication",
         "authorization_decision",
         "membership_change",
@@ -160,6 +163,7 @@ impl AuditAction {
         "audit_query",
         "work_order_lifecycle",
         "human_shell_run",
+        "scratch_reclaim",
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -191,6 +195,7 @@ impl AuditAction {
             Self::AuditQuery => "audit_query",
             Self::WorkOrderLifecycle => "work_order_lifecycle",
             Self::HumanShellRun => "human_shell_run",
+            Self::ScratchReclaim => "scratch_reclaim",
             Self::Unknown => "unknown",
         }
     }
@@ -225,6 +230,7 @@ impl AuditAction {
             "audit_query" => Self::AuditQuery,
             "work_order_lifecycle" => Self::WorkOrderLifecycle,
             "human_shell_run" => Self::HumanShellRun,
+            "scratch_reclaim" => Self::ScratchReclaim,
             _ => {
                 return Err(AuditError::UnknownAction(value.to_owned()));
             }

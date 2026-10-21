@@ -288,6 +288,14 @@ listed `Source` with the method the table has always used, and each was
 confirmed to have been correct before the change; the remaining rows were
 confirmed unchanged.
 
+The four rows M007 could affect were **remeasured again on 2026-10-21**
+after it added the scratch retention sweep and the operator disposition:
+`CoreRequest` variants (260 → 261), `CoreResponse` variants (170 → 171),
+authorized operations (254 → 255), and integration test files (279 → 280). The
+remaining rows were confirmed unchanged: no new architecture document, no new
+`codegg-core` top-level module, no database table, and **no storage layout
+version bump** — M007 adds no migration, no table, and no lease column.
+
 The whole table was then **remeasured again on the merged tree** when the
 Eggwork worker branch was reconciled with `main`, because the two sides had
 measured some rows by different methods and the table is the single source
@@ -376,6 +384,18 @@ applied to the merged tree. The authorized-operations row keeps the
 published **254** used the superseded `operation_descriptor` measure and is
 not this row's measure.
 
+`main` then advanced once more, to `28724bd83` (the M007 scratch retention
+sweep), and the branch was reconciled with it by a third merge on 2026-10-21.
+That advance added a `CoreRequest` variant, a `CoreResponse` variant, an
+authorized operation, and an integration test file, so four rows moved again
+and were re-measured against their own listed `Source` on the merged tree —
+`CoreRequest` variants 261 → **262** (238 struct + 24 unit), `CoreResponse`
+variants 170 → **171**, authorized operations 245 → **246**, and integration
+test files 285 → **286**. The directory tree's "Integration tests (285
+files)" becomes 286. The remaining rows were re-measured and did not move. The
+enum-variant measure was calibrated against the tree those values were
+published against before it was applied, as in the pass above.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 87 | `architecture/*.md` |
@@ -385,11 +405,11 @@ not this row's measure.
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 48 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 261 (237 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 170 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 262 (238 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 171 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 245 | `representative_requests()` (`crates/codegg-core/src/authorization/policy.rs`) — one representative request per operation, the list `operation_capability_matrix()` derives from; `operation_descriptor` is the per-request mapper, so its call-site count is not this row's measure |
+| Authorized operations | 246 | `representative_requests()` (`crates/codegg-core/src/authorization/policy.rs`) — one representative request per operation, the list `operation_capability_matrix()` derives from; `operation_descriptor` is the per-request mapper, so its call-site count is not this row's measure |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 168 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -400,7 +420,7 @@ not this row's measure.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 285 | `tests/*.rs` |
+| Integration test files | 286 | `tests/*.rs` |
 | CI guard scripts | 62 | `scripts/check_*` |
 
 
@@ -667,7 +687,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (285 files)
+├── tests/                      # Integration tests (286 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates

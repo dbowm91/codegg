@@ -106,6 +106,81 @@ pub enum ScratchError {
     CleanupUnavailable,
 }
 
+/// Resolve the cache root the daemon's scratch tree lives under.
+///
+/// Every path in this module resolves its root here, so there is exactly one
+/// place that knows where the tree lives — and, in a test build, exactly one
+/// place that can be redirected.
+fn scratch_cache_root() -> Result<PathBuf, ScratchError> {
+    #[cfg(test)]
+    if let Some(root) = test_scratch_root() {
+        return Ok(root);
+    }
+    dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)
+}
+
+/// The scratch root a test redirects the tree to, if any.
+///
+/// The override is **thread-local**: cargo runs each test on its own thread,
+/// so two tests never see each other's root, and the tree a test plants is
+/// never the developer's real one. This matters more than it looks: the
+/// retention sweep *reclaims* trees, so a test that ran against the real
+/// root would delete the developer's own scratch.
+#[cfg(test)]
+mod test_scratch_root_override {
+    use std::path::PathBuf;
+
+    thread_local! {
+        static TEST_SCRATCH_ROOT: std::cell::RefCell<Option<PathBuf>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn root() -> Option<PathBuf> {
+        TEST_SCRATCH_ROOT.with(|root| root.borrow().clone())
+    }
+
+    pub(super) fn install(root: PathBuf) -> Option<PathBuf> {
+        TEST_SCRATCH_ROOT.with(|slot| slot.borrow_mut().replace(root))
+    }
+
+    pub(super) fn restore(previous: Option<PathBuf>) {
+        TEST_SCRATCH_ROOT.with(|slot| {
+            *slot.borrow_mut() = previous;
+        });
+    }
+}
+
+#[cfg(test)]
+fn test_scratch_root() -> Option<PathBuf> {
+    test_scratch_root_override::root()
+}
+
+/// A test-only redirect of the scratch tree.
+///
+/// Dropping the guard restores the previous root.
+#[cfg(test)]
+pub(crate) struct TestScratchRoot {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl TestScratchRoot {
+    /// Point the scratch tree at `root` for the current thread.
+    pub(crate) fn install(root: PathBuf) -> Self {
+        std::fs::create_dir_all(&root).expect("create the test scratch root");
+        let previous = test_scratch_root_override::install(root);
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestScratchRoot {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        test_scratch_root_override::restore(previous);
+    }
+}
+
 /// Resolve and securely create the persistent scratch root for one session.
 /// The identity is supplied by the host execution context, never by tool
 /// arguments. Repeated calls, including calls after restart, converge on the
@@ -119,7 +194,7 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     // root. Cache storage remains per-user and stable across normal daemon and
     // process restarts; the artifacts are explicitly disposable.
     let expected_uid = current_owner_uid()?;
-    let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
+    let cache_root = scratch_cache_root()?;
     ensure_private_cache_root(&cache_root, expected_uid)?;
     let vendor_root = cache_root.join(SCRATCH_VENDOR_NAME);
     let scratch_root = vendor_root.join(SCRATCH_ROOT_NAME);
@@ -182,6 +257,7 @@ pub(crate) fn reclaim_shared_scratch_dir(
         &shared_root,
         &resource_digest("shared-scratch", scratch_id.as_str()),
         owner,
+        ReclaimStrictness::Automatic,
     )
 }
 
@@ -210,14 +286,18 @@ pub(crate) fn reclaim_agent_run_scratch_dir(
         &runs_root,
         &resource_digest("agent-run", run_id.as_str()),
         owner,
+        ReclaimStrictness::Automatic,
     )
 }
 
-/// Remove all scratch under a deleted session after durable jobs and runs are
-/// terminal. Session transcripts and child Git results live in their own
-/// stores and are not affected.
+/// Remove all scratch under one session's tree.
+///
+/// The **decision** to reclaim belongs to the caller — the deleted marker,
+/// the idle age, the lease — and this is the filesystem half of it. Session
+/// transcripts and child Git results live in their own stores and are not
+/// affected.
 #[cfg(any(unix, windows))]
-pub(crate) fn reclaim_deleted_session_scratch_dir(session_id: &str) -> Result<bool, ScratchError> {
+pub(crate) fn reclaim_session_scratch_dir(session_id: &str) -> Result<bool, ScratchError> {
     let _guard = SHARED_RECLAIM_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -229,7 +309,59 @@ pub(crate) fn reclaim_deleted_session_scratch_dir(session_id: &str) -> Result<bo
         .parent()
         .ok_or_else(|| ScratchError::InvalidPath(session_root.clone()))?;
     let owner = directory_owner(sessions_root)?;
-    reclaim_owned_resource_dir(sessions_root, &session_scratch_digest(session_id), owner)
+    reclaim_owned_resource_dir(
+        sessions_root,
+        &session_scratch_digest(session_id),
+        owner,
+        ReclaimStrictness::Automatic,
+    )
+}
+
+/// Remove one session's scratch tree, addressed by its opaque digest.
+///
+/// The digest is the only handle a sweep or an operator has: the tree's name
+/// is `hex(sha256(session_id))`, and the durable side stores the digest, not
+/// the session id — so the mapping only runs forward.
+#[cfg(any(unix, windows))]
+pub(crate) fn reclaim_session_scratch_by_digest(digest_hex: &str) -> Result<bool, ScratchError> {
+    let digest = decode_scratch_digest(digest_hex)?;
+    let _guard = SHARED_RECLAIM_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let sessions_root = sessions_root_path()?;
+    let owner = directory_owner(&sessions_root)?;
+    reclaim_owned_resource_dir(&sessions_root, &digest, owner, ReclaimStrictness::Automatic)
+}
+
+/// Dispose of one session's scratch tree, addressed by its opaque digest, on
+/// the operator's explicit instruction.
+///
+/// This is the disposition for a tree the automatic path refuses. It relaxes
+/// the **entry-content** refusals only: a planted symlink or a non-regular
+/// entry is removed by name. The ownership check, the containment check, and
+/// the owner-record check are unchanged, so this can only ever remove a tree
+/// the daemon itself created and still owns.
+#[cfg(any(unix, windows))]
+pub(crate) fn reclaim_session_scratch_for_operator(digest_hex: &str) -> Result<bool, ScratchError> {
+    let digest = decode_scratch_digest(digest_hex)?;
+    let _guard = SHARED_RECLAIM_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let sessions_root = sessions_root_path()?;
+    let owner = directory_owner(&sessions_root)?;
+    reclaim_owned_resource_dir(&sessions_root, &digest, owner, ReclaimStrictness::Operator)
+}
+
+/// Resolve the sessions root without creating anything.
+#[cfg(any(unix, windows))]
+fn sessions_root_path() -> Result<PathBuf, ScratchError> {
+    let cache_root = scratch_cache_root()?;
+    Ok(cache_root
+        .join(SCRATCH_VENDOR_NAME)
+        .join(SCRATCH_ROOT_NAME)
+        .join("sessions"))
 }
 
 fn existing_session_scratch_dir(session_id: &str) -> Result<Option<PathBuf>, ScratchError> {
@@ -237,7 +369,7 @@ fn existing_session_scratch_dir(session_id: &str) -> Result<Option<PathBuf>, Scr
         return Err(ScratchError::MissingSession);
     }
     let name = hex_digest(&session_scratch_digest(session_id));
-    let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
+    let cache_root = scratch_cache_root()?;
     let path = cache_root
         .join(SCRATCH_VENDOR_NAME)
         .join(SCRATCH_ROOT_NAME)
@@ -259,7 +391,19 @@ pub(crate) fn reclaim_agent_run_scratch_dir(
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn reclaim_deleted_session_scratch_dir(_session_id: &str) -> Result<bool, ScratchError> {
+pub(crate) fn reclaim_session_scratch_dir(_session_id: &str) -> Result<bool, ScratchError> {
+    Err(ScratchError::CleanupUnavailable)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn reclaim_session_scratch_by_digest(_digest_hex: &str) -> Result<bool, ScratchError> {
+    Err(ScratchError::CleanupUnavailable)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn reclaim_session_scratch_for_operator(
+    _digest_hex: &str,
+) -> Result<bool, ScratchError> {
     Err(ScratchError::CleanupUnavailable)
 }
 
@@ -268,18 +412,19 @@ fn reclaim_owned_resource_dir(
     parent: &Path,
     digest: &[u8],
     owner: impl OwnerCheck,
+    strictness: ReclaimStrictness,
 ) -> Result<bool, ScratchError> {
     let name = hex_digest(digest);
     let path = parent.join(&name);
     let canonical_parent = std::fs::canonicalize(parent)?;
-    let recovered = recover_reclaim_tombstones(parent, digest, owner)?;
+    let recovered = recover_reclaim_tombstones(parent, digest, owner, strictness)?;
     let tombstone = parent.join(format!(".reclaim-{name}-{}", uuid::Uuid::new_v4()));
     match std::fs::rename(&path, &tombstone) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(recovered),
         Err(error) => return Err(error.into()),
     }
-    validate_and_remove_tombstone(&tombstone, &canonical_parent, digest, owner)?;
+    validate_and_remove_tombstone(&tombstone, &canonical_parent, digest, owner, strictness)?;
     Ok(true)
 }
 
@@ -298,6 +443,7 @@ fn recover_reclaim_tombstones(
     shared_root: &Path,
     digest: &[u8],
     owner: impl OwnerCheck,
+    strictness: ReclaimStrictness,
 ) -> Result<bool, ScratchError> {
     let prefix = format!(".reclaim-{}-", hex_digest(digest));
     let tombstones = std::fs::read_dir(shared_root)?
@@ -318,7 +464,13 @@ fn recover_reclaim_tombstones(
         let claimed = shared_root.join(format!("{prefix}{}", uuid::Uuid::new_v4()));
         match std::fs::rename(&previous, &claimed) {
             Ok(()) => {
-                validate_and_remove_tombstone(&claimed, &canonical_shared_root, digest, owner)?;
+                validate_and_remove_tombstone(
+                    &claimed,
+                    &canonical_shared_root,
+                    digest,
+                    owner,
+                    strictness,
+                )?;
                 recovered = true;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -334,6 +486,7 @@ fn validate_and_remove_tombstone(
     canonical_shared_root: &Path,
     digest: &[u8],
     owner: impl OwnerCheck,
+    strictness: ReclaimStrictness,
 ) -> Result<(), ScratchError> {
     let metadata = std::fs::symlink_metadata(tombstone)?;
     if is_symlink_or_reparse_point(&metadata) || !metadata.is_dir() {
@@ -366,23 +519,28 @@ fn validate_and_remove_tombstone(
     if record != expected_record {
         return Err(ScratchError::InvalidPath(tombstone.to_path_buf()));
     }
-    validate_reclaim_tree(tombstone)?;
+    validate_reclaim_tree(tombstone, strictness)?;
     std::fs::remove_dir_all(tombstone)?;
     Ok(())
 }
 
 #[cfg(any(unix, windows))]
-fn validate_reclaim_tree(path: &Path) -> Result<(), ScratchError> {
+fn validate_reclaim_tree(path: &Path, strictness: ReclaimStrictness) -> Result<(), ScratchError> {
     let metadata = std::fs::symlink_metadata(path)?;
     if let Some(reason) = classify_reclaim_entry(&metadata) {
-        return Err(ScratchError::Unreclaimable {
-            reason,
-            path: path.to_path_buf(),
-        });
+        if strictness == ReclaimStrictness::Automatic {
+            return Err(ScratchError::Unreclaimable {
+                reason,
+                path: path.to_path_buf(),
+            });
+        }
+        // The operator path removes the entry by name. The link's target is
+        // not touched: `remove_dir_all` does not follow symbolic links.
+        return Ok(());
     }
     if metadata.is_dir() {
         for entry in std::fs::read_dir(path)? {
-            validate_reclaim_tree(&entry?.path())?;
+            validate_reclaim_tree(&entry?.path(), strictness)?;
         }
     }
     Ok(())
@@ -398,8 +556,6 @@ pub enum ReclaimRefusal {
     Symlink,
     /// An entry that is neither a regular file nor a directory.
     NonRegular,
-    /// A regular file with more than one link.
-    MultiplyLinked,
 }
 
 impl ReclaimRefusal {
@@ -408,7 +564,6 @@ impl ReclaimRefusal {
         match self {
             Self::Symlink => "symbolic_link",
             Self::NonRegular => "non_regular_entry",
-            Self::MultiplyLinked => "multiply_linked_file",
         }
     }
 }
@@ -419,10 +574,39 @@ impl std::fmt::Display for ReclaimRefusal {
     }
 }
 
+/// How strict the reclaim path is about a tree's **entries**.
+///
+/// The ownership check, the containment check, and the owner-record check are
+/// the same under both settings. Only the entry-content rule differs.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReclaimStrictness {
+    /// Refuse a tree whose entries include a symlink or a non-regular file.
+    ///
+    /// The automatic path. A refused tree stays parked under its tombstone,
+    /// which keeps the residual visible instead of silently deleting bytes the
+    /// daemon cannot vouch for.
+    Automatic,
+    /// Remove such entries by name.
+    ///
+    /// The operator path, used only on an explicit instruction to dispose of
+    /// a named tree. `std::fs::remove_dir_all` does not follow symbolic
+    /// links on either platform, so removing a link removes the name and
+    /// leaves whatever it points at untouched.
+    Operator,
+}
+
 /// The one rule that decides whether a single entry may be removed.
 ///
 /// [`validate_reclaim_tree`] and the census both consult this, so the report
 /// cannot drift from the behaviour it describes.
+///
+/// A hard link is deliberately **not** a refusal. A hard link is a file name,
+/// not a recursive edge: removing the name under the claimed scratch
+/// tombstone only decrements its link count, and it does not modify or
+/// remove the file that the name points at. Windows already behaved this way,
+/// because it exposes no stable link-count accessor at this crate's MSRV;
+/// the Unix refusal was residue of a fix applied to one platform only.
 #[cfg(any(unix, windows))]
 fn classify_reclaim_entry(metadata: &std::fs::Metadata) -> Option<ReclaimRefusal> {
     if is_symlink_or_reparse_point(metadata) {
@@ -430,13 +614,6 @@ fn classify_reclaim_entry(metadata: &std::fs::Metadata) -> Option<ReclaimRefusal
     }
     if !metadata.is_dir() && !metadata.is_file() {
         return Some(ReclaimRefusal::NonRegular);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.is_file() && metadata.nlink() != 1 {
-            return Some(ReclaimRefusal::MultiplyLinked);
-        }
     }
     None
 }
@@ -468,6 +645,27 @@ pub fn session_scratch_digest(session_id: &str) -> Vec<u8> {
 /// The hex form of [`session_scratch_digest`] — the scratch tree's name.
 pub fn session_scratch_digest_hex(session_id: &str) -> String {
     hex_digest(&session_scratch_digest(session_id))
+}
+
+/// Decode a tree's hex digest back into its bytes.
+///
+/// The digest is one-way by design, so this does **not** recover a session
+/// id; it only turns a tree's own name into the bytes the owner record and
+/// the tombstone name are built from.
+pub fn decode_scratch_digest(digest_hex: &str) -> Result<Vec<u8>, ScratchError> {
+    if digest_hex.len() != 64 || !digest_hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ScratchError::InvalidPath(PathBuf::from(digest_hex)));
+    }
+    let mut bytes = Vec::with_capacity(32);
+    for pair in digest_hex.as_bytes().chunks(2) {
+        let text = std::str::from_utf8(pair)
+            .map_err(|_| ScratchError::InvalidPath(PathBuf::from(digest_hex)))?;
+        bytes.push(
+            u8::from_str_radix(text, 16)
+                .map_err(|_| ScratchError::InvalidPath(PathBuf::from(digest_hex)))?,
+        );
+    }
+    Ok(bytes)
 }
 
 fn resource_digest(scope: &str, id: &str) -> Vec<u8> {
@@ -834,7 +1032,7 @@ pub fn scratch_usage_census(
 /// resolves the root in place and refuses a symlinked component.
 #[cfg(any(unix, windows))]
 fn existing_sessions_root() -> Result<Option<PathBuf>, ScratchError> {
-    let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
+    let cache_root = scratch_cache_root()?;
     let path = cache_root
         .join(SCRATCH_VENDOR_NAME)
         .join(SCRATCH_ROOT_NAME)
@@ -1052,6 +1250,14 @@ pub struct ScratchTreeRef {
     pub digest: String,
     pub path: PathBuf,
     pub quarantined: bool,
+    /// The tree root's own modification time, in milliseconds since the
+    /// epoch.
+    ///
+    /// This is one `stat`, not a traversal: the root's mtime is when the tree
+    /// was created, because creating an entry inside it updates the *parent's*
+    /// mtime, not its own. The retention sweep uses it as the orphan grace
+    /// period's reference point.
+    pub modified_ms: Option<i64>,
 }
 
 /// Enumerate the scratch trees under one sessions root.
@@ -1073,10 +1279,17 @@ fn enumerate_trees(sessions_root: &Path, include_quarantined: bool) -> Vec<Scrat
             if parsed.quarantined && !include_quarantined {
                 return None;
             }
+            let path = entry.path();
+            let modified_ms = std::fs::symlink_metadata(&path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64);
             Some(ScratchTreeRef {
                 digest: parsed.digest,
-                path: entry.path(),
+                path,
                 quarantined: parsed.quarantined,
+                modified_ms,
             })
         })
         .collect::<Vec<_>>();
@@ -1100,6 +1313,86 @@ pub fn enumerate_session_scratch_trees(
     let mut trees = enumerate_trees(&sessions_root, include_quarantined);
     trees.truncate(max_trees);
     Ok(trees)
+}
+
+/// Find the scratch tree one digest names, if it exists.
+///
+/// The live tree is preferred; a tree the reclaim path refused is parked
+/// under a tombstone that still carries the digest, so the residual stays
+/// findable by the same handle.
+#[cfg(any(unix, windows))]
+pub fn find_session_scratch_tree(digest_hex: &str) -> Result<Option<ScratchTreeRef>, ScratchError> {
+    let Some(sessions_root) = existing_sessions_root()? else {
+        return Ok(None);
+    };
+    let managed = sessions_root.join(digest_hex);
+    if let Some(tree) = tree_ref(&managed, digest_hex, false) {
+        return Ok(Some(tree));
+    }
+    let prefix = format!(".reclaim-{digest_hex}-");
+    let entries = match std::fs::read_dir(&sessions_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        if let Some(tree) = tree_ref(&entry.path(), digest_hex, true) {
+            return Ok(Some(tree));
+        }
+    }
+    Ok(None)
+}
+
+/// Build a tree reference for a path that is a real directory.
+#[cfg(any(unix, windows))]
+fn tree_ref(path: &Path, digest_hex: &str, quarantined: bool) -> Option<ScratchTreeRef> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return None;
+    }
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64);
+    Some(ScratchTreeRef {
+        digest: digest_hex.to_string(),
+        path: path.to_path_buf(),
+        quarantined,
+        modified_ms,
+    })
+}
+
+/// Measure one scratch tree, addressed by its opaque digest.
+///
+/// Read-only: it never renames, unlinks, or writes. A digest that names no
+/// tree yields an absent measurement rather than an error.
+#[cfg(any(unix, windows))]
+pub fn preview_session_scratch(digest_hex: &str) -> Result<ScratchTreeUsage, ScratchError> {
+    match find_session_scratch_tree(digest_hex)? {
+        Some(tree) => Ok(census_tree(&tree, &ScratchCensusBudget::default())),
+        None => Ok(ScratchTreeUsage {
+            digest: digest_hex.to_string(),
+            quarantined: false,
+            total_bytes: 0,
+            file_count: 0,
+            directory_count: 0,
+            symlink_count: 0,
+            non_regular_count: 0,
+            multiply_linked_count: 0,
+            oldest_modified_ms: None,
+            newest_modified_ms: None,
+            reclaimable: true,
+            refusal: None,
+            owner_record_present: false,
+            truncated: false,
+            vanished: true,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -1182,7 +1475,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn census_reports_a_multiply_linked_file_as_a_refusal() {
+    fn census_counts_a_multiply_linked_file_without_refusing_the_tree() {
         let root = tempfile::tempdir().unwrap();
         let tree = census_tree_fixture(root.path(), "census-hardlink");
         std::fs::write(tree.join("a.txt"), b"hello").unwrap();
@@ -1192,9 +1485,11 @@ mod tests {
         let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
 
         let usage = &report.trees[0];
+        // The count is an observation. A hard link is a file name, not a
+        // recursive edge, so it does not stop the reclaim path.
         assert_eq!(usage.multiply_linked_count, 1);
-        assert_eq!(usage.refusal, Some(ReclaimRefusal::MultiplyLinked));
-        assert!(!usage.reclaimable);
+        assert_eq!(usage.refusal, None);
+        assert!(usage.reclaimable);
     }
 
     #[cfg(any(unix, windows))]
@@ -1304,6 +1599,7 @@ mod tests {
                 digest: hex_digest(&session_scratch_digest("census-vanished")),
                 path: tree,
                 quarantined: false,
+                modified_ms: None,
             },
             &ScratchCensusBudget::default(),
         );
@@ -1482,10 +1778,10 @@ mod tests {
         std::fs::write(run_root.join("run.tmp"), "temporary").unwrap();
         std::fs::write(shared_root.join("shared.tmp"), "temporary").unwrap();
 
-        assert!(reclaim_deleted_session_scratch_dir(&session_id).unwrap());
+        assert!(reclaim_session_scratch_dir(&session_id).unwrap());
         assert!(!run_root.exists());
         assert!(!shared_root.exists());
-        assert!(!reclaim_deleted_session_scratch_dir(&session_id).unwrap());
+        assert!(!reclaim_session_scratch_dir(&session_id).unwrap());
     }
 
     #[cfg(any(unix, windows))]
@@ -1533,7 +1829,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn revoked_shared_cleanup_quarantines_symlinks_and_hardlinks() {
+    fn revoked_shared_cleanup_quarantines_symlinks_and_reclaims_hardlinks() {
         let session_id = format!("scratch-cleanup-session-{}", uuid::Uuid::new_v4());
         let scratch_id = codegg_core::identity::ScratchId::new();
         let external = tempfile::tempdir().unwrap();
@@ -1569,22 +1865,19 @@ mod tests {
         let hardlink_id = codegg_core::identity::ScratchId::new();
         let hardlink_root = shared_scratch_dir(&session_id, &hardlink_id).unwrap();
         std::fs::hard_link(&external_file, hardlink_root.join("external-link")).unwrap();
-        assert!(reclaim_shared_scratch_dir(&session_id, &hardlink_id).is_err());
+        // A hard link is a file name, not a recursive edge. Removing the name
+        // under the tombstone only decrements its link count; it does not
+        // modify or remove the outside file. Unix now behaves as Windows
+        // already did.
+        assert!(reclaim_shared_scratch_dir(&session_id, &hardlink_id).unwrap());
         assert_eq!(
             std::fs::read_to_string(&external_file).unwrap(),
             "outside content"
         );
-        let hardlink_tombstone = std::fs::read_dir(shared_parent)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(".reclaim-") && path.exists())
-            })
-            .expect("hardlinked resource is quarantined");
-        std::fs::remove_dir_all(hardlink_tombstone).unwrap();
+        assert!(
+            !hardlink_root.exists(),
+            "the hardlinked resource is reclaimed, not quarantined"
+        );
     }
 
     #[cfg(windows)]

@@ -25,7 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codegg_protocol::scratch::{
-    ScratchReclaimRefusalDto, ScratchTreeUsageDto, ScratchUsageReportDto,
+    ScratchReclaimRefusalDto, ScratchReclaimRequestDto, ScratchReclaimResultDto,
+    ScratchReclaimVerdictDto, ScratchTreeUsageDto, ScratchUsageReportDto,
 };
 
 use crate::core::daemon::CoreDaemon;
@@ -83,10 +84,13 @@ impl ScratchCensus {
 }
 
 impl CoreDaemon {
-    /// Dispatch one M006 scratch measurement request.
+    /// Dispatch one M006 scratch measurement request, or one M007 operator
+    /// reclaim request.
     pub(crate) async fn handle_scratch_request(
         &self,
         request: CoreRequest,
+        authority: codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
         match request {
             CoreRequest::ScratchUsage { request } => {
@@ -103,11 +107,105 @@ impl CoreDaemon {
                     }
                 }
             }
+            CoreRequest::ScratchReclaim { request } => {
+                self.handle_scratch_reclaim(request, &authority, &authz_decision)
+                    .await
+            }
             other => Ok(CoreResponse::Error {
                 code: "unsupported_scratch_request".into(),
                 message: format!("{other:?} is not a scratch request"),
             }),
         }
+    }
+
+    /// Answer one operator reclaim request (M007).
+    ///
+    /// The request names a tree by its opaque digest, never by a path. A dry
+    /// run is the default, so an operator sees the verdict before anything is
+    /// removed.
+    async fn handle_scratch_reclaim(
+        &self,
+        request: ScratchReclaimRequestDto,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> Result<CoreResponse, AppError> {
+        let Some(pool) = self.deps.pool.clone() else {
+            return Ok(CoreResponse::Error {
+                code: "scratch_reclaim_unavailable".into(),
+                message: "this daemon has no durable session store".into(),
+            });
+        };
+        let outcome = match super::scratch_sweep::reclaim_session_scratch_for_operator(
+            &pool,
+            self.deps.agent_run_store.as_ref(),
+            self.deps.job_store.as_ref(),
+            request.tree.trim(),
+            request.apply,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                tracing::warn!(%error, "scratch reclaim failed");
+                return Ok(CoreResponse::Error {
+                    code: "scratch_reclaim_failed".into(),
+                    message: "the scratch reclaim could not be completed".into(),
+                });
+            }
+        };
+
+        let verdict = if outcome.leased {
+            ScratchReclaimVerdictDto::Leased
+        } else if !outcome.present {
+            ScratchReclaimVerdictDto::Absent
+        } else if outcome.removed {
+            ScratchReclaimVerdictDto::Removed
+        } else if outcome.reclaimable {
+            ScratchReclaimVerdictDto::Reclaimable
+        } else {
+            ScratchReclaimVerdictDto::Refused
+        };
+
+        // The audit record. Its metadata is bounded: the digest, the counts,
+        // the verdict, the refusal reason, and the outcome. No path, no file
+        // name, no file content, and no session identity.
+        let provenance = codegg_core::authorization::audit_provenance(authz_decision);
+        let mut builder = codegg_core::audit::AuditEventBuilder::new(
+            codegg_core::audit::AuditAction::ScratchReclaim,
+            authority.principal(),
+            &provenance,
+        );
+        builder = builder.with_metadata("scratch.digest", outcome.digest.clone());
+        builder = builder.with_metadata("scratch.entry_count", outcome.entry_count.to_string());
+        builder = builder.with_metadata("scratch.byte_count", outcome.byte_count.to_string());
+        builder = builder.with_metadata("scratch.verdict", verdict_name(verdict));
+        if let Some(refusal) = outcome.refusal {
+            builder = builder.with_metadata("scratch.refusal", refusal.as_str());
+        }
+        builder = builder.with_metadata(
+            "scratch.outcome",
+            if outcome.removed {
+                "removed"
+            } else if request.apply {
+                "refused"
+            } else {
+                "dry_run"
+            },
+        );
+        self.append_audit_event(builder).await;
+
+        Ok(CoreResponse::ScratchReclaim {
+            result: ScratchReclaimResultDto {
+                digest: outcome.digest,
+                entry_count: outcome.entry_count,
+                byte_count: outcome.byte_count,
+                verdict,
+                refusal: outcome.refusal.map(refusal_to_dto),
+                quarantined: outcome.quarantined,
+                dry_run: !request.apply,
+                removed: outcome.removed,
+            },
+        })
     }
 
     /// Answer a scratch usage request.
@@ -187,12 +285,22 @@ fn tree_to_dto(tree: &ScratchTreeUsage) -> ScratchTreeUsageDto {
     }
 }
 
+/// The stable name of a reclaim verdict, for the audit record.
+fn verdict_name(verdict: ScratchReclaimVerdictDto) -> &'static str {
+    match verdict {
+        ScratchReclaimVerdictDto::Reclaimable => "reclaimable",
+        ScratchReclaimVerdictDto::Refused => "refused",
+        ScratchReclaimVerdictDto::Leased => "leased",
+        ScratchReclaimVerdictDto::Removed => "removed",
+        ScratchReclaimVerdictDto::Absent => "absent",
+    }
+}
+
 /// Map a refusal reason onto the wire DTO.
 fn refusal_to_dto(refusal: ReclaimRefusal) -> ScratchReclaimRefusalDto {
     match refusal {
         ReclaimRefusal::Symlink => ScratchReclaimRefusalDto::SymbolicLink,
         ReclaimRefusal::NonRegular => ScratchReclaimRefusalDto::NonRegularEntry,
-        ReclaimRefusal::MultiplyLinked => ScratchReclaimRefusalDto::MultiplyLinkedFile,
     }
 }
 

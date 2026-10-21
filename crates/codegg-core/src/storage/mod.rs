@@ -20,8 +20,10 @@
 //! The legacy [`init`] entry point remains as a deprecated wrapper so
 //! callers that have not yet been migrated continue to work.
 
+pub mod immediate;
 pub mod paths;
 pub mod preferences;
+pub use immediate::{begin_immediate, ImmediateWrite};
 pub use paths::DaemonPaths;
 pub use preferences::{UserPreferences, KEY_MODEL_LAST_USED, KEY_THEME_ACTIVE};
 
