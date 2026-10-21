@@ -147,7 +147,7 @@ Local (macOS, arm64):
 | `cargo fmt --all -- --check` | pass |
 | `cargo +stable clippy --workspace --all-targets --locked -- -D warnings` | pass — 0 findings |
 | `cargo test --locked -p codegg-protocol` | pass — **293 passed**, 0 failed |
-| `cargo test --locked -p codegg --lib scratch::` | pass — **25 passed**, 0 failed (12 of them new census tests) |
+| `cargo test --locked -p codegg --lib scratch::` | pass — **31 passed**, 0 failed (12 of them new census tests) |
 | `cargo test --locked -p codegg --lib daemon_scratch` | pass — **6 passed**, 0 failed |
 | `cargo test --locked -p codegg --lib daemon_socket_integration_tests::the_scratch_usage_census_is_served_over_the_socket` | pass — 1 passed |
 | `cargo test --locked --test scratch_usage_census` | pass — **7 passed**, 0 failed |
@@ -319,7 +319,7 @@ The same two jobs were also green on the code head **`67d88db9`**
 `39529050572`, **26 passed, 0 failed**). The three commits after `67d88db9`
 change only the plans and closure record, so the code is the same in both.
 
-### One hosted-CI flake, on the final head, and its re-run
+### One hosted-CI flake, and its green re-run of the same SHA
 
 The **first** attempt of `CI` run `39536529955` failed exactly one test:
 
@@ -356,9 +356,9 @@ This is the same flake class the repository already records for
 `codegg-client::session_projection_driver::duplicate_events_are_idempotent`
 in `plans/closure/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-status.md`.
 
-### A second hosted-CI flake, and its re-run
+### A second hosted-CI flake, and how it was closed
 
-The **first** attempt of the `CI` run on the final head `24a74874`
+The **first** attempt of the `CI` run on the head `24a74874`
 (`39540628447`) failed one test in a package this branch does not touch:
 
 ```
@@ -381,11 +381,20 @@ this flake class in
 - `git diff --name-only origin/main...HEAD -- crates/codegg-client/` is
   **empty** — the branch never touched that crate.
 - The suite passes **16/16** locally, in 0.97 s.
-- The re-run of the **same SHA** is green.
 
-Two of this milestone's four `CI` runs on the final head had a first attempt
-that failed on an unrelated runner-sensitive flake; the re-run of the same
-SHA was fully green in both cases. The code itself was green on every
+The **re-run of the same SHA** (`39540628447`, attempt 2) came back
+**cancelled**, not green: pushing the next commit started a fresh run set and
+GitHub cancelled the in-flight re-run. So this flake was **not** closed by a
+re-run of its own SHA, and that is recorded rather than blurred.
+
+It was closed instead by the **final head's** own `CI` run, which ran
+byte-identical code: `24a74874` and `d5b519f4` differ **only** in
+`plans/closure/managed-agent-scratch/006-status.md`, a markdown file that
+cannot influence a Rust test. That run is green — see the table above.
+
+One of this milestone's two `CI` flakes therefore has a green re-run of the
+same SHA (`39536529955`) and the other does not (`39540628447`); both were
+closed by a green run of the final head's code. The code was green on every
 attempt that reached the workspace tests without tripping a flake.
 
 The first Windows run, `39527099234` on the pre-fix head `8e4c2ad5`, failed
