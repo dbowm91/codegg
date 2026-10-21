@@ -243,7 +243,58 @@ new state.
 
 ## 13. Factual corrections
 
-None required.
+### 2026-10-21 — a partially-read tree could report itself reclaimable
+
+Corrected after the fact by a follow-up change. The historical sections
+above are left as they were written; this records what was wrong and what
+now holds.
+
+**What was wrong.** §1 states that "a report therefore cannot claim a tree
+is reclaimable when the validator would refuse it". That is true of every
+entry the census *read* — the rule is shared, so there is no drift. It was
+not true of a tree the census did not finish reading. `ScratchTreeUsage`'s
+`reclaimable` was a plain `bool`, assigned unconditionally at the end of the
+walk as `refusal.is_none()`. A walk that hit the entry budget stopped early,
+so the entries past the budget were never classified — but the tree was
+reported `reclaimable: true` anyway, on the strength of the entries that
+*were* read.
+
+The consequence is a report that overstates what is known: it tells an
+operator the reclaim path would accept a tree whose unread part might hold
+exactly the entry that would make the reclaim path refuse it. The same
+applied to a tree that vanished while it was being read.
+
+This was not a paper property. A probe added to
+`census_stops_at_its_entry_budget_and_says_so` — a test that already
+asserted `truncated` and the entry count, but said nothing about the
+verdict — failed against `main`:
+
+```
+PROBE: a truncated tree reported reclaimable=true (truncated=true)
+```
+
+**What now holds.** The verdict is tri-state: `Option<bool>`, where `None`
+means the verdict could not be established. A truncated tree and a vanished
+tree both carry `None`; a tree the walk read in full carries `Some(true)` or
+`Some(false)` from the shared rule. A partial walk never yields
+`Some(true)`, so the report can no longer claim a tree is reclaimable on the
+strength of the part it managed to read.
+
+The wire shape changed with it — `ScratchTreeUsageDto.reclaimable` is now
+`Option<bool>`, and `SCRATCH_PROTOCOL_VERSION` moved from 1 to 2. The
+operator surface reports the three states as `yes`, `no`, and `unknown`, and
+counts the unknown trees separately from the refused ones. The retention
+sweep's consumer of the same verdict is fail-closed: only an established
+`Some(true)` counts as reclaimable, so an unknown verdict is never a
+permission to reclaim.
+
+**What this correction does not change.** The removal path is unaffected
+either way: the sweep and the operator reclaim both re-run the authoritative
+validator (`reclaim_session_scratch_for_operator`) before anything is
+removed, so the census verdict never authorised a removal. This was a
+reporting-accuracy defect, not a data-loss one. The property §1 claims —
+that the verdict is the validator's own rule rather than a restatement of it
+— was and remains true.
 
 ## 14. Handoff notes
 
