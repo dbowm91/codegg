@@ -38,9 +38,12 @@ For model-owned work, a host-stamped session identity may carry the process
 through a persistent private session scratch root. The service injects its
 path after environment sanitization and adds it to Required sandbox grants;
 never derive it from command input or human-shell context. Structured `read`
-and `write` only accept absolute paths beneath that session root. Current
-cleanup intentionally retains these resources until lease-aware reclamation
-is qualified.
+and `write` only accept absolute paths beneath that session root. Cleanup is
+lease-aware: a terminal delegated run reclaims its own private root, a revoked
+shared resource is reclaimed after the last attempt lease releases, and a
+soft-deleted session's whole tree is reclaimed once its durable runs and jobs
+are terminal. The daemon resumes that cleanup after a restart. Scratch contents
+remain disposable cache data that host cache maintenance may purge.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows
