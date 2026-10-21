@@ -349,7 +349,11 @@ cannot cover. Every run below is on an exact head of this branch.
 | `39677678125` | `a74c7dbbe` | Linux M004 process and IPC qualification | **failure** — the new delegated-child proof found the second defect in §3.6 |
 | `39677671427` | `a74c7dbbe` | Linux M004 process and IPC qualification | **failure** — same cause, the other trigger event |
 | `39681302386` | `9a40e983e` | Linux M004 process and IPC qualification | **failure** — the proof still rebuilt its own configuration and so reproduced the defect the fix had removed (§3.6) |
-| `39682689275` | `9a40e983e` | CI (branch-wide), `workflow_dispatch` | see §10.2 — the branch-wide sweep on the fixed head |
+| `39682689275` | `9a40e983e` | CI (branch-wide), `workflow_dispatch` | **cancelled** — superseded by the next push on the branch |
+| `39685731938` | `7be59bd46` | CI (branch-wide), `workflow_dispatch` | **success** — 15,854 tests run, 15,854 passed, 8 skipped, `Summary [ 451.904s]` |
+| `39685717425` | `7be59bd46` | Linux M004 process and IPC qualification | **success** — the delegated-child proof passes on a qualified host (§10.1) |
+| `39685699753` | `7be59bd46` | Linux M004 process and IPC qualification (`push`) | the same qualification from the `push` trigger; superseded by the merge push |
+| `39685699680` | `7be59bd46` | Linux C006 protected mount qualification | **success** |
 
 The `pull_request` event dispatch for `9a40e983e` produced **no** runs at all
 — GitHub created none, for any workflow, after the push. The CI run was
@@ -357,17 +361,55 @@ therefore dispatched explicitly on that exact ref with `workflow_dispatch`,
 which checks out the same head and runs the same job. The M004 run for the
 same head was created by the `push` event.
 
-The two M004 failures are **evidence, not regressions**: they are the hosted
+The three M004 failures are **evidence, not regressions**: they are the hosted
 native run reporting the durable route's ordering defect, which is what the
-proof was added to find. The 17 sibling tests in that suite passed in both
-runs; only the new proof failed, and it failed with a typed refusal rather
-than a silent pass.
+proof was added to find. The 17 sibling tests in that suite passed in every
+failing run; only the new proof failed, and it failed with a typed refusal
+rather than a silent pass.
 
-The CI run on `a74c7dbbe` is the branch-wide hosted sweep for this line: the
-identical command over the identical workspace on a dedicated runner. The
-head has since moved to `9a40e983e`, which changes production code in the
-two durable routes, so a CI run on that head is required before the CI
-evidence qualifies the shipped tree exactly.
+The CI run on `7be59bd46` is the branch-wide hosted sweep for this line: the
+identical command over the identical workspace on a dedicated runner.
+
+### 4.7a The native qualification that passed
+
+Run `39685717425` on head `7be59bd46` is the hosted native qualification that
+C002 WP2 asked for. Its `process-ipc` job ran the whole
+`linux_m004_process_ipc` binary with `CODEGG_RUN_M005_OFFLINE_NATIVE=1` set at
+the job level, so the proof was not skipped:
+
+```
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 510.17s
+...
+test delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner ... ok
+```
+
+The 18 include the sibling proofs the C002 matrix is composed of —
+`offline_network_blocks_host_network_and_inherited_socket_access`,
+`process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket`,
+`managed_process_owner_applies_authenticated_offline_network_intent`,
+`offline_network_runs_cargo_metadata_and_check_without_network`, and the
+contained-Git and private-index proofs. The `restricted-userns-fails-closed`
+job on the same run **passed**, which is the no-userns negative WP4 asks for.
+
+The **host facts** the run captured, for the record:
+
+| Fact | Value |
+|---|---|
+| Runner image | `ubuntu-24.04` (GitHub-hosted, `ubuntu24/20261018.339`) |
+| Kernel | `7.0.0-1017-azure #17~24.04.1-Ubuntu SMP PREEMPT Thu Sep 24 18:46:57 UTC 2026 x86_64` |
+| Bubblewrap | `0.9.0` (`0.9.0-1ubuntu0.3`), `/usr/bin/bwrap` mode `755`, owner root |
+| `max_user_namespaces` | `58121` |
+| Seccomp actions available | `kill_process kill_thread trap errno user_notif trace log allow` |
+| AppArmor profile | `unconfined`; `kernel.apparmor_restrict_unprivileged_userns` was `1` and was relaxed to `0` on that ephemeral VM |
+| Landlock | ABI 6 process scopes qualify — `probe_process_scopes()` succeeded, and the proof panics rather than skips when it does not |
+
+The **denied effects** the delegated-child proof observed: the probe's TCP
+connect to the host listener was refused (it exits `10` on success, so a
+reachable host would have failed the step), the host UDP listener received
+nothing, and the child still completed its permitted workspace write. The
+host **positive control** — the same host reaching its own loopback listener —
+passed, so a denial could not be a broken fixture.
+
 
 ### 4.8 The reconciliation with `main` (`53d9fc9fd`)
 
@@ -416,6 +458,15 @@ second ADR-numbered artifact onto the branch:
   survive. One factual correction was made to this milestone's row, which
   still described the guard's self-test as injecting seven defects when it now
   injects eleven.
+
+  A per-table duplicate scan of the merged registry found **three** duplicated
+  rows in the `Agent tool-use operability corrective` block (C001, C004 and
+  C006 each appear twice). These are **pre-existing on `main`** — the same
+  three duplicates are present at `2c1953347`, the baseline this branch
+  started from, so they were not introduced by this merge and are not this
+  milestone's rows. They are left untouched: fixing another subsystem's
+  registry hygiene is outside C001/C002's scope, and the rows are recorded
+  here so the observation is not lost.
 
 ## 5. Invariant review
 
@@ -517,8 +568,26 @@ Its **first hosted execution failed**, and the failure found the second
 defect described in §3.6: the durable route built the launch spec before it
 requested the M004 tier, so the owner had no captured path identity to
 re-verify. That defect is fixed in both durable routes the delegated child
-uses, and the guard now checks the ordering. The proof's **re-execution** on
-the fixed head is the outstanding item.
+uses, and the guard now checks the ordering.
+
+**The proof has since passed on a qualified Linux host.** Run `39685717425`
+on head `7be59bd46` is the re-execution §10.1's first condition asked for:
+the `process-ipc` job ran the whole `linux_m004_process_ipc` binary with
+`CODEGG_RUN_M005_OFFLINE_NATIVE=1` set at the job level, and the delegated
+proof is reported as
+
+```
+test delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner ... ok
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 510.17s
+```
+
+The 18 include the sibling proofs the C002 matrix is composed of — the
+offline-network denial, the host-PID/IPC/abstract-socket denial, the
+authenticated offline owner, the offline `cargo metadata`/`cargo check`
+run, and the contained-Git and private-index proofs. The
+`restricted-userns-fails-closed` job on the same run **passed**, which is the
+no-userns negative WP4 asks for. The host facts and the denied effects are
+recorded in §4.7a.
 
 **What the proof does and does not establish.** It proves the delegated
 route's *policy* reaches the owner and is enforced there. It does **not**
@@ -536,15 +605,19 @@ no-admission decision stands regardless.
 
 **Exact future evidence required.**
 
-1. A hosted M004 run on the fixed head, in which
+1. ~~A hosted M004 run on the fixed head, in which
    `delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner`
-   passes, with its per-test result recorded.
-2. The hosted `restricted-userns-fails-closed` job passing on the same head,
-   which is the no-userns negative C002 WP4 asks for.
+   passes, with its per-test result recorded.~~ — **satisfied** by run
+   `39685717425` on `7be59bd46`; the per-test result is quoted above and the
+   host facts in §4.7a.
+2. ~~The hosted `restricted-userns-fails-closed` job passing on the same
+   head, which is the no-userns negative C002 WP4 asks for.~~ — **satisfied**
+   by the same run.
 3. The captured kernel/LSM/Bubblewrap/Landlock facts, the requested and
    obtained launch receipt, and the actual denied effects, recorded against
    that exact revision in the `native_negative_proven` section of the
-   manifest.
+   manifest. The facts and effects are captured in §4.7a; what remains is
+   the manifest entry itself, which is **maintainer-owned** (§10.1b).
 4. `native_negative_proven` non-empty and `maintainer_admitted` set by a
    maintainer decision — never by the probe.
 5. The residual cargo-specific attribution: evidence that a delegated
@@ -555,6 +628,36 @@ no-admission decision stands regardless.
 intent, `OfflineRequired` executes with host network, a status receipt is
 forged from policy or probe alone, or a socket/FD crosses isolation, this
 condition escalates and C002 does not close.
+
+### 10.1b The admission record is maintainer-owned (severity: medium, owner: the maintainer)
+
+The host-admission manifest deliberately separates what a host *offers* from
+what a maintainer *records*. `discover()` cannot write `native_negative_proven`
+and cannot write `maintainer_admitted`; `contains_enforcement_claim()` exists
+so a manifest that asserts enforcement is rejected mechanically rather than by
+review. The consequence is that the native evidence this milestone produced
+**cannot be promoted into the manifest by the agent that produced it** — the
+`NativeNegativeEvidence` entry for the revision above is a maintainer
+decision, and `maintainer_admitted.admitted` stays `false` until a maintainer
+sets it.
+
+The evidence a maintainer needs is already captured: the revision, the run
+id, the refusal cases, and the host facts in §4.7a. The exact shape is:
+
+```
+NativeNegativeEvidence {
+    revision: "<the exact head that was qualified>",
+    run_id:   Some("39685717425"),
+    cases:    ["ipv4_tcp_denied", "ipv4_udp_denied", "host_process_ipc_denied"],
+    recorded_at: "<the maintainer's recording time>",
+}
+```
+
+This is recorded as an **open maintainer action**, not as a gap in the
+implementation. C002 stays *conditionally closed* until it is recorded, and
+**no admission is claimed by this milestone either way**: C010's no-admission
+decision stands, no backend is registered, and ADR-0044 remains proposed.
+
 
 ### 10.1a The Python durable route has the same ordering defect (severity: medium, owner: the Python tool's owner)
 
@@ -588,15 +691,26 @@ makes the payload's intent and the route's capability agree.
 
 ### 10.2 Branch-wide hosted CI on this head (severity: medium, owner: this milestone)
 
-The hosted branch-wide sweep and the hosted M004/M005 native job were not run
-on this head; the local scope was narrowed at the user's direction because the
-environment is contended. The branch-wide evidence for the merged baseline is
-in `plans/closure/branch-and-ci-stabilization/001-status.md`
+**Satisfied for `7be59bd46`.** The hosted branch-wide sweep ran on that head:
+CI run `39685731938`, **15,854 tests run, 15,854 passed, 8 skipped**,
+`Summary [ 451.904s]`, exit 0. The same head also carries the hosted native
+qualification in §10.1 and the C006 protected-mount qualification
+(`39685699680`, success).
+
+The head has since moved to the merge commit that reconciles this line with
+`main` (§4.8), which brings `main`'s PR #157 production changes into the two
+durable routes and into the owner that enforces the ceiling. The hosted
+evidence must therefore be re-run on **that** head before it qualifies the
+shipped tree exactly. The local scope stays narrowed at the owner's
+direction: the local changed-surface slice on the merged tree is
+**7546 tests run, 7546 passed, 4 skipped**, `Summary [ 190.297s]` — 24 more
+tests than the pre-merge slice, from `main`'s PR #157.
+
+The branch-wide evidence for the merged baseline is also in
+`plans/closure/branch-and-ci-stabilization/001-status.md`
 (hosted CI run `39649501713`: 15,841 run, 15,841 passed, 8 skipped, on
 `4c08f2cc5`, which is content-identical to `main` for every source file).
 
-**Exact future evidence required.** A hosted `CI` run on this milestone's
-head, and a hosted native M004/M005 job, with the run links recorded here.
 
 ### 10.3 macOS target compile (severity: low, owner: this milestone)
 
