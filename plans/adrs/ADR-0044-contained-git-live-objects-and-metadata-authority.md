@@ -14,7 +14,7 @@ Affected subsystem roadmaps:
 - `plans/subsystems/linux-execution-isolation-roadmap.md`
 - `plans/subsystems/linux-trusted-git-cost-corrective-roadmap.md`
 
-Related accepted decisions: ADR-0004 (approvals/ceilings), ADR-0016 (platform-owned launch/obtained enforcement), ADR-0034 (syntax advisory, authority enforced), ADR-0043 (composable Linux sandbox). Historical evidence: Linux C010 no-admission (`plans/closure/linux-execution-isolation/018-status.md`), C012 closed-negative (`020-status.md`), M004 closed (`004-status.md`).
+Related accepted decisions: ADR-0004 (approvals/ceilings), ADR-0016 (platform-owned launch/obtained enforcement), ADR-0034 (syntax advisory, authority enforced), ADR-0046 (composable Linux sandbox). Historical evidence: Linux C010 no-admission (`plans/closure/linux-execution-isolation/018-status.md`), C012 closed-negative (`020-status.md`), M004 closed (`004-status.md`).
 
 ## Context and forces
 
@@ -71,8 +71,8 @@ Tests must cover malicious local and configured hooks, Git filters/merge drivers
 
 ## Verification and acceptance gate
 
-Test-only proof may proceed under ADR-0043 while this ADR is proposed. Before enabling any live-ODB trusted read or private promotion route: independent security review accepts/revises this ADR; native supported Linux and restricted-userns negative proofs; real-tool equivalence and performance evidence; exact head CI; rollback; explicit operator release decision. Any missing requirement is a hard blocker, not a waived test.
+Test-only proof may proceed under ADR-0046 while this ADR is proposed. Before enabling any live-ODB trusted read or private promotion route: independent security review accepts/revises this ADR; native supported Linux and restricted-userns negative proofs; real-tool equivalence and performance evidence; exact head CI; rollback; explicit operator release decision. Any missing requirement is a hard blocker, not a waived test.
 
 ## Supersession
 
-None at proposal time. This ADR would introduce a **separately named** authority/consistency contract; it does not rewrite ADR-0043 or the historical C010/C012 decisions.
+None at proposal time. This ADR would introduce a **separately named** authority/consistency contract; it does not rewrite ADR-0046 or the historical C010/C012 decisions.

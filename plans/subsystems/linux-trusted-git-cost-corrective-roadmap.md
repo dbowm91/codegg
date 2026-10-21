@@ -6,7 +6,7 @@ Status: active planning — C001/C002/C003/C004 are bounded test-only handoffs; 
 
 Parent: `plans/subsystems/linux-execution-isolation-roadmap.md`. Corrects C010 no-admission (`plans/closure/linux-execution-isolation/018-status.md`) and C012's closed-negative no-writer/live-mount finding (`020-status.md`) **without rewriting them**. M004 closed only on its qualified host (`004-status.md`); M005 offline-network remains internal candidate. Linux C002 contained local Git and C003 mediated remote Git remain separate authoritative acceptance paths.
 
-Normative authority: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/002-long-term-roadmap.md`; `plans/003-planning-process.md`. Accepted ADR-0004, ADR-0016, ADR-0042, ADR-0043. Proposed **ADR-0044**, not accepted, gates any replacement of immutable trusted Git with live-object reads or production private promotion.
+Normative authority: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/002-long-term-roadmap.md`; `plans/003-planning-process.md`. Accepted ADR-0004, ADR-0016, ADR-0042, ADR-0046. Proposed **ADR-0044**, not accepted, gates any replacement of immutable trusted Git with live-object reads or production private promotion.
 
 ## 1. Purpose and ownership
 
@@ -18,7 +18,7 @@ Current source review began at post-rebase commit `0b36c71f`, reconciled from pr
 
 ## 3. Security invariants and non-goals
 
-A confined Git worker cannot read host credentials or private daemon data, signal host processes, use host IPC, talk to host/external network in an offline-required tier, write protected gitdir/common-dir outside an expressly brokered operation, or elevate via hook/filter/config/extension. Parent/child ceilings and typed `DestructiveRepositoryChange` remain. An untrusted live ODB read is **not** an immutable snapshot; external-write consistency is not falsely guaranteed. No default policy change, no universal persistent object mirror, no Git daemon replacement, no mandatory gix dependency, no host-global lock, no remote-credential/SSH feature in this corrective, no rewriting C010/C012 closures or superseding ADR-0043.
+A confined Git worker cannot read host credentials or private daemon data, signal host processes, use host IPC, talk to host/external network in an offline-required tier, write protected gitdir/common-dir outside an expressly brokered operation, or elevate via hook/filter/config/extension. Parent/child ceilings and typed `DestructiveRepositoryChange` remain. An untrusted live ODB read is **not** an immutable snapshot; external-write consistency is not falsely guaranteed. No default policy change, no universal persistent object mirror, no Git daemon replacement, no mandatory gix dependency, no host-global lock, no remote-credential/SSH feature in this corrective, no rewriting C010/C012 closures or superseding ADR-0046.
 
 ## 4. Target decision boundary
 

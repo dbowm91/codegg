@@ -13,7 +13,7 @@ Implementation commits:
 
 ## 1. Executive finding
 
-C010 is conditionally closed with an explicit decision: **the Bubblewrap protected-mount candidate is not admitted for production on any Linux host configuration yet.** ADR-0043 remains accepted, Landlock remains canonical, and no production backend/default/profile routing changed.
+C010 is conditionally closed with an explicit decision: **the Bubblewrap protected-mount candidate is not admitted for production on any Linux host configuration yet.** ADR-0046 remains accepted, Landlock remains canonical, and no production backend/default/profile routing changed.
 
 The post-merge candidate passed exact-head native Linux qualification and cross-platform compile qualification. The performance evidence is contradictory across cold and cache-warm runs: the prior cold fragmented-store operation took 2.95 seconds, while this workstation measured 325 ms on a cache-warm mixed 105 MiB object store and 47 ms for a cache-warm 29 MiB packed store. This does not establish a cold/p95 budget. Rustup still requires `/proc/self/exe`, and production LSP/PTY routing has not been qualified. These findings make no-admission the only evidence-backed disposition.
 
@@ -22,7 +22,7 @@ The post-merge candidate passed exact-head native Linux qualification and cross-
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
 | Reconcile feature branch against current main | Merge commit `611f6bee`; quick verification on merge and final source | pass | Resolved conflicts using current-main Git behavior and test contracts; preserved Linux isolation implementation and accepted ADR. |
-| Accepted ADR and unique canonical identities | `python3 scripts/check_adr_integrity.py` | pass | ADR-0043 remains accepted; ADR-0045 remains accepted; active IDs unique and local paths resolve. |
+| Accepted ADR and unique canonical identities | `python3 scripts/check_adr_integrity.py` | pass | ADR-0046 remains accepted; ADR-0045 remains accepted; active IDs unique and local paths resolve. |
 | Exact-head Linux protected-mount native behavior | Hosted run [`38749191367`](https://github.com/dbowm91/codegg/actions/runs/38749191367), exact SHA `f6befe51` | pass | 11/11 protected-mount tests and 18/18 trusted-Git tests. Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, Bubblewrap 0.9.0, UID/GID 1001, AppArmor `unconfined`. The ephemeral runner changed `kernel.apparmor_restrict_unprivileged_userns` 1→0. |
 | Native behavior on an AppArmor-restricted-userns local host | Local exact merge-source native test | pass | Ubuntu x86_64, kernel `6.8.0-147-generic`, ext4, Bubblewrap 0.9.0, UID/GID 1000, AppArmor active, userns restriction sysctl remained 1; 11/11 tests passed. |
 | Packed and mixed/fragmented object-store preparation | Temporary test called the exact `GitEnvPolicy::apply_sync` private-view path | partial | Cache-warm single samples: mixed 105 MiB store 325 ms; single-pack 29.07 MiB store 47 ms. C009 cold fragmented measurement was 2.95 seconds. No cold/p95 distribution or stable acceptable budget. |
@@ -61,7 +61,7 @@ No production code, persisted policy, protocol, backend registration or default 
 
 ## 5. Invariant review
 
-- ADR-0043 remains accepted and unmodified; ADR-0045 remains accepted and unmodified.
+- ADR-0046 remains accepted and unmodified; ADR-0045 remains accepted and unmodified.
 - Canonical ADR identifiers remain unique.
 - Landlock remains the default; the candidate remains explicit and unregistered for production.
 - No test or feature result is used to imply process, IPC, seccomp, network or resource containment beyond the achieved filesystem view.
@@ -110,7 +110,7 @@ including `origin/main` at `de49884f3fdc6d528620f2a2645694b9b19fc087`.
 
 The later current-main merge revealed that ADR-0031 is already accepted for
 authenticated idle continuation. The unchanged accepted Linux decision now has
-canonical identity ADR-0043; ADR-0045 remains the accepted command-authority
+canonical identity ADR-0046; ADR-0045 remains the accepted command-authority
 decision. The Linux ADR integrity self-test now represents all three active
 identities. This renumbering does not alter C010's no-admission result.
 
@@ -304,7 +304,7 @@ not a Linux isolation failure or an Eggwork fixture failure. No rerun or
 benchmark threshold change is claimed here.
 
 The fixture correction is test-only and does not change runtime sandbox
-behavior. Linux ADR-0043 remains accepted, C010's negative M003 production
+behavior. Linux ADR-0046 remains accepted, C010's negative M003 production
 admission remains in force, M004 remains active pending PTY/LSP ownership and
 supported-host qualification, and M005 remains an internal candidate without
 persisted OfflineRequired authority or enforced network status.
@@ -314,7 +314,7 @@ persisted OfflineRequired authority or enforced network status.
 The branch was reconciled with `main` at `68f9358d` in merge commit
 `bebcbf50`; a fresh fetch confirmed `main` had not advanced beyond that commit.
 ADR-0031 remains the accepted authenticated-idle-continuation decision, while
-the accepted Linux isolation decision remains ADR-0043. The ADR identity/link
+the accepted Linux isolation decision remains ADR-0046. The ADR identity/link
 guard passed both in CI and on the final documentation update.
 
 Exact merged-head CI

@@ -10,7 +10,7 @@ Baseline: implementation branch @ `eb2ca664d8e8aebe51fddeed8ac06d63f15f555b` (20
 
 The pre-migration checked-out tree had two active decisions named ADR-0027:
 - the Windows decision now at `plans/adrs/ADR-0029-windows-sandbox-capability-successors.md` (accepted for **bounded test-only Windows work**, not production);
-- `plans/adrs/ADR-0043-composable-linux-execution-isolation.md` (**accepted**; no production backend authorization).
+- `plans/adrs/ADR-0046-composable-linux-execution-isolation.md` (**accepted**; no production backend authorization).
 
 It also had two active ADR-0028 decisions:
 - `plans/adrs/ADR-0030-windows-broad-read-compatibility-profile.md` (**proposed**; not approved);
@@ -21,7 +21,7 @@ The existing `scripts/check_adr_integrity.py` checks unique active IDs and local
 ## 2. Identity-only migration contract
 
 - Inventory **all** active `plans/adrs/ADR-NNNN-*.md` from the current target head, including open feature branches and any newly allocated IDs; if 0029/0030 are taken, select the next free unique monotonically increasing IDs and update this mapping before editing.
-- At the C004 baseline, migrate proposed Linux composable ADR-0027 -> **ADR-0031**, accepted command-syntax ADR-0028 -> **ADR-0042** on one branch. Following current-main reconciliation, preserve main's accepted idle-continuation ADR-0031 and assign the unchanged accepted Linux decision **ADR-0043**. The later mainline allocation of ADR-0042 to agent-workstream coordination requires the accepted command decision to move unchanged to **ADR-0042**. Statuses, decisions, underlying authority, non-goals, security limits and architecture must be preserved except canonical ID/path and unambiguous cross-references. An accepted ADR is not accepted anew and cannot have its substance silently revised.
+- At the C004 baseline, migrate proposed Linux composable ADR-0027 -> **ADR-0031**, accepted command-syntax ADR-0028 -> **ADR-0042** on one branch. Following current-main reconciliation, preserve main's accepted idle-continuation ADR-0031 and assign the unchanged accepted Linux decision **ADR-0046**. The later mainline allocation of ADR-0042 to agent-workstream coordination requires the accepted command decision to move unchanged to **ADR-0042**. Statuses, decisions, underlying authority, non-goals, security limits and architecture must be preserved except canonical ID/path and unambiguous cross-references. An accepted ADR is not accepted anew and cannot have its substance silently revised.
 - Copy exact *pre-migration* originals to `plans/archive/linux-command-adr-id-aliases/` and record source ref, blob hashes, mapping and provenance in `plans/adrs/linux-command-adr-id-migration.md`. Archived copies are historical; do not leave old conflicting numbered files active under `plans/adrs/`.
 - Update `plans/adrs/README.md`, Linux/command roadmaps, implementation plans (including M001-M008/C001-C003), active registry rows, architecture docs, policy skills, research and any other live reference with **referent-aware** replacement. Bare "ADR-0027" in Windows docs means Windows; bare "ADR-0028" in Windows docs means Windows broad-read; these MUST NOT be globally replaced. IDs 0029/0030 are reserved by the concurrent Windows identity migration.
 - Preserve older `plans/closure/**` as historical evidence. Do not rewrite status, test counts, host provenance, security findings or closure verdicts to fabricate continuity. Record an explicit machine-readable migration/reference map; if a historical closure has a now-dangling literal local file path, fix only the path reference with a conspicuous provenance note, otherwise leave history intact and explain alias lookup.
@@ -29,7 +29,7 @@ The existing `scripts/check_adr_integrity.py` checks unique active IDs and local
 
 ## 3. Architecture and dependency consequences
 
-- At the C004 baseline, do not mark Linux ADR-0031 accepted during a numbering rename. That design was accepted separately on 2026-10-14. Current main already uses ADR-0031 for authenticated idle continuation, so the Linux decision now uses ADR-0043 while retaining its accepted status and unchanged substance; command ADR-0042 remained accepted at that point and is now ADR-0042 after the next mainline collision.
+- At the C004 baseline, do not mark Linux ADR-0031 accepted during a numbering rename. That design was accepted separately on 2026-10-14. Current main already uses ADR-0031 for authenticated idle continuation, so the Linux decision now uses ADR-0046 while retaining its accepted status and unchanged substance; command ADR-0042 remained accepted at that point and is now ADR-0042 after the next mainline collision.
 - Linux M003/M004 production namespace backend promotion is blocked until (a) this identity cleanup closes, (b) the proposed Linux ADR receives an explicit architecture decision, and (c) relevant native setup/denial evidence exists. Pre-ADR test-only feasibility does not imply acceptance.
 - Windows ADR-0027 remains test-only; Windows ADR-0028 remains proposed; no Windows `SandboxRequest::Required` or broad-read production enablement.
 - The earlier Windows C039 accepted identity migration and its historical archive must stay intact. Do not "repair" duplicate IDs by deleting an unrelated Windows ADR or changing its disposition.
@@ -48,7 +48,7 @@ Run `python3 scripts/check_adr_integrity.py --self-test`, `python3 scripts/check
 
 **Stop** if a later branch now owns 0029/0030, an accepted ADR would need substantive rewriting, or a Windows reference would be misidentified as Linux/command. Record blocked provenance and revisit allocation; do not suppress the guard.
 
-Storage/API/runtime/daemon change: **none**. C004 made the Linux ADR identifiable; its later acceptance and current ADR-0043 identity do not prove that Linux isolation mechanisms have landed.
+Storage/API/runtime/daemon change: **none**. C004 made the Linux ADR identifiable; its later acceptance and current ADR-0046 identity do not prove that Linux isolation mechanisms have landed.
 
 ## 6. Current-main identity reconciliations (2026-10-15 and 2026-10-16)
 
@@ -56,7 +56,7 @@ Main accepted authenticated idle continuation as ADR-0031 after the earlier
 Linux branch had used that number for composable Linux isolation. Reconciliation
 keeps main's ADR-0031 and accepted command ADR-0042 unchanged at that
 reconciliation. The Linux ADR was
-moved to `plans/adrs/ADR-0043-composable-linux-execution-isolation.md`; its
+moved to `plans/adrs/ADR-0046-composable-linux-execution-isolation.md`; its
 accepted status, accepted date, decision text, authority, non-goals and security
 limits are preserved. The unique-ID guard and merged-tree self-test now include
 all three active records. This identity-only correction changes no runtime
@@ -66,6 +66,6 @@ The 2026-10-16 merge of current main exposed a further collision: accepted
 agent-workstream coordination now owns ADR-0042. The unchanged accepted
 command-syntax decision is therefore canonical ADR-0042 at
 `plans/adrs/ADR-0045-command-syntax-and-execution-authority.md`; the Linux
-decision remains ADR-0043 and idle continuation remains ADR-0031. The
+decision remains ADR-0046 and idle continuation remains ADR-0031. The
 agent-workstream decision keeps ADR-0042. No decision status, content or
 authority changed; the identity guard now checks all four active decisions.

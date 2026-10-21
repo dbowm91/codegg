@@ -25,7 +25,7 @@ The separate maintainer decision was pending at the reviewed baseline; see the d
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
 | C004 identity reconciliation | `plans/closure/linux-execution-isolation/012-status.md` | pass | ADR-0031 was uniquely identified at the reviewed baseline; its proposed status did not change during C004. |
-| Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0043-composable-linux-execution-isolation.md` | pass (2026-10-14; canonical ID later reconciled) | The Linux ADR was accepted as ADR-0031. This cleared the architecture decision gate only; it did not prove or enable a production backend. |
+| Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0046-composable-linux-execution-isolation.md` | pass (2026-10-14; canonical ID later reconciled) | The Linux ADR was accepted as ADR-0031. This cleared the architecture decision gate only; it did not prove or enable a production backend. |
 | C005 strict-positive native production launcher qualification | `plans/closure/linux-execution-isolation/013-status.md` | partial / blocked | Real test-only namespaces and setup-failure behavior passed, but protected overlays, production adapter integration, toolchain, Git workspace, and PTY compatibility were not qualified. |
 | M002 typed launch contract | `plans/closure/linux-execution-isolation/002-status.md` | partial | Interface/probe slice is conditionally closed; no mount backend is selected and enhanced dimensions remain unavailable. |
 | Protected workspace/Git metadata implementation | no implementation | blocked | No mount manifest, protected nested overlays, worktree alias handling, metadata lease, or trusted integration exists. |
@@ -65,7 +65,7 @@ C006 moved to active implementation after Linux ADR-0031 acceptance. The first s
 
 Current identity note (2026-10-15): current main uses ADR-0031 for accepted
 authenticated idle continuation. The Linux decision referenced above is now
-canonical ADR-0043 with unchanged substance and accepted status. This note
+canonical ADR-0046 with unchanged substance and accepted status. This note
 reconciles identity only; the findings and verdict remain unchanged.
 
 ## 9. Implementation and hosted native qualification update — 2026-10-14

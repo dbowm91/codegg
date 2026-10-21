@@ -5,7 +5,7 @@ Scope: current Linux protected-mount candidate after reconciling the feature bra
 
 ## Decision
 
-**Do not admit the Bubblewrap protected-mount candidate as a production backend on any host configuration yet.** Keep it opt-in for qualification, keep Landlock canonical, and retain fail-closed behavior for required enhanced launches. This is an explicit no-admission decision, not a rejection of accepted ADR-0043.
+**Do not admit the Bubblewrap protected-mount candidate as a production backend on any host configuration yet.** Keep it opt-in for qualification, keep Landlock canonical, and retain fail-closed behavior for required enhanced launches. This is an explicit no-admission decision, not a rejection of accepted ADR-0046.
 
 The exact reconciled implementation now has hosted native protected-mount and trusted-Git evidence. That demonstrates candidate behavior, not a supported production profile: object-view timing varies materially between cold and cache-warm observations, there is no repeatable p95 or accepted latency budget, general LSP/PTY routing is unqualified, and the protected-mount flag is not wired as a generally selectable production profile.
 

@@ -6,7 +6,7 @@ Closure: `plans/closure/linux-execution-isolation/020-status.md`
 Repository baseline: `f7935ad7` (reconciled with current `main`)
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
-Related decisions: accepted ADR-0043 (Linux isolation), ADR-0045 (command authorization); C010 no-admission closure `plans/closure/linux-execution-isolation/018-status.md`; C011 warm-cache corrective `plans/closure/linux-execution-isolation/019-status.md`.
+Related decisions: accepted ADR-0046 (Linux isolation), ADR-0045 (command authorization); C010 no-admission closure `plans/closure/linux-execution-isolation/018-status.md`; C011 warm-cache corrective `plans/closure/linux-execution-isolation/019-status.md`.
 
 ## 1. Objective
 

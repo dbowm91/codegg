@@ -5,7 +5,7 @@ Source: `plans/subsystems/linux-sandbox-admission-follow-up-corrective-addendum.
 Baseline: `planning/linux-sandbox-next-admission-and-adr-cleanup` `d251b11cd7fa5b89ca008e45d80a28a4ac3aea9f` (2026-10-20).
 Closure target: `plans/closure/linux-sandbox-admission-follow-up-corrective/002-status.md`.
 Class: invariant (route completeness and honest obtained-enforcement evidence).
-Hard dependencies: accepted ADR-0043 and closed M004/C014/C023. C001 clean integration is an operational deployment dependency, not a prerequisite to isolated coding.
+Hard dependencies: accepted ADR-0046 and closed M004/C014/C023. C001 clean integration is an operational deployment dependency, not a prerequisite to isolated coding.
 
 ## Problem and prior-proof gap
 

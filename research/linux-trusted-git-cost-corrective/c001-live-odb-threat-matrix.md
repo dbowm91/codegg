@@ -3,7 +3,7 @@
 Status: exact-head hosted test-only qualification passed; external metadata and concurrent-writer probes remain open and prohibit production admission.
 
 Reviewed source baseline: rebased branch commit `0b36c71f` (2026-10-18); test implementation commits `db6033f9` and `5c43a7fd`.
-Authority: accepted ADR-0043 permits test-only Linux mechanism probes; proposed ADR-0044 has not been accepted and grants no production selector.
+Authority: accepted ADR-0046 permits test-only Linux mechanism probes; proposed ADR-0044 has not been accepted and grants no production selector.
 
 ## Security property versus consistency property
 

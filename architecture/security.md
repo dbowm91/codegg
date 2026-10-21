@@ -240,7 +240,7 @@ canonical workspace. Initial starts and restarts use the M004 helper; the
 preserving JSON-RPC pipes. Failure to construct or launch this scope keeps the
 constrained LSP tools unavailable.
 
-ADR-0043 accepts Bubblewrap-based Linux namespace/mount composition as the
+ADR-0046 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
 network behavior are unchanged. The opt-in mount path is implemented but
 remains unqualified until the native protected-mount, descriptor, race,

@@ -27,12 +27,19 @@ not active ADR allocations.
 The C004 identity corrective archived the exact pre-migration Linux and command
 records under `plans/archive/linux-command-adr-id-aliases/`, with source blob IDs,
 content digests, and mappings in `migration.json`. Reconciliation with current
-main preserves all main ADR allocations through ADR-0041. The accepted command
+main preserves all main ADR allocations through ADR-0043. The accepted command
 authority decision is retained under ADR-0045 and the accepted Linux isolation
-decision under ADR-0043. Their substance and acceptance status are unchanged;
+decision under ADR-0046. Their substance and acceptance status are unchanged;
 production Linux backend registration and rollout remain gated by native
 qualification. The proposed contained-Git live-object decision is retained as
 ADR-0044 and does not authorize replacing the immutable trusted-Git route.
+
+A second collision was reconciled on 2026-10-21: main had allocated ADR-0043 to
+the accepted session-owned subagent lifecycle projection decision and ADR-0042 to
+the accepted composer normal-mode key ownership decision, so the Linux isolation
+record moved from ADR-0043 to ADR-0046 and the command authority record from
+ADR-0042 to ADR-0045. Main wins both numbers; the decision content, status, and
+acceptance dates are unchanged.
 
 `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`
 records the original migration contract and
@@ -159,9 +166,11 @@ were never active on main and must not be reused for Windows references.
 - ADR-0033 — **accepted** directory-tied project identity and client working directory.
 - ADR-0034 — **proposed** editor syntax-tree dependency (current-main decision).
 - ADR-0035 through ADR-0041 — current-main accepted decisions; see their individual records.
-- ADR-0045 — **accepted** command syntax is advisory and execution authority is enforced.
-- ADR-0043 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
+- ADR-0042 — **accepted** composer normal-mode key ownership (current-main decision).
+- ADR-0043 — **accepted** session-owned subagent lifecycle projection (current-main decision; Option A accepted 2026-10-19).
 - ADR-0044 — **proposed only** contained Git execution with live mutable ODB reads and brokered metadata promotion; test-only proof is permitted, but replacing the immutable trusted-Git route requires independent maintainer acceptance and native security/performance admission. See `ADR-0044-contained-git-live-objects-and-metadata-authority.md`.
+- ADR-0045 — **accepted** command syntax is advisory and execution authority is enforced.
+- ADR-0046 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
 ## ADR-0032 workstream coordination reservation (2026-10-15)
 

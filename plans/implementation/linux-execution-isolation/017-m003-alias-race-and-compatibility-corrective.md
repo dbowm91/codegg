@@ -8,7 +8,7 @@ Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
 
 Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8.
 
-Applicable ADRs: accepted ADR-0043 (Linux mechanism); accepted ADR-0045 (command syntax and execution authority); ADR-0001/0002/0004/0016.
+Applicable ADRs: accepted ADR-0046 (Linux mechanism); accepted ADR-0045 (command syntax and execution authority); ADR-0001/0002/0004/0016.
 
 Primary class: capability / security invariant
 
@@ -22,7 +22,7 @@ Arbitrary future nested `.git` creation is permitted as workspace content. Trust
 
 ## 2. Why this corrective is ready
 
-- ADR-0043 is accepted.
+- ADR-0046 is accepted.
 - M002's typed launch interface and obtained-status boundary are implemented; its remaining macOS cross-compile condition is tracked separately and must be resolved or explicitly classified as non-blocking for this Linux-only gate.
 - C001 provides the typed Git execution-class interface.
 - C006 provides an opt-in Bubblewrap mount compiler and exact-head hosted proof of its basic managed-process handoff, but not the alias/race/tool compatibility matrix in this plan.
@@ -70,7 +70,7 @@ Change mount or trusted-Git implementation only when an adversarial fixture demo
 
 ### A — Reconcile live planning state
 
-Update the active M003 dependency/status summaries to distinguish accepted ADR-0043, the implemented M002 interface, M002's outstanding macOS compile condition, and this corrective's actual native gates. Preserve old closure records and their reviewed-baseline findings.
+Update the active M003 dependency/status summaries to distinguish accepted ADR-0046, the implemented M002 interface, M002's outstanding macOS compile condition, and this corrective's actual native gates. Preserve old closure records and their reviewed-baseline findings.
 
 ### B — Qualify repository aliases and Git trust boundary
 
