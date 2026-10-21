@@ -387,6 +387,16 @@ executor marker — and proves each is reported. The guard is wired into
   native probe matrix 1/1 and the restricted-child
   timeout/cancellation/descendant coverage 6/6 on a Windows runner — so the
   merge did not disturb the Windows compile fix either.
+* **The complete local sweep** — `cargo nextest run --workspace --locked --profile
+  ci --no-fail-fast`, run under `umask 022`: **15,909 tests run, 15,900
+  passed, 6 failed, 3 timed out, 7 skipped**. The nine that did not pass are
+  **host contention**, not defects: five are `eggwork_remote_execution_live`
+  tests that drive a real remote node, three are `tool::lsp` service tests
+  that timed out under load, and one is
+  `interactive_process_sessions::environment_overrides_apply_while_denied_vars_stay_stripped`,
+  which races with the other session's daemon. **All nine pass in `main`'s
+  own green CI run `39627518536`**, which is the authority; the local host
+  runs several cargo daemons and a daemon process at once.
 * **The local full sweep needs `umask 022` on this host.** The first complete
   local sweep (15,909 tests, `--no-fail-fast`) reported **36 failures and 6
   timeouts**, and every one of them was an artefact of the desktop session's
@@ -398,6 +408,21 @@ executor marker — and proves each is reported. The guard is wired into
   (`39627518536`) passes exactly the tests that failed here. A local sweep on
   this host is only evidence when it runs under `umask 022`; without it the
   result is noise that reads like a regression.
+
+  The **test-side** half of that is fixed on this branch: `TestScratchRoot`
+  now pins its root to `0700` like the product path does, so the scratch
+  suites no longer depend on the umask of whoever runs them.
+
+  The **product-side** half is a real defect and is *not* fixed here,
+  because the scratch subsystem is M007's, not this line's. `session_scratch_dir`
+  creates the cache root with `create_dir_all` — inheriting the ambient umask —
+  and then refuses it with `ensure_private_parent` if it is group- or
+  other-writable. A user whose umask is `002` therefore gets a `0775`
+  `~/.cache` and the daemon **cannot use the agent scratch subsystem at
+  all**, because the directory it created is one it then refuses. The fix
+  belongs to the subsystem that owns the path: create the cache root
+  privately rather than inheriting the umask. It is recorded here so it is
+  not lost with this line.
 * **Local, on the merged tree** — `scripts/verify.sh quick` — pass (exit 0);
   `cargo check --workspace --all-targets --locked` — pass (exit 0);
   `cargo fmt --all -- --check` — pass; `codegg validate --config
