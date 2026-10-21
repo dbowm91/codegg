@@ -878,6 +878,312 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             shutil.rmtree(root, ignore_errors=True)
 
 
+#: Evidence that a headless tool call was refused or failed.
+#:
+#: The headless contract reports neither a per-tool status nor a per-tool
+#: output: its JSON result carries only the tools the model called, the turn
+#: result, and the usage. A refusal is therefore read from the child's own
+#: output when the child prints one, and from the missing artifact when it
+#: does not. The markers are deliberately generic: a candidate that words its
+#: refusal differently must still be caught.
+EXEC_TOOL_REFUSAL_MARKERS = (
+    "permission denied",
+    "non-retryable error",
+    "missing workspace path policy",
+    "tool error:",
+    "tool_permission",
+    "permission_error",
+)
+
+#: The headless child names the refused tool when it reports one.
+EXEC_TOOL_REFUSAL_PATTERN = re.compile(r"Tool '([^']+)'[^\n]*non-retryable error", re.IGNORECASE)
+
+
+def _exec_tool_refused(name: str, refused_tools: list[str], tool_failures: int,
+                        tools_used: list[str]) -> bool:
+    """True when the observed tool call is the one that failed.
+
+    A refusal the child named is attributed to that tool. A refusal the child
+    did not name is attributed to the last tool it reported, because the
+    headless contract reports the called tools and nothing else.
+    """
+    if name in refused_tools:
+        return True
+    return bool(tool_failures) and not refused_tools and bool(tools_used) and name == tools_used[-1]
+
+
+def _parse_exec_payload(text: str) -> Optional[dict[str, Any]]:
+    """Return the headless child's JSON result object, or ``None``.
+
+    The child prints exactly one JSON object on stdout. A tolerant fallback
+    scans the trailing lines so a stray banner cannot hide the result, and an
+    unparseable stdout is reported as absent rather than guessed at.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        return value
+    for line in reversed(stripped.splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def run_exec_trial(binary: Path, profile: str, timeout: float, *,
+                   ledger_root: Optional[Path] = None, candidate: str = "current",
+                   task_id: str = "headless-exec-write", group_id: str = "headless-exec",
+                   repeat: int = 0, suite_sha256: str = "", case_sha256: str = "",
+                   content: str = "harness-lab-tool-ok",
+                   expected_text: Optional[str] = "harness-lab-tool-ok",
+                   expected_file: str = "tool-receipt.txt",
+                   expected_exists: Optional[bool] = None,
+                   expected_terminal: str = "passed",
+                   expected_tool_failures: int = 0,
+                   tool_sequence: Optional[list[dict[str, Any]]] = None,
+                   initial_files: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """Run one headless ``codegg exec`` turn against the local deterministic fixture.
+
+    The headless adapter is measured the same way the native ACP adapter is,
+    with one difference that decides the whole trial: the headless contract
+    reports no per-tool status. A turn can complete with every tool refused
+    and still print ``success: true``, so the artifact and the child's own
+    output decide the outcome — never the child's success flag alone.
+
+    The trial never raises for an observed failure. It records the failure and
+    returns the receipt, so a score sees a failure terminal instead of an
+    aborted evaluation.
+    """
+    from .provider_fixture import FixtureProvider
+    if profile not in {"full-host", "workspace-write"}:
+        raise HarnessError("profile must be full-host or workspace-write")
+    trial_started = time.monotonic()
+    binary = binary.resolve()
+    root = lane_root("exec-" + uuid.uuid4().hex[:8])
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = root / "workspace"
+    workspace.mkdir()
+    provider = None
+    try:
+        target = (workspace / expected_file).resolve(strict=False)
+        if not target.is_relative_to(workspace.resolve()):
+            raise HarnessError("fixture verifier path escapes its private workspace")
+        for relative, value in (initial_files or {}).items():
+            path = (workspace / relative).resolve(strict=False)
+            if not path.is_relative_to(workspace.resolve()) or not isinstance(value, str) or len(value.encode()) > 65536:
+                raise HarnessError("fixture initial file path or content is invalid")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value, encoding="utf-8")
+        if tool_sequence is None:
+            tool_sequence = [{"name": "write", "arguments": {"path": expected_file, "content": content}}]
+        if not isinstance(tool_sequence, list) or not 1 <= len(tool_sequence) <= 8:
+            raise HarnessError("fixture tool sequence must contain 1-8 calls")
+        def bind_workspace(value: Any) -> Any:
+            if isinstance(value, str):
+                return value.replace("{workspace}", str(workspace))
+            if isinstance(value, list):
+                return [bind_workspace(item) for item in value]
+            if isinstance(value, dict):
+                return {key: bind_workspace(item) for key, item in value.items()}
+            return value
+        tool_sequence = bind_workspace(tool_sequence)
+        provider = FixtureProvider(tool_sequence).start()
+        spec = SubjectSpec.create("exec-trial", binary, workspace, root, Path.cwd())
+        env = spec.environment()
+        config = {
+            "provider": {"openai": {
+                "api_key": "local-fixture-only",
+                "base_url": provider.base_url,
+                "models": {"harness-fixture": {"name": "Harness Fixture"}},
+            }},
+            "permission": {"bash": "ask", "bash_ask_patterns": ["*"]},
+            "agent": {"build": {"permission": {"write": "ask"}}},
+        }
+        config_path = Path(env["CODEGG_TUI_CONFIG"])
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        request = json.dumps({
+            "prompt": f"Complete this deterministic local task using the supplied tool sequence: {task_id}.",
+            "model": "openai/harness-fixture",
+            "agent": "build",
+        })
+        argv = [str(binary), "exec", "--json", request, "--format", "json",
+                "--approval-mode", "yolo", "--sandbox", profile]
+        process = subprocess.Popen(argv, cwd=workspace, env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=(os.name == "posix"))
+        timed_out = False
+        try:
+            stdout_bytes, stderr_bytes = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _signal_owned_group(process, signal.SIGKILL)
+            try:
+                stdout_bytes, stderr_bytes = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                stdout_bytes, stderr_bytes = b"", b""
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+        payload = _parse_exec_payload(stdout_text)
+        combined = f"{stdout_text}\n{stderr_text}"
+        tools_used: list[str] = []
+        child_success = False
+        child_error: Optional[str] = None
+        child_code: Optional[str] = None
+        tokens_used: Optional[int] = None
+        if payload is not None:
+            raw_tools = payload.get("toolsUsed")
+            if isinstance(raw_tools, list):
+                tools_used = [str(item) for item in raw_tools]
+            child_success = payload.get("success") is True
+            raw_error = payload.get("error")
+            child_error = raw_error if isinstance(raw_error, str) else None
+            raw_code = payload.get("code")
+            child_code = raw_code if isinstance(raw_code, str) else None
+            tokens_used = _optional_token_count(payload.get("tokensUsed"))
+        observed_exists = target.is_file()
+        observed_text = target.read_text(encoding="utf-8", errors="replace") if observed_exists else None
+        expected_exists_resolved = True if expected_exists is None else bool(expected_exists)
+        artifact_matches = observed_exists and (expected_text is None or observed_text == expected_text)
+        # The same verdict the ledger's own verifier reaches: a missing
+        # artifact fails the case that expects one, and an artifact whose
+        # content differs fails it too.
+        verification_passed = ((not observed_exists and not expected_exists_resolved)
+                                or (expected_exists_resolved and artifact_matches))
+        refused_tools = sorted(set(EXEC_TOOL_REFUSAL_PATTERN.findall(combined)))
+        marker_hits = [marker for marker in EXEC_TOOL_REFUSAL_MARKERS if marker in combined.lower()]
+        tool_failures = len(refused_tools)
+        if tool_failures == 0 and marker_hits:
+            # The child reported a refusal without naming the tool.
+            tool_failures = 1
+        if tool_failures == 0 and tools_used and expected_exists_resolved and not artifact_matches:
+            # The child reported a tool call and the artifact never appeared:
+            # the tool did not do its work, whatever the child called the turn.
+            tool_failures = len(tools_used)
+        failures_match = (tool_failures >= expected_tool_failures if expected_terminal == "execution_failed"
+                          else tool_failures == expected_tool_failures)
+        if timed_out:
+            stop_reason = "timeout"
+        elif payload is None:
+            stop_reason = "indeterminate"
+        elif child_success:
+            stop_reason = "end_turn"
+        else:
+            stop_reason = "execution_failed"
+        if timed_out:
+            error_text = f"headless child exceeded the {timeout}s budget and was killed"
+        elif payload is None:
+            error_text = "headless child did not emit a parseable JSON result"
+        elif not child_success:
+            error_text = child_error or "headless child reported a failed turn"
+        else:
+            error_text = None
+        if timed_out or payload is None or not child_success:
+            ok = False
+        elif expected_terminal == "execution_failed":
+            ok = failures_match
+        elif expected_terminal == "assertion_failed":
+            ok = (not verification_passed) and failures_match
+        else:
+            ok = verification_passed and failures_match
+        usage = None
+        if tokens_used is not None:
+            # The headless contract reports one total and never splits it into
+            # input/output counts. A missing total stays missing: it is never
+            # reported as zero tokens.
+            usage = {"turn_id": None, "input_tokens": None, "output_tokens": None,
+                     "cached_tokens": None, "reasoning_tokens": None,
+                     "total_tokens": tokens_used}
+        receipt: dict[str, Any] = {
+            "ok": ok,
+            "task_id": task_id,
+            "repeat": repeat,
+            "profile": profile,
+            "provider": "local-openai-fixture",
+            "model": "openai/harness-fixture",
+            "agent": "build",
+            "tool_started": len(tools_used),
+            "tool_finished": max(len(tools_used) - tool_failures, 0),
+            "tool_failures": tool_failures,
+            "tool_outcomes": [{"tool": name,
+                               "status": "failed" if _exec_tool_refused(name, refused_tools, tool_failures, tools_used) else "completed"}
+                              for name in tools_used],
+            "tool_selection": tools_used,
+            "codegg_usage": usage,
+            "usage_unavailable_reason": "not_provided",
+            "tool_receipt_created": observed_exists,
+            "provider_calls": provider.calls,
+            "wall_time_ms": int((time.monotonic() - trial_started) * 1000),
+            "stop_reason": stop_reason,
+            "error": error_text,
+            "error_code": child_code,
+            "workspace": str(workspace),
+            "expected_file": expected_file,
+            # The headless path runs in-process: there is no daemon to prove.
+            "daemon": {},
+            # The headless contract exposes no policy receipt in its result.
+            "policy": None,
+            "session_id": None,
+        }
+        if ledger_root is not None:
+            from .ledger import record
+            trace = []
+            scripted: dict[str, Any] = {}
+            for call in tool_sequence:
+                name = call.get("name")
+                if isinstance(name, str) and name not in scripted:
+                    scripted[name] = call.get("arguments")
+            for name in tools_used:
+                arguments = scripted.get(name)
+                digest = (hashlib.sha256(json.dumps(arguments, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                          if arguments is not None else None)
+                trace.append({"kind": "tool_started", "tool": name,
+                              "arguments_sha256": digest, "elapsed_ms": None})
+                trace.append({"kind": "tool_finished", "tool": name,
+                              "status": "failed" if _exec_tool_refused(name, refused_tools, tool_failures, tools_used) else "completed",
+                              "elapsed_ms": None})
+            trace.append({"kind": "turn_terminal", "status": stop_reason})
+            override = None
+            if timed_out:
+                override = "timeout"
+            elif expected_terminal == "execution_failed" and failures_match:
+                # The case asked for a failed turn and the tool failures match:
+                # the recorded terminal names that failure rather than the
+                # missing artifact.
+                override = "execution_failed"
+            elif payload is not None and not child_success:
+                # The headless turn itself failed. The recorded terminal names
+                # the failed execution instead of the missing artifact, so the
+                # reliability criterion sees it as the avoidable failure it is.
+                override = "execution_failed"
+            try:
+                receipt["ledger_manifest"] = record(
+                    ledger_root, receipt, task_id=task_id, group_id=group_id,
+                    candidate=candidate, workspace=workspace, expected_file=expected_file,
+                    expected_text=expected_text, expected_exists=expected_exists_resolved,
+                    timeout_seconds=timeout, repeat=repeat, suite_sha256=suite_sha256,
+                    case_sha256=case_sha256, trace=trace, terminal_override=override)
+            except (ValueError, OSError) as error:
+                receipt["ledger_error"] = f"{type(error).__name__}: {error}"
+                receipt["ok"] = False
+        return receipt
+    finally:
+        if provider is not None:
+            provider.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _default_daemon_fingerprint(binary: Path, timeout: float) -> tuple[str, str] | None:
     # Status is read-only and does not autostart the daemon. This detects any
     # accidental attachment or mutation of the ordinary user daemon.

@@ -8,7 +8,7 @@ import sys
 import time
 from typing import Optional
 
-from .supervisor import HarnessError, run_smoke, run_tool_trial
+from .supervisor import HarnessError, run_exec_trial, run_smoke, run_tool_trial
 from . import budget
 from . import ledger
 from . import improve
@@ -395,6 +395,8 @@ def main(argv: list[str] | None = None) -> int:
                     expanded_files_by_task[case["task_id"]] = expanded_initial_files
                     if not isinstance(case.get("expected_file", "tool-receipt.txt"), str):
                         raise HarnessError("suite expected_file must be a relative path")
+                    if case.get("transport", "acp") not in {"acp", "exec"}:
+                        raise HarnessError("suite case transport must be acp or exec")
                     if not isinstance(case.get("expected_exists", not case.get("deny_bash", args.deny_bash)), bool):
                         raise HarnessError("suite expected_exists must be boolean")
                     if not isinstance(case.get("cancel", False), bool):
@@ -470,18 +472,34 @@ def main(argv: list[str] | None = None) -> int:
                                 exhausted = True
                                 break
                         try:
-                            trial = run_tool_trial(binary, case.get("profile", args.profile), min(args.timeout, remaining, case.get("timeout_seconds", args.timeout)),
-                                                   bool(case.get("deny_bash", args.deny_bash)), args.ledger,
-                                                   args.candidate, case["task_id"], case.get("group_id", args.group_id),
-                                                   repeat, suite_sha256, case_sha256,
-                                                   case.get("content", "harness-lab-tool-ok"),
-                                                   case.get("expected_text", "harness-lab-tool-ok"),
-                                                   case.get("tool_sequence"), expanded_files_by_task[case["task_id"]],
-                                                   case.get("expected_file", "tool-receipt.txt"),
-                                                   case.get("expected_exists"), case.get("cancel", False),
-                                                   case.get("expected_terminal", "passed"), case.get("timeout_task", False),
-                                                   case.get("context_text"),
-                                                   case.get("expected_tool_failures", 1 if case.get("deny_bash", args.deny_bash) else 0))
+                            if case.get("transport", "acp") == "exec":
+                                trial = run_exec_trial(binary, case.get("profile", args.profile),
+                                                      min(args.timeout, remaining, case.get("timeout_seconds", args.timeout)),
+                                                      ledger_root=args.ledger, candidate=args.candidate,
+                                                      task_id=case["task_id"], group_id=case.get("group_id", args.group_id),
+                                                      repeat=repeat, suite_sha256=suite_sha256,
+                                                      case_sha256=case_sha256,
+                                                      content=case.get("content", "harness-lab-tool-ok"),
+                                                      expected_text=case.get("expected_text", "harness-lab-tool-ok"),
+                                                      expected_file=case.get("expected_file", "tool-receipt.txt"),
+                                                      expected_exists=case.get("expected_exists"),
+                                                      expected_terminal=case.get("expected_terminal", "passed"),
+                                                      expected_tool_failures=case.get("expected_tool_failures", 0),
+                                                      tool_sequence=case.get("tool_sequence"),
+                                                      initial_files=expanded_files_by_task[case["task_id"]])
+                            else:
+                                trial = run_tool_trial(binary, case.get("profile", args.profile), min(args.timeout, remaining, case.get("timeout_seconds", args.timeout)),
+                                                       bool(case.get("deny_bash", args.deny_bash)), args.ledger,
+                                                       args.candidate, case["task_id"], case.get("group_id", args.group_id),
+                                                       repeat, suite_sha256, case_sha256,
+                                                       case.get("content", "harness-lab-tool-ok"),
+                                                       case.get("expected_text", "harness-lab-tool-ok"),
+                                                       case.get("tool_sequence"), expanded_files_by_task[case["task_id"]],
+                                                       case.get("expected_file", "tool-receipt.txt"),
+                                                       case.get("expected_exists"), case.get("cancel", False),
+                                                       case.get("expected_terminal", "passed"), case.get("timeout_task", False),
+                                                       case.get("context_text"),
+                                                       case.get("expected_tool_failures", 1 if case.get("deny_bash", args.deny_bash) else 0))
                         except HarnessError as error:
                             trial = {"ok": False, "task_id": case["task_id"], "repeat": repeat,
                                      "failure_type": type(error).__name__}

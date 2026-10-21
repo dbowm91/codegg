@@ -68,7 +68,21 @@ class FixtureProvider:
                 call_index = owner.calls
                 expected = owner.calls_to_make[min(call_index, len(owner.calls_to_make) - 1)]["name"]
                 if call_index < len(owner.calls_to_make) and expected not in names:
-                    self.send_error(422, f"expected native {expected} tool schema")
+                    # The refusal records what the caller actually advertised.
+                    # A schema mismatch is otherwise invisible: the caller only
+                    # sees a 422 and cannot tell which tool was missing.
+                    owner.request_summaries.append({"call": call_index + 1,
+                                                    "model": request.get("model"),
+                                                    "tool_names": names,
+                                                    "message_roles": [message.get("role") for message in request.get("messages", [])],
+                                                    "called_tools": [], "tool_message_names": [],
+                                                    "tool_message_bytes": [],
+                                                    "tool_message_has_context_handle": False,
+                                                    "tool_message_total_bytes": [],
+                                                    "tool_message_has_required_text": False,
+                                                    "context_read_used": False, "context_recovered": False,
+                                                    "refused_expected_tool": expected})
+                    self.send_error(422, f"expected native {expected} tool schema; advertised: {names}")
                     return
                 with owner._lock:
                     owner.calls += 1
