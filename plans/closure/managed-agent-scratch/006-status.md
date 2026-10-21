@@ -344,6 +344,43 @@ failure was already present on `main` before this branch existed. The cause is
 raising a human decision, which was recorded in the M005 closure record. It
 is **not** a regression of this milestone and is not repaired here.
 
+### A live observation of the operator surface
+
+The census was exercised against a **live daemon**, not only in a fixture.
+The daemon was started **isolated** — its own `CODEGG_DAEMON_HOME` and
+`CODEGG_DATA_HOME`, its own socket, and a temporary root — so the
+developer's own daemon was not driven. The scratch tree is the per-user
+cache tree, which is the tree the milestone is about.
+
+| Command | Observed result |
+|---|---|
+| `codegg daemon scratch-usage` | `Scratch usage — 301 tree(s), 40.0 KiB, measured 20s ago`, then one row per tree: the 16-character digest prefix, the size, the file and directory counts, the link and multiply-linked counts, and the verdict |
+| `codegg daemon scratch-usage --json` | the same measurement as JSON, with the **full** 64-character digest, the sizes, the counts, the modification-time range, `reclaimable`, the refusal rules, and the refusal paths |
+| `codegg daemon status` | one added line: `Scratch: 301 tree(s), 40.0 KiB, measured 34s ago` |
+
+What the observation shows about the milestone's purpose: on this host the
+tree holds **301 session trees totalling 40 KiB** — almost all of them
+holding nothing but their own owner record. They are session trees that were
+allocated and never reclaimed. Before this milestone that condition was
+invisible; there is no surface that reported it. The census reports it, and
+the numbers are what the unregistered retention successor needs in order to
+have a policy at all.
+
+Two properties of the observation are worth recording because they are the
+milestone's own guarantees, observed rather than asserted:
+
+- The JSON carries the full digest and the ages but **no absolute host
+  path, no file content, and no session identity** — the digests are
+  one-way and the tree is named by its digest alone.
+- The daemon was started, measured, and stopped without the census
+  **changing anything**: the tree is the same afterwards.
+
+The 301 trees are a property of this host and of the repository's own test
+suite, which allocates real session scratch trees under the per-user cache
+root. The pre-existing `scratch::tests` module leaks four trees per run
+(measured: 305 → 309 with the milestone's own test skipped, and 305 → 305
+with only that test run), so the milestone's new test adds **no** leak.
+
 ### The local whole-suite sweep
 
 `cargo nextest run --workspace --locked --profile ci --no-fail-fast` on this
