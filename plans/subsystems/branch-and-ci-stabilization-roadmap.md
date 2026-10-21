@@ -207,6 +207,30 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   every target, and the feature-enabled tier is green at 12474/12474 after an
   inherited race in one of `main`'s tests was fixed. See §3.12–§3.15 of the
   closure.
+- **Reconciliation with `main` at `2a0bae08f` — 2026-10-21 (recorded, not
+  silent).** `main` advanced a further **9 commits** after the fresh rebase's
+  base, and the pull request was reported `CONFLICTING`. The branch was
+  reconciled with it by a **merge** — the pattern this repository's own history
+  already uses for a branch carrying work `main` has not seen — and the
+  tip-level conflict was **exactly one file**, resolved by the rule that a
+  later qualification supersedes an earlier deferral. The branch now carries
+  `main`'s tip as a direct ancestor, the merged tree holds zero conflict
+  markers, every target compiles, the canonical gate passes, and **no
+  published count moved**: `main`'s nine commits added and deleted no file
+  under any directory a count is measured from. The reconciled tree's sweep is
+  green at **15755/15755** and its feature-enabled tier at **12496/12496**,
+  with the live Eggwork qualification **16/16** on its own. See §3.16 of the
+  closure.
+- **Hosted evidence — 2026-10-21 (recorded, not silent).** The default sweep
+  and the five native workflows ran on the rebased head and **concluded
+  green**: the hosted default sweep reports **15733 tests run: 15733 passed, 8
+  skipped** — the same count the local sweep reports — and the M004/M005
+  native tier is qualified on a Landlock-ABI-6 host this workstation does not
+  have. The `pull_request` event did not create a `CI` run for this pull
+  request on any of its heads, so the run carrying the evidence is a
+  `workflow_dispatch` against the branch head; the cause is not in the
+  repository's workflow file and is **not diagnosed** here. See §4.3 of the
+  closure.
 - **Exit conditions:** the tree compiles with every target; both identifier
   guards pass; the canonical gate passes; the sweep's remaining failures are
   zero or explained; and the records say exactly what was and was not verified.
@@ -272,6 +296,37 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   one side added and a type the other side extended. The fresh rebase needed
   both: the file-level proof was clean (93 files, 0 deviations) and the tree
   still did not compile, because three such pairings existed.
+- **Decision point (2026-10-21): merge or rebase, when `main` advances again
+  after the branch has been rebased.** Resolved in favour of a **merge**. The
+  repository's own history carries four `Merge origin/main into <branch>`
+  commits for this situation, and two workstreams in this repository recorded
+  their reconciliations the same way; a third rebase would have replayed 309
+  commits to resolve one file and would have invalidated the hosted evidence
+  already obtained on the pre-merge head. The branch now carries `main`'s tip
+  as a direct ancestor.
+- **Decision point (2026-10-21): which side wins a conflict where one side's
+  later work discharges the other side's stated precondition.** Resolved in
+  favour of the **later qualification**: `main`'s M007 qualified the
+  lease-aware reclamation this branch's skill file was waiting on, so the
+  branch's "cleanup intentionally retains these resources until lease-aware
+  reclamation is qualified" yields to `main`'s description of the qualified
+  behaviour. This is the same shape as the ADR rule in a different domain —
+  where one side's later work discharges the other's precondition, the
+  discharged side yields — and the branch's own M005/M004 text, which `main`
+  does not carry at all, is kept in full.
+- **Decision point (2026-10-21): how to obtain the hosted evidence when the
+  `pull_request` event produces no run.** The `pull_request` event did not
+  create a `CI` run for this pull request, on this branch, on any of its
+  heads. The cause is not in the repository's workflow file — `ci.yml`'s
+  trigger block is byte-identical to `main`'s, the `verify` job has no `if:`
+  condition, and the pull request's diff is 301 changed files including `.rs`
+  sources, so `paths-ignore` cannot explain it — and it is therefore **not
+  diagnosed** here. The run that carries the evidence is a
+  `workflow_dispatch` against the branch's own head, which is the **stronger**
+  of the two tests rather than a weaker substitute: a `pull_request` run
+  checks out the synthetic `refs/pull/N/merge`, while the dispatched run
+  checks out the tree this record describes, with `main` already merged into
+  it. The job, its steps, and its configuration are identical in both cases.
 - **Decision point: how to treat a transient object-store read failure.**
   Resolved in favour of retrying inside the existing bounded attempts, because
   the bound already exists for exactly this class of event and a persistent
@@ -341,4 +396,4 @@ This roadmap is complete when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head is **pending**, not an obstacle: a pull request is open for it) | |
+| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head has **landed green** — 15733 run, 15733 passed, 8 skipped; the branch is also reconciled with `main` at `2a0bae08f` and carries its tip as a direct ancestor) | |

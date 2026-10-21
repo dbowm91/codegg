@@ -337,6 +337,16 @@ rebased onto `main` at `cb0e79c0`. Nine rows moved, and two rows changed their
 The directory tree above was corrected with them: it said "Integration tests
 (278 files)" and now says **284**.
 
+The table was then **re-verified, unchanged**, after the branch was reconciled
+with `main` at `2a0bae08f` by a merge on 2026-10-21. `main`'s nine commits
+added and deleted **no** file under any directory a count is measured from —
+`src/tool/`, `src/context/`, `src/tui/app/state/`, `crates/codegg-core/`,
+`crates/egglsp/src/`, `tests/`, `scripts/`, `architecture/` — so no row could
+move; every row was nonetheless re-measured against its own listed `Source`
+on the merged tree and none differed. The built-in slash-command row is
+unchanged for a second reason: `src/tui/command.rs` is byte-identical to the
+pre-merge tree.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 87 | `architecture/*.md` |

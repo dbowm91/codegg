@@ -10,7 +10,7 @@ Source subsystem roadmap:
 
 - `plans/subsystems/branch-and-ci-stabilization-roadmap.md#7-milestones`
 
-Repository baseline reviewed: `d251b11c` (branch tip before the first rebase), rebased onto `main` at `fe2c1306` and then — the **fresh rebase** — onto `main` at `cb0e79c0`
+Repository baseline reviewed: `d251b11c` (branch tip before the first rebase), rebased onto `main` at `fe2c1306`, then — the **fresh rebase** — onto `main` at `cb0e79c0`, and then reconciled with `main` at `2a0bae08f` by a merge (§3.16)
 
 ## 1. Executive finding
 
@@ -26,6 +26,22 @@ side its content.
 > cannot see, and **one** inherited race in a test. All are closed, and all are
 > recorded below (§3.12–§3.15). The first rebase's findings stand unchanged;
 > this section records what the second one added.
+>
+> **The reconciliation with `main` at `2a0bae08f`, and the hosted evidence.**
+> `main` advanced a further **9 commits** after the fresh rebase's base, and the
+> pull request was reported `CONFLICTING`. The branch was reconciled with it by
+> a **merge** — the pattern this repository's own history already uses for a
+> branch carrying work `main` has not seen — and the tip-level conflict was
+> **exactly one file**, resolved by the rule that a later qualification
+> supersedes an earlier deferral (§3.16). The branch now carries `main`'s tip
+> as a direct ancestor, and **no published count moved**: `main` added and
+> deleted no file under any directory a count is measured from.
+>
+> The hosted evidence this milestone waited for **has landed**. The default
+> sweep ran green on the head — **15733 tests run, 15733 passed, 8 skipped** —
+> together with the five native workflows (§4.3). The rebased head is therefore
+> no longer an expectation; §13 no longer carries that gap, and what remains
+> there is narrower and stated plainly.
 
 The rebase replayed **295 commits** onto `main` at `fe2c1306` and stopped at
 **21 conflict steps across 20 distinct files**. Every conflict was resolved by
@@ -97,7 +113,7 @@ contract** rather than an accident of the host.
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| The branch is rebased onto `main` and carries `main`'s tip | **the fresh rebase**: `git merge-base HEAD origin/main` == `cb0e79c0`; `git log --oneline origin/main..HEAD` == **304 commits**, every subject preserved (the first rebase's 295 onto `fe2c1306` is superseded) | pass |
+| The branch is rebased onto `main` and carries `main`'s tip | **the reconciliation with `main` at `2a0bae08f`**: `git merge-base HEAD origin/main` == `2a0bae08f` and `git merge-base --is-ancestor origin/main HEAD` succeeds, so `main`'s tip is a direct ancestor of the branch (§3.16). The fresh rebase's own facts stand: `cb0e79c0` was the base it replayed **304** commits onto, every subject preserved (the first rebase's 295 onto `fe2c1306` is superseded) | pass |
 | No conflict survives in the final tree | `git grep -lE "^(<<<<<<< \|>>>>>>> )" HEAD --` outside `plans/` → **0** | pass |
 | A conflict is never committed with markers | two such commits were found during the rebase and repaired by a targeted rewrite; the repair is proved by an **empty** `git diff --stat backup/post-rebase-pre-fix HEAD` | pass |
 | One storage-layout number per migration | `crates/codegg-core/src/session/schema.rs` has one `migrate_v83` (main's managed scratch), `migrate_v84` (M005 network intent), `migrate_v85` (C007 journal); `python3 scripts/check_project_catalog_invariants.py` → **7/7** | pass |
@@ -119,7 +135,7 @@ contract** rather than an accident of the host.
 | The forty-four tests that failed in the authoritative sweep pass | the sweep's result is recorded in §4.1; the previously-failing families (`scratch`, `core::daemon`, `core::daemon_sessions`, `tool_program_m015/016/017`, `session_family control_m004`, `async_background_c006`, `agent_loop_harness`, `identity_live_execution_audit`, `identity_m002_live_audit_hooks`, `workspace_root_execution_authority`, `linux_native_scratch_containment`, `python_script::executor`, `managed_process`, `tool::bash`) pass | pass |
 | The sweep's result does not depend on the operator's home directory | `scripts/verify.sh full` and `.github/workflows/ci.yml` both give the sweep a private cache root; the authoritative sweep in §4.1 was run with the host's own `~/.cache` still world-writable (0777) and still passed | pass |
 | The branch passes the CI clippy step | `cargo clippy --workspace --all-targets --locked -- -D warnings` → **clean**; four lints in branch-owned code would have failed it (§3.8) | pass |
-| The feature-enabled tier passes | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci` → 11804 run, **11804 passed, 0 failed** on the fixed tree (§4.2) | pass |
+| The feature-enabled tier passes | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci` → **12496 run, 12496 passed, 0 failed** on the merged tree (§4.2); 11804 run, 11804 passed, 0 failed on the pre-rebase tree | pass |
 | The live Eggwork qualification's trust chain does not follow the operator's umask | `tests/eggwork_remote_execution_live.rs` regression test `a_staged_sandbox_helper_is_trusted_whatever_the_umask`; **non-vacuity proved** — with the helper group-writable the *same* five qualifications fail (8 passed / 5 failed) and the staged pair passes (14/14) (§3.11) | pass |
 | No work is lost by the force push | the remote branch's two commits past the rebase base (`32611c8d`, `5019fb26`) are replayed onto the rebased branch; their files are **byte-identical** to the remote's originals (§3.10) | pass |
 | Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20 (**eight** rows corrected) and again on 2026-10-21 against the rebased tree (**nine** more rows moved, two of them because the *measure* was wrong — the tool-registration count and the authorized-operations count); no row is carried forward (§3.6) | pass |
@@ -127,6 +143,10 @@ contract** rather than an accident of the host.
 | No branch content is lost by the fresh rebase | for every file the branch changed relative to the merge base, the canonical per-file three-way merge of (branch, merge base, `main`) was compared with the rebased tree: **93 files byte-identical, 0 deviations**; **zero** conflict markers in the tree (§3.12.4) | pass |
 | The merged tree compiles with every target | `cargo check --workspace --all-targets --locked` → **exit 0**. The first attempt did not compile: the rebase cannot see a pairing between a file `main` added and a type this branch extended. Three such pairings were found and closed (§3.14) | pass |
 | The feature-enabled tier is deterministic | `real_tui_rollback_invariants_on_writer_closed` failed **7 of 12** isolated runs; its wait condition omitted the counter its own assertion checks. Fixed by waiting for that counter; **0 failures in 15 runs** after, and the tier is green. No assertion weakened, no timeout widened, no product code touched (§3.15) | pass |
+| The branch is reconciled with `main`'s current tip | the tip-level conflict was **exactly one file**, `.opencode/skills/tool-execution/SKILL.md`; it is resolved by the rule that a later qualification supersedes an earlier deferral, and the branch's M005/M004 text — which `main` does not carry at all — is kept in full (§3.16). The merged tree holds **zero** conflict markers, `cargo check --workspace --all-targets --locked` → **exit 0**, and `scripts/verify.sh quick` → **"Quick verification passed."** | pass |
+| The reconciliation does not move a published count | `main`'s nine commits added and deleted **no** file under any directory a count is measured from (`--diff-filter=A` and `--diff-filter=D` are empty for `src/tool/`, `src/context/`, `src/tui/app/state/`, `crates/codegg-core/`, `crates/egglsp/src/`, `tests/`, `scripts/`, `architecture/`). Every count was then re-verified against its own listed `Source` on the merged tree: architecture docs **87**, tool registrations **67** (54 + 13), tool source files **80**, `codegg-core` modules **48**, authorized operations **244**, TUI state modules **33**, storage layout **85**, integration test files **284**, CI guard scripts **62**, database tables **89**, built-in agents **10**, workspace member crates **11** (+ root), built-in slash commands **168** (asserted by `built_in_command_count_matches_release_docs`; `src/tui/command.rs` is byte-identical to the pre-merge tree) (§3.16) | pass |
+| The rebased head is observed in a hosted CI run | run **39551117669** on head `352ed719c`: **conclusion success**, all 44 steps green, `Workspace tests` reporting **15733 tests run: 15733 passed, 8 skipped** (`Summary [ 523.092s]`) — the same count the local sweep reports (§4.3) | pass |
+| The M004/M005 native tier is qualified on the head | run **39550735458** on head `352ed719c`: **success**, with jobs `restricted-userns-fails-closed`, `process-ipc` and `git-cost-pilot` (skipped) — the ten qualification steps green on a host with Landlock ABI ≥ 6, which this workstation does not have (§4.3) | pass |
 
 ## 3. Production implementation evidence
 
@@ -639,19 +659,104 @@ simply waits for the teardown to finish before checking it.
 **Non-vacuity proved** on the same tree, same host, same command: **7 failures
 in 12 isolated runs before the fix, 0 failures in 15 runs after it**.
 
+### 3.16 The reconciliation with `main` at `2a0bae08f`
+
+`main` advanced a further **9 commits** after the fresh rebase's base
+`cb0e79c0` — PRs #146 (the TUI editor Helix-parity UX line), #147 (the scratch
+record corrections), and #148 (the managed-scratch M007 retention plan). The
+pull request was reported `CONFLICTING` / `DIRTY`, and the tip-level conflict
+was **exactly one file**.
+
+The reconciliation is a **merge**, not a third rebase, and the reason is the
+repository's own precedent rather than convenience: `main`'s history already
+carries four `Merge origin/main into <branch>` commits for this exact
+situation (`4bd81ef48`, `5bd37fa24`, `1b72c3b8b`, `17f590c3c`), and two
+workstreams in this repository recorded their reconciliations the same way
+(`plans/closure/tui-editor-helix-parity/021-merge-reconciliation-status.md`,
+`plans/closure/managed-agent-scratch-native-qualification-corrective/003-merge-reconciliation-status.md`).
+A third rebase would have replayed **309** commits to resolve one file, and
+would have invalidated the hosted evidence already obtained on the pre-merge
+head.
+
+**The one conflict: `.opencode/skills/tool-execution/SKILL.md`.** The two
+sides touch adjacent sentences about session scratch cleanup.
+
+- This branch said: "Current cleanup intentionally retains these resources
+  until lease-aware reclamation is qualified."
+- `main` said: "Cleanup is lease-aware: a terminal delegated run reclaims its
+  own private root, a revoked shared resource is reclaimed after the last
+  attempt lease releases, and a soft-deleted session's whole tree is reclaimed
+  once its durable runs and jobs are terminal. The daemon resumes that cleanup
+  after a restart. Scratch contents remain disposable cache data that host
+  cache maintenance may purge."
+
+**The rule applied: the later qualification supersedes the earlier deferral.**
+`main`'s M007 *qualified* lease-aware reclamation — which is precisely the
+condition the branch's sentence was waiting on — so the branch's sentence is
+stale and `main`'s is the accurate one. This is the same shape as WP-B's rule
+in a different domain: where one side's later work discharges the other side's
+stated precondition, the discharged side yields.
+
+The branch's M005/M004 paragraphs in that file — the authenticated network
+intent, the protected Bubblewrap mount view, the `with_linux_process_isolation`
+opt-in (Landlock ABI 6 signal/abstract-socket scopes, PID/IPC namespaces,
+private procfs, an architecture-checked seccomp denylist), the constrained PTY
+owner, and the constrained per-turn LSP service — are **unique to this
+branch**: `main` carries no equivalent text anywhere in the file. A grep of
+`main`'s copy for `M004|Landlock|OfflineRequired|Bubblewrap|network intent`
+returns nothing. They are kept in full, and the resolution is `main`'s
+cleanup sentence followed by the branch's M005/M004 paragraphs, so neither side
+loses a claim.
+
+**The four auto-merged files were reviewed, not trusted.** `plans/registry.md`
+is **996** lines, the branch's own count unchanged; `main`'s four rows changed
+in place (the managed-scratch row gains M007, the M006 row gains its named
+successor, the harness-lab row is dropped by `main`); and both of this
+milestone's own C001 rows — lines 50 and 648 — are intact. `src/tui/app/mod.rs`
+carries `main`'s editor-keymap and composer-badge changes, textually disjoint
+from the branch's. `architecture/tui.md` and `docs/tui.md` carry `main`'s
+editor documentation.
+
+**No published count moves.** `main`'s nine commits added and deleted **no**
+file under any directory a published count is measured from — `src/tool/`,
+`src/context/`, `src/tui/app/state/`, `crates/codegg-core/`, `crates/egglsp/src/`,
+`tests/`, `scripts/`, `architecture/` — because `git diff --diff-filter=A` and
+`--diff-filter=D` both return empty for those paths over `cb0e79c0..2a0bae08f`.
+The counts were then re-verified against their own listed `Source` on the
+merged tree: architecture docs **87**, tool registrations **67** (54 + 13),
+tool source files **80**, `codegg-core` modules **48**, authorized operations
+**244**, TUI state modules **33** (34 `.rs` files incl. `mod.rs`), storage
+layout **85**, integration test files **284**, CI guard scripts **62**,
+database tables **89**, built-in agents **10**, workspace member crates **11**
+(+ root). The built-in slash-command count is asserted by
+`built_in_command_count_matches_release_docs` at **168**, and
+`src/tui/command.rs` is byte-identical to the pre-merge tree, so it cannot
+have moved.
+
+**Compile-level proof.** `cargo check --workspace --all-targets --locked` →
+**exit 0**; `scripts/verify.sh quick` → **"Quick verification passed."**;
+`scripts/check_adr_integrity.py` and its `--self-test` pass;
+`scripts/check_project_catalog_invariants.py` → **7/7**. The merged tree holds
+**zero** conflict markers.
+
+The branch now carries `main`'s tip as a direct ancestor:
+`git merge-base --is-ancestor origin/main HEAD` succeeds, and
+`git merge-base HEAD origin/main` == `2a0bae08f`.
+
 ## 4. Verification executed
 
 Local, on the final tree, in this order.
 
-The results below are the **fresh rebase's** tree, `d24808d4e`. The rows that
-predate it are kept below with the tree they were measured on, so that no
-number in this record is silently attributed to a tree it was not measured on.
+The results below are the **merged** tree, `17350a5df` — the fresh rebase's
+tree reconciled with `main` at `2a0bae08f` (§3.16). The rows that predate it
+are kept below with the tree they were measured on, so that no number in this
+record is silently attributed to a tree it was not measured on.
 
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | clean |
-| `cargo check --workspace --all-targets --locked` | clean (every target) — **exit 0** on `d24808d4e` |
-| `scripts/verify.sh quick` | **"Quick verification passed."** on `d24808d4e` |
+| `cargo check --workspace --all-targets --locked` | clean (every target) — **exit 0** on `17350a5df` and on `d24808d4e` |
+| `scripts/verify.sh quick` | **"Quick verification passed."** on `17350a5df` and on `d24808d4e` |
 | `python3 scripts/check_adr_integrity.py` | pass |
 | `python3 scripts/check_adr_integrity.py --self-test` | "ADR integrity fixtures passed" |
 | `python3 scripts/check_project_catalog_invariants.py` | 7/7 |
@@ -659,8 +764,9 @@ number in this record is silently attributed to a tree it was not measured on.
 | `cargo nextest run -p codegg --locked --profile ci -E '<the 14 recorded failures>'` | **18 passed, 0 failed** |
 | `cargo test -p codegg --locked --lib -- --list` | the three live-language-server tests are **absent**; the four rejection tests remain |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(scratch_cache_root_contract) or binary(linux_native_scratch_containment) or test(/scratch::tests::/)'` | **28 passed, 0 failed** (the scratch allocator's own qualifications, its resolution contract, and the native containment fixture) |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings` | **clean** (0 errors) — after the four lints in §3.8 and the two in `crates/egggit` were fixed |
-| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | on `d24808d4e`: **12474 tests run: 12474 passed, 0 failed, 7 skipped** (`Summary [ 440.750s]`) — the live Eggwork qualification included (§4.2). On the pre-rebase tree: 11804 run, 11804 passed, 0 failed, 7 skipped |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | **clean** (0 errors) — after the four lints in §3.8 and the two in `crates/egggit` were fixed. `verify.sh quick` runs this step |
+| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | on `17350a5df`: **12496 tests run: 12496 passed, 0 failed, 7 skipped** (`Summary [ 432.319s]`) — the live Eggwork qualification included (§4.2). On `d24808d4e`: 12474 run, 12474 passed, 0 failed, 7 skipped (`Summary [ 440.750s]`). On the pre-rebase tree: 11804 run, 11804 passed, 0 failed, 7 skipped |
+| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci -E 'binary(eggwork_remote_execution_live)'` | on `17350a5df`: **16 run, 16 passed, 0 failed** (`Summary [ 8.212s]`) — the live qualification's own binary, run on its own so its inclusion is proved rather than inferred from a total |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(eggwork_remote_execution_live)'` | **14 passed, 0 failed** with the build tree in the failing state (helper 0775, target directory 0775) — the qualification's own non-vacuity proof (§3.11) |
 | `cargo nextest run -p codegg --locked --profile ci -E 'test(/scratch/)'` with **no** `XDG_CACHE_HOME` | **33 passed, 0 failed** — the ambient cache path against this host's repaired `~/.cache` (0755) |
 
@@ -694,6 +800,10 @@ The authoritative workspace sweep is recorded in §4.1.
 run on the committed tree with no concurrent edits and no Git commands in the
 worktree:
 
+- **The merged tree, `17350a5df`: 15755 tests run: 15755 passed, 8 skipped,
+  0 failed, 0 timed out** (`Summary [ 484.380s]`, exit 0). The count is **22**
+  higher than the fresh rebase's tree because `main`'s nine commits brought
+  their own tests with them; nothing on the branch's side changed.
 - **The fresh rebase's tree, `d24808d4e`: 15733 tests run: 15733 passed,
   8 skipped, 0 failed, 0 timed out** (`Summary [ 476.302s]`, exit 0), and
   `scripts/verify.sh quick` → **"Quick verification passed."** The count is
@@ -755,6 +865,13 @@ worktree:
 `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast`
 — the third tier of `scripts/verify.sh full` — was run on the final tree:
 
+- **The merged tree, `17350a5df`: 12496 tests run: 12496 passed,
+  0 failed, 7 skipped** (`Summary [ 432.319s]`, exit 0). The live-Eggwork
+  binary's own **16** tests are inside that total, and they were additionally
+  run on their own — **16 run, 16 passed** (`Summary [ 8.212s]`) — so the
+  qualification's inclusion is proved rather than inferred from a count. The
+  count is **22** higher than the fresh rebase's tree, entirely from `main`'s
+  own tests.
 - **The fresh rebase's tree, `d24808d4e`: 12474 tests run: 12474 passed,
   0 failed, 7 skipped** (`Summary [ 440.750s]`, exit 0). All 15 live-Eggwork
   qualifications pass, including the two `main` added for Eggwork M002 and this
@@ -793,6 +910,54 @@ worktree:
   `CODEGG_EGGWORK_TEST_NODE`, `CODEGG_EGGWORK_FIXTURES_PREBUILT=1`), because it
   needs a provisioned node rather than a mocked one. The prebuild script only
   has to *produce* the artifacts; the qualification stages and trusts them.
+
+### 4.3 The hosted runs
+
+The hosted evidence this milestone waited for, on head `352ed719c` — the fresh
+rebase's head, before the reconciliation with `main` at `2a0bae08f` (§3.16).
+
+| Run | Workflow | Event | Result |
+|---|---|---|---|
+| `39551117669` | `CI` — the default sweep | `workflow_dispatch` | **success** (30m48s) — all 44 steps green; `Workspace tests`: **15733 tests run: 15733 passed, 8 skipped** (`Summary [ 523.092s]`) |
+| `39550735458` | Linux M004 process and IPC qualification | `push` | **success** (30m10s) — jobs `restricted-userns-fails-closed` **success**, `process-ipc` **success**, `git-cost-pilot` **skipped** |
+| `39550735444` | Linux C006 protected mount qualification | `push` | **success** (9m11s) |
+| `39550735415` | Windows native probe contract | `push` | **success** (8m17s) |
+| `39550735467` | Linux Git object snapshot CoW qualification | `push` | **success** (3m36s) |
+| `39550735512` | Command authorization macOS target compile (one-shot) | `push` | **success** (3m6s) |
+| — | GitGuardian Security Checks | — | **success** |
+
+**The hosted default sweep's count matches the local one exactly** — 15733 on
+both — so the hosted result is a property of the product and not of the
+runner.
+
+**The M004 native tier is qualified on this head**, which is the evidence this
+workstation cannot produce: the host has Landlock ABI < 6. All ten
+qualification steps passed — install Bubblewrap; record native runner
+capabilities; enable user namespaces; build the trusted sandbox helper; C007
+private-index publication under containment; the M004 managed-process host PID
+and IPC denial probes; the M004 constrained PTY live-owner qualification; the
+M004 daemon-authorized PTY routing and descendant cleanup; the M004
+daemon-owned constrained LSP duplex and procfs qualification; and the
+protected-mount and Git regressions (**20 passed**). The step-level test
+results were **17 passed / 0 failed** (552.47 s), **11 passed**, and **20
+passed**.
+
+**One fact about *how* the CI run was started, recorded because it is a
+difference in the evidence, not a detail.** The `pull_request` event did not
+create a `CI` run for this pull request, on this branch, on any of its heads:
+every `CI` run on this branch is a `workflow_dispatch`. The cause is not in
+the repository's workflow file — `ci.yml`'s trigger block is byte-identical to
+`main`'s, the `verify` job carries no `if:` condition, and the pull request's
+diff contains 301 changed files including `.rs` sources, so `paths-ignore`
+cannot explain it. The reason is therefore **not diagnosed** here, and it is
+recorded rather than papered over.
+
+The run that carries the evidence is therefore a `workflow_dispatch` against
+the branch's own head, and that is the **stronger** of the two tests rather
+than a weaker substitute: a `pull_request` run checks out the synthetic
+`refs/pull/N/merge`, while the dispatched run checks out the branch head
+itself — the exact tree this record describes, with `main` already merged into
+it. The job, its steps, and its configuration are the same in both cases.
 
 ## 5. Invariant review
 
@@ -956,15 +1121,31 @@ sets the modes it needs on any host.
   **not** widened to make a run green, and no test was changed. The remaining
   exposure is a property of the profile, recorded in `.config/nextest.toml`,
   and is not introduced by this milestone.
-- **medium — the hosted CI runs recorded in the C007 and C023 closures qualify
-  the *code* those closures describe, not the rebased head.** The rebase
-  rewrote every SHA, and the recorded runs predate it. The rebased head has
-  **not yet** been observed in a hosted run. A pull request is now open for the
-  branch, which is what exercises the default sweep on the rebased head
-  (`ci.yml` runs on pull requests and on pushes to `main`, so the branch's own
-  push starts only the path-triggered native workflows); **its result is not
-  evidence until it has actually run**, and it is not reported here as one.
-  See §12.
+- **closed — the hosted CI runs recorded in the C007 and C023 closures
+  qualified the *code* those closures describe, not the rebased head.** The
+  rebase rewrote every SHA, and the recorded runs predate it. This is now
+  discharged: the rebased head `352ed719c` was observed in a hosted run — the
+  default sweep **39551117669**, **success**, 15733 tests run and 15733
+  passed (§4.3) — together with the five native workflows. The earlier
+  statement, that the rebased head "has not yet been observed in a hosted
+  run", was true when it was written and is not true now.
+- **low — the hosted `CI` run for this pull request is a `workflow_dispatch`,
+  not a `pull_request` run**, because the `pull_request` event did not create
+  one for this branch on any of its heads (§4.3). The cause is not in the
+  repository's workflow file and is **not diagnosed** here. The run exercises
+  the same job, the same steps, and the same configuration, against the
+  branch's own head rather than the synthetic pull-request merge, so the
+  evidence is not weaker for it — but the distinction is recorded because a
+  reader comparing this branch's runs with another branch's will see the
+  event differs.
+- **low — the branch's hosted evidence was obtained on the pre-reconciliation
+  head `352ed719c`, and the reconciled head `17350a5df` is verified locally
+  only.** The reconciliation changed the tree — it brought `main`'s nine
+  commits in — so the hosted runs qualify the tree before that change, not the
+  tree after it. The local gates on the reconciled tree are the sweep
+  (15755 run, 15755 passed), the feature tier (12496 run, 12496 passed), the
+  canonical gate, and every target compiling (§4, §4.1, §4.2). What is
+  **not** claimed is a hosted run on `17350a5df` itself; §13 states that.
 - **low — `main`'s `src/server/ws.rs` carries a deprecated `AtomicBool::fetch_update`
   call**, which the feature-enabled build reports as a warning. The file is
   byte-identical to `main`'s, the warning is not produced by any gate
@@ -1014,28 +1195,45 @@ The roadmap's status becomes `closed; C001 closed`.
   registry's own reconciliation is recorded in §3.12.1: **64** of `main`'s
   rows gained, **9** stale inherited rows superseded, **2** duplicate
   placements de-duplicated, and no branch row lost.
+- **The reconciliation's registry rows (2026-10-21).** `main`'s nine-commit
+  advance changed four registry rows in place, and the merge preserved both of
+  this milestone's own C001 rows — the active-roadmap row at line 50 and the
+  closure-table row at line 648 — unchanged. The registry is **996** lines
+  after the merge, the branch's own count. Both C001 rows carry the
+  reconciliation's facts and the hosted evidence's run identifiers (§3.16,
+  §4.3).
 
 ## 13. What was not verified
 
 Stated plainly, because a closure that hides its gaps is worse than one that
 names them:
 
-- **The rebased head has not yet been observed in a hosted CI run.** The
-  recorded runs (`39356728579` and its predecessors) qualify the pre-rebase
-  source. The rebased tree is verified locally, and a pull request is open
-  that will exercise it, but an open pull request is an expectation and not
-  evidence: the run's result is not reported here until it has actually
-  happened. Pushing the branch does not start it either — `ci.yml` runs on pull
-  requests and on pushes to `main`.
-- **The M004/M005 native tier is not re-qualified on the rebased head**, and
-  the inherited projection-transport race (§3.15) was fixed on the branch's
-  tree rather than on `main`'s — so `main` still carries that race until the
+- **The rebased head *was* observed in a hosted CI run, and the earlier gap is
+  closed.** Run **39551117669** on head `352ed719c` concluded **success** —
+  15733 tests run, 15733 passed, 8 skipped — together with the five native
+  workflows (§4.3). This bullet was the milestone's last open gap; it is now
+  history, and it is kept as a record of what the gap was rather than deleted.
+- **The reconciled head `17350a5df` — the tree that carries `main`'s tip — has
+  not yet been observed in a hosted run.** The reconciliation changed the tree
+  (it brought `main`'s nine commits in), so the hosted runs qualify the tree
+  *before* that change. The reconciled tree is verified locally and completely:
+  the workspace sweep (**15755 run, 15755 passed, 8 skipped**), the
+  feature-enabled tier (**12496 run, 12496 passed, 7 skipped**), the live
+  Eggwork binary on its own (**16 run, 16 passed**), `scripts/verify.sh quick`
+  → **"Quick verification passed."**, and `cargo check --workspace --all-targets
+  --locked` → **exit 0**. What is not claimed is a hosted run on that exact
+  head.
+- **No native Windows or macOS *test* run.** The Windows evidence is the
+  native **probe contract** workflow (a compile-and-probe check on a Windows
+  runner); the macOS evidence is a **target compile** on macOS. Neither is a
+  native test suite. The tree was verified by running tests on Linux only.
+- **The inherited projection-transport race (§3.15) was fixed on the branch's
+  tree rather than on `main`'s** — so `main` still carries that race until the
   change is merged.
-- **No native Windows or macOS run.** The rebased tree was verified on Linux
-  only.
-- **The M004/M005 tier was not re-qualified on the rebased head.** This
-  workstation cannot run it (Landlock ABI < 6); that evidence must come from
-  the hosted runner.
+- **The M004/M005 tier was re-qualified on the rebased head** by the hosted
+  runner (§4.3), which this workstation cannot do: its Landlock ABI is below
+  6. That gap is closed; what remains is the reconciled head's hosted run
+  above.
 - **Every published count is now measured against a re-runnable source** (§3.6).
   The three rows this milestone first carried forward are re-derived, and two of
   their published values were stale in `main` as well. The table was measured

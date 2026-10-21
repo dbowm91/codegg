@@ -282,6 +282,41 @@ reconciled by a row-level three-way merge against the merge base, which gained
 **64** of `main`'s rows, superseded **9** stale inherited rows, and de-
 duplicated **2** placements the branch had listed twice.
 
+**WP-M — The reconciliation with `main` at `2a0bae08f`, and the hosted
+evidence (2026-10-21).** `main` advanced a further **9 commits** after
+WP-L's base, the pull request was reported `CONFLICTING`, and the tip-level
+conflict was **exactly one file**. Two obligations follow from it:
+
+- **The reconciliation is a merge, not a third rebase.** `main`'s own history
+  already carries four `Merge origin/main into <branch>` commits for this
+  situation, and two workstreams in this repository recorded their
+  reconciliations the same way. A third rebase would have replayed **309**
+  commits to resolve one file and would have invalidated the hosted evidence
+  already obtained on the pre-merge head.
+- **The conflict's rule is new, and it is recorded as a rule:** *a later
+  qualification supersedes an earlier deferral.* The branch's skill file said
+  cleanup "intentionally retains these resources until lease-aware reclamation
+  is qualified"; `main`'s M007 **qualified** it. The branch's sentence
+  therefore yields to `main`'s. The branch's M005/M004 network-intent,
+  process-IPC, protected-mount and constrained-LSP paragraphs are unique to
+  this branch — `main` carries no equivalent text — and are kept in full, so
+  neither side loses a claim.
+
+The reconciliation must not move a published count, and it does not: `main`'s
+nine commits added and deleted **no** file under any directory a count is
+measured from, and every count was re-verified against its own listed
+`Source` on the merged tree.
+
+**WP-N — The hosted evidence.** The default sweep and the five native
+workflows were run on the rebased head and **concluded green**: the hosted
+default sweep reports **15733 tests run: 15733 passed, 8 skipped** — the same
+count the local sweep reports — and the M004/M005 native tier is qualified on
+a Landlock-ABI-6 host that this workstation does not have. The one fact about
+*how* the CI run was started is recorded too: the `pull_request` event did
+not create a `CI` run for this pull request, on any of its heads, so the run
+that carries the evidence is a `workflow_dispatch` against the branch head
+(§4.3 of the closure).
+
 ## 8. Failure, cancellation, restart, contention semantics
 
 - A history surgery must not change the tree. The correction is verified by
