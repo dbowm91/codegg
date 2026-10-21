@@ -503,6 +503,17 @@ def _stop_daemon(spec: SubjectSpec, timeout: float) -> None:
     raise HarnessError(f"lane {spec.lane_id} daemon did not exit gracefully; no unverified signal sent")
 
 
+def stop_lane_daemon(spec: SubjectSpec, timeout: float = 15.0) -> None:
+    """Stop the lane's daemon and refuse to leave an unverified one behind.
+
+    A lane that leaves its daemon running keeps a socket, a lock and a process
+    alive after the trial ends. The stop is verified against the lane's own
+    recorded identity, so the harness never signals a process it cannot prove
+    it owns.
+    """
+    _stop_daemon(spec, timeout)
+
+
 def run_smoke(binary: Path, subjects: int = 2, timeout: float = 20.0, output_dir: Path | None = None, unattended_profile: str | None = None) -> dict[str, Any]:
     if os.name != "posix" or platform.system() not in {"Linux", "Darwin"}:
         raise HarnessError("real multi-daemon smoke currently supports macOS and Linux only")

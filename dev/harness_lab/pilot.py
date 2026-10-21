@@ -402,6 +402,16 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
         result = {"error": str(error)}
     finally:
         client.close()
+        # The lane's daemon outlives the ACP client unless it is stopped. A
+        # trial that leaves a daemon behind keeps a socket, a lock and a
+        # process alive for the rest of the scenario, so the stop is verified
+        # here and a failure to stop is recorded rather than swallowed.
+        try:
+            supervisor.stop_lane_daemon(spec)
+        except (HarnessError, OSError, subprocess.TimeoutExpired) as error:
+            daemon_stop_error = f"{type(error).__name__}: {error}"
+        else:
+            daemon_stop_error = None
 
     duration_ms = int((time.monotonic() - started) * 1000)
     sequence, statuses = _tool_updates(client)
@@ -445,6 +455,7 @@ def run_live_task(binary: Path, task: str, model: str, *, budget_policy: budget.
         "binary_sha256": spec.binary_sha256,
         "source_revision": spec.revision,
         "fixture_sha256": fixture_sha256,
+        "daemon_stop_error": daemon_stop_error,
         "terminal": terminal,
         "fault": fault,
         "fault_outcome": fault_outcome,
