@@ -280,6 +280,14 @@ files (78 → 80), TUI state modules (31/32 → 32/33), storage layout
 version (79 → 82), CI guard scripts (53 → 57), and integration test files
 (267 → 268). The remaining rows were confirmed unchanged.
 
+The rows this milestone could affect were **remeasured again on 2026-10-21**
+after M006 added the scratch usage census: `CoreRequest` variants (259 → 260),
+`CoreResponse` variants (169 → 170), authorized operations (253 → 254), and
+integration test files (278 → 279). Each was re-measured against its own
+listed `Source` with the method the table has always used, and each was
+confirmed to have been correct before the change; the remaining rows were
+confirmed unchanged.
+
 The whole table was then **remeasured again on the merged tree** when the
 Eggwork worker branch was reconciled with `main`, because the two sides had
 measured some rows by different methods and the table is the single source
@@ -315,11 +323,11 @@ the statement count is 92 because `migration_version` and the
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 259 (235 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 169 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 260 (236 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 170 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 253 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 254 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 167 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -330,7 +338,7 @@ the statement count is 92 because `migration_version` and the
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 278 | `tests/*.rs` |
+| Integration test files | 279 | `tests/*.rs` |
 | CI guard scripts | 62 | `scripts/check_*` |
 
 

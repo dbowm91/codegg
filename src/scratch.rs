@@ -95,6 +95,11 @@ pub enum ScratchError {
     InvalidPath(PathBuf),
     #[error("managed scratch path is owned by a different user: {0}")]
     WrongOwner(PathBuf),
+    #[error("managed scratch tree is not reclaimable ({reason}): {path}")]
+    Unreclaimable {
+        reason: ReclaimRefusal,
+        path: PathBuf,
+    },
     #[error("could not determine the current user's home-directory owner")]
     OwnerUnavailable,
     #[error("shared scratch reclamation is unavailable on this platform")]
@@ -133,11 +138,8 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     ensure_private_directory(&scratch_root, expected_uid)?;
     ensure_private_directory(&sessions_root, expected_uid)?;
 
-    let digest = Sha256::digest(session_id.as_bytes());
-    let name = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let digest = session_scratch_digest(session_id);
+    let name = hex_digest(&digest);
     let session_root = sessions_root.join(name);
     ensure_private_directory(&session_root, expected_uid)?;
     ensure_owner_record(&session_root, &digest)?;
@@ -237,15 +239,14 @@ pub(crate) fn reclaim_deleted_session_scratch_dir(session_id: &str) -> Result<bo
         .parent()
         .ok_or_else(|| ScratchError::InvalidPath(session_root.clone()))?;
     let owner = directory_owner(sessions_root)?;
-    reclaim_owned_resource_dir(sessions_root, &Sha256::digest(session_id.as_bytes()), owner)
+    reclaim_owned_resource_dir(sessions_root, &session_scratch_digest(session_id), owner)
 }
 
 fn existing_session_scratch_dir(session_id: &str) -> Result<Option<PathBuf>, ScratchError> {
     if session_id.is_empty() {
         return Err(ScratchError::MissingSession);
     }
-    let digest = Sha256::digest(session_id.as_bytes());
-    let name = hex_digest(&digest);
+    let name = hex_digest(&session_scratch_digest(session_id));
     let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
     let path = cache_root
         .join(SCRATCH_VENDOR_NAME)
@@ -383,31 +384,71 @@ fn validate_and_remove_tombstone(
 #[cfg(any(unix, windows))]
 fn validate_reclaim_tree(path: &Path) -> Result<(), ScratchError> {
     let metadata = std::fs::symlink_metadata(path)?;
-    if is_symlink_or_reparse_point(&metadata) {
-        return Err(ScratchError::InvalidPath(path.to_path_buf()));
+    if let Some(reason) = classify_reclaim_entry(&metadata) {
+        return Err(ScratchError::Unreclaimable {
+            reason,
+            path: path.to_path_buf(),
+        });
     }
     if metadata.is_dir() {
         for entry in std::fs::read_dir(path)? {
             validate_reclaim_tree(&entry?.path())?;
         }
-        return Ok(());
     }
-    if !metadata.is_file() {
-        return Err(ScratchError::InvalidPath(path.to_path_buf()));
+    Ok(())
+}
+
+/// Why the automatic reclaim path refuses a tree.
+///
+/// The census reports the validator's own verdict, so a report cannot claim
+/// a tree is reclaimable when the validator would refuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReclaimRefusal {
+    /// A symbolic link, or a Windows reparse point.
+    Symlink,
+    /// An entry that is neither a regular file nor a directory.
+    NonRegular,
+    /// A regular file with more than one link.
+    MultiplyLinked,
+}
+
+impl ReclaimRefusal {
+    /// A stable, bounded label for the operator report.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Symlink => "symbolic_link",
+            Self::NonRegular => "non_regular_entry",
+            Self::MultiplyLinked => "multiply_linked_file",
+        }
+    }
+}
+
+impl std::fmt::Display for ReclaimRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// The one rule that decides whether a single entry may be removed.
+///
+/// [`validate_reclaim_tree`] and the census both consult this, so the report
+/// cannot drift from the behaviour it describes.
+#[cfg(any(unix, windows))]
+fn classify_reclaim_entry(metadata: &std::fs::Metadata) -> Option<ReclaimRefusal> {
+    if is_symlink_or_reparse_point(metadata) {
+        return Some(ReclaimRefusal::Symlink);
+    }
+    if !metadata.is_dir() && !metadata.is_file() {
+        return Some(ReclaimRefusal::NonRegular);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
-            return Err(ScratchError::InvalidPath(path.to_path_buf()));
+        if metadata.is_file() && metadata.nlink() != 1 {
+            return Some(ReclaimRefusal::MultiplyLinked);
         }
     }
-    // A hard link is a file name, not a recursive edge. Removing the name
-    // under the claimed scratch tombstone only decrements its link count; it
-    // does not modify or remove the outside file. Windows does not expose a
-    // stable link-count accessor at this crate's MSRV, so quarantine reparse
-    // points and let the platform's handle-based remove_dir_all unlink names.
-    Ok(())
+    None
 }
 
 #[cfg(unix)]
@@ -421,6 +462,22 @@ fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
     metadata.file_type().is_symlink()
         || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+/// The one digest computation for a session's scratch tree.
+///
+/// The tree name is `hex(sha256(session_id))`. The name is one-way by
+/// design — the owner record stores the digest, not the session id — so the
+/// durable-to-disk mapping is only computable in the forward direction:
+/// enumerate durable session ids and hash each one. Every caller hashes
+/// here; a second, divergent copy is how that mapping silently breaks.
+pub fn session_scratch_digest(session_id: &str) -> Vec<u8> {
+    Sha256::digest(session_id.as_bytes()).to_vec()
+}
+
+/// The hex form of [`session_scratch_digest`] — the scratch tree's name.
+pub fn session_scratch_digest_hex(session_id: &str) -> String {
+    hex_digest(&session_scratch_digest(session_id))
 }
 
 fn resource_digest(scope: &str, id: &str) -> Vec<u8> {
@@ -620,9 +677,650 @@ impl CanonicalPathCheck for Path {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Measurement: the read-only scratch census (M006).
+//
+// The census is a measurement, never a lifecycle event. It creates nothing,
+// renames nothing, unlinks nothing, opens no file for reading, and never
+// follows a link: only `symlink_metadata` and directory listing are used.
+// ---------------------------------------------------------------------------
+
+/// Bounds for one census walk.
+///
+/// The census is a measurement, not a traversal contract: it stops at a
+/// bound and says so, rather than presenting a partial total as complete.
+#[derive(Debug, Clone, Copy)]
+pub struct ScratchCensusBudget {
+    /// The maximum number of trees the walk reports.
+    pub max_trees: usize,
+    /// The maximum number of entries visited inside one tree.
+    pub max_entries_per_tree: usize,
+    /// The maximum directory depth the walk descends into.
+    pub max_depth: usize,
+}
+
+impl Default for ScratchCensusBudget {
+    fn default() -> Self {
+        Self {
+            max_trees: 512,
+            max_entries_per_tree: 4096,
+            max_depth: 32,
+        }
+    }
+}
+
+/// One tree's measured usage.
+///
+/// Counts and sizes only: no path, no file name, no content, and no session
+/// identity — the digest is one-way by design.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScratchTreeUsage {
+    /// The opaque, one-way digest that names the tree.
+    pub digest: String,
+    /// True when the tree is parked under a reclaim tombstone, which means
+    /// the automatic path already refused it at least once.
+    pub quarantined: bool,
+    /// The total size of the regular files in the tree.
+    pub total_bytes: u64,
+    pub file_count: u64,
+    pub directory_count: u64,
+    /// Symbolic links (or Windows reparse points). Never traversed.
+    pub symlink_count: u64,
+    /// Entries that are neither a regular file nor a directory.
+    pub non_regular_count: u64,
+    /// Regular files with more than one link. Always zero on Windows, which
+    /// exposes no stable link-count accessor at this crate's MSRV.
+    pub multiply_linked_count: u64,
+    /// The oldest modification time observed, in milliseconds since the epoch.
+    pub oldest_modified_ms: Option<i64>,
+    /// The newest modification time observed, in milliseconds since the epoch.
+    pub newest_modified_ms: Option<i64>,
+    /// The reclaim validator's own verdict for this tree.
+    pub reclaimable: bool,
+    /// Which rule refused the tree, when it did.
+    pub refusal: Option<ReclaimRefusal>,
+    /// True when the daemon's owner record is present and is a regular file.
+    pub owner_record_present: bool,
+    /// True when the walk hit a bound inside this tree.
+    pub truncated: bool,
+    /// True when the tree vanished while the walk was reading it.
+    pub vanished: bool,
+}
+
+/// A whole-root measurement.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScratchUsageReport {
+    /// One entry per tree the walk reached.
+    pub trees: Vec<ScratchTreeUsage>,
+    /// The number of trees the walk reached.
+    pub tree_count: usize,
+    /// The number of trees the walk did not reach because of `max_trees`.
+    pub unreported_trees: usize,
+    /// The total size of every tree the walk reached.
+    pub total_bytes: u64,
+    /// True when any bound was hit. A truncated report is never presented as
+    /// a complete measurement.
+    pub truncated: bool,
+}
+
+/// Measure the scratch tree the daemon owns.
+///
+/// Read-only by construction. A missing scratch root is an empty report, not
+/// an error: a fresh install has nothing to report.
+#[cfg(any(unix, windows))]
+pub fn scratch_usage_census(
+    budget: &ScratchCensusBudget,
+) -> Result<ScratchUsageReport, ScratchError> {
+    let Some(sessions_root) = existing_sessions_root()? else {
+        return Ok(ScratchUsageReport::default());
+    };
+    Ok(census_sessions_root(&sessions_root, budget))
+}
+
+/// The census is unavailable on this platform.
+///
+/// The reclaim path is Unix- and Windows-only, so a verdict this platform
+/// cannot compute is not reported as "reclaimable" — it is reported as
+/// unavailable, which is the fail-closed answer.
+#[cfg(not(any(unix, windows)))]
+pub fn scratch_usage_census(
+    _budget: &ScratchCensusBudget,
+) -> Result<ScratchUsageReport, ScratchError> {
+    Err(ScratchError::CleanupUnavailable)
+}
+
+/// Resolve the sessions root without creating anything.
+///
+/// The census must never materialize a directory it did not find, so this
+/// resolves the root in place and refuses a symlinked component.
+#[cfg(any(unix, windows))]
+fn existing_sessions_root() -> Result<Option<PathBuf>, ScratchError> {
+    let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
+    let path = cache_root
+        .join(SCRATCH_VENDOR_NAME)
+        .join(SCRATCH_ROOT_NAME)
+        .join("sessions");
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Ok(None);
+            }
+            Ok(Some(path.canonicalize_parent_and_self()?))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A tree's name, resolved to the digest it carries.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TreeName {
+    digest: String,
+    quarantined: bool,
+}
+
+/// Parse a directory name under the sessions root.
+///
+/// A managed tree is named by its digest. A tree the reclaim path refused is
+/// parked under a tombstone name that still carries the digest, so the
+/// residual bytes stay visible to the operator.
+#[cfg(any(unix, windows))]
+fn parse_tree_name(name: &str) -> Option<TreeName> {
+    if let Some(rest) = name.strip_prefix(".reclaim-") {
+        let digest = rest.split('-').next()?;
+        if is_digest_hex(digest) {
+            return Some(TreeName {
+                digest: digest.to_string(),
+                quarantined: true,
+            });
+        }
+        return None;
+    }
+    if is_digest_hex(name) {
+        return Some(TreeName {
+            digest: name.to_string(),
+            quarantined: false,
+        });
+    }
+    None
+}
+
+/// True when the value is exactly one lowercase hex sha256 digest.
+#[cfg(any(unix, windows))]
+fn is_digest_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Walk one sessions root and measure every tree under it.
+#[cfg(any(unix, windows))]
+fn census_sessions_root(sessions_root: &Path, budget: &ScratchCensusBudget) -> ScratchUsageReport {
+    let mut report = ScratchUsageReport::default();
+    for tree in enumerate_trees(sessions_root, true) {
+        if report.trees.len() >= budget.max_trees {
+            report.unreported_trees += 1;
+            report.truncated = true;
+            continue;
+        }
+        let usage = census_tree(&tree, budget);
+        report.total_bytes = report.total_bytes.saturating_add(usage.total_bytes);
+        report.truncated |= usage.truncated;
+        report.trees.push(usage);
+    }
+    report.tree_count = report.trees.len();
+    report
+}
+
+/// Measure one tree.
+#[cfg(any(unix, windows))]
+fn census_tree(tree: &ScratchTreeRef, budget: &ScratchCensusBudget) -> ScratchTreeUsage {
+    let path = &tree.path;
+    let mut usage = ScratchTreeUsage {
+        digest: tree.digest.clone(),
+        quarantined: tree.quarantined,
+        total_bytes: 0,
+        file_count: 0,
+        directory_count: 0,
+        symlink_count: 0,
+        non_regular_count: 0,
+        multiply_linked_count: 0,
+        oldest_modified_ms: None,
+        newest_modified_ms: None,
+        reclaimable: true,
+        refusal: None,
+        owner_record_present: false,
+        truncated: false,
+        vanished: false,
+    };
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            usage.vanished = true;
+            return usage;
+        }
+    };
+    if let Some(reason) = classify_reclaim_entry(&metadata) {
+        usage.refusal = Some(reason);
+        usage.reclaimable = false;
+        return usage;
+    }
+    if !metadata.is_dir() {
+        usage.vanished = true;
+        return usage;
+    }
+    note_modified(&mut usage, &metadata);
+    usage.owner_record_present = std::fs::symlink_metadata(path.join(OWNER_RECORD_NAME))
+        .map(|record| record.is_file() && !record.file_type().is_symlink())
+        .unwrap_or(false);
+
+    let mut stack: Vec<(PathBuf, usize)> = vec![(path.to_path_buf(), 0)];
+    let mut visited = 0usize;
+    while let Some((directory, depth)) = stack.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => {
+                // A directory the daemon cannot read (no permission, or a
+                // hostile tree) degrades to an incomplete measurement of this
+                // tree rather than to a hang or a crash. The report says so
+                // instead of presenting a partial count as complete.
+                usage.truncated = true;
+                continue;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let entry_path = entry.path();
+            let Ok(entry_metadata) = std::fs::symlink_metadata(&entry_path) else {
+                continue;
+            };
+            visited += 1;
+            if visited > budget.max_entries_per_tree {
+                usage.truncated = true;
+                break;
+            }
+            note_modified(&mut usage, &entry_metadata);
+            // The verdict comes from the validator's own rule, so the report
+            // cannot claim a tree is reclaimable when the validator would
+            // refuse it.
+            if let Some(reason) = classify_reclaim_entry(&entry_metadata) {
+                usage.refusal.get_or_insert(reason);
+            }
+            // What is in the tree, counted independently of the verdict.
+            if is_symlink_or_reparse_point(&entry_metadata) {
+                // A link is reported, never traversed.
+                usage.symlink_count += 1;
+                continue;
+            }
+            if entry_metadata.is_dir() {
+                usage.directory_count += 1;
+                if depth < budget.max_depth {
+                    stack.push((entry_path, depth + 1));
+                } else {
+                    usage.truncated = true;
+                }
+                continue;
+            }
+            if entry_metadata.is_file() {
+                usage.file_count += 1;
+                usage.total_bytes = usage.total_bytes.saturating_add(entry_metadata.len());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if entry_metadata.nlink() > 1 {
+                        usage.multiply_linked_count += 1;
+                    }
+                }
+                continue;
+            }
+            usage.non_regular_count += 1;
+        }
+    }
+    usage.reclaimable = usage.refusal.is_none();
+    usage
+}
+
+/// Fold one entry's modification time into the tree's age range.
+#[cfg(any(unix, windows))]
+fn note_modified(usage: &mut ScratchTreeUsage, metadata: &std::fs::Metadata) {
+    let Ok(modified) = metadata.modified() else {
+        return;
+    };
+    let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) else {
+        return;
+    };
+    let millis = duration.as_millis().min(i64::MAX as u128) as i64;
+    usage.oldest_modified_ms = Some(match usage.oldest_modified_ms {
+        Some(existing) => existing.min(millis),
+        None => millis,
+    });
+    usage.newest_modified_ms = Some(match usage.newest_modified_ms {
+        Some(existing) => existing.max(millis),
+        None => millis,
+    });
+}
+
+/// A scratch tree the daemon owns, addressed by its opaque digest.
+///
+/// The digest is the only handle: the path is resolved from it, never taken
+/// from a caller.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScratchTreeRef {
+    pub digest: String,
+    pub path: PathBuf,
+    pub quarantined: bool,
+}
+
+/// Enumerate the scratch trees under one sessions root.
+///
+/// `include_quarantined` also yields the tombstones left behind by a refused
+/// reclaim, so the residual bytes stay visible. The walk is not truncated
+/// here: the caller applies its own budget and reports what it did not
+/// reach.
+#[cfg(any(unix, windows))]
+fn enumerate_trees(sessions_root: &Path, include_quarantined: bool) -> Vec<ScratchTreeRef> {
+    let Ok(entries) = std::fs::read_dir(sessions_root) else {
+        return Vec::new();
+    };
+    let mut trees = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            let parsed = parse_tree_name(&name)?;
+            if parsed.quarantined && !include_quarantined {
+                return None;
+            }
+            Some(ScratchTreeRef {
+                digest: parsed.digest,
+                path: entry.path(),
+                quarantined: parsed.quarantined,
+            })
+        })
+        .collect::<Vec<_>>();
+    // A deterministic order keeps two runs over the same tree comparable.
+    trees.sort_by(|left, right| left.digest.cmp(&right.digest));
+    trees
+}
+
+/// Enumerate the scratch trees the daemon owns.
+///
+/// The digest is the only handle: the path is resolved from it, never taken
+/// from a caller.
+#[cfg(any(unix, windows))]
+pub fn enumerate_session_scratch_trees(
+    include_quarantined: bool,
+    max_trees: usize,
+) -> Result<Vec<ScratchTreeRef>, ScratchError> {
+    let Some(sessions_root) = existing_sessions_root()? else {
+        return Ok(Vec::new());
+    };
+    let mut trees = enumerate_trees(&sessions_root, include_quarantined);
+    trees.truncate(max_trees);
+    Ok(trees)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch tree in a temporary sessions root, named by its digest.
+    #[cfg(any(unix, windows))]
+    fn census_tree_fixture(root: &Path, session_id: &str) -> PathBuf {
+        let tree = root.join(hex_digest(&session_scratch_digest(session_id)));
+        std::fs::create_dir_all(&tree).unwrap();
+        tree
+    }
+
+    #[test]
+    fn the_digest_names_the_tree_and_cannot_be_inverted() {
+        let session_id = "census-digest";
+        let digest = session_scratch_digest(session_id);
+        assert_eq!(hex_digest(&digest), session_scratch_digest_hex(session_id));
+        assert_eq!(session_scratch_digest_hex(session_id).len(), 64);
+        // The name is one-way: it is not the session id, and the session id
+        // cannot be read back out of it.
+        assert_ne!(session_scratch_digest_hex(session_id), session_id);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn census_measures_a_tree_without_mutating_it() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = census_tree_fixture(root.path(), "census-measure");
+        std::fs::write(tree.join("a.txt"), b"hello").unwrap();
+        std::fs::create_dir_all(tree.join("nested")).unwrap();
+        std::fs::write(tree.join("nested/b.txt"), b"world!").unwrap();
+
+        let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
+
+        assert_eq!(report.tree_count, 1);
+        assert_eq!(report.total_bytes, 11);
+        assert!(!report.truncated);
+        let usage = &report.trees[0];
+        assert_eq!(
+            usage.digest,
+            hex_digest(&session_scratch_digest("census-measure"))
+        );
+        assert_eq!(usage.file_count, 2);
+        assert_eq!(usage.directory_count, 1);
+        assert!(usage.reclaimable);
+        assert_eq!(usage.refusal, None);
+        assert!(usage.oldest_modified_ms.is_some());
+        assert!(usage.newest_modified_ms.is_some());
+        // The census is read-only: the tree is still exactly as it was.
+        assert!(tree.join("a.txt").exists());
+        assert!(tree.join("nested/b.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn census_reports_a_planted_symlink_as_a_refusal_without_traversing_it() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, b"outside-content").unwrap();
+
+        let tree = census_tree_fixture(root.path(), "census-symlink");
+        std::os::unix::fs::symlink(&outside_file, tree.join("escape")).unwrap();
+
+        let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
+
+        assert_eq!(report.tree_count, 1);
+        let usage = &report.trees[0];
+        assert_eq!(usage.symlink_count, 1);
+        assert_eq!(usage.refusal, Some(ReclaimRefusal::Symlink));
+        assert!(!usage.reclaimable);
+        // The link was reported, never traversed: the outside file is intact
+        // and its content appears nowhere in the report.
+        assert!(outside_file.exists());
+        assert_eq!(std::fs::read(&outside_file).unwrap(), b"outside-content");
+        assert!(!format!("{report:?}").contains("outside-content"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn census_reports_a_multiply_linked_file_as_a_refusal() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = census_tree_fixture(root.path(), "census-hardlink");
+        std::fs::write(tree.join("a.txt"), b"hello").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::hard_link(tree.join("a.txt"), outside.path().join("alias.txt")).unwrap();
+
+        let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
+
+        let usage = &report.trees[0];
+        assert_eq!(usage.multiply_linked_count, 1);
+        assert_eq!(usage.refusal, Some(ReclaimRefusal::MultiplyLinked));
+        assert!(!usage.reclaimable);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn census_reports_a_tombstone_as_quarantined() {
+        let root = tempfile::tempdir().unwrap();
+        let digest = hex_digest(&session_scratch_digest("census-tombstone"));
+        let tombstone = root
+            .path()
+            .join(format!(".reclaim-{digest}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tombstone).unwrap();
+        std::fs::write(tombstone.join("a.txt"), b"hello").unwrap();
+
+        let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
+
+        assert_eq!(report.tree_count, 1);
+        let usage = &report.trees[0];
+        assert!(usage.quarantined);
+        assert_eq!(usage.digest, digest);
+        assert_eq!(usage.total_bytes, 5);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn census_treats_a_missing_root_as_an_empty_report() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("absent");
+
+        let report = census_sessions_root(&missing, &ScratchCensusBudget::default());
+
+        assert_eq!(report.tree_count, 0);
+        assert!(report.trees.is_empty());
+        assert!(!report.truncated);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn census_stops_at_its_tree_budget_and_says_so() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..3 {
+            let tree = census_tree_fixture(root.path(), &format!("census-budget-{index}"));
+            std::fs::write(tree.join("a.txt"), b"hello").unwrap();
+        }
+        let budget = ScratchCensusBudget {
+            max_trees: 2,
+            ..ScratchCensusBudget::default()
+        };
+
+        let report = census_sessions_root(root.path(), &budget);
+
+        assert_eq!(report.tree_count, 2);
+        assert_eq!(report.unreported_trees, 1);
+        assert!(report.truncated);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn census_stops_at_its_entry_budget_and_says_so() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = census_tree_fixture(root.path(), "census-entries");
+        for index in 0..8 {
+            std::fs::write(tree.join(format!("f{index}.txt")), b"x").unwrap();
+        }
+        let budget = ScratchCensusBudget {
+            max_entries_per_tree: 3,
+            ..ScratchCensusBudget::default()
+        };
+
+        let report = census_sessions_root(root.path(), &budget);
+
+        let usage = &report.trees[0];
+        assert!(usage.truncated);
+        assert!(report.truncated);
+        assert!(usage.file_count <= 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn census_reports_a_fifo_without_opening_it() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = census_tree_fixture(root.path(), "census-fifo");
+        let fifo_path = tree.join("pipe");
+        nix::unistd::mkfifo(&fifo_path, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+
+        let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
+
+        let usage = &report.trees[0];
+        assert_eq!(usage.non_regular_count, 1);
+        assert_eq!(usage.refusal, Some(ReclaimRefusal::NonRegular));
+        assert!(!usage.reclaimable);
+        // The FIFO was counted from metadata, never opened: opening one blocks
+        // until a writer appears, which would hang the walk.
+        assert!(fifo_path.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn census_reports_a_tree_that_vanished_mid_walk() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = census_tree_fixture(root.path(), "census-vanished");
+        std::fs::write(tree.join("a.txt"), b"hello").unwrap();
+        // The tree disappears between the enumeration and the measurement.
+        std::fs::remove_dir_all(&tree).unwrap();
+
+        let usage = census_tree(
+            &ScratchTreeRef {
+                digest: hex_digest(&session_scratch_digest("census-vanished")),
+                path: tree,
+                quarantined: false,
+            },
+            &ScratchCensusBudget::default(),
+        );
+
+        assert!(usage.vanished);
+        assert_eq!(usage.file_count, 0);
+        assert_eq!(usage.total_bytes, 0);
+    }
+
+    /// A name, size, and mtime manifest of a tree.
+    #[cfg(any(unix, windows))]
+    fn manifest(root: &Path) -> Vec<(String, u64, Option<std::time::SystemTime>)> {
+        let mut entries = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(directory) = stack.pop() {
+            let Ok(children) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for child in children.flatten() {
+                let name = child.file_name().to_string_lossy().into_owned();
+                let Ok(metadata) = std::fs::symlink_metadata(child.path()) else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    entries.push((format!("{name}/"), 0u64, metadata.modified().ok()));
+                    stack.push(child.path());
+                } else {
+                    entries.push((name, metadata.len(), metadata.modified().ok()));
+                }
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_full_census_leaves_the_root_entry_for_entry_identical() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = census_tree_fixture(root.path(), "census-manifest");
+        std::fs::write(tree.join("a.txt"), b"hello").unwrap();
+        std::fs::create_dir_all(tree.join("nested")).unwrap();
+        std::fs::write(tree.join("nested/b.txt"), b"world!").unwrap();
+
+        let before = manifest(root.path());
+        let report = census_sessions_root(root.path(), &ScratchCensusBudget::default());
+        assert_eq!(report.tree_count, 1);
+        let after = manifest(root.path());
+
+        // No file was created, renamed, removed, or changed, and no tombstone
+        // appeared: the census cannot reclaim.
+        assert_eq!(before, after);
+        assert!(!after
+            .iter()
+            .any(|(name, _, _)| name.starts_with(".reclaim-")));
+    }
 
     #[test]
     fn session_paths_are_stable_and_separate() {

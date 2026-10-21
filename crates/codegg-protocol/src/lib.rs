@@ -36,6 +36,7 @@ pub mod plugin;
 pub mod projection;
 pub mod provider;
 pub mod runtime_assets;
+pub mod scratch;
 pub mod tui;
 pub mod ui;
 pub mod work_order;

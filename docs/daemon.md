@@ -117,15 +117,24 @@ lock steps in `docs/TROUBLESHOOTING.md`.
 |---|---|
 | `codegg daemon start` | Starts the daemon **in the foreground** (see above). `--endpoint` picks the socket; `--force-take-lock` is accepted but cannot override a held lock. |
 | `codegg daemon stop` | Graceful shutdown. Verifies the live daemon's identity first, then signals it. Unix only. |
-| `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, and connected clients. |
+| `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, connected clients, and a one-line scratch usage summary. |
+| `codegg daemon scratch-usage` | Measures the daemon's disposable scratch cache: tree count, total size, age, and whether the reclaim path would accept each tree. `--json` emits the raw report; `--refresh` runs a fresh measurement instead of the daemon's last snapshot. |
 | `codegg daemon logs` | Shows the tail of `daemon.log`. `--lines` defaults to `50`; `--file` reads a specific file. |
 | `codegg daemon attach` | Opens the TUI against a running daemon over the local socket. `--endpoint`, `--session`, `--new`. |
 
 ```bash
 codegg daemon status
+codegg daemon scratch-usage
 codegg daemon logs --lines 200
 codegg daemon stop
 ```
+
+`daemon scratch-usage` is a **measurement**, not a lifecycle event. It reads
+the daemon's own disposable scratch cache and reports counts, sizes, ages, and
+the opaque digest that names each tree — never a path, a file name, file
+content, or a session identity. The daemon answers from its last snapshot;
+`--refresh` asks for exactly one fresh bounded walk. The command is served on
+the local daemon socket only.
 
 `daemon stop` is a bounded, verified operation: it will not signal a PID it
 has not confirmed is the live daemon. On timeout it reports the failure
