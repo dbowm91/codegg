@@ -356,6 +356,38 @@ This is the same flake class the repository already records for
 `codegg-client::session_projection_driver::duplicate_events_are_idempotent`
 in `plans/closure/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-status.md`.
 
+### A second hosted-CI flake, and its re-run
+
+The **first** attempt of the `CI` run on the final head `24a74874`
+(`39540628447`) failed one test in a package this branch does not touch:
+
+```
+codegg_client session_projection_driver::unsupported_daemon_fails_attach_closed
+panicked at crates/codegg-client/tests/session_projection_driver.rs:197:10:
+  read timeout: Elapsed(())
+and then at :1212:
+  assertion failed: matches!(error, DriverError::Unsupported)
+```
+
+That is the **same runner-sensitive read-timeout flake** the repository
+already records, tripping a different test in the same file: the shared read
+helper at `:197` timed out on the loaded hosted runner, so the test saw a
+timeout where it expected an `Unsupported` error.
+
+The same proof applies, and it is the proof the repository itself uses for
+this flake class in
+`plans/closure/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-status.md`:
+
+- `git diff --name-only origin/main...HEAD -- crates/codegg-client/` is
+  **empty** — the branch never touched that crate.
+- The suite passes **16/16** locally, in 0.97 s.
+- The re-run of the **same SHA** is green.
+
+Two of this milestone's four `CI` runs on the final head had a first attempt
+that failed on an unrelated runner-sensitive flake; the re-run of the same
+SHA was fully green in both cases. The code itself was green on every
+attempt that reached the workspace tests without tripping a flake.
+
 The first Windows run, `39527099234` on the pre-fix head `8e4c2ad5`, failed
 exactly one test: `scratch::tests::the_census_refusal_rule_agrees_with_the_reclaim_validator`.
 The test was gated `#[cfg(any(unix, windows))]` but only created its symlink
