@@ -319,12 +319,15 @@ by `plans/subsystems/windows-native-sandbox-roadmap.md`.
 
 The pull request is [#145](https://github.com/dbowm91/codegg/pull/145).
 
-The branch's tip was validated on head **`3e8e9ec2`** — the head that
-carries `main`'s `17b0b106` — and every job on it is green except the one
+The branch's code was validated on head **`0032699c`** — the head that
+carries `main`'s `2a0bae08` — and every job on it is green except the one
 that is already red on `main`:
 
 | Run | Head | Job | Result |
 |---|---|---|---|
+| **`39551649707`** | `0032699c` | `CI` | **success** — all 40 guard steps, workspace Clippy, and the workspace tests: **15665 run, 15665 passed, 7 skipped** (512 s) |
+| **`39551649719`** | `0032699c` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
+| `39551649701` | `0032699c` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
 | **`39547389536`** | `3e8e9ec2` | `CI` | **success** — all 40 guard steps, workspace Clippy, and the workspace tests: **15665 run, 15665 passed, 7 skipped** (352 s) |
 | **`39547389563`** | `3e8e9ec2` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
 | `39547389535` | `3e8e9ec2` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
@@ -332,9 +335,13 @@ that is already red on `main`:
 | **`39543436858`** | `d5b519f4` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
 | `39543436868` | `d5b519f4` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
 
-`main` was merged into the branch as **`6d2d40b4`**, before that head. The
-merge resolves exactly one conflict, in `plans/registry.md` — a plans file —
-and touches **no Rust code**. The commit that records these runs changes
+`main` was merged into the branch twice, and both merges are **plans-only** —
+they touch **no Rust code**. The first, `6d2d40b4`, brought in `main`'s
+`17b0b106` and resolved one conflict, in `plans/registry.md`. The second,
+`693f22cb`, brought in `2a0bae08`, which registers **M007**; its two
+conflicts are resolved as unions that keep both facts — **M006 closed** here,
+**M007 ready** there — and correct the two statements the other side's fact
+had made stale. The commit that records these runs changes
 only this closure record, so the code these runs validated is the code the
 branch carries.
 
