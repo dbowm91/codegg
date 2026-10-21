@@ -65,3 +65,15 @@ If a provider emits failed turn without authoritative usage or a configured enfo
 **Stop** if a route is unavailable/unmetered under mandatory hard cost rules, an unfinished tool spawns untracked children, a task/verifier is candidate-editable, or an unknown provider outcome is counted as success. Do not claim `full-host` capability from a `workspace-write` result.
 
 **Closure** `plans/closure/harness-lab-post-pilot-corrective/004-status.md`, mapping each case/model/run to revision/hash, policy, trial duration, tool errors, terminal evidence, independent verifier, exact spend/usage vs null and sample counts, CI/local tests, original Task 1 artifact link, new Task 2 artifact or blocker and recommendation on changing M004/M005 conditionally closed statuses.
+
+## 8. Compatibility and migration
+
+No mandatory changes to the installed CodeGG binary, ordinary ACP v1 compatibility, production SQLite migration or default user daemon. The sustained suite and comparator formats are independently versioned; existing M003 12-case and original M005 Task 1 receipts remain readable but cannot silently be rescored as new evidence. If a native tool capability is not ready in the source branch, report it as `unqualified` and link its separate subsystem owner; do not add a fake harness implementation.
+
+## 9. Documentation and static guards
+
+Update `dev/harness_lab/README.md` with concise local commands for provider-free smoke and paid opt-in sustained tasks, resource/route admission, expected partial failure handling, usable per-lane worktree/daemon output paths, and how to compare baseline/candidate. Update `architecture/acp.md` only if its actual terminal/trace contract changes. If a safety invariant has repeatedly regressed, add a focused guard in the usual `scripts/verify.sh quick` path; no broad CI matrix of live providers.
+
+## 10. Handoff and closure evidence
+
+The implementer must inspect current CodeGG and pilot evidence before modifying fixtures, run a low-cost deterministic trial first, and preserve unrelated changes. Record the actual list of supported tool families and any deferred worktree/LSP/MCP cases, test command output and exact SHA, foreground/background cancellation behavior, live provider admission proof, total attempted/unattempted trial counts, frozen Task 1 hashes and either Task 2 receipt or a typed no-call blocker. Independent review must distinguish harness regression from model/provider error and declare M005 **conditional** whenever hard budget or complete comparative coverage is not actually demonstrated.
