@@ -77,8 +77,9 @@ pub use subagent_addressee::{
     reconcile_addressee, SubagentAddressee, MAX_ADDRESSED_DESCRIPTION_CHARS,
 };
 pub use subagent_tabs::{
-    bar_width, fit_bar_tabs, SubagentBarTab, SubagentTabId, SubagentTabLiveness, SubagentTabState,
-    SubagentTabs, BAR_ELLIPSIS, BAR_SEPARATOR, MAIN_TAB_LABEL, MAX_OPEN_SUBAGENT_TABS,
+    bar_width, fit_bar_tabs, plan_strip, StripPlan, SubagentBarTab, SubagentTabId,
+    SubagentTabLiveness, SubagentTabState, SubagentTabs, BAR_ELLIPSIS, BAR_GAP, BAR_HINTS,
+    BAR_SEPARATOR, MAIN_TAB_GLYPH, MAIN_TAB_LABEL, MAX_OPEN_SUBAGENT_TABS, MIN_STRIP_PERSONA_COLS,
 };
 pub use subagents::{SubagentRow, SubagentState};
 pub use ui::{AppMode, UiState};

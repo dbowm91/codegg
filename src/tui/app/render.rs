@@ -65,6 +65,29 @@ fn strip_line_selected<'a>(
 /// Maximum display width of the agent name shown beside the input-mode badge.
 const MAX_AGENT_BADGE_WIDTH: usize = 20;
 
+/// Which surface owns the viewport rect for this frame.
+///
+/// The viewport rect has exactly **one** owner. It used to have two: the
+/// transcript was painted, and the subagent view was then painted *over* it,
+/// so a reader looking at a subagent saw the main conversation showing through
+/// the subagent's own text and in the rect's last column. The change review
+/// had the same problem one level up — it took the viewport, and the subagent
+/// view then took it back.
+///
+/// Naming the owner turns "one surface, one rect" from an ordering accident
+/// into a structural fact: exactly one branch renders into the rect, so no
+/// surface can be legible through another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewportOwner {
+    /// The current route's own view — transcript, home, workspace, or editor.
+    Route,
+    /// The change review. A modal decision surface: the user must accept or
+    /// reject, so it outranks an open subagent tab.
+    ChangeReview,
+    /// An open subagent tab.
+    SubagentTab,
+}
+
 /// Pick a foreground that stays legible on `background`.
 ///
 /// Theme palettes are authored independently, so a slot that reads well
@@ -323,18 +346,28 @@ impl App {
         self.viewport_area = Some(viewport_chunk);
 
         // Viewport (messages) — highest-risk surface for render panics
+        //
+        // Exactly one surface owns the viewport rect. An open subagent buffer
+        // *replaces* the transcript in the same rect rather than opening a
+        // modal over it: Esc then has exactly one meaning — return to the
+        // main buffer — instead of being ambiguous between "close a dialog"
+        // and "go back". The change review is modal and outranks the tab.
+        // The scrollbar belongs to the transcript, and only the transcript
+        // draws one. Clear the rect before the dispatch so an owner that does
+        // not paint a scrollbar cannot inherit the last frame's — a rect that
+        // names a surface that is not on screen is a rect that mis-resolves a
+        // click. The session route sets it again below.
+        self.scrollbar_area = None;
+        let viewport_owner = self.viewport_owner();
         let viewport_result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
                 if self.render_panic_injection.messages {
                     panic!("injected messages render panic");
                 }
-                self.render_viewport(frame, viewport_chunk);
-                // An open subagent buffer replaces the transcript in the
-                // same rect rather than opening a modal over it: Esc then has
-                // exactly one meaning — return to the main buffer — instead of
-                // being ambiguous between "close a dialog" and "go back".
-                if self.ui_state.subagents.active_tab().is_some() {
-                    self.render_subagent_view(frame, viewport_chunk);
+                match viewport_owner {
+                    ViewportOwner::Route => self.render_viewport(frame, viewport_chunk),
+                    ViewportOwner::ChangeReview => self.render_change_review(frame, viewport_chunk),
+                    ViewportOwner::SubagentTab => self.render_subagent_view(frame, viewport_chunk),
                 }
                 Ok(())
             }));
@@ -893,25 +926,44 @@ impl App {
         String::new()
     }
 
-    fn render_viewport(&mut self, frame: &mut Frame, area: Rect) {
-        // M006-E: an open review takes over the viewport. It is a modal
-        // decision surface — the user must accept or reject — so it is the one
-        // place M006 does not stay non-modal, and it is reachable only via an
-        // explicit `/review`.
+    /// Decide which surface owns the viewport rect this frame.
+    ///
+    /// The change review outranks the subagent tab: it is a modal decision
+    /// surface the user has to answer, so a subagent tab must not cover it.
+    /// The tab outranks the transcript, because the tab *is* the buffer the
+    /// user asked to read — the transcript is what is behind it, not what
+    /// shares it.
+    fn viewport_owner(&self) -> ViewportOwner {
         if self.change_review_state.is_open() {
-            crate::tui::components::change_review::ChangeReviewView::new(
-                &self.change_review_state,
-                Arc::clone(&self.ui_state.theme),
-            )
-            .render(frame, area);
-            return;
+            return ViewportOwner::ChangeReview;
         }
+        if self.ui_state.subagents.active_tab().is_some() {
+            return ViewportOwner::SubagentTab;
+        }
+        ViewportOwner::Route
+    }
+
+    fn render_viewport(&mut self, frame: &mut Frame, area: Rect) {
         match self.ui_state.routes.current() {
             Route::Home => self.render_home(frame, area),
             Route::Session(_) => self.render_session(frame, area),
             Route::Workspace => self.render_workspace_view(frame, area),
             Route::Editor => self.render_editor_view(frame, area),
         }
+    }
+
+    /// Draw the modal change review into the viewport rect.
+    ///
+    /// M006-E: an open review takes over the viewport. It is a modal decision
+    /// surface — the user must accept or reject — so it is the one place M006
+    /// does not stay non-modal, and it is reachable only via an explicit
+    /// `/review`.
+    fn render_change_review(&mut self, frame: &mut Frame, area: Rect) {
+        crate::tui::components::change_review::ChangeReviewView::new(
+            &self.change_review_state,
+            Arc::clone(&self.ui_state.theme),
+        )
+        .render(frame, area);
     }
 
     /// M006-A: non-modal document editor primary view. Reads the text
@@ -1492,13 +1544,16 @@ impl App {
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
     }
 
-    /// Render the open subagent buffer over the transcript.
+    /// Render the open subagent buffer into the viewport rect.
     ///
-    /// Shows only what the projection actually vouches for — the agent, its
-    /// task description, the lifecycle status, and the canonical ids needed
-    /// to reach durable run detail. It deliberately does not synthesize
-    /// progress text: the projection adapter hardcodes `progress: None`, so
-    /// an invented "working on step 3" line would be a lie the user acts on.
+    /// This surface **owns** the rect it is given: the transcript is not
+    /// painted underneath it, so nothing of the main conversation shows
+    /// through. It is a run inspector, not a transcript — it shows only what
+    /// the projection actually vouches for: the agent, its task description,
+    /// the lifecycle status, and the canonical ids needed to reach durable run
+    /// detail. It deliberately does not synthesize progress text: the
+    /// projection adapter hardcodes `progress: None`, so an invented "working
+    /// on step 3" line would be a lie the user acts on.
     fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
         let Some(tab) = self.ui_state.subagents.active_tab().cloned() else {
             return;
@@ -1507,6 +1562,12 @@ impl App {
             return;
         }
         let theme = self.ui_state.theme.clone();
+        // Fill the rect before decorating it. A row or a paragraph painted on
+        // its own leaves every cell it does not cover showing whatever was
+        // there before, and this surface is the only thing drawn into the
+        // viewport now.
+        let block = Block::default().style(Style::default().bg(theme.background));
+        frame.render_widget(block, area);
         let status_style = if tab.is_running() {
             Style::default().fg(theme.primary)
         } else {
@@ -1610,11 +1671,13 @@ impl App {
             Style::default().fg(theme.muted),
         )));
 
-        let width = area.width.saturating_sub(1);
+        // The full width of the rect. A one-column inset left the last
+        // column of the viewport unpainted, which read as the transcript
+        // showing through the tab.
         let paragraph = Paragraph::new(lines)
             .wrap(ratatui::widgets::Wrap { trim: false })
             .scroll((tab.scroll, 0));
-        frame.render_widget(paragraph, Rect { width, ..area });
+        frame.render_widget(paragraph, area);
     }
 
     /// Draw the one-row subagent tab bar directly under the header.
@@ -1628,43 +1691,96 @@ impl App {
     /// The active entry is styled, not merely ordered, because at a narrow
     /// width the bar trims older tabs and "which one am I reading" can no
     /// longer be answered by position.
+    ///
+    /// The row carries three things, and they share **one** width budget: the
+    /// tab labels on the left, the active tab's persona next to the entry it
+    /// describes, and the key hints on the right. The budget is computed once,
+    /// in [`plan_strip`], so what is drawn is exactly what was measured.
     fn render_subagent_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
         if area.width == 0 || area.height == 0 {
             return;
         }
         let theme = self.ui_state.theme.clone();
-        let entries = crate::tui::app::state::subagent_tabs::fit_bar_tabs(
+        // The row is carved out of the viewport chunk, so nothing else ever
+        // paints it: without a background of its own it was the one surface in
+        // the TUI with no fill, and whatever the terminal had underneath showed
+        // through. A carved-out row is still a row — fill it, then decorate it.
+        let block = Block::default().style(Style::default().bg(theme.background));
+        frame.render_widget(block, area);
+        let plan = crate::tui::app::state::subagent_tabs::plan_strip(
             self.ui_state.subagents.tabs.bar_tabs(),
             area.width as usize,
         );
         let separator = crate::tui::app::state::subagent_tabs::BAR_SEPARATOR;
         let muted = Style::default().fg(theme.muted);
 
-        let mut spans: Vec<Span> = Vec::with_capacity(entries.len() * 2);
-        for (index, entry) in entries.iter().enumerate() {
+        // Left region: the tab entries, then the active tab's persona.
+        let mut spans: Vec<Span> = Vec::with_capacity(plan.entries.len() * 3 + 2);
+        for (index, entry) in plan.entries.iter().enumerate() {
             if index > 0 {
                 spans.push(Span::styled(separator.to_string(), muted));
             }
             let style = if entry.active {
+                // The same treatment the project tab strip gives its active
+                // entry: the strip trims older tabs at narrow widths, so "which
+                // one am I reading" cannot be answered by position alone.
                 Style::default()
                     .fg(theme.primary)
+                    .bg(theme.selection)
                     .add_modifier(Modifier::BOLD)
             } else if entry.ellipsis {
                 muted
             } else {
                 Style::default().fg(theme.foreground)
             };
-            if entry.glyph.is_empty() {
-                spans.push(Span::styled(entry.label.clone(), style));
-            } else {
-                spans.push(Span::styled(entry.label.clone(), style));
+            if !entry.glyph.is_empty() {
+                // The marker leads the label: a status dot in front of a name
+                // reads as that name's status, and the main entry's marker
+                // reads as a tab marker rather than as a trailing action.
                 spans.push(Span::styled(
-                    format!(" {}", entry.glyph),
+                    format!("{} ", entry.glyph),
                     if entry.active { style } else { muted },
                 ));
             }
+            spans.push(Span::styled(entry.label.clone(), style));
+            if entry.active {
+                // The persona annotates the entry it describes, so it sits
+                // directly after it rather than at the end of the row — where
+                // it would read as a description of the *last* tab instead.
+                if let Some(persona) = plan.persona.as_deref() {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        persona.to_string(),
+                        muted.add_modifier(Modifier::ITALIC),
+                    ));
+                }
+            }
         }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        let entries_area = Rect {
+            width: plan.entries_width as u16,
+            ..area
+        };
+        frame.render_widget(Paragraph::new(Line::from(spans)), entries_area);
+
+        // Right region: the keys that operate this row. The row exists only
+        // while tabs are open, so the hints cannot outlive what they describe.
+        let gap = plan.gap as u16;
+        let hints_x = area.x + plan.entries_width as u16 + gap;
+        if plan.hints_width > 0 {
+            let hints_area = Rect {
+                x: hints_x,
+                width: plan.hints_width as u16,
+                ..area
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    crate::tui::app::state::subagent_tabs::BAR_HINTS,
+                    muted,
+                )))
+                .alignment(Alignment::Right),
+                hints_area,
+            );
+        }
     }
 
     /// Rows the working strip needs.
@@ -3171,5 +3287,93 @@ mod subagent_row_chain_tests {
         let snapshot = crate::protocol::projection::fixtures::idle_snapshot();
         let rows = App::sync_subagents_from_snapshot(&snapshot).expect("Some, not None");
         assert!(rows.is_empty(), "no turn means no rows: {rows:?}");
+    }
+}
+
+#[cfg(test)]
+mod viewport_owner_tests {
+    //! Who owns the viewport rect.
+    //!
+    //! The viewport used to have two owners: the transcript was painted, and
+    //! the subagent view was then painted *over* it, so a reader looking at a
+    //! subagent saw the main conversation showing through the subagent's own
+    //! text and in the rect's last column. The change review had the same
+    //! defect one level up — it took the viewport, and the subagent view took
+    //! it back.
+    //!
+    //! These tests pin the **decision**, so "one surface, one rect" is a fact
+    //! about the code rather than a fact about the order two calls happen in.
+
+    use super::{App, ViewportOwner};
+    use crate::tui::app::state::subagents::SubagentRow;
+    use crate::tui::unified_diff::parse_review;
+
+    fn app() -> App {
+        App::new_for_testing("/tmp".into())
+    }
+
+    fn row() -> SubagentRow {
+        SubagentRow {
+            child_instance_id: Some("child-1".into()),
+            task_id: "1".into(),
+            run_id: Some("run-1".into()),
+            display_name: Some("Sally".into()),
+            profile: None,
+            usefulness: None,
+            agent: "explore".into(),
+            description: "Map the auth flow".into(),
+            status: "running".into(),
+        }
+    }
+
+    /// Open a change review, which is modal and therefore outranks a tab.
+    fn open_review(app: &mut App) {
+        let patches = vec![(
+            "src/lib.rs".to_string(),
+            "@@ -1,1 +1,1 @@\n-a\n+b\n".to_string(),
+        )];
+        app.change_review_state.open(
+            "preview-1".into(),
+            "edit".into(),
+            "Rename helper".into(),
+            "agent".into(),
+            false,
+            parse_review(&patches),
+            vec!["src/lib.rs".into()],
+        );
+    }
+
+    #[test]
+    fn the_transcript_owns_the_viewport_when_nothing_else_claims_it() {
+        let app = app();
+        assert_eq!(app.viewport_owner(), ViewportOwner::Route);
+    }
+
+    #[test]
+    fn an_open_subagent_tab_owns_the_viewport() {
+        let mut app = app();
+        app.ui_state.subagents.set_rows(vec![row()]);
+        assert!(app.open_subagent_tab("1"), "the tab opens");
+        assert_eq!(app.viewport_owner(), ViewportOwner::SubagentTab);
+    }
+
+    #[test]
+    fn the_change_review_owns_the_viewport_on_its_own() {
+        let mut app = app();
+        open_review(&mut app);
+        assert_eq!(app.viewport_owner(), ViewportOwner::ChangeReview);
+    }
+
+    #[test]
+    fn the_change_review_outranks_an_open_subagent_tab() {
+        let mut app = app();
+        app.ui_state.subagents.set_rows(vec![row()]);
+        assert!(app.open_subagent_tab("1"), "the tab opens");
+        open_review(&mut app);
+        assert_eq!(
+            app.viewport_owner(),
+            ViewportOwner::ChangeReview,
+            "a modal decision surface must never be covered by a tab"
+        );
     }
 }

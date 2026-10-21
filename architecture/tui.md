@@ -749,26 +749,46 @@ verbatim. The reducer has no pool and cannot re-derive them; a re-drawn value
 would make replay non-deterministic, the same failure `display_name` already had.
 
 The TUI resolves nothing. `SubagentRow::descriptor()` returns only what arrived.
-A display name is not a stable key: the registry appends numeric variants
-(`Sally-2`), a name outside the pool must render *no* descriptor rather than a
-guessed one, and a released name can be re-drawn to a different subagent while a
-stale snapshot is still on screen. `scripts/check_tui_subagent_name_pool_isolation.py`
+A display name is not a stable key: the registry takes a **free pool name
+first** and only appends a numeric variant (`Sally-2`) when every pool name is
+held, a name outside the pool must render *no* descriptor rather than a guessed
+one, and a released name can be re-drawn to a different subagent while a stale
+snapshot is still on screen. `scripts/check_tui_subagent_name_pool_isolation.py`
 enforces this and carries a `--self-test` proving it fails on a planted
 violation; run the guard, not the absence of a complaint.
 
 **One row, five surfaces, and a deliberate trade.** The strip, the sidebar panel,
 the `Ctrl+T` overlay, the `/sessions` dialog, and the subagent tab all render the
-same derived vector. The four one-line surfaces show `SubagentRow::topic()` — the
-descriptor when the projection carried one, the task description otherwise —
-because a single terminal line cannot legibly carry two pieces of prose and
-whichever is ellipsized second reads as noise. The sidebar additionally drops the
-descriptor entirely below `MIN_SIDEBAR_DESCRIPTOR_CHARS`, since a three-character
-stub reads as a rendering fault; a narrow column shows exactly what it showed
-before. The **subagent tab is the full-fidelity surface**: it renders `Task` and
-`Agent` side by side, wrapped and untruncated, which is what makes the
-one-line trade lossless. A node recorded before descriptors existed has neither
-field, so every surface falls back and the tab omits the `Agent` heading rather
-than leaving one over an empty body.
+same derived vector. The **sidebar row is a scan surface**: it shows name, agent
+type, and status, and no prose. The other three one-line surfaces show
+`SubagentRow::topic()` — the descriptor when the projection carried one, the task
+description otherwise — because a single terminal line cannot legibly carry two
+pieces of prose and whichever is ellipsized second reads as noise. The
+**subagent tab is the full-fidelity surface**: it renders `Task` and `Agent` side
+by side, wrapped and untruncated, which is what makes the one-line trade
+lossless. A node recorded before descriptors existed has neither field, so every
+surface falls back and the tab omits the `Agent` heading rather than leaving one
+over an empty body.
+
+**Where the persona lives.** The descriptor is the *projection's* value and it is
+carried on the row, so any surface may show it. The tab **strip** shows the
+**active** tab's persona, in italics, next to the entry it describes — one row
+cannot carry a persona per tab, and the strip's job is to say which run is on
+screen and how to operate it. The sidebar row does not: a one-line column spent
+on prose pushes the three facts a reader scans for to the left, and the persona
+now has a home that can afford it.
+
+**The strip's row is one width budget.** `plan_strip`
+(`src/tui/app/state/subagent_tabs.rs`) computes it once, so what is drawn is
+exactly what was measured. The precedence is fixed: the **key hints**
+(`⇧P/⇧N switch · ⇧X close`) are reserved first and in full, because they are
+the discoverability fix; the **labels** come next and keep their text —
+`fit_bar_tabs` drops the oldest tabs and leaves an ellipsis rather than
+truncating a label to make room; the **persona** takes what is left and is
+dropped rather than squeezed below `MIN_STRIP_PERSONA_COLS`, because a
+two-character persona reads as a rendering fault. The glyph is counted in the
+same arithmetic, because a marker that is painted but not measured is a marker
+that paints past the width the budget promised.
 
 **Subagent buffer** (`SubagentState::open`). Clicking a row replaces the
 transcript in the viewport rect rather than opening a modal, so `Esc` has one
@@ -777,6 +797,26 @@ modal short-circuit (so `Esc` still closes a dialog in front of it) and above
 every other handler (so nothing can swallow the key that dismisses it). The
 view holds its own captured row, so a run dropping out of the next snapshot
 does not yank the buffer out from under the reader.
+
+**The viewport rect has exactly one owner.** `render()` decides between three
+candidates and renders exactly one of them into the rect: the route's own view
+(the transcript), the change review, or the open subagent tab. The change
+review outranks the tab — it is a modal decision surface the user has to
+answer, so a tab must not cover it — and the tab outranks the transcript,
+because the tab *is* the buffer the user asked to read. The previous shape
+rendered the viewport and then rendered the subagent view **over** it, so the
+main conversation stayed legible through the subagent's own text and in the
+rect's last column; the change review had the same defect one level up.
+`ViewportOwner` (`src/tui/app/render.rs`) makes the choice a value rather than
+an ordering accident, and the ownership is pinned by
+`viewport_owner_tests` and by the ghosting and review-precedence render tests.
+
+**Every surface paints an opaque background.** The tab's own rect is filled
+before it is decorated, and the tab strip's row — carved off the top of the
+viewport chunk, so nothing else ever paints it — carries the theme background
+rather than foreground colours alone. A carved-out row is still a row: a
+surface that is filled only where its text reaches is transparent everywhere
+else, and a terminal's own background shows through it.
 
 **Todo strip** (`render_todo_strip`). Compact form is a single
 `Todo list: 2/8 completed · Ctrl+T expand` row; `Ctrl+T` expands to a header
@@ -3714,6 +3754,21 @@ hit testing resolve the same target even when scrolling or collapse changes
 rendered line positions. Selection is presentation-only and is cleared when
 the active project scope changes.
 
+**A focusable row has an action** (invariant I5). The focus list is built
+from the rows whose activation is not a no-op, and the `SidebarFocusTarget`
+variants are exactly that set — a variant that cannot be produced would be a
+variant that lied. A **todo row** is not one of them: `activate_focused`
+resolved it to `SidebarActivation::None`, so the selection highlight was
+painted on a row where `Enter` did nothing and `j`/`k` walked through every
+one of them. The `Todos` **section header** stays focusable and still folds
+the section; the rows do not. The mouse map (`line_targets`) is a different
+map and keeps its todo entries, so hovering, tooltips, and click resolution on
+a todo row are unchanged. A hovered todo therefore resolves to the **header**
+rather than to a target the focus list cannot produce — resolving it to
+nothing would clear the focus and make the next navigation key jump to index
+0, yanking the panel to the top. The `Ctrl+T` overlay is the deliberate
+opposite: there a todo row *is* actionable, so it stays selectable there.
+
 Normal-mode `Space` opens help — a **searchable** keybinding list (see
 [Help dialog search](#help-dialog-search)) — and `Ctrl+Alt+S` enters
 sidebar focus; `j/k` or the arrow keys move, PageUp/PageDown move by a bounded
@@ -3748,7 +3803,7 @@ Four properties here are deliberate, and each has a test named after it:
 - **The agent tree keeps `Enter`.** Adding a second adjacent subagent surface
   made reusing `Enter` on the tree rows tempting; refusing it keeps a working
   surface working. "What happened to this run" (run-detail dialog) and "show me
-  its transcript" (buffer tab) stay separate questions on separate rows
+  its run view" (buffer tab) stay separate questions on separate rows
   (`the_new_sections_do_not_take_over_the_agent_tree_activation`).
 - **A job row activates to nothing.** There is no job transcript and no job
   dialog, so `Enter` consumes the key via `SidebarActivation::None` rather than
