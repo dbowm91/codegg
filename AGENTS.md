@@ -232,9 +232,25 @@ change-triggered (`ls scripts/check_*` for the full list):
   per-checkout waiter. Two rules that are easy to get wrong: a permit is never
   freed without **positive** quiescence evidence (unproven evidence quarantines
   it, and a lease deadline never frees a live writer), and **dropping** a
-  `WriterPermitGuard` quarantines the permit rather than releasing it. Nothing
-  is routed through the permit yet — C003/C004 do that — so its presence
-  enables no shared mutation.
+  `WriterPermitGuard` quarantines the permit rather than releasing it. The
+  permit is now **routed**: C003 routes the model's native file and typed Git
+  writers through it, C004 mediates the non-broker writers, C005 refuses the
+  process surfaces pre-effect, and C006 makes the shared checkout an
+  **opt-in, platform-gated** path (`codegg_core::run_placement`). The shared
+  profile is off by default (`RunPlacement::Auto` isolates) and off on any
+  platform without native containment evidence, so the permit's presence
+  still enables no shared mutation by itself.
+- The **shared checkout profile** is opt-in and **never inferred**
+  (`codegg_core::run_placement::RunPlacement`, `architecture/writer_permit.md`
+  §"The shared checkout profile (C006)"). The default is `Auto` — an isolated
+  managed checkout — and the durable payload field is `#[serde(default)]`, so
+  an older payload and an older client keep the behaviour they had. Two rules
+  are load-bearing: the group is the reservation (a run outside the live
+  group is refused whatever scope it is handed, because the fence resolves
+  the run's scope from the run's **own durable record**, never from a
+  caller-supplied path), and the profile is **platform-gated** — Linux is
+  qualified, macOS and Windows are disabled with a named reason, and the gate
+  is a compile-time table rather than a runtime flag.
 - The **build quota** is admission, and it is not the writer permit. M007
   replaced the legacy *global* `exclusive:workspace-mutation` key on the
   `Build`/`Format` profiles with a **counted, workspace-scoped** quota

@@ -96,6 +96,7 @@ impl JobDispatcher for SubAgentJobDispatcher {
             parent_sandbox_profile: None,
             sandbox_profile: None,
             process_admission: None,
+            writer_fence: None,
         };
 
         self.pool

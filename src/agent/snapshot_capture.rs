@@ -182,6 +182,7 @@ impl AgentLoop {
             parent_sandbox_profile: None,
             sandbox_profile: None,
             process_admission: None,
+            writer_fence: None,
         };
         tokio::spawn(async move {
             // scheduler-audit: standalone-compat

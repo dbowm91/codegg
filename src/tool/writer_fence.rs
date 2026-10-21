@@ -534,12 +534,20 @@ pub fn granted_roots(ctx: &ToolExecutionContext) -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// What the daemon needs in order to resolve a run's checkout scope.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct WriterScopeRequest {
     /// The scheduler-owned run, when the call comes from a delegated run.
     pub agent_run_id: Option<String>,
     /// The run's workspace root, used when the run holds no managed checkout.
     pub workspace_root: PathBuf,
+    /// The execution attempt within the run.
+    ///
+    /// The permit records it, so a permit can be attributed to one attempt
+    /// rather than to a run that has been retried.
+    pub attempt_id: Option<String>,
+    /// The run's cancellation, so a cancelled writer is refused instead of
+    /// parking the checkout's permit.
+    pub cancellation: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// Builds the fence for one run's checkout.

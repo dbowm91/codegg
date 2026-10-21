@@ -68,6 +68,15 @@ pub struct DaemonWriterFence {
     run_id: Option<AgentRunId>,
     attempt_id: Option<String>,
     cancellation: Option<tokio_util::sync::CancellationToken>,
+    /// The principal used when the call carries no bound actor.
+    ///
+    /// A single-user daemon has no transport-bound principal for a
+    /// scheduler-owned child, but it still owns the checkout it is writing.
+    /// The fallback is the daemon's own local principal and is only ever
+    /// installed by a daemon that has no team policy; a daemon with one
+    /// leaves this empty, so an unattributed writer is refused rather than
+    /// written anonymously.
+    principal_fallback: Option<AuthenticatedPrincipal>,
     /// How long a writer waits for a busy checkout before it is told no.
     wait_timeout: std::time::Duration,
 }
@@ -106,8 +115,19 @@ impl DaemonWriterFence {
             run_id,
             attempt_id,
             cancellation,
+            principal_fallback: None,
             wait_timeout: WRITER_PERMIT_WAIT,
         }
+    }
+
+    /// Install the principal used when the call carries no bound actor.
+    ///
+    /// Only a daemon without a team policy may install one. A daemon with a
+    /// team policy must bind the transport principal, and an unattributed
+    /// write is refused rather than attributed to the daemon.
+    pub fn with_principal_fallback(mut self, principal: AuthenticatedPrincipal) -> Self {
+        self.principal_fallback = Some(principal);
+        self
     }
 
     /// Bound the wait for a busy checkout.
@@ -301,20 +321,27 @@ impl CheckoutWriterFence for DaemonWriterFence {
         if request.effect_class == NativeEffectClass::ProcessSpawn {
             self.record_denial(
                 &request,
-                "process writers are refused on a shared checkout until the process deny \
-                 contract lands",
+                "process writers are refused on a shared checkout; the process deny \
+                 contract refuses every unqualified process surface",
             );
             return Err(WriterFenceError::EffectClassDenied {
                 class: request.effect_class.as_str(),
-                reason: "process writers are refused on a shared checkout until the process \
-                         deny contract lands"
+                reason: "process writers are refused on a shared checkout; the process deny \
+                         contract refuses every unqualified process surface"
                     .to_owned(),
             });
         }
 
         // 6. A shared checkout with no bound actor is refused. Mutual
         //    exclusion without an attributed writer is an anonymous writer.
-        let principal = match request.principal.clone() {
+        //    A single-user daemon owns its own checkout, so it names its own
+        //    principal; a daemon with a team policy installs no fallback and
+        //    refuses the unattributed write instead.
+        let principal = match request
+            .principal
+            .clone()
+            .or_else(|| self.principal_fallback.clone())
+        {
             Some(principal) => principal,
             None => {
                 self.record_denial(&request, "this shared checkout has no bound actor");
@@ -438,4 +465,100 @@ pub fn managed_scope(
 /// team policy never reaches this path: the bound principal is required.
 pub fn local_principal() -> AuthenticatedPrincipal {
     AuthenticatedPrincipal::local_owner("codegg-writer-fence")
+}
+
+/// Builds the fence for one run's checkout.
+///
+/// M005 C006. This is the daemon-side implementation of the tool layer's
+/// `WriterFenceFactory` seam, and it is the piece that makes the shared
+/// profile *real*: the authority behind the fence — the permit service, the
+/// worktree service, the durable run store and the group service — lives
+/// here, in the daemon, and the agent and scheduler layers only carry the
+/// trait object.
+///
+/// The scope is resolved from the run's **own durable record**, never from a
+/// model-supplied path: a run that holds no managed checkout gets no fence at
+/// all, and a run that holds one gets the fence for exactly that checkout.
+pub struct DaemonWriterFenceFactory {
+    permit: Arc<WriterPermitService>,
+    worktrees: Arc<WorktreeService>,
+    runs: Arc<dyn AgentRunStore>,
+    groups: Option<Arc<AgentRunGroupService>>,
+    /// Whether this daemon may attribute an unattributed write to itself.
+    ///
+    /// A single-user daemon owns its own checkout and names its own
+    /// principal. A daemon with a team policy leaves this off, so a write
+    /// that arrives without a bound actor is refused rather than written
+    /// anonymously.
+    local_principal_fallback: bool,
+}
+
+impl DaemonWriterFenceFactory {
+    /// Build the factory.
+    pub fn new(
+        permit: Arc<WriterPermitService>,
+        worktrees: Arc<WorktreeService>,
+        runs: Arc<dyn AgentRunStore>,
+        groups: Option<Arc<AgentRunGroupService>>,
+        local_principal_fallback: bool,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            permit,
+            worktrees,
+            runs,
+            groups,
+            local_principal_fallback,
+        })
+    }
+}
+
+#[async_trait]
+impl crate::tool::writer_fence::WriterFenceFactory for DaemonWriterFenceFactory {
+    async fn fence_for(
+        &self,
+        request: crate::tool::writer_fence::WriterScopeRequest,
+    ) -> Result<Option<Arc<dyn CheckoutWriterFence>>, WriterFenceError> {
+        let run_id = request
+            .agent_run_id
+            .as_deref()
+            .and_then(|raw| AgentRunId::parse(raw).ok());
+
+        // The run's durable record is the authority for which checkout the
+        // run holds. Without a record there is no lease, and a run with no
+        // lease has nothing to fence.
+        let worktree_id = match run_id.as_ref() {
+            Some(run) => self
+                .runs
+                .get_run(run)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|record| record.worktree_id),
+            None => None,
+        };
+        let Some(worktree_id) = worktree_id else {
+            return Ok(None);
+        };
+        let record = self
+            .worktrees
+            .get(&worktree_id)
+            .await
+            .map_err(|error| WriterFenceError::Unavailable(error.to_string()))?;
+
+        let scope = managed_scope(&worktree_id, record.path.clone(), run_id.clone());
+        let mut fence = DaemonWriterFence::new(
+            scope,
+            Arc::clone(&self.permit),
+            Arc::clone(&self.worktrees),
+            Arc::clone(&self.runs),
+            self.groups.clone(),
+            run_id,
+            request.attempt_id.clone(),
+            request.cancellation.clone(),
+        );
+        if self.local_principal_fallback {
+            fence = fence.with_principal_fallback(local_principal());
+        }
+        Ok(Some(Arc::new(fence)))
+    }
 }

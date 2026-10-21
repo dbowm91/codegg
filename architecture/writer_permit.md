@@ -487,6 +487,87 @@ with a recorded reason — and the code's capability table must agree with the
 manifest. A surface that lost its refusal fails the guard, and the guard's
 self-test proves it by injecting violations into a copy of the tree.
 
+## The shared checkout profile (C006)
+
+The permit and the fence existed before anything could use them: until C006,
+no production placement put two runs on one checkout, and the fence was wired
+only in its containment-only form. C006 made the shared checkout a real,
+**opt-in** path.
+
+### The placement is opt-in and never inferred
+
+`codegg_core::run_placement::RunPlacement` is carried by
+`JobPayload::SubagentRun` as one additive, `#[serde(default)]` field:
+
+| Variant | Meaning |
+|---|---|
+| `Auto` (the default) | The run gets its own isolated managed checkout — exactly what it got before C006. |
+| `IsolatedNew` | The same isolation, pinned explicitly, so the durable payload records a *choice* rather than a default. |
+| `SerializedShared { group_id }` | The run joins the managed checkout held by a live agent-run group. |
+
+A payload written before the placement existed decodes as `Auto`, and an
+older API client keeps the behaviour it had. Sharing is asked for; it is
+never deduced from a group, a session, or a model request.
+
+### The group's checkout, not the caller's
+
+`codegg_core::shared_checkout::SharedCheckoutCoordinator` resolves the
+group's managed checkout: the one whose **lease is held by a member of the
+group**. The lease owner is what makes the checkout *this group's* checkout,
+so a checkout leased by an unrelated run is never adopted. The resolution
+runs under a per-group lock, so two members that arrive together end up on
+one checkout, and it **fails closed**: an unknown group, a finished group
+and a run that is not a member are three distinct, typed refusals.
+
+The coordinator consults C005's **reservation preflight** before the group
+takes the checkout over, so a persistent process that was started before the
+checkout became shared refuses the placement rather than being pretended
+away.
+
+### The fence is resolved from the run's own record
+
+The tool layer already declared the seam — `WriterFenceFactory` — and
+nothing implemented it. `DaemonWriterFenceFactory` does now: it resolves the
+fence from the run's **own durable record**, never from a model-supplied
+path, and returns no fence at all for a run that holds no managed checkout,
+because such a run has no lease and therefore nothing to fence. This is what
+makes the permit authoritative on a shared checkout rather than advisory:
+the fence a child runs under is the one its record names.
+
+### The shared child's effective profile is narrowed
+
+A child placed on a shared checkout is denied, **before it runs**, every tool
+that starts a process in the checkout and every tool that uses a persistent
+process the host owns. The list is derived from the C005 capability table,
+so it cannot drift from the set of tools that can actually reach a process.
+The delegating tools (`task`, `job`) are deliberately not on it: a child runs
+in its own scope, and a shared group is *made of* delegating children.
+
+### The profile is platform-gated
+
+The shared profile is available only where there is native containment
+evidence:
+
+```rust
+pub const QUALIFIED_SHARED_CHECKOUT_PLATFORMS: &[&str] = &["linux"];
+```
+
+A platform with no evidence has the profile **disabled**, and the refusal
+names both the qualified platforms and the platform that is missing the
+evidence. The gate is a compile-time table rather than a runtime flag: an
+operator cannot turn the profile on for a platform that has no evidence.
+
+### The guard
+
+`scripts/check_shared_checkout.py` is the static backstop. It checks the
+contract's nine landmarks, that the default placement is still the isolated
+one and the durable field still defaulted, that the shared-profile denial
+list is still derived from the capability table and still selects both
+process-reaching shapes, that the executor still attaches the run to the
+checkout it resolved, and that the C005 preflight is still consulted. Its
+self-test injects six violations into a copy of the tree and proves each is
+reported.
+
 ## What This Does Not Claim
 
 - **Not a filesystem exclusion.** The permit coordinates CodeGG's own writers.
@@ -495,9 +576,23 @@ self-test proves it by injecting violations into a copy of the tree.
 - **Not an enablement.** C003 routes the native file writers and the typed Git
   mutations through the fence, and it closes the model-supplied `workdir`
   hole. C004 mediates the non-broker writers with a pre-effect reservation
-  check. Neither enables shared mutation: no production path places two runs
-  on one checkout, and the shared profile refuses every effect class C005 has
-  not yet qualified. C005 and C006 own the rest.
+  check. C006 adds the opt-in placement that *can* place two runs on one
+  checkout, and C005 owns the effect classes such a checkout refuses. The
+  profile stays off by default and off on any platform without native
+  containment evidence.
+- **Not a shared profile on every platform.** The gate qualifies Linux and
+  **disables** macOS and Windows with a named reason. Adding a platform is a
+  recorded decision with evidence behind it.
+- **Not a claim of descendant quiescence.** No platform is claimed to have
+  no process writing into the checkout. C005's preflight refuses the
+  *reservation* while a persistent process is live in it; it does not stop
+  the process.
+- **Not a claim that two agents were observed racing in one daemon.** C006's
+  evidence is the mediation, over a real durable stack. The composed
+  two-agent daemon race is not claimed, and the closure record says why:
+  managed worktree creation needs a contained Git backend that does not
+  exist in this tree, which blocks the isolated delegated-run path
+  identically.
 - **Not a permit for the non-broker path.** The C004 gate is a *check*. A
   reserved checkout is refused to every writer outside the group even when the
   group's own writer is idle. That is the deliberate trade: a check cannot
@@ -510,6 +605,15 @@ self-test proves it by injecting violations into a copy of the tree.
   `tests/checkout_reservation_c004_http.rs` (through a real HTTP route), over
   a temporary Git checkout. C005's evidence is in
   `tests/process_denial_c005.rs`, over the same reserved-checkout fixture.
+  C006's evidence is in `tests/shared_checkout_c006.rs` (15 tests): the
+  placement joins the group's checkout, two members racing for one group land
+  on one checkout, two writers on the shared checkout never overlap, a run
+  outside the group is refused, a process effect is refused, a live persistent
+  process refuses the placement and the placement succeeds once it is
+  drained, the daemon's fence factory resolves the fence from the run's own
+  record, the shared profile denies every process-reaching tool, the platform
+  gate refuses an unqualified platform, and a legacy durable payload still
+  decodes as the default placement.
 - **Not a containment of a process CodeGG already started.** C005 refuses a
   launch; it does not stop a program that was started before the checkout
   became shared. The live persistent-process registry and the reservation

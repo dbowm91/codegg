@@ -28,6 +28,15 @@ Preserve the typed job request, permission decision, cancellation, and durable
 result path when changing those capabilities. Human shell commands are a
 separate TUI feature and do not become model tools.
 
+A native writer on a checkout shared by more than one run is serialized by
+the checkout's durable writer permit. The fence that takes it resolves the
+run's scope from the run's **own durable record**, never from a
+model-supplied path, and a run that holds no managed checkout has no fence at
+all. When you change how a delegated run is placed on a checkout, keep that
+attachment: a run whose record does not name its checkout holds no authority
+to write it. See `architecture/writer_permit.md` §"The shared checkout profile
+(C006)" and `scripts/check_shared_checkout.py`.
+
 The broker derives every retry's `ToolExecutionContext` from the same
 `BrokerInvocationContext`. When an agent call includes
 `ExecutionAuthorizationContext`, preserve its immutable snapshot, receipt, and

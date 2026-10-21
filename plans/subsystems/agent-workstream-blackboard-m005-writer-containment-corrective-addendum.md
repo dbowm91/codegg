@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective Addendum — Restricted Shared Checkout
 
-Status: active planning; C001–C005 closed; C006 ready. SerializedShared remains unavailable.
+Status: active planning; C001–C005 closed; C006 conditionally closed. The shared checkout is now an opt-in, platform-gated path (Linux qualified; macOS and Windows disabled with a named reason).
 
 Planning baseline: branch plan/agent-workstream-m005-writer-audit inspected 2026-10-19, main ancestor 61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649. Revalidate exact branch head and mainline status before any implementation.
 
@@ -46,9 +46,12 @@ Independent M006 isolated session/worktree launch, M007 per-workspace build admi
                                            |        lifecycle gating Q3/Q4 [CLOSED]
                                            |
                                            +-- C006 restricted end-to-end
-                                                    Q1–Q5 / opt-in [READY]
+                                                    Q1–Q5 / opt-in [CONDITIONALLY CLOSED]
+                                                    (opt-in, platform-gated:
+                                                     Linux qualified; macOS/Windows
+                                                     disabled with a reason)
 
-C001 may document and test negative current behavior without accepted ADR-0044. C002 implementation proceeded under accepted ADR-0044 and closed on 2026-10-19; no product enablement proceeded on it, and acceptance alone still enables nothing: C003–C006 must land and qualify before any shared mutation exists. C002 built the permit's authority; C003 routed the model's native file and typed Git writers through it, C004 routed the non-broker writers through the checkout reservation gate, and C005 made the process surface refuse pre-effect through the authoritative process admission gate. The permit still fences the *model* path only; the non-broker and process paths refuse pre-effect instead of taking a permit, deliberately, so they cannot invert the document/repository/permit lock order. C006 must not claim M005 strict closure if it cannot demonstrate a production path and native evidence.
+C001 may document and test negative current behavior without accepted ADR-0044. C002 implementation proceeded under accepted ADR-0044 and closed on 2026-10-19; no product enablement proceeded on it, and acceptance alone still enables nothing: C003–C006 must land and qualify before any shared mutation exists. C002 built the permit's authority; C003 routed the model's native file and typed Git writers through it, C004 routed the non-broker writers through the checkout reservation gate, and C005 made the process surface refuse pre-effect through the authoritative process admission gate. The permit still fences the *model* path only; the non-broker and process paths refuse pre-effect instead of taking a permit, deliberately, so they cannot invert the document/repository/permit lock order. C006 wired the production shared-reservation path — the durable `RunPlacement`, the group-authorized shared-checkout coordinator, the daemon's writer-fence factory and the task tool's opt-in placement — and it consults C005's reservation preflight; it did **not** claim M005 strict closure, because macOS/Windows native evidence and the composed two-agent daemon race are both still open, the latter blocked on the pre-existing absent contained Git backend that managed worktree creation needs.
 
 ## Milestone contracts
 
@@ -59,7 +62,7 @@ C001 may document and test negative current behavior without accepted ADR-0044. 
 | C003 | invariant / capability | closed | Final-effect file and typed Git write interposition without double acquisition/deadlock (Q2) | C002 closed — **met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/003-status.md` |
 | C004 | invariant / capability | closed | Every other CodeGG project-root writer either holds permit or refuses; includes human CodeGG file APIs and workspace-local state (Q3) | C003 closed — **met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md` |
 | C005 | invariant / capability | closed | Prevent unqualified direct/persistent process launch pre-effect; per-OS negative/proven lifecycle matrix (Q3–Q4) | C004 closed — **met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md` |
-| C006 | capability / closure | ready | Real two-AgentRun restricted checkout, full Q1–Q5, restart, Git provenance, honest supported-OS opt-in or negative disposition | C004+C005 closed — **met** (`plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`, `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md`); C006 must still wire the production shared-reservation path and call C005's reservation preflight |
+| C006 | capability / closure | conditionally closed | Real two-AgentRun restricted checkout, full Q1–Q5, restart, Git provenance, honest supported-OS opt-in or negative disposition | C004+C005 closed — **met** (`plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`, `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md`); the production shared-reservation path is wired and calls C005's reservation preflight; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/006-status.md`. **Two named follow-ups keep it from strict closure**: macOS/Windows native containment evidence, and the composed two-agent daemon race, which this tree cannot compose because managed worktree creation needs a contained Git backend that does not exist here (pre-existing; it blocks the isolated path identically) |
 
 Implementation handoffs: plans/implementation/agent-workstream-m005-writer-containment-corrective/001-*.md through 006-*.md. Closure records: plans/closure/agent-workstream-m005-writer-containment-corrective/001-status.md through 006-status.md. C001 closure includes maintainer decision status but cannot presume it; C002 is ready only after acceptance is independently recorded. **Acceptance was independently recorded on 2026-10-19** (ADR-0044 "Acceptance record" section, option B), which satisfies C002's second gate condition.
 

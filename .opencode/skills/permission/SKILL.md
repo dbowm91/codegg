@@ -45,6 +45,15 @@ So: never turn a process denial into a permission prompt, and never let a
 model argument widen the profile. The scope is the daemon-resolved checkout
 root of the execution, never a model-supplied working directory.
 
+M005 corrective C006 adds the profile's **placement**, and it follows the
+same rule: the shared checkout is entered by an explicit, durable,
+defaulted `RunPlacement`, never by a permission grant and never by inference
+from a group. A child placed on a shared checkout is *narrowed* before it
+runs — every tool that can reach a process in the checkout is denied in its
+effective profile — so the denial and the placement agree rather than
+contradicting each other. The permission, sandbox and Git-authorization
+layers still apply on top and can only narrow further.
+
 ## Key Invariants
 
 - **The registries are synchronous.** `PermissionRegistry::register`

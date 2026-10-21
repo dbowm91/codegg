@@ -153,6 +153,33 @@ pub fn process_capable_tool_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// The built-in tools a shared checkout denies.
+///
+/// A shared checkout admits no tool that **starts** a process in it and no
+/// tool that **uses** a persistent process the host owns: the server was
+/// started under an authority the checkout no longer has, and it is not
+/// CodeGG's to stop.
+///
+/// A tool that *delegates* to a child execution (`task`) or *submits* work
+/// (`job`) is deliberately not on this list. The child runs in its own
+/// scope and the job's executor has its own admission, so neither writes the
+/// shared checkout — and a shared group is *made of* delegating children, so
+/// denying the delegating tool would deny the profile to itself.
+pub fn shared_profile_denied_tools(base: &[String]) -> Vec<String> {
+    let mut denied = base.to_vec();
+    denied.extend(
+        BUILTIN_PROCESS_CAPABILITIES
+            .iter()
+            .filter(|(_, capability)| {
+                capability.spawns_itself() || capability.uses_persistent_process()
+            })
+            .map(|(name, _)| (*name).to_owned()),
+    );
+    denied.sort();
+    denied.dedup();
+    denied
+}
+
 /// Every built-in tool with a declared process capability.
 pub fn declared_process_capabilities() -> &'static [(&'static str, ToolProcessCapability)] {
     BUILTIN_PROCESS_CAPABILITIES

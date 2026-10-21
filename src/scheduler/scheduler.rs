@@ -618,6 +618,7 @@ impl JobScheduler {
             agent_runs,
             run_control,
             None,
+            None,
         )
     }
 
@@ -627,6 +628,7 @@ impl JobScheduler {
         agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
         run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
         worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
+        authority: Option<crate::scheduler::executors::SubagentAuthority>,
     ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
         use crate::scheduler::executors::{
             AgentTurnExecutor, ManagedArgvExecutor, PythonJobExecutor, SubagentJobExecutor,
@@ -671,6 +673,10 @@ impl JobScheduler {
                     ),
                 },
                 None => SubagentJobExecutor::new(pool),
+            };
+            let executor = match authority {
+                Some(authority) => executor.with_authority(authority),
+                None => executor,
             };
             registry.register(Arc::new(executor))?;
         }

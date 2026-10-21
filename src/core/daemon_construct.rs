@@ -468,6 +468,36 @@ impl CoreDaemon {
                 scheduler_config.clone(),
                 deps.daemon_generation.clone(),
             );
+            // M005 corrective C006: the daemon-side authority a delegated
+            // run inherits.
+            //
+            // The shared-checkout coordinator resolves (and creates) the
+            // group's managed checkout, and refuses the placement while a
+            // persistent process is live in it — the C005 reservation
+            // preflight. The writer-fence factory resolves the child's fence
+            // from the child's own durable run record, which is what makes a
+            // shared checkout's writer permit authoritative.
+            let shared_checkout = codegg_core::shared_checkout::SharedCheckoutCoordinator::new(
+                Some(deps.run_group_service.clone()),
+                Some(deps.agent_run_store.clone()),
+                Some(worktree_service.clone()),
+                Some(process_admission.clone()),
+            );
+            let writer_fences: Option<Arc<dyn crate::tool::writer_fence::WriterFenceFactory>> =
+                deps.writer_permit_service.as_ref().map(|permit| {
+                    crate::core::writer_fence::DaemonWriterFenceFactory::new(
+                        permit.clone(),
+                        worktree_service.clone(),
+                        deps.agent_run_store.clone(),
+                        Some(deps.run_group_service.clone()),
+                        true,
+                    ) as Arc<dyn crate::tool::writer_fence::WriterFenceFactory>
+                });
+            let subagent_authority = crate::scheduler::executors::SubagentAuthority {
+                process_admission: Some(process_admission.clone()),
+                shared_checkout: Some(shared_checkout),
+                writer_fences,
+            };
             // Register the default executor set synchronously.
             if let Err(error) = scheduler_arc
                 .register_default_executors_sync_with_agent_runs_and_control_and_worktree(
@@ -475,6 +505,7 @@ impl CoreDaemon {
                     Some(deps.agent_run_store.clone()),
                     Some(deps.run_control.clone()),
                     Some(worktree_service.clone()),
+                    Some(subagent_authority),
                 )
             {
                 tracing::error!(

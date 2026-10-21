@@ -1101,6 +1101,13 @@ pub enum JobPayload {
         /// Host-validated immutable Git base for a convergence child.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_commit: Option<String>,
+        /// M005 C006: where the run is placed.
+        ///
+        /// Additive: a payload written before the placement existed decodes
+        /// as `Auto`, which is the isolated-worktree default the run had
+        /// anyway. The shared profile is opt-in and is never inferred.
+        #[serde(default)]
+        placement: crate::run_placement::RunPlacement,
     },
     Test {
         command: String,

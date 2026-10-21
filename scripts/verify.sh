@@ -131,6 +131,12 @@ run_quick() {
     echo "==> python3 scripts/check_process_denial.py"
     (cd "$REPO_ROOT" && python3 scripts/check_process_denial.py)
 
+    echo "==> python3 scripts/check_shared_checkout.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py --self-test)
+
+    echo "==> python3 scripts/check_shared_checkout.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py)
+
     echo "==> python3 scripts/check_audit_coverage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_audit_coverage.py)
 

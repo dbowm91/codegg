@@ -123,6 +123,14 @@ pub struct SubAgentRequest {
     /// The child builds its own scope over its own workspace root, but the
     /// authority it consults is the same one.
     pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
+    /// M005 corrective C006: the writer fence for this child's checkout.
+    ///
+    /// The daemon resolves it from the child's own durable run record, so a
+    /// child placed on a shared checkout takes that checkout's writer permit
+    /// while a child on an isolated checkout keeps the containment-only
+    /// profile it always had. When it is absent the child falls back to
+    /// containment over its workspace root.
+    pub writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1545,10 +1553,18 @@ async fn execute_agent_task(
     // M005 C003: a delegated run executes inside the managed checkout the
     // scheduler leased for it, so that checkout is the scope its native
     // writers are contained to.
+    //
+    // M005 corrective C006: when the daemon resolved a writer fence for this
+    // run, that fence is authoritative — it is the one that knows whether the
+    // checkout is shared and takes the writer permit when it is. The
+    // containment-only fence below is the fallback for a run that holds no
+    // managed checkout.
     let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> =
-        Some(std::sync::Arc::new(
-            crate::tool::writer_fence::WorkspaceWriterFence::new(workspace_root.clone()),
-        ));
+        request.writer_fence.clone().or_else(|| {
+            Some(std::sync::Arc::new(
+                crate::tool::writer_fence::WorkspaceWriterFence::new(workspace_root.clone()),
+            ))
+        });
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
         provider,
@@ -1951,6 +1967,7 @@ mod admission_tests {
             parent_sandbox_profile: None,
             sandbox_profile: None,
             process_admission: None,
+            writer_fence: None,
         }
     }
 

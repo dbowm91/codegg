@@ -279,6 +279,33 @@ load-bearing:
   reads durable state (the managed worktree record, the run-group record) and
   an in-memory registry. It takes no lock, holds no permit, and never waits.
 
+## The shared-checkout placement is a placement, not a scheduler decision
+
+M005 corrective C006 added the **opt-in shared checkout**: a delegated run
+may be placed on the managed checkout a live agent-run group already holds,
+instead of getting an isolated one of its own.
+
+- **The placement is durable and defaulted.** `JobPayload::SubagentRun` carries
+  one additive `#[serde(default)]` field, `RunPlacement`. The default is
+  `Auto` — the isolated worktree the run had before C006 — so an older
+  payload and an older client are unaffected. Sharing is asked for; it is
+  never inferred.
+- **The scheduler resolves the group's checkout; the caller does not.**
+  `SharedCheckoutCoordinator` (`crates/codegg-core/src/shared_checkout.rs`)
+  resolves the checkout whose lease is held by a member of the group, under a
+  per-group lock, and refuses an unknown group, a finished group and a
+  non-member as three typed errors. The executor then attaches the run to
+  the checkout it resolved — that attachment is what makes the writer fence
+  authoritative, because the fence reads the run's own durable record.
+- **The profile is platform-gated.** `shared_checkout_availability()` is off
+  on any platform without native containment evidence, and the refusal names
+  the platform. Do not add a platform to
+  `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` without the evidence behind it.
+- **Do not make the scheduler decide to share.** The scheduler carries the
+  placement; it does not derive one. `scripts/check_shared_checkout.py` is the
+  guard for the contract's landmarks, the opt-in default and the C005
+  preflight.
+
 The scheduler's part of the contract is narrow and lives in two places: the
 **submission boundary** (`src/scheduler/submission.rs`) refuses a
 *process-class* job for a reserved checkout — per job kind, so a job that

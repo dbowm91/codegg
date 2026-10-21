@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective C006 — Restricted Shared Checkout End-to-End Qualification (Q1–Q5)
 
-Status: ready — C004 AND C005 strict closure met (`plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`, `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md`); C001–C003/ADR-0044 upstream gates inherited
+Status: conditionally closed — C006 closed conditionally (`plans/closure/agent-workstream-m005-writer-containment-corrective/006-status.md`); C004 and C005 closed; ADR-0044 acceptance inherited. The shared checkout is a real, opt-in, platform-gated production path; two named follow-ups (macOS/Windows native containment evidence, and the composed two-agent daemon race that this tree cannot compose because managed worktree creation needs a contained Git backend) keep it from strict closure.
 Primary class: capability closure / invariant
 Planning baseline: plan/agent-workstream-m005-writer-audit 2026-10-19; revalidate exact implementation HEAD.
 Source: plans/subsystems/agent-workstream-blackboard-m005-writer-containment-corrective-addendum.md C006

@@ -149,6 +149,7 @@ fn subagent_payload() -> JobPayload {
         run_id: codegg_core::identity::AgentRunId::new(),
         delegation_key: "dk-1".into(),
         base_commit: None,
+        placement: codegg_core::run_placement::RunPlacement::Auto,
     }
 }
 

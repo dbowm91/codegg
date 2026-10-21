@@ -267,11 +267,13 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 ## Verified counts
 
 Every count below was re-measured against the current tree on
-**2026-10-20**, each against its own listed `Source`, after the M005
-writer-containment branch was reconciled with `main` (`origin/main`
-`a9f70375`). Earlier passes (2026-10-13, 2026-10-15, 2026-10-19) measured
-the same rows against smaller trees; the merge moved rows that **both**
-sides had measured, so no number was carried over from either side.
+**2026-10-21**, each against its own listed `Source`, after the M005
+writer-containment corrective closed C006. The tree it was measured in
+descends from the M005 branch reconciled with `main` (`origin/main`
+`a9f70375`), which itself was measured on 2026-10-20; earlier passes
+(2026-10-13, 2026-10-15, 2026-10-19) measured the same rows against smaller
+trees. Every row that moved carries its own note below, saying what moved
+and why; no number was carried over from another tree.
 
 Three rows were corrected rather than incremented, and the corrections are
 recorded here because the pre-merge numbers disagreed on **identical**
@@ -300,9 +302,9 @@ exactly 259 `R::` arms, one per request variant.
 | Architecture docs | 90 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 65 call sites | `src/tool/mod.rs` — 52 `registry.register(` plus 13 `registry.register_boxed(` |
 | Distinct production tool names | 60 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 7 test-only mock impls under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs` and `broker.rs`; 3 of the 7 use the literals `read`, `direct_only`, `no_schema`, and 4 resolve their name at runtime) |
-| Tool source files | 81 | `src/tool/**.rs` (incl. `bash/`) |
+| Tool source files | 83 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
-| `codegg-core` modules | 50 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
+| `codegg-core` modules | 53 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 61 | `crates/codegg-core/src/bus/events.rs` |
 | `CoreRequest` variants | 259 (235 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreResponse` variants | 169 (168 struct + 1 unit) | `crates/codegg-protocol/src/core.rs` |
@@ -319,8 +321,8 @@ exactly 259 `R::` arms, one per request variant.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 281 | `tests/*.rs` |
-| CI guard scripts | 63 | `scripts/check_*` |
+| Integration test files | 283 | `tests/*.rs` |
+| CI guard scripts | 65 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -615,7 +617,7 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (62 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (65 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, TUI editor text authority, TUI editor key authority, TUI composer key ownership, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
@@ -630,6 +632,8 @@ Every row was **remeasured on 2026-10-20** against its listed `Source` when the 
 The two file-count rows were **remeasured once more on 2026-10-20** when the TUI composer Helix parity workstream (M004–M007) was reconciled with `main`: integration test files are **274** (`ls tests/*.rs`) and CI guard scripts are **62** (`ls scripts/check_*`). The composer workstream contributes five further test files on top of the 269 measured above — `tests/tui_composer_motions.rs` (M004), `tests/tui_composer_selection.rs` (M005), `tests/tui_composer_undo.rs` and `tests/tui_composer_insert_transitions.rs` (M006), and `tests/tui_composer_keymap_consistency.rs` (M007) — and **no** new guard: M007 extends the existing `scripts/check_tui_composer_key_authority.py` with two rules rather than adding a script, so the guard row is unchanged. The `Full check_* inventory` line above was carrying the stale 58 and is corrected here to 62, which is what `ls scripts/check_*` reports in this tree.
 
 Two rows moved again on **2026-10-20** when the M005 writer-containment corrective closed C005 (process and persistent-service deny contract): `codegg-core` modules are **51** (`pub mod` in `crates/codegg-core/src/lib.rs` — the count moved by one, the new `process_admission` module that owns the authoritative process admission state and the live persistent-process registry) and integration test files are **282** (`ls tests/*.rs` — the count moved by one, `tests/process_denial_c005.rs`). CI guard scripts are **64** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_process_denial.py`). The immediately preceding row's C004 measurement (`codegg-core` **50**, test files **281**, guard scripts **63**) was correct for its own tree and is superseded here.
+
+Three rows moved again on **2026-10-21** when the M005 writer-containment corrective closed C006 (restricted shared-checkout qualification), and one row was **corrected rather than incremented**: `codegg-core` modules are **53** (`pub mod` in `crates/codegg-core/src/lib.rs` — the count moved by two, the new `run_placement` module that owns the durable placement type and the platform availability gate, and the new `shared_checkout` module that owns the group's shared-checkout coordinator); integration test files are **283** (`ls tests/*.rs` — the count moved by one, `tests/shared_checkout_c006.rs`); CI guard scripts are **65** (`ls scripts/check_*` — the count moved by one, the new `scripts/check_shared_checkout.py`). The **tool source files** row was **stale**: it read 81, but the C005 pass added `src/tool/process_admission.rs` and `src/tool/process_capability.rs` without re-measuring the row. Re-measured against its listed `Source` (`src/tool/**.rs`, incl. `bash/`) it is **83**. The table above now carries the measured values; the earlier rows remain correct for their own trees.
 
 Every other row was re-checked against its listed `Source` and is unchanged.
 

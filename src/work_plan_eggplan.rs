@@ -1643,6 +1643,7 @@ mod tests {
             run_id: codegg_core::identity::AgentRunId::parse("run-1").unwrap(),
             delegation_key: "dk".to_string(),
             base_commit: None,
+            placement: codegg_core::run_placement::RunPlacement::Auto,
         };
         let mut first = test_job_record();
         first.payload = payload(
