@@ -493,7 +493,24 @@ covered by the build-admission suite. The alternative — dropping the default
 to admit two builds per workspace — would have changed the shipped contract
 to satisfy a test, which is the wrong direction.
 
-### 9.3 What this reconciliation does not change
+### 9.3 Drift absorbed after the reconciliation
+
+`origin/main` moved twice more while the reconciliation's own hosted runs
+were in flight — to `239f06e7f`. Both commits are **plans-only**
+(`plans/registry.md` and
+`plans/subsystems/managed-agent-scratch-roadmap.md`), so absorbing them
+changed no code and needed no re-verification. The merge was textually
+clean, and it **reduced** the registry's true duplicate rows from six to
+three, because one of `main`'s two commits was itself a registry
+de-duplication.
+
+The three that remain are `main`'s own pre-existing pattern, not a merge
+artefact and not this line's to restructure: each pairs an
+implementation-plan row with its **closure** row for the same milestone, so
+the two point at distinct artifacts. They are present on `origin/main`
+unchanged.
+
+### 9.4 What this reconciliation does not change
 
 - **The writer-fence boundary is untouched again.** `main`'s 71 commits
   changed no file of the fence contract (`src/tool/writer_fence.rs`), the
