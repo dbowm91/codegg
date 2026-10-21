@@ -1428,6 +1428,8 @@ fn host_boundary_and_executor_share_one_remote_policy() {
         cwd: None,
         scope: None,
         parent_run_id: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     assert!(validate_remote_job(test.kind, &test.payload).is_err());
     assert!(exec.validate(&test).is_err());
@@ -1452,6 +1454,8 @@ fn host_boundary_and_executor_share_one_remote_policy() {
     empty.payload = JobPayload::ManagedArgv {
         argv: Vec::new(),
         cwd: None,
+        sandbox_profile: None,
+        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
     };
     assert!(validate_remote_job(empty.kind, &empty.payload).is_err());
     assert!(exec.validate(&empty).is_err());
@@ -1479,6 +1483,8 @@ async fn admitted_remote_target_reaches_the_eggwork_executor_once() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string(), "hello".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1549,6 +1555,8 @@ async fn named_target_survives_a_store_restart() {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["echo".to_string()],
                 cwd: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

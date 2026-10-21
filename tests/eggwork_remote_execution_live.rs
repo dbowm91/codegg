@@ -1635,6 +1635,8 @@ async fn live_node_without_a_provider_reports_no_observation() {
     assert!(snapshot.diagnostic.is_some());
 
     live.shutdown().await;
+}
+
 // ── Fixture trust contract ───────────────────────────────────────────────────
 
 /// The live isolation qualifications depend on the pinned node *trusting* its
