@@ -14,8 +14,14 @@ Repository baseline reviewed: `31a412844fbbf36055b29245075121035eefc385`
 
 Implementation commits or pull requests:
 
-- Working tree only — not committed at the time of writing. The change is
-  confined to `src/agent/subagent_names/registry.rs`,
+- Implementation commit `682c6999d` (`feat(tui): the subagent presentation and
+  name-allocation workstream — P001–P004`) on branch
+  `feat/auto-20261020-3702c7c5`.
+- Pull request [#150](https://github.com/dbowm91/codegg/pull/150). The branch was
+  reconciled with `main` at `2a0bae08f` in merge commit `fffd96426`, with no
+  conflicts, and every verification result in this record was re-taken on the
+  merged tree.
+- The change is confined to `src/agent/subagent_names/registry.rs`,
   `scripts/generate_subagent_names.py`, `src/agent/subagent_names/generated.rs`
   (regenerated, never hand-edited), `assets/subagent-names/names.toml`,
   `architecture/tui.md`, `.opencode/skills/tui/SKILL.md`, and
@@ -208,6 +214,9 @@ the re-run of the suite above.
 |---|---|
 | `cargo test -p codegg --lib agent::subagent_names` | 24 passed, 0 failed |
 | `cargo test -p codegg --lib` | 7 216 passed, 4 failed, 4 ignored (run 1); 7 214 passed, 6 failed, 4 ignored (run 2) — see §4.5 |
+| `cargo test -p codegg --lib` — **merged tree**, after reconciling with `main` | 7 236 passed, 6 failed, 4 ignored — see §4.5 |
+| `cargo test -p codegg --lib` — **`main` baseline** (`2a0bae08f`), same sweep | 7 211 passed, 3 failed, 4 ignored — see §4.5 |
+| `cargo test --test tui_main_buffer --test tui_side_panels` — merged tree | 70 passed, 0 failed; 32 passed, 0 failed |
 | `cargo fmt --all -- --check` | clean (one `cargo fmt --all` pass was applied first, to the new test helper) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean, no warnings |
 | `python3 scripts/generate_subagent_names.py --check` | pass — "All checks passed." |
@@ -216,7 +225,8 @@ the re-run of the suite above.
 | `python3 scripts/check_tui_transport_authority.py` | pass |
 | `python3 scripts/check_no_hardcoded_selection_colours.py` | pass |
 | `python3 scripts/check_first_party_skills.py` | pass |
-| `scripts/verify.sh quick` | pass — "Quick verification passed." |
+| `scripts/verify.sh quick` | pass — "Quick verification passed." — re-run on the **merged** tree, and also passing the new upstream guards `check_tui_editor_doc_drift.py`, `check_tui_editor_key_authority.py` and `check_tui_editor_leaf_authority.py` |
+| **CI** — pull request [#150](https://github.com/dbowm91/codegg/pull/150), `verify` job | **pass** — `cargo nextest run --workspace --locked --profile ci`: **15 674 tests run: 15 674 passed, 7 skipped**, 0 failed. See §4.5.1 |
 
 ### 4.4 Not run
 
@@ -267,9 +277,64 @@ fails the same way**. There are two distinct causes.
    `interactive_terminal` tests passed, and the two `daemon_refresh` tests
    failed with the same `InvalidRootPath("/tmp")` panic.
 
+   §4.5.1 refines this with the post-reconciliation evidence and with the CI
+   run, which is what finally separates the two sub-classes: three of the four
+   are load-sensitive and one is macOS-PTY-specific.
+
 No file in either group is touched by this milestone, and none of them uses
 the name registry. This is recorded here rather than left to be discovered as
 a surprise.
+
+#### 4.5.1 The reconciliation sweep — and the CI run that settles it
+
+The branch was reconciled with `main` at `2a0bae08f` (merge commit
+`fffd96426`, no conflicts). The wider sweep was re-run on the **merged** tree
+and on the **`main` baseline** as a separate worktree, with the same
+`cargo test -p codegg --lib`:
+
+| Run | Tree | Result |
+|---|---|---|
+| 4 | **merged** (this branch) | 7 236 passed, **6 failed**, 4 ignored |
+| 5 | **merged** (this branch), re-run | 7 237 passed, **5 failed**, 4 ignored |
+| 6 | **`main` baseline** `2a0bae08f` | 7 211 passed, **3 failed**, 4 ignored |
+| 7 | **`main` baseline** `2a0bae08f`, re-run | 7 211 passed, **3 failed**, 4 ignored |
+
+The failing set **varies between runs on identical code** (6, then 5, on the
+same tree), and the three that fail on the baseline are a strict subset of the
+ones that fail on the merged tree. Two facts narrow it further:
+
+- **Neither file is touched by this branch, or by upstream's Helix
+  workstream.** `git diff origin/main..HEAD -- src/tui/commands/interactive_terminal.rs`
+  and `-- src/core/daemon_refresh.rs` are both empty, and so are the same two
+  diffs across upstream's own 18 commits.
+- **None of the four `interactive_terminal` tests calls `render(`.** They
+  exercise the PTY plumbing (`service_terminal_output_pull`,
+  `drain_tui_commands`, `type_through_app`), so this milestone's render change
+  is not on their path at all.
+
+**The CI run settles it.** Pull request [#150](https://github.com/dbowm91/codegg/pull/150)
+runs the full workspace suite under nextest (one process per test, so no
+intra-process contention) on Linux runners: **`15 674 tests run: 15 674 passed,
+7 skipped`, 0 failed.** Every one of the six locally-failing tests is
+**green** there — `session_projection_snapshot_includes_in_process_live_child_instances`
+and `session_projection_rebuilds_owner_scoped_live_jobs` included.
+
+So the six local failures are **macOS-local**, not defects:
+
+1. The two `daemon_refresh` tests reject `/tmp` because macOS's `/tmp` is a
+   symlink to `/private/tmp`. They fail **deterministically, in isolation**,
+   on the baseline and on the merged tree alike, and pass where `/tmp` is a
+   real directory — which is exactly what the Linux runners have.
+2. The four `interactive_terminal` tests are **PTY-timing-sensitive on
+   macOS**. Three of them fail intermittently under a 7 246-test parallel
+   sweep and pass in isolation, single-threaded, on both trees. The fourth,
+   `a_hidden_terminal_surface_does_not_arm_the_loop`, fails on macOS even in
+   isolation — so it is **macOS-PTY-specific** rather than merely
+   load-sensitive, which is a more precise description than the one this
+   record gave before the reconciliation.
+
+None of the six is caused by this change, and none is a regression against
+`main`. The CI job — the authoritative gate — is green on this head.
 
 ### 4.6 Wider sweep
 
@@ -413,6 +478,9 @@ it: both passes run inside the same `assign` call, under the same guard.
   timing respectively, and **none of them was fixed here** — they are not in
   this milestone's blast radius, and fixing them would be an unrelated
   change. They are recorded rather than left to be discovered as a surprise.
+  §4.5.1 adds the decisive datum: all six are **macOS-local** and **pass on
+  the CI run** (Linux, nextest — 15 674 tests, 0 failed), which is why the
+  PR's `verify` job is green on this head.
 
 ## 11. Roadmap disposition
 

@@ -14,8 +14,14 @@ Repository baseline reviewed: `31a412844fbbf36055b29245075121035eefc385`
 
 Implementation commits or pull requests:
 
-- Working tree only — not committed at the time of writing. The change is
-  confined to `src/tui/app/render.rs`, `tests/tui_main_buffer.rs`,
+- Implementation commit `682c6999d` (`feat(tui): the subagent presentation and
+  name-allocation workstream — P001–P004`) on branch
+  `feat/auto-20261020-3702c7c5`.
+- Pull request [#150](https://github.com/dbowm91/codegg/pull/150). The branch was
+  reconciled with `main` at `2a0bae08f` in merge commit `fffd96426`, with no
+  conflicts, and every verification result in this record was re-taken on the
+  merged tree.
+- The change is confined to `src/tui/app/render.rs`, `tests/tui_main_buffer.rs`,
   `docs/tui.md`, `architecture/tui.md`, and `.opencode/skills/tui/SKILL.md`,
   plus the plan records named above.
 
@@ -265,6 +271,21 @@ discriminates.
 The workspace-wide test run in `verify.sh full` was not executed. The
 workspace **check** (`cargo check --workspace --all-targets --locked`) is
 inside `verify.sh quick` and passed.
+
+On the **merged** tree (after reconciling with `main` at `2a0bae08f`, merge
+commit `fffd96426`) the root crate's library suite was run in full:
+`cargo test -p codegg --lib` — **7 236 passed, 6 failed, 4 ignored**. The
+**same** suite on the `main` baseline gives **7 211 passed, 3 failed, 4
+ignored**. The three extra failures are the load-sensitive
+`src/tui/commands/interactive_terminal.rs` badge/PTY tests, a file **neither
+this milestone nor upstream's Helix workstream touches**; they pass in
+isolation, single-threaded, on both trees. The remaining three failures are
+identical on both trees. The full comparison — and the per-test evidence that
+the extra three are timing-sensitive rather than caused by this change — is in
+P004's §4.5, which is the record that carries it. The PR's CI `verify` job —
+the full workspace suite under nextest, on Linux runners — is **green**:
+**15 674 tests run, 15 674 passed, 7 skipped**, 0 failed, with all six of the
+locally-failing tests passing there.
 
 ## 5. Invariant review
 

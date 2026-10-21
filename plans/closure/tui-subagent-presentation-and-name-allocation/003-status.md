@@ -14,10 +14,16 @@ Repository baseline reviewed: `31a412844fbbf36055b29245075121035eefc385`
 
 Implementation commits or pull requests:
 
-- Working tree only — not committed at the time of writing. The change is
-  confined to `src/tui/components/sidebar.rs`, `tests/tui_side_panels.rs`,
-  `docs/tui.md`, `architecture/tui.md`, and `.opencode/skills/tui/SKILL.md`,
-  plus the plan records named above.
+- Implementation commit `682c6999d` (`feat(tui): the subagent presentation and
+  name-allocation workstream — P001–P004`) on branch
+  `feat/auto-20261020-3702c7c5`.
+- Pull request [#150](https://github.com/dbowm91/codegg/pull/150). The branch was
+  reconciled with `main` at `2a0bae08f` in merge commit `fffd96426`, with no
+  conflicts, and every verification result in this record was re-taken on the
+  merged tree.
+- The change is confined to `src/tui/components/sidebar.rs`,
+  `tests/tui_side_panels.rs`, `docs/tui.md`, `architecture/tui.md`, and
+  `.opencode/skills/tui/SKILL.md`, plus the plan records named above.
 
 ## 1. Executive finding
 
@@ -226,6 +232,18 @@ http-route-disposition, audit-coverage, queue-delivery-callsites,
 queue-write-transaction-shape, scheduler-bypass, config-merge-coverage, the
 no-hardcoded-models guard, the provider wire/catalog/resilience guards, the
 OpenAI endpoint guard, Eggwork target routing, and a workspace `cargo check`.
+
+On the **merged** tree (after reconciling with `main` at `2a0bae08f`, merge
+commit `fffd96426`) the root crate's library suite was also run in full:
+`cargo test -p codegg --lib` — **7 236 passed, 6 failed, 4 ignored**, against
+**7 211 passed, 3 failed, 4 ignored** on the `main` baseline. The three extra
+failures are the load-sensitive `src/tui/commands/interactive_terminal.rs`
+badge/PTY tests, a file neither this milestone nor upstream's Helix
+workstream touches; they pass in isolation, single-threaded, on both trees.
+P004's §4.5 carries the full per-test comparison. The PR's CI `verify` job —
+the full workspace suite under nextest, on Linux runners — is **green**:
+**15 674 tests run, 15 674 passed, 7 skipped**, 0 failed, with all six of the
+locally-failing tests passing there.
 
 ## 5. Invariant review
 
