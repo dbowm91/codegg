@@ -241,6 +241,47 @@ the same binary goes from 8 passed / 5 failed to 14/14, and a pinned
 regression test carries a mirror of the node's trust check. See §3.11 of the
 closure.
 
+**WP-L — The fresh rebase (2026-10-21).** `main` advanced by **103 commits**
+while this milestone was in flight, so the branch was rebased again, onto
+`main` at `cb0e79c0`, replaying **304** commits. The same explicit-rule
+discipline as WP-A applies, and it produced four obligations this milestone
+did not originally plan for:
+
+- **A second ADR collision.** `main` allocated **ADR-0043** to the accepted
+  session-owned subagent lifecycle projection decision, which this branch had
+  published for the accepted composable Linux execution isolation decision.
+  Under WP-B's rule — main wins a contested number — the branch's decision
+  moves to **ADR-0046**, with its substance, accepted status, and acceptance
+  date unchanged, and the guard's self-test gains a non-vacuous case for that
+  collision class.
+- **A file-level no-loss proof.** For every file the branch changed against
+  the merge base, the canonical per-file three-way merge of (branch, merge
+  base, `main`) is compared with the rebased tree: **93** files match
+  byte-for-byte, **0** deviate, and the tree holds **zero** conflict markers.
+  This proves *content*; it cannot prove *compilation*, because a pairing
+  between a file `main` added and a type this branch extended is invisible to
+  any two-way merge.
+- **Three cross-file pairings.** `main` added 26 new `.rs` files that use
+  three types this branch extended: `JobSubmissionError` (the
+  `LabelsTooLarge` variant), and `JobPayload::ManagedArgv` / `JobPayload::Test`
+  (the `sandbox_profile` and `network_intent` fields). Each is closed with the
+  branch's established values, and the `submission_error_code` slug — which had
+  no test at all — is now pinned.
+- **One inherited race.** The feature-enabled tier failed
+  `real_tui_rollback_invariants_on_writer_closed`, a test whose file and
+  `src/server/ws.rs` are byte-identical to `main`'s. Its wait condition omitted
+  the counter its own assertion checks, so it failed **7 of 12** isolated
+  runs. The fix waits for that counter: strictly more synchronization, no
+  assertion weakened, no timeout widened, no product code touched.
+
+WP-A's rule was applied per conflict, not as a bulk strategy, and the same
+holds here: `main`'s side was taken where `main` had already landed the same
+refactor, both sides were kept where each added something the other needed,
+and the registry was resolved to `main`'s side during the replay and then
+reconciled by a row-level three-way merge against the merge base, which gained
+**64** of `main`'s rows, superseded **9** stale inherited rows, and de-
+duplicated **2** placements the branch had listed twice.
+
 ## 8. Failure, cancellation, restart, contention semantics
 
 - A history surgery must not change the tree. The correction is verified by

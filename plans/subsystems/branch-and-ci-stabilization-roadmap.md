@@ -194,6 +194,19 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   at all depended on the operator's umask. The change is confined to *how a
   cache root the product creates is created*; a cache root that already exists
   and another user could write to is still refused, with the same typed error.
+- **Fresh rebase — 2026-10-21 (recorded, not silent).** `main` advanced by 103
+  commits while this milestone was in flight, and the branch was rebased again
+  onto `main` at `cb0e79c0` (304 commits replayed; the merge base moved from
+  `fe2c1306`). That rebase closed a **second** ADR collision (the branch's
+  Linux execution isolation decision moves to **ADR-0046**, because `main` owns
+  ADR-0043), proved that no file's content was lost (the canonical per-file
+  three-way merge matches the rebased tree byte-for-byte across 93 files with 0
+  deviations, and the tree holds zero conflict markers), and exposed three
+  cross-file pairings that no two-way merge can see — a file `main` added
+  against a type this branch extended. Those are closed, the tree compiles with
+  every target, and the feature-enabled tier is green at 12474/12474 after an
+  inherited race in one of `main`'s tests was fixed. See §3.12–§3.15 of the
+  closure.
 - **Exit conditions:** the tree compiles with every target; both identifier
   guards pass; the canonical gate passes; the sweep's remaining failures are
   zero or explained; and the records say exactly what was and was not verified.
@@ -238,6 +251,27 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   `main`, because `main`'s number is already reachable by an existing
   database; keeping the branch's number would silently skip the branch's
   migration for anyone who had already run `main`'s.
+- **Decision point (2026-10-21): which side wins an ADR number, when the
+  collision appears only after a later rebase.** Resolved the same way —
+  `main` wins, and the branch's decision moves to a free number. The second
+  collision was **ADR-0043**: `main` allocated it to the accepted
+  session-owned subagent lifecycle projection decision while this branch had
+  published it for the accepted composable Linux execution isolation decision.
+  The branch's decision therefore moves to **ADR-0046**, keeping its
+  substance, its accepted status, and its acceptance date. The rule is applied
+  uniformly rather than case by case, and the ADR guard's self-test now carries
+  a non-vacuous case for exactly this collision class, so the renumbering is
+  enforced rather than merely asserted.
+- **Decision point (2026-10-21): what counts as proof that a rebase lost
+  nothing.** Two proofs are required, because they answer different questions
+  and neither substitutes for the other. A **file-level** proof — the
+  canonical per-file three-way merge of (branch, merge base, `main`) compared
+  with the rebased tree — establishes that no *content* was dropped. A
+  **compile-level** proof establishes that the *result* is coherent, and it
+  covers the class a file-level proof cannot see: a pairing between a file
+  one side added and a type the other side extended. The fresh rebase needed
+  both: the file-level proof was clean (93 files, 0 deviations) and the tree
+  still did not compile, because three such pairings existed.
 - **Decision point: how to treat a transient object-store read failure.**
   Resolved in favour of retrying inside the existing bounded attempts, because
   the bound already exists for exactly this class of event and a persistent
@@ -307,4 +341,4 @@ This roadmap is complete when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none |
+| C001 | closed | `plans/implementation/branch-and-ci-stabilization/001-branch-and-ci-stabilization.md` | `plans/closure/branch-and-ci-stabilization/001-status.md` | none (the hosted CI run on the rebased head is **pending**, not an obstacle: a pull request is open for it) | |

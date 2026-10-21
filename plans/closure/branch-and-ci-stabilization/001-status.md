@@ -10,12 +10,22 @@ Source subsystem roadmap:
 
 - `plans/subsystems/branch-and-ci-stabilization-roadmap.md#7-milestones`
 
-Repository baseline reviewed: `d251b11c` (branch tip before the rebase), rebased onto `main` at `fe2c1306`
+Repository baseline reviewed: `d251b11c` (branch tip before the first rebase), rebased onto `main` at `fe2c1306` and then — the **fresh rebase** — onto `main` at `cb0e79c0`
 
 ## 1. Executive finding
 
 The branch is integrated with `main`, and the integration did not cost either
 side its content.
+
+> **The fresh rebase (2026-10-21).** `main` advanced by **103 commits** while this
+> branch was in flight — the TUI editor milestone series, the live-work
+> visibility corrective, the Eggwork worker targeting and telemetry line, the
+> harness lab, and the managed-scratch reconciliation. The branch was rebased
+> again, onto `main` at `cb0e79c0`, replaying **304 commits**. That rebase
+> exposed a **second** ADR collision, **three** cross-file pairings a rebase
+> cannot see, and **one** inherited race in a test. All are closed, and all are
+> recorded below (§3.12–§3.15). The first rebase's findings stand unchanged;
+> this section records what the second one added.
 
 The rebase replayed **295 commits** onto `main` at `fe2c1306` and stopped at
 **21 conflict steps across 20 distinct files**. Every conflict was resolved by
@@ -87,13 +97,13 @@ contract** rather than an accident of the host.
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| The branch is rebased onto `main` and carries `main`'s tip | `git merge-base HEAD origin/main` == `fe2c1306`; `git log --oneline origin/main..HEAD` == 294 commits, every subject preserved | pass |
+| The branch is rebased onto `main` and carries `main`'s tip | **the fresh rebase**: `git merge-base HEAD origin/main` == `cb0e79c0`; `git log --oneline origin/main..HEAD` == **304 commits**, every subject preserved (the first rebase's 295 onto `fe2c1306` is superseded) | pass |
 | No conflict survives in the final tree | `git grep -lE "^(<<<<<<< \|>>>>>>> )" HEAD --` outside `plans/` → **0** | pass |
 | A conflict is never committed with markers | two such commits were found during the rebase and repaired by a targeted rewrite; the repair is proved by an **empty** `git diff --stat backup/post-rebase-pre-fix HEAD` | pass |
 | One storage-layout number per migration | `crates/codegg-core/src/session/schema.rs` has one `migrate_v83` (main's managed scratch), `migrate_v84` (M005 network intent), `migrate_v85` (C007 journal); `python3 scripts/check_project_catalog_invariants.py` → **7/7** | pass |
 | The layout version tracks the highest wired migration | `STORAGE_LAYOUT_VERSION = 85`; `scripts/check_project_catalog_invariants.py` → "storage layout marker tracks highest wired schema migration" PASS | pass |
-| One ADR identifier per decision | `python3 scripts/check_adr_integrity.py` → pass; `main` passes the same guard, so the guard is not merely permissive | pass |
-| The ADR guard is itself trustworthy | `python3 scripts/check_adr_integrity.py --self-test` → "ADR integrity fixtures passed" | pass |
+| One ADR identifier per decision | `python3 scripts/check_adr_integrity.py` → pass; `main` passes the same guard, so the guard is not merely permissive. The fresh rebase's second collision (ADR-0043) is closed by moving this branch's decision to **ADR-0046** (§3.13) | pass |
+| The ADR guard is itself trustworthy | `python3 scripts/check_adr_integrity.py --self-test` → "ADR integrity fixtures passed"; the self-test now carries the real merged ADR set and a **non-vacuous** case for the ADR-0043 collision class (§3.13) | pass |
 | Every live local ADR path resolves | the guard's own check; two dangling references were found and corrected with a provenance note — the `ADR-0028-command-syntax-and-execution-authority.md` reference in the agent-tool-use addendum, and this record's own reference to the command ADR's **former** filename (the guard treats any `plans/adrs/ADR-….md` path form as a live link, so a historical name is cited by number or filename only) | pass |
 | Content the branch had lost is restored | the eleven registry rows and prose for three unrelated workstreams are back in `plans/registry.md` | pass |
 | A stale ADR identifier no longer names a different decision | `plans/subsystems/tui-editor-helix-parity-roadmap.md` is now **byte-identical to `main`**; four editor closure records likewise | pass |
@@ -112,8 +122,11 @@ contract** rather than an accident of the host.
 | The feature-enabled tier passes | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci` → 11804 run, **11804 passed, 0 failed** on the fixed tree (§4.2) | pass |
 | The live Eggwork qualification's trust chain does not follow the operator's umask | `tests/eggwork_remote_execution_live.rs` regression test `a_staged_sandbox_helper_is_trusted_whatever_the_umask`; **non-vacuity proved** — with the helper group-writable the *same* five qualifications fail (8 passed / 5 failed) and the staged pair passes (14/14) (§3.11) | pass |
 | No work is lost by the force push | the remote branch's two commits past the rebase base (`32611c8d`, `5019fb26`) are replayed onto the rebased branch; their files are **byte-identical** to the remote's originals (§3.10) | pass |
-| Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20; **eight** rows corrected, and the three rows this milestone first carried forward are now re-derived from re-runnable sources — no row is carried forward (§3.6) | pass |
+| Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20 (**eight** rows corrected) and again on 2026-10-21 against the rebased tree (**nine** more rows moved, two of them because the *measure* was wrong — the tool-registration count and the authorized-operations count); no row is carried forward (§3.6) | pass |
 | The canonical gate after the sweep | `scripts/verify.sh quick` → "Quick verification passed." (§4) | pass |
+| No branch content is lost by the fresh rebase | for every file the branch changed relative to the merge base, the canonical per-file three-way merge of (branch, merge base, `main`) was compared with the rebased tree: **93 files byte-identical, 0 deviations**; **zero** conflict markers in the tree (§3.12.4) | pass |
+| The merged tree compiles with every target | `cargo check --workspace --all-targets --locked` → **exit 0**. The first attempt did not compile: the rebase cannot see a pairing between a file `main` added and a type this branch extended. Three such pairings were found and closed (§3.14) | pass |
+| The feature-enabled tier is deterministic | `real_tui_rollback_invariants_on_writer_closed` failed **7 of 12** isolated runs; its wait condition omitted the counter its own assertion checks. Fixed by waiting for that counter; **0 failures in 15 runs** after, and the tier is green. No assertion weakened, no timeout widened, no product code touched (§3.15) | pass |
 
 ## 3. Production implementation evidence
 
@@ -449,15 +462,196 @@ isolate the workspace. What changed is that the fixture now hands the node an
 artifact it can trust on any host, instead of one whose trust the operator's
 umask decided.
 
+### 3.12 The fresh rebase onto `main` at `cb0e79c0`
+
+`main` advanced by **103 commits** while this branch was in flight. The branch
+was rebased again, replaying **304 commits** onto `main` at `cb0e79c0`. The
+merge base moved from `fe2c1306` to `cb0e79c0`; 327 files changed on `main`
+and 295 on the branch, with **55 files touched by both**.
+
+Every conflict was resolved by an explicit rule, and the conflicts fell into
+four classes:
+
+| Conflict | Rule applied | Outcome |
+|---|---|---|
+| `plans/registry.md` (repeatedly) | `main`'s side during the replay, then the branch's own rows re-applied afterwards by a row-level three-way merge against the merge base (§3.12.1) | 64 of `main`'s rows gained, 9 stale inherited rows superseded, 2 duplicate placements de-duplicated |
+| `plans/subsystems/tui-editor-helix-parity-roadmap.md` | `main`'s side | the branch's only delta there was an ADR label `main` had already corrected (§3.12.2) |
+| `architecture/overview.md`, `architecture/command.md` | `main`'s side during the replay, then rewritten wholesale by the re-derivation (§3.6) | nine count rows moved, two of them by a corrected measure |
+| `src/tui/command.rs`, `tests/eggwork_remote_execution_live.rs` | composed by hand | both sides' content kept (§3.12.3) |
+
+#### 3.12.1 The registry reconciliation
+
+`plans/registry.md` is a hand-maintained table whose sections mix row schemas,
+so a conflict region does not determine what a row means. The rebase therefore
+resolved each registry conflict to `main`'s side and re-applied the branch's own
+rows afterwards, using the merge base as the third side of a **row-level**
+three-way merge. The result, compared against the pre-rebase branch tree:
+
+- **64 rows gained** — every one of them a row `main` added.
+- **9 rows superseded** — stale inherited rows for workstreams `main` has since
+  advanced (the managed-scratch, TUI composer and TUI editor roadmap rows, the
+  composer M003 and editor M006–M008 rows `main` implemented, the agent-recovery
+  row `main` renamed, and the editor M009 row `main` closed and re-homed as
+  M014).
+- **2 placements de-duplicated** — the branch listed "Linux execution isolation
+  M003" and "M005" in *both* the "Blocked work" table and the
+  "Dependency-ready implementation plans" table; the merged tree keeps them
+  once, in the latter, carrying the branch's own text.
+
+No branch row was lost. The branch's eleven Linux-execution-isolation rows,
+its seven Linux-trusted-Git rows, and its four branch-and-CI rows are all
+present in the merged registry with their original content.
+
+#### 3.12.2 The editor-Helix roadmap
+
+The branch's entire delta to `plans/subsystems/tui-editor-helix-parity-roadmap.md`
+was an ADR label: it had written `ADR-0037` where the decision is `ADR-0034`,
+and later corrected it. `main` carries `ADR-0034` in **29** places and
+`ADR-0037` in **none**, and has advanced the roadmap itself (M001–M013 and
+M015–M020 closed). `main`'s side was taken; the branch's later correction
+commit became a no-op. Nothing was lost — the four unique lines the branch
+held were older wordings of lines `main` has since reworded.
+
+#### 3.12.3 The two hand-composed conflicts
+
+`src/tui/command.rs`: `main` registered `/nodes` (Eggwork M002) and this
+branch registered `/network` (M005), each moving the same registry-length pin
+by one. The merged tree holds **168** built-in commands and **160**
+`BuiltinSlashAction` variants — one more than either side alone — and the
+conflict was resolved so both commands and both enum variants survive.
+
+`tests/eggwork_remote_execution_live.rs`: `main` added two telemetry
+qualifications and this branch added the fixture-trust contract test (§3.11).
+The resolution keeps all three, and repairs one structural defect the merge
+introduced: the composed file was missing a closing brace, which the compiler
+caught (§3.14).
+
+#### 3.12.4 Proof that no content was lost
+
+The file-level three-way merge was computed for **every** file the branch
+changed relative to the merge base, and compared with the rebased tree:
+
+    expected = git merge-file -p  (branch, merge-base, main)
+    actual   = the rebased tree
+
+**93 files are byte-identical to that merge, and 0 files deviate.** The
+rebased tree contains **zero** conflict markers. The three paths the check
+reports as moved are the two ADR files this branch renamed (archived as
+aliases, §3.13) and one implementation plan this branch moved into
+`plans/archive/`.
+
+This proof is about *content*, not about *compilation*: a cross-file pairing is
+invisible to it, which is why the compiler is the other half of the evidence
+(§3.14).
+
+### 3.13 The second ADR collision, and ADR-0046
+
+`main` had, since the first reconciliation, allocated **ADR-0043** to the
+accepted session-owned subagent lifecycle projection decision (Option A
+accepted 2026-10-19). This branch had published ADR-0043 for the accepted
+composable Linux execution isolation decision. The rebased tree carried two
+live records claiming ADR-0043, and `scripts/check_adr_integrity.py` failed
+with `duplicate active ADR-0043` plus four dangling path references.
+
+The rule the first reconciliation applied is applied again — **main wins a
+contested number; this branch's decision moves**:
+
+| Decision | Before | After |
+|---|---|---|
+| Composable Linux execution isolation | ADR-0043 | **ADR-0046** |
+| Command syntax and execution authority | ADR-0045 | ADR-0045 (unchanged) |
+| Session-owned subagent lifecycle projection | ADR-0043 (main) | ADR-0043 (main, unchanged) |
+| Contained Git live objects and metadata | ADR-0044 | ADR-0044 (unchanged) |
+
+The decision's substance, its accepted status, and its 2026-10-14 acceptance
+date are **unchanged**; only the canonical identifier moved. The published
+ADR-0043 file is archived beside the earlier ADR-0027 and ADR-0028 aliases
+under `plans/archive/linux-command-adr-id-aliases/`, and `migration.json`
+records the mapping with recomputed digests, the full identity history
+(ADR-0027 → ADR-0031 → ADR-0033 → ADR-0035 → ADR-0043 → ADR-0046), and the
+current `main` allocation set.
+
+The manifest also carried a **stale** claim from the first reconciliation: it
+still named ADR-0042 as the command authority's canonical id, which `main` owns
+(composer normal-mode key ownership). It is corrected to ADR-0045.
+
+The guard's self-test now carries the real merged ADR set and adds a
+**non-vacuity** case for exactly this collision class: two decisions claiming
+ADR-0043 must be rejected, so the renumbering is enforced rather than merely
+asserted. The storage-layout namespace is unaffected — `main`'s ceiling is 83,
+this branch's migrations are 84 and 85, `STORAGE_LAYOUT_VERSION` = 85.
+
+### 3.14 The cross-file pairings a rebase cannot see
+
+A rebase resolves *file-level* conflicts. It cannot see a pairing between a
+file one side added and a type the other side extended, because no two-way
+merge ever compares them. `main` added 26 new `.rs` files; this branch had
+extended three types they use. Three such pairings existed, and the tree did
+not compile until each was closed.
+
+- **`JobSubmissionError::LabelsTooLarge` (production).** `main` added
+  `src/scheduler/schedule_materializer.rs`, whose `submission_error_code`
+  matches exhaustively over `JobSubmissionError`; this branch had added the
+  `LabelsTooLarge` variant to that enum. The match had no arm for it. The arm
+  maps it to `labels_too_large`, following the neighbouring `payload_too_large`.
+  That function had **no test at all**; the compiler enforces the *coverage*,
+  while the new `submission_error_codes_are_stable_slugs` test pins the *slug*,
+  which a wrong value would have changed silently.
+- **`JobPayload::ManagedArgv` and `JobPayload::Test` (tests).** This branch's
+  M005 work added `sandbox_profile` and `network_intent` to the command-bearing
+  job payloads. Six construction sites in files `main` added after the previous
+  rebase base did not know about them:
+  `tests/eggwork_target_boundary.rs`, `tests/schedule_materialization.rs`,
+  `tests/eggwork_remote_limits.rs`, and four sites in
+  `tests/eggwork_remote_execution.rs`. Each is filled with the branch's
+  established values — `sandbox_profile: None` and
+  `network_intent: NetworkIntent::LegacyUnrestricted`, the enum's `#[default]`
+  and the intent a payload had before either field existed. No test's behaviour
+  changes; the fields are the ones the type requires.
+
+The structural defect in `tests/eggwork_remote_execution_live.rs` (§3.12.3) is
+of the same kind: the composed file was one closing brace short, and the
+compiler caught it.
+
+### 3.15 The projection transport's inherited race
+
+The feature-enabled tier failed one test:
+`codegg::projection_transport_real::real_tui_rollback_invariants_on_writer_closed`.
+The test file and `src/server/ws.rs` are **byte-identical to `main`'s**, so the
+defect is inherited rather than introduced by the rebase — but it is a real
+defect and it made the tier's green result unreliable.
+
+The race is in the test's own synchronization.
+`ConnectionTaskProbe::assert_all_at_baseline` asserts that the TUI request
+handler completed exactly once as soon as `mark_tui_task_set()` has been
+observed; that flag is set when the task set is **constructed**, not when the
+handler finishes, so it is true long before the handler has completed. The
+test's wait loop covered the send, receive, and raw-event completions but
+**not** the request-handler completion, so the assertion raced the handler it
+was waiting for.
+
+The fix waits for the counter the assertion checks. It is strictly *more*
+synchronization: no assertion is weakened, no timeout is widened, and no
+product code path is touched (`src/server/ws.rs` is unchanged). The rollback
+invariants the test exists to prove are asserted exactly as before — the test
+simply waits for the teardown to finish before checking it.
+
+**Non-vacuity proved** on the same tree, same host, same command: **7 failures
+in 12 isolated runs before the fix, 0 failures in 15 runs after it**.
+
 ## 4. Verification executed
 
 Local, on the final tree, in this order.
 
+The results below are the **fresh rebase's** tree, `d24808d4e`. The rows that
+predate it are kept below with the tree they were measured on, so that no
+number in this record is silently attributed to a tree it was not measured on.
+
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | clean |
-| `cargo check --workspace --all-targets --locked` | clean (every target) |
-| `scripts/verify.sh quick` | **"Quick verification passed."** |
+| `cargo check --workspace --all-targets --locked` | clean (every target) — **exit 0** on `d24808d4e` |
+| `scripts/verify.sh quick` | **"Quick verification passed."** on `d24808d4e` |
 | `python3 scripts/check_adr_integrity.py` | pass |
 | `python3 scripts/check_adr_integrity.py --self-test` | "ADR integrity fixtures passed" |
 | `python3 scripts/check_project_catalog_invariants.py` | 7/7 |
@@ -466,7 +660,7 @@ Local, on the final tree, in this order.
 | `cargo test -p codegg --locked --lib -- --list` | the three live-language-server tests are **absent**; the four rejection tests remain |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(scratch_cache_root_contract) or binary(linux_native_scratch_containment) or test(/scratch::tests::/)'` | **28 passed, 0 failed** (the scratch allocator's own qualifications, its resolution contract, and the native containment fixture) |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | **clean** (0 errors) — after the four lints in §3.8 and the two in `crates/egggit` were fixed |
-| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | 11804 tests run: **11804 passed, 0 failed, 7 skipped** — the live Eggwork qualification included (§4.2) |
+| `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | on `d24808d4e`: **12474 tests run: 12474 passed, 0 failed, 7 skipped** (`Summary [ 440.750s]`) — the live Eggwork qualification included (§4.2). On the pre-rebase tree: 11804 run, 11804 passed, 0 failed, 7 skipped |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(eggwork_remote_execution_live)'` | **14 passed, 0 failed** with the build tree in the failing state (helper 0775, target directory 0775) — the qualification's own non-vacuity proof (§3.11) |
 | `cargo nextest run -p codegg --locked --profile ci -E 'test(/scratch/)'` with **no** `XDG_CACHE_HOME` | **33 passed, 0 failed** — the ambient cache path against this host's repaired `~/.cache` (0755) |
 
@@ -500,8 +694,13 @@ The authoritative workspace sweep is recorded in §4.1.
 run on the committed tree with no concurrent edits and no Git commands in the
 worktree:
 
+- **The fresh rebase's tree, `d24808d4e`: 15733 tests run: 15733 passed,
+  8 skipped, 0 failed, 0 timed out** (`Summary [ 476.302s]`, exit 0), and
+  `scripts/verify.sh quick` → **"Quick verification passed."** The count is
+  729 higher than the pre-rebase tree's because `main` brought 103 commits
+  with it.
 - **15004 tests run: 15004 passed, 8 skipped, 0 failed, 0 timed out**
-  (`Summary [ 505.752s]`, exit 0) on the final tree `81697139`. The count is
+  (`Summary [ 505.752s]`, exit 0) on the pre-rebase tree `81697139`. The count is
   one higher than the earlier run on `9b346776` because the live-Eggwork
   fixture added one regression test (§3.11).
 - Two earlier runs of the same command on this tree were **not** green, and
@@ -556,9 +755,20 @@ worktree:
 `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast`
 — the third tier of `scripts/verify.sh full` — was run on the final tree:
 
+- **The fresh rebase's tree, `d24808d4e`: 12474 tests run: 12474 passed,
+  0 failed, 7 skipped** (`Summary [ 440.750s]`, exit 0). All 15 live-Eggwork
+  qualifications pass, including the two `main` added for Eggwork M002 and this
+  branch's fixture-trust contract test (§3.11).
+- The **first** run of the same command on that tree was **not** green: 12474
+  run, 12473 passed, **1 failed** —
+  `real_tui_rollback_invariants_on_writer_closed`. The defect was inherited
+  from `main` (the test file and `src/server/ws.rs` are byte-identical to
+  `main`'s) and is a race in the test's own wait condition; it failed **7 of 12**
+  isolated runs. It is closed by waiting for the counter the assertion checks
+  (§3.15), and the re-run above is green.
 - **11804 tests run: 11804 passed, 0 failed, 7 skipped** (`Summary [ 603.669s]`,
-  exit 0). The count is one higher than the run below because the live-Eggwork
-  fixture added one regression test (§3.11).
+  exit 0) on the pre-rebase tree `81697139`. The count is one higher than the
+  run below because the live-Eggwork fixture added one regression test (§3.11).
 - The earlier run of the same command on the same tree was **not** green:
   **11803 run, 11798 passed, 5 failed**, all five in one binary,
   `eggwork_remote_execution_live`, and all five with the same cause — the live
@@ -749,11 +959,19 @@ sets the modes it needs on any host.
 - **medium — the hosted CI runs recorded in the C007 and C023 closures qualify
   the *code* those closures describe, not the rebased head.** The rebase
   rewrote every SHA, and the recorded runs predate it. The rebased head has
-  **not** been observed in a hosted run, and pushing the branch does not start
-  one: `ci.yml` runs on pull requests and on pushes to `main`, so the branch's
-  own push starts only the path-triggered native workflows. Opening a pull
-  request is what would exercise the default sweep on the rebased head. See
-  §12.
+  **not yet** been observed in a hosted run. A pull request is now open for the
+  branch, which is what exercises the default sweep on the rebased head
+  (`ci.yml` runs on pull requests and on pushes to `main`, so the branch's own
+  push starts only the path-triggered native workflows); **its result is not
+  evidence until it has actually run**, and it is not reported here as one.
+  See §12.
+- **low — `main`'s `src/server/ws.rs` carries a deprecated `AtomicBool::fetch_update`
+  call**, which the feature-enabled build reports as a warning. The file is
+  byte-identical to `main`'s, the warning is not produced by any gate
+  (`verify.sh full`'s clippy step runs without `--features server`, so it never
+  compiles that module), and it is recorded rather than changed: editing
+  another line's server code during a rebase stabilisation would be an
+  unrelated change to a file this milestone does not own.
 - **low — the branch and the *Linux Sandbox Admission — Post-Review Corrective
   Addendum* packet both call their first package "C001", and the two differ in
   two recorded places** (§3.10): the disposition of the three
@@ -788,18 +1006,31 @@ The roadmap's status becomes `closed; C001 closed`.
 - The Linux trusted Git cost corrective's registry row is updated to record
   that the branch it names has been rebased onto `main` and that its
   C007/C023 hosted evidence qualifies the pre-rebase source.
+- **The fresh rebase's registry rows (2026-10-21).** Both of this milestone's
+  rows — the active-roadmap row and the closure-table row — carry the fresh
+  rebase's facts: the new merge base `cb0e79c0`, the second ADR collision and
+  ADR-0046, the file-level no-loss proof, the three closed cross-file
+  pairings, and the inherited race's fix with its non-vacuity numbers. The
+  registry's own reconciliation is recorded in §3.12.1: **64** of `main`'s
+  rows gained, **9** stale inherited rows superseded, **2** duplicate
+  placements de-duplicated, and no branch row lost.
 
 ## 13. What was not verified
 
 Stated plainly, because a closure that hides its gaps is worse than one that
 names them:
 
-- **The rebased head has not been observed in a hosted CI run.** The recorded
-  runs (`39356728579` and its predecessors) qualify the pre-rebase source.
-  The rebased tree is verified locally, and the hosted workflow is expected to
-  exercise it, but that is an expectation and not evidence. Pushing the branch
-  does not start it either: `ci.yml` runs on pull requests and on pushes to
-  `main`.
+- **The rebased head has not yet been observed in a hosted CI run.** The
+  recorded runs (`39356728579` and its predecessors) qualify the pre-rebase
+  source. The rebased tree is verified locally, and a pull request is open
+  that will exercise it, but an open pull request is an expectation and not
+  evidence: the run's result is not reported here until it has actually
+  happened. Pushing the branch does not start it either — `ci.yml` runs on pull
+  requests and on pushes to `main`.
+- **The M004/M005 native tier is not re-qualified on the rebased head**, and
+  the inherited projection-transport race (§3.15) was fixed on the branch's
+  tree rather than on `main`'s — so `main` still carries that race until the
+  change is merged.
 - **No native Windows or macOS run.** The rebased tree was verified on Linux
   only.
 - **The M004/M005 tier was not re-qualified on the rebased head.** This
@@ -807,7 +1038,9 @@ names them:
   the hosted runner.
 - **Every published count is now measured against a re-runnable source** (§3.6).
   The three rows this milestone first carried forward are re-derived, and two of
-  their published values were stale in `main` as well.
+  their published values were stale in `main` as well. The table was measured
+  again on 2026-10-21 against the rebased tree: nine further rows moved, two of
+  them because the *measure* was wrong rather than the value.
 - **The two historical commits with the invalid guard script were recorded,
   not rewritten** (§10).
 - **The parallel planning packet's C001 is not merged into this one** (§3.10);
