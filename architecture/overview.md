@@ -306,31 +306,62 @@ the transient `origin_attribution_new` rebuild name, which is 88 tables;
 the statement count is 92 because `migration_version` and the
 `origin_attribution` rebuild each appear twice.
 
+Every row was **remeasured again on 2026-10-21**, after this branch was
+rebased onto `main` at `cb0e79c0`. Nine rows moved, and two rows changed their
+*measure* rather than only their value:
+
+- **Tool registrations** 65 → **67**. The row's measure is now pinned: the
+  registrations are the `registry.register(..)` / `registry.register_boxed(..)`
+  calls inside `ToolRegistry::with_options()`'s body (54 + 13), not the number
+  of lines that merely mention `with_options`. The old measure counted
+  unrelated methods whose names end in `with_options` —
+  `subscribe_with_options`, `probe_with_options`, `new_with_options` — which is
+  why it read 63 on this branch and 65 on `main` for the same tree.
+- **Authorized operations** 253 → **244**, and the row's `Source` changed from
+  `operation_descriptor` to `representative_requests()`. `operation_descriptor`
+  is the per-request *mapper*; its call-site count is not the number of
+  operations. `representative_requests()` is one representative request per
+  operation and is the list `operation_capability_matrix()` derives from.
+- **Distinct production tool names** 60 → **61**. The previous value was an
+  undercount: the scan missed `impl crate::tool::Tool for ContextReadTool`,
+  whose literal name is `context_read`. The measure is unchanged and still
+  excludes the 7 test-only mocks.
+- `codegg-core` modules 47 → **48**; `CoreRequest` variants 259 → **260** (236
+  struct + 24 unit); built-in slash commands 167 → **168** (this branch
+  registers `/network` and `main` registers `/nodes`, so the merged tree holds
+  one more than either side); database tables 88 → **89** (90 distinct
+  `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild
+  name); storage layout version 83 → **85** (this branch's migrations 84 and
+  85); integration test files 278 → **284**.
+
+The directory tree above was corrected with them: it said "Integration tests
+(278 files)" and now says **284**.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 87 | `architecture/*.md` |
-| Tool registrations in `with_options()` | 65 call sites | `src/tool/mod.rs` |
+| Tool registrations in `with_options()` | 67 (54 `register` + 13 `register_boxed`) | `ToolRegistry::with_options()` (`src/tool/mod.rs`) — the registrations are the `registry.register(..)` / `registry.register_boxed(..)` calls in that constructor's body, not the constructor's own call sites |
 | Distinct production tool names | 61 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 7 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs`, `tool_search.rs`, `disabled.rs` and `broker.rs`; this row counts **literal** `name()` strings only, so the forwarding impls `UnrootedTool` and `Box<dyn Tool>`, the renaming wrapper `DisabledTool`, and the plugin adapter `PluginToolAdapter` — whose `name()` is not a literal — add no name to it, and neither does `EggsactTool`, whose name is supplied per instance and whose 13 eggsact-backed tool names are outside this row's method) |
 | Tool source files | 80 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
-| `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
+| `codegg-core` modules | 48 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 259 (235 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 260 (236 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreResponse` variants | 169 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 253 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 244 | `representative_requests()` (`crates/codegg-core/src/authorization/policy.rs`) — one representative request per operation, the list `operation_capability_matrix()` derives from; `operation_descriptor` is the per-request mapper, so its call-site count is not this row's measure |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 167 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 168 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 33 (34 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 88 | `crates/codegg-core/src/session/schema.rs` (distinct table names: 89 `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version` and the `origin_attribution` rebuild each appear twice) |
-| Storage layout version | 83 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 89 | `crates/codegg-core/src/session/schema.rs` (distinct table names: 90 `CREATE TABLE` names, less the transient `origin_attribution_new` rebuild name; `migration_version` and the `origin_attribution` rebuild each appear twice) |
+| Storage layout version | 85 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 278 | `tests/*.rs` |
+| Integration test files | 284 | `tests/*.rs` |
 | CI guard scripts | 62 | `scripts/check_*` |
 
 
@@ -597,7 +628,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (278 files)
+├── tests/                      # Integration tests (284 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates

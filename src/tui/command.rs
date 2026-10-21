@@ -1215,15 +1215,21 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 165th is `/network` (the per-principal network intent policy).
-        // 164th is `/projects` (the project picker spelling that stays
-        // typeable mid-prompt, mirroring `/panels` for `⇧S`). 163rd is
-        // `/start` and 162nd is `/stop` (carry on after a stopped turn;
-        // interrupt a running one). 161st is `/files` (the workspace file
-        // manager); 160th is `/panels` (the side-panel manager, the spelling
-        // of `⇧S` that stays typeable mid-prompt); 159th and 158th are
-        // `/terminal` (bare interactive terminal box) and `/terminal-clear`.
+        // Registry order, 1-based in `built_in_commands()`: 9th is `/network`
+        // (the per-principal network intent policy); 13th is `/projects` (the
+        // project picker spelling that stays typeable mid-prompt, mirroring
+        // `/panels` for `⇧S`); 15th is `/stop` and 16th is `/start` (carry on
+        // after a stopped turn; interrupt a running one); 40th is `/files`
+        // (the workspace file manager); 125th and 126th are `/terminal` (bare
+        // interactive terminal box) and `/terminal-clear`; 151st is `/panels`
+        // (the side-panel manager, the spelling of `⇧S` that stays typeable
+        // mid-prompt).
         // Keep `architecture/command.md` counts in sync when adding more.
+        //
+        // These positions were re-derived on 2026-10-21 against the merged
+        // tree. The run of ordinals they replaced was never right: it matched
+        // no ordering in the registry, on this branch or on `main`, and no
+        // guard read it.
         //
         // This number moved 164 -> 165 for **M004's `/queue`**, which was
         // registered without updating this pin or `architecture/command.md`.
@@ -1397,7 +1403,7 @@ mod tests {
         // and `[Cc]ount is (\d+)`, and a `BuiltinSlashAction` **variant** count
         // is neither. That blind spot is not hypothetical — the document
         // historical prose carried 149 and later 156–158 counts without a
-        // source-backed variant assertion; the current total is 159.
+        // source-backed variant assertion; the current total is 160.
         //
         // The source of truth is `all_builtin_variants`, which
         // `every_builtin_action_is_referenced_by_a_canonical_command` already
