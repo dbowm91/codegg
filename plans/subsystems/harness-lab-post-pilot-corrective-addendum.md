@@ -1,6 +1,6 @@
 # Harness Lab Post-Pilot Corrective Addendum
 
-Status: conditionally closed — C001 and C002 closed; C003 and C004 offline preparation closed, with both live halves awaiting live-provider authorization
+Status: conditionally closed — C001, C002 and C003 closed; C004's live half ran and stays conditional on the two-route provider pair and the final autonomy claim
 
 Supersedes: **no original closure**. The historical M001–M003 strict closures remain intact. M004 and M005 stay **conditionally closed** until their outstanding evidence is discharged. See `plans/subsystems/harness-lab-roadmap.md`, `plans/closure/harness-lab/004-status.md`, `005-status.md`.
 
@@ -54,7 +54,7 @@ C002 scoring/holdout + resume correctness ───────────┘  
 
 - **C001 ready:** existing ACP/native telemetry and M005 partial pilot are sufficient interfaces.
 - **C002 ready:** existing immutable ledger, evaluator and M004/M005 candidate controller are sufficient interfaces. Work may proceed in parallel with C001, but touching common Python code requires ordinary Git coordination.
-- **C003 blocked (hard):** C001 and C002 strict closure.
+- **C003 closed:** the live acceptance ran and the candidate was accepted.
 - **C004 blocked (hard):** C003 strict closure for *autonomous-optimization-readiness claim*; the frozen Task 2 provider pair may be run as a separate operational action after C001 closure, provided no code changes or comparisons are called optimizer acceptance. Corpus research/fixtures are a soft, parallel dependency.
 - No ADR required for these developer-only changes **provided** canonical daemon ownership, ACP v1 compatibility and production singleton policy remain unchanged. Stop/raise ADR if code needs to replace these boundaries.
 
@@ -101,5 +101,5 @@ Final completion requires truthful failed-turn evidence or authoritative stop, c
 |---|---|---|---|---|
 | C001 | closed | `implementation/harness-lab-post-pilot-corrective/001-failed-turn-evidence-and-budget-authority.md` | `closure/harness-lab-post-pilot-corrective/001-status.md` | none |
 | C002 | closed | `implementation/harness-lab-post-pilot-corrective/002-scoring-and-resumable-qualification.md` | `closure/harness-lab-post-pilot-corrective/002-status.md` | none |
-| C003 | conditionally closed (dependency discharged) | `implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md` | `closure/harness-lab-post-pilot-corrective/003-status.md` | live-provider authorization: an approved model route with C001-verified spend authority, and a genuine observed defect. The OpenCode CLI pin now names the actually installed 1.19.3 and the bounded compile-correction mechanic is qualified against a labelled fault injection |
-| C004 | conditionally closed (offline preparation closed) | `implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md` | `closure/harness-lab-post-pilot-corrective/004-status.md` | hard: C003 strict closure for the final autonomy claim; the offline taxonomy, loader, isolation guard and one materialized case are closed, and Task 2's remaining blocker is the approved usage budget |
+| C003 | closed | `implementation/harness-lab-post-pilot-corrective/003-live-proposer-correction-and-acceptance.md` | `closure/harness-lab-post-pilot-corrective/003-status.md` | none. The live acceptance ran and the candidate was accepted: an authenticated OpenCode 1.19.3 proposal on `opencode-go/muse-spark-1.3-contributor` corrected the headless workspace-binding defect; the paired score accepted it (`correctness_fix`, 13/13 pairs, one improvement, zero regressions, four protected controls held) after a real SIGKILL interruption and resume. Four harness defects the run exposed are fixed and tested |
+| C004 | conditionally closed (live half ran) | `implementation/harness-lab-post-pilot-corrective/004-sustained-agent-benchmark-qualification.md` | `closure/harness-lab-post-pilot-corrective/004-status.md` | the provider pair is one route: `longcat-2.5-preview-free`'s upstream answers HTTP 400 "Endpoint is unavailable."; five verifier bodies remain unmaterialized; the final autonomy claim still depends on C003's accepted-defect receipt |

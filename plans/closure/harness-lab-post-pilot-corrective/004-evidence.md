@@ -126,12 +126,92 @@ The suite was `Ran 72 tests ... OK` before this line of work.
 list. `cargo fmt --check --all` is clean and `cargo clippy -p codegg
 --all-targets -- -D warnings` finishes with no warning.
 
-## 6. What was NOT run, and why
+## 6. The live half
 
-- **No live provider call.** No approved budget and no provider-authoritative
-  quota exists to verify. The plan's own instruction for this case is to skip
-  the live calls and close only the offline preparation as conditional.
-- **No Task 2 pair and no sustained 30–60 minute scenario.** Both need the live
-  authorization and C003's accepted-defect receipt.
+The live authorization arrived: the operator approved four low-cost/free
+routes — `longcat-2.5-preview-free`, `muse-spark-1.3-contributor`,
+`minimax-m3.1-flash-free` and `beam-free` — and three controller-enforced
+budget policies were admitted before any provider request.
+
+### 6.1 What each route can and cannot do
+
+| Route | As a CodeGG subject | As an OpenCode proposer |
+|---|---|---|
+| `muse-spark-1.3-contributor` | **works** — live ACP turn completed | works |
+| `beam-free` | no wire mapping at any rev | proposal **failed mid-run** with a retryable `429` "Upstream request failed: Endpoint is unavailable." |
+| `minimax-m3.1-flash-free` | no wire mapping at any rev | works |
+| `longcat-2.5-preview-free` | **upstream down** — HTTP 400 "Endpoint is unavailable." | — |
+
+`codegg models --provider opencode_go` lists 27 bare ids. The shared
+`eggpool-provider-profile` carries 30 `model_wire` entries and maps
+`longcat-2.5-preview-free` → `openai_chat_completions` and
+`muse-spark-1.3-contributor` → `openai_responses`. `minimax-m3.1-flash-free`
+and `beam-free` are absent from that profile, and the pinned profile revision
+is identical at eggpool `main`, so bumping the pin cannot produce them.
+`https://opencode.ai/zen/go/v1/models` returns no rate-limit headers, so there
+is still **no provider-authoritative quota** to verify: only the
+controller-enforced caps exist.
+
+### 6.2 Task 2 — one route of the pair
+
+Task 2 (`ranges`) was solved by `muse-spark-1.3-contributor` against the
+frozen fixture, whose digests match the M005 receipts (`worklog`
+`5adfbae3…`, `ranges` `89075ca1…`):
+
+- terminal `completed`, 11 tool calls, `ranges.py` only, no protected file
+  changed;
+- the independent verifier exited 0 with 11/11 tests passing;
+- usage: input 23 700, output 322, with a `turn_id`; 45.4 s; 1 provider
+  request; **cost unobservable** on this route, so no dollar figure is claimed.
+
+The run was reproduced twice. `longcat-2.5-preview-free` could not serve the
+same task: the upstream answered HTTP 400 "Upstream request failed: Endpoint
+is unavailable." on two separate attempts. **The provider pair is therefore one
+route, not two.** That is a property of the upstream, not of the harness, and
+it is reported as measured.
+
+### 6.3 The sustained scenario
+
+24 live trials, **34.9 min** (2 093 626 ms), 0 unattempted, 11 solved and 13
+stopped, inside a budget of 24 provider requests / 256 999 tokens with the cost
+recorded as `null` rather than zero.
+
+- `ranges`: 8/8 clean trials completed.
+- `worklog`: 3/12 completed. The 9 failures were `provider error: stream
+  error: stream chunk timeout`.
+- Two `cancel` and two `abrupt_acp_drop` fault injections behaved as designed.
+- `cleanup_complete` was **false**: 31 lane daemons survived the scenario.
+
+The 9 `worklog` failures reproduce M005's native turn failure. The cause is
+`crates/codegg-providers/src/opencode_go.rs:35`, `CHUNK_TIMEOUT =
+Duration::from_secs(30)`: `opencode_go`, `openai_compatible` and
+`opencode_zen` hard-code a 30 s chunk timeout while `openai`, `anthropic`,
+`google`, `openrouter` and `azure` pass `None`. `ProviderConfig.chunk_timeout`
+is documented and read by **no** provider, so the knob is dead.
+`ProviderError::Stream` maps to `RetryDisposition::Transient` and is retryable,
+but `src/agent/provider_turn.rs:248-283` refuses to replay after visible
+output has been produced, so the stall is terminal.
+
+### 6.4 The daemon leak, and its fix
+
+The 31 surviving daemons were a harness defect, not a product one: the live
+pilot closed only the ACP client and left the lane's daemon running. The pilot
+now stops the lane daemon after every trial and records a failure to stop as
+`daemon_stop_error` instead of swallowing it. A re-run of the scenario left **0
+survivors**.
+
+A second macOS-only harness defect surfaced on the way: the lane lived under
+the system temporary directory, and the daemon socket path exceeded the
+platform's `sun_path` limit, so the lane failed with `Failed to bind daemon
+socket: path must be shorter than SUN_LEN`. The lane root now lives under
+`~/.codegg-harness-lanes/<short>` and the limit is asserted at 96 bytes.
+
+## 7. What was NOT run, and why
+
+- **No complete provider pair.** `longcat-2.5-preview-free`'s upstream is
+  unavailable (HTTP 400), so the Task 2 pair could not be run on two routes.
 - **No candidate qualification against the new taxonomy.** The C002 score
-  contract and hardened comparator are ready; a live candidate run is not.
+  contract and hardened comparator are ready; a live candidate run against the
+  autonomy taxonomy is not.
+- **Five verifier bodies remain unmaterialized.** Their contracts are frozen;
+  their bodies are the next authoring step.

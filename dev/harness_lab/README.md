@@ -48,17 +48,23 @@ The fixture never contacts an upstream model service.
 python3 -m dev.harness_lab evaluate --suite dev/harness_lab/fixtures/smoke.jsonl --ledger /tmp/codegg-ledger
 ```
 
-The evaluator runs the versioned 12-case task manifest and writes versioned
+The evaluator runs the versioned 13-case task manifest and writes versioned
 immutable run manifests, sequenced redacted event rows, captured verifier
 artifacts, and an append-only `index.sqlite3` query index cross-checked against
 the JSONL index. Cases cover write/edit/read/grep, distinct repeated reads, projected
 output recovery through `context_read`, shell execution/recovery and bounded
 identical failures, both policy profiles, explicit denial, cancellation,
-timeout, and an intentionally failing verifier. `report`, `replay`, and `compare` read
+timeout, an intentionally failing verifier, and one headless `codegg exec` turn
+that must write a file through the native tool broker. `report`, `replay`, and `compare` read
 that ledger offline. The projection case forces a large native `read` result
 through its artifact handle, then requires `context_read` to return a tail
 marker omitted from the initial model-visible projection. Comparison pairs task IDs and repeat indexes only when
-group, suite digest, and case digest match. Unknown token, cost,
+group, suite digest, and case digest match. A paired comparison judges each
+trial against its **declared** `expected_terminal`, not against the literal
+string `passed`: a protected negative control expects a failure terminal, so a
+candidate that reproduces the declared control is not a regression against a
+baseline that happened to record `passed` for it. A trial with no declared
+expectation is refused rather than guessed. Unknown token, cost,
 CPU, RSS, provider cost, and model-visible context metrics remain unavailable;
 token counts and native turn identity are recorded only when CodeGG's ACP
 terminal event carries provider-reported usage. Tool selection is captured from
@@ -69,6 +75,10 @@ The suite intentionally includes `assertion_failed`, `execution_failed`,
 `cancelled`, and `timeout` terminals, so its process exit is nonzero when those
 negative cases are observed; inspect each JSON trial's `expected_terminal_matched`
 and the ledger's exact terminal before treating that as an unexpected failure.
+The tool notifications that close a turn can arrive after the `session/prompt`
+response, so the trial drains the notification stream before it counts tool
+calls; otherwise the same turn could report a different number of tool calls
+from run to run.
 
 ```bash
 python3 -m dev.harness_lab improve --proposer manual --max-iterations 1 --dry-run
@@ -107,7 +117,13 @@ The result is a qualification receipt; it does not switch branches or accept,
 merge, or push the candidate. Manual mode and the deterministic fixture require
 no OpenCode credentials or paid model call.
 To invoke the optional proposer from this command, set `--proposer opencode`
-and supply a bounded `--prompt`; the CLI version is pinned to 1.19.0. A bounded
+and supply a bounded `--prompt`; the CLI version is pinned to 1.19.3. `--model
+<provider>/<model>` pins the proposal to one approved route, and the receipt
+attributes the proposal to that exact route; without it the CLI's own unpinned
+default is used and the receipt says so. `--budget <policy.json>` declares the
+spend authority for a live proposal and `--live-provider` declares that the run
+reaches a live provider; the policy is admitted before the first provider
+request and enforced during the run. A bounded
 compile-correction retry can be enabled with `--max-candidate-retries N`; each
 retry consumes a separate proposal attempt, is checkpointed, and reruns the
 candidate gates. This option requires the OpenCode proposer. A
@@ -115,7 +131,9 @@ checkpoint binds the candidate patch, baseline and suite. With `--resume`, an
 interrupted build/evaluation can continue only after those immutable inputs and
 the recorded candidate binary match. Partial ledger evaluations continue only
 the missing task/repeat pairs after validating every existing row against the
-frozen suite.
+frozen suite. The qualification runs the controller's own harness rather than
+any copy of it that happens to sit in the candidate tree: the measuring
+instrument is the one the controller owns, so a candidate cannot measure itself.
 
 For a bounded outer assess/propose/build/retest loop, use `optimize` after a
 baseline ledger is complete:
@@ -149,6 +167,46 @@ An optional `--output-dir` must be empty and outside the candidate worktree.
 Without it, the supervisor creates an OS temporary experiment directory and
 removes it after cleanup. The output is a bounded JSON receipt on stdout;
 ACP stderr tails are capped at 64 KiB per child.
+
+## Live pilot and sustained scenarios
+
+`pilot` runs one live ACP turn against a real provider route and records the
+C001 failure/usage provenance for it:
+
+```bash
+python3 -m dev.harness_lab pilot \
+  --binary target/debug/codegg \
+  --task worklog --model opencode_go/muse-spark-1.3-contributor \
+  --budget /path/to/budget.json --live-provider
+```
+
+The pilot's `--model` is a **CodeGG** provider route (`opencode_go/…`), because
+the turn runs through CodeGG's own provider dispatch. It is not the same
+namespace as the OpenCode CLI route the proposer uses (`opencode-go/…`): the
+CLI has its own provider set, and a model id that is routable by one is not
+necessarily routable by the other.
+
+The pilot runs against a private lane daemon, so the lane's daemon is stopped
+after every trial; a failure to stop it is recorded in the receipt as
+`daemon_stop_error` rather than swallowed. A lane whose socket path would
+exceed the platform's `sun_path` limit is refused: the lane root lives under
+`~/.codegg-harness-lanes`, not under the system temporary directory.
+
+`sustained` runs a repeated scenario over the same tasks and reports the
+repeatability, the failure attribution and the cleanup evidence:
+
+```bash
+python3 -m dev.harness_lab sustained \
+  --binary target/debug/codegg --trials 24 \
+  --model opencode_go/muse-spark-1.3-contributor \
+  --budget /path/to/budget.json --live-provider
+```
+
+`sustained` can inject a `cancel` or `abrupt_acp_drop` fault into a trial so
+the interruption handling is exercised rather than assumed. The cleanup
+evidence is **observed**, never asserted: the receipt reports how many lane
+daemons survived the scenario, and a non-zero survivor count is a reported
+fact, not a failure to hide.
 
 ## Budget admission before a live trial
 

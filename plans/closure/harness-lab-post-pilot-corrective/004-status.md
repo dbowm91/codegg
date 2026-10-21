@@ -1,6 +1,7 @@
 # Harness Lab Post-Pilot Corrective 004 — Closure Status
 
-Status: **conditionally closed — offline preparation closed; the live half is blocked**
+Status: **conditionally closed — the live half ran; the provider pair and the
+autonomy-claim dependency did not**
 
 Source implementation plan:
 
@@ -14,24 +15,24 @@ Repository baseline reviewed: `2a9fc376707ef14dab4a2f9a27f6aba8ac00dd59`
 
 ## 1. Executive finding
 
-The offline half of C004 is closed: a versioned, opt-in benchmark taxonomy with
-its frozen cases, a strict loader that refuses everything the taxonomy
-contract forbids, a verifier-isolation guard, and one fully materialized case
-whose verifier is proven to fail while the task is unsolved and pass once the
-defect is repaired.
+The live half is no longer blocked on authorization: the operator approved
+four low-cost/free routes, three controller-enforced budget policies were
+admitted before any provider request, Task 2 was solved against the frozen
+fixture, and a 24-trial sustained scenario ran for 34.9 minutes inside its
+declared caps.
 
-The live half is blocked, and §7 of the plan anticipates exactly this: "If
-hard cap cannot be met, **skip live calls** and close only offline fixture
-preparation as conditional." A CodeGG provider route exposes **no
-provider-authoritative spend quota at all** — the `quota` concept in the
-config schema is a remote-node CPU quota, and the provider crate has no quota
-surface whatsoever — so the only enforceable caps available are the
-controller-enforced ones C001 provides. The Task 2 provider pair and the
-30–60 minute sustained scenarios additionally need C003's accepted-defect
-receipt, which is itself blocked on the same live-provider authorization.
+Two things did **not** close, and both are properties of the outside world
+rather than of the harness:
 
-No live provider call was made. No Task 2 receipt exists. No sustained
-scenario was run.
+- **The provider pair is one route, not two.** `longcat-2.5-preview-free`'s
+  upstream answers HTTP 400 "Upstream request failed: Endpoint is unavailable."
+  on every attempt, so the frozen Task 2 pair could not be run on two routes.
+  `muse-spark-1.3-contributor` served the task; `longcat` could not.
+- **The autonomy claim still depends on C003's accepted-defect receipt.**
+
+Two genuine harness defects were found and fixed by the live run itself: the
+lane daemon leaked (31 survivors after 24 trials) and the macOS lane socket
+path exceeded the platform's `sun_path` limit.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -54,8 +55,8 @@ scenario was run.
 | §6 offline: hidden verifier isolation | `verify_isolation()` plus segment-aware prefix matching | Met |
 | §6 offline: a fake success without a source change | The materialized verifier re-derives the contract and refuses an edited frozen file; it fails on the unsolved baseline | Met |
 | §6 offline: a wrong source SHA | The loader's manifest digest is the source identity; a changed manifest changes the digest | Met |
-| §4-B: Task 2 pair under an approved budget | — | **Blocked** — no approved budget; no provider quota exists to verify |
-| §4-C: a 30–60 minute sustained scenario | — | **Blocked** — needs the live authorization and C003's accepted defect |
+| §4-B: Task 2 pair under an approved budget | Task 2 solved on `muse-spark-1.3-contributor`: terminal `completed`, 11 tool calls, verifier 11/11, 1 provider request, cost unobservable | **Partial** — one route served it; `longcat`'s upstream is down (HTTP 400), so the pair is not a pair |
+| §4-C: a 30–60 minute sustained scenario | 24 live trials, 34.9 min (2 093 626 ms), 0 unattempted, 11 solved / 13 stopped, inside 24 requests / 256 999 tokens | Met |
 | §4-D: a paired baseline/candidate benchmark comparison | The C002 score contract and hardened comparator are in place; no live run | **Partial** — mechanics ready, no live run |
 | §7: the operator can run the documented commands | `dev/harness_lab/README.md` | Met |
 
@@ -170,42 +171,55 @@ OK
 
 ## 5. Remaining conditions
 
-1. **An approved live-provider budget.** The plan requires it for every live
-   call. CodeGG exposes **no provider-authoritative spend quota** — the
-   `quota` in the config schema is a remote-node CPU quota and the provider
-   crate has no quota surface — so the only enforceable caps are the
-   controller-enforced ones C001 provides. A live run needs a budget policy
-   whose cap is real: a token limit, a provider-request limit, a wall-clock
-   limit, or a retry-safe provider quota.
-2. **C003's accepted-defect receipt.** C004's final autonomy claim needs it,
-   and C003 is blocked on the same authorization.
+1. **A second serving route for the Task 2 pair.** `muse-spark-1.3-contributor`
+   serves Task 2; `longcat-2.5-preview-free`'s upstream answers HTTP 400
+   "Endpoint is unavailable." on every attempt, so the pair could not be run on
+   two routes. This is an upstream condition and is reported as measured.
+2. **C003's accepted-defect receipt.** C004's final autonomy claim needs it.
 3. **The five unmaterialized verifier bodies.** Their contracts are frozen;
    their bodies are the next authoring step.
-4. **The Task 2 pair** (LongCat/Muse) from identical committed baseline copies,
-   with the chosen provider route recorded.
-5. **At least one 30–60 minute sustained scenario**, with the independent
-   limits C001's guard enforces and the per-lane cleanup proven.
-6. **The paired baseline/candidate comparison** over stable groups, with the
-   C002 score contract doing the decision.
+4. **The paired baseline/candidate comparison** over stable groups, with the
+   C002 score contract doing the decision. No live run against the autonomy
+   taxonomy was made.
+5. **The `opencode_go` 30 s chunk timeout.** `crates/codegg-providers/src/opencode_go.rs:35`
+   hard-codes a chunk timeout that `openai`, `anthropic`, `google`,
+   `openrouter` and `azure` do not have, and `ProviderConfig.chunk_timeout` is
+   read by no provider at all. It caused 9 of the 12 `worklog` failures in the
+   sustained scenario. Fixing it is a provider change, outside this closure.
 
 ## 6. Planning audit
 
 - No plan file was edited to make this implementation look complete.
-- The frozen 12-case suite and the stored pilot receipts were not changed, and
-  `canonical_digest` was not touched.
+- The frozen pilot fixture digests were not changed: `worklog` is
+  `5adfbae3d68ea0857a5ebbb212e62333d76aaecd6ef178f3bc3f14d612b12135` and
+  `ranges` is `89075ca1e92c7e1b829d5f6db99320d5c7bb437830cd2c6d1840b4b7a1ad0d53`,
+  matching the M005 receipts.
 - The two families that cannot be honestly verified today are **deferred with
   a precise reason**, not recorded as a pass.
-- No live provider call was made and no model route was exercised.
-- The C001 budget guard was extended so a declared cap is **enforced** during
-  a run, not merely declared: the provider-request cap refuses work before it
-  starts, and a controller-enforced cost cap now requires an observable
-  provider cost, which the OpenCode Go route does not report.
+- The live routes were exercised inside admitted, controller-enforced budget
+  caps. Where a route reported no cost, the cost is recorded as **null**, not
+  zero; no dollar figure was invented for a route that does not report one.
+- The provider pair is reported as **one serving route**, because the second
+  route's upstream is unavailable. It is not recorded as a completed pair.
+- The cleanup evidence is **observed**: the first sustained run reported
+  `cleanup_complete: false` with 31 surviving daemons, and the harness defect
+  behind it was fixed rather than the observation being dropped.
 - The harness-lab Python suite remains wired into `scripts/verify.sh quick`
   and the CI workflow.
 
 ## 7. Status of M004 and M005
 
-Both stay **conditionally closed**. Neither C003's live acceptance nor C004's
-sustained pilot has produced the evidence their original closure records
-required, and neither has been weakened: the conditional dispositions are
-carried forward unchanged, with the precise remaining conditions named above.
+Both stay **conditionally closed**.
+
+- **M004** required a live interrupted qualification → restart → completion
+  without duplicate receipts. The mechanism is proven with real SIGTERM/SIGKILL
+  subprocesses in C002; C003's live qualification carries the interruption
+  proof itself.
+- **M005** required a sustained pilot with a two-route provider pair and an
+  accepted defect. The sustained pilot ran (24 trials, 34.9 min) and the
+  accepted-defect dependency is C003's; the **two-route pair did not** close,
+  because one upstream is unavailable.
+
+Neither has been weakened: the conditional dispositions are carried forward
+with the precise remaining conditions named above, and the parts that *did*
+run are recorded with their measurements.

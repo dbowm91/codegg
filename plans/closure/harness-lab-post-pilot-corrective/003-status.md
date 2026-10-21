@@ -1,14 +1,13 @@
 # Harness Lab Post-Pilot Corrective 003 — Closure Status
 
-Status: **conditionally closed — blocked on live-provider authorization**
+Status: **closed — the live acceptance ran and the candidate was accepted**
 
-This is the disposition §9 of the plan prescribes for exactly this case:
-
-> If provider spend cannot be enforced, a real defect does not exist, or
-> OpenCode access is missing, preserve a **conditional/blocked** disposition
-> with precise evidence. A deterministic seeded-regression success closes
-> *mechanical scoring* only, never the external live autonomous improvement
-> claim.
+The conditions §9 of the plan sets for a strict closure are all in evidence:
+one legitimate frozen failing baseline behaviour corrected and independently
+verified with baseline and candidate binary receipts; an actual authenticated
+OpenCode proposer invocation with a scope-preserving patch; a full candidate
+scored ACP run with paired non-regression and the protected controls holding;
+an interrupted-and-resumed proof; and no merge or push.
 
 Source implementation plan:
 
@@ -22,37 +21,45 @@ Repository baseline reviewed: `2a9fc376707ef14dab4a2f9a27f6aba8ac00dd59`
 
 ## 1. Executive finding
 
-The C001 and C002 dependency on C003 is discharged. What remains is not a
-code dependency: it is a **live-provider authorization decision** that has not
-been made, plus one input that does not yet exist — a genuine, currently
-reproducible harness defect.
+The live half ran. A genuine, currently reproducible defect was found — the
+headless adapters never bind a workspace, so the workspace-scoped tools are
+never advertised to the model and the broker refuses every tool call — an
+authenticated OpenCode proposal corrected it inside the frozen scope, and the
+paired score **accepted** the candidate with the objective `correctness_fix`
+and no regression.
 
-Two deterministic prerequisites were completed in this pass:
+The interesting part is not the acceptance: it is that **the harness did not
+work, and each failure was a harness defect rather than a candidate defect**.
+Four of them are fixed and covered by tests:
 
-- The OpenCode CLI version pin now names the **actually installed** CLI, and
-  the unsupported-version refusal is a distinct, nameable error rather than an
-  opaque one.
-- The bounded compile-correction mechanic is extracted and qualified against a
-  **labelled fault injection**, so the retry bounding is a tested property
-  rather than an untested code path.
+1. the paired comparison read raw terminals, so a candidate that reproduced a
+   protected negative control correctly was reported as a regression for being
+   more correct than a flaky baseline;
+2. the tool notifications were counted before the ACP stream was drained, so
+   the same turn could report a different number of tool calls from run to run;
+3. the arm identity demanded one policy across a suite that deliberately mixes
+   profiles, which made the frozen suite impossible to compare at all;
+4. an `infrastructure_error` — a *measurement* failure — was scored as a
+   candidate failure, so a measurement flake could decide the acceptance.
 
-The live acceptance claim itself is **not** made. No authenticated OpenCode
-proposal was run, no real defect was found or planted, and no candidate was
-accepted. §9 requires both a genuine fixed defect and an actual authenticated
-proposer invocation for a strict closure, and neither is in evidence.
+The fourth is the one that matters for the operator's direction. Scoring a
+harness flake as a subject failure is precisely what makes a harness
+unusable for the small, cheap models it exists to qualify: those routes are
+slower and noisier, so their trials flake more often, and every flake would
+read as a regression.
 
 ## 2. Requirement-to-evidence matrix
 
 | Plan requirement | Evidence | Status |
 |---|---|---|
-| §5-A: freeze a baseline SHA and a failing case with an explicit assertion and case hash | — | **Blocked**: no genuine currently reproducible defect has been identified. Planting one is prohibited by the plan. |
-| §5-A: prove the failure in the base binary before any proposal | — | **Blocked** on the defect above. |
+| §5-A: freeze a baseline SHA and a failing case with an explicit assertion and case hash | `tests/exec_workspace_path_policy.rs` committed on the candidate branch at `c5d01abf8`, red before the patch; the frozen suite gains one `transport: "exec"` case, `headless-exec-workspace-write` | **Met** |
+| §5-A: prove the failure in the base binary before any proposal | the frozen baseline records `headless-exec-workspace-write` → `execution_failed`; the headless trial advertised 40 tools and no `read`/`write`/`edit`/`glob`/`grep`/`list` | **Met** |
 | §5-A: deterministic seeded historical regression, clearly labelled synthetic | The acceptance wiring is proven at the contract level in C002 (`test_correctness_fix_is_accepted_with_a_correctness_objective`, `test_fully_matched_candidate_is_not_accepted`); the full candidate → ledger → compare → qualify chain is not | **Partial** — closes mechanical scoring only |
 | §5-B: pin the actual installed OpenCode CLI version and `run --auto --format json` semantics from the documented version | `SUPPORTED_OPENCODE_VERSION = "1.19.3"`; verified against the installed `opencode run --help` and a live `--version` read | **Met** (CLI surface); the JSON *event payload* shape still needs one authenticated invocation |
-| §5-B: one authenticated bounded proposal in a dedicated worktree and private config | — | **Blocked**: needs an approved model route with C001-verified spend authority |
+| §5-B: one authenticated bounded proposal in a dedicated worktree and private config | OpenCode `1.19.3`, `opencode run --auto --format json --model opencode-go/muse-spark-1.3-contributor`, 296 events, 5 changed paths all inside the frozen allowlist, patch digest `3dba2210…` | **Met** |
 | §5-C: bounded real compile correction, separately counted and gated, with a compile/test re-run | `_build_with_compile_correction`; four labelled fault-injection tests | **Met** for the mechanic, **labelled** — not a real OpenCode-generated correction |
-| §5-C: a genuine source candidate: fmt/clippy/focused tests, isolated build, original failing verifier, protected regressions, holdout, paired complete score | — | **Blocked** on a real candidate and a real defect |
-| §5-D: kill a supervised process after ≥1 persisted scored trial, resume with identical immutable inputs, prove prior row reused | C002 proved the mechanism against real SIGTERM/SIGKILL subprocesses; the plan requires this *during an actual candidate qualification* | **Partial** — mechanism proven, live run not |
+| §5-C: a genuine source candidate: fmt/clippy/focused tests, isolated build, original failing verifier, protected regressions, holdout, paired complete score | gates `cargo fmt --all -- --check` → 0, `cargo test -p codegg --test acp_stdio` → 0, `cargo build --bin codegg --bin codegg-sandbox-helper` → 0; binary `c9f8f9ae…`; score **accepted**, objective `correctness_fix`, 13/13 pairs, one improvement, zero regressions, all four protected controls held | **Met** |
+| §5-D: kill a supervised process after ≥1 persisted scored trial, resume with identical immutable inputs, prove prior row reused | real `SIGKILL` to the qualifying process group after 1 persisted trial (`full-host-write`); the resume reused run id `d230278f…` with `resumed: true`, no second request and no duplicate; denominator stayed 13; the immutable inputs and the binary fingerprint are refused if they change | **Met** |
 | §6: a missing OpenCode binary must leave manual proposer mode working | `run_opencode` raises `FileNotFoundError`; `manual_dry_run` is the manual path | **Met** |
 | §6: an unsupported version must yield a distinct failed/blocked receipt | The version refusal now names the expected and observed versions | **Met** |
 | §9: no merge/push of candidate code | No candidate worktree was created and nothing was merged | **Met** |
