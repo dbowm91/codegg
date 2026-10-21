@@ -1002,6 +1002,11 @@ async fn run_windows_test_restricted_inner(
         sandbox,
         provenance,
         execution_authorization: _execution_authorization,
+        // M005 corrective C005: the restricted profile's own fields. This
+        // launcher is the test-only AppContainer path, so it has no
+        // admission authority of its own and never reads them.
+        process_admission: _process_admission,
+        process_kind: _process_kind,
     } = request;
     if executable.is_empty() {
         return Err(ManagedProcessError::EmptyArgv);

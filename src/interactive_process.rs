@@ -668,26 +668,33 @@ impl InteractiveProcessService {
         // creation, so a refused spawn leaves no live session, no handle
         // and no permit. The scope is the execution's daemon-resolved
         // workspace root — never the spec's own working directory.
-        let admission_service = self.process_admission.read().clone();
-        if let Some(service) = admission_service.as_ref() {
-            let admission = service
-                .admit_scope(
-                    &ctx.workspace_root,
-                    codegg_core::process_admission::ProcessKind::Pty,
-                )
-                .await;
-            match admission {
-                Ok(admission) => {
-                    if let Some(denial) = admission.denial() {
-                        drop(permit);
-                        return Err(InteractiveError::ProcessDenied(denial.to_string()));
+        //
+        // It is Unix-only because the interactive PTY is refused outright on
+        // every other platform by the block above: there is no child to deny,
+        // and the refusal there is the platform's, not the profile's.
+        #[cfg(unix)]
+        {
+            let admission_service = self.process_admission.read().clone();
+            if let Some(service) = admission_service.as_ref() {
+                let admission = service
+                    .admit_scope(
+                        &ctx.workspace_root,
+                        codegg_core::process_admission::ProcessKind::Pty,
+                    )
+                    .await;
+                match admission {
+                    Ok(admission) => {
+                        if let Some(denial) = admission.denial() {
+                            drop(permit);
+                            return Err(InteractiveError::ProcessDenied(denial.to_string()));
+                        }
                     }
-                }
-                Err(failure) => {
-                    drop(permit);
-                    return Err(InteractiveError::ProcessDenied(format!(
-                        "the process admission authority could not be consulted: {failure}"
-                    )));
+                    Err(failure) => {
+                        drop(permit);
+                        return Err(InteractiveError::ProcessDenied(format!(
+                            "the process admission authority could not be consulted: {failure}"
+                        )));
+                    }
                 }
             }
         }
