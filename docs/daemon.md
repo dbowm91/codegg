@@ -117,12 +117,15 @@ lock steps in `docs/TROUBLESHOOTING.md`.
 |---|---|
 | `codegg daemon start` | Starts the daemon **in the foreground** (see above). `--endpoint` picks the socket; `--force-take-lock` is accepted but cannot override a held lock. |
 | `codegg daemon stop` | Graceful shutdown. Verifies the live daemon's identity first, then signals it. Unix only. |
-| `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, and connected clients. |
+| `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, connected clients, and one line summarising scratch usage. |
+| `codegg daemon scratch-usage` | Reports the daemon's scratch usage census: per session tree, the opaque tree digest, its size and file and directory counts, the age of its oldest and newest file, and whether the reclaim validator would accept it. `--json` emits the same measurement as machine-readable JSON; `--refresh` walks the tree now instead of reporting the daemon's last completed census. Read-only: it measures and never reclaims. |
 | `codegg daemon logs` | Shows the tail of `daemon.log`. `--lines` defaults to `50`; `--file` reads a specific file. |
 | `codegg daemon attach` | Opens the TUI against a running daemon over the local socket. `--endpoint`, `--session`, `--new`. |
 
 ```bash
 codegg daemon status
+codegg daemon scratch-usage
+codegg daemon scratch-usage --json
 codegg daemon logs --lines 200
 codegg daemon stop
 ```
@@ -131,6 +134,19 @@ codegg daemon stop
 has not confirmed is the live daemon. On timeout it reports the failure
 rather than force-killing an unverified process. Windows daemon stop is not
 available yet.
+
+### The scratch usage census
+
+The daemon measures its own per-user scratch tree on an internal cadence and
+keeps the last completed measurement in memory, so `daemon status` and
+`daemon scratch-usage` answer without walking the tree on the request path.
+The census is read-only: it never creates, renames, unlinks, or writes
+anything, it never reclaims, and it reports no file content, no absolute host
+path, and no session identity. A tree the reclaim validator would refuse is
+reported as such, with the rule that refused it, and a walk that hit its
+budget is reported as truncated rather than as a complete total. A failed
+walk keeps the previous measurement, so the report always carries the age of
+what it is showing.
 
 ## Alternative transports
 

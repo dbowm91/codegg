@@ -471,7 +471,7 @@ intentionally live outside it.
 ### Next Likely Extraction Target
 
 The daemon/agent/tool/permission boundary, not TUI. Residual M002 split
-the `CoreDaemon` request dispatch into `core::daemon_family` plus 15
+the `CoreDaemon` request dispatch into `core::daemon_family` plus 16
 `core::daemon_*` family handler modules (and the two sub-handler modules
 `daemon_control` / `daemon_workspace_dashboard`); Residual M003 has separated
 construction, bootstrap/recovery, refresh, and shutdown into
@@ -501,13 +501,14 @@ transport from the underlying agent and session logic.
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
 | `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router that delegates each envelope to exactly one family handler. ~6,000 lines (was ~12,000 before M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
-| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 234 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
+| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 260 variants to one family plus `owner_module()`. Chat/team/interactive/human-shell/work-order classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. Also owns `spawn_turn_reaper`, whose post-terminal hook is M003's queue-delivery wake, and `publish_queue_changed`. |
 | `core::daemon_queue_delivery` | `CoreDaemon::submit_queued_prompt_turn`, `reconcile_stranded_queue_deliveries`, `advance_due_queue_entries` | M003 (ADR-0038): the single daemon-internal queue-delivery entry, its bounded restart twin, and M007's bounded advance tick (ADR-0039, accepted). Restricted to three callers by `scripts/check_queue_delivery_callsites.py`. |
 | `core::daemon_documents` | `handle_document_request` | Open/close/reload document operations over daemon-owned document state. |
 | `core::daemon_project_init` | `handle_project_init_request` | Bounded `/init` evidence preview and one-use, project-scoped guarded publication of root `AGENTS.md`. |
 | `core::daemon_lsp` | `handle_lsp_request` | LSP status/operations plus diagnostics-store reads. |
+| `core::daemon_scratch` | `handle_scratch_usage_request` | M006: the read-only scratch usage census — the daemon-held measurement of its own scratch tree, its refresh cadence, and the operator-facing renderers. |
 | `core::daemon_team` | `handle_team_request` | Team membership, principal, and device-token administration (team-collaboration M003). |
 | `core::daemon_work_orders` | `handle_work_order_request` | Project work orders, occurrences, sequence lanes, and trigger management. |
 | `core::daemon_workspace_dashboard` | `handle_workspace_dashboard_request` | Workspace dashboard aggregates over daemon-owned workspace state. |
@@ -1040,3 +1041,32 @@ Second pass (2026-10-06) against `src/core/daemon.rs`,
   non-Linux-Unix fallback. The Windows entry was also vaguer than the source
   (`dirs::data_local_dir()` else `env::temp_dir()`). This is the same cascade
   the `.opencode/skills/core/SKILL.md` table already carried correctly.
+
+### Re-verification (2026-10-21) — M006 scratch usage census
+
+Re-measured against `src/core/daemon_family.rs`, `src/core/daemon.rs`,
+`src/core/daemon_scratch.rs`, and `src/core/runtime_deps.rs` while
+implementing M006 (the scratch usage census). Three body claims had drifted
+and were corrected against the source rather than copied forward:
+
+- **The family-handler module count was stale.** The extraction-target
+  paragraph said "15 `core::daemon_*` family handler modules". The source
+  held 16 distinct family owner modules: `daemon_human_shell` had been added
+  without updating this paragraph, and M006 added `daemon_scratch`. The
+  count is now 16, and `core::daemon_scratch` is listed in the module
+  inventory above.
+- **`of(&CoreRequest)` maps all 234 variants.** The enum now has 260
+  variants (counted programmatically from the enum body, the method this
+  document already used). The stale sentence also named only chat and
+  interactive as pre-router families; team, work orders, and human shell
+  also return before the family match.
+- **The pre-router split.** The family router dispatches 13 families; chat,
+  team, interactive, human shell, and work orders (5) return earlier through
+  their own boxed or spawned paths. The `DaemonRequestFamily` enum holds 18
+  variants in total.
+
+`src/core/daemon_family.rs`'s own doc table was missing the `human shell`
+row; it is now complete, and the `scratch` row was added with M006. The
+`.opencode/skills/core/SKILL.md` family table and counts were stale in the
+same way and were corrected in the same pass; that skill records the
+correction in its own source-verification log.

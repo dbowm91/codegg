@@ -49,6 +49,23 @@ staging directory. Human-shell launches have no model session identity and do
 not receive this resource. M001 cleanup is conservative: directories are
 retained pending the later lease and retention qualification.
 
+The daemon measures that disposable tree on an internal cadence and keeps the
+last completed census in memory. The measurement is read-only: it uses
+`symlink_metadata` only, so a link is reported and never traversed, a file is
+measured and never opened, and nothing is created, renamed, unlinked, or
+written. It never reclaims and never creates a tombstone. Its reclaim verdict
+comes from the *same rule* the reclaim validator applies, so a report can
+never disagree with the behaviour it describes, and a walk that hit a budget
+says so rather than presenting a partial total as a complete one. The report
+carries the opaque tree digest, sizes, counts, ages, and that verdict — never
+an absolute host path, a session identity, or file content. The census request
+carries no path and no scope, so it always measures the single scratch root
+the daemon owns, and because it resolves no project scope, every principal
+other than the local owner fails closed before the walk is reached. The walk
+runs off the request path: no tool call, permission check, turn admission, or
+scheduler decision performs a size traversal. The disclosure boundary is
+specified in `architecture/security.md`.
+
 Durable delegated runs use a distinct persistent private root keyed by the
 host-owned `AgentRunId`. An accepted run may also carry opaque shared scratch
 grants owned by its direct parent. The worker validates those grants against

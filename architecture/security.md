@@ -315,6 +315,26 @@ row under the SQLite writer lock before claiming the tree. Startup keyset-scans
 deleted sessions and re-arms cleanup after daemon restart. Transcripts,
 durable run results, and managed Git worktrees are outside the scratch tree.
 
+**Scratch usage census (read-only).** The daemon measures its own per-user
+scratch tree on an internal cadence and keeps the last completed report in
+memory. The census is read-only: it uses `symlink_metadata` only, so a link
+is reported and never traversed, a file is measured and never opened, and
+nothing is created, renamed, unlinked, chmodded, or written. It never
+reclaims, and it never creates a tombstone. Its reclaim verdict comes from
+the *same rule* the reclaim validator applies, so a report can never
+disagree with the behaviour it describes, and a walk that hit a budget
+reports `truncated` instead of presenting a partial total as a complete one.
+The report carries the opaque tree digest, sizes, counts, ages, and that
+verdict — never an absolute host path, a session identity, or file content;
+the only file names it reports are the bounded relative paths that refused a
+tree. The request carries no path and no scope, so it always measures the
+single scratch root the daemon owns; because it resolves no project scope,
+every principal other than the local owner fails closed before the walk is
+reached. The walk runs off the request path: no tool call, permission check,
+turn admission, or scheduler decision performs a size traversal. A failed
+walk keeps the previous report, so the operator sees the last good
+measurement together with its age.
+
 **Native Linux scratch containment (qualified).** The delegated-grant path is
 qualified on a native Linux host with Landlock ABI >= 3 by
 `tests/linux_native_scratch_containment.rs`. The fixture admits a delegated

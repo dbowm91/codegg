@@ -317,6 +317,17 @@ active and stops if the session is restored. The daemon resumes cleanup for
 deleted sessions after restart. Durable transcripts, run results, and Git
 worktrees live outside this disposable tree.
 
+To see what that disposable tree is using, run `codegg daemon scratch-usage`.
+It reports, per session tree, the opaque tree digest, its size and file and
+directory counts, the age of its oldest and newest file, and whether the
+reclaim validator would accept it. `--json` emits the same measurement as
+machine-readable JSON, `--refresh` walks the tree now instead of reporting the
+daemon's last completed census, and `codegg daemon status` carries the same
+totals on one line. The census only measures: it never reclaims, never writes,
+and never reports file content, an absolute path, or a session identity. A
+tree the reclaim validator would refuse is reported as such, with the rule
+that refused it.
+
 ## Testing and the scheduler
 
 The `test` tool runs the project's suite through the daemon scheduler rather

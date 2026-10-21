@@ -40,9 +40,9 @@ implement local affinity caching. See `architecture/agent.md` and
 handling is physically decomposed by family; do not add a new generic
 coordinator, service bus, or DI framework:
 
-`DaemonRequestFamily` has 16 variants; 12 are dispatched by the family
-router in `handle_request_with_client`, and 4 (chat, team, interactive,
-work orders) return earlier through their own pre-router arms.
+`DaemonRequestFamily` has 18 variants; 13 are dispatched by the family
+router in `handle_request_with_client`, and 5 (chat, team, interactive,
+human shell, work orders) return earlier through their own pre-router arms.
 
 | Family | Handler | Module |
 |---|---|---|
@@ -58,10 +58,12 @@ work orders) return earlier through their own pre-router arms.
 | documents | `handle_document_request` | `src/core/daemon_documents.rs` |
 | project initialization | `handle_project_init_request` | `src/core/daemon_project_init.rs` |
 | lsp | `handle_lsp_request` | `src/core/daemon_lsp.rs` |
+| scratch | `handle_scratch_usage_request` | `src/core/daemon_scratch.rs` |
 | chat | `handle_chat_request` | `src/core/daemon.rs` |
 | team | `handle_team_request` | `src/core/daemon_team.rs` |
 | work orders | `handle_work_order_request` | `src/core/daemon_work_orders.rs` |
 | interactive | `run_interactive_request` | `src/core/daemon.rs` |
+| human shell | `handle_human_shell_request` | `src/core/daemon_human_shell.rs` |
 
 Two further `daemon_*` modules are sub-handlers rather than routed
 families: `daemon_control.rs` (`handle_control_request`, called from the
@@ -300,3 +302,16 @@ the hidden-flag contract. Added the `Initialize`-is-unhandled fact, the
 `PROTECTED_GLOBS` scope of the cwd guard, a `## Testing` section, and a
 `## See Also` section. No stale claims were found in the existing body
 of this file.
+
+Third pass (2026-10-21) against `src/core/daemon_family.rs`,
+`src/core/daemon.rs`, and `src/core/daemon_scratch.rs`, for M006 (the
+scratch usage census): the family count was **stale** — the skill said 16
+variants with a 12-dispatch / 4-pre-router split, but the source held **17**
+variants before M006 and **18** after it. The `human shell` family had been
+added without updating this skill, and M006 added `scratch`; the dispatch
+split is now **13 routed / 5 pre-router** (chat, team, interactive, human
+shell, work orders). The family table was missing the `human shell` and
+`scratch` rows, and the source doc table in `src/core/daemon_family.rs` was
+missing the `human shell` row; both are now complete. The counts above were
+re-measured from the enum and from the router's match arms, not copied from
+the previous text.
