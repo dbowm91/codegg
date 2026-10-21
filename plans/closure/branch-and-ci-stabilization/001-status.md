@@ -1024,11 +1024,20 @@ and the claim for this head rests on the hosted run.
 
 Local, on the final tree, in this order.
 
-The results below are the **twice-merged** tree, `e0036d340` — the fresh
-rebase's tree reconciled twice with `main`, at `2a0bae08f` (§3.16) and at
-`84aa47528` (§3.17). The rows that predate it are kept below with the tree
-they were measured on, so that no number in this record is silently attributed
-to a tree it was not measured on.
+The results below are the **four-times-merged** tree — `0c5ecd333` (the merge
+with `main` at `c93211542`) and `aba3a559a` (this record's own commit), the
+fresh rebase's tree reconciled four times with `main`: at `2a0bae08f` (§3.16),
+at `84aa47528` (§3.17), at `28724bd83` (§3.19), and at `c93211542` (§3.20). The
+rows that predate it are kept below with the tree they were measured on, so
+that no number in this record is silently attributed to a tree it was not
+measured on.
+
+**The local suite for this tree was narrowed, deliberately.** This linked
+worktree's build cache was cold (§3.20.1), and `.github/workflows/ci.yml` runs
+the same full-workspace sweep on the pull request's own head, on dedicated
+runners, as the pull request's own required check — so the hosted run is the
+authoritative full-suite evidence, and the local run is narrowed to the changed
+surface. What that gives up is stated in §13.
 
 | Command | Result |
 |---|---|
@@ -1044,6 +1053,10 @@ to a tree it was not measured on.
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(scratch_cache_root_contract) or binary(linux_native_scratch_containment) or test(/scratch::tests::/)'` | **28 passed, 0 failed** (the scratch allocator's own qualifications, its resolution contract, and the native containment fixture) |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | **clean** (0 errors) — after the four lints in §3.8 and the two in `crates/egggit` were fixed. `verify.sh quick` runs this step |
 | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast` | on `e0036d340`: **12512 tests run: 12512 passed, 0 failed, 7 skipped** (`Summary [ 434.172s]`) — the live Eggwork qualification included (§4.2). On `17350a5df`: 12496 run, 12496 passed, 0 failed, 7 skipped (`Summary [ 432.319s]`). On `d24808d4e`: 12474 run, 12474 passed, 0 failed, 7 skipped (`Summary [ 440.750s]`). On the pre-rebase tree: 11804 run, 11804 passed, 0 failed, 7 skipped |
+| `cargo nextest run --locked --profile ci --no-fail-fast -p codegg --lib --test <the branch's changed integration targets>` (the narrowed local slice, §3.20.1) | on `aba3a559a`: **7561 tests run: 7561 passed, 4 skipped, 0 failed** (`Summary [ 141.813s]`, exit 0) — the `codegg` library test binary plus the twelve integration binaries covering the files this branch changed |
+| `cargo nextest run --locked --profile ci --no-fail-fast -p codegg-core -p codegg-protocol -p egggit -p egglsp` | on `aba3a559a`: **2492 tests run: 2492 passed, 1 skipped, 0 failed** (`Summary [ 66.337s]`, exit 0) — the four crates this branch changed, in full |
+| `cargo nextest run --locked --profile ci --no-fail-fast -p codegg --features server,plugins,lsp-test-support --lib --test <the feature-gated targets this branch changed>` | on `aba3a559a`: **7541 tests run: 7541 passed, 4 skipped, 0 failed** (`Summary [ 164.214s]`, exit 0) — the canonical feature set, narrowed to the binaries covering the branch's changed surface: the `codegg` library binary and the nine `server`/LSP-gated integration binaries. `projection_transport_real::real_tui_rollback_invariants_on_writer_closed` — the inherited race of §3.15 — **passes** here |
+| `cargo nextest run --locked --profile ci --no-fail-fast -p egglsp --features lsp-test-support` | on `aba3a559a`: **1078 tests run: 1078 passed, 0 skipped, 0 failed** (`Summary [ 15.700s]`, exit 0) — the `egglsp` crate's own fake-LSP harness, which this branch changed |
 | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci -E 'binary(eggwork_remote_execution_live)'` | on `17350a5df`: **16 run, 16 passed, 0 failed** (`Summary [ 8.212s]`) — the live qualification's own binary, run on its own so its inclusion is proved rather than inferred from a total |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(eggwork_remote_execution_live)'` | **14 passed, 0 failed** with the build tree in the failing state (helper 0775, target directory 0775) — the qualification's own non-vacuity proof (§3.11) |
 | `cargo nextest run -p codegg --locked --profile ci -E 'test(/scratch/)'` with **no** `XDG_CACHE_HOME` | **33 passed, 0 failed** — the ambient cache path against this host's repaired `~/.cache` (0755) |
@@ -1077,6 +1090,19 @@ The authoritative workspace sweep is recorded in §4.1.
 `XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci --no-fail-fast`,
 run on the committed tree with no concurrent edits and no Git commands in the
 worktree:
+
+- **The four-times-merged tree, `aba3a559a`: 15841 tests run: 15841 passed, 8
+  skipped, 0 failed, 0 timed out** (`Summary [ 523.966s]`, exit 0) — the
+  **hosted** run `39632391908` (§4.3), on dedicated runners. This is the
+  authoritative full-suite evidence for this tree. The count is **70** higher
+  than the twice-merged tree's 15771 because `main`'s M007 sweep and its
+  TUI-subagent workstream brought their own tests with them; nothing on the
+  branch's side changed.
+- **The same tree, locally, narrowed to the changed surface:** 7561 run, 7561
+  passed, 4 skipped on the `codegg` library test binary and the branch's twelve
+  integration binaries, and 2492 run, 2492 passed, 1 skipped on the four crates
+  this branch changed. The **full workspace sweep was not run locally on this
+  tree** — §3.20.1 says why, and §13 says what that means.
 
 - **The tree carrying the Windows scratch fix (§3.18): 15771 tests run: 15771
   passed, 8 skipped, 0 failed, 0 timed out** (`Summary [ 469.705s]`, exit 0) —
@@ -1150,6 +1176,18 @@ worktree:
 
 `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast`
 — the third tier of `scripts/verify.sh full` — was run on the final tree:
+
+- **The four-times-merged tree, `aba3a559a`: 7541 tests run: 7541 passed, 4
+  skipped, 0 failed** (`Summary [ 164.214s]`, exit 0), with
+  `cargo nextest run --locked --profile ci --no-fail-fast -p egglsp --features
+  lsp-test-support` → **1078 run, 1078 passed, 0 skipped**
+  (`Summary [ 15.700s]`, exit 0). The **feature set is the canonical one** —
+  `server,plugins,lsp-test-support` — but the run was **narrowed** to the
+  binaries covering this branch's changed surface: the `codegg` library test
+  binary and the nine `server`/LSP-gated integration binaries, rather than all
+  ~290 integration binaries (§3.20.1). The inherited projection-transport race
+  of §3.15 is covered here: `projection_transport_real::
+  real_tui_rollback_invariants_on_writer_closed` **passes**.
 
 - **The tree carrying the Windows scratch fix (§3.18): 12512 tests run: 12512
   passed, 0 failed, 7 skipped** (`Summary [ 435.238s]`, exit 0) — the same
@@ -1239,6 +1277,15 @@ the first reconciliation with `main` (§3.16).
 | `39580097823` | `2ab5a3335` | Command authorization macOS target compile (one-shot) | `push` | **success** |
 | `39580103958` | `2ab5a3335` | Windows process launcher | `pull_request` | **failure** — the branch's own Windows scratch test; §3.18. **Fixed on the branch's tree** |
 | `39580103920` | `2ab5a3335` | Desktop E2E | `pull_request` | **failure** — **pre-existing on `main`**; §3.18 |
+| `39632391908` | `aba3a559a` | `CI` — the default sweep | `pull_request` | **success** — `Workspace tests`: **15841 tests run: 15841 passed, 8 skipped** (`Summary [ 523.966s]`) |
+| `39632392133` | `aba3a559a` | Windows process launcher | `pull_request` | **success** — and the branch's own Windows scratch test now passes there: `scratch::tests::the_session_root_lives_under_the_resolved_cache_root ... ok`, **21 passed, 0 failed** (§3.18) |
+| `39632391912` | `aba3a559a` | Linux M004 process and IPC qualification | `pull_request` | **success** |
+| `39632385340` | `aba3a559a` | Linux M004 process and IPC qualification | `push` | **success** |
+| `39632391992` | `aba3a559a` | Linux C006 protected mount qualification | `pull_request` | **success** |
+| `39632392003` | `aba3a559a` | Linux Git object snapshot CoW qualification | `pull_request` | **success** |
+| `39632391967` | `aba3a559a` | Windows native probe contract | `pull_request` | **success** |
+| `39632385341` | `aba3a559a` | Command authorization macOS target compile (one-shot) | `push` | **success** |
+| `39632391968` | `aba3a559a` | Desktop E2E | `pull_request` | **failure** — **pre-existing on `main`**: the same `apps/desktop/e2e/specs/m004-session.e2e.ts:169`, `[data-testid="permission-list"]` "still not existing after 120000ms". It reproduces on `main` at `84aa47528` and `48a5ca7d2` and on the M006/M007 branches (§3.18) |
 | — | all | GitGuardian Security Checks | — | **success** |
 
 **The hosted default sweep's count matches the local one exactly, on both
@@ -1492,14 +1539,27 @@ sets the modes it needs on any host.
   M007 branches — same spec, same step, same timeout. It is **not** a
   regression of this branch, and it is recorded rather than fixed here:
   `main`'s Desktop E2E is not this milestone's work (§3.18).
-- **low — the branch's hosted evidence was obtained on the pre-second-
-  reconciliation head, and the twice-merged head is verified locally only.**
-  The second reconciliation changed the tree — it brought `main`'s M006 census
-  in — so the hosted runs qualify the tree before that change, not the tree
-  after it. The local gates on the twice-merged tree are the sweep (15771 run,
-  15771 passed), the feature tier (12512 run, 12512 passed), the canonical
-  gate, and every target compiling (§4, §4.1, §4.2). What is **not** claimed
-  is a hosted run on `e0036d340` itself; §13 states that.
+- **closed — the branch's hosted evidence now qualifies the tree it ships.**
+  The gap this bullet recorded was real: after the second reconciliation the
+  hosted runs qualified the tree *before* that change, and the twice-merged
+  tree `e0036d340` was verified locally only. It is now discharged. The
+  four-times-merged tree `aba3a559a` was observed in hosted runs — the default
+  sweep **39632391908**, **success**, **15841 tests run: 15841 passed, 8
+  skipped** (§4.1, §4.3), together with the Windows process launcher
+  (**39632392133**, **success**, and the branch's own Windows scratch test now
+  passes there), the Linux M004 tier, the C006 protected-mount tier, the Git
+  CoW tier, the Windows native probe contract, and the macOS target compile.
+  The two reconciliations that followed the second one (§3.19, §3.20) are
+  recorded with their own counts and their own conflict resolutions.
+- **low — the four-times-merged tree's *local* full-workspace sweep was not
+  run.** This linked worktree's build cache was cold, so the sweep means
+  compiling and linking roughly 290 integration test binaries from scratch; the
+  hosted `CI` job runs the identical command on dedicated runners and is the
+  authoritative full-suite evidence (§3.20.1). The local suite was narrowed to
+  the changed surface — 7561 tests on the `codegg` library binary and the
+  branch's twelve integration binaries, and 2492 on the four crates this branch
+  changed — and that narrowing is recorded rather than presented as a full
+  sweep. §13 states the gap.
 - **low — `main` advanced twice while this milestone was in flight, and each
   advance was reconciled by a merge rather than a rebase.** The reconciliations
   are bounded, rule-driven, and each one is recorded (§3.16, §3.17), but the
@@ -1585,19 +1645,35 @@ names them:
   **success** (§4.3). This bullet was the milestone's last open gap; it is now
   history, and it is kept as a record of what the gap was rather than deleted.
 - **The twice-merged head `e0036d340` — the tree that carries `main`'s tip at
-  `84aa47528` — has not yet been observed in a hosted run.** The second
+  `84aa47528` — has not been observed in a hosted run.** The second
   reconciliation changed the tree (it brought `main`'s M006 census in), so the
-  hosted runs qualify the tree *before* that change. The twice-merged tree is
-  verified locally and completely: the workspace sweep (**15771 run, 15771
-  passed, 8 skipped**), the feature-enabled tier (**12512 run, 12512 passed, 7
-  skipped**), `scripts/verify.sh quick` → **"Quick verification passed."**, and
-  `cargo check --workspace --all-targets --locked` → **exit 0**. What is not
-  claimed is a hosted run on that exact head.
-- **The Windows scratch fix (§3.18) is verified locally, not on Windows.** The
-  defect was found by the hosted Windows runner, the fix is proved
-  non-vacuous locally, and the hosted Windows launcher must re-run to confirm
-  it there. A local Linux gate cannot see a Windows path-spelling difference
-  in either direction, so this is a claim the hosted runner has to make.
+  hosted runs qualify the tree *before* that change. The twice-merged tree was
+  verified locally and completely at the time: the workspace sweep (**15771 run,
+  15771 passed, 8 skipped**), the feature-enabled tier (**12512 run, 12512
+  passed, 7 skipped**), `scripts/verify.sh quick` → **"Quick verification
+  passed."**, and `cargo check --workspace --all-targets --locked` → **exit 0**.
+  That head has since been superseded by two further merges, and the tree that
+  ships — `aba3a559a` — **is** observed in a hosted run (§4.3). This bullet is
+  kept as a record of the gap that applied to an intermediate head.
+- **The Windows scratch fix (§3.18) is now verified on Windows.** This gap is
+  closed: hosted Windows process launcher run **39632392133** on `aba3a559a`
+  concluded **success**, and the specific test that failed on the earlier head
+  — `scratch::tests::the_session_root_lives_under_the_resolved_cache_root` —
+  reports **ok** there (**21 passed, 0 failed**). The local proof that the fix
+  is non-vacuous still stands alongside it.
+- **The four-times-merged tree's full workspace sweep was not run locally.**
+  The hosted `CI` job runs the identical command over the identical workspace
+  on dedicated runners — **15841 tests run: 15841 passed, 8 skipped** — so the
+  full-suite claim for this tree rests on the hosted run, not on a local one.
+  The local suite was narrowed to the changed surface (§3.20.1) and its result
+  is reported as exactly that, never as a full sweep.
+- **The feature-enabled tier was run narrowed.** The canonical feature set —
+  `server,plugins,lsp-test-support` — is the one that was compiled, but only the
+  binaries covering the branch's changed surface were built and run, rather than
+  all ~290 integration binaries. On this tree it is **7541 run, 7541 passed, 4
+  skipped** for `codegg` and **1078 run, 1078 passed** for `egglsp`. The tier's
+  *full* form — every integration binary under those features — was last green
+  at **12512 run, 12512 passed** on the twice-merged head.
 - **No native Windows or macOS *test* run.** The Windows evidence is the
   native **probe contract** workflow (a compile-and-probe check on a Windows
   runner); the macOS evidence is a **target compile** on macOS. Neither is a
