@@ -311,11 +311,17 @@ measured from, and every count was re-verified against its own listed
 workflows were run on the rebased head and **concluded green**: the hosted
 default sweep reports **15733 tests run: 15733 passed, 8 skipped** — the same
 count the local sweep reports — and the M004/M005 native tier is qualified on
-a Landlock-ABI-6 host that this workstation does not have. The one fact about
-*how* the CI run was started is recorded too: the `pull_request` event did
-not create a `CI` run for this pull request, on any of its heads, so the run
-that carries the evidence is a `workflow_dispatch` against the branch head
-(§4.3 of the closure).
+a Landlock-ABI-6 host that this workstation does not have.
+
+**A pull request that conflicts with `main` cannot obtain hosted
+`pull_request` evidence at all.** The `pull_request` event created no run on
+the first two heads, and the reason is not in `ci.yml`: a `pull_request`
+workflow checks out the synthetic `refs/pull/N/merge` ref, and GitHub cannot
+create that ref for a conflicting pull request. On the head that carries
+`main`'s tip, the ref exists and the event fires for the whole set of
+workflows, `CI` included. **The reconciliation with `main` is therefore a
+prerequisite for the evidence, not merely a tidiness step** (§4.3 of the
+closure).
 
 **WP-O — The second reconciliation, with `main` at `84aa47528` (2026-10-21).**
 `main` advanced again — PR #151, the M006 scratch usage census — and the pull

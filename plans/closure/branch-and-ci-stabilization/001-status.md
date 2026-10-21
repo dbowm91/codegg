@@ -156,7 +156,9 @@ contract** rather than an accident of the host.
 | The branch is reconciled with `main`'s current tip | the tip-level conflict was **exactly one file**, `.opencode/skills/tool-execution/SKILL.md`; it is resolved by the rule that a later qualification supersedes an earlier deferral, and the branch's M005/M004 text — which `main` does not carry at all — is kept in full (§3.16). The merged tree holds **zero** conflict markers, `cargo check --workspace --all-targets --locked` → **exit 0**, and `scripts/verify.sh quick` → **"Quick verification passed."** | pass |
 | The reconciliation does not move a published count | **the first reconciliation** (`main` at `2a0bae08f`) moved none: its nine commits added and deleted no file under any directory a count is measured from (§3.16). **The second reconciliation** (`main` at `84aa47528`) moved **four** rows, and each was re-measured against its own listed `Source` on the merged tree: `CoreRequest` variants 260 → **261** (237 struct + 24 unit), `CoreResponse` variants 169 → **170**, authorized operations 244 → **245**, integration test files 284 → **285**. The enum-variant measure was **calibrated, not assumed** — it reproduces the published values exactly on the pre-merge tree (`CoreRequest` 260 = 236 struct + 24 unit, `CoreResponse` 169, `CoreEvent` 92, `ProjectionEvent` 47, `AppEvent` 60) before it is applied to the merged tree. Every other row was re-measured and did not move (§3.17) | pass |
 | The rebased head is observed in a hosted CI run | run **39551117669** on head `352ed719c`: **conclusion success**, all 44 steps green, `Workspace tests` reporting **15733 tests run: 15733 passed, 8 skipped** (`Summary [ 523.092s]`) — the same count the local sweep reports (§4.3) | pass |
-| The M004/M005 native tier is qualified on the head | run **39550735458** on head `352ed719c`: **success**, with jobs `restricted-userns-fails-closed`, `process-ipc` and `git-cost-pilot` (skipped) — the ten qualification steps green on a host with Landlock ABI ≥ 6, which this workstation does not have (§4.3) | pass |
+| The M004/M005 native tier is qualified on the head | run **39550735458** on head `352ed719c`: **success**, with jobs `restricted-userns-fails-closed`, `process-ipc` and `git-cost-pilot` (skipped) — the ten qualification steps green on a host with Landlock ABI ≥ 6, which this workstation does not have (§4.3). Re-qualified on the two later heads as well: `39567537372` on `979ba14c6` and `39580103924` / `39580168070` / `39580097658` on `2ab5a3335`, all **success** | pass |
+| A defect the hosted evidence finds is fixed, not waived | the hosted Windows launcher found a **branch-owned** failure — `scratch::tests::the_session_root_lives_under_the_resolved_cache_root`, a test `main` does not have — and it is fixed by canonicalizing both sides of the comparison, with the assertion's claim unchanged and its discriminating power proved and kept in-tree (§3.18) | pass |
+| A hosted failure that is not the branch's is recorded, not fixed | the Desktop E2E failure reproduces on `main` itself, at `84aa47528` and `48a5ca7d2`, and on the M006 and M007 branches; it is recorded as a pre-existing `main` failure rather than fixed or waived (§3.18) | pass |
 
 ## 3. Production implementation evidence
 
@@ -807,6 +809,73 @@ verification passed."**; the workspace sweep → **15771 tests run: 15771 passed
 merged tree holds **zero** conflict markers, and the branch carries `main`'s
 tip as a direct ancestor at `84aa47528`.
 
+### 3.18 A branch-owned defect the hosted Windows run found, and its fix
+
+The `pull_request` event firing for the first time — because the branch became
+mergeable — started two workflows this branch had never run: the **Windows
+process launcher** and the **Desktop E2E**. One failed for a reason that is
+this branch's, and one for a reason that is not. Both are recorded, and the
+distinction is the point.
+
+**This branch's own: `scratch::tests::the_session_root_lives_under_the_resolved_cache_root`.**
+
+Run `39580103958`, step "Windows managed scratch lifecycle tests"
+(`cargo test -p codegg --lib scratch::tests`): **20 passed, 1 failed**, with
+
+```
+the scratch root must live under the resolved cache root:
+"\\?\C:\Users\runneradmin\AppData\Local\codegg\scratch\sessions\fd41a13d…"
+is not under "C:\Users\runneradmin\AppData\Local"
+```
+
+The containment **holds** — the failing path is literally under the cache root.
+What differs is the **spelling**: `session_scratch_dir` returns
+`std::fs::canonicalize(session_root)`, and on Windows `canonicalize` yields
+the extended-length (`\\?\`) device form, while `dirs::cache_dir()` yields the
+plain drive form. The test compared a canonicalized path against a
+non-canonicalized one, so it failed on its own spelling rather than on its own
+claim.
+
+**The test is this branch's own.** It was introduced by `3e722a878` ("fix
+(scratch): create the cache root privately, and give the sweep one of its
+own"), and it does not exist on `main` at all — `git show origin/main:src/scratch.rs`
+carries no such test. The Windows launcher is **green on `main`** at
+`84aa47528` and on the M006 and M007 branches, so the failure is a regression
+of this branch and not of `main`.
+
+**The fix is in the test, not in the product.** The product's behaviour is
+right: `session_scratch_dir` hands out a fully resolved path, which is exactly
+what a containment claim needs. The test now canonicalizes **both** sides
+before comparing — the same form the product resolves and hands out — and the
+assertion's claim is unchanged: the session root lives under the resolved
+cache root.
+
+**Non-vacuity proved** two ways. With the containment check pointed at a root
+the session root does not live under, the test **fails with the containment
+message** — not with an unrelated error — so the comparison still
+discriminates. And the test now carries that discriminating power **in-tree**,
+as a second assertion that a path outside the resolved cache root does not
+read as contained, so the property is checked on every platform rather than
+only where the fix was made.
+
+This is the class the hosted evidence exists to find. A Linux-only gate cannot
+see a Windows path-spelling difference, and the branch's own hosted Windows
+tier is what found it.
+
+**Not this branch's: the Desktop E2E.**
+
+Run `39580103920`, step "Built-app WebDriver trajectory":
+`apps/desktop/e2e/specs/m004-session.e2e.ts:169` —
+`element ("[data-testid=\"permission-list\"]") still not existing after
+120000ms`, with the other six assertions of the same spec passing.
+
+The same workflow **fails on `main` itself**: on `main` at `84aa47528` (push,
+2026-10-21T07:07:02Z), on `main` at `48a5ca7d2`, and on the M006 and M007
+feature branches — the same spec, the same step, the same timeout. It is a
+**pre-existing failure on `main`**, not a regression of this branch, and it is
+recorded rather than fixed here: `main`'s Desktop E2E is not this milestone's
+work, and this branch does not own the desktop app's session trajectory.
+
 ## 4. Verification executed
 
 Local, on the final tree, in this order.
@@ -865,6 +934,10 @@ The authoritative workspace sweep is recorded in §4.1.
 run on the committed tree with no concurrent edits and no Git commands in the
 worktree:
 
+- **The tree carrying the Windows scratch fix (§3.18): 15771 tests run: 15771
+  passed, 8 skipped, 0 failed, 0 timed out** (`Summary [ 469.705s]`, exit 0) —
+  the same count as the twice-merged tree, because the fix changes a test, not
+  the product.
 - **The twice-merged tree, `e0036d340`: 15771 tests run: 15771 passed, 8 skipped,
   0 failed, 0 timed out** (`Summary [ 477.297s]`, exit 0). The count is **16**
   higher than the first reconciliation's tree because `main`'s M006 census
@@ -934,6 +1007,10 @@ worktree:
 `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast`
 — the third tier of `scripts/verify.sh full` — was run on the final tree:
 
+- **The tree carrying the Windows scratch fix (§3.18): 12512 tests run: 12512
+  passed, 0 failed, 7 skipped** (`Summary [ 435.238s]`, exit 0) — the same
+  count as the twice-merged tree, because the fix changes a test, not the
+  product.
 - **The twice-merged tree, `e0036d340`: 12512 tests run: 12512 passed,
   0 failed, 7 skipped** (`Summary [ 434.172s]`, exit 0). The count is **16**
   higher than the first reconciliation's tree, entirely from `main`'s own
@@ -1004,7 +1081,21 @@ the first reconciliation with `main` (§3.16).
 | `39567544367` | `979ba14c6` | Linux Git object snapshot CoW qualification | `workflow_dispatch` | **success** |
 | `39567547799` | `979ba14c6` | Windows native probe contract | `workflow_dispatch` | **success** |
 | `39567330945` | `979ba14c6` | Command authorization macOS target compile (one-shot) | `push` | **success** |
-| — | both | GitGuardian Security Checks | — | **success** |
+| `39580104073` | `2ab5a3335` | `CI` — the default sweep | `pull_request` | **success** — `Workspace tests`: **15771 tests run: 15771 passed, 8 skipped** |
+| `39580165234` | `2ab5a3335` | `CI` — the default sweep | `workflow_dispatch` | **success** |
+| `39580103924` | `2ab5a3335` | Linux M004 process and IPC qualification | `pull_request` | **success** |
+| `39580168070` | `2ab5a3335` | Linux M004 process and IPC qualification | `workflow_dispatch` | **success** |
+| `39580097658` | `2ab5a3335` | Linux M004 process and IPC qualification | `push` | **success** |
+| `39580104060` | `2ab5a3335` | Linux C006 protected mount qualification | `pull_request` | **success** |
+| `39580170650` | `2ab5a3335` | Linux C006 protected mount qualification | `workflow_dispatch` | **success** |
+| `39580103890` | `2ab5a3335` | Linux Git object snapshot CoW qualification | `pull_request` | **success** |
+| `39580173312` | `2ab5a3335` | Linux Git object snapshot CoW qualification | `workflow_dispatch` | **success** |
+| `39580103981` | `2ab5a3335` | Windows native probe contract | `pull_request` | **success** |
+| `39580175684` | `2ab5a3335` | Windows native probe contract | `workflow_dispatch` | **success** |
+| `39580097823` | `2ab5a3335` | Command authorization macOS target compile (one-shot) | `push` | **success** |
+| `39580103958` | `2ab5a3335` | Windows process launcher | `pull_request` | **failure** — the branch's own Windows scratch test; §3.18. **Fixed on the branch's tree** |
+| `39580103920` | `2ab5a3335` | Desktop E2E | `pull_request` | **failure** — **pre-existing on `main`**; §3.18 |
+| — | all | GitGuardian Security Checks | — | **success** |
 
 **The hosted default sweep's count matches the local one exactly, on both
 heads** — 15733 on `352ed719c` and 15755 on `979ba14c6` — so each hosted
@@ -1024,22 +1115,38 @@ passed**. The tier was **re-qualified on the first reconciliation's head**
 `979ba14c6` as well (`39567537372`, **success**), so the qualification is not
 carried by a single head.
 
-**One fact about *how* the CI run was started, recorded because it is a
-difference in the evidence, not a detail.** The `pull_request` event did not
-create a `CI` run for this pull request, on this branch, on any of its heads:
-every `CI` run on this branch is a `workflow_dispatch`. The cause is not in
-the repository's workflow file — `ci.yml`'s trigger block is byte-identical to
-`main`'s, the `verify` job carries no `if:` condition, and the pull request's
-diff contains 301 changed files including `.rs` sources, so `paths-ignore`
-cannot explain it. The reason is therefore **not diagnosed** here, and it is
-recorded rather than papered over.
+**One fact about *how* the CI runs were started, and the correction it
+requires.** On the first two heads, the `pull_request` event did not create a
+`CI` run, and every `CI` run on this branch was a `workflow_dispatch`. That
+observation was real, and the explanation offered alongside it — that the
+cause "is not in the repository's workflow file and is not diagnosed" — was
+**incomplete, and is now corrected**.
 
-The run that carries the evidence is therefore a `workflow_dispatch` against
-the branch's own head, and that is the **stronger** of the two tests rather
-than a weaker substitute: a `pull_request` run checks out the synthetic
-`refs/pull/N/merge`, while the dispatched run checks out the branch head
-itself — the exact tree this record describes, with `main` already merged into
-it. The job, its steps, and its configuration are the same in both cases.
+Both earlier heads were **`CONFLICTING`** pull requests, and both were
+reconciled only after the hosted runs had been started. The `pull_request`
+event fired on the **third** head, `2ab5a3335`, the moment the branch carried
+`main`'s tip and the pull request became **mergeable** — and it fired for the
+whole set: the `CI` job (`39580104073`), the M004 native tier
+(`39580103924`), the C006 protected mount qualification (`39580104060`), the
+Git CoW qualification (`39580103890`), the Windows native probe contract
+(`39580103981`), the Windows process launcher (`39580103958`), and the
+Desktop E2E run (`39580103920`).
+
+**The mechanism.** A `pull_request` workflow checks out the synthetic
+`refs/pull/N/merge` ref, and GitHub cannot create that ref for a pull request
+that conflicts — there is no merge commit to check out. The ref exists now:
+`git ls-remote origin refs/pull/149/merge` →
+`c9da671b853c8f75cd7f8ef74bc1736d4c71a50d`, a synthetic merge of the head into
+`84aa47528`. While the pull request conflicted, it did not exist, and no
+`pull_request` workflow could start. The absence of those runs was a symptom
+of the **conflict**, not a property of `ci.yml`'s trigger block — which is
+byte-identical to `main`'s, and which carries no `if:` condition.
+
+This also settles the second question the earlier record left open: the
+`workflow_dispatch` runs are not a weaker substitute for `pull_request` runs.
+On the third head, **both** exist and exercise the same job, the same steps,
+and the same configuration — the dispatched run against the branch head, the
+`pull_request` run against the synthetic merge.
 
 ## 5. Invariant review
 
@@ -1211,15 +1318,36 @@ sets the modes it needs on any host.
   passed (§4.3) — together with the five native workflows. The earlier
   statement, that the rebased head "has not yet been observed in a hosted
   run", was true when it was written and is not true now.
-- **low — the hosted `CI` run for this pull request is a `workflow_dispatch`,
-  not a `pull_request` run**, because the `pull_request` event did not create
-  one for this branch on any of its heads (§4.3). The cause is not in the
-  repository's workflow file and is **not diagnosed** here. The run exercises
-  the same job, the same steps, and the same configuration, against the
-  branch's own head rather than the synthetic pull-request merge, so the
-  evidence is not weaker for it — but the distinction is recorded because a
-  reader comparing this branch's runs with another branch's will see the
-  event differs.
+- **closed — the hosted `CI` run for this pull request did not exist on the
+  first two heads, and the reason was the pull request's conflict, not the
+  repository's workflow file.** The earlier statement — that the
+  `pull_request` event "did not create a `CI` run for this pull request, on
+  this branch, on any of its heads" and that the cause was "not diagnosed" —
+  was **incomplete, and is corrected here**. A `pull_request` workflow checks
+  out the synthetic `refs/pull/N/merge` ref, and GitHub cannot create that ref
+  for a conflicting pull request. Both earlier heads conflicted; the ref does
+  not exist for them, and no `pull_request` workflow could start. On the third
+  head, which is mergeable, the ref exists and the `pull_request` event fired
+  for the whole set of workflows, `CI` included (§4.3). The lesson is the
+  ordering: **a branch that conflicts with `main` cannot obtain hosted
+  `pull_request` evidence at all**, so the reconciliation with `main` is a
+  prerequisite for the evidence and not merely a tidiness step.
+- **closed — the branch's own Windows scratch test failed on the hosted
+  Windows runner, and the defect is fixed.** Run `39580103958` failed
+  `scratch::tests::the_session_root_lives_under_the_resolved_cache_root`
+  because the test compared a canonicalized path against a non-canonicalized
+  one, and on Windows those spell the same directory differently. The test is
+  this branch's own and does not exist on `main`; the fix canonicalizes both
+  sides, keeps the assertion's claim unchanged, and carries the comparison's
+  discriminating power in-tree so it is checked on every platform. Non-vacuity
+  is proved locally (§3.18).
+- **low — the Desktop E2E fails, and the failure is pre-existing on `main`.**
+  Run `39580103920` fails `m004-session.e2e.ts:169` on a
+  `[data-testid="permission-list"]` that never appears. The same workflow fails
+  on `main` itself, at `84aa47528` and at `48a5ca7d2`, and on the M006 and
+  M007 branches — same spec, same step, same timeout. It is **not** a
+  regression of this branch, and it is recorded rather than fixed here:
+  `main`'s Desktop E2E is not this milestone's work (§3.18).
 - **low — the branch's hosted evidence was obtained on the pre-second-
   reconciliation head, and the twice-merged head is verified locally only.**
   The second reconciliation changed the tree — it brought `main`'s M006 census
@@ -1321,6 +1449,11 @@ names them:
   skipped**), `scripts/verify.sh quick` → **"Quick verification passed."**, and
   `cargo check --workspace --all-targets --locked` → **exit 0**. What is not
   claimed is a hosted run on that exact head.
+- **The Windows scratch fix (§3.18) is verified locally, not on Windows.** The
+  defect was found by the hosted Windows runner, the fix is proved
+  non-vacuous locally, and the hosted Windows launcher must re-run to confirm
+  it there. A local Linux gate cannot see a Windows path-spelling difference
+  in either direction, so this is a claim the hosted runner has to make.
 - **No native Windows or macOS *test* run.** The Windows evidence is the
   native **probe contract** workflow (a compile-and-probe check on a Windows
   runner); the macOS evidence is a **target compile** on macOS. Neither is a

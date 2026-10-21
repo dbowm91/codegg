@@ -1730,9 +1730,31 @@ mod tests {
         let session_id = format!("scratch-cache-root-{}", uuid::Uuid::new_v4());
         let root = session_scratch_dir(&session_id).unwrap();
         let cache_root = dirs::cache_dir().expect("resolved cache root");
+        // `session_scratch_dir` returns a **canonicalized** path, and on
+        // Windows `canonicalize` yields the extended-length (`\\?\`) device
+        // form while `dirs::cache_dir()` yields the plain drive form. The two
+        // spell the same directory, so a raw comparison of one against the
+        // other fails on its own spelling rather than on its own claim — the
+        // containment check below has to compare like with like. Both sides
+        // are canonicalized, which is the form the product itself resolves
+        // and hands out.
+        let canonical_cache_root =
+            std::fs::canonicalize(&cache_root).expect("canonical resolved cache root");
         assert!(
-            root.starts_with(&cache_root),
-            "the scratch root must live under the resolved cache root: {root:?} is not under {cache_root:?}"
+            root.starts_with(&canonical_cache_root),
+            "the scratch root must live under the resolved cache root: {root:?} is not under {canonical_cache_root:?}"
+        );
+        // The check above must still be able to *fail*: a path that is
+        // genuinely outside the resolved cache root must not read as
+        // contained. Without this, a comparison that always holds would
+        // satisfy the assertion above.
+        let outside = canonical_cache_root
+            .parent()
+            .expect("the cache root has a parent")
+            .join("codegg-scratch-outside-the-cache-root");
+        assert!(
+            !outside.starts_with(&canonical_cache_root),
+            "a path outside the resolved cache root must not read as contained: {outside:?}"
         );
         std::fs::remove_dir_all(&root).ok();
     }

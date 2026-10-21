@@ -241,11 +241,13 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   native tier is qualified on a Landlock-ABI-6 host this workstation does not
   have. The same was re-observed on the head after the first reconciliation
   (**15755 run, 15755 passed, 8 skipped**, and all five native workflows
-  **success**). The `pull_request` event did not create a `CI` run for this
-  pull request on any of its heads, so the run carrying the evidence is a
-  `workflow_dispatch` against the branch head; the cause is not in the
-  repository's workflow file and is **not diagnosed** here. See §4.3 of the
-  closure.
+  **success**). The `pull_request` event created no run on the first two
+  heads because a `pull_request` workflow checks out the synthetic
+  `refs/pull/N/merge` ref, and GitHub cannot create that ref for a
+  **conflicting** pull request; on the head that carries `main`'s tip the ref
+  exists and the event fires for the whole set of workflows, `CI` included.
+  The reconciliation with `main` is therefore a prerequisite for the hosted
+  evidence, not merely a tidiness step. See §4.3 of the closure.
 - **Exit conditions:** the tree compiles with every target; both identifier
   guards pass; the canonical gate passes; the sweep's remaining failures are
   zero or explained; and the records say exactly what was and was not verified.
@@ -330,18 +332,19 @@ milestone depends on C001 for correctness; C001 exists so that the work that
   discharged side yields — and the branch's own M005/M004 text, which `main`
   does not carry at all, is kept in full.
 - **Decision point (2026-10-21): how to obtain the hosted evidence when the
-  `pull_request` event produces no run.** The `pull_request` event did not
-  create a `CI` run for this pull request, on this branch, on any of its
-  heads. The cause is not in the repository's workflow file — `ci.yml`'s
-  trigger block is byte-identical to `main`'s, the `verify` job has no `if:`
-  condition, and the pull request's diff is 301 changed files including `.rs`
-  sources, so `paths-ignore` cannot explain it — and it is therefore **not
-  diagnosed** here. The run that carries the evidence is a
-  `workflow_dispatch` against the branch's own head, which is the **stronger**
-  of the two tests rather than a weaker substitute: a `pull_request` run
-  checks out the synthetic `refs/pull/N/merge`, while the dispatched run
-  checks out the tree this record describes, with `main` already merged into
-  it. The job, its steps, and its configuration are identical in both cases.
+  `pull_request` event produces no run.** On the first two heads it produced
+  none, and the cause is **not** in the repository's workflow file: `ci.yml`'s
+  trigger block is byte-identical to `main`'s and the `verify` job has no `if:`
+  condition. The cause is that a `pull_request` workflow checks out the
+  synthetic `refs/pull/N/merge` ref, and **GitHub cannot create that ref for a
+  conflicting pull request** — there is no merge commit to check out. Both
+  earlier heads conflicted; on the head that carries `main`'s tip the ref
+  exists (`c9da671b…`, a synthetic merge into `84aa47528`) and the event fires
+  for the whole set of workflows, `CI` included. The consequence is an
+  ordering rule rather than a workaround: **the reconciliation with `main` is
+  a prerequisite for the hosted evidence, not merely a tidiness step**, and a
+  `workflow_dispatch` against the branch head remains the way to obtain the
+  evidence while a pull request still conflicts.
 - **Decision point: how to treat a transient object-store read failure.**
   Resolved in favour of retrying inside the existing bounded attempts, because
   the bound already exists for exactly this class of event and a persistent
