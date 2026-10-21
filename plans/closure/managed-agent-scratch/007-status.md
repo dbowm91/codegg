@@ -405,7 +405,9 @@ the fresh tree survives.
 - `codegg.example.jsonc` — the annotated `scratch` block.
 - `architecture/overview.md` — the `## Verified counts` table is remeasured:
   `CoreRequest` variants **261** (237 struct + 24 unit), `CoreResponse`
-  variants **171**, and authorized operations **255**.
+  variants **171**, authorized operations **255**, and integration test files
+  **280**. Each was remeasured against its listed `Source` with the counting
+  method the table has always used.
 
 ## 10. Unresolved findings
 

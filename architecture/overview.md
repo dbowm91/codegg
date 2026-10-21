@@ -288,11 +288,11 @@ listed `Source` with the method the table has always used, and each was
 confirmed to have been correct before the change; the remaining rows were
 confirmed unchanged.
 
-The three rows M007 could affect were **remeasured again on 2026-10-21**
+The four rows M007 could affect were **remeasured again on 2026-10-21**
 after it added the scratch retention sweep and the operator disposition:
-`CoreRequest` variants (260 → 261), `CoreResponse` variants (170 → 171), and
-authorized operations (254 → 255). The remaining rows were confirmed
-unchanged: no new architecture document, no new integration test file, no new
+`CoreRequest` variants (260 → 261), `CoreResponse` variants (170 → 171),
+authorized operations (254 → 255), and integration test files (279 → 280). The
+remaining rows were confirmed unchanged: no new architecture document, no new
 `codegg-core` top-level module, no database table, and **no storage layout
 version bump** — M007 adds no migration, no table, and no lease column.
 
@@ -346,7 +346,7 @@ the statement count is 92 because `migration_version` and the
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 279 | `tests/*.rs` |
+| Integration test files | 280 | `tests/*.rs` |
 | CI guard scripts | 62 | `scripts/check_*` |
 
 
