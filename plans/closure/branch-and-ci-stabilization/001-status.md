@@ -112,7 +112,7 @@ contract** rather than an accident of the host.
 | The feature-enabled tier passes | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci` → 11804 run, **11804 passed, 0 failed** on the fixed tree (§4.2) | pass |
 | The live Eggwork qualification's trust chain does not follow the operator's umask | `tests/eggwork_remote_execution_live.rs` regression test `a_staged_sandbox_helper_is_trusted_whatever_the_umask`; **non-vacuity proved** — with the helper group-writable the *same* five qualifications fail (8 passed / 5 failed) and the staged pair passes (14/14) (§3.11) | pass |
 | No work is lost by the force push | the remote branch's two commits past the rebase base (`32611c8d`, `5019fb26`) are replayed onto the rebased branch; their files are **byte-identical** to the remote's originals (§3.10) | pass |
-| Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20; six rows corrected | pass |
+| Every published count is measured against its listed `Source` | `architecture/overview.md`'s "Verified counts" table re-measured on 2026-10-20; **eight** rows corrected, and the three rows this milestone first carried forward are now re-derived from re-runnable sources — no row is carried forward (§3.6) | pass |
 | The canonical gate after the sweep | `scripts/verify.sh quick` → "Quick verification passed." (§4) | pass |
 
 ## 3. Production implementation evidence
@@ -213,12 +213,32 @@ table is current (`AppEvent` 60, `ProjectionEvent` 47, `codegg-core` modules
 47, integration test files 268, guard scripts 58), and the enum-variant counts
 were confirmed by a second, independent signal.
 
-Three rows — `Authorized operations`, `Tool registrations`, and `Distinct
-production tool names` — are **carried forward unchanged**: their published
-conventions could not be reproduced from their listed `Source` on this tree
-(`main`'s published values do not reproduce either), and re-deriving them from
-a guess would be worse than recording that they were not re-derived. This is
-stated in the table's own re-measurement note rather than left implicit.
+The three rows that this milestone originally **carried forward** —
+`Authorized operations`, `Tool registrations`, and `Distinct production tool
+names` — have since been **re-derived** from sources a reader can re-run, so
+no row of the table is now carried forward:
+
+- `Authorized operations` is **243**, the length of `representative_requests()`
+  in `crates/codegg-core/src/authorization/policy.rs` — the list the executable
+  `operation_capability_matrix()` is derived from, so the count and the matrix
+  cannot drift apart. The previously published source, the
+  `operation_descriptor` function, yields none of the candidate counts (58
+  distinct operation names, 253 call sites, 259 variant references), which is
+  why the row could not be reproduced before.
+- `Tool registrations` keeps **63**, and its source is widened from
+  `src/tool/mod.rs` (26 call sites) to `with_options` call sites across `src/`
+  (26 + 37).
+- `Distinct production tool names` is **60**: the distinct literal `name()`
+  strings of the production `impl Tool for …` in `src/tool/` and `src/context/`,
+  after the six test-only mocks are excluded (three in `program_manifest.rs`,
+  one in `disabled.rs`, and the two whose `name()` is not a literal, in
+  `catalog.rs` and `tool_search.rs`).
+
+Two of those values were **stale in `main` as well** — `main`'s tree measures
+243 and 60 by the same methods — so the branch inherits `main`'s drift rather
+than adding any of its own; the correction is recorded as pre-existing drift,
+consistent with the other rows corrected on the 2026-10-19 pass. Eight rows
+moved in total.
 
 ### 3.7 The scratch allocator's per-user cache root
 
@@ -785,7 +805,9 @@ names them:
 - **The M004/M005 tier was not re-qualified on the rebased head.** This
   workstation cannot run it (Landlock ABI < 6); that evidence must come from
   the hosted runner.
-- **Three published rows were carried forward rather than re-derived** (§3.6).
+- **Every published count is now measured against a re-runnable source** (§3.6).
+  The three rows this milestone first carried forward are re-derived, and two of
+  their published values were stale in `main` as well.
 - **The two historical commits with the invalid guard script were recorded,
   not rewritten** (§10).
 - **The parallel planning packet's C001 is not merged into this one** (§3.10);
