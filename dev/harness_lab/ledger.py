@@ -17,6 +17,14 @@ SCHEMA_VERSION = 2
 #: and reportable; every new row is written with `SCHEMA_VERSION`.
 SUPPORTED_SCHEMA_VERSIONS = (1, 2)
 TERMINALS = {"passed", "assertion_failed", "execution_failed", "cancelled", "denied", "timeout", "budget_exhausted", "infrastructure_error", "indeterminate", "interrupted_unknown"}
+
+#: Terminals that carry **no measurement** of the subject. An interrupted
+#: attempt has an unknown outcome; an infrastructure error means the harness,
+#: the daemon or the transport failed before the trial could produce an
+#: observation. Neither is evidence that the candidate failed, so neither may
+#: be scored as a failure: the pair is re-run instead. Scoring one as a zero
+#: would let a measurement flake decide the acceptance.
+UNMEASURED_TERMINALS = frozenset({"interrupted_unknown", "infrastructure_error"})
 #: Terminal recorded for an attempt whose outcome is unknown because the
 #: controller crashed mid-flight. It is never a pass and never a failure.
 INTERRUPTED_UNKNOWN = "interrupted_unknown"
@@ -473,9 +481,11 @@ def validate_candidate_resume_rows(root: Path, candidate: str, cases: list[dict[
     for row in load_runs(root):
         if row["candidate"] != candidate:
             continue
-        if row.get("terminal") == INTERRUPTED_UNKNOWN:
-            # An interrupted attempt is not a completed row: the case is retried
-            # under a new attempt id, never overwritten with a success.
+        if row.get("terminal") in UNMEASURED_TERMINALS:
+            # An interrupted attempt and an infrastructure error are not
+            # completed rows: neither carries an observation of the candidate.
+            # The case is retried under a new attempt id, never overwritten
+            # with a success.
             continue
         key = (row["task_id"], row.get("repeat", 0))
         case = by_task.get(key[0])
@@ -548,10 +558,6 @@ _ARM_IDENTITY_FIELDS = (
     ("suite digest", lambda row: row.get("suite_sha256")),
     ("subject binary fingerprint", lambda row: (row.get("subject") or {}).get("binary_sha256")),
     ("revision", lambda row: (row.get("subject") or {}).get("revision")),
-    ("agent", lambda row: (row.get("receipt") or {}).get("agent")),
-    ("model", lambda row: (row.get("receipt") or {}).get("model")),
-    ("policy", lambda row: row.get("policy")),
-    ("tool surface digest", lambda row: (row.get("receipt") or {}).get("tool_surface_sha256")),
 )
 
 #: Identity fields a PAIRED trial must share across the two candidates. The
@@ -565,13 +571,37 @@ _PAIR_IDENTITY_FIELDS = (
     ("policy", lambda row: row.get("policy")),
 )
 
+#: Fields a suite may legitimately vary *between its cases*. The frozen suite
+#: runs one case under the full-host policy and the rest under the
+#: workspace-write policy, the headless adapter records no ACP policy
+#: handshake at all, and a trial that timed out never received one. Those are
+#: properties of the *case*, not of the arm, so they are reported per case and
+#: compared between the two arms for the same case — never required to be
+#: uniform across an arm.
+_CASE_SCOPED_IDENTITY_FIELDS = (
+    ("agent", lambda row: (row.get("receipt") or {}).get("agent")),
+    ("model", lambda row: (row.get("receipt") or {}).get("model")),
+    ("policy", lambda row: row.get("policy")),
+    ("tool surface digest", lambda row: (row.get("receipt") or {}).get("tool_surface_sha256")),
+)
+
 
 def _identity_key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _require_arm_identity(candidate: str, rows: dict[tuple[str, int], dict[str, Any]]) -> None:
-    """Refuse a candidate whose own trials disagree on their subject identity."""
+    """Refuse a candidate whose own trials disagree on their subject identity.
+
+    Only the arm-wide invariants are checked here. A suite may legitimately
+    vary the agent, the model, the policy or the tool surface *between its
+    cases* — the frozen suite runs one case under the full-host policy and the
+    rest under the workspace-write policy, and the headless adapter records no
+    ACP policy handshake at all. Requiring those to be uniform across an arm
+    would make a deliberately mixed suite impossible to compare at all, and
+    the pair-wise comparison already requires the two arms to agree on them
+    for the *same* case.
+    """
     for label, extract in _ARM_IDENTITY_FIELDS:
         values = {_identity_key(extract(row)) for row in rows.values() if extract(row) is not None}
         if len(values) > 1:
@@ -579,10 +609,19 @@ def _require_arm_identity(candidate: str, rows: dict[tuple[str, int], dict[str, 
 
 
 def _arm_identity(rows: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
+    """Report the arm's identity: the invariants, plus every case-scoped value.
+
+    The case-scoped fields are reported as the sorted set of the values the
+    arm actually used, so a mixed suite's identity says "this arm ran under
+    two policies" rather than naming whichever trial happened to come first.
+    """
     identity: dict[str, Any] = {}
     for label, extract in _ARM_IDENTITY_FIELDS:
         values = [extract(row) for row in rows.values() if extract(row) is not None]
         identity[label] = values[0] if values else None
+    for label, extract in _CASE_SCOPED_IDENTITY_FIELDS:
+        values = {_identity_key(extract(row)) for row in rows.values() if extract(row) is not None}
+        identity[label] = sorted(values)
     return identity
 
 
@@ -647,9 +686,11 @@ def compare(root: Path, left_candidate: str, right_candidate: str,
     right_unknown: list[dict[str, Any]] = []
     for row in runs:
         candidate = row.get("candidate")
-        if row.get("terminal") == INTERRUPTED_UNKNOWN:
-            # An unknown outcome is not a finished trial: it stays visible and
-            # keeps the pairing incomplete, it is never scored.
+        if row.get("terminal") in UNMEASURED_TERMINALS:
+            # An unknown outcome and an infrastructure error are not finished
+            # trials: they stay visible and keep the pairing incomplete, they
+            # are never scored. A pair that was measured after one of them is
+            # the measured row that counts.
             if candidate == left_candidate:
                 left_unknown.append(row)
             elif candidate == right_candidate:
@@ -666,7 +707,8 @@ def compare(root: Path, left_candidate: str, right_candidate: str,
     left_suites = {row.get("suite_sha256") for row in left.values()}
     right_suites = {row.get("suite_sha256") for row in right.values()}
     if not left_suites or not right_suites:
-        raise ValueError("comparison has an empty expected denominator: no completed trials to pair")
+        raise ValueError("comparison has no completed trials to pair on one side: "
+                         "an empty expected denominator is not a comparison")
     if left_suites != right_suites:
         raise ValueError("paired candidate trials do not share the same frozen suite")
     suite = next(iter(left_suites))

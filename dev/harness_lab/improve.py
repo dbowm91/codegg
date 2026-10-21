@@ -789,17 +789,25 @@ def index_trials(rows: list[dict[str, Any]], candidate: str,
 
     A candidate that records the same ``(task_id, repeat)`` twice would be
     scored twice and would break the paired comparison, so the duplicate is
-    refused instead of being silently collapsed. A reconciled orphan attempt
-    whose outcome is unknown is not a completed trial: it carries no measured
-    observation and is excluded from the index.
+    refused instead of being silently collapsed.
+
+    Two terminals carry **no measurement**: ``interrupted_unknown`` (a
+    reconciled orphan attempt whose outcome is unknown) and
+    ``infrastructure_error`` (the harness, the daemon or the transport failed
+    before the trial could produce an observation). Neither says anything
+    about the candidate, so neither is a completed trial: they are excluded
+    from the index and the pair is re-run. A pair may therefore appear twice
+    in the ledger — once unmeasured, once measured — and the measured row is
+    the one that counts. Two *measured* rows for one pair are still refused.
     """
     indexed: dict[tuple[str, int], dict[str, Any]] = {}
+    from . import ledger
     for row in rows:
         if row.get("candidate") != candidate:
             continue
         if suite_sha256 is not None and row.get("suite_sha256") != suite_sha256:
             continue
-        if row.get("terminal") == INTERRUPTED_UNKNOWN_OUTCOME:
+        if row.get("terminal") in ledger.UNMEASURED_TERMINALS:
             continue
         key = (row.get("task_id"), row.get("repeat", 0))
         if key in indexed:

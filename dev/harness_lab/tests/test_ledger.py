@@ -462,6 +462,55 @@ class LedgerCompareTests(unittest.TestCase):
             self.assertEqual(comparison["regressions"], [])
             self.assertEqual(len(comparison["improvements"]), 1)
 
+    def test_a_suite_that_varies_its_policy_between_cases_is_comparable(self) -> None:
+        """A case may use a different policy than its neighbours.
+
+        The frozen suite runs one case under the full-host policy and the rest
+        under the workspace-write policy, and the headless adapter records no
+        ACP policy handshake at all. Requiring one policy across an arm made
+        the frozen suite impossible to compare at all.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "receipt.txt").write_text("ok", encoding="utf-8")
+            ledger = root / "ledger"
+            policies = {"host": {"sandbox": "full_host"}, "write": {"sandbox": "workspace_write"}}
+            for candidate, terminal in (("base", "passed"), ("candidate", "passed")):
+                for task_id, policy in policies.items():
+                    record(ledger, {"daemon": {"binary_sha256": "aaa", "revision": "r1"},
+                                    "policy": policy},
+                           task_id=task_id, group_id="g", candidate=candidate, workspace=workspace,
+                           expected_file="receipt.txt", expected_text="ok", repeat=0,
+                           suite_sha256="suite", case_sha256="case-" + task_id,
+                           terminal_override=terminal)
+            comparison = compare(ledger, "base", "candidate",
+                                 expected_terminals={("host", 0): "passed", ("write", 0): "passed"})
+            self.assertEqual(comparison["regressions"], [])
+            self.assertEqual(comparison["denominator"], 2)
+
+    def test_an_infrastructure_error_is_not_a_measured_trial(self) -> None:
+        """A measurement failure is re-run, not scored as a candidate failure."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "receipt.txt").write_text("ok", encoding="utf-8")
+            ledger = root / "ledger"
+            for candidate, terminal in (("base", "passed"), ("candidate", "infrastructure_error")):
+                record(ledger, {"daemon": {"binary_sha256": "aaa", "revision": "r1"}},
+                       task_id="one", group_id="g", candidate=candidate, workspace=workspace,
+                       expected_file="receipt.txt", expected_text="ok", repeat=0,
+                       suite_sha256="suite", case_sha256="case",
+                       terminal_override=terminal)
+            # The candidate's only trial carries no measurement, so the arm has
+            # no completed trial to pair and the comparison refuses rather than
+            # scoring the measurement failure as a candidate failure.
+            with self.assertRaisesRegex(ValueError, "no completed trials"):
+                compare(ledger, "base", "candidate",
+                        expected_terminals={("one", 0): "passed"})
+
 
 class LedgerRecoveryTests(unittest.TestCase):
     def test_orphan_run_directory_is_reconciled_as_interrupted_unknown(self) -> None:
