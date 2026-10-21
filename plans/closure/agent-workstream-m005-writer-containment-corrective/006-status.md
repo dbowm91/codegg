@@ -397,14 +397,15 @@ executor marker — and proves each is reported. The guard is wired into
 * **No macOS or Windows run was possible on this host.** The macOS lane
   (§5.1) exists to produce that evidence on a hosted runner; Windows has no
   backend to run (§5.1).
-* **The branch was not reconciled with `origin/main` before the hosted run.**
-  The branch is 65 commits ahead of and 72 behind `origin/main`, and
-  reconciling it means resolving ~70 conflict hunks across 21 files that
-  include the scheduler, the admission controller and the queue-write guard.
-  The hosted run was therefore dispatched on the branch head
-  (`workflow_dispatch` accepts any ref), and it is evidence about **this
-  branch's head**, not about a merge result. A merge reconciliation is a
-  separate, named piece of work.
+* **The branch has since been reconciled with `origin/main`.** The hosted run
+  above was dispatched on the branch head (`workflow_dispatch` accepts any
+  ref), so it was evidence about **this branch's head**, not about a merge
+  result — which is why the merge reconciliation is a separate, named piece of
+  work and not something this record's runs were asked to cover. It has since
+  been done: merge commit `42707515b` reconciles the branch with
+  `origin/main` `9c9ffb763` (20 files conflicted in 81 hunks), and is recorded
+  in §9 of
+  `plans/closure/agent-workstream-m005-writer-containment-corrective/004-merge-reconciliation-status.md`.
 
 ### 8.3 The composed scenario
 
@@ -474,22 +475,47 @@ Both are recorded because they are the reason a full-workspace hosted run is
 not a formality. C005 was committed with no hosted CI run at all, and two
 platform-specific defects shipped with it.
 
-### 8.5 The failure that is not C006's
+### 8.5 The failure that is not C006's — and is now fixed
 
-The second hosted run's single failure is
+The second hosted run's single failure was
 `scheduler_contention::different_exclusivity_keys_run_in_parallel`: two jobs
 with *different* exclusivity keys must run concurrently, and the test's
 `Barrier::new(2)` makes each of them wait for the other, so a scheduler that
 serialises them trips the test's five-second budget.
 
-That is the per-workspace build admission — M007's feature, not M005's. The
-branch's own M007 implementation is what the test is measuring, and the test
-fails at the branch's **pre-session** head as well, so it is pre-existing on
-this branch rather than something C006 introduced. `main` has since reworked
-`src/scheduler/admission.rs` substantially (it is one of the files that
-conflicts on merge), so the branch's copy of that area is behind `main`'s —
-which is one more reason the branch needs its merge reconciliation before it
-is offered as a PR.
+That is the per-workspace build admission — **M007's** feature, not M005's.
+The test fails at the branch's **pre-session** head as well, so it was
+pre-existing on this branch rather than something C006 introduced. It was
+attributed, not dismissed: the third hosted run (`39627444733`, head
+`2cddbff3c`) reproduced it unchanged — 9,780 of 15,650 tests passed, 1
+failed, and the failure was the same test.
+
+The **cause** was found during the merge reconciliation with `main`, and it
+is a contract interaction, not a bug in either side:
+
+* The test submits two `JobKind::Build` jobs into **one** workspace with
+  different exclusivity keys, and asserts they run in parallel.
+* The submission boundary **unconditionally** binds the build-class quota to
+  the canonical workspace (`KeyedQuotaRequest::for_workspace`), so both jobs
+  land in the same counted scope.
+* That scope's default limit is **one build slot per workspace**
+  (`scheduler.quota.max_concurrent_builds_per_workspace`, default `1`).
+
+So the two jobs were serialised by the **quota** — a different admission
+dimension from the one the test names — and the test failed while asserting
+nothing about exclusivity at all. The fix widens the quota bound **in that
+test only**, so the test measures the dimension its name names. The shipped
+contract is unchanged: one build slot per workspace by default is still what
+`architecture/build_admission.md` says it is, and the quota's own contract is
+covered by the build-admission suite.
+
+The alternative — lowering the shipped default to two builds per workspace —
+would have changed the product contract to satisfy a test, which is the
+wrong direction. The test passes in the merged tree
+(`scheduler_contention` 14/14).
+
+The merge reconciliation itself is recorded in §9 of
+`plans/closure/agent-workstream-m005-writer-containment-corrective/004-merge-reconciliation-status.md`.
 
 ---
 
