@@ -170,8 +170,10 @@ impl SweepStop {
 /// The daemon's scratch retention policy.
 ///
 /// The defaults are **specified**, not measured: they are derived from the
-/// disposal contract, not from a census. The census that would validate them
-/// is M006's, and it is a separate measurement.
+/// disposal contract. M006's census ran as this milestone's WP0 and was
+/// consulted — it did not contradict the default, so the default was not
+/// adjusted — but the measured population was synthetic, so the number itself
+/// is still contract-derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScratchRetentionPolicy {
     /// Whether the sweep runs at all. Off means the sweep never fires; the
@@ -190,9 +192,9 @@ impl Default for ScratchRetentionPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            retention_days: 14,
-            sweep_interval_minutes: 360,
-            orphan_grace_hours: 24,
+            retention_days: codegg_config::SCRATCH_RETENTION_DAYS_DEFAULT,
+            sweep_interval_minutes: codegg_config::SCRATCH_SWEEP_INTERVAL_MINUTES_DEFAULT,
+            orphan_grace_hours: codegg_config::SCRATCH_ORPHAN_GRACE_HOURS_DEFAULT,
         }
     }
 }
@@ -208,6 +210,7 @@ impl From<&codegg_config::ScratchConfig> for ScratchRetentionPolicy {
         }
     }
 }
+
 /// What one sweep pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScratchSweepReport {

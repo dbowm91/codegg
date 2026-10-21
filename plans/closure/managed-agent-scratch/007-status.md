@@ -121,7 +121,7 @@ Local (macOS 25.6.0 x86_64, rustc 1.89.0, load-averaged shared host,
 | `CARGO_BUILD_JOBS=2 cargo test -p codegg --test scratch_retention_sweep` | pass — 4 passed, 0 failed |
 | `CARGO_BUILD_JOBS=2 cargo test -p codegg --test scratch_usage_census` | pass — M006's census suite still passes unchanged |
 | `CARGO_BUILD_JOBS=2 cargo test -p codegg-config` | pass — 113 passed, 0 failed |
-| `CARGO_BUILD_JOBS=2 cargo test -p codegg-core authorization` | pass |
+| `CARGO_BUILD_JOBS=2 cargo test -p codegg-core authorization` | pass — 22 passed, 0 failed |
 | `python3 scripts/check_queue_write_transaction_shape.py --self-test` | pass — four injections, each rejected |
 | `python3 scripts/check_audit_coverage.py` | pass |
 | `python3 scripts/check_config_merge_coverage.py --self-test` | pass |
