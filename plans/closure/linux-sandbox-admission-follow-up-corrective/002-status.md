@@ -43,19 +43,19 @@ unchanged. See §10 for the one named outstanding condition.
 | Plan requirement | Evidence | Status |
 |---|---|---|
 | WP1: enumerate each producer/consumer of `NetworkIntent::OfflineRequired` and the sandbox ceiling; producers without a principal snapshot receive daemon-stamped authenticated intent (narrowing only) | §3.1; `src/core/daemon_jobs.rs` stamps `Shell`/`ManagedArgv`/`Test`/`Python`; the Tool Program route bypassed both stamping points and now carries the accepted snapshot instead (§3.2) | met |
-| WP2: thread bound policy unchanged through durable storage/deserialization, child request and backend choice | §3.2–§3.4; `ToolProgramExecutionContext` carries both axes, is covered by the replay-safety digest, and survives a JSON round-trip (§4.2) | met for the policy thread; the native obtained-enforcement matrix is outstanding (§10) |
-| WP2: a real Tool Program child-job integration showing denied host TCP/UDP/DNS and host-process/IPC access | The proof exists and has been **executed on a qualified Linux host** (the hosted M004 runner). Its first execution failed and found the second defect in §3.6; that is fixed, and the proof's re-execution is outstanding | **outstanding** (§10.1) |
+| WP2: thread bound policy unchanged through durable storage/deserialization, child request and backend choice | §3.2–§3.4; `ToolProgramExecutionContext` carries both axes, is covered by the replay-safety digest, and survives a JSON round-trip (§4.2) | met for the policy thread; the native obtained-enforcement matrix has now run on a qualified hosted Linux runner (§4.7a, §10.1) |
+| WP2: a real Tool Program child-job integration showing denied host TCP/UDP/DNS and host-process/IPC access | The proof's first execution failed and found the second defect in §3.6; that is fixed, and the proof **passed** on the hosted M004 runner `39685717425` (18 passed / 0 failed in the native binary, with the host positive control intact). The residual cargo-specific attribution stays outstanding (§10.1 item 5) | **met**, with the cargo attribution outstanding (§10.1) |
 | WP2: the bound policy must survive into the *backend choice*, including the required process/Filesystem tier | §3.6 — the durable route built the launch spec before requesting the M004 tier, so the owner's forced offline flag left the spec with no captured path identity and the launch failed closed. Fixed in both durable routes the delegated child uses; the guard now checks the ordering | met |
-| WP2: verify denial survives FullHost filesystem preference plus OfflineRequired intent; do not conflate profile with independent network authority | §4.2 `the_two_axes_are_independent`; the two axes are narrowed independently in `narrow_child_ceiling` | met at the policy level; the launch-level refusal is part of the outstanding native matrix |
+| WP2: verify denial survives FullHost filesystem preference plus OfflineRequired intent; do not conflate profile with independent network authority | §4.2 `the_two_axes_are_independent`; the two axes are narrowed independently in `narrow_child_ceiling`; the launch-level refusal was observed on the qualified hosted runner (§4.7a) | met |
 | WP3: legacy jobs (without persisted intent) stay explicitly `LegacyUnrestricted`; current principal policy governs newly admitted jobs | §3.2 additive fields with `#[serde(default)]`; §4.2 `a_pre_m005_payload_still_decodes` and `a_missing_authorization_keeps_the_historical_meaning` | met |
 | WP3: added wire/persistence fields need additive versioning/migration and older-client negative tests | Additive `Option<SandboxProfile>` + `NetworkIntent` with `#[serde(default)]`; no storage-layout migration, so `STORAGE_LAYOUT_VERSION` is unchanged; the pre-M005 payload is the older-client negative test (§4.2) | met |
-| WP3: check parent/child ceilings on resume, restart and agent handoff; test stale revisions and nonexistent or revoked principals | The ceiling travels inside the durable execution context, so a restart or replay re-reads it rather than re-deriving it (§3.2); a stale/invalid authorization is refused at the tool boundary (§4.2 `an_invalid_authorization_is_refused`) | met for the policy thread; a live restart/handoff trace is part of the outstanding native matrix |
+| WP3: check parent/child ceilings on resume, restart and agent handoff; test stale revisions and nonexistent or revoked principals | The ceiling travels inside the durable execution context, so a restart or replay re-reads it rather than re-deriving it (§3.2); a stale/invalid authorization is refused at the tool boundary (§4.2 `an_invalid_authorization_is_refused`) | met for the policy thread; a live restart/handoff trace is **not** covered and is not claimed |
 | WP4: machine-readable host-admission manifest with `discovered` / `can_launch` / `native_negative_proven` / `maintainer_admitted` kept distinct | §3.5; `src/security/sandbox/host_admission.rs`; §4.3 | met |
 | WP4: the manifest alone can never turn a requested boundary into `Enforced` | `HostAdmissionManifest::contains_enforcement_claim`; §4.3 `the_manifest_makes_no_enforcement_claim`; the module has no path that grants an admission from a probe | met |
-| WP4: Ubuntu positive and restricted/no-userns negative | Not produced. Requires the qualified Linux host | **outstanding** (§10) |
+| WP4: Ubuntu positive and restricted/no-userns negative | Produced on the hosted runner `39685717425`: the Ubuntu 24.04 positive is the native binary's 18 passing tests, and the `restricted-userns-fails-closed` job on the same run **passed** | met |
 | WP5: report which dimension failed, pre-target failure reason and safe manual remedy; cap/redact sensitive host paths/socket/credentials | §3.5; every capability carries an evidence string, and `can_launch` records the failing dimension with the underlying reason | met for the manifest; the runtime-side remedy text for a failed launch is part of the outstanding native matrix |
 | WP5: extend `scripts/check_network_intent_owner_wiring.py` | The script did **not** exist on any branch in this repository's history. It was created, not extended (§3.7) | met, with a recorded premise correction |
-| WP5: prove the guard fails by defect injection | §4.4 — ten injected defects, each rejected | met |
+| WP5: prove the guard fails by defect injection | §4.4 — eleven injected defects, each rejected | met |
 | WP5: native workflow path triggers for changed Tool Program, job, policy and protocol paths | §3.8 — `src/tool/tool_program.rs` and `src/tool/tool_program_context.rs` added to **both** trigger blocks; the guard enforces the coverage | met |
 | WP5: no false claims in `docs/security-semantics.md` / `architecture/security.md` | No new enforcement claim is made anywhere; the manifest is explicitly capability, not enforcement (§3.5) | met |
 | Verification: `check_network_intent_owner_wiring.py`, `check_sandbox_contract.py`, `check_execution_ownership.py`, formatting, Clippy, `scripts/verify.sh quick` | §4 | met |
@@ -243,7 +243,7 @@ this plan names.
 | `cargo check --workspace --all-targets --locked` | **exit 0** |
 | `cargo fmt --all -- --check` | pass (via `scripts/verify.sh quick`) |
 | `python3 scripts/check_network_intent_owner_wiring.py` | pass |
-| `python3 scripts/check_network_intent_owner_wiring.py --self-test` | pass — 7 injected defects, each rejected |
+| `python3 scripts/check_network_intent_owner_wiring.py --self-test` | pass — 11 injected defects, each rejected |
 | `scripts/verify.sh quick` | see §4.5 |
 
 ### 4.2 Focused C002 tests
@@ -285,16 +285,27 @@ not enforcement, and only a maintainer record can set an admission.
 ### 4.4 Guard self-test
 
 `python3 scripts/check_network_intent_owner_wiring.py --self-test` — pass.
-Ten defects were injected one at a time into a copy of the tree, and the
-guard rejected each: the child payload dropping the narrowed intent; the
-child payload dropping the narrowed profile; the carrier losing its
-`network_intent` field; the digest stopping covering the ceiling; the tool
-boundary stopping stamping the ceiling; the executor stopping binding the
-ceiling; the test runner stopping forwarding the payload's intent; the
-managed executor stopping requesting the M004 tier for an offline job; the
-test runner stopping requesting it; and the native workflow stopping
-triggering on the Tool Program paths. The guard also reports failures on an
-unmodified tree, which is checked first so a vacuous guard cannot pass.
+**Eleven** defects were injected one at a time into a copy of the tree, and
+the guard rejected each:
+
+1. the delegated child payload dropping the narrowed network intent;
+2. the delegated child payload dropping the narrowed sandbox profile;
+3. the durable carrier losing its `network_intent` field;
+4. the replay-safety digest stopping covering the ceiling;
+5. the tool boundary stopping stamping the ceiling;
+6. the executor stopping binding the ceiling;
+7. the test runner stopping forwarding the payload's network intent;
+8. the shared durable-payload helper stopping requesting the M004 tier;
+9. the managed executor stopping using the shared durable-payload helper;
+10. the test runner stopping using the shared durable-payload helper;
+11. the native workflow stopping triggering on the Tool Program paths.
+
+Cases 8–10 are the ones the shared-helper refactor added: before it, a
+durable route could go back to building its own configuration from the
+profile and quietly reintroduce the tier-ordering defect of §3.6.
+
+The guard also reports failures on an unmodified tree, which is checked first
+so a vacuous guard cannot pass.
 
 ### 4.5 `scripts/verify.sh quick`
 
@@ -721,8 +732,12 @@ head.
 ## 11. Roadmap disposition
 
 - **C002** — production changes, the guard and the manifest are landed and
-  verified locally. The closure is **conditional** on §10.1, which needs a
-  qualified Linux host.
+  verified locally and on a hosted native runner. The closure is **conditional**
+  on §10.1b (the maintainer-owned admission record) and on the residual
+  cargo-specific attribution in §10.1 item 5. The qualified-Linux-host
+  condition that §10.1 originally named is **met**: run `39685717425` ran the
+  delegated-child proof on a host whose Landlock ABI 6 process scopes
+  qualify, and it passed.
 - **Closing C002 does not admit M005.** No host is admitted, no backend is
   registered, and C010's no-admission decision is unchanged. A separately
   reviewed host-admission disposition is still required, and it must be
@@ -741,8 +756,9 @@ head.
 - **Unblock audit:** C003 (typed Git consistency / ADR packet) was audited.
   Its hard dependencies are ADR-0044 acceptance, the C004 production
   vertical and the M005 production owner qualification. This milestone does
-  **not** satisfy the last of those — §10.1 is open — so C003 stays as it
-  was and is **not** unblocked by this closure.
+  **not** satisfy the last of those — §10.1b is open, because the
+  admission record is maintainer-owned and has not been made — so C003 stays
+  as it is and is **not** unblocked by this closure.
 - No other registered plan's blocker is resolved by this milestone.
 
 ## 13. Verification policy note
@@ -752,11 +768,16 @@ hidden. The reasons were the contended host and the user's explicit
 instruction to prune testing that was not needed. The narrowing means:
 
 - the full workspace sweep was **not** re-run locally;
-- the Windows and macOS hosted jobs were **not** awaited;
-- the native Linux matrix was **not** attempted, because the host does not
-  qualify (§10.1).
+- the Windows and macOS hosted jobs were **not** awaited.
 
 What was run covers the changed surface, the two fixtures this milestone
-changed, and the gates this plan names. The one gap that matters for the
-milestone's own acceptance — the native refusal matrix — is named, owned, and
-stated with the exact evidence that would close it.
+changed, and the gates this plan names.
+
+**The native matrix was not attempted on this workstation, because the host
+does not qualify** (`landlock::probe_process_scopes()` fails here). It was run
+on a **hosted** qualified Linux runner instead — run `39685717425` — and the
+result is recorded in §4.7a and §10.1. The gap that remains for the
+milestone's own acceptance is no longer the qualified host; it is the
+maintainer-owned admission record (§10.1b) and the residual cargo-specific
+attribution, both named with the exact evidence that would close them.
+
