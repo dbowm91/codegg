@@ -1066,13 +1066,13 @@ tree compiles, is what turns the pull request's merge into a reviewed one.
 
 Local, on the final tree, in this order.
 
-The results below are the **four-times-merged** tree — `0c5ecd333` (the merge
-with `main` at `c93211542`) and `aba3a559a` (this record's own commit), the
-fresh rebase's tree reconciled four times with `main`: at `2a0bae08f` (§3.16),
-at `84aa47528` (§3.17), at `28724bd83` (§3.19), and at `c93211542` (§3.20). The
-rows that predate it are kept below with the tree they were measured on, so
-that no number in this record is silently attributed to a tree it was not
-measured on.
+The results below are the **five-times-merged** tree — `c78a2a640` (the merge
+with `main` at `239f06e7f`) and `4e4023ed8` (this record's own commit), the
+fresh rebase's tree reconciled five times with `main`: at `2a0bae08f` (§3.16),
+at `84aa47528` (§3.17), at `28724bd83` (§3.19), at `c93211542` (§3.20), and at
+`239f06e7f` (§3.21). The rows that predate it are kept below with the tree they
+were measured on, so that no number in this record is silently attributed to a
+tree it was not measured on.
 
 **The local suite for this tree was narrowed, deliberately.** This linked
 worktree's build cache was cold (§3.20.1), and `.github/workflows/ci.yml` runs
@@ -1099,6 +1099,7 @@ surface. What that gives up is stated in §13.
 | `cargo nextest run --locked --profile ci --no-fail-fast -p codegg-core -p codegg-protocol -p egggit -p egglsp` | on `aba3a559a`: **2492 tests run: 2492 passed, 1 skipped, 0 failed** (`Summary [ 66.337s]`, exit 0) — the four crates this branch changed, in full |
 | `cargo nextest run --locked --profile ci --no-fail-fast -p codegg --features server,plugins,lsp-test-support --lib --test <the feature-gated targets this branch changed>` | on `aba3a559a`: **7541 tests run: 7541 passed, 4 skipped, 0 failed** (`Summary [ 164.214s]`, exit 0) — the canonical feature set, narrowed to the binaries covering the branch's changed surface: the `codegg` library binary and the nine `server`/LSP-gated integration binaries. `projection_transport_real::real_tui_rollback_invariants_on_writer_closed` — the inherited race of §3.15 — **passes** here |
 | `cargo nextest run --locked --profile ci --no-fail-fast -p egglsp --features lsp-test-support` | on `aba3a559a`: **1078 tests run: 1078 passed, 0 skipped, 0 failed** (`Summary [ 15.700s]`, exit 0) — the `egglsp` crate's own fake-LSP harness, which this branch changed |
+| The same three local commands on the **five-times-merged** tree, `4e4023ed8` | `cargo check --workspace --all-targets --locked` → **exit 0** (`Finished dev profile in 1m 39s`); `scripts/verify.sh quick` → **"Quick verification passed."**; the count re-derivation → **ALL MATCH**; the narrowed slice → **7561 run, 7561 passed, 4 skipped** (`Summary [ 149.642s]`, exit 0); the four crates → **2492 run, 2492 passed, 1 skipped** (`Summary [ 73.439s]`, exit 0); the feature-enabled tier → **7541 run, 7541 passed, 4 skipped** (`Summary [ 153.252s]`, exit 0) for `codegg` and **1078 run, 1078 passed, 0 skipped** (`Summary [ 9.062s]`, exit 0) for `egglsp` |
 | `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci -E 'binary(eggwork_remote_execution_live)'` | on `17350a5df`: **16 run, 16 passed, 0 failed** (`Summary [ 8.212s]`) — the live qualification's own binary, run on its own so its inclusion is proved rather than inferred from a total |
 | `cargo nextest run -p codegg --locked --profile ci -E 'binary(eggwork_remote_execution_live)'` | **14 passed, 0 failed** with the build tree in the failing state (helper 0775, target directory 0775) — the qualification's own non-vacuity proof (§3.11) |
 | `cargo nextest run -p codegg --locked --profile ci -E 'test(/scratch/)'` with **no** `XDG_CACHE_HOME` | **33 passed, 0 failed** — the ambient cache path against this host's repaired `~/.cache` (0755) |
@@ -1133,11 +1134,14 @@ The authoritative workspace sweep is recorded in §4.1.
 run on the committed tree with no concurrent edits and no Git commands in the
 worktree:
 
+- **The five-times-merged tree, `4e4023ed8`: 15841 tests run: 15841 passed, 8
+  skipped, 0 failed, 0 timed out** (`Summary [ 523.804s]`, exit 0) — the
+  **hosted** run `39642334455` (§4.3), on dedicated runners. This is the
+  authoritative full-suite evidence for the tree this milestone ships.
 - **The four-times-merged tree, `aba3a559a`: 15841 tests run: 15841 passed, 8
   skipped, 0 failed, 0 timed out** (`Summary [ 523.966s]`, exit 0) — the
-  **hosted** run `39632391908` (§4.3), on dedicated runners. This is the
-  authoritative full-suite evidence for this tree. The count is **70** higher
-  than the twice-merged tree's 15771 because `main`'s M007 sweep and its
+  **hosted** run `39632391908` (§4.3), on dedicated runners. The count is **70**
+  higher than the twice-merged tree's 15771 because `main`'s M007 sweep and its
   TUI-subagent workstream brought their own tests with them; nothing on the
   branch's side changed.
 - **The same tree, locally, narrowed to the changed surface:** 7561 run, 7561
@@ -1219,6 +1223,13 @@ worktree:
 `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci --no-fail-fast`
 — the third tier of `scripts/verify.sh full` — was run on the final tree:
 
+- **The five-times-merged tree, `4e4023ed8`: 7541 tests run: 7541 passed, 4
+  skipped, 0 failed** (`Summary [ 153.252s]`, exit 0), with
+  `cargo nextest run --locked --profile ci --no-fail-fast -p egglsp --features
+  lsp-test-support` → **1078 run, 1078 passed, 0 skipped**
+  (`Summary [ 9.062s]`, exit 0). The same canonical feature set, the same
+  narrowing, and the same coverage of the inherited projection-transport race
+  of §3.15.
 - **The four-times-merged tree, `aba3a559a`: 7541 tests run: 7541 passed, 4
   skipped, 0 failed** (`Summary [ 164.214s]`, exit 0), with
   `cargo nextest run --locked --profile ci --no-fail-fast -p egglsp --features
@@ -1327,7 +1338,16 @@ the first reconciliation with `main` (§3.16).
 | `39632392003` | `aba3a559a` | Linux Git object snapshot CoW qualification | `pull_request` | **success** |
 | `39632391967` | `aba3a559a` | Windows native probe contract | `pull_request` | **success** |
 | `39632385341` | `aba3a559a` | Command authorization macOS target compile (one-shot) | `push` | **success** |
-| `39632391968` | `aba3a559a` | Desktop E2E | `pull_request` | **failure** — **pre-existing on `main`**: the same `apps/desktop/e2e/specs/m004-session.e2e.ts:169`, `[data-testid="permission-list"]` "still not existing after 120000ms". It reproduces on `main` at `84aa47528` and `48a5ca7d2` and on the M006/M007 branches (§3.18) |
+| `39642391968` | `aba3a559a` | Desktop E2E | `pull_request` | **failure** — **pre-existing on `main`**: the same `apps/desktop/e2e/specs/m004-session.e2e.ts:169`, `[data-testid="permission-list"]` "still not existing after 120000ms". It reproduces on `main` at `84aa47528` and `48a5ca7d2` and on the M006/M007 branches (§3.18) |
+| `39642334455` | `4e4023ed8` | `CI` — the default sweep | `pull_request` | **success** — `Workspace tests`: **15841 tests run: 15841 passed, 8 skipped** (`Summary [ 523.804s]`) |
+| `39642334201` | `4e4023ed8` | Windows process launcher | `pull_request` | **success** |
+| `39642334496` | `4e4023ed8` | Windows native probe contract | `pull_request` | **success** |
+| `39642334419` | `4e4023ed8` | Linux M004 process and IPC qualification | `pull_request` | **success** |
+| `39642326885` | `4e4023ed8` | Linux M004 process and IPC qualification | `push` | **success** |
+| `39642334661` | `4e4023ed8` | Linux C006 protected mount qualification | `pull_request` | **success** |
+| `39642334322` | `4e4023ed8` | Linux Git object snapshot CoW qualification | `pull_request` | **success** |
+| `39642326845` | `4e4023ed8` | Command authorization macOS target compile (one-shot) | `push` | **success** |
+| `39642334182` | `4e4023ed8` | Desktop E2E | `pull_request` | **failure** — **pre-existing on `main`**, the same spec, line, and 120 s timeout as on every earlier head (§3.18) |
 | — | all | GitGuardian Security Checks | — | **success** |
 
 **The hosted default sweep's count matches the local one exactly, on both
@@ -1591,8 +1611,12 @@ sets the modes it needs on any host.
   (**39632392133**, **success**, and the branch's own Windows scratch test now
   passes there), the Linux M004 tier, the C006 protected-mount tier, the Git
   CoW tier, the Windows native probe contract, and the macOS target compile.
-  The two reconciliations that followed the second one (§3.19, §3.20) are
-  recorded with their own counts and their own conflict resolutions.
+  The **five-times-merged tree `4e4023ed8`**, which is the tree this milestone
+  ships, was then observed in hosted runs of its own — the default sweep
+  **39642334455**, **success**, **15841 tests run: 15841 passed, 8 skipped**,
+  and all seven native workflows **success** (§4.3). The three reconciliations
+  that followed the second one (§3.19, §3.20, §3.21) are recorded with their
+  own counts and their own conflict resolutions.
 - **low — the four-times-merged tree's *local* full-workspace sweep was not
   run.** This linked worktree's build cache was cold, so the sweep means
   compiling and linking roughly 290 integration test binaries from scratch; the
@@ -1701,8 +1725,10 @@ names them:
   closed: hosted Windows process launcher run **39632392133** on `aba3a559a`
   concluded **success**, and the specific test that failed on the earlier head
   — `scratch::tests::the_session_root_lives_under_the_resolved_cache_root` —
-  reports **ok** there (**21 passed, 0 failed**). The local proof that the fix
-  is non-vacuous still stands alongside it.
+  reports **ok** there (**21 passed, 0 failed**). The same workflow was then
+  re-observed **success** on the final head — run **39642334201** on
+  `4e4023ed8`. The local proof that the fix is non-vacuous still stands
+  alongside it.
 - **The four-times-merged tree's full workspace sweep was not run locally.**
   The hosted `CI` job runs the identical command over the identical workspace
   on dedicated runners — **15841 tests run: 15841 passed, 8 skipped** — so the
