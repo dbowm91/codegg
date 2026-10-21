@@ -582,17 +582,26 @@ reported.
   containment evidence.
 - **Not a shared profile on every platform.** The gate qualifies Linux and
   **disables** macOS and Windows with a named reason. Adding a platform is a
-  recorded decision with evidence behind it.
+  recorded decision with evidence behind it. The two platforms are disabled
+  for different reasons, and the distinction matters: **macOS** lacks a
+  *measurement* — Seatbelt is a registered, applying backend here, and a
+  hosted macOS lane plus a macOS whole-file native fixture exist to produce
+  the evidence — while **Windows** lacks a *capability*, because no
+  filesystem-enforcement backend is registered for Windows at all, so no run
+  could produce the evidence.
 - **Not a claim of descendant quiescence.** No platform is claimed to have
   no process writing into the checkout. C005's preflight refuses the
   *reservation* while a persistent process is live in it; it does not stop
   the process.
-- **Not a claim that two agents were observed racing in one daemon.** C006's
-  evidence is the mediation, over a real durable stack. The composed
-  two-agent daemon race is not claimed, and the closure record says why:
-  managed worktree creation needs a contained Git backend that does not
-  exist in this tree, which blocks the isolated delegated-run path
-  identically.
+- **Not a claim that two *live* agents were observed racing in one daemon.**
+  The carrier is composed: the real scheduler and the real executor, carrying
+  the daemon's own coordinator and fence factory, place two group members on
+  one checkout, and the daemon-resolved fences for them queue behind each
+  other on that checkout's permit. A *live* two-agent race inside one daemon
+  process is still not claimed, and the closure record says why: it needs a
+  live model, and managed worktree creation needs a contained Git backend
+  that does not exist in this tree, which blocks the isolated delegated-run
+  path identically.
 - **Not a permit for the non-broker path.** The C004 gate is a *check*. A
   reserved checkout is refused to every writer outside the group even when the
   group's own writer is idle. That is the deliberate trade: a check cannot

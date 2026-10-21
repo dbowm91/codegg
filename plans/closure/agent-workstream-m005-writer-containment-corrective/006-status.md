@@ -218,8 +218,8 @@ operator cannot turn the profile on for a platform that has no evidence.
 | Platform | Native containment evidence | Profile | Status |
 |---|---|---|---|
 | Linux | present in this tree | **available** | qualified |
-| macOS | absent | **disabled** | refused with a reason; narrow follow-up §9.1 |
-| Windows | absent | **disabled** | refused with a reason; narrow follow-up §9.1 |
+| macOS | Seatbelt is a registered, applying backend; the qualification lane was added on 2026-10-21 | **disabled** | refusal stands until the lane's result is read; narrow follow-up §5.1 |
+| Windows | **no filesystem-enforcement backend is registered at all** | **disabled** | refused with a reason; the gap is a capability, not an evidence gap — §5.1 |
 
 **What is claimed on Linux, and what is not.** The qualification covers the
 *mediation*: the placement, the group authorization, the permit's mutual
@@ -234,10 +234,37 @@ writing to the checkout. That limit is C005's, and it is not narrowed here.
 
 ### 5.1 macOS and Windows native containment evidence
 
-**Status:** open, narrow. The profile is disabled on both platforms by the
-gate. The work is to produce the native containment evidence for each
-platform and, only then, add it to the qualified table. Until then the
-refusal is the correct answer, not a gap in the implementation.
+**Status:** open, narrow, and now **split by cause** (re-measured 2026-10-21).
+
+**macOS — an evidence gap, and the evidence can be produced.** macOS's native
+backend is Seatbelt's, it *is* a registered backend in this tree, and it *is*
+applied by the shipped helper. What was missing was a lane that ever runs it:
+`tests/sandbox_containment.rs` carries Seatbelt arms that had never been
+executed on a macOS host. Two things were added on 2026-10-21:
+
+* `tests/macos_native_shared_checkout_containment.rs` — a whole-file
+  `#![cfg(target_os = "macos")]` fixture that qualifies the dimension the
+  shared profile actually needs: a process launched through the real
+  `ManagedProcessService` under a real `SandboxRequest::Required` can write
+  inside its own roots and **cannot** write into a checkout outside them. A
+  macOS host that cannot obtain Seatbelt **fails** the fixture rather than
+  skipping it, because a skipped qualification is indistinguishable from a
+  passed one in a test report.
+* `.github/workflows/shared-checkout-macos-qualification.yml` — a hosted lane
+  that runs that fixture, the C006 suite and the containment matrix on a
+  native macOS runner, and uploads the logs as an artifact.
+
+Until that lane's result is read, the gate keeps macOS disabled. Adding
+`macos` to `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` is a recorded decision with
+that evidence behind it, never a quiet edit.
+
+**Windows — a capability gap, not an evidence gap.** No filesystem-enforcement
+backend is registered for Windows at all, so a constrained request is refused
+before any process is created. No CI run can produce the missing evidence,
+because the capability is absent rather than unmeasured: the Windows half of
+the sibling native-qualification corrective is closed *as blocked* for the
+same reason. The profile therefore stays disabled on Windows, and the refusal
+names a missing capability rather than a missing measurement.
 
 ### 5.2 The contained Git backend, and therefore managed worktree creation
 
@@ -297,14 +324,22 @@ executor marker — and proves each is reported. The guard is wired into
 
 ### 8.1 What was run
 
+* **Hosted CI** — `CI / verify` run **`39601564349`** on head `717cdcbc9`
+  (`workflow_dispatch` on `work/agent-workstream-m005-writer-audit`). Every
+  guard step passed, including the C006 shared-checkout guard and its
+  self-test, plus formatting and workspace clippy. The workspace test step
+  ran **4,449 tests: 4,448 passed, 1 failed**. The single failure was
+  `tool_advisor::causal_frontier::tests::m003_checked_in_receipt_matches_recomputation`,
+  and it was a **real regression this branch had introduced** — see §8.4.
 * `scripts/verify.sh quick` — pass (exit 0).
 * `cargo fmt --all -- --check` — pass.
 * `cargo clippy --workspace --all-targets -- -D warnings` — pass.
-* `tests/shared_checkout_c006.rs` — **15 tests**, 0 failed.
-* Regression suites, all green (63 tests in total, 0 failed):
+* `tests/shared_checkout_c006.rs` — **16 tests**, 0 failed (the sixteenth is
+  the composed carrier test of §8.3).
+* Regression suites, all green (64 tests in total, 0 failed):
   `process_denial_c005` (18), `checkout_reservation_c004` (14),
   `writer_fence_c003` (10), `writer_disposition_guards` (5),
-  `scheduler_executor_coverage` (1), `shared_checkout_c006` (15).
+  `scheduler_executor_coverage` (1), `shared_checkout_c006` (16).
 * Guards: `check_shared_checkout.py` (+ `--self-test`),
   `check_process_denial.py` (+ `--self-test`),
   `check_writer_disposition.py` (+ `--self-test`),
@@ -313,36 +348,71 @@ executor marker — and proves each is reported. The guard is wired into
 
 ### 8.2 What was NOT run, and why
 
-* **A full-workspace nextest sweep** could not complete on this host:
+* **A full-workspace nextest sweep on this host** could not complete:
   another session's `cargo nextest run --workspace --locked --profile ci`
-  holds the cargo lock and the load is ~10. The scoped suites above are
-  the recorded evidence, and this record says so rather than implying a
-  full pass.
-* **No hosted CI run.** The branch is local and unpushed, so the new
-  guard's CI wiring is asserted by the workflow file, not by a CI result.
-* **No macOS or Windows run**, and none is possible here. That is why the
-  profile is disabled there.
+  holds the cargo lock and the load is ~10. The hosted run above is the
+  full-workspace evidence, and the scoped suites are the local evidence.
+* **No macOS or Windows run was possible on this host.** The macOS lane
+  (§5.1) exists to produce that evidence on a hosted runner; Windows has no
+  backend to run (§5.1).
+* **The branch was not reconciled with `origin/main` before the hosted run.**
+  The branch is 65 commits ahead of and 72 behind `origin/main`, and
+  reconciling it means resolving ~70 conflict hunks across 21 files that
+  include the scheduler, the admission controller and the queue-write guard.
+  The hosted run was therefore dispatched on the branch head
+  (`workflow_dispatch` accepts any ref), and it is evidence about **this
+  branch's head**, not about a merge result. A merge reconciliation is a
+  separate, named piece of work.
 
-### 8.3 The composed daemon scenario, and what it does not cover
+### 8.3 The composed scenario
 
 The plan's Q1/Q2 ask for a composed run through a real daemon, scheduler and
-broker with two agents racing for one checkout. This tree cannot compose
-that end to end: managed worktree creation needs the contained Git backend
-that does not exist here (§1.1), so the delegated-run path that would
-allocate a checkout fails before the agent starts — for the isolated path
-exactly as for the shared one.
+broker with two agents racing for one checkout. **The carrier half of that is
+now composed** (`two_members_placed_through_the_real_scheduler_share_one_checkout`,
+in `tests/shared_checkout_c006.rs`):
 
-What C006 therefore qualifies is the **mediation**, on a real durable
-stack: a real SQLite database with the full migration set, a real durable
-agent-run group, a real managed-checkout record over a real Git checkout, a
-real durable writer-permit store, the real `SharedCheckoutCoordinator`, the
-real `DaemonWriterFence` and the real daemon-side fence factory. The
-placement, the group authorization, the mutual exclusion, the preflight and
-the profile narrowing are all exercised against those real components.
+* the **real** `JobScheduler` and `JobSubmissionService`;
+* the **real** `SubagentJobExecutor`, registered with the daemon's own
+  `SubagentAuthority` — the same `SharedCheckoutCoordinator` and the same
+  `DaemonWriterFenceFactory` the daemon builds;
+* two **real** `JobPayload::SubagentRun` jobs carrying
+  `placement = SerializedShared { group_id }`, one per group member;
+* the **real** coordinator and the **real** factory resolving the fence.
 
-What it does **not** claim: that two agents have been observed racing for
-one checkout through the broker in one daemon process. That scenario is
-recorded as a narrow follow-up (§9.2) rather than claimed.
+Both members are attached to the group's checkout by the executor's shared
+branch, and the two fences the daemon resolves for them name that same
+checkout and queue behind each other on its writer permit: the second writer
+cannot take the checkout until the first settles.
+
+What the composed test deliberately does **not** do is start a child. The
+pool is built with no agents, so the run stops after the placement. That is
+the point — the placement happens before the agent is looked up, and an
+unknown agent is treated as isolation-requiring, which is what routes the run
+into the placement branch at all.
+
+So the claim is now: **the production carrier places two members of one group
+on one checkout, and the daemon's fences for them exclude each other.** The
+claim that is still *not* made is that two *live* agents have been observed
+issuing real writes through the broker inside one daemon process. That needs
+a live model and a contained Git backend, and it stays a narrow follow-up.
+
+### 8.4 The regression the hosted CI found
+
+The hosted run found a defect the local scoped suites could not: the M003
+tool-advisor receipt no longer matched its recomputation. The receipt is
+frozen, and the test reconstructs the M003-era tool schemas by reversing every
+recorded post-M003 change — the scratch fields, the claim fields, the action
+enum, the identifier shapes and the `path` descriptions. C006 added the
+`task` tool's `placement` parameter, which is one more post-M003 change, and
+the reconstruction did not know about it.
+
+The fix is the one the test's own design calls for: `placement` is removed
+from the reconstructed historical schema, with an assertion that it is
+present, so the receipt stays immutable and the live schema keeps the opt-in
+placement. This is recorded because it is the reason a full-workspace hosted
+run is not a formality: the local evidence for C006 was scoped to the
+corrective's own suites, and the frozen receipt lived in a suite they never
+touched.
 
 ---
 
@@ -351,8 +421,12 @@ recorded as a narrow follow-up (§9.2) rather than claimed.
 1. **macOS and Windows are disabled.** The gate keeps the profile off any
    platform without native containment evidence. Adding a platform to
    `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` is a recorded decision with
-   evidence behind it, never a quiet edit.
-2. **The composed daemon race is not claimed.** See §8.3.
+   evidence behind it, never a quiet edit. The two platforms are disabled for
+   different reasons and §5.1 now says which is which: macOS lacks a
+   *measurement* (a lane now exists), Windows lacks a *backend*.
+2. **A live two-agent race is not claimed.** The carrier is composed and
+   proven (§8.3); two live agents issuing real writes inside one daemon
+   process are not, and that is a narrow follow-up.
 3. **Descendant quiescence is not claimed on any platform.** A process
    started before the reservation can still be writing. C005's preflight
    refuses the *reservation* while such a process is live; it does not stop

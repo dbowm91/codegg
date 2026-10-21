@@ -250,7 +250,11 @@ change-triggered (`ls scripts/check_*` for the full list):
   the run's scope from the run's **own durable record**, never from a
   caller-supplied path), and the profile is **platform-gated** — Linux is
   qualified, macOS and Windows are disabled with a named reason, and the gate
-  is a compile-time table rather than a runtime flag.
+  is a compile-time table rather than a runtime flag. The two are disabled for
+  different reasons: macOS lacks a *measurement* (Seatbelt is a registered
+  backend here, and a hosted macOS lane qualifies it), Windows lacks a
+  *backend* — no filesystem-enforcement backend is registered for it at all,
+  so no CI run could produce the evidence.
 - The **build quota** is admission, and it is not the writer permit. M007
   replaced the legacy *global* `exclusive:workspace-mutation` key on the
   `Build`/`Format` profiles with a **counted, workspace-scoped** quota

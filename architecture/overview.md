@@ -268,12 +268,19 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 Every count below was re-measured against the current tree on
 **2026-10-21**, each against its own listed `Source`, after the M005
-writer-containment corrective closed C006. The tree it was measured in
+writer-containment corrective closed C006 and after the hosted macOS
+qualification lane was added. The tree it was measured in
 descends from the M005 branch reconciled with `main` (`origin/main`
 `a9f70375`), which itself was measured on 2026-10-20; earlier passes
 (2026-10-13, 2026-10-15, 2026-10-19) measured the same rows against smaller
 trees. Every row that moved carries its own note below, saying what moved
 and why; no number was carried over from another tree.
+
+**Integration test files moved 283 → 284**, and only that row moved: the
+macOS native-containment fixture
+(`tests/macos_native_shared_checkout_containment.rs`) is the new file. The
+CI guard script row did **not** move — the macOS qualification is a
+workflow, not a `scripts/check_*` guard, so it adds a lane and not a guard.
 
 Three rows were corrected rather than incremented, and the corrections are
 recorded here because the pre-merge numbers disagreed on **identical**
@@ -321,7 +328,7 @@ exactly 259 `R::` arms, one per request variant.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 283 | `tests/*.rs` |
+| Integration test files | 284 | `tests/*.rs` |
 | CI guard scripts | 65 | `scripts/check_*` |
 
 ## Feature gates

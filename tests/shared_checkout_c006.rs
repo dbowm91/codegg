@@ -37,21 +37,32 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
+use codegg::agent::worker::SubAgentPool;
+use codegg::config::schema::Config;
 use codegg::core::writer_fence::{DaemonWriterFence, DaemonWriterFenceFactory};
 use codegg::core::writer_permit::{WorktreePermitAuthority, WriterPermitService};
+use codegg::provider::ProviderRegistry;
+use codegg::scheduler::executors::SubagentAuthority;
+use codegg::scheduler::{JobScheduler, JobSubmissionService, ResolvedSchedulerConfig};
+use codegg::session::SessionStore;
 use codegg::tool::writer_fence::{
     CheckoutWriterFence, CheckoutWriterScope, NativeEffectClass, WriterFenceError,
     WriterFenceFactory, WriterFenceOutcome, WriterFenceRequest, WriterScopeRequest,
 };
 use codegg_core::agent_run::{
-    AgentRunBudget, AgentRunStore, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
+    AgentRunBudget, AgentRunStatus, AgentRunStore, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
 };
 use codegg_core::agent_run_group::{
     AgentRunGroupOwner, AgentRunGroupService, NewAgentRunGroup, RunJoinPolicy,
 };
 use codegg_core::identity::{
     AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorkspaceId, WorktreeId,
+};
+use codegg_core::jobs::{
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
+    JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::process_admission::{
     PersistentProcessEntry, PersistentProcessRegistry, ProcessAdmissionService, ProcessKind,
@@ -63,6 +74,10 @@ use codegg_core::shared_checkout::{
     SharedCheckoutCoordinator, SharedCheckoutError, SharedCheckoutOutcome, SharedCheckoutRequest,
 };
 use codegg_core::transport_auth::AuthenticatedPrincipal;
+use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
+use codegg_core::workspace_services::{
+    ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
+};
 use codegg_core::worktree_service::{CreateWorktreeRequest, WorktreeService};
 use codegg_core::writer_permit::WriterPermitStore;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -156,11 +171,14 @@ struct Shared {
     permits: Arc<WriterPermitService>,
     coordinator: Arc<SharedCheckoutCoordinator>,
     processes: Arc<PersistentProcessRegistry>,
+    admission: Arc<ProcessAdmissionService>,
     group_id: AgentRunGroupId,
     worktree_id: WorktreeId,
     owner_run: AgentRunId,
     member_run: AgentRunId,
     outsider_run: AgentRunId,
+    owner_task: AgentTaskId,
+    member_task: AgentTaskId,
     project_id: ProjectId,
     repository_id: RepositoryId,
     workspace_id: WorkspaceId,
@@ -236,12 +254,14 @@ impl Shared {
 
         // Three real delegated runs under one turn, so a turn-owned group can
         // cover two of them and leave the third outside it.
+        let mut task_ids: Vec<AgentTaskId> = Vec::new();
         for (index, run_id) in [owner_run.clone(), member_run.clone(), outsider_run.clone()]
             .into_iter()
             .enumerate()
         {
+            let task_id = AgentTaskId::new();
             let task = NewAgentTask {
-                task_id: AgentTaskId::new(),
+                task_id: task_id.clone(),
                 parent_task_id: None,
                 originating_session_id: session_id.clone(),
                 originating_turn_id: Some(turn_id.clone()),
@@ -269,6 +289,7 @@ impl Shared {
             runs.create_or_get(task, run)
                 .await
                 .expect("create the delegated run");
+            task_ids.push(task_id);
         }
 
         groups
@@ -336,7 +357,7 @@ impl Shared {
             Some(groups.clone()),
             Some(runs.clone()),
             Some(worktrees.clone()),
-            Some(admission),
+            Some(admission.clone()),
         );
 
         Self {
@@ -349,11 +370,14 @@ impl Shared {
             permits,
             coordinator,
             processes,
+            admission,
             group_id,
             worktree_id,
             owner_run,
             member_run,
             outsider_run,
+            owner_task: task_ids[0].clone(),
+            member_task: task_ids[1].clone(),
             project_id,
             repository_id,
             workspace_id,
@@ -1003,4 +1027,263 @@ fn a_shared_placement_names_its_group() {
     };
     assert!(placement.is_shared());
     assert_eq!(placement.shared_group_id(), Some(&group_id));
+}
+
+// ---------------------------------------------------------------------------
+// The composed production carrier
+// ---------------------------------------------------------------------------
+
+/// Two members of one group, placed through the **real scheduler and the real
+/// executor**, land on one checkout — and the fences the daemon resolves for
+/// those two runs queue behind each other.
+///
+/// The tests above prove the *resolution*: the coordinator joins a member to
+/// the group's checkout, and the daemon's factory resolves that checkout for
+/// the run's own durable record. This one proves the **production carrier**
+/// uses them. The executor's shared branch runs, the durable run record is
+/// attached to the group's checkout, and the fence the daemon resolves for
+/// that run then names the same checkout.
+///
+/// The child cannot actually start here — the pool is built with no agents, so
+/// the run stops after the placement. That is deliberate: the placement is
+/// what is under test, and it happens before the agent is looked up. An
+/// unknown agent is treated as isolation-requiring, which is what routes the
+/// run into the placement branch at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_members_placed_through_the_real_scheduler_share_one_checkout() {
+    let shared = Shared::new("composed").await;
+
+    // The scheduler's world: a real workspace, so the scheduler can lease it.
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+        .await
+        .expect("workspace registry");
+    let workspace = workspace_registry
+        .get_or_register(root.path())
+        .await
+        .expect("register the workspace");
+    let services = WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(ProductionWorkspaceServicesFactory),
+        WorkspaceServicePolicy::default(),
+    );
+
+    // A pool with no agents. An unknown agent is isolation-requiring, which
+    // is what routes the run into the placement branch.
+    let pool = Arc::new(
+        SubAgentPool::new(
+            &Config::default(),
+            Vec::new(),
+            ProviderRegistry::new(),
+            Arc::new(SessionStore::new(shared.pool.clone())),
+            Some(shared.pool.clone()),
+        )
+        .await,
+    );
+
+    // The daemon's authority: the same coordinator and fence factory the
+    // daemon builds, not test doubles.
+    let factory = DaemonWriterFenceFactory::new(
+        shared.permits.clone(),
+        shared.worktrees.clone(),
+        shared.runs.clone(),
+        Some(shared.groups.clone()),
+        true,
+    );
+    let authority = SubagentAuthority {
+        process_admission: Some(shared.admission.clone()),
+        shared_checkout: Some(shared.coordinator.clone()),
+        writer_fences: Some(factory.clone() as Arc<dyn WriterFenceFactory>),
+    };
+
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let scheduler = JobScheduler::new(
+        store.clone(),
+        services.clone(),
+        ResolvedSchedulerConfig::default(),
+        DaemonGeneration::new_unchecked("gen-c006-composed"),
+    );
+    scheduler
+        .register_default_executors_sync_with_agent_runs_and_control_and_worktree(
+            Some(pool),
+            Some(shared.runs.clone()),
+            None,
+            Some(shared.worktrees.clone()),
+            Some(authority),
+        )
+        .expect("register the default executors");
+
+    let submission = JobSubmissionService::new(
+        store.clone(),
+        scheduler.clone(),
+        services.clone(),
+        DaemonGeneration::new_unchecked("gen-c006-composed"),
+    );
+
+    // Two members of the same group, each asking for the shared placement.
+    //
+    // The durable path queues a run before the executor prepares it, so the
+    // fixture moves each run to `Queued` first: the executor's transition to
+    // `Preparing` is only legal from there.
+    let mut placed = Vec::new();
+    for (index, (run_id, task_id)) in [
+        (shared.owner_run.clone(), shared.owner_task.clone()),
+        (shared.member_run.clone(), shared.member_task.clone()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        shared
+            .runs
+            .transition(&run_id, AgentRunStatus::Queued)
+            .await
+            .expect("queue the delegated run");
+        let job = submission
+            .submit(
+                None,
+                NewJob {
+                    workspace_id: workspace.id.clone(),
+                    session_id: Some(shared.session_id.clone()),
+                    turn_id: Some(shared.turn_id.clone()),
+                    kind: JobKind::Subagent,
+                    source: JobSource::Interactive,
+                    priority: JobPriority::Interactive,
+                    payload: JobPayload::SubagentRun {
+                        prompt: "composed shared checkout placement".to_owned(),
+                        agent: "build".to_owned(),
+                        model: None,
+                        parent_id: None,
+                        denied_tools: Vec::new(),
+                        allowed_paths: Vec::new(),
+                        max_tool_calls: None,
+                        task_id,
+                        run_id: run_id.clone(),
+                        delegation_key: format!(
+                            "composed-{index}-{}",
+                            uuid::Uuid::new_v4().simple()
+                        ),
+                        base_commit: None,
+                        placement: RunPlacement::SerializedShared {
+                            group_id: shared.group_id.clone(),
+                        },
+                    },
+                    resource_request: ResourceRequest::default(),
+                    timeout: None,
+                    retry_policy: RetryPolicy::no_retry(),
+                    idempotency: IdempotencyClass::SafeRepeat,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: vec![],
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
+                    target: ExecutionTarget::default(),
+                },
+            )
+            .await
+            .expect("submit the shared placement");
+        placed.push((run_id, job.job_id));
+    }
+
+    scheduler
+        .reconcile()
+        .await
+        .expect("reconcile the submitted jobs");
+    scheduler.clone().admit_and_dispatch_batch().await;
+    for (_, job_id) in &placed {
+        scheduler
+            .wait_for_completion(job_id, Duration::from_secs(30))
+            .await
+            .expect("the placed job completes");
+    }
+
+    // Both runs are attached to the group's checkout: the executor's shared
+    // branch placed them, through the real coordinator.
+    for (run_id, _) in &placed {
+        let run = shared
+            .runs
+            .get_run(run_id)
+            .await
+            .expect("the run record")
+            .expect("the placed run has a durable record");
+        assert_eq!(
+            run.worktree_id.as_ref().map(|id| id.as_str()),
+            Some(shared.worktree_id.as_str()),
+            "the placed run must hold the group's checkout"
+        );
+    }
+
+    // And the daemon resolves that same checkout for both runs, through the
+    // production factory rather than a directly constructed fence.
+    let scope_for = |run_id: &AgentRunId, attempt: &str| WriterScopeRequest {
+        agent_run_id: Some(run_id.as_str().to_owned()),
+        workspace_root: shared.repository_root.path().to_path_buf(),
+        attempt_id: Some(attempt.to_owned()),
+        cancellation: None,
+    };
+    let first = factory
+        .fence_for(scope_for(&shared.owner_run, "composed-first"))
+        .await
+        .expect("the factory resolves the first fence")
+        .expect("a placed run has a fence");
+    let second = factory
+        .fence_for(scope_for(&shared.member_run, "composed-second"))
+        .await
+        .expect("the factory resolves the second fence")
+        .expect("a placed run has a fence");
+    assert_eq!(
+        first.scope().worktree_id,
+        second.scope().worktree_id,
+        "both runs resolve the same checkout"
+    );
+
+    // The first writer takes the checkout.
+    let held = first
+        .begin(shared.request(
+            shared.repository_root.path(),
+            "composed-first",
+            NativeEffectClass::FileWrite,
+        ))
+        .await
+        .expect("the first writer takes the shared checkout");
+    assert!(
+        held.is_some(),
+        "a shared checkout must take a permit: there is a second writer to exclude"
+    );
+
+    // The second writer is queued behind it. It cannot take the checkout
+    // while the first holds it, so it proceeds only once the first settles.
+    //
+    // The first settles on a timer rather than on demand: the production
+    // fence's wait bound is thirty seconds, and a proof that waits for it
+    // would make this test a thirty-second test.
+    let settler = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        held.expect("held permit")
+            .settle(WriterFenceOutcome::Settled)
+            .await
+            .expect("the first writer settles its permit");
+    });
+    let queued = second
+        .begin(shared.request(
+            shared.repository_root.path(),
+            "composed-second",
+            NativeEffectClass::FileWrite,
+        ))
+        .await
+        .expect("the second writer takes the checkout once the first settles");
+    assert!(
+        queued.is_some(),
+        "the second writer takes the checkout after the first settles"
+    );
+    settler.await.expect("the settling writer finished");
+    queued
+        .expect("held permit")
+        .settle(WriterFenceOutcome::Settled)
+        .await
+        .expect("the second writer settles its permit");
 }
