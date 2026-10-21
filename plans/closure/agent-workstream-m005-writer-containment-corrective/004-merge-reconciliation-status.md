@@ -544,7 +544,8 @@ migration and two ADRs.
 
 Merge-base `239f06e7f` ("docs(plans): record the census's tri-state verdict in
 the M006 rows"). `main` carried **323** commits above that base; the branch
-carried **88**. Eight files conflicted, in **16 hunks**. The writer-fence
+carried **88**. Eight files conflicted, in **16 hunks**. The merge commit on
+the branch is `35ea128ec`. The writer-fence
 boundary was untouched again: none of `src/tool/writer_fence.rs`,
 `src/core/writer_fence.rs`, `crates/codegg-core/src/writer_permit.rs`,
 `docs/writer-disposition.toml` or `scripts/check_writer_disposition.py`
