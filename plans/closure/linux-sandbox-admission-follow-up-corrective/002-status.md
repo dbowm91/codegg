@@ -44,7 +44,8 @@ unchanged. See §10 for the one named outstanding condition.
 |---|---|---|
 | WP1: enumerate each producer/consumer of `NetworkIntent::OfflineRequired` and the sandbox ceiling; producers without a principal snapshot receive daemon-stamped authenticated intent (narrowing only) | §3.1; `src/core/daemon_jobs.rs` stamps `Shell`/`ManagedArgv`/`Test`/`Python`; the Tool Program route bypassed both stamping points and now carries the accepted snapshot instead (§3.2) | met |
 | WP2: thread bound policy unchanged through durable storage/deserialization, child request and backend choice | §3.2–§3.4; `ToolProgramExecutionContext` carries both axes, is covered by the replay-safety digest, and survives a JSON round-trip (§4.2) | met for the policy thread; the native obtained-enforcement matrix is outstanding (§10) |
-| WP2: a real Tool Program child-job integration showing denied host TCP/UDP/DNS and host-process/IPC access | Not produced. Requires a qualified Linux host this environment does not provide | **outstanding** (§10) |
+| WP2: a real Tool Program child-job integration showing denied host TCP/UDP/DNS and host-process/IPC access | The proof exists and has been **executed on a qualified Linux host** (the hosted M004 runner). Its first execution failed and found the second defect in §3.6; that is fixed, and the proof's re-execution is outstanding | **outstanding** (§10.1) |
+| WP2: the bound policy must survive into the *backend choice*, including the required process/Filesystem tier | §3.6 — the durable route built the launch spec before requesting the M004 tier, so the owner's forced offline flag left the spec with no captured path identity and the launch failed closed. Fixed in both durable routes the delegated child uses; the guard now checks the ordering | met |
 | WP2: verify denial survives FullHost filesystem preference plus OfflineRequired intent; do not conflate profile with independent network authority | §4.2 `the_two_axes_are_independent`; the two axes are narrowed independently in `narrow_child_ceiling` | met at the policy level; the launch-level refusal is part of the outstanding native matrix |
 | WP3: legacy jobs (without persisted intent) stay explicitly `LegacyUnrestricted`; current principal policy governs newly admitted jobs | §3.2 additive fields with `#[serde(default)]`; §4.2 `a_pre_m005_payload_still_decodes` and `a_missing_authorization_keeps_the_historical_meaning` | met |
 | WP3: added wire/persistence fields need additive versioning/migration and older-client negative tests | Additive `Option<SandboxProfile>` + `NetworkIntent` with `#[serde(default)]`; no storage-layout migration, so `STORAGE_LAYOUT_VERSION` is unchanged; the pre-M005 payload is the older-client negative test (§4.2) | met |
@@ -53,9 +54,9 @@ unchanged. See §10 for the one named outstanding condition.
 | WP4: the manifest alone can never turn a requested boundary into `Enforced` | `HostAdmissionManifest::contains_enforcement_claim`; §4.3 `the_manifest_makes_no_enforcement_claim`; the module has no path that grants an admission from a probe | met |
 | WP4: Ubuntu positive and restricted/no-userns negative | Not produced. Requires the qualified Linux host | **outstanding** (§10) |
 | WP5: report which dimension failed, pre-target failure reason and safe manual remedy; cap/redact sensitive host paths/socket/credentials | §3.5; every capability carries an evidence string, and `can_launch` records the failing dimension with the underlying reason | met for the manifest; the runtime-side remedy text for a failed launch is part of the outstanding native matrix |
-| WP5: extend `scripts/check_network_intent_owner_wiring.py` | The script did **not** exist on any branch in this repository's history. It was created, not extended (§3.6) | met, with a recorded premise correction |
-| WP5: prove the guard fails by defect injection | §4.4 — seven injected defects, each rejected | met |
-| WP5: native workflow path triggers for changed Tool Program, job, policy and protocol paths | §3.7 — `src/tool/tool_program.rs` and `src/tool/tool_program_context.rs` added to **both** trigger blocks; the guard enforces the coverage | met |
+| WP5: extend `scripts/check_network_intent_owner_wiring.py` | The script did **not** exist on any branch in this repository's history. It was created, not extended (§3.7) | met, with a recorded premise correction |
+| WP5: prove the guard fails by defect injection | §4.4 — ten injected defects, each rejected | met |
+| WP5: native workflow path triggers for changed Tool Program, job, policy and protocol paths | §3.8 — `src/tool/tool_program.rs` and `src/tool/tool_program_context.rs` added to **both** trigger blocks; the guard enforces the coverage | met |
 | WP5: no false claims in `docs/security-semantics.md` / `architecture/security.md` | No new enforcement claim is made anywhere; the manifest is explicitly capability, not enforcement (§3.5) | met |
 | Verification: `check_network_intent_owner_wiring.py`, `check_sandbox_contract.py`, `check_execution_ownership.py`, formatting, Clippy, `scripts/verify.sh quick` | §4 | met |
 | Verification: branch-wide CI on the reconciled head | Not run on this head; the branch-wide evidence for the merged baseline is in `plans/closure/branch-and-ci-stabilization/001-status.md` | **outstanding** (§10) |
@@ -127,19 +128,76 @@ review. The kernel release is read from `/proc` rather than by spawning
 `uname`, so a read-only capability probe stays a file read and does not
 become a process-execution surface.
 
-### 3.6 The static guard (WP5)
+### 3.6 A second defect the native proof found: the durable route built the spec too late
 
-`scripts/check_network_intent_owner_wiring.py` checks seven links: the durable
+The native delegated-child proof was run on the hosted M004 qualification
+runner, and it **failed** — with a typed refusal from Bubblewrap setup:
+
+```
+the offline delegated child should launch:
+  SandboxFailed("Bubblewrap setup failed: sandbox grant has no captured path identity")
+```
+
+That is not a fixture problem. It is a second defect in the same chain, and
+it is what "thread the bound policy through ... backend choice" actually
+means.
+
+The owner turns the offline flag on when it accepts an offline intent:
+
+```rust
+// src/managed_process.rs
+spec.linux_offline_network = true;
+spec.linux_process_isolation = true;
+spec.linux_protected_mount_view = true;
+```
+
+The protected mount view is what **captures** the path identities the helper
+re-verifies at launch, and `SandboxConfig::launch_spec` captures them only
+when the protected mount view is already requested **at spec-build time**.
+The direct route gets this right — its caller sets
+`with_linux_offline_network(true)` before building the spec, and the passing
+sibling proof asserts `!spec.linux_offline_network` to show the intent comes
+from the authority rather than the spec.
+
+The two **durable** routes did not. They built the config from the profile
+alone, so the spec carried `path_identities: Vec::new()`, and the owner then
+turned the protected mount view on *after* the spec existed — too late for the
+capture. The launch then failed closed with the refusal above.
+
+So before this milestone, a durable job carrying `OfflineRequired` with a
+constrained profile could not launch at all: it failed closed rather than
+running uncontained, which is the safe direction, but it was a functional
+dead end. The delegated Tool Program child inherits that route, so C002's fix
+alone would have turned "runs with host network" into "cannot run".
+
+**The fix.** Both durable routes the delegated child uses now request the
+M004 process/filesystem tier while the config is still being built, so the
+identities are captured before the spec exists:
+
+- `src/scheduler/executors.rs` — the managed-argv and shell route;
+- `src/test_runner/runner.rs` — the `Test` route, which a delegated
+  `cargo test` child uses.
+
+The owner's forcing of the flags stays as it was: it is defence in depth. If
+a route ever forgets to request the tier, the launch still fails closed.
+
+The guard checks the ordering, not just the presence of the call, because
+the ordering is the whole defect: the tier request has to sit between the
+config build and `launch_spec`.
+
+### 3.7 The static guard (WP5)
+`scripts/check_network_intent_owner_wiring.py` checks nine links: the durable
 carrier and its digest coverage, the tool-boundary stamp, the executor binding
 and the narrowed child payload, the durable payload variants, the scheduler
-forwarding, the owner's refusal, and the native workflow trigger coverage.
+forwarding, the M004 tier's ordering against the launch spec, the owner's
+refusal, and the native workflow trigger coverage.
 
 **Premise correction:** the C002 plan says to *extend*
 `scripts/check_network_intent_owner_wiring.py`. That script did not exist in
 this repository's history — not on `main`, and not on any branch — so it was
 created rather than extended.
 
-### 3.7 The native workflow triggers
+### 3.8 The native workflow triggers
 
 `.github/workflows/linux-m004-native.yml` did not trigger on the Tool Program
 tool or context files; only `src/scheduler/**` covered the executor. Both
@@ -214,14 +272,16 @@ not enforcement, and only a maintainer record can set an admission.
 ### 4.4 Guard self-test
 
 `python3 scripts/check_network_intent_owner_wiring.py --self-test` — pass.
-Seven defects were injected one at a time into a copy of the tree, and the
+Ten defects were injected one at a time into a copy of the tree, and the
 guard rejected each: the child payload dropping the narrowed intent; the
 child payload dropping the narrowed profile; the carrier losing its
 `network_intent` field; the digest stopping covering the ceiling; the tool
 boundary stopping stamping the ceiling; the executor stopping binding the
-ceiling; and the native workflow stopping triggering on the Tool Program
-paths. The guard also reports failures on an unmodified tree, which is
-checked first so a vacuous guard cannot pass.
+ceiling; the test runner stopping forwarding the payload's intent; the
+managed executor stopping requesting the M004 tier for an offline job; the
+test runner stopping requesting it; and the native workflow stopping
+triggering on the Tool Program paths. The guard also reports failures on an
+unmodified tree, which is checked first so a vacuous guard cannot pass.
 
 ### 4.5 `scripts/verify.sh quick`
 
@@ -345,43 +405,90 @@ positive control so the refusals are non-vacuous. WP4 requires the same
 matrix to be recorded as native negative evidence, including an Ubuntu
 positive and a restricted/no-userns negative.
 
-**Why it is outstanding.** The matrix must run on a Linux host whose Landlock
-ABI 6 signal and abstract-socket scopes qualify. This workstation does not
-provide them: `landlock::probe_process_scopes()` fails there, so the M004
-process/IPC scopes cannot be established. The plan is explicit that this
-case is recorded **blocked**, not green-from-skip — so it is recorded here as
-the condition of a conditional closure, and no skip has been reported as a
-pass anywhere in this record.
+**Where it stands.** The proof now exists and has been **executed on a
+qualified Linux host** — the hosted M004 qualification runner, which is the
+Ubuntu 24.04 runner whose Landlock ABI 6 process scopes qualify and which
+already sets `CODEGG_RUN_M005_OFFLINE_NATIVE=1`:
+
+- `delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner`
+  in `tests/linux_m004_process_ipc.rs` builds the delegated child's payload
+  with the production builder, reads its axes back the way the scheduler
+  executor reads them, launches through the owner with the production
+  profile-derived launcher, and asserts the child is denied host IPv4 TCP and
+  UDP against a host positive control.
+
+Its **first hosted execution failed**, and the failure found the second
+defect described in §3.6: the durable route built the launch spec before it
+requested the M004 tier, so the owner had no captured path identity to
+re-verify. That defect is fixed in both durable routes the delegated child
+uses, and the guard now checks the ordering. The proof's **re-execution** on
+the fixed head is the outstanding item.
+
+**What the proof does and does not establish.** It proves the delegated
+route's *policy* reaches the owner and is enforced there. It does **not**
+prove that a `cargo` delegated child's own network fetch is denied, because
+the Tool Program contract restricts a delegated child's argv to `cargo`
+(`ChildJobConfig::validate` rejects any other executable). A delegated child
+can therefore never be an arbitrary network probe, and the executable in this
+proof is a probe instead. The cargo-specific attribution is recorded as
+outstanding below rather than claimed.
 
 **Risk.** The policy thread is proven by unit and integration evidence at the
-payload boundary. What is *not* yet proven is that a real delegated child on a
-qualified host is actually denied host TCP/UDP/DNS and host-process/IPC, and
-that the launch receipt the runtime observes is truthful. The M005 production
-owner qualification remains open, and C010's no-admission decision stands
-regardless.
+payload boundary. The owner's enforcement of it is proven by the hosted
+native run. The M005 production owner qualification remains open, and C010's
+no-admission decision stands regardless.
 
-**Exact future evidence required.** On a Linux host with Landlock ABI 6
-qualified, at an exact revision:
+**Exact future evidence required.**
 
-1. `CODEGG_RUN_M005_OFFLINE_NATIVE=1 cargo test --locked --test linux_m004_process_ipc --features linux-git-test-support`
-   — with the host-positive IPv4/IPv6 TCP/UDP, DNS/rebinding, inherited
-   connected FD, pathname and abstract UDS, host proc/signal, nested child and
-   concurrent-worker cases, each denied;
-2. the restricted/no-userns negative case, where the setup must fail **before**
-   the target marker, with a typed refusal;
-3. a deliberately uncontained positive control in the same run, so the
-   refusals are non-vacuous;
-4. the captured kernel/LSM/Bubblewrap/Landlock facts, the requested and
+1. A hosted M004 run on the fixed head, in which
+   `delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner`
+   passes, with its per-test result recorded.
+2. The hosted `restricted-userns-fails-closed` job passing on the same head,
+   which is the no-userns negative C002 WP4 asks for.
+3. The captured kernel/LSM/Bubblewrap/Landlock facts, the requested and
    obtained launch receipt, and the actual denied effects, recorded against
    that exact revision in the `native_negative_proven` section of the
-   manifest;
-5. `native_negative_proven` non-empty and `maintainer_admitted` set by a
+   manifest.
+4. `native_negative_proven` non-empty and `maintainer_admitted` set by a
    maintainer decision — never by the probe.
+5. The residual cargo-specific attribution: evidence that a delegated
+   `cargo` child's own network attempt is refused rather than merely
+   unexercised.
 
 **Stop conditions carried forward.** If any nested route silently loses
 intent, `OfflineRequired` executes with host network, a status receipt is
 forged from policy or probe alone, or a socket/FD crosses isolation, this
 condition escalates and C002 does not close.
+
+### 10.1a The Python durable route has the same ordering defect (severity: medium, owner: the Python tool's owner)
+
+`src/python_script/executor.rs` builds its own `SandboxLaunchSpec` for the
+`JobPayload::Python` route with `linux_protected_mount_view: false` and
+`path_identities: Vec::new()`, and it forwards the payload's intent to the
+managed process request exactly as the other durable routes do. The owner
+therefore turns the protected mount view on after the spec exists, with the
+same consequence: a durable Python job carrying `OfflineRequired` and a
+constrained profile fails closed with "sandbox grant has no captured path
+identity".
+
+This is the **same class** of defect that §3.6 fixed for the delegated
+child's two routes, and it was found by reading the owner's forcing logic
+rather than by a failing run, because the delegated child's proof is what
+exercised the owner's forcing path.
+
+It fails **closed**, so it is not a confidentiality hole: the job cannot run
+with host network. It is a functional dead end for an offline Python job.
+
+It is **not** fixed here, because the Python durable route is outside C002's
+delegated-child scope and its path set is built differently (the Python route
+computes its own read/write roots rather than going through
+`sandbox_config_for_profile`), so the fix needs the Python route's own owner
+to reason about its path set. The finding is recorded here so it is not lost.
+
+**Exact future evidence required.** The Python route's owner either requests
+the M004 tier before building its spec, capturing the identities for its own
+path set, or records why the Python route cannot take the offline tier and
+makes the payload's intent and the route's capability agree.
 
 ### 10.2 Branch-wide hosted CI on this head (severity: medium, owner: this milestone)
 

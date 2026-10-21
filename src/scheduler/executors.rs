@@ -402,7 +402,7 @@ impl JobExecutor for ManagedArgvExecutor {
             // The durable route rebuilds the same containment the direct route
             // would have used. A constrained job whose host cannot provide it
             // fails closed here instead of running uncontained.
-            let Some(config) =
+            let Some(mut config) =
                 crate::security::sandbox::sandbox_config_for_profile(profile, &ctx.workspace_root)
             else {
                 return failure_completion(
@@ -413,6 +413,18 @@ impl JobExecutor for ManagedArgvExecutor {
                     ),
                 );
             };
+            // M005/C002: an offline intent requires the M004 process/filesystem
+            // tier, and that tier's protected mount view captures the path
+            // identities the helper re-verifies at launch.
+            //
+            // The owner turns the offline flag on when it accepts the intent,
+            // but it can only do that after the spec already exists — so the
+            // tier has to be requested here. Without it the spec carries no
+            // captured identity and the launch fails closed with "sandbox
+            // grant has no captured path identity".
+            if network_intent == codegg_core::approval::NetworkIntent::OfflineRequired {
+                config = config.with_linux_process_isolation(true);
+            }
             let spec = match config.launch_spec(target, args, Some(&cwd)) {
                 Ok(spec) => spec,
                 Err(error) => {

@@ -361,6 +361,51 @@ def check_scheduler_forwarding(root: Path) -> list[str]:
     return problems
 
 
+def check_offline_tier_is_requested_before_the_spec(root: Path) -> list[str]:
+    """Check 6: a durable offline job requests the M004 tier before the spec exists.
+
+    The owner turns the offline flag on when it accepts an intent, but it can
+    only do that after the launch spec already exists. The spec's protected
+    mount view captures the path identities the helper re-verifies at launch,
+    so a durable route that builds the spec without the tier ends up with no
+    captured identity and fails closed with "sandbox grant has no captured
+    path identity" the moment the owner turns the offline flag on.
+
+    The tier therefore has to be requested while the config is still being
+    built, not after the spec exists.
+    """
+    problems: list[str] = []
+    for rel, label in (
+        (SCHEDULER_EXECUTORS, "the managed executor"),
+        (TEST_RUNNER, "the test runner"),
+    ):
+        content = read(root, rel)
+        if content is None:
+            problems.append(f"{rel}: unreadable")
+            continue
+        start = content.find("sandbox_config_for_profile")
+        if start < 0:
+            problems.append(f"{rel}: {label} does not build a sandbox config from the profile")
+            continue
+        end = content.find(".launch_spec(", start)
+        if end < 0:
+            problems.append(f"{rel}: {label} builds a sandbox config but never launches a spec")
+            continue
+        region = content[start:end]
+        if "OfflineRequired" not in region:
+            problems.append(
+                f"{rel}: {label} builds the sandbox config without considering the offline "
+                "intent, so an offline job would request no M004 tier"
+            )
+        if "with_linux_process_isolation(true)" not in region:
+            problems.append(
+                f"{rel}: {label} does not request the M004 process/filesystem tier for an "
+                "offline intent before the launch spec is built, so the spec carries no "
+                "captured path identity and the launch fails closed"
+            )
+    return problems
+
+
 def check_owner_refusal(root: Path) -> list[str]:
     """Check 6: the process owner refuses an unconstrained launch for an offline intent."""
     problems: list[str] = []
@@ -446,6 +491,7 @@ CHECKS = (
     check_executor_binding,
     check_durable_payload_variants,
     check_scheduler_forwarding,
+    check_offline_tier_is_requested_before_the_spec,
     check_owner_refusal,
     check_workflow_triggers,
 )
@@ -526,6 +572,24 @@ def self_test() -> int:
             root,
             TEST_RUNNER,
             "    process.required_network_intent = network_intent;\n",
+            "",
+        )
+
+    @case("the managed executor stops requesting the M004 tier for an offline job")
+    def _drop_managed_tier(root: Path) -> None:
+        mutate(
+            root,
+            SCHEDULER_EXECUTORS,
+            "                config = config.with_linux_process_isolation(true);\n",
+            "",
+        )
+
+    @case("the test runner stops requesting the M004 tier for an offline job")
+    def _drop_runner_tier(root: Path) -> None:
+        mutate(
+            root,
+            TEST_RUNNER,
+            "            config = config.with_linux_process_isolation(true);\n",
             "",
         )
 
