@@ -234,7 +234,10 @@ async fn harness(
     // `:` would type a colon into the text instead of opening the command line.
     app.ui_state.input_mode = match mode {
         EditorMode::Insert => codegg::tui::input::InputMode::Insert,
-        EditorMode::Normal => codegg::tui::input::InputMode::Normal,
+        // `Select` is a **verb** mode, not a keyboard axis: the keys that
+        // extend a selection are the Helix verbs, which live in the buffer,
+        // so the route's keyboard stays with them — exactly as in `Normal`.
+        EditorMode::Normal | EditorMode::Select => codegg::tui::input::InputMode::Normal,
     };
     if let Some(tab) = app.project_tabs.active_mut() {
         tab.project_id = Some("project-1".to_string());

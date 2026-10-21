@@ -9,21 +9,39 @@
 //! after the user switched project tab or asked for a rebuild is discarded
 //! rather than applied to the wrong workspace.
 //!
-//! ## The pane has a root, and it is not always the workspace root
+//! ## The pane has a scope, and the scope moves
 //!
-//! [`FileTreeState::root_history`] is the chain of directories the user has
-//! walked into with `l`, newest last, so `h` can step back out one level at a
-//! time and land the cursor on the directory it just left. The current listing
-//! scope is always the last entry, which is what makes "which directory am I
-//! looking at" one fact instead of a prefix field and a history field that
-//! can disagree.
+//! [`FileTreeState::root_prefix`] is the directory whose children the pane
+//! lists; `""` is the workspace root. Navigation is a **peek** motion, not a
+//! re-root: `l` expands the selected directory *in place* and moves the
+//! cursor into it, and `h` moves the cursor back out to the parent row and
+//! collapses it. The daemon's listing window is three levels deep, so a
+//! directory at the window's edge cannot show its children — the scope
+//! **slides** instead: the scope becomes that directory's parent and the
+//! directory is expanded there. The scope can therefore advance without
+//! bound while the *relative* depth of the rows never leaves the window.
 //!
-//! Re-rooting is a **daemon round-trip**, not a local filter: the scope is
-//! carried as `WorkspaceDirectoryListRequestDto::prefix`, and the daemon
+//! [`FileTreeState::root_history`] is the chain of scopes the pane has moved
+//! through, so a scope slide can be walked back out one level at a time. The
+//! current scope is always the last entry, which is what makes "which
+//! directory am I looking at" one fact instead of a prefix field and a
+//! history field that can disagree.
+//!
+//! A scope change is a **daemon round-trip**, not a local filter: the scope
+//! is carried as `WorkspaceDirectoryListRequestDto::prefix`, and the daemon
 //! walks that subtree with the same bounded walker. Filtering an
 //! already-loaded listing would have been free, but it would silently drop
 //! everything the original walk hit its bounds on, presenting a partial
 //! subtree as if it were the directory.
+//!
+//! ## The panel's own filter is not a scope
+//!
+//! [`FileTreeState::filter`] narrows the rows the pane *shows*; it never
+//! changes what was asked for, so it issues no request and cannot present a
+//! partial subtree as a complete one. The panel's mode
+//! ([`TreePanelMode`]) is deliberately separate from the app-wide
+//! `InputMode`: the composer badge reports the app-level mode, and a
+//! panel-local insert must never be reported as the composer's insert.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -40,14 +58,18 @@ use crate::tui::file_tree::{visible_rows, TreeListing, TreeNodeKind, TreeRow};
 /// very fast paste, and a page verb must never become a no-op there.
 pub const FALLBACK_PAGE_ROWS: usize = 10;
 
-/// Deepest indent a row may draw, counting the scope itself.
+/// Deepest indent a row may draw.
 ///
 /// Indentation is orientation, the name is content: past this a nested row
-/// would push its name out of a narrow column entirely, and the listing is
-/// scoped one directory at a time anyway, so real depth inside one pane is a
-/// level or two. Defined once here because the `/files` box and the Ctrl+T
-/// pane used to carry independent copies of this number and nothing kept them
-/// equal.
+/// would push its name out of a narrow column entirely. Defined once here
+/// because the `/files` box and the Ctrl+T pane used to carry independent
+/// copies of this number and nothing kept them equal.
+///
+/// The cap is a *render* bound, not a navigation one. It used to be
+/// load-bearing as well, because the indent was the absolute depth and the
+/// absolute depth grew with the scope; the indent is now relative to the
+/// scope ([`FileTreeState::display_depth`]), so the relative depth cannot
+/// grow and the cap only ever bites on a column too narrow for the guide.
 pub const MAX_INDENT_DEPTH: usize = 8;
 
 /// How deep to draw one row, and whether it closes its own level.
@@ -79,6 +101,79 @@ pub enum FileTreeStatus {
     Ready,
     /// The walk could not run (for example the workspace root is unreadable).
     Error(String),
+}
+
+/// The tree pane's own input mode.
+///
+/// Deliberately **not** the app-wide `InputMode`: the composer badge
+/// reports the app-level mode, and a panel-local insert must never be
+/// reported as the composer's insert — the two are different surfaces with
+/// different jobs. The panel's mode only decides which keys the pane claims
+/// (see `commands::file_tree::handle_panel_key`); the app-level mode stays
+/// `Normal` while the pane filters, so the composer is never left in a mode
+/// the user did not enter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TreePanelMode {
+    /// Navigation keys: `j`/`k`, `l`/`h`, `Enter`, `r`, paging.
+    #[default]
+    Normal,
+    /// The filter is being typed. Printable keys edit the filter, `Backspace`
+    /// deletes from it, `Esc` leaves insert mode and **keeps** the filter.
+    Insert,
+}
+
+/// What a peek motion decided to do.
+///
+/// The decision is taken on the state (it is pure navigation arithmetic over
+/// the current listing); the *effect* that needs the daemon — a scope slide —
+/// is applied by the command layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeekStep {
+    /// Expand `directory` in place and move the cursor into it. Its children
+    /// are already inside the listing window.
+    Enter {
+        /// The directory to expand and enter.
+        directory: String,
+    },
+    /// The directory's children are outside the listing window: slide the
+    /// scope to `scope` (the directory's parent), expand the directory
+    /// there, and move the cursor into it.
+    Slide {
+        /// The new scope: the directory's parent.
+        scope: String,
+        /// The directory to expand in the new scope.
+        directory: String,
+    },
+    /// Nothing to peek at: a file, or no selection.
+    None,
+}
+
+/// What the `h`/left motion decided to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeekUp {
+    /// The cursor was inside a directory: move it to the parent row and
+    /// collapse that directory.
+    Leave {
+        /// The parent row's path.
+        parent: String,
+    },
+    /// The cursor was on a top-level row and the scope can go up: slide the
+    /// scope to `scope` (the current scope's parent) with the old scope root
+    /// expanded there.
+    Slide {
+        /// The new scope.
+        scope: String,
+        /// The old scope root, expanded in the new scope.
+        root: String,
+    },
+    /// The workspace root: the scope cannot go higher, so the selected
+    /// directory collapses in place. Never a dead key.
+    Collapse {
+        /// The directory to collapse.
+        directory: String,
+    },
+    /// Nothing to leave: no selection, or a file at the workspace root.
+    None,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -139,17 +234,94 @@ pub struct FileTreeState {
     /// without knowing how many rows fit, and the renderer is the only place
     /// that knows. `0` means "not measured yet", which pages fall back from.
     pub viewport_rows: usize,
+    /// The pane's own input mode.
+    ///
+    /// Panel-scoped, not app-scoped: see [`TreePanelMode`]. The composer
+    /// badge reports `InputMode`, and this one must never leak into it.
+    pub panel_mode: TreePanelMode,
+    /// The panel's live filter over the current listing.
+    ///
+    /// Empty means "no filter", which shows every row. The filter narrows
+    /// what the pane *shows*; it is not a scope change, so it never issues a
+    /// request and never re-scopes the listing.
+    pub filter: String,
+    /// The directory the cursor must enter once the relist lands.
+    ///
+    /// A scope slide replaces the listing, so the row the cursor belongs on
+    /// (the first child of the directory the user entered) is not known
+    /// until the daemon answers. The path is carried here and applied when
+    /// the listing arrives.
+    pub pending_cursor: Option<String>,
+    /// The file opened from this pane, awaiting the editor handoff.
+    ///
+    /// The open is asynchronous, so the handoff cannot happen when the key
+    /// is pressed: the document has to be attached first. The command layer
+    /// records the path here, and the completion path calls
+    /// `commands::file_tree::complete_editor_open_handoff`, which only
+    /// hands over if this is still the document that was opened.
+    pub pending_editor_handoff: Option<String>,
 }
 
 impl FileTreeState {
+    /// Every row the listing holds, ignoring the panel's filter.
+    ///
+    /// The expansion set decides which rows exist at all; the filter only
+    /// decides which of them the pane *shows*.
+    pub fn all_rows(&self) -> Vec<TreeRow> {
+        let mut rows = Vec::new();
+        visible_rows(&self.nodes, &self.expanded, &mut rows);
+        rows
+    }
+
     /// Rows the user can currently move between.
+    ///
+    /// The listing the daemon returned, narrowed by the panel's live filter.
+    /// An empty filter matches everything, so this is the plain listing.
     ///
     /// The selection is clamped rather than dropped, so a collapse or a
     /// shrink never leaves the tree with no reachable row.
     pub fn rows(&self) -> Vec<TreeRow> {
-        let mut rows = Vec::new();
-        visible_rows(&self.nodes, &self.expanded, &mut rows);
-        rows
+        let rows = self.all_rows();
+        if self.filter.is_empty() {
+            return rows;
+        }
+        let needle = self.filter.to_lowercase();
+        rows.into_iter()
+            .filter(|row| matches_filter(row, &needle))
+            .collect()
+    }
+
+    /// Whether `row` survives the panel's live filter.
+    ///
+    /// Case-insensitive, and it matches the file *name* as well as the path:
+    /// typing `mod` finds `mod.rs` whether the pane sits at the workspace
+    /// root or four directories deep.
+    pub fn filter_matches(&self, row: &TreeRow) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        matches_filter(row, &self.filter.to_lowercase())
+    }
+
+    /// Keep the cursor on a row the filter still shows.
+    ///
+    /// The filter can hide the selected row; the cursor then falls back to
+    /// the first row that survives, so the pane never claims a selection the
+    /// user cannot see.
+    pub fn reanchor_selection(&mut self) {
+        let rows = self.rows();
+        let Some(first) = rows.first() else {
+            self.selected = None;
+            return;
+        };
+        if self
+            .selected
+            .as_deref()
+            .is_some_and(|path| rows.iter().any(|row| row.path == path))
+        {
+            return;
+        }
+        self.selected = Some(first.path.clone());
     }
 
     /// Index of the selected row within [`Self::rows`].
@@ -185,19 +357,40 @@ impl FileTreeState {
         self.reveal_selected(next, rows.len());
     }
 
-    /// Scroll so the selected row stays inside a `height`-row viewport.
+    /// How many rows the pane can show right now.
+    ///
+    /// [`Self::viewport_rows`] is published by the renderer, and it is `0`
+    /// until the first frame has been drawn. A page verb must never be a
+    /// no-op because the pane has not been measured yet, so the unmeasured
+    /// case falls back to [`FALLBACK_PAGE_ROWS`].
+    pub fn viewport_height(&self) -> usize {
+        if self.viewport_rows == 0 {
+            FALLBACK_PAGE_ROWS
+        } else {
+            self.viewport_rows
+        }
+    }
+
+    /// Scroll so the selected row stays inside the measured window.
+    ///
+    /// The clamp is against the **window**, not against the row count: a
+    /// scroll offset of `total - 1` is the last row of a listing, which
+    /// means a page of it has scrolled off the top and the pane shows one
+    /// row at the bottom. The offset may therefore never exceed
+    /// `total - viewport_height`, and the selected row is revealed inside
+    /// that window.
     pub fn reveal_selected(&mut self, index: usize, total: usize) {
         if total == 0 {
             self.scroll = 0;
             return;
         }
-        // No viewport height is known here; the renderer passes the real one
-        // through `ensure_visible`. This keeps the invariant that the selected
-        // row is not scrolled past the end of the listing.
-        let last_page_start = total.saturating_sub(1);
-        self.scroll = self.scroll.min(last_page_start);
+        let height = self.viewport_height();
+        let max_scroll = total.saturating_sub(height);
+        self.scroll = self.scroll.min(max_scroll);
         if index < self.scroll {
             self.scroll = index;
+        } else if index >= self.scroll + height {
+            self.scroll = index + 1 - height;
         }
     }
 
@@ -219,12 +412,7 @@ impl FileTreeState {
     /// — a full page scrolls *past* a name the user was reaching for, and a
     /// paging verb that overshoots reads as a broken one.
     pub fn page_step(&self) -> isize {
-        let rows = if self.viewport_rows == 0 {
-            FALLBACK_PAGE_ROWS
-        } else {
-            self.viewport_rows
-        };
-        ((rows * 2) / 3).max(1) as isize
+        ((self.viewport_height() * 2) / 3).max(1) as isize
     }
 
     /// Page the cursor by `direction` pages: `1` down, `-1` up.
@@ -233,13 +421,18 @@ impl FileTreeState {
     /// selection moves a full page *and* the scroll follows it, because a
     /// page verb that moved the highlight without moving the listing would
     /// scroll only after the cursor had already left the screen.
+    ///
+    /// The page is measured against the pane's own height, falling back to
+    /// [`FALLBACK_PAGE_ROWS`] before the first frame: passing `0` to
+    /// [`Self::ensure_visible`] would make the verb a no-op, which is how a
+    /// `Ctrl+d` could leave the listing scrolled off the page.
     pub fn page_selection(&mut self, direction: isize) {
         if self.rows().is_empty() {
             return;
         }
         self.move_selection(direction * self.page_step());
         if let Some(index) = self.selected_index() {
-            self.ensure_visible(index, self.viewport_rows);
+            self.ensure_visible(index, self.viewport_height());
         }
     }
 
@@ -247,6 +440,11 @@ impl FileTreeState {
     ///
     /// Returns the path that changed, so a caller can report it. A file
     /// selection is a no-op: expanding a file is not a meaningful action.
+    ///
+    /// The *verb* this used to be bound to is retired: `l` expands and
+    /// enters, `h` leaves and collapses, so the standalone toggle has no
+    /// key left. What is left is the state-level helper the peek motion
+    /// uses — expand a directory, or collapse one.
     pub fn toggle_selected(&mut self) -> Option<String> {
         let row = self.selected_row()?;
         if row.kind != TreeNodeKind::Directory {
@@ -260,16 +458,168 @@ impl FileTreeState {
         Some(row.path)
     }
 
-    /// Step the pane's root back one level.
+    /// Decide what `l`/right/Enter does with the current selection.
     ///
-    /// This is the `h`/left-arrow verb, and the counterpart of
-    /// [`Self::descend_selected`]: the cursor lands on the directory just
-    /// left behind, so stepping out and back in returns to the same place.
+    /// A directory whose children are still inside the listing window is
+    /// expanded in place and the cursor moves into it. A directory at the
+    /// window's edge (relative depth 2) cannot show its children, so the
+    /// scope slides to its parent and the directory is expanded there.
+    ///
+    /// A file is not a directory: there is nothing to peek into.
+    pub fn peek_into_selected(&self) -> PeekStep {
+        let Some(row) = self.selected_row() else {
+            return PeekStep::None;
+        };
+        self.peek_into(&row.path)
+    }
+
+    /// Decide what `l`/right/Enter does with `path`.
+    ///
+    /// The decision is taken over the whole listing, not the filtered view:
+    /// the filter decides what the pane *shows*, and a path the filter
+    /// happens to hide is still a directory the daemon listed.
+    pub fn peek_into(&self, path: &str) -> PeekStep {
+        let Some(row) = self.all_rows().into_iter().find(|row| row.path == path) else {
+            return PeekStep::None;
+        };
+        if row.kind != TreeNodeKind::Directory {
+            return PeekStep::None;
+        }
+        if self.relative_depth(&row) >= 2 {
+            return PeekStep::Slide {
+                scope: parent_path(&row.path),
+                directory: row.path,
+            };
+        }
+        PeekStep::Enter {
+            directory: row.path,
+        }
+    }
+
+    /// Decide what `h`/left/Backspace does with the current selection.
+    ///
+    /// The cursor inside a directory moves to its parent row and that
+    /// directory collapses. The cursor on a top-level row slides the scope
+    /// up, with the old scope root expanded in the new scope. At the
+    /// workspace root there is no scope to slide to, so the selected
+    /// directory collapses in place — never a dead key.
+    pub fn peek_up(&self) -> PeekUp {
+        let rows = self.rows();
+        let Some(index) = self.selected_index() else {
+            return PeekUp::None;
+        };
+        let Some(row) = rows.get(index) else {
+            return PeekUp::None;
+        };
+        if self.relative_depth(row) > 0 {
+            let Some(parent) = rows[..index].iter().rev().find(|c| c.depth < row.depth) else {
+                return PeekUp::None;
+            };
+            return PeekUp::Leave {
+                parent: parent.path.clone(),
+            };
+        }
+        let scope_root = self.root_prefix().to_string();
+        if !scope_root.is_empty() {
+            return PeekUp::Slide {
+                scope: parent_path(&scope_root),
+                root: scope_root,
+            };
+        }
+        if row.kind == TreeNodeKind::Directory && row.expanded {
+            return PeekUp::Collapse {
+                directory: row.path.clone(),
+            };
+        }
+        PeekUp::None
+    }
+
+    /// Expand `directory` and move the cursor into it.
+    ///
+    /// The cursor lands on the directory's first child, which is only known
+    /// once the directory is expanded and the rows are re-read.
+    pub fn expand_and_enter(&mut self, directory: &str) {
+        self.expanded.insert(directory.to_string());
+        self.enter_directory(directory);
+    }
+
+    /// Move the cursor into `directory`: onto its first child when one is
+    /// visible, otherwise onto the directory itself.
+    ///
+    /// A directory that is not a row leaves the cursor alone: pointing the
+    /// selection at a path nothing shows would leave the pane with no
+    /// highlighted row at all.
+    pub fn enter_directory(&mut self, directory: &str) {
+        let rows = self.rows();
+        let Some(index) = rows.iter().position(|row| row.path == directory) else {
+            return;
+        };
+        match rows.get(index + 1) {
+            Some(next) if next.depth > rows[index].depth => {
+                self.selected = Some(next.path.clone());
+            }
+            _ => self.selected = Some(directory.to_string()),
+        }
+    }
+
+    /// Move the cursor to the parent row and collapse that directory.
+    pub fn leave_into(&mut self, parent: &str) {
+        self.expanded.remove(parent);
+        self.selected = Some(parent.to_string());
+    }
+
+    /// Collapse `directory` in place, leaving the cursor where it is.
+    pub fn collapse(&mut self, directory: &str) {
+        self.expanded.remove(directory);
+    }
+
+    /// Expand `root` in the current scope and put the cursor on it.
+    ///
+    /// The scope slide: the old scope root becomes a top-level row of the
+    /// new scope, expanded, with the cursor on it.
+    pub fn expand_and_select(&mut self, root: &str) {
+        self.expanded.insert(root.to_string());
+        self.selected = Some(root.to_string());
+    }
+
+    /// Ask for the cursor to enter `directory` once the relist lands.
+    ///
+    /// A scope slide replaces the listing, so the row the cursor belongs on
+    /// is not known until the daemon answers.
+    pub fn set_pending_cursor(&mut self, directory: &str) {
+        self.pending_cursor = Some(directory.to_string());
+    }
+
+    /// Take the pending cursor target, if any.
+    pub fn take_pending_cursor(&mut self) -> Option<String> {
+        self.pending_cursor.take()
+    }
+
+    /// Record that the keyboard must move to the editor once the open of
+    /// `path` completes.
+    pub fn set_pending_editor_handoff(&mut self, path: &str) {
+        self.pending_editor_handoff = Some(path.to_string());
+    }
+
+    /// Take the pending editor handoff, if any.
+    pub fn take_pending_editor_handoff(&mut self) -> Option<String> {
+        self.pending_editor_handoff.take()
+    }
+
+    /// Step the pane's scope back one level through the recorded history.
+    ///
+    /// This is the explicit "back" affordance the scope chain makes
+    /// possible: the cursor lands on the directory just left behind, so
+    /// stepping out and back in returns to the same place.
+    ///
+    /// It is **not** the `h`/left-arrow motion any more — that is
+    /// [`Self::peek_up`], which slides the scope to the *parent* of the
+    /// current scope and expands the old scope root there. The two answer
+    /// different questions: this one walks back the way the pane came, the
+    /// other walks one level shallower.
     ///
     /// `false` means the pane is already showing the workspace root, where
-    /// "one level up" does not exist. The caller falls back to
-    /// [`Self::leave_selected`] there rather than making `h` inert at the one
-    /// depth every listing starts at.
+    /// "one level up" does not exist.
     pub fn ascend_root(&mut self) -> bool {
         if self.root_history.len() < 2 {
             return false;
@@ -321,22 +671,36 @@ impl FileTreeState {
 
     /// How deep to *display* `row`.
     ///
-    /// A walk of a subtree counts depth from the subtree
-    /// (`crate::directory_listing::walk_directory` seeds the walk with the
-    /// subtree as its base), so the top level of a listing scoped with `l`
-    /// arrives at exactly the depth the workspace root's own top level arrives
-    /// at. A renderer that trusted `row.depth` therefore drew a scoped listing
-    /// identically to the root — entering a directory made the indentation say
-    /// nothing at all. The scope's components are added back here, so the
-    /// nesting the user is actually in is visible in the drawing.
+    /// **Relative to the scope.** A walk of a subtree counts depth from the
+    /// subtree (`crate::directory_listing::walk_directory` seeds the walk
+    /// with the subtree as its base), so the top level of a listing scoped
+    /// with `l` arrives at exactly the depth the workspace root's own top
+    /// level arrives at. The indent is therefore the row's own depth: the
+    /// scope's position is carried by the scope path, which the pane already
+    /// shows, and the guide keeps describing the *current* view.
     ///
-    /// Display arithmetic over an unchanged listing: it reads
-    /// [`Self::root_prefix`] and clamps, and touches nothing else. Clamping to
-    /// [`MAX_INDENT_DEPTH`] keeps a deep scope from eating the name.
+    /// This is also what makes a deep scope usable. The scope can slide
+    /// arbitrarily far down — the listing window is three levels, but the
+    /// scope is unbounded — and the old absolute depth grew with it until
+    /// the clamp flattened exactly the deep scopes the peek motion exists to
+    /// reach. The relative depth cannot grow: it is bounded by the window.
+    ///
+    /// Display arithmetic over an unchanged listing: it reads the row and
+    /// clamps, and touches nothing else. Clamping to
+    /// [`MAX_INDENT_DEPTH`] keeps a name from being pushed off a narrow
+    /// column by a guide the column cannot hold.
     pub fn display_depth(&self, row: &TreeRow) -> usize {
-        self.scope_depth()
-            .saturating_add(row.depth)
-            .min(MAX_INDENT_DEPTH)
+        row.depth.min(MAX_INDENT_DEPTH)
+    }
+
+    /// How deep `row` sits **relative to the current scope**.
+    ///
+    /// The scope's own children are relative depth 0, their children 1, and
+    /// their children 2 — the three levels the daemon's listing window
+    /// carries. A row at relative depth 2 is the last one whose children
+    /// are still inside the window.
+    pub fn relative_depth(&self, row: &TreeRow) -> usize {
+        row.depth.saturating_sub(1)
     }
 
     /// How many directory components the current scope sits below the
@@ -394,38 +758,31 @@ impl FileTreeState {
         self.selected = None;
         self.scroll = 0;
         self.truncated = None;
+        self.pending_cursor = None;
     }
 
     /// Go back one level *within* the current scope.
     ///
-    /// Two cases, in order:
+    /// The in-scope half of the `h` motion ([`Self::peek_up`]): the cursor
+    /// inside a directory moves to its parent row and that directory
+    /// collapses; at the workspace root there is no scope to slide to, so
+    /// the selected directory collapses in place.
     ///
-    /// 1. The cursor is on an expanded directory — collapse it and stay put.
-    /// 2. Otherwise step the cursor to the nearest preceding shallower row,
-    ///    which is the parent directory of whatever is selected.
-    ///
-    /// A top-level entry has no parent, so case 2 is a no-op there rather
-    /// than an error: backing out of the workspace root means nowhere to go,
-    /// and silently clamping is the honest answer.
-    ///
-    /// This is the `h` fallback at the workspace root, where
-    /// [`Self::ascend_root`] has nothing to do.
+    /// A top-level row in a scope that *can* slide is not handled here —
+    /// that is the scope slide, which the command layer owns because it
+    /// has to issue the daemon request.
     pub fn leave_selected(&mut self) -> Option<String> {
-        let rows = self.rows();
-        let index = self.selected_index()?;
-        let row = rows.get(index)?;
-        if row.kind == TreeNodeKind::Directory && row.expanded {
-            self.expanded.remove(&row.path);
-            return Some(row.path.clone());
+        match self.peek_up() {
+            PeekUp::Leave { parent } => {
+                self.leave_into(&parent);
+                Some(parent)
+            }
+            PeekUp::Collapse { directory } => {
+                self.collapse(&directory);
+                Some(directory)
+            }
+            PeekUp::Slide { .. } | PeekUp::None => None,
         }
-        let parent = rows[..index]
-            .iter()
-            .rev()
-            .find(|candidate| candidate.depth < row.depth)?;
-        let path = parent.path.clone();
-        self.selected = Some(path.clone());
-        self.reveal_selected(index.saturating_sub(1), rows.len());
-        Some(path)
     }
 
     /// Apply a completed walk, if it belongs to the current generation, root,
@@ -469,6 +826,12 @@ impl FileTreeState {
             .is_none_or(|s| !rows.iter().any(|row| row.path == s))
         {
             self.selected = rows.first().map(|row| row.path.clone());
+        }
+        // A scope slide knows where the cursor goes only once the relist
+        // lands: the directory the user entered is a row of the *new*
+        // scope, and its first child is what the cursor belongs on.
+        if let Some(target) = self.take_pending_cursor() {
+            self.enter_directory(&target);
         }
         self.reveal_selected(self.selected_index().unwrap_or(0), rows.len());
         true
@@ -556,6 +919,27 @@ impl FileTreeState {
     }
 }
 
+/// The parent of a workspace-relative path.
+///
+/// `"src/tui"` → `"src"`, `"src"` → `""` (the workspace root). The scope
+/// slides along this relation, and the listing window is what decides when
+/// a slide is needed.
+fn parent_path(path: &str) -> String {
+    match path.rfind('/') {
+        Some(index) => path[..index].to_string(),
+        None => String::new(),
+    }
+}
+
+/// Whether `row` survives `needle`, which is already lowercased.
+///
+/// The name and the path are both matched: the name is what the user
+/// remembers, and the path is what disambiguates two rows with the same
+/// name in different directories.
+fn matches_filter(row: &TreeRow, needle: &str) -> bool {
+    row.name.to_lowercase().contains(needle) || row.path.to_lowercase().contains(needle)
+}
+
 fn collect_directory_paths(nodes: &[crate::tui::file_tree::TreeNode]) -> BTreeSet<String> {
     fn recurse(nodes: &[crate::tui::file_tree::TreeNode], out: &mut BTreeSet<String>) {
         for node in nodes {
@@ -592,6 +976,95 @@ mod tests {
         let (generation, request_id) = state.begin_rebuild(root.to_path_buf());
         state.apply_listing(generation, request_id, root.to_path_buf(), build_tree(root));
         state
+    }
+
+    /// One node of a hand-built listing.
+    ///
+    /// The daemon's window is three levels deep, so a listing carries rows
+    /// at depth 1, 2 and 3 — the depth a row would have *inside* the scope
+    /// it was asked for.
+    fn node(
+        path: &str,
+        depth: usize,
+        kind: TreeNodeKind,
+        children: Option<Vec<crate::tui::file_tree::TreeNode>>,
+    ) -> crate::tui::file_tree::TreeNode {
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        crate::tui::file_tree::TreeNode {
+            name,
+            path: path.to_string(),
+            depth,
+            kind,
+            children,
+        }
+    }
+
+    /// A state showing `nodes` for the workspace root.
+    fn state_with_listing(
+        root: &std::path::Path,
+        nodes: Vec<crate::tui::file_tree::TreeNode>,
+    ) -> FileTreeState {
+        scoped_state(root, "", nodes)
+    }
+
+    /// A state showing `nodes` for `scope`.
+    ///
+    /// The scope is set *after* the first rebuild, because a rebuild for a
+    /// new root resets the scope chain — the same order the command layer
+    /// uses (`set_root_prefix` then `rebuild`).
+    fn scoped_state(
+        root: &std::path::Path,
+        scope: &str,
+        nodes: Vec<crate::tui::file_tree::TreeNode>,
+    ) -> FileTreeState {
+        let mut state = FileTreeState::default();
+        let _ = state.begin_rebuild(root.to_path_buf());
+        if !scope.is_empty() {
+            state.set_root_prefix(scope);
+        }
+        let (generation, request_id) = state.begin_rebuild(root.to_path_buf());
+        let listing = crate::tui::file_tree::TreeListing {
+            prefix: scope.to_string(),
+            nodes,
+            truncated: false,
+            truncated_reason: None,
+            examined: 0,
+        };
+        assert!(
+            state.apply_listing(generation, request_id, root.to_path_buf(), listing),
+            "the listing belongs to the scope it was asked for"
+        );
+        state
+    }
+
+    /// The worked example from the peek design:
+    ///
+    /// ```text
+    /// /workspace
+    ///   src/
+    ///     tui/
+    ///       editor.rs
+    ///       app/          <- the window's edge: its children are not here
+    ///   Cargo.toml
+    /// ```
+    fn worked_example_listing() -> Vec<crate::tui::file_tree::TreeNode> {
+        vec![
+            node(
+                "src",
+                1,
+                TreeNodeKind::Directory,
+                Some(vec![node(
+                    "src/tui",
+                    2,
+                    TreeNodeKind::Directory,
+                    Some(vec![
+                        node("src/tui/editor.rs", 3, TreeNodeKind::File, None),
+                        node("src/tui/app", 3, TreeNodeKind::Directory, None),
+                    ]),
+                )]),
+            ),
+            node("Cargo.toml", 1, TreeNodeKind::File, None),
+        ]
     }
 
     #[test]
@@ -828,14 +1301,15 @@ mod tests {
         state.expanded.insert("dir".to_string());
         assert_eq!(state.selected.as_deref(), Some("dir"));
 
-        // `h` on an expanded directory closes it and stays put.
+        // At the workspace root there is no scope to slide to, so `h`
+        // collapses the selected directory where it stands.
         assert_eq!(state.leave_selected().as_deref(), Some("dir"));
         assert!(!state.expanded.contains("dir"));
         assert_eq!(state.selected.as_deref(), Some("dir"));
     }
 
     #[test]
-    fn leave_steps_out_to_the_parent_directory() {
+    fn leave_steps_out_to_the_parent_directory_and_collapses_it() {
         let root = temp();
         write(root.path(), "dir/nested/deep.txt");
 
@@ -844,19 +1318,19 @@ mod tests {
         state.expanded.insert("dir/nested".to_string());
         state.selected = Some("dir/nested/deep.txt".to_string());
 
-        // From a nested file, `h` walks out one level at a time.
+        // From a nested file, `h` moves to the parent row and collapses the
+        // directory it is leaving.
         assert_eq!(state.leave_selected().as_deref(), Some("dir/nested"));
         assert_eq!(state.selected.as_deref(), Some("dir/nested"));
+        assert!(
+            !state.expanded.contains("dir/nested"),
+            "the directory being left is collapsed"
+        );
 
-        // `dir/nested` is still open, so the next `h` closes it in place
-        // rather than jumping again — backing out of an open directory means
-        // closing it, and only a *closed* one steps to the parent.
-        assert_eq!(state.leave_selected().as_deref(), Some("dir/nested"));
-        assert!(!state.expanded.contains("dir/nested"));
-        assert_eq!(state.selected.as_deref(), Some("dir/nested"));
-
+        // One more step leaves `dir` the same way.
         assert_eq!(state.leave_selected().as_deref(), Some("dir"));
         assert_eq!(state.selected.as_deref(), Some("dir"));
+        assert!(!state.expanded.contains("dir"));
     }
 
     #[test]
@@ -874,6 +1348,135 @@ mod tests {
         state.selected = Some("top.txt".to_string());
         assert_eq!(state.leave_selected(), None);
         assert_eq!(state.selected.as_deref(), Some("top.txt"));
+    }
+
+    /// The scroll offset is a **window** offset, not a row count.
+    ///
+    /// The old clamp was `total - 1`, which is the last row of the listing:
+    /// a page verb that left the cursor there scrolled the whole listing off
+    /// the page and showed one row at the bottom of the pane.
+    #[test]
+    fn the_scroll_offset_never_leaves_the_measured_window() {
+        let root = temp();
+        for index in 0..40 {
+            write(root.path(), &format!("file{index:02}.txt"));
+        }
+
+        let mut state = state_with(root.path());
+        state.viewport_rows = 10;
+        let total = state.rows().len();
+
+        for _ in 0..10 {
+            state.page_selection(1);
+            assert!(
+                state.scroll <= total - state.viewport_height(),
+                "the offset may never exceed total - viewport, got {}",
+                state.scroll
+            );
+            let index = state.selected_index().expect("a row is selected");
+            assert!(
+                index >= state.scroll && index < state.scroll + state.viewport_height(),
+                "the cursor has to stay on screen, got {index} at {}",
+                state.scroll
+            );
+        }
+        assert_eq!(state.scroll, total - state.viewport_height());
+    }
+
+    /// A keypress can arrive before the first frame, when the pane has no
+    /// measured height. The page verb falls back to a page size and still
+    /// keeps the listing on the page.
+    #[test]
+    fn a_page_before_the_first_frame_uses_the_fallback_and_stays_on_the_page() {
+        let root = temp();
+        for index in 0..40 {
+            write(root.path(), &format!("file{index:02}.txt"));
+        }
+
+        let mut state = state_with(root.path());
+        assert_eq!(state.viewport_rows, 0, "nothing has rendered yet");
+        let total = state.rows().len();
+
+        state.page_selection(1);
+        assert!(
+            state.selected_index().unwrap_or(0) > 0,
+            "the page verb must not be a no-op before the first frame"
+        );
+        assert!(
+            state.scroll <= total.saturating_sub(FALLBACK_PAGE_ROWS),
+            "the fallback page still bounds the offset, got {}",
+            state.scroll
+        );
+    }
+
+    /// The filter narrows the rows the pane shows, on the name and on the
+    /// path, and it does not care about case.
+    #[test]
+    fn the_filter_matches_the_name_and_the_path_case_insensitively() {
+        let root = temp();
+        write(root.path(), "Main.rs");
+        write(root.path(), "docs/readme.md");
+
+        let mut state = state_with(root.path());
+        state.selected = Some("docs".to_string());
+        state.toggle_selected();
+        let paths = |state: &FileTreeState| {
+            state
+                .rows()
+                .iter()
+                .map(|row| row.path.clone())
+                .collect::<Vec<String>>()
+        };
+
+        assert_eq!(
+            paths(&state),
+            vec![
+                "docs".to_string(),
+                "docs/readme.md".to_string(),
+                "Main.rs".to_string()
+            ],
+            "no filter yet"
+        );
+
+        state.filter = "main".to_string();
+        assert_eq!(
+            paths(&state),
+            vec!["Main.rs".to_string()],
+            "the name, case-folded"
+        );
+
+        state.filter = "DOCS/".to_string();
+        assert_eq!(
+            paths(&state),
+            vec!["docs/readme.md".to_string()],
+            "the path, case-folded"
+        );
+
+        state.filter = "readme".to_string();
+        assert_eq!(paths(&state), vec!["docs/readme.md".to_string()]);
+
+        state.filter = "nothing-matches-this".to_string();
+        assert!(state.rows().is_empty());
+    }
+
+    /// The filter hides rows, so the cursor has to follow: a selection the
+    /// user cannot see is a selection they cannot reason about.
+    #[test]
+    fn the_cursor_follows_the_filter_onto_a_row_that_is_still_shown() {
+        let root = temp();
+        write(root.path(), "Main.rs");
+        write(root.path(), "other.txt");
+
+        let mut state = state_with(root.path());
+        assert_eq!(state.selected.as_deref(), Some("Main.rs"));
+
+        state.filter = "other".to_string();
+        state.reanchor_selection();
+        assert_eq!(
+            state.selected.as_deref(),
+            Some("other.txt"),
+            "the cursor moves to a row the filter still shows"
+        );
     }
 
     #[test]
@@ -1187,13 +1790,16 @@ mod tests {
         );
     }
 
-    /// `display_depth` is the fix for "a listing scoped with `l` draws flush
-    /// left", and the table *is* the fix: a scoped listing's rows arrive
-    /// counted from the subtree rather than from the workspace root, so the
-    /// scope has to be added back or the indentation says the user is at the
-    /// root when they are not.
+    /// The indent is **relative to the scope**.
+    ///
+    /// A walk of a subtree counts depth from the subtree, so a scoped
+    /// listing's top level arrives at the depth the workspace root's own top
+    /// level arrives at. Adding the scope's components back made the
+    /// absolute depth grow with every scope slide, and the clamp flattened
+    /// exactly the deep scopes the peek motion exists to reach. The scope's
+    /// position is carried by the scope path instead.
     #[test]
-    fn display_depth_adds_back_the_scope_a_subtree_walk_restarted() {
+    fn display_depth_is_relative_to_the_scope() {
         let root = temp();
         write(root.path(), "a/b/c/deep.txt");
         let state = state_with(root.path());
@@ -1212,21 +1818,29 @@ mod tests {
         let mut scoped = FileTreeState::default();
         assert!(scoped.set_root_prefix("a"));
         assert_eq!(scoped.scope_depth(), 1);
-        assert_eq!(scoped.display_depth(&row(1)), 2, "one `l` deep, top level");
-        assert_eq!(scoped.display_depth(&row(3)), 4);
+        assert_eq!(
+            scoped.display_depth(&row(1)),
+            1,
+            "a scoped listing's top level draws at the top level"
+        );
+        assert_eq!(scoped.display_depth(&row(3)), 3);
 
         assert!(scoped.set_root_prefix("a/b"));
         assert_eq!(scoped.scope_depth(), 2);
         assert_eq!(
             scoped.display_depth(&row(1)),
-            3,
-            "a two-component scope is two levels below the root"
+            1,
+            "the scope is carried by the scope path, not by the guide"
         );
     }
 
     /// Past the cap the answer stops growing. A name is content and a guide is
     /// orientation, so the guide is what runs out of room first — silently
     /// pushing the name off a narrow column is the failure this prevents.
+    ///
+    /// The cap is a *render* bound now: the relative depth cannot grow past
+    /// the listing window, so it only ever bites on a column too narrow for
+    /// the guide.
     #[test]
     fn display_depth_clamps_at_the_one_cap_both_renderers_share() {
         let mut state = FileTreeState::default();
@@ -1245,6 +1859,10 @@ mod tests {
     /// row may not move the cursor, open a directory, or change what the walk
     /// would hand back. A hierarchy fix that reached into navigation would make
     /// "visually deeper" and "reachable differently" the same change.
+    ///
+    /// Under the peek motion the two are *deliberately* different: the guide
+    /// is relative to the scope, and reaching a deeper row is a navigation
+    /// decision (`l`), never a consequence of where the row is drawn.
     #[test]
     fn display_depth_is_a_read_and_changes_nothing_about_navigation() {
         let root = temp();
@@ -1273,5 +1891,130 @@ mod tests {
         assert_eq!(state.selected, before_selected, "the cursor must not move");
         assert_eq!(state.expanded, before_expanded, "expansion must not change");
         assert_eq!(state.scroll, before_scroll, "the viewport must not move");
+    }
+
+    /// `l` on a directory whose children are still inside the listing
+    /// window: expand it in place and move the cursor into it.
+    #[test]
+    fn peeking_into_a_directory_expands_it_in_place_and_enters_it() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        state.selected = Some("src".to_string());
+
+        assert_eq!(
+            state.peek_into_selected(),
+            PeekStep::Enter {
+                directory: "src".to_string()
+            }
+        );
+
+        state.expand_and_enter("src");
+        assert!(state.expanded.contains("src"));
+        assert_eq!(
+            state.selected.as_deref(),
+            Some("src/tui"),
+            "the cursor moves into the directory, onto its first child"
+        );
+        assert_eq!(
+            state.root_prefix(),
+            "",
+            "the scope does not move when the children are inside the window"
+        );
+    }
+
+    /// `l` on a directory at the window's edge: its children cannot be
+    /// fetched, so the scope slides to its parent and the directory is
+    /// expanded there.
+    #[test]
+    fn peeking_into_a_directory_at_the_window_edge_slides_the_scope() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        state.expanded.insert("src".to_string());
+        state.expanded.insert("src/tui".to_string());
+        state.selected = Some("src/tui/app".to_string());
+
+        assert_eq!(
+            state.peek_into_selected(),
+            PeekStep::Slide {
+                scope: "src/tui".to_string(),
+                directory: "src/tui/app".to_string(),
+            }
+        );
+    }
+
+    /// `l` on a file is not a motion: there is nothing to peek into.
+    #[test]
+    fn peeking_into_a_file_is_a_no_op() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        state.selected = Some("Cargo.toml".to_string());
+
+        assert_eq!(state.peek_into_selected(), PeekStep::None);
+    }
+
+    /// `h` from inside a directory: the cursor moves to the parent row and
+    /// that directory collapses.
+    #[test]
+    fn leaving_a_directory_moves_to_the_parent_row_and_collapses_it() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        state.expanded.insert("src".to_string());
+        state.expanded.insert("src/tui".to_string());
+        state.selected = Some("src/tui/editor.rs".to_string());
+
+        assert_eq!(
+            state.peek_up(),
+            PeekUp::Leave {
+                parent: "src/tui".to_string()
+            }
+        );
+    }
+
+    /// `h` on a top-level row: the scope slides up, with the old scope root
+    /// expanded in the new scope.
+    #[test]
+    fn leaving_a_top_level_row_slides_the_scope_up() {
+        let root = temp();
+        let mut state = scoped_state(
+            root.path(),
+            "src/tui",
+            vec![node(
+                "src/tui/app",
+                1,
+                TreeNodeKind::Directory,
+                Some(vec![node(
+                    "src/tui/app/mod.rs",
+                    2,
+                    TreeNodeKind::File,
+                    None,
+                )]),
+            )],
+        );
+        state.selected = Some("src/tui/app".to_string());
+
+        assert_eq!(
+            state.peek_up(),
+            PeekUp::Slide {
+                scope: "src".to_string(),
+                root: "src/tui".to_string(),
+            }
+        );
+    }
+
+    /// `h` at the workspace root: the scope cannot go higher, so the
+    /// selected directory collapses in place. Never a dead key.
+    #[test]
+    fn leaving_a_top_level_row_at_the_workspace_root_collapses_in_place() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        state.expanded.insert("src".to_string());
+        state.selected = Some("src".to_string());
+
+        assert_eq!(
+            state.peek_up(),
+            PeekUp::Collapse {
+                directory: "src".to_string()
+            }
+        );
     }
 }

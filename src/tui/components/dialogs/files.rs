@@ -45,7 +45,7 @@ use crate::tui::file_tree::{TreeListing, TreeNodeKind};
 /// second copy in `panels/hosted.rs` is what taught the panel to advertise an
 /// `i act` verb `handle_key` never implemented.
 pub const HINT: &str =
-    "j/k move · ^d/^u page · l/→ root at dir · h/← up · enter open · r refresh · esc close";
+    "j/k move · ^d/^u page · l/→ peek into dir · h/← up · enter open · r refresh · esc close";
 
 /// Separator between breadcrumb components. A `›` reads as "down one level"
 /// and is BMP box-adjacent, so it survives the plain-icon fallback.
@@ -120,10 +120,11 @@ impl FilesDialog {
 
     /// Activate the selected row.
     ///
-    /// A directory expands in place (the same verb the Ctrl+T pane's Enter
-    /// uses); a file asks the command layer to open it. Only a file can
-    /// become a document, so only a file emits an intent — a directory
-    /// reaches the editor by being entered with `l` first.
+    /// A directory is **peeked into** — the same motion `l` makes, and the
+    /// same one the Ctrl+T pane's `l` makes — so the two surfaces cannot
+    /// disagree about what `Enter` does. A file asks the command layer to
+    /// open it; only a file can become a document, so only a file emits an
+    /// intent.
     fn activate(&mut self) -> Option<TuiMsg> {
         let row = self.state.selected_row()?;
         match row.kind {
@@ -342,10 +343,10 @@ impl Component for FilesDialog {
                 self.move_selection(-1);
                 None
             }
-            // `l` makes the selected directory the listing's root and `h`
-            // goes back one level. Both are intents: the box holds a copy of
-            // the shared state and the walk belongs to the command layer, so
-            // it names the direction rather than moving its own scope.
+            // `l` peeks into the selected directory and `h` goes back one
+            // level. Both are intents: the box holds a copy of the shared
+            // state and the walk belongs to the command layer, so it names
+            // the direction rather than moving its own scope.
             KeyCode::Char('l') | KeyCode::Right => {
                 let row = self.state.selected_row()?;
                 if row.kind != TreeNodeKind::Directory {
@@ -467,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn l_asks_the_command_layer_to_root_the_listing_at_the_directory() {
+    fn l_asks_the_command_layer_to_peek_into_the_directory() {
         let root = temp();
         write(root.path(), "dir/a.txt");
         write(root.path(), "top.txt");
@@ -488,7 +489,7 @@ mod tests {
             })
         );
 
-        // A file has no directory to root the listing at.
+        // A file has no directory to peek into.
         dialog.state.selected = Some("top.txt".to_string());
         assert_eq!(dialog.handle_key(key(KeyCode::Char('l'))), None);
     }
@@ -762,10 +763,11 @@ mod tests {
             "the premise: a subtree walk restarts depth, so `dir`'s top level \
              arrives at the same depth the workspace root's does"
         );
-        assert!(
-            at_root.state.display_depth(&at_root.state.rows()[0])
-                < scoped.state.display_depth(&scoped.state.rows()[0]),
-            "and that is exactly why the scope has to be added back"
+        assert_eq!(
+            at_root.state.display_depth(&at_root.state.rows()[0]),
+            scoped.state.display_depth(&scoped.state.rows()[0]),
+            "the indent is relative to the scope, so the scope's own depth is \
+             not added back — a deep scope no longer flattens to the same cap"
         );
 
         let text = render_text(&mut scoped, 44, 10);
@@ -780,13 +782,18 @@ mod tests {
         // Drop the box's own left border, leaving the guide, the icon, the name.
         let row = inner_of(top_line);
         assert!(
-            row.starts_with("│  └─ "),
-            "a row one level inside `dir` draws a continuing guide and closes its \
-             own level, before the icon and the name, got {row:?}"
+            row.starts_with("└─ "),
+            "the scope is the parent, so its only child closes the level, before \
+             the icon and the name, got {row:?}"
         );
 
-        // And the same row in the *root* listing sits one level further left,
-        // which is the whole point: the two listings are distinguishable.
+        // And the same row in the *root* listing sits at the same indent.
+        //
+        // The indent is **relative to the scope**, so each listing draws its
+        // own top level at the left edge and the scope's absolute depth is
+        // carried by the breadcrumb in the title rather than by a stack of
+        // guides the reader has to count. The two listings are told apart by
+        // their scope, not by their shape.
         let root_text = render_text(&mut at_root, 44, 10);
         let dir_line = root_text
             .lines()
@@ -797,10 +804,11 @@ mod tests {
             !root_row.starts_with('│'),
             "at the workspace root there is nothing above the row, got {root_row:?}"
         );
-        assert!(
-            root_row.find("dir") < row.find("top.txt"),
-            "a scoped row must be drawn further right than a root row, got \
-             {root_row:?} against {row:?}"
+        assert_eq!(
+            row.find("top.txt"),
+            root_row.find("dir"),
+            "a scoped row and a root row are drawn at the same column, because \
+             the indent is relative to the scope, got {root_row:?} against {row:?}"
         );
     }
 

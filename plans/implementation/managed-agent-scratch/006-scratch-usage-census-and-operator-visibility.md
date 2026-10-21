@@ -100,6 +100,27 @@ tombstone and every later retry renames that tombstone and fails again
 (exercised at `src/scratch.rs:832-850`). A census that reports reclaimability
 makes that condition visible instead of silent.
 
+**That refusal is reachable under the strongest containment, so it is a real
+defect and not a theoretical one.** The Landlock backend requests
+`write_access = AccessFs::from_all(abi)` for every writable root
+(`src/security/sandbox/landlock.rs:80`, applied at `:113-115`), and
+`from_all` includes **REFER** — the right that governs linking. A hard link
+whose source and destination are the *same* directory therefore needs REFER
+only on that one directory, which a writable root has. The Linux native
+qualification proves only the **cross-boundary** case is denied (C001);
+the same-directory case is permitted. macOS Seatbelt re-allows `file-write*`
+for the writable roots (`src/security/sandbox/seatbelt.rs:105-109`), so the
+same is permitted there. A model can run `ln a b` inside its own scratch under
+Landlock Required and permanently pin that session's whole tree against
+reclamation, while Windows is immune to this because it has no link-count
+accessor at this crate's MSRV.
+
+This is the reason the census reports the **reclaimability verdict** and not
+only sizes and counts. A pinned tree is invisible to any measurement that
+reports only totals, and the disposition for a tree reclamation can never
+accept belongs to the successor retention milestone — not to this one, which
+reclaims nothing.
+
 **No measurement surface exists.**
 
 - There is no `scratch` key in `crates/codegg-config/src/schema.rs` and no

@@ -106,6 +106,14 @@ pub enum EditorPendingEffect {
     OpenFilePicker,
     /// Open the editor's `:` command palette.
     OpenCommandPalette,
+    /// Toggle the editor's **keymap box** — its own catalogue of its keys,
+    /// in the bottom-right corner of the editor.
+    ///
+    /// `space ?` asks "what can I press here?", and the `:` line answers a
+    /// different question ("what can I *do* here?"). They used to be the same
+    /// surface, which made the keymap undiscoverable from the keymap's own
+    /// gesture.
+    OpenKeymap,
     /// Open the **rename prompt** — the `:` line, pre-filled with the rename
     /// command, waiting for the new name.
     ///

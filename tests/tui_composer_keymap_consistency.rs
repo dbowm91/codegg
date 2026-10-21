@@ -34,7 +34,7 @@ fn hint(app: &mut App) -> String {
 /// The row is read rather than inspected, because the row is what the user
 /// sees: a key that is in the table but not in the row is a key the user
 /// cannot find. A **key** is a single-letter part of the row — the prose
-/// around it ("COMP", "NOR", "space help") is not a key.
+/// around it ("space help", "type", "Esc normal") is not a key.
 fn keys_in(row: &str) -> Vec<char> {
     row.split(" · ")
         .filter_map(|part| {
@@ -135,9 +135,9 @@ fn the_hint_names_no_verb_that_is_not_a_live_claim() {
         .map(|claim| claim.key)
         .collect();
 
-    // The row's prose is "COMP · NOR · … · space help"; the words carry
-    // letters of their own, so the check is over the row's *key* positions:
-    // every single-letter part must be a live claim.
+    // The row's prose is "… · space help"; the words carry letters of their
+    // own, so the check is over the row's *key* positions: every
+    // single-letter part must be a live claim.
     for key in keys_in(&row) {
         assert!(
             live.contains(&key),
@@ -187,6 +187,13 @@ fn the_hint_is_truncated_to_the_width_without_cutting_a_key() {
 ///
 /// The terminal panel's verbs (`v chars · x lines · d delete`) are the
 /// terminal's, and the composer's row is the composer's.
+///
+/// The row carries **keys only**. It used to open with `COMP · NOR`, which
+/// named the surface and the mode — and both are already said elsewhere: the
+/// badge directly above the input box carries the mode, and the row's
+/// position under that badge says whose keys these are. A row that restated
+/// them was the same fact said twice, and the second copy was the one that
+/// could disagree with the first.
 #[test]
 fn the_hint_names_the_composers_verbs_and_not_the_transcripts() {
     let mut app = test_app();
@@ -194,8 +201,9 @@ fn the_hint_names_the_composers_verbs_and_not_the_transcripts() {
 
     let row = hint(&mut app);
     assert!(
-        row.starts_with("COMP · NOR"),
-        "the row does not name its owner: {row:?}"
+        !row.starts_with("COMP") && !row.starts_with("NOR") && !row.starts_with("INS"),
+        "the row carries keys only: the badge above the input box owns the \
+         mode and the surface name: {row:?}"
     );
     assert!(
         !row.contains("scroll"),

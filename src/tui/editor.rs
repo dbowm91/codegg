@@ -103,6 +103,13 @@ pub enum EditorPrefix {
     Idle,
     /// Helix goto mode, armed by `g`. Leaves: [`GOTO_LEAVES`].
     Goto,
+    /// Helix view mode, armed by `z`. Leaves: [`VIEW_LEAVES`].
+    ///
+    /// The one grammar whose leaves move the **view** rather than the
+    /// cursor. Helix's view mode is what lets a reader scroll the page to
+    /// find something without losing the place they were reading from, and
+    /// a cursor-bound viewport cannot express it.
+    View,
     /// Helix space mode, armed by `space`. Leaves: [`SPACE_LEAVES`].
     Space,
     /// Helix's unimpaired `[` prefix. Leaves: [`OPEN_BRACKET_LEAVES`].
@@ -305,6 +312,7 @@ impl EditorPrefix {
         match self {
             EditorPrefix::Idle => "".into(),
             EditorPrefix::Goto => "g".into(),
+            EditorPrefix::View => "z".into(),
             EditorPrefix::Space => "space".into(),
             EditorPrefix::OpenBracket => "[".into(),
             EditorPrefix::CloseBracket => "]".into(),
@@ -348,6 +356,7 @@ impl EditorPrefix {
     pub fn leaves(self) -> &'static [PrefixLeaf] {
         match self {
             EditorPrefix::Goto => GOTO_LEAVES,
+            EditorPrefix::View => VIEW_LEAVES,
             EditorPrefix::Space => SPACE_LEAVES,
             EditorPrefix::OpenBracket => OPEN_BRACKET_LEAVES,
             EditorPrefix::CloseBracket => CLOSE_BRACKET_LEAVES,
@@ -366,7 +375,12 @@ impl EditorPrefix {
     ///
     /// `Goto` swallows, because that is the baseline's `gg` behavior and
     /// Helix's: the second key belongs to the chord whether or not it
-    /// completes it. The unimpaired prefixes retry, because swallowing there
+    /// completes it. `View` swallows for the same reason and Helix's sake:
+    /// view mode is a **mode**, and a mode that handed an unmatched key back
+    /// would run it as an ordinary command — `z x` would delete a line
+    /// instead of doing nothing.
+    ///
+    /// The unimpaired prefixes retry, because swallowing there
     /// would mean a `[` followed by a letter lost that letter on its way to
     /// the composer — and their leaves are still two milestones away, so a
     /// prefix that cannot be escaped is worse than one that occasionally
@@ -389,7 +403,7 @@ impl EditorPrefix {
     /// rather than eating it. A swallowed `m z` would type nothing at all,
     /// which is the M002 failure mode this milestone exists to end.
     pub fn swallows_unmatched(self) -> bool {
-        self == EditorPrefix::Goto
+        self == EditorPrefix::Goto || self == EditorPrefix::View
     }
 }
 
@@ -458,6 +472,48 @@ pub struct PrefixLeaf {
     pub action: PrefixAction,
 }
 
+/// View mode's leaves, against `https://docs.helix-editor.com/keymap.html`.
+///
+/// Helix's view mode is the one grammar whose leaves move the **view**
+/// rather than the cursor: the page scrolls and the cursor stays where it
+/// was, so a reader can look at another part of the file without losing the
+/// place they were reading from.
+///
+/// Helix binds `c` (centre), `t` (top), `b` (bottom) and `m` (middle,
+/// horizontally). The horizontal one is not here: this editor's viewport is
+/// one screen row per logical line and it has no soft-wrap display-line
+/// model, so "middle" horizontally has no meaning to it.
+///
+/// `j`/`k` are here as **scroll** rather than as the cursor motions they are
+/// elsewhere. That is the whole difference between the two grammars, and it
+/// is why they are separate leaves rather than the same command.
+pub const VIEW_LEAVES: &[PrefixLeaf] = &[
+    // `z c` — the cursor's line sits in the middle of the view.
+    PrefixLeaf {
+        glyph: 'c',
+        action: PrefixAction::Motion(EditorCommand::ViewAlign(ViewAlign::Center)),
+    },
+    // `z t` — the cursor's line sits on the first row.
+    PrefixLeaf {
+        glyph: 't',
+        action: PrefixAction::Motion(EditorCommand::ViewAlign(ViewAlign::Top)),
+    },
+    // `z b` — the cursor's line sits on the last row.
+    PrefixLeaf {
+        glyph: 'b',
+        action: PrefixAction::Motion(EditorCommand::ViewAlign(ViewAlign::Bottom)),
+    },
+    // `z j` / `z k` — scroll the view a line at a time, leaving the cursor.
+    PrefixLeaf {
+        glyph: 'j',
+        action: PrefixAction::Motion(EditorCommand::ViewScroll(1)),
+    },
+    PrefixLeaf {
+        glyph: 'k',
+        action: PrefixAction::Motion(EditorCommand::ViewScroll(-1)),
+    },
+];
+
 /// Goto mode's leaves, against `https://docs.helix-editor.com/keymap.html`.
 ///
 /// Only the leaves this editor can *honour* are listed. Helix binds twenty;
@@ -466,14 +522,14 @@ pub struct PrefixLeaf {
 ///
 /// - `gf`/`ga`/`gm`/`gn`/`gp`/`.` — files and alternate buffers. Multi-document
 ///   attachment is out of this roadmap's scope.
-/// - `gt`/`gc`/`gb` — top/middle/bottom **of the screen**. Excluded because
-///   this editor resolves motions against [`NOMINAL_VISIBLE_LINES`], a fixed
-///   guess rather than the real viewport, so "the top of the screen" would be a
-///   line that is not the top of the screen. Binding them now would ship a key
-///   that lands one place and looks broken; the honest fix is to thread the
-///   real viewport through first.
 /// - `g|` — goto column, which needs the same count entry point as Helix's
 ///   `G <n>`; this editor's `G` takes no count today.
+///
+/// `gt`/`gc`/`gb` used to be on the omission list, and the reason they were
+/// omitted was the thing this milestone fixed: they resolve against the
+/// **real** viewport, which the renderer measures and publishes on the
+/// presentation. A fixed guess would have put "the top of the screen" on a
+/// line that was not the top of the screen.
 ///
 /// `ge` and the bare `G` both land on the last line here, which is Helix's
 /// own outcome too: with no count argument `G` is `goto_line` to the end of
@@ -482,6 +538,20 @@ pub const GOTO_LEAVES: &[PrefixLeaf] = &[
     PrefixLeaf {
         glyph: 'g',
         action: PrefixAction::Motion(EditorCommand::BufferStart),
+    },
+    // `gt`/`gc`/`gb` — the top, the middle and the bottom **of the screen**.
+    // The cursor moves to them; the screen does not move to the cursor.
+    PrefixLeaf {
+        glyph: 't',
+        action: PrefixAction::Motion(EditorCommand::ScreenTop),
+    },
+    PrefixLeaf {
+        glyph: 'c',
+        action: PrefixAction::Motion(EditorCommand::ScreenCenter),
+    },
+    PrefixLeaf {
+        glyph: 'b',
+        action: PrefixAction::Motion(EditorCommand::ScreenBottom),
     },
     // `gs` — the leaf this milestone exists for. There is no other key that
     // reaches first non-whitespace: `0` is line start and `$` is line end, so
@@ -614,13 +684,18 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
         glyph: 'f',
         action: PrefixAction::Effect(EditorPendingEffect::OpenFilePicker),
     },
-    // `space ?` — the editor's own `:` command palette: the catalogue of
-    // `EditorCommandName::ALL`, filtered as you type. Deliberately not the
-    // global `?` help dialog: bare `?` still opens the help, and `space ?`
-    // is the editor's own list of what it can do.
+    // `space ?` — the editor's own **keymap box**, in its bottom-right
+    // corner.
+    //
+    // Deliberately not the global `?` help dialog: bare `?` still opens the
+    // help, and `space ?` is the editor's own list of *its* keys. It used to
+    // open the `:` command palette, but the `:` line is the command matcher
+    // and the palette was a second way to reach the same commands — so the
+    // key that was supposed to answer "what can I press here?" answered a
+    // different question.
     PrefixLeaf {
         glyph: '?',
-        action: PrefixAction::Effect(EditorPendingEffect::OpenCommandPalette),
+        action: PrefixAction::Effect(EditorPendingEffect::OpenKeymap),
     },
     // The clipboard family. `space y` yanks every member of the selection
     // set; `space Y` is Helix's *main* selection — the distinguished member
@@ -1382,6 +1457,13 @@ pub enum EditorCommandName {
     /// and the panel shows it. Nothing is applied, because an LSP write has
     /// no accepted authorization ADR.
     RenamePreview,
+    /// `:goto <n>` — jump to line `n`. Also spelled `:50`.
+    ///
+    /// Helix-native rather than an invention: Helix's command line documents
+    /// `:goto 123`, and `:123` and `123G` as the same intent. The bare
+    /// numeric spelling is the one a reader reaches for, so it is the one
+    /// this registry answers first.
+    GotoLine,
 }
 
 impl EditorCommandName {
@@ -1401,6 +1483,7 @@ impl EditorCommandName {
             Self::KeepRegex => "keep-regex",
             Self::RemoveRegex => "remove-regex",
             Self::RenamePreview => "rename-preview",
+            Self::GotoLine => "goto",
         }
     }
 
@@ -1420,6 +1503,7 @@ impl EditorCommandName {
             Self::KeepRegex => "keep the selections matching a regex",
             Self::RemoveRegex => "remove the selections matching a regex",
             Self::RenamePreview => "preview renaming the symbol under the cursor",
+            Self::GotoLine => "jump to a line number",
         }
     }
 
@@ -1436,6 +1520,7 @@ impl EditorCommandName {
                 | Self::KeepRegex
                 | Self::RemoveRegex
                 | Self::RenamePreview
+                | Self::GotoLine
         )
     }
 
@@ -1457,6 +1542,7 @@ impl EditorCommandName {
         Self::KeepRegex,
         Self::RemoveRegex,
         Self::RenamePreview,
+        Self::GotoLine,
     ];
 }
 
@@ -1480,6 +1566,18 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
     if trimmed.is_empty() {
         return None;
     }
+    // The **numeric** spelling comes first, before the name is looked up.
+    //
+    // `:50` has no name to match: the parser splits on the first space and
+    // hands the left half to the registry, and "50" is not in it. So the
+    // number is recognised as a number first, and the registry answer is
+    // reached only for the spellings that are names.
+    //
+    // This is Helix's own spelling — `:123` and `:goto 123` are the same
+    // intent — and the bare one is the one a reader reaches for.
+    if let Ok(line_number) = trimmed.parse::<usize>() {
+        return Some((EditorCommandName::GotoLine, Some(line_number.to_string())));
+    }
     let (name, argument) = match trimmed.split_once(char::is_whitespace) {
         Some((name, rest)) => (name, Some(rest.trim())),
         None => (trimmed, None),
@@ -1498,6 +1596,7 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
         "keep-regex" => EditorCommandName::KeepRegex,
         "remove-regex" => EditorCommandName::RemoveRegex,
         "rename-preview" => EditorCommandName::RenamePreview,
+        "goto" => EditorCommandName::GotoLine,
         _ => return None,
     };
     let argument = argument.filter(|value| !value.is_empty());
@@ -1521,6 +1620,19 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
 /// regardless of score, and only then ordered by score.
 pub fn complete_editor_command(query: &str) -> Vec<EditorCommandMatch> {
     let query = query.trim();
+    // A **numeric** query is a line number, not a command name, and the
+    // fuzzy matcher would say so in the wrong words: "5" is a subsequence of
+    // "split-regex" and of "complete", so `:5` would offer those two ahead of
+    // the line jump the reader asked for.
+    //
+    // So the numeric path short-circuits the matcher entirely. There is one
+    // answer to "which command is `:50`?", and it is the line jump.
+    if !query.is_empty() && query.chars().all(|ch| ch.is_ascii_digit()) {
+        return vec![EditorCommandMatch {
+            command: EditorCommandName::GotoLine,
+            score: 0,
+        }];
+    }
     // An empty query is the discovery path, and it is served in *declared*
     // order — not alphabetically — so the registry reads as a curated menu
     // rather than an index. Sorting it by score would reorder the list for
@@ -1576,12 +1688,27 @@ pub fn complete_editor_command(query: &str) -> Vec<EditorCommandMatch> {
 }
 
 /// Buffer edit mode. `Normal` is a vi-style command mode over the buffer;
-/// `Insert` routes printable keys into the document.
+/// `Insert` routes printable keys into the document; `Select` is Helix's
+/// select mode, where a movement **extends** the held selection instead of
+/// dropping it.
+///
+/// `Select` is a *verb* mode, not a second keyboard axis. Which region owns
+/// the keyboard is still answered by
+/// [`crate::tui::input::InputMode`] alone — see the module docs — and
+/// `Select` only ever coexists with `InputMode::Normal`, because the keys
+/// that extend a selection are the Helix verbs and those live in the buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EditorMode {
     #[default]
     Normal,
     Insert,
+    /// Helix select mode — `v` arms it, `Esc` leaves it.
+    ///
+    /// While it is held, a movement grows the selection. Outside it, a
+    /// movement drops the selection: a selection that outlives the movement
+    /// that made it reads as "something is still selected" long after the
+    /// reader thought it was gone.
+    Select,
 }
 
 /// A local, reversible edit produced by a presentation-level command.
@@ -1673,6 +1800,106 @@ pub struct InsertSession {
     selections_before: Vec<crate::tui::helix_selection::Selection<EditorPoint>>,
 }
 
+/// The word a word motion landed on, and therefore the word it selects.
+///
+/// `None` for every other motion, which is what makes the difference between
+/// "this motion selects" and "this motion moves".
+///
+/// Only `e` and `b` select. `w` is a *positioning* motion — Helix's "move next
+/// word start" — and a reader who pressed it wanted to be somewhere, not to
+/// have a word highlighted. The two word motions that jump to a word's
+/// **edge** are the ones whose arrival identifies a word unambiguously, so
+/// they are the ones that can select it.
+fn selected_word_bounds(
+    snapshot: &DocumentSnapshot,
+    command: EditorCommand,
+    next: usize,
+) -> Option<(usize, usize)> {
+    match command {
+        EditorCommand::WordEnd | EditorCommand::WordBackward => {
+            text_geometry::word_run_at(snapshot, next).map(|run| (run.start, run.last))
+        }
+        _ => None,
+    }
+}
+
+/// Apply the selection consequences of a deliberate cursor movement.
+///
+/// One sentence is the whole rule: **outside select mode a movement drops the
+/// selection, and inside it the movement grows it.** A selection that
+/// outlives the movement that made it reads as "something is still selected"
+/// long after the reader thought it was gone — so `x` on a line, then `j`,
+/// leaves nothing highlighted.
+///
+/// The word motions are the exception that creates rather than destroys: `e`
+/// and `b` land on a word and select it, which is what makes a held `e`
+/// step through a file with each word picked out in turn.
+///
+/// The selection's **head** is always the cursor, and the anchor is the other
+/// end of the word. That is why `b` — which lands on a word's *first* byte —
+/// produces a backwards selection, and why the highlighted span is the word
+/// either way.
+fn apply_motion_selection(
+    state: &mut SelectionState<EditorPoint>,
+    snapshot: &DocumentSnapshot,
+    command: EditorCommand,
+    next: usize,
+    selecting: bool,
+) {
+    let point = editor_point(snapshot, next);
+    if selecting {
+        // Select mode: the selection follows the cursor.
+        if !state.is_selected() {
+            // Nothing held. A word motion still selects the word it landed
+            // on — `v` then `e` selects a word, not one character — and any
+            // other motion starts a selection at the cursor's old position
+            // and grows it, so `v` then `l` selects two characters.
+            if let Some((anchor, head)) = selected_word_bounds(snapshot, command, next) {
+                state.select_char_range(
+                    editor_point(snapshot, anchor),
+                    editor_point(snapshot, head),
+                );
+                state.set_cursor(point);
+                return;
+            }
+            state.select_char();
+        }
+        state.move_to(point);
+        return;
+    }
+    // Normal mode: a movement drops the selection, and the word motions are
+    // the ones that create one.
+    match selected_word_bounds(snapshot, command, next) {
+        Some((anchor, head)) => {
+            state.clear();
+            state.select_char_range(editor_point(snapshot, anchor), editor_point(snapshot, head));
+            state.set_cursor(point);
+        }
+        None => {
+            state.clear();
+            state.move_to(point);
+        }
+    }
+}
+
+/// Where the view puts the cursor's line, when the view is being aligned
+/// rather than the cursor being moved.
+///
+/// Helix's view mode has three alignments and they are not the same thing:
+/// "top" pins the line to the first row, "bottom" to the last, and "center"
+/// to the middle. The names say which edge, because "middle" and "center" are
+/// the same word for two different axes in Helix and one of them is
+/// horizontal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewAlign {
+    /// The cursor's line sits in the middle of the view.
+    Center,
+    /// The cursor's line sits on the first row of the view.
+    Top,
+    /// The cursor's line sits on the last row of the view.
+    Bottom,
+}
+
 /// A resolved, document-relative edit intent from a normal-mode key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorCommand {
@@ -1699,6 +1926,37 @@ pub enum EditorCommand {
     LongWordEnd,
     HalfPageDown,
     HalfPageUp,
+    /// Helix `PageDown` / `Ctrl-f` — a **full** page.
+    ///
+    /// A variant of its own rather than an alias of [`Self::HalfPageDown`],
+    /// because the two are different sizes: Helix's `Ctrl-d` is a half page
+    /// and its `PageDown` is a whole one, and a reader who pressed `PageDown`
+    /// asked for a page. Aliasing the two made `PageDown` move half a screen
+    /// and the key's name a lie.
+    PageDown,
+    /// Helix `PageUp` / `Ctrl-b` — see [`Self::PageDown`].
+    PageUp,
+    /// Helix's view mode — align the **view** on the cursor's line without
+    /// moving the cursor.
+    ///
+    /// The cursor stays where it is and the page moves under it, which is the
+    /// one thing a cursor-bound viewport cannot do. It is a distinct command
+    /// rather than a flag on a motion because it resolves to a **scroll
+    /// offset**, not to an offset in the document.
+    ViewAlign(ViewAlign),
+    /// Helix's view mode — scroll the view by whole lines, leaving the cursor
+    /// where it is.
+    ViewScroll(isize),
+    /// Helix `gt` — the cursor to the **top** of the screen.
+    ///
+    /// The other way round from [`Self::ViewAlign`]: the screen moves to the
+    /// cursor there, and here the cursor moves to the screen. It needs the
+    /// real viewport, which the renderer measures and publishes.
+    ScreenTop,
+    /// Helix `gc` — the cursor to the **middle** of the screen.
+    ScreenCenter,
+    /// Helix `gb` — the cursor to the **bottom** of the screen.
+    ScreenBottom,
     /// Helix `]p` — the first non-whitespace byte of the next paragraph.
     ///
     /// A variant of its own rather than a flag on [`Self::MoveDown`]:
@@ -2237,8 +2495,14 @@ pub fn prev_paragraph_start(snapshot: &DocumentSnapshot, from: usize) -> Paragra
     }
 }
 
+/// Whether `byte` is word content.
+///
+/// **The editor's copy is the tree's copy.** The rule lives in
+/// [`crate::tui::text_geometry`], shared with the composer, so the editor
+/// cannot answer "is this a word byte" differently from the surface that
+/// shares the same word motions.
 fn is_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
+    text_geometry::is_word_byte(byte)
 }
 
 /// Whether `byte` belongs to a whitespace-delimited run, for Helix's `W`/`B`/`E`.
@@ -2658,6 +2922,30 @@ pub fn selection_ranges(
     )
 }
 
+/// Whether a **line-mode** selection member covers `line`.
+///
+/// A line selection is a *row* fact — "this line is selected" — and the byte
+/// range of an empty line is a single terminator byte that the row has no
+/// cell for. The range therefore cannot answer this question, and `x` on an
+/// empty line highlighted nothing at all: the selection was real, and there
+/// were no bytes for it to cover.
+///
+/// So the renderer asks this instead, and paints the row.
+pub fn line_selection_covers_line(
+    snapshot: &DocumentSnapshot,
+    selection: &crate::tui::helix_selection::Selection<EditorPoint>,
+    line: usize,
+) -> bool {
+    if selection.mode != crate::tui::helix_selection::SelectionMode::Line {
+        return false;
+    }
+    let (first, last) = selection.bounds();
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let first_line = first.line.min(last_line);
+    let final_line = last.line.min(last_line);
+    line >= first_line && line <= final_line
+}
+
 /// Sort `ranges` ascending and collapse every overlapping or touching pair.
 ///
 /// Touching counts as overlapping: `a..b` and `b..c` delete the same bytes as
@@ -2737,6 +3025,9 @@ pub fn apply_helix_verb(
     );
     let mut outcome = HelixVerbOutcome::Handled;
     let mut scrolled_to = presentation.viewport_line;
+    // The view scroll, when a view command set one. `None` is the ordinary
+    // case: the view follows the cursor.
+    let mut view_scroll = presentation.view_scroll;
     // Only a find motion writes a record; `None` means this verb moved the
     // cursor and deliberately left the repeatable-motion slot alone.
     let mut find_record: Option<(Option<FindMotion>, FindNote)> = None;
@@ -2746,7 +3037,23 @@ pub fn apply_helix_verb(
     // motion — `v`, `x` — leaves the column exactly as it found it.
     let mut probe_desired_column = presentation.desired_column;
     match verb {
-        HelixVerb::SelectChar => state.toggle_char(),
+        HelixVerb::SelectChar => {
+            // `v` is a **mode**, and the mode is what the reader can see.
+            // Entering it is what makes a movement grow the selection instead
+            // of dropping it; leaving it is what makes the next movement drop
+            // the selection again. `Esc` leaves it too — this is the same
+            // toggle, reached from the other end.
+            if presentation.mode == EditorMode::Select {
+                presentation.mode = EditorMode::Normal;
+                state.clear();
+            } else {
+                presentation.mode = EditorMode::Select;
+                // Armed on the cursor rather than toggled: the reader asked to
+                // *start* selecting, and a selection left over from a word
+                // jump is replaced rather than taken away.
+                state.select_char();
+            }
+        }
         HelixVerb::SelectLine => {
             // `x` is an action, not a mode: the second press grows the
             // selection by exactly one line, and only while nothing has moved
@@ -2824,15 +3131,30 @@ pub fn apply_helix_verb(
                 // the motion that just ran, and a motion that resolves on the
                 // probe must not leave a stale one behind.
                 match_note: presentation.match_note,
+                // The measured pane height, so a page motion pages by what the
+                // reader can actually see rather than by a fixed guess.
+                visible_lines: presentation.visible_lines,
+                // The view scroll rides along: a view command resolves on the
+                // probe, and the offset it computed has to reach the real
+                // presentation.
+                view_scroll: presentation.view_scroll,
                 ..TuiDocumentPresentation::default()
             };
-            let next = apply_motion(&mut probe, snapshot, command, NOMINAL_HELIX_PAGES);
+            let motion_height = motion_height(&probe);
+            let next = apply_motion(&mut probe, snapshot, command, motion_height);
             // The scroll has to come back with the cursor: it was resolved on
             // the probe, and dropping it is what made a second `Ctrl+d` land on
             // the same line as the first.
             scrolled_to = probe.viewport_line;
+            view_scroll = probe.view_scroll;
             probe_desired_column = probe.desired_column;
-            state.move_to(editor_point(snapshot, next));
+            apply_motion_selection(
+                &mut state,
+                snapshot,
+                command,
+                next,
+                presentation.mode == EditorMode::Select,
+            );
             outcome = HelixVerbOutcome::Moved(next);
             find_record = Some((probe.last_find, probe.find_note));
             paragraph_record = Some(probe.paragraph_note);
@@ -2930,6 +3252,7 @@ pub fn apply_helix_verb(
                         &state,
                         presentation,
                         scrolled_to,
+                        view_scroll,
                         probe_desired_column,
                         find_record,
                         paragraph_record,
@@ -2951,6 +3274,7 @@ pub fn apply_helix_verb(
                         &state,
                         presentation,
                         scrolled_to,
+                        view_scroll,
                         probe_desired_column,
                         find_record,
                         paragraph_record,
@@ -2972,6 +3296,7 @@ pub fn apply_helix_verb(
                         &state,
                         presentation,
                         scrolled_to,
+                        view_scroll,
                         probe_desired_column,
                         find_record,
                         paragraph_record,
@@ -3027,6 +3352,7 @@ pub fn apply_helix_verb(
         &state,
         presentation,
         scrolled_to,
+        view_scroll,
         probe_desired_column,
         find_record,
         paragraph_record,
@@ -3058,6 +3384,7 @@ fn write_back(
     state: &SelectionState<EditorPoint>,
     presentation: &mut TuiDocumentPresentation,
     scrolled_to: usize,
+    view_scroll: Option<usize>,
     desired_column: Option<usize>,
     find_record: Option<(Option<FindMotion>, FindNote)>,
     paragraph_record: Option<ParagraphNote>,
@@ -3067,6 +3394,10 @@ fn write_back(
     presentation.selections = state.selections().to_vec();
     presentation.primary_index = state.primary_index().unwrap_or_default();
     presentation.viewport_line = scrolled_to;
+    // The view scroll, when the motion set one. A view command resolves on
+    // the probe, and the offset it computed has to reach the real
+    // presentation — otherwise the page would not move at all.
+    presentation.view_scroll = view_scroll;
     // Unconditional, unlike the find record below: `apply_motion` always
     // rewrites the desired column — `None` for every motion that is not a step
     // along a column — so a column from the previous motion must not survive a
@@ -3112,7 +3443,25 @@ fn members_are_adjacent(
 /// The widget resolves the exact window at render time; a motion only needs
 /// *a* height to turn a page into a line count, and the viewport follows the
 /// cursor on the next frame.
+///
+/// This is the **fallback**, not the answer: the renderer measures the pane
+/// and publishes it, and [`motion_height`] prefers that. The fallback covers
+/// the window between opening a document and the first frame.
 const NOMINAL_HELIX_PAGES: usize = 20;
+
+/// The height a page motion should use.
+///
+/// The **measured** pane height when there is one, and the nominal fallback
+/// otherwise. A half page in a twelve-row pane is six rows, and the ten a
+/// fixed guess would give is most of the pane — which is why `Ctrl+d` used to
+/// overshoot a short editor by half a screen.
+fn motion_height(presentation: &TuiDocumentPresentation) -> usize {
+    if presentation.visible_lines > 0 {
+        presentation.visible_lines
+    } else {
+        NOMINAL_HELIX_PAGES
+    }
+}
 
 /// Byte offset of the first content byte on the line after `line`.
 ///
@@ -3657,12 +4006,31 @@ fn last_char_start(snapshot: &DocumentSnapshot, end: usize) -> Option<usize> {
 }
 
 /// Line reached by a half-page motion, from the current viewport height.
-pub fn half_page_target(viewport_line: usize, visible_lines: usize, down: bool) -> usize {
+///
+/// The anchor is the **cursor's** line, not the viewport's first line, and
+/// that is what makes a page a page: the cursor keeps the screen row it was
+/// on and the view moves with it. Anchoring on the viewport instead put the
+/// cursor on the first row of the new page, which is a jump rather than a
+/// scroll.
+pub fn half_page_target(cursor_line: usize, visible_lines: usize, down: bool) -> usize {
     let step = (visible_lines / 2).max(1);
     if down {
-        viewport_line.saturating_add(step)
+        cursor_line.saturating_add(step)
     } else {
-        viewport_line.saturating_sub(step)
+        cursor_line.saturating_sub(step)
+    }
+}
+
+/// Line reached by a full-page motion, from the current viewport height.
+///
+/// A full page, not a half: Helix's `PageDown` is a whole window and its
+/// `Ctrl-d` is half of one, and the two keys are not interchangeable.
+pub fn page_target(cursor_line: usize, visible_lines: usize, down: bool) -> usize {
+    let step = visible_lines.max(1);
+    if down {
+        cursor_line.saturating_add(step)
+    } else {
+        cursor_line.saturating_sub(step)
     }
 }
 
@@ -4279,6 +4647,41 @@ pub fn apply_motion(
     visible_lines: usize,
 ) -> usize {
     let from = clamp_offset(snapshot, presentation.cursor_byte);
+    // The view commands do not move the cursor — they move the **view**, and
+    // they resolve to a scroll offset rather than to an offset in the
+    // document. They are answered before the motion machinery, which would
+    // otherwise read their result as a cursor position and put the cursor
+    // where the page used to be.
+    match command {
+        EditorCommand::ViewAlign(align) => {
+            presentation.view_scroll = Some(view_align_line(
+                snapshot,
+                presentation.cursor_byte,
+                align,
+                visible_lines,
+            ));
+            return from;
+        }
+        EditorCommand::ViewScroll(delta) => {
+            let last_line = snapshot.len_lines().saturating_sub(1);
+            let max_first = last_line.saturating_sub(visible_lines.max(1) - 1);
+            let current = presentation
+                .view_scroll
+                .unwrap_or(presentation.viewport_line)
+                .min(max_first);
+            let next = if delta >= 0 {
+                current.saturating_add(delta as usize)
+            } else {
+                current.saturating_sub(delta.unsigned_abs())
+            };
+            presentation.view_scroll = Some(next.min(max_first));
+            return from;
+        }
+        _ => {}
+    }
+    // Any other motion re-attaches the view to the cursor: a view that was
+    // scrolled away is only meaningful while the reader is reading it.
+    presentation.view_scroll = None;
     // Read before `apply_motion_inner`, which reads it too, to resolve a
     // vertical move: the column it aimed at is what must survive, not the one
     // the target line clamped to.
@@ -4426,7 +4829,7 @@ fn apply_motion_inner(
             // is a very ordinary place to be — and a motion that quietly
             // refuses there reads as a dropped keypress rather than as the
             // end of the document.
-            let target = half_page_target(presentation.viewport_line, visible_lines, true);
+            let target = half_page_target(cursor_line(snapshot, cursor), visible_lines, true);
             if target > last_line_of(snapshot) {
                 buffer_content_end(snapshot)
             } else {
@@ -4437,10 +4840,56 @@ fn apply_motion_inner(
             }
         }
         EditorCommand::HalfPageUp => {
-            let target = half_page_target(presentation.viewport_line, visible_lines, false);
+            let target = half_page_target(cursor_line(snapshot, cursor), visible_lines, false);
             let column = cursor
                 .saturating_sub(line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0));
             offset_on_line(snapshot, target, column)
+        }
+        EditorCommand::PageDown => {
+            // A **full** page, and the same rule at the end of the document:
+            // the motion continues to the end rather than stopping a line
+            // short of it.
+            let target = page_target(cursor_line(snapshot, cursor), visible_lines, true);
+            if target > last_line_of(snapshot) {
+                buffer_content_end(snapshot)
+            } else {
+                let column = cursor.saturating_sub(
+                    line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0),
+                );
+                offset_on_line(snapshot, target, column)
+            }
+        }
+        EditorCommand::PageUp => {
+            let target = page_target(cursor_line(snapshot, cursor), visible_lines, false);
+            let column = cursor
+                .saturating_sub(line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0));
+            offset_on_line(snapshot, target, column)
+        }
+        // The three screen-relative motions. They need the **real** viewport,
+        // which the renderer measures and publishes — a fixed guess would put
+        // "the top of the screen" on a line that is not the top of the screen.
+        EditorCommand::ScreenTop => {
+            let column = cursor
+                .saturating_sub(line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0));
+            offset_on_line(snapshot, presentation.viewport_line, column)
+        }
+        EditorCommand::ScreenCenter => {
+            let column = cursor
+                .saturating_sub(line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0));
+            offset_on_line(
+                snapshot,
+                presentation.viewport_line + (visible_lines / 2).max(1),
+                column,
+            )
+        }
+        EditorCommand::ScreenBottom => {
+            let column = cursor
+                .saturating_sub(line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0));
+            offset_on_line(
+                snapshot,
+                presentation.viewport_line + visible_lines.saturating_sub(1),
+                column,
+            )
         }
         // A command this surface does not own (`DeleteChar`, `DeleteWord`, …)
         // is an *editing* intent, not a motion. Returning the cursor
@@ -4477,40 +4926,123 @@ fn viewport_after_motion(
 ) -> usize {
     let last_line = snapshot.len_lines().saturating_sub(1);
     let window = visible_lines.max(1);
-    let viewport = match command {
-        EditorCommand::HalfPageDown => presentation.viewport_line + (window / 2).max(1),
+    let max_first = last_line.saturating_sub(window - 1);
+    match command {
+        // A **page** moves the page. The margin does not apply to it: the
+        // reader asked for a page, and a page that stopped half-way to
+        // preserve a five-row margin would not be a page. The cursor keeps
+        // the screen row it was on, because the view moves by the same
+        // amount the cursor does.
+        EditorCommand::HalfPageDown => {
+            (presentation.viewport_line + (window / 2).max(1)).min(max_first)
+        }
         EditorCommand::HalfPageUp => presentation
             .viewport_line
-            .saturating_sub((window / 2).max(1)),
-        _ => presentation.viewport_line,
+            .saturating_sub((window / 2).max(1))
+            .min(max_first),
+        EditorCommand::PageDown => (presentation.viewport_line + window).min(max_first),
+        EditorCommand::PageUp => presentation
+            .viewport_line
+            .saturating_sub(window)
+            .min(max_first),
+        // Every **other** motion scrolls the minimum amount needed to reveal
+        // the cursor, keeping the scrolloff margin, so `j` does not reframe
+        // the document under the reader.
+        _ => reveal_cursor(
+            presentation.viewport_line,
+            cursor_line(snapshot, clamp_offset(snapshot, cursor)),
+            window,
+            last_line,
+        ),
     }
-    .min(last_line);
-    reveal_cursor(
-        viewport,
-        cursor_line(snapshot, clamp_offset(snapshot, cursor)),
-        window,
-        last_line,
-    )
 }
 
 /// Scroll the minimum amount needed to bring `target_line` into a window of
-/// `window` rows anchored at `viewport`.
+/// `window` rows anchored at `viewport`, keeping a margin at both edges.
 ///
 /// The one reveal rule, shared by motions and by `/` search, so a jump to a
 /// match lands the same way a jump to the end of the buffer does.
+///
+/// The **margin** is the whole of the behaviour. A view that scrolls the
+/// instant the cursor touches the bottom row is a view the reader cannot
+/// read: the text they are on moves out from under them mid-sentence. So the
+/// page stands still while the cursor walks the last few rows, and moves
+/// only when the cursor would leave the margin.
+///
+/// In a window of `H` rows with a margin of `SCROLL_OFF`:
+/// * the cursor rests at row `H - SCROLL_OFF - 1`, leaving `SCROLL_OFF` rows
+///   below it — `5 + 1` rows above the bottom, which is what Helix's
+///   `editor.scrolloff` of 5 produces;
+/// * the page starts moving when the cursor reaches row `H - SCROLL_OFF`;
+/// * the cursor is kept `SCROLL_OFF` rows below the top edge when the page
+///   moves up, which is the mirror of the same rule.
+///
+/// At the two ends of the document the margin gives way: the page cannot
+/// scroll past the first or the last line, so the cursor is allowed onto the
+/// edge row there. A reader who pages to the end of a file expects to be
+/// able to sit on the last line.
 pub fn reveal_cursor(
     viewport: usize,
     target_line: usize,
     window: usize,
     last_line: usize,
 ) -> usize {
-    if target_line < viewport {
-        target_line
-    } else if target_line >= viewport + window {
-        (target_line + 1 - window).min(last_line)
+    let window = window.max(1);
+    let margin = scrolloff_margin(window);
+    let max_first = last_line.saturating_sub(window - 1);
+    let first = viewport.min(max_first);
+    // The band the cursor may rest in: `margin` rows from the top and
+    // `margin` rows from the bottom.
+    let top = first + margin;
+    let bottom = first + (window - 1).saturating_sub(margin);
+    let scrolled = if target_line < top {
+        target_line.saturating_sub(margin)
+    } else if target_line > bottom {
+        target_line.saturating_sub((window - 1).saturating_sub(margin))
     } else {
-        viewport
-    }
+        first
+    };
+    scrolled.min(max_first)
+}
+
+/// The first visible line that puts the cursor's line where `align` wants it.
+///
+/// Helix's view mode, and the one thing a cursor-bound viewport cannot do:
+/// the page moves and the cursor stays where it is.
+fn view_align_line(
+    snapshot: &DocumentSnapshot,
+    cursor: usize,
+    align: ViewAlign,
+    visible_lines: usize,
+) -> usize {
+    let window = visible_lines.max(1);
+    let line = cursor_line(snapshot, clamp_offset(snapshot, cursor));
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let max_first = last_line.saturating_sub(window - 1);
+    let first = match align {
+        ViewAlign::Top => line,
+        ViewAlign::Bottom => line.saturating_sub(window - 1),
+        ViewAlign::Center => line.saturating_sub(window / 2),
+    };
+    first.min(max_first)
+}
+
+/// Helix's `editor.scrolloff`: the number of lines the cursor is kept away
+/// from the top and bottom edges of the view.
+///
+/// Helix's default is 5, and 5 is what the behaviour above is written
+/// against. It is a constant rather than a setting because nothing in the
+/// configuration schema carries an editor scroll setting today, and a
+/// half-finished setting is worse than a documented constant.
+pub const SCROLL_OFF: usize = 5;
+
+/// The margin a window of `window` rows can actually keep.
+///
+/// A window shorter than twice the margin plus one cannot hold a margin at
+/// both ends, and a margin that consumed the whole window would leave the
+/// cursor nowhere to go. The margin shrinks instead of the rule breaking.
+fn scrolloff_margin(window: usize) -> usize {
+    SCROLL_OFF.min(window.saturating_sub(1) / 2)
 }
 
 /// Park the cursor on `offset` and scroll the minimum amount to reveal it.
@@ -5181,18 +5713,27 @@ pub fn resolve_viewport(
         .saturating_sub(1)
         .max(MIN_EDITOR_TEXT_COLUMNS);
     let visible_lines = area_height.max(1);
+    // The measured height is published so a page motion can use it. A half
+    // page in a twelve-row pane is six rows, and the ten a fixed guess would
+    // give is most of the pane.
+    presentation.visible_lines = visible_lines as usize;
     let cursor_line = cursor_line(snapshot, presentation.cursor_byte);
     let last_line = snapshot.len_lines().saturating_sub(1);
     let max_first = last_line.saturating_sub(visible_lines.saturating_sub(1) as usize);
 
-    // Vertical: move the window minimally to keep the cursor line on screen.
-    let mut first = presentation.viewport_line.min(max_first);
-    if cursor_line < first {
-        first = cursor_line;
-    } else if cursor_line >= first + visible_lines as usize {
-        first = cursor_line + 1 - visible_lines as usize;
-    }
-    first = first.min(max_first);
+    // Vertical: the view follows the cursor, keeping the scrolloff margin —
+    // unless the view has been scrolled **away** from the cursor, which is
+    // Helix's view mode. There the cursor may be off screen entirely, and
+    // that is the point.
+    let first = match presentation.view_scroll {
+        Some(scroll) => scroll.min(max_first),
+        None => reveal_cursor(
+            presentation.viewport_line,
+            cursor_line,
+            visible_lines as usize,
+            last_line,
+        ),
+    };
 
     // Horizontal: keep the cursor's display column on screen, then clamp to
     // the longest visible line so the view never scrolls past content.
@@ -5202,10 +5743,12 @@ pub fn resolve_viewport(
     let cursor_start = line_start(snapshot, cursor_line).unwrap_or(0);
     let cursor_column = bounded_display_width(snapshot, cursor_start..presentation.cursor_byte).0;
     let mut column = presentation.viewport_column;
-    if cursor_column < column {
-        column = cursor_column;
-    } else if cursor_column >= column + text_columns as usize {
-        column = cursor_column + 1 - text_columns as usize;
+    if presentation.view_scroll.is_none() {
+        if cursor_column < column {
+            column = cursor_column;
+        } else if cursor_column >= column + text_columns as usize {
+            column = cursor_column + 1 - text_columns as usize;
+        }
     }
     let max_column = longest_visible_width(snapshot, first, visible_lines as usize)
         .saturating_sub(text_columns as usize);
@@ -5594,6 +6137,12 @@ fn resolve_object(
 /// The byte classification is [`is_word_byte`]'s, so a CJK run is one word
 /// and the object agrees with the `w` motion the reader just used to get
 /// there.
+///
+/// The object's word is **word content only**, which is not the motion's
+/// word: the motion treats a punctuation run as a word in its own right
+/// (Helix's category model), while the object does not. So `a.b` is one
+/// motion-word and two object-words, and `m i w` on it takes `a` without the
+/// dot.
 fn word_object(
     snapshot: &DocumentSnapshot,
     cursor: usize,
@@ -5601,29 +6150,18 @@ fn word_object(
     let cursor = clamp_offset(snapshot, cursor);
     // The word **at** the cursor. A cursor on a separator names the next
     // word, the same rule Helix's `e` uses to step onto one.
-    let start = if is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
-        word_start_at(snapshot, cursor)
+    let range = if is_word_byte(leading_byte(snapshot, cursor).unwrap_or(0)) {
+        text_geometry::word_content_run_at(snapshot, cursor)
     } else {
-        word_forward(snapshot, cursor)
+        text_geometry::next_word_content_run(snapshot, cursor)
     };
-    let end = char_end(snapshot, word_end(snapshot, start));
+    let Some((start, end)) = range else {
+        return Err("no word under the cursor".to_string());
+    };
     if end <= start {
         return Err("no word under the cursor".to_string());
     }
     Ok(start..end)
-}
-
-/// The start of the word run that contains `cursor`.
-fn word_start_at(snapshot: &DocumentSnapshot, cursor: usize) -> usize {
-    let mut start = clamp_offset(snapshot, cursor);
-    while start > 0 {
-        let previous = prev_char_boundary(snapshot, start);
-        if !is_word_byte(leading_byte(snapshot, previous).unwrap_or(0)) {
-            break;
-        }
-        start = previous;
-    }
-    start
 }
 
 /// The whitespace-delimited run under the cursor.
@@ -6337,6 +6875,10 @@ mod tests {
         let text = (0..30).map(|i| format!("line{i}\n")).collect::<String>();
         let snapshot = snapshot_of(&text);
         let mut presentation = presentation_at(0);
+        // The half page is anchored on the **cursor**, so the caret keeps its
+        // screen row and the view moves with it. The caret therefore starts
+        // where the view says it is.
+        presentation.cursor_byte = line_start(&snapshot, 20).expect("line 20 starts somewhere");
         presentation.viewport_line = 20;
         apply_motion(
             &mut presentation,
@@ -6736,14 +7278,19 @@ mod tests {
         apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
         assert_eq!(primary(&presentation).unwrap().line_range(), (0, 1));
 
-        // Any deliberate movement disarms growth, so the next `x` re-anchors
-        // instead of swallowing everything walked past.
+        // A deliberate movement **drops** the selection outside select mode.
+        // A selection that outlives the movement that made it reads as
+        // "something is still selected" long after the reader thought it was
+        // gone.
         apply_helix_verb(
             &snapshot,
             &mut presentation,
             HelixVerb::Moved(EditorCommand::MoveDown),
         );
-        assert_eq!(primary(&presentation).unwrap().line_range(), (0, 1));
+        assert!(
+            primary(&presentation).is_none(),
+            "a movement outside select mode drops the held selection"
+        );
         // The cursor is on line 1 now, so the next `x` re-anchors there
         // rather than swallowing everything walked past.
         apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
@@ -6755,16 +7302,28 @@ mod tests {
         let snapshot = snapshot_of("one\ntwo\nthree\n");
         let mut presentation = presentation_at(1);
 
+        // `v` enters **select mode** and arms a character selection.
         apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectChar);
+        assert_eq!(
+            presentation.mode,
+            EditorMode::Select,
+            "`v` is a mode the reader can see"
+        );
         apply_helix_verb(
             &snapshot,
             &mut presentation,
             HelixVerb::Moved(EditorCommand::MoveRight),
         );
         let (first, last) = primary(&presentation).unwrap().bounds();
-        assert_eq!((first.byte, last.byte), (1, 2));
+        assert_eq!(
+            (first.byte, last.byte),
+            (1, 2),
+            "in select mode a movement grows the selection"
+        );
 
-        // Same movement, but the selection was anchored by `x`.
+        // The same movement **outside** select mode drops the selection. A
+        // line selection is not grown by a movement either — it is dropped,
+        // because the reader moved somewhere else.
         let mut line_selection = presentation_at(1);
         apply_helix_verb(&snapshot, &mut line_selection, HelixVerb::SelectLine);
         apply_helix_verb(
@@ -6772,9 +7331,8 @@ mod tests {
             &mut line_selection,
             HelixVerb::Moved(EditorCommand::MoveDown),
         );
-        assert_eq!(
-            primary(&line_selection).unwrap().line_range(),
-            (0, 0),
+        assert!(
+            primary(&line_selection).is_none(),
             "a bare movement must not add lines to a line selection"
         );
     }
@@ -7197,8 +7755,8 @@ mod tests {
         assert_eq!(long_word_forward(&snapshot, 0), 8, "`foo.bar` is one WORD");
         assert_eq!(
             word_forward(&snapshot, 0),
-            4,
-            "`w` stops inside the WORD, at `bar`"
+            3,
+            "`w` stops on the punctuation run, which is a word of its own"
         );
 
         assert_eq!(long_word_backward(&snapshot, 8), 0, "one WORD back");
@@ -7241,8 +7799,8 @@ mod tests {
         );
         assert_eq!(
             word_forward(&mixed, 0),
-            7,
-            "`w` breaks at the comma, landing on 語"
+            6,
+            "`w` stops on the comma — a punctuation run is a word of its own"
         );
     }
 
@@ -8120,13 +8678,28 @@ mod tests {
             &'static str,
             Option<FindKind>,
         );
-        let cases: [Case; 10] = [
+        let cases: [Case; 11] = [
             (EditorPrefix::Idle, vec![], false, "", None),
             (
                 EditorPrefix::Goto,
-                vec!['g', 's', 'e', 'h', 'l', 'j', 'k', 'd', 'i', 'r', 'y'],
+                // `gt`/`gc`/`gb` — the top, the middle and the bottom of the
+                // **screen** — became bound once the renderer published the
+                // measured viewport; before that they resolved against a
+                // fixed guess, which was not the top of the screen.
+                vec![
+                    'g', 't', 'c', 'b', 's', 'e', 'h', 'l', 'j', 'k', 'd', 'i', 'r', 'y',
+                ],
                 true,
                 "g",
+                None,
+            ),
+            // View mode. It **swallows** an unmatched key, because it is a
+            // mode: `z x` must not delete a line.
+            (
+                EditorPrefix::View,
+                vec!['c', 't', 'b', 'j', 'k'],
+                true,
+                "z",
                 None,
             ),
             (
