@@ -444,6 +444,20 @@ policy* of a delegated child job, the other bounds the *process reach* of a
 nested call. The resolution keeps both fields, both initializers, and both
 builder methods; `BrokerAdapter::new` initializes all three.
 
+**One interaction to note.** `main`'s PR #157 also added a **process-admission**
+gate at the final executor (`admit_process_class` in
+`src/scheduler/executors.rs`), which refuses a process-class job for a
+reserved checkout. A delegated Tool Program child is a process-class job, so
+from this merge forward the delegated child's effective policy is the
+**intersection** of two independent authorities: the accepted sandbox/network
+ceiling this milestone delivers, and `main`'s process-denial authority. The
+gate fails closed — it returns `Ok` only when no process-admission service is
+attached — so it can refuse a delegated child that the ceiling alone would
+have allowed, never the reverse. This is `main`'s C005 contract, not a change
+to this milestone's; it is recorded because it changes what a delegated child
+may do, and because it is the reason the hosted evidence had to be re-run on
+the merged tree rather than carried over.
+
 The reconciliation was proved at both levels the earlier ones were:
 
 - **file level** — `git ls-files -u` is empty, `git diff --check` is clean,
