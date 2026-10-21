@@ -365,6 +365,15 @@ cannot cover. Every run below is on an exact head of this branch.
 | `39685717425` | `7be59bd46` | Linux M004 process and IPC qualification | **success** — the delegated-child proof passes on a qualified host (§10.1) |
 | `39685699753` | `7be59bd46` | Linux M004 process and IPC qualification (`push`) | the same qualification from the `push` trigger; superseded by the merge push |
 | `39685699680` | `7be59bd46` | Linux C006 protected mount qualification | **success** |
+| `39689988865` | `b87f15860` | CI (branch-wide), `workflow_dispatch` | **failure** — one timing-sensitive test, diagnosed in §4.7b |
+| `39691145379` | `b9648609c` | CI (branch-wide) | **success** — 16,029 tests run, 16,029 passed, 8 skipped, `Summary [ 376.832s]` |
+| `39691145352` | `b9648609c` | Linux M004 process and IPC qualification | **success** — the delegated-child proof passes on the shipped tree (§4.7a) |
+
+Heads `b87f15860`, `96b150dc8` and `b9648609c` differ only in `plans/` — the
+merge commit `0a77cfa37` carries every code change on the branch, and the two
+later commits are records. The hosted qualification of the shipped tree is
+therefore the one on `b9648609c`, where CI and the native qualification are
+both green.
 
 The `pull_request` event dispatch for `9a40e983e` produced **no** runs at all
 — GitHub created none, for any workflow, after the push. The CI run was
@@ -420,6 +429,50 @@ reachable host would have failed the step), the host UDP listener received
 nothing, and the child still completed its permitted workspace write. The
 host **positive control** — the same host reaching its own loopback listener —
 passed, so a denial could not be a broken fixture.
+
+### 4.7b A hosted CI failure that was diagnosed as a timing flake
+
+CI run `39689988865` on head `b87f15860` **failed** with one test:
+
+```
+FAIL [   0.158s] ( 8417/16029) codegg::git_credential_cross_path f2_sanitize_large_argv_is_linear
+thread 'f2_sanitize_large_argv_is_linear' panicked at tests/git_credential_cross_path.rs:419:5:
+sanitize_argv_for_run_store took 148.190758ms on 10k tokens — likely quadratic
+```
+
+The nextest run stopped there (8,420 of 16,029 tests had run), so the
+remaining tests in that run were never executed — this run is **not** counted
+as evidence for anything.
+
+**The diagnosis.** The assertion is a wall-clock bound — `elapsed < 100 ms`
+for sanitizing a 10,000-token argv — and it failed at 148 ms, 48% over. The
+evidence that this is runner timing and not a regression:
+
+- **The function is linear by inspection.**
+  `sanitize_argv_for_run_store` is a single `map` over the argv with one
+  `contains` check per token and a per-token redaction. There is no nested
+  scan and no quadratic path.
+- **The file is untouched.** `tests/git_credential_cross_path.rs` is not in
+  this branch's diff against `main`, and `main`'s PR #157 did not change it
+  either. It is in the Git-credential path, which none of this milestone's
+  changes touch.
+- **It passes locally, including under load.** The test binary passes in
+  0.01 s here, and still passes in 0.01–0.02 s with sixteen CPU burners
+  running.
+- **The same test passes in the next hosted run.** In CI run `39691145379`
+  on the same code, the same test at the same position (8,418 of 16,029)
+  **passed in 0.010 s**.
+
+The test was added in `527ad616c` with its 100 ms budget and is not a test
+this branch changed. **Nothing was weakened to make it pass**: the budget was
+not raised, the test was not excluded, and no assertion was relaxed. The
+re-run on `b9648609c` is the green signal; this run is recorded because a
+failed run is a fact and not something to be quietly dropped.
+
+This is recorded as an **observation about the hosted runner**, not as a
+defect in this milestone. A wall-clock bound in a shared test suite is
+inherently sensitive to runner load, and the load in the failing run was
+raised by the 16,029-test workspace sweep it was part of.
 
 
 ### 4.8 The reconciliation with `main` (`53d9fc9fd`)
@@ -725,11 +778,16 @@ qualification in §10.1 and the C006 protected-mount qualification
 The head has since moved to the merge commit that reconciles this line with
 `main` (§4.8), which brings `main`'s PR #157 production changes into the two
 durable routes and into the owner that enforces the ceiling. The hosted
-evidence must therefore be re-run on **that** head before it qualifies the
-shipped tree exactly. The local scope stays narrowed at the owner's
-direction: the local changed-surface slice on the merged tree is
-**7546 tests run, 7546 passed, 4 skipped**, `Summary [ 190.297s]` — 24 more
-tests than the pre-merge slice, from `main`'s PR #157.
+evidence was therefore re-run on the merged tree, and it is **green there**:
+CI run `39691145379` on `b9648609c` — **16,029 tests run, 16,029 passed,
+8 skipped**, `Summary [ 376.832s]` — and the native qualification run
+`39691145352`, also green, with the delegated-child proof passing (§4.7a).
+The count grew from 15,854 to 16,029 because `main`'s PR #157 added tests.
+
+The local scope stays narrowed at the owner's direction: the local
+changed-surface slice on the merged tree is **7546 tests run, 7546 passed,
+4 skipped**, `Summary [ 190.297s]` — 24 more tests than the pre-merge slice,
+from `main`'s PR #157.
 
 The branch-wide evidence for the merged baseline is also in
 `plans/closure/branch-and-ci-stabilization/001-status.md`
