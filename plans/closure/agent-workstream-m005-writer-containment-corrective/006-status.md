@@ -470,9 +470,9 @@ a live model and a contained Git backend, and it stays a narrow follow-up.
 
 ### 8.4 The regressions the hosted CI found
 
-The hosted runs found two real defects that the local scoped suites could not
-have found, both introduced by C005 and both invisible to a run that only
-touches the corrective's own suites.
+The hosted runs found three real defects that the local scoped suites could not
+have found, all of them invisible to a run that only touches the corrective's
+own suites.
 
 **The frozen M003 tool-advisor receipt.** The receipt test reconstructs the
 M003-era tool schemas by reversing every recorded post-M003 change — the
@@ -499,6 +499,35 @@ platform, so there is no child for the profile to deny — and by letting the
 second is fixed by listing and ignoring the two fields. Windows behaviour is
 unchanged in both cases: the refusal there is the platform's, not the
 profile's.
+
+**A stale assertion on the WorkOrder shared-mutation diagnostic — and why it
+stayed hidden.** The corrective's own accuracy pass (commit `717cdcbc9`)
+corrected the `shared_mutation_unavailable:` diagnostic so it no longer
+claimed the daemon "has no checkout-scoped writer reservation covering every
+AgentTurn" — a claim that became false when C002–C004 built exactly that
+reservation. That correction broke
+`work_orders_m002_materialization::non_git_mutation_and_sharing_follow_the_truthful_policy`,
+which asserted the *pre-corrective* phrase.
+
+It stayed invisible for a long time because **nextest stops at the first
+failure**: every earlier hosted run died on
+`scheduler_contention::different_exclusivity_keys_run_in_parallel` before
+ever reaching that test, so ~3,800 tests were never executed at all. Fixing
+the contention failure (§8.5) exposed it immediately.
+
+The fix follows the current truth rather than the old wording: the assertion
+now requires the stable `shared_mutation_unavailable:` prefix — the marker the
+M005 trigger suite also relies on — plus the opt-in shared placement the
+diagnostic points at. The diagnostic was **not** bent to keep the old phrase:
+an assertion that mentions a concept without that concept being the reason
+is a hollow assertion, and the corrected diagnostic is the truthful one.
+
+Two lessons are recorded here rather than left implicit. First, a corrective
+that touches a *diagnostic* can break a test in another subsystem's suite,
+and the scoped suites cannot see it. Second, a fail-fast CI run reports one
+failure and silently skips the rest, so "the CI run failed on X" is never
+evidence that X is the only failure — and a green run after a fix is the
+first moment the remaining failures can surface.
 
 Both are recorded because they are the reason a full-workspace hosted run is
 not a formality. C005 was committed with no hosted CI run at all, and two
