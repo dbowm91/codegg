@@ -625,6 +625,11 @@ mod tests {
             unaccounted_tool_calls: 2,
             unaccounted_input_tokens: 11,
             unaccounted_output_tokens: 7,
+            run_provider_responses: 0,
+            run_input_tokens: 0,
+            run_output_tokens: 0,
+            run_cached_tokens: None,
+            run_reasoning_tokens: None,
         };
 
         // A successful accounting tick consumes only the delta; the hard

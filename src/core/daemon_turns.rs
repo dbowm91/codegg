@@ -769,6 +769,16 @@ impl CoreDaemon {
                                     session_id: session_id.clone(),
                                     turn_id: Some(turn_id.clone()),
                                     message: error.to_string(),
+                                    // The turn never reached the agent loop,
+                                    // so no provider response was observed
+                                    // and no usage is knowable. The error
+                                    // itself is typed, so the category is the
+                                    // same classification the agent-loop
+                                    // failure path uses.
+                                    category: Some(
+                                        crate::agent::turn_runtime::classify_turn_failure(&error),
+                                    ),
+                                    usage: None,
                                 },
                             )
                             .await;

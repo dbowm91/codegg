@@ -8,16 +8,24 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import statistics
 import subprocess
 import threading
 import time
 from typing import Any
 
 
-STATES = {"BASELINED", "DIAGNOSED", "PROPOSING", "PATCHED", "BUILDING", "QUALIFYING", "EVALUATING", "COMPARING", "ACCEPTED", "REJECTED", "BLOCKED"}
-SUPPORTED_OPENCODE_VERSION = "1.19.0"
-TERMINAL = {"ACCEPTED", "REJECTED", "BLOCKED"}
-ALLOWED = {
+STATES = {"BASELINED", "DIAGNOSED", "PROPOSING", "PATCHED", "BUILDING", "QUALIFYING", "EVALUATING", "COMPARING", "ACCEPTED", "REJECTED", "BLOCKED", "INTERRUPTED_UNKNOWN"}
+#: The OpenCode CLI version whose `run --auto --format json` surface this
+#: adapter supports. Verified against the installed 1.19.3 `opencode run
+#: --help`: `run [message..]`, `--auto` (auto-approve permissions that are not
+#: explicitly denied), `--format json` (raw JSON events), `--dir`, `--model`,
+#: and `--agent` are all present with unchanged meanings. The JSON *event
+#: payload* shape still needs one authenticated bounded invocation to confirm
+#: against a live proposer; until then the pin only certifies the CLI surface.
+SUPPORTED_OPENCODE_VERSION = "1.19.3"
+TERMINAL = {"ACCEPTED", "REJECTED", "BLOCKED", "INTERRUPTED_UNKNOWN"}
+_ALLOWED_TRANSITIONS = {
     "BASELINED": {"DIAGNOSED", "BLOCKED"}, "DIAGNOSED": {"PROPOSING", "BLOCKED"},
     "PROPOSING": {"PATCHED", "REJECTED", "BLOCKED"}, "PATCHED": {"BUILDING", "REJECTED", "BLOCKED"},
     "BUILDING": {"BUILDING", "QUALIFYING", "PROPOSING", "REJECTED", "BLOCKED"},
@@ -26,7 +34,27 @@ ALLOWED = {
     "COMPARING": {"BUILDING", "ACCEPTED", "REJECTED", "BLOCKED"},
     "ACCEPTED": set(), "REJECTED": set(), "BLOCKED": set(),
 }
+# Every non-terminal state may record an interruption. A crash between a
+# checkpoint's append-only event write and its current-state pointer
+# replacement is reconciled to a recorded ``interrupted_unknown`` outcome, so
+# the ambiguous attempt is preserved for manual inspection instead of being
+# silently continued or resubmitted.
+ALLOWED = {state: (set(targets) | {"INTERRUPTED_UNKNOWN"}) if state not in TERMINAL else set(targets)
+           for state, targets in _ALLOWED_TRANSITIONS.items()}
+ALLOWED["INTERRUPTED_UNKNOWN"] = set()
+INTERRUPTED_UNKNOWN_OUTCOME = "interrupted_unknown"
 OPENCODE_EVENT_TYPES = {"session_start", "session_end", "step_start", "step_finish", "text", "reasoning", "tool_use", "tool_result", "tool", "error", "permission"}
+
+
+class CheckpointInterrupted(ValueError):
+    """Raised when a checkpoint's recorded tail and its current-state pointer disagree.
+
+    The disagreement is reconciled to a recorded ``interrupted_unknown`` outcome
+    *before* the error is raised, so the ambiguous attempt is preserved for
+    manual inspection instead of being silently continued or resubmitted. The
+    error is a refusal, not an opaque failure: it names the exact sequence
+    numbers that were ambiguous.
+    """
 
 
 @dataclass
@@ -55,6 +83,45 @@ class Budget:
         setattr(self, attr, value)
 
 
+def _read_event_log(events_path: Path) -> tuple[list[dict[str, Any]], bool]:
+    """Read an append-only event log, tolerating one torn trailing record.
+
+    A process killed *inside* the append can leave a partially written final
+    line. That record was never acknowledged by the pointer and is not a
+    committed event, so it is reported as a torn tail and dropped instead of
+    being parsed as corruption. A corrupt record anywhere else is corruption.
+    """
+    if not events_path.exists():
+        return [], False
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    events: list[dict[str, Any]] = []
+    torn_tail = False
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            if index == len(lines) - 1:
+                torn_tail = True
+            else:
+                raise ValueError("checkpoint event log contains a corrupt record")
+    return events, torn_tail
+
+
+def _truncate_event_log(events_path: Path, events: list[dict[str, Any]]) -> None:
+    """Rewrite an event log without its torn trailing record.
+
+    Only the never-committed torn bytes are dropped; every complete event is
+    rewritten byte-for-byte in the format ``_save`` uses, so the log stays
+    append-only for every record that was ever acknowledged.
+    """
+    temporary = events_path.with_suffix(".recovered")
+    temporary.write_text("".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+                         encoding="utf-8")
+    os.replace(temporary, events_path)
+
+
 class Checkpoint:
     def __init__(self, path: Path, base_revision: str, suite_digest: str) -> None:
         self.path = path
@@ -70,7 +137,7 @@ class Checkpoint:
     @classmethod
     def resume(cls, path: Path, base_revision: str, suite_digest: str) -> "Checkpoint":
         events_path = path.with_suffix(".jsonl")
-        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        events, torn_tail = _read_event_log(events_path)
         if not events or any(event.get("seq") != index for index, event in enumerate(events, 1)):
             raise ValueError("checkpoint event sequence is missing or corrupt")
         if events[0].get("state") != "BASELINED":
@@ -83,17 +150,24 @@ class Checkpoint:
             expected_attempt = int(previous.get("attempt_id", 0)) + (next_state == "PROPOSING")
             if current.get("attempt_id") != expected_attempt:
                 raise ValueError("checkpoint attempt sequence is invalid")
-        if path.exists():
-            pointer = json.loads(path.read_text(encoding="utf-8"))
-            if pointer != events[-1]:
-                raise ValueError("checkpoint pointer does not match the append-only event tail")
-        else:
-            raise ValueError("checkpoint pointer is missing")
-        last = events[-1]
         if any(event.get("base_revision") != base_revision or event.get("suite_digest") != suite_digest
                for event in events):
             raise ValueError("checkpoint baseline or fixture suite changed; refusing resume")
+        if not path.exists():
+            raise ValueError("checkpoint pointer is missing")
+        pointer = json.loads(path.read_text(encoding="utf-8"))
+        if pointer != events[-1]:
+            pointer_index = next((index for index, event in enumerate(events) if event == pointer), None)
+            if pointer_index is None:
+                raise ValueError("checkpoint pointer does not match the append-only event tail")
+            raise cls._reconcile_interruption(path, events_path, events, pointer, pointer_index,
+                                               torn_tail=torn_tail)
+        last = events[-1]
         state = last.get("state")
+        if state == "INTERRUPTED_UNKNOWN":
+            raise CheckpointInterrupted(last.get("evidence", {}).get("reason")
+                                        or "checkpoint was interrupted; its outcome is recorded as "
+                                           f"{INTERRUPTED_UNKNOWN_OUTCOME}")
         if state not in STATES or state in TERMINAL:
             raise ValueError("checkpoint is terminal or has an unknown state")
         checkpoint = cls.__new__(cls)
@@ -103,6 +177,44 @@ class Checkpoint:
         checkpoint.suite_digest = suite_digest
         checkpoint.attempt_id = int(last.get("attempt_id", 0))
         return checkpoint
+
+    @classmethod
+    def _reconcile_interruption(cls, path: Path, events_path: Path, events: list[dict[str, Any]],
+                                pointer: dict[str, Any], pointer_index: int,
+                                torn_tail: bool) -> "CheckpointInterrupted":
+        """Record the ambiguous interruption and refuse to continue.
+
+        The tail advanced past the pointer, so the process died between the
+        append-only event write and the pointer replacement: the interrupted
+        attempt's outcome is unknown. The interruption is recorded as an
+        ``interrupted_unknown`` outcome (the ledger's interrupted terminal) and
+        the resume is refused, so no duplicate event and no duplicate trial can
+        be produced by silently continuing.
+        """
+        unpointed = events[pointer_index + 1:]
+        reason = ("checkpoint pointer is stale: the append-only event tail advanced to seq "
+                  f"{events[-1].get('seq')} ({events[-1].get('state')}) while the pointer still names "
+                  f"seq {pointer.get('seq')} ({pointer.get('state')}); the interrupted attempt's outcome "
+                  f"is ambiguous and was recorded as {INTERRUPTED_UNKNOWN_OUTCOME}")
+        checkpoint = cls.__new__(cls)
+        checkpoint.path, checkpoint.events_path = path, events_path
+        checkpoint.state = events[-1].get("state")
+        checkpoint.base_revision = events[-1].get("base_revision")
+        checkpoint.suite_digest = events[-1].get("suite_digest")
+        checkpoint.attempt_id = int(events[-1].get("attempt_id", 0))
+        if events[-1].get("state") == "INTERRUPTED_UNKNOWN":
+            # A repeated resume is idempotent: the interruption is already
+            # recorded, so no second event is appended for the same tail.
+            raise CheckpointInterrupted(reason)
+        if torn_tail:
+            _truncate_event_log(events_path, events)
+        checkpoint._save("INTERRUPTED_UNKNOWN",
+                         {"outcome": INTERRUPTED_UNKNOWN_OUTCOME, "reason": reason,
+                          "pointer_seq": pointer.get("seq"),
+                          "unpointed_seq": [event.get("seq") for event in unpointed],
+                          "unpointed_state": events[-1].get("state"),
+                          "torn_tail": torn_tail, "source_mutated": False})
+        raise CheckpointInterrupted(reason)
 
     def transition(self, state: str, evidence: dict[str, Any]) -> None:
         if state not in STATES or state not in ALLOWED[self.state]:
@@ -158,8 +270,13 @@ def run_opencode(worktree: Path, prompt: str, timeout: float = 300.0, executable
     if not binary:
         raise FileNotFoundError("opencode executable is unavailable; manual proposer remains available")
     version = subprocess.run([binary, "--version"], cwd=worktree, capture_output=True, text=True, timeout=5)
-    if version.returncode != 0 or version.stdout.strip() != SUPPORTED_OPENCODE_VERSION:
-        raise RuntimeError("OpenCode version preflight failed")
+    observed = version.stdout.strip() if version.stdout else ""
+    if version.returncode != 0 or observed != SUPPORTED_OPENCODE_VERSION:
+        # The version gate is a distinct, nameable refusal: it is not a
+        # transport fault and it must not be reported as one.
+        raise RuntimeError(
+            f"OpenCode version preflight failed: expected {SUPPORTED_OPENCODE_VERSION}, "
+            f"observed {observed or 'unknown'} from {binary}")
     env = os.environ.copy()
     env.pop("CODEGG_DAEMON_HOME", None)
     process = subprocess.Popen([binary, "run", "--auto", "--format", "json", "--dir", str(worktree), prompt],
@@ -305,6 +422,69 @@ def check_scope(paths: list[str], allowed_prefixes: tuple[str, ...]) -> None:
             raise ValueError(f"candidate changed forbidden or out-of-scope path: {path}")
 
 
+def _build_with_compile_correction(*, build, propose, gates: list[Any], started: float,
+                                   max_wallclock: float, timeout: float, proposer: str,
+                                   max_candidate_retries: int, checkpoint: "Checkpoint | None",
+                                   correction_prompt: str, allowed_prefixes: tuple[str, ...],
+                                   changelog: str, worktree: Path, patch_digest: str
+                                   ) -> tuple[str, int]:
+    """Build a candidate, correcting a compile failure at most N times.
+
+    This is the bounded compile-correction mechanic. It is extracted so the
+    bounding is directly testable: each retry is separately counted and gated,
+    the build is re-run after every correction, and the retry count is
+    exhausted rather than unbounded.
+
+    ``build`` performs one build attempt and raises on failure. ``propose``
+    asks the proposer for a correction and returns its receipt. Both are
+    injected so the mechanic can be qualified against a labelled fault
+    injection without a live provider.
+    """
+    import hashlib
+
+    retry_count = 0
+    while True:
+        remaining = max_wallclock - (time.monotonic() - started)
+        if remaining <= 0:
+            raise TimeoutError("candidate qualification wallclock budget exhausted during build gates")
+        try:
+            gates.append(build())
+            return patch_digest, retry_count
+        except (RuntimeError, TimeoutError) as error:
+            if proposer != "opencode" or retry_count >= max_candidate_retries:
+                raise
+            retry_count += 1
+            if checkpoint is not None:
+                checkpoint.transition("PROPOSING", {"attempt_kind": "compile_correction",
+                                                      "retry": retry_count,
+                                                      "failure_sha256": hashlib.sha256(str(error).encode()).hexdigest()})
+            prompt = (correction_prompt.strip() + "\n\n" if correction_prompt.strip() else "") + \
+                "Correct this candidate's compile gate failure. This is a compile-correction retry, not a new candidate. " + \
+                "Keep changes within the already authorized path scope and preserve CHANGELOG.harness.md. " + \
+                "Do not claim tests passed. Failure evidence (bounded):\n" + str(error)[-4096:]
+            remaining = max_wallclock - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("candidate qualification wallclock budget exhausted before compile correction")
+            receipt = propose(prompt)
+            corrected_paths = changed_paths(worktree)
+            check_scope(corrected_paths, allowed_prefixes + (changelog,))
+            if changelog not in corrected_paths:
+                raise ValueError(f"compile correction removed required {changelog}")
+            corrected_text = (worktree / changelog).read_text(encoding="utf-8")
+            if any(section.casefold() not in corrected_text.casefold()
+                   for section in ("Root cause", "Contracts", "Validation", "Accepted risks")):
+                raise ValueError("compile correction invalidated required candidate changelog sections")
+            if any(word.casefold() in corrected_text.casefold() for word in ("<candidate", "TODO", "TBD", "pending")):
+                raise ValueError("compile correction left an unresolved changelog placeholder")
+            patch_digest = candidate_patch_sha256(worktree, corrected_paths)
+            if checkpoint is not None:
+                checkpoint.transition("PATCHED", {"attempt_kind": "compile_correction", "retry": retry_count,
+                                                   "changed_paths": corrected_paths,
+                                                   "patch_sha256": patch_digest,
+                                                   "proposer_receipt": receipt})
+                checkpoint.transition("BUILDING", {"retry": retry_count, "patch_sha256": patch_digest})
+
+
 def manual_dry_run(path: Path, max_iterations: int = 1, max_candidate_retries: int = 0) -> dict[str, Any]:
     budget = Budget(max_iterations=max_iterations, max_candidate_retries=max_candidate_retries,
                     max_proposer_calls=max_iterations)
@@ -359,6 +539,249 @@ def _run_gate(argv: list[str], cwd: Path, env: dict[str, str], timeout: float) -
             "stderr_bytes": len(result.stderr)}
 
 
+PROTECTED_CONTROL_TERMINALS = frozenset({"assertion_failed", "execution_failed", "cancelled", "timeout"})
+AVOIDABLE_FAILURE_TERMINALS = frozenset({"execution_failed", "infrastructure_error"})
+SCORE_REASON_ACCEPTED = "accepted_by_score_contract"
+SCORE_REASON_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+SCORE_REASON_PROTECTED_CONTROL_REGRESSED = "protected_control_regressed"
+SCORE_REASON_NO_IMPROVEMENT = "no_criterion_improved"
+SCORE_REASON_CRITERION_REGRESSED = "criterion_regressed"
+
+
+def expected_trial_keys(cases: list[dict[str, Any]]) -> set[tuple[str, int]]:
+    """Return the repeat-expanded ``(task_id, repeat)`` keys a suite requires.
+
+    A suite case may declare ``repeats``. A completeness check must compare
+    the recorded trials against the *expanded* count: comparing against the
+    raw number of cases fails every suite that repeats a case.
+    """
+    return {(case["task_id"], repeat) for case in cases
+            for repeat in range(case.get("repeats", 1))}
+
+
+def evaluation_is_complete(trials: list[dict[str, Any]], cases: list[dict[str, Any]]) -> bool:
+    """Return True when an evaluation covered every repeat-expanded suite trial."""
+    expected = expected_trial_keys(cases)
+    if len(trials) != len(expected):
+        return False
+    return {(trial.get("task_id"), trial.get("repeat", 0)) for trial in trials} == expected
+
+
+def protected_control_keys(cases: list[dict[str, Any]]) -> set[tuple[str, int]]:
+    """Return the protected negative-control ``(task_id, repeat)`` keys of a suite.
+
+    The suite schema carries no explicit control marker, and adding one would
+    change ``ledger.canonical_digest`` for every case and invalidate every
+    stored baseline digest. A case is therefore a protected negative control
+    exactly when its ``expected_terminal`` is not ``"passed"``: the schema only
+    permits ``passed``, ``assertion_failed``, ``cancelled``, ``timeout`` and
+    ``execution_failed``, so every non-``passed`` expectation is a deliberately
+    negative case that must keep terminating as expected. A control is a guard,
+    never an optimization objective.
+    """
+    controls: set[tuple[str, int]] = set()
+    for case in cases:
+        expected_terminal = case.get("expected_terminal", "passed")
+        if expected_terminal == "passed":
+            continue
+        if expected_terminal not in PROTECTED_CONTROL_TERMINALS:
+            raise ValueError(f"suite case {case.get('task_id')!r} declares an unsupported negative "
+                             f"expected terminal: {expected_terminal!r}")
+        for repeat in range(case.get("repeats", 1)):
+            controls.add((case["task_id"], repeat))
+    return controls
+
+
+def index_trials(rows: list[dict[str, Any]], candidate: str,
+                 suite_sha256: str | None = None) -> dict[tuple[str, int], dict[str, Any]]:
+    """Index recorded trials by ``(task_id, repeat)``, refusing a duplicate pair.
+
+    A candidate that records the same ``(task_id, repeat)`` twice would be
+    scored twice and would break the paired comparison, so the duplicate is
+    refused instead of being silently collapsed. A reconciled orphan attempt
+    whose outcome is unknown is not a completed trial: it carries no measured
+    observation and is excluded from the index.
+    """
+    indexed: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in rows:
+        if row.get("candidate") != candidate:
+            continue
+        if suite_sha256 is not None and row.get("suite_sha256") != suite_sha256:
+            continue
+        if row.get("terminal") == INTERRUPTED_UNKNOWN_OUTCOME:
+            continue
+        key = (row.get("task_id"), row.get("repeat", 0))
+        if key in indexed:
+            raise ValueError(f"candidate {candidate} records duplicate trials for {key}")
+        indexed[key] = row
+    return indexed
+
+
+def _observed_duration_ms(row: dict[str, Any]) -> float | None:
+    """Return a trial's measured duration in ms, or None when it was not measured."""
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+    value = metrics.get("wall_time_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def score_candidate_trials(cases: list[dict[str, Any]],
+                           baseline_by_key: dict[tuple[str, int], dict[str, Any]],
+                           candidate_by_key: dict[tuple[str, int], dict[str, Any]],
+                           contract: Any | None = None) -> dict[str, Any]:
+    """Score a candidate's recorded trials against its frozen baseline.
+
+    The decision comes from the versioned score contract in
+    :mod:`dev.harness_lab.scoring`; this function only maps recorded trials
+    onto the contract's criteria.
+
+    * ``correctness.pass_rate`` — fraction of the *non-control* cases whose
+      recorded terminal matched the expected terminal.
+    * ``reliability.success_rate`` — fraction of the paired trials that did not
+      end in ``execution_failed`` or ``infrastructure_error``.
+    * ``efficiency.duration_ms`` — median observed duration of the paired
+      trials that reported a duration on *both* sides.
+    * ``control.no_regression`` — fraction of the protected negative controls
+      that still terminated as expected. The control is a guard: it is fed
+      explicitly, and it never enters the improvement set or the aggregate.
+
+    A criterion is only *measured* when its side covers every expected trial
+    of that criterion. A trial whose telemetry was not measured maps to an
+    unmeasured observation, never to ``0``.
+    """
+    from . import scoring
+
+    contract = contract if contract is not None else scoring.default_contract()
+    expected = {(case["task_id"], repeat): case
+                for case in cases for repeat in range(case.get("repeats", 1))}
+    controls = protected_control_keys(cases)
+    objective_keys = [key for key in expected if key not in controls]
+    control_keys = [key for key in expected if key in controls]
+    complete = sorted(key for key in expected
+                      if key in baseline_by_key and key in candidate_by_key)
+
+    def covers(rows: dict[tuple[str, int], dict[str, Any]], keys: list[tuple[str, int]]) -> bool:
+        return bool(keys) and all(key in rows for key in keys)
+
+    def match_rate(rows: dict[tuple[str, int], dict[str, Any]],
+                   keys: list[tuple[str, int]]) -> float | None:
+        """Fraction of ``keys`` whose recorded terminal matched the expectation."""
+        if not covers(rows, keys):
+            return None
+        matched = sum(1 for key in keys
+                      if rows[key].get("terminal") == expected[key].get("expected_terminal", "passed"))
+        return matched / len(keys)
+
+    def reliability_rate(rows: dict[tuple[str, int], dict[str, Any]]) -> float | None:
+        """Fraction of the paired trials that did not end in an avoidable failure."""
+        if not covers(rows, list(expected)):
+            return None
+        return sum(1 for key in expected
+                   if rows[key].get("terminal") not in AVOIDABLE_FAILURE_TERMINALS) / len(expected)
+
+    duration_keys = [key for key in complete
+                     if _observed_duration_ms(baseline_by_key[key]) is not None
+                     and _observed_duration_ms(candidate_by_key[key]) is not None]
+    duration_measured = (covers(baseline_by_key, list(expected))
+                         and covers(candidate_by_key, list(expected)) and bool(duration_keys))
+
+    def median_duration(rows: dict[tuple[str, int], dict[str, Any]]) -> float | None:
+        """Median observed duration over the trials that reported one on both sides."""
+        if not duration_measured:
+            return None
+        return float(statistics.median([_observed_duration_ms(rows[key]) for key in duration_keys]))
+
+    def observation(criterion_id: str, value: float | None) -> Any:
+        if value is None:
+            return scoring.Observation(criterion_id=criterion_id, value=None, measured=False)
+        return scoring.Observation(criterion_id=criterion_id, value=float(value), measured=True)
+
+    baseline_observations = [
+        observation("correctness.pass_rate", match_rate(baseline_by_key, objective_keys)),
+        observation("reliability.success_rate", reliability_rate(baseline_by_key)),
+        observation("efficiency.duration_ms", median_duration(baseline_by_key)),
+        observation("control.no_regression", match_rate(baseline_by_key, control_keys)),
+    ]
+    candidate_observations = [
+        observation("correctness.pass_rate", match_rate(candidate_by_key, objective_keys)),
+        observation("reliability.success_rate", reliability_rate(candidate_by_key)),
+        observation("efficiency.duration_ms", median_duration(candidate_by_key)),
+        observation("control.no_regression", match_rate(candidate_by_key, control_keys)),
+    ]
+    outcome = scoring.score_candidate(contract, baseline_observations, candidate_observations,
+                                      evidence_pairs=len(complete))
+    return {"outcome": outcome, "contract": contract, "evidence_pairs": len(complete),
+            "baseline_observations": baseline_observations,
+            "candidate_observations": candidate_observations,
+            "protected_controls": sorted(controls), "complete_pairs": complete}
+
+
+def decision_reasons(outcome: Any) -> tuple[str, list[str]]:
+    """Return the primary decision token and the full ordered token list.
+
+    ``insufficient_evidence`` is its own token: it never reuses or renames an
+    existing rejection reason.
+    """
+    from . import scoring
+
+    if outcome.decision == scoring.DECISION_ACCEPTED:
+        primary = SCORE_REASON_ACCEPTED
+    elif outcome.decision == scoring.DECISION_INSUFFICIENT_EVIDENCE:
+        primary = SCORE_REASON_INSUFFICIENT_EVIDENCE
+    elif outcome.protected_violations:
+        primary = SCORE_REASON_PROTECTED_CONTROL_REGRESSED
+    elif "criterion_regressed" in outcome.reasons:
+        primary = SCORE_REASON_CRITERION_REGRESSED
+    else:
+        primary = SCORE_REASON_NO_IMPROVEMENT
+    reasons: list[str] = []
+    for token in (primary,) + tuple(outcome.reasons):
+        if token not in reasons:
+            reasons.append(token)
+    return primary, reasons
+
+
+def authorize_build_transition(checkpoint: Checkpoint, patch_digest: str, resume: bool) -> None:
+    """Raise when the checkpoint may not enter ``BUILDING``; return None otherwise.
+
+    A non-resume call may enter ``BUILDING`` from ``PATCHED`` only when this
+    checkpoint has not already built this patch. Building the same patch twice
+    would evaluate the same candidate twice and duplicate its recorded trials,
+    so the second build is refused and the proposal is preserved for manual
+    inspection.
+    """
+    if checkpoint.state != "PATCHED" and not resume:
+        raise ValueError("candidate checkpoint exists; pass --resume to continue the same immutable candidate")
+    if checkpoint.state in TERMINAL:
+        raise ValueError("candidate checkpoint is already terminal")
+    if checkpoint.state == "PATCHED" and not resume:
+        events, _torn = _read_event_log(checkpoint.events_path)
+        already_built = [event for event in events
+                         if event.get("state") == "BUILDING"
+                         and event.get("evidence", {}).get("patch_sha256") == patch_digest]
+        if already_built:
+            raise ValueError("candidate checkpoint already built this patch; "
+                             "pass --resume to continue the same immutable candidate")
+
+
+def authorize_binary_fingerprint(checkpoint: Checkpoint, binary_digest: str) -> None:
+    """Refuse a resume whose rebuilt binary differs from the checkpointed build.
+
+    The fingerprint that must match is the *latest* one recorded by the
+    checkpoint: accepting any previously recorded hash would let a resume
+    continue under a binary the checkpoint never saw.
+    """
+    events, _torn = _read_event_log(checkpoint.events_path)
+    fingerprints = [event.get("evidence", {}).get("binary_sha256") for event in events
+                    if event.get("evidence", {}).get("binary_sha256")]
+    if fingerprints and binary_digest != fingerprints[-1]:
+        raise RuntimeError("candidate binary fingerprint differs from the latest checkpointed build; "
+                           "refusing resume")
+
+
 def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baseline_candidate: str,
                       candidate: str, target_dir: Path, allowed_prefixes: tuple[str, ...],
                       timeout: float = 900.0, max_wallclock: float = 3600.0,
@@ -370,6 +793,7 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     import hashlib
     import sys
     from . import ledger
+    from . import scoring
 
     started = time.monotonic()
     worktree = worktree.expanduser().resolve(strict=True)
@@ -406,17 +830,26 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     baseline_rows = [row for row in ledger.load_runs(ledger_root) if row["candidate"] == baseline_candidate]
     if not baseline_rows:
         raise ValueError("candidate qualification requires existing frozen baseline ledger records")
-    baseline_revision = baseline_rows[0].get("subject", {}).get("revision")
+    # A reconciled orphan attempt carries no measurement and no known outcome:
+    # it is never a completed baseline trial, and a baseline that still has an
+    # ambiguous attempt is not a frozen baseline to compare against.
+    interrupted_baseline = [row for row in baseline_rows
+                            if row.get("terminal") == INTERRUPTED_UNKNOWN_OUTCOME]
+    if interrupted_baseline:
+        raise ValueError("frozen baseline has interrupted attempts whose outcome is unknown; "
+                         "inspect them before qualifying a candidate")
+    baseline_revision = next((row.get("subject", {}).get("revision") for row in baseline_rows
+                              if row.get("subject", {}).get("revision")), None)
     worktree_revision = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"],
                                        capture_output=True, text=True, timeout=5)
     if not baseline_revision or worktree_revision.returncode or worktree_revision.stdout.strip() != baseline_revision:
         raise ValueError("candidate worktree HEAD must equal the frozen baseline source revision")
     baseline_index = (ledger_root / "index.jsonl").read_bytes()
     baseline_manifests = {row["run_id"]: ledger.canonical_digest(row) for row in baseline_rows}
-    baseline_pairs = {(row["task_id"], row.get("repeat", 0)): row for row in baseline_rows
-                      if row.get("suite_sha256") == suite_digest}
-    expected_keys = {(case["task_id"], repeat) for case in cases
-                     for repeat in range(case.get("repeats", 1))}
+    baseline_pairs = index_trials(baseline_rows, baseline_candidate, suite_digest)
+    expected_keys = expected_trial_keys(cases)
+    expected_cases = {(case["task_id"], repeat): case for case in cases
+                      for repeat in range(case.get("repeats", 1))}
     if set(baseline_pairs) != expected_keys:
         raise ValueError("frozen baseline does not exactly cover the candidate suite and repeats")
     for case in cases:
@@ -428,16 +861,11 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     if checkpoint is not None:
         if checkpoint.base_revision != baseline_revision or checkpoint.suite_digest != suite_digest:
             raise ValueError("candidate checkpoint does not match its frozen source and suite")
-        events = [json.loads(line) for line in checkpoint.events_path.read_text(encoding="utf-8").splitlines()]
+        events, _torn = _read_event_log(checkpoint.events_path)
         patched = next((event for event in reversed(events) if event.get("state") == "PATCHED"), None)
         if patched is None or patched.get("evidence", {}).get("patch_sha256") != patch_digest:
             raise ValueError("candidate patch changed since its checkpoint; refusing resume")
-        prior_binary_hashes = [event.get("evidence", {}).get("binary_sha256") for event in events
-                               if event.get("evidence", {}).get("binary_sha256")]
-        if checkpoint.state != "PATCHED" and not resume:
-            raise ValueError("candidate checkpoint exists; pass --resume to continue the same immutable candidate")
-        if checkpoint.state in TERMINAL:
-            raise ValueError("candidate checkpoint is already terminal")
+        authorize_build_transition(checkpoint, patch_digest, resume)
         checkpoint.transition("BUILDING", {"changed_paths": paths, "patch_sha256": patch_digest,
                                             "suite_sha256": suite_digest,
                                             "resumed_from": checkpoint.state if resume else None})
@@ -456,55 +884,28 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
         gates.append(_run_gate(argv, worktree, env, min(timeout, remaining)))
     retry_count = 0
     build_argv = ["cargo", "build", "--bin", "codegg", "--bin", "codegg-sandbox-helper"]
-    while True:
-        remaining = max_wallclock - (time.monotonic() - started)
-        if remaining <= 0:
-            raise TimeoutError("candidate qualification wallclock budget exhausted during build gates")
-        try:
-            gates.append(_run_gate(build_argv, worktree, env, min(timeout, remaining)))
-            break
-        except (RuntimeError, TimeoutError) as error:
-            if proposer != "opencode" or retry_count >= max_candidate_retries:
-                raise
-            retry_count += 1
-            if checkpoint is not None:
-                checkpoint.transition("PROPOSING", {"attempt_kind": "compile_correction",
-                                                      "retry": retry_count,
-                                                      "failure_sha256": hashlib.sha256(str(error).encode()).hexdigest()})
-            prompt = (correction_prompt.strip() + "\n\n" if correction_prompt.strip() else "") + \
-                "Correct this candidate's compile gate failure. This is a compile-correction retry, not a new candidate. " + \
-                "Keep changes within the already authorized path scope and preserve CHANGELOG.harness.md. " + \
-                "Do not claim tests passed. Failure evidence (bounded):\n" + str(error)[-4096:]
-            remaining = max_wallclock - (time.monotonic() - started)
-            if remaining <= 0:
-                raise TimeoutError("candidate qualification wallclock budget exhausted before compile correction")
-            receipt = run_opencode(worktree, prompt, min(timeout, remaining))
-            corrected_paths = changed_paths(worktree)
-            check_scope(corrected_paths, allowed_prefixes + (changelog,))
-            if changelog not in corrected_paths:
-                raise ValueError(f"compile correction removed required {changelog}")
-            corrected_text = (worktree / changelog).read_text(encoding="utf-8")
-            if any(section.casefold() not in corrected_text.casefold()
-                   for section in ("Root cause", "Contracts", "Validation", "Accepted risks")):
-                raise ValueError("compile correction invalidated required candidate changelog sections")
-            if any(word.casefold() in corrected_text.casefold() for word in ("<candidate", "TODO", "TBD", "pending")):
-                raise ValueError("compile correction left an unresolved changelog placeholder")
-            patch_digest = candidate_patch_sha256(worktree, corrected_paths)
-            if checkpoint is not None:
-                checkpoint.transition("PATCHED", {"attempt_kind": "compile_correction", "retry": retry_count,
-                                                   "changed_paths": corrected_paths,
-                                                   "patch_sha256": patch_digest,
-                                                   "proposer_receipt": receipt})
-                checkpoint.transition("BUILDING", {"retry": retry_count, "patch_sha256": patch_digest})
+    patch_digest, retry_count = _build_with_compile_correction(
+        build=lambda: _run_gate(build_argv, worktree, env,
+                                min(timeout, max_wallclock - (time.monotonic() - started))),
+        propose=lambda correction: run_opencode(
+            worktree, correction,
+            min(timeout, max_wallclock - (time.monotonic() - started))),
+        gates=gates, started=started, max_wallclock=max_wallclock, timeout=timeout,
+        proposer=proposer, max_candidate_retries=max_candidate_retries,
+        checkpoint=checkpoint, correction_prompt=correction_prompt,
+        allowed_prefixes=allowed_prefixes, changelog=changelog, worktree=worktree,
+        patch_digest=patch_digest)
     binary = target_dir / "debug" / ("codegg.exe" if os.name == "nt" else "codegg")
     if not binary.is_file():
         raise FileNotFoundError("candidate build did not produce the expected CodeGG executable")
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     if checkpoint is not None:
-        if prior_binary_hashes and binary_digest not in prior_binary_hashes:
-            raise RuntimeError("candidate binary hash differs from its checkpoint; refusing resume")
+        authorize_binary_fingerprint(checkpoint, binary_digest)
         checkpoint.transition("QUALIFYING", {"gates": gates, "binary_sha256": binary_digest})
         checkpoint.transition("EVALUATING", {"candidate": candidate, "binary_sha256": binary_digest})
+    # Any recorded attempt of this candidate - including a reconciled orphan
+    # whose outcome is unknown - blocks a fresh run: the interrupted attempt is
+    # preserved and never silently resubmitted under a new identity.
     candidate_prior = [row for row in ledger.load_runs(ledger_root) if row["candidate"] == candidate]
     if candidate_prior and not resume:
         raise ValueError("candidate already has ledger trials; pass --resume to continue its exact frozen trials")
@@ -523,10 +924,10 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     except json.JSONDecodeError as error:
         raise RuntimeError("candidate evaluation did not return a structured receipt") from error
     trials = evaluation.get("trials", [])
-    if evaluation.get("budget_exhausted") or len(trials) != len(cases):
+    # The completeness check compares against the repeat-expanded trial count:
+    # a suite case may declare repeats, and the raw case count is smaller.
+    if evaluation.get("budget_exhausted") or not evaluation_is_complete(trials, cases):
         raise RuntimeError("candidate evaluation was incomplete; candidate cannot be accepted")
-    if any(not trial.get("expected_terminal_matched", False) for trial in trials):
-        raise RuntimeError("candidate evaluation contains an unexpected terminal result")
     if checkpoint is not None:
         checkpoint.transition("COMPARING", {"trials": len(trials), "evaluation_exit": evaluated.returncode,
                                              "baseline_index_prefix_sha256": hashlib.sha256(baseline_index).hexdigest()})
@@ -540,30 +941,56 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     if candidate_patch_sha256(worktree, changed_paths(worktree)) != patch_digest:
         raise RuntimeError("candidate worktree changed while qualification was running")
     comparison = ledger.compare(ledger_root, baseline_candidate, candidate)
-    if comparison["denominator"] != len(cases) or comparison["regressions"] or comparison["unpaired_right"]:
+    # ``compare`` reports the repeat-expanded pair count as its denominator.
+    if comparison["denominator"] != len(expected_keys) or comparison["unpaired_right"]:
         raise RuntimeError("candidate failed paired non-regression comparison")
-    baseline_by_key = {(row["task_id"], row.get("repeat", 0)): row for row in baseline_rows
-                       if row.get("suite_sha256") == suite_digest}
-    candidate_by_key = {(row["task_id"], row.get("repeat", 0)): row for row in after
-                        if row["candidate"] == candidate and row.get("suite_sha256") == suite_digest}
-    correctness_improvements = [key for key, expected in
-                               { (case["task_id"], repeat): case.get("expected_terminal", "passed")
-                                 for case in cases for repeat in range(case.get("repeats", 1)) }.items()
-                               if baseline_by_key[key]["terminal"] != expected
-                               and candidate_by_key[key]["terminal"] == expected]
-    accepted = bool(correctness_improvements)
+    baseline_by_key = index_trials(baseline_rows, baseline_candidate, suite_digest)
+    candidate_by_key = index_trials(after, candidate, suite_digest)
+    if set(candidate_by_key) != expected_keys:
+        raise RuntimeError("candidate ledger does not exactly cover the candidate suite and repeats")
+    scored = score_candidate_trials(cases, baseline_by_key, candidate_by_key)
+    outcome = scored["outcome"]
+    controls = protected_control_keys(cases)
+    correctness_improvements = [key for key in sorted(expected_keys)
+                                if key not in controls
+                                and baseline_by_key[key]["terminal"] != expected_cases[key].get("expected_terminal", "passed")
+                                and candidate_by_key[key]["terminal"] == expected_cases[key].get("expected_terminal", "passed")]
+    # Every trial whose recorded terminal is not the expected one stays visible:
+    # the score contract classifies them, the receipt names them.
+    unmatched_trials = [key for key in sorted(expected_keys)
+                        if candidate_by_key[key]["terminal"] != expected_cases[key].get("expected_terminal", "passed")]
+    accepted = outcome.decision == scoring.DECISION_ACCEPTED
     status = "ACCEPTED" if accepted else "REJECTED"
+    primary_reason, reasons = decision_reasons(outcome)
+    if accepted and comparison["regressions"]:
+        # The contract accepted a candidate that regressed a paired trial: the
+        # paired comparison is authoritative and refuses the acceptance.
+        raise RuntimeError("candidate failed paired non-regression comparison")
+    # An interrupted attempt stays visible: it is reported, never scored.
+    interrupted_trials = comparison.get("interrupted_trials", {"left": [], "right": []})
     if checkpoint is not None:
         checkpoint.transition(status, {"correctness_improvements": correctness_improvements,
                                        "paired_comparison": comparison,
-                                       "reason": None if accepted else
-                                       "no correctness improvement; secondary cost/time metrics are unavailable or unqualified"})
+                                       "score_contract": scored["contract"].as_dict(),
+                                       "score_outcome": outcome.as_dict(),
+                                       "evidence_pairs": scored["evidence_pairs"],
+                                       "protected_violations": list(outcome.protected_violations),
+                                       "unmatched_trials": unmatched_trials,
+                                       "interrupted_trials": interrupted_trials,
+                                       "reason": primary_reason, "reasons": reasons})
     return {"status": status, "candidate": candidate, "branch": branch.stdout.strip(),
             "binary_sha256": binary_digest, "suite_sha256": suite_digest, "patch_sha256": patch_digest,
             "baseline_candidate": baseline_candidate, "baseline_manifests_unchanged": True,
             "gates": gates, "evaluation_exit": evaluated.returncode,
             "paired_comparison": comparison, "correctness_improvements": correctness_improvements,
+            "unmatched_trials": unmatched_trials,
             "compile_correction_retries": retry_count,
+            "score": outcome.score, "objective": outcome.objective,
+            "reason": primary_reason, "reasons": reasons,
+            "protected_violations": list(outcome.protected_violations),
+            "interrupted_trials": interrupted_trials,
+            "score_contract": scored["contract"].as_dict(), "score_outcome": outcome.as_dict(),
+            "evidence_pairs": scored["evidence_pairs"],
             "wall_time_seconds": time.monotonic() - started,
             "accepted": accepted, "next_gate": None if accepted else "propose a candidate with a verified correctness improvement"}
 
@@ -587,7 +1014,7 @@ class OptimizationCheckpoint:
     @classmethod
     def resume(cls, path: Path, inputs: dict[str, Any]) -> "OptimizationCheckpoint":
         events_path = path.with_suffix(".jsonl")
-        decoded = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        decoded, _torn_tail = _read_event_log(events_path)
         if not decoded or not path.is_file():
             raise ValueError("optimization checkpoint is incomplete")
         pointer = json.loads(path.read_text(encoding="utf-8"))
@@ -601,7 +1028,7 @@ class OptimizationCheckpoint:
             if digest != actual:
                 raise ValueError("optimization event checksum is corrupt")
             previous = actual
-        if pointer != decoded[-1] or decoded[0].get("kind") != "run_started":
+        if decoded[0].get("kind") != "run_started":
             raise ValueError("optimization pointer does not match its append-only event tail")
         stored_inputs = decoded[0].get("data", {}).get("inputs")
         digest = hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -611,9 +1038,46 @@ class OptimizationCheckpoint:
         instance.path, instance.events_path, instance.inputs = path, events_path, inputs
         instance.inputs_sha256, instance.run_id = digest, decoded[0]["data"]["run_id"]
         instance.last_hash, instance.sequence, instance.events = previous, len(decoded), decoded
+        if pointer != decoded[-1]:
+            pointer_index = next((index for index, event in enumerate(decoded) if event == pointer), None)
+            if pointer_index is None:
+                raise ValueError("optimization pointer does not match its append-only event tail")
+            raise instance._reconcile_interruption(decoded, pointer, pointer_index)
+        if decoded[-1].get("kind") == "run_interrupted" and \
+                decoded[-1].get("data", {}).get("outcome") == INTERRUPTED_UNKNOWN_OUTCOME:
+            raise CheckpointInterrupted(decoded[-1].get("data", {}).get("reason")
+                                        or "optimization run was interrupted; its outcome is recorded as "
+                                           f"{INTERRUPTED_UNKNOWN_OUTCOME}")
         if decoded[-1]["kind"] == "run_finished":
             raise ValueError("optimization checkpoint is already finished")
         return instance
+
+    def _reconcile_interruption(self, decoded: list[dict[str, Any]], pointer: dict[str, Any],
+                                pointer_index: int) -> CheckpointInterrupted:
+        """Record the ambiguous interruption and refuse to continue.
+
+        The append-only tail advanced past the pointer, so the process died
+        between the event write and the pointer replacement: the interrupted
+        run's outcome is unknown. The interruption is recorded as an
+        ``interrupted_unknown`` outcome and the resume is refused, so the run
+        is never silently continued or resubmitted.
+        """
+        unpointed = decoded[pointer_index + 1:]
+        reason = ("optimization pointer is stale: the append-only event tail advanced to seq "
+                  f"{decoded[-1].get('seq')} ({decoded[-1].get('kind')}) while the pointer still names "
+                  f"seq {pointer.get('seq')} ({pointer.get('kind')}); the interrupted run's outcome is "
+                  f"ambiguous and was recorded as {INTERRUPTED_UNKNOWN_OUTCOME}")
+        if decoded[-1].get("kind") == "run_interrupted" and \
+                decoded[-1].get("data", {}).get("outcome") == INTERRUPTED_UNKNOWN_OUTCOME:
+            # A repeated resume is idempotent: the interruption is already
+            # recorded, so no second event is appended for the same tail.
+            raise CheckpointInterrupted(reason)
+        self.record("run_interrupted", {"outcome": INTERRUPTED_UNKNOWN_OUTCOME, "reason": reason,
+                                        "pointer_seq": pointer.get("seq"),
+                                        "unpointed_seq": [event.get("seq") for event in unpointed],
+                                        "unpointed_kind": decoded[-1].get("kind"),
+                                        "source_mutated": False})
+        raise CheckpointInterrupted(reason)
 
     def record(self, kind: str, data: dict[str, Any]) -> None:
         event = {"schema_version": 1, "seq": self.sequence + 1, "kind": kind,
@@ -656,9 +1120,13 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
     if candidate_root.is_relative_to(repository) or target_root.is_relative_to(repository):
         raise ValueError("candidate worktrees and build outputs must be outside the source repository")
     baseline_rows = [row for row in ledger.load_runs(ledger_root) if row["candidate"] == baseline_candidate]
-    if not baseline_rows or not baseline_rows[0].get("subject", {}).get("revision"):
+    # A reconciled orphan attempt has no known outcome and no revision receipt.
+    baseline_revision = next((row.get("subject", {}).get("revision") for row in baseline_rows
+                              if row.get("terminal") != INTERRUPTED_UNKNOWN_OUTCOME
+                              and row.get("subject", {}).get("revision")), None)
+    if not baseline_revision:
         raise ValueError("optimization requires a frozen baseline with source revision receipts")
-    base_revision = baseline_rows[0]["subject"]["revision"]
+    base_revision = baseline_revision
     suite_digest = hashlib.sha256(suite.read_bytes()).hexdigest()
     inputs = {"base_revision": base_revision, "suite_sha256": suite_digest,
               "baseline_candidate": baseline_candidate, "max_iterations": max_iterations,
@@ -701,8 +1169,8 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
         if not worktree.exists():
             branch = f"harness/{state.run_id}-i{iteration:02d}"
             create_candidate_worktree(repository, branch, worktree, base_revision)
-        child = Checkpoint.resume(child_path, base_revision, suite_digest) if child_path.exists() else Checkpoint(child_path, base_revision, suite_digest)
         try:
+            child = Checkpoint.resume(child_path, base_revision, suite_digest) if child_path.exists() else Checkpoint(child_path, base_revision, suite_digest)
             if child.state == "BASELINED":
                 child.transition("DIAGNOSED", {"baseline": baseline_candidate, "iteration": iteration,
                                                 "suite_sha256": suite_digest})
@@ -740,8 +1208,16 @@ def run_optimizer(repository: Path, suite: Path, ledger_root: Path, *, baseline_
                                                "candidate": candidate, "patch_sha256": result["patch_sha256"]})
                 return {"status": "ACCEPTED", "iterations": results, "checkpoint": str(checkpoint_path)}
         except (ValueError, RuntimeError, TimeoutError, OSError) as error:
-            state.record("iteration_interrupted", {"iteration": iteration, "candidate": candidate,
-                                                    "failure_class": type(error).__name__})
+            interruption = {"iteration": iteration, "candidate": candidate,
+                            "failure_class": type(error).__name__}
+            if isinstance(error, CheckpointInterrupted):
+                # The interruption was already reconciled to a recorded
+                # interrupted_unknown outcome inside the checkpoint that owns
+                # it. The outer receipt names it so the ambiguous attempt is
+                # never silently continued or resubmitted.
+                interruption["outcome"] = INTERRUPTED_UNKNOWN_OUTCOME
+                interruption["reason"] = str(error)
+            state.record("iteration_interrupted", interruption)
             raise
     state.record("run_finished", {"status": "NO_IMPROVEMENT", "iterations": len(results)})
     return {"status": "NO_IMPROVEMENT", "iterations": results, "checkpoint": str(checkpoint_path)}

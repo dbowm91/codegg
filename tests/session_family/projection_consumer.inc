@@ -110,6 +110,7 @@ impl FakeTuiState {
                 turn_id,
                 message: _,
                 failed_at: _,
+                ..
             } => {
                 if self.active_turn_id.as_deref() == Some(turn_id.as_str()) {
                     self.active_turn_id = None;

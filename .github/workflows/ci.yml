@@ -177,6 +177,9 @@ jobs:
       - name: Shell policy test-safety fixtures
         run: python3 scripts/test_shell_policy_test_safety.py
 
+      - name: Harness Lab Python suite
+        run: python3 -m unittest discover -s dev/harness_lab/tests
+
       - name: Formatting
         run: cargo fmt --check --all
 

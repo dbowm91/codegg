@@ -176,6 +176,9 @@ run_quick() {
     echo "==> python3 scripts/test_shell_policy_test_safety.py"
     (cd "$REPO_ROOT" && python3 scripts/test_shell_policy_test_safety.py)
 
+    echo "==> python3 -m unittest discover -s dev/harness_lab/tests"
+    (cd "$REPO_ROOT" && python3 -m unittest discover -s dev/harness_lab/tests)
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 

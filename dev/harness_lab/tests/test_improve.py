@@ -1,11 +1,143 @@
+import json
+import os
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
-import subprocess
 
-from dev.harness_lab.improve import (Budget, Checkpoint, candidate_patch_sha256, check_scope,
-                                     changed_paths, create_candidate_worktree, manual_dry_run,
-                                     OptimizationCheckpoint, parse_opencode_events, run_opencode)
+from dev.harness_lab import scoring
+from dev.harness_lab.improve import (_build_with_compile_correction,
+                                     authorize_binary_fingerprint, authorize_build_transition, Budget,
+                                     candidate_patch_sha256, check_scope, changed_paths,
+                                     Checkpoint, CheckpointInterrupted, create_candidate_worktree,
+                                     decision_reasons, evaluation_is_complete, expected_trial_keys,
+                                     index_trials, manual_dry_run, OptimizationCheckpoint,
+                                     parse_opencode_events, protected_control_keys, run_opencode,
+                                     score_candidate_trials, SUPPORTED_OPENCODE_VERSION)
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+GROUP_ID = "native-tool-smoke"
+SUITE_DIGEST = "suite-digest"
+
+# A child that reaches a failpoint between the append-only event write and the
+# current-state pointer replacement, then parks so the parent can signal it.
+_CHECKPOINT_CRASH_CHILD = """
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from dev.harness_lab import improve
+
+checkpoint_path, marker_path = Path(sys.argv[2]), Path(sys.argv[-1])
+checkpoint = improve.Checkpoint(checkpoint_path, "base-revision", "suite-digest")
+
+
+def pausing_replace(source, destination):
+    with open(marker_path, "w", encoding="utf-8") as handle:
+        handle.write("failpoint\\n")
+        handle.flush()
+    while True:
+        time.sleep(0.05)
+
+
+os.replace = pausing_replace
+checkpoint.transition("DIAGNOSED", {"failpoint": "between-append-and-pointer"})
+"""
+
+_OPTIMIZATION_CRASH_CHILD = """
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from dev.harness_lab import improve
+
+checkpoint_path, marker_path = Path(sys.argv[2]), Path(sys.argv[-1])
+state = improve.OptimizationCheckpoint(checkpoint_path, {"base_revision": "abc", "suite_sha256": "suite"})
+
+
+def pausing_replace(source, destination):
+    with open(marker_path, "w", encoding="utf-8") as handle:
+        handle.write("failpoint\\n")
+        handle.flush()
+    while True:
+        time.sleep(0.05)
+
+
+os.replace = pausing_replace
+state.record("iteration_started", {"iteration": 1, "candidate": "one"})
+"""
+
+_LEDGER_CRASH_CHILD = """
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from dev.harness_lab import ledger
+
+ledger_root, workspace, marker_path = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[-1])
+real_open = Path.open
+
+
+def pausing_open(self, mode="r", *args, **kwargs):
+    if self.name == "index.jsonl" and "a" in mode:
+        with open(marker_path, "w", encoding="utf-8") as handle:
+            handle.write("failpoint\\n")
+            handle.flush()
+        while True:
+            time.sleep(0.05)
+    return real_open(self, mode, *args, **kwargs)
+
+
+Path.open = pausing_open
+ledger.record(ledger_root, {"daemon": {"revision": "abc"}, "wall_time_ms": 120},
+              task_id="task-one", group_id="native-tool-smoke", candidate="candidate-one",
+              workspace=workspace, expected_file="tool-receipt.txt", expected_text="ok",
+              suite_sha256="suite-digest", case_sha256="case-digest")
+"""
+
+
+def _trial_row(candidate: str, task_id: str, repeat: int, terminal: str, duration_ms,
+               group_id: str = GROUP_ID, suite_sha256: str = SUITE_DIGEST) -> dict:
+    """Build a recorded ledger manifest row for a scoring fixture."""
+    return {"run_id": f"{candidate}-{task_id}-{repeat}", "task_id": task_id, "repeat": repeat,
+            "group_id": group_id, "candidate": candidate, "suite_sha256": suite_sha256,
+            "case_sha256": "case-digest", "terminal": terminal,
+            "metrics": {"wall_time_ms": duration_ms, "input_tokens": 10, "output_tokens": 5,
+                        "cached_tokens": None, "reasoning_tokens": None, "cost_usd": None,
+                        "tool_started": 1, "tool_finished": 1, "provider_calls": 1,
+                        "repeated_tool_calls": 0, "recovery_followups": 0, "unavailable": []},
+            "subject": {"revision": "revision"}}
+
+
+SCORING_CASES = [
+    {"schema_version": 1, "task_id": "task-pass", "group_id": GROUP_ID},
+    {"schema_version": 1, "task_id": "task-defect", "group_id": GROUP_ID},
+    {"schema_version": 1, "task_id": "task-flaky", "group_id": GROUP_ID},
+    {"schema_version": 1, "task_id": "control-cancel", "group_id": GROUP_ID,
+     "expected_terminal": "cancelled"},
+    {"schema_version": 1, "task_id": "control-timeout", "group_id": GROUP_ID,
+     "expected_terminal": "timeout"},
+]
+
+
+def _baseline_rows(candidate: str = "baseline") -> dict:
+    """Baseline trials: one broken task, one flaky task, two intact controls."""
+    return {
+        ("task-pass", 0): _trial_row(candidate, "task-pass", 0, "passed", 100),
+        ("task-defect", 0): _trial_row(candidate, "task-defect", 0, "assertion_failed", 100),
+        ("task-flaky", 0): _trial_row(candidate, "task-flaky", 0, "execution_failed", 100),
+        ("control-cancel", 0): _trial_row(candidate, "control-cancel", 0, "cancelled", 100),
+        ("control-timeout", 0): _trial_row(candidate, "control-timeout", 0, "timeout", 100),
+    }
 
 
 class ImproveTests(unittest.TestCase):
@@ -60,16 +192,30 @@ class ImproveTests(unittest.TestCase):
             dry = manual_dry_run(root / "dry.json")
             self.assertEqual(dry["status"], "REJECTED")
             fake = root / "opencode"
-            fake.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.0; else echo '{\"type\":\"text\",\"part\":{\"text\":\"fixture\"}}'; fi\n", encoding="utf-8")
+            fake.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.3; else echo '{\"type\":\"text\",\"part\":{\"text\":\"fixture\"}}'; fi\n", encoding="utf-8")
             fake.chmod(0o755)
             result = run_opencode(root, "inspect", executable=str(fake))
-            self.assertEqual(result["version"], "1.19.0")
+            self.assertEqual(result["version"], "1.19.3")
             self.assertEqual(result["event_count"], 1)
             slow = root / "opencode-slow"
-            slow.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.0; else sleep 5; fi\n", encoding="utf-8")
+            slow.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.3; else sleep 5; fi\n", encoding="utf-8")
             slow.chmod(0o755)
             with self.assertRaises(TimeoutError):
                 run_opencode(root, "inspect", timeout=0.1, executable=str(slow))
+
+    def test_an_unsupported_opencode_version_is_a_named_refusal(self) -> None:
+        """An unsupported version is a distinct refusal, not a transport fault."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stale = root / "opencode-stale"
+            stale.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.18.9; else echo '{}'; fi\n", encoding="utf-8")
+            stale.chmod(0o755)
+            with self.assertRaises(RuntimeError) as caught:
+                run_opencode(root, "inspect", executable=str(stale))
+            message = str(caught.exception)
+            self.assertIn("OpenCode version preflight failed", message)
+            self.assertIn(SUPPORTED_OPENCODE_VERSION, message)
+            self.assertIn("1.18.9", message)
 
     def test_patch_digest_includes_untracked_candidate_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -124,5 +270,480 @@ class ImproveTests(unittest.TestCase):
                 OptimizationCheckpoint.resume(path, inputs)
 
 
+class CrashRecoveryTests(unittest.TestCase):
+    """Crash the real checkpoint and ledger writers with real signals."""
+
+    def _spawn_failpoint_child(self, root: Path, script: str,
+                               arguments: list[str]) -> subprocess.Popen:
+        script_path = root / "failpoint_child.py"
+        script_path.write_text(script, encoding="utf-8")
+        marker = root / "failpoint.marker"
+        process = subprocess.Popen([sys.executable, str(script_path), str(REPO_ROOT), *arguments, str(marker)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if marker.exists():
+                return process
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail("failpoint child exited before the failpoint: "
+                          + stderr.decode(errors="replace")[-2000:])
+            time.sleep(0.02)
+        self._kill_and_reap(process, signal.SIGKILL)
+        self.fail("failpoint child never reached the failpoint")
+
+    def _kill_and_reap(self, process: subprocess.Popen, number: int) -> str:
+        os.kill(process.pid, number)
+        try:
+            stdout, stderr = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=30)
+            self.fail("the failpoint child ignored the signal")
+        return stderr.decode(errors="replace")
+
+    @staticmethod
+    def _events(path: Path) -> list[dict]:
+        return [json.loads(line) for line in path.with_suffix(".jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+
+    def test_sigkill_between_checkpoint_append_and_pointer_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            checkpoint_path = root / "candidate.json"
+            process = self._spawn_failpoint_child(root, _CHECKPOINT_CRASH_CHILD, [str(checkpoint_path)])
+            self._kill_and_reap(process, signal.SIGKILL)
+            # The append-only tail advanced past the pointer: the crash window
+            # between the event write and the pointer replacement.
+            events = self._events(checkpoint_path)
+            self.assertEqual([event["seq"] for event in events], [1, 2])
+            pointer = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            self.assertNotEqual(pointer, events[-1])
+            # The resume refuses explicitly instead of raising an opaque error.
+            with self.assertRaises(CheckpointInterrupted) as raised:
+                Checkpoint.resume(checkpoint_path, "base-revision", "suite-digest")
+            self.assertIn("interrupted_unknown", str(raised.exception))
+            self.assertIn("seq 2", str(raised.exception))
+            # The interruption is a recorded state and the checkpoint loads again.
+            recorded = self._events(checkpoint_path)
+            self.assertEqual([event["seq"] for event in recorded], [1, 2, 3])
+            self.assertEqual(recorded[-1]["state"], "INTERRUPTED_UNKNOWN")
+            self.assertEqual(recorded[-1]["evidence"]["outcome"], "interrupted_unknown")
+            self.assertEqual(json.loads(checkpoint_path.read_text(encoding="utf-8")), recorded[-1])
+            # A repeated resume is idempotent: no duplicate event and no
+            # duplicate sequence number is appended.
+            with self.assertRaises(CheckpointInterrupted):
+                Checkpoint.resume(checkpoint_path, "base-revision", "suite-digest")
+            again = self._events(checkpoint_path)
+            self.assertEqual([event["seq"] for event in again], [1, 2, 3])
+            self.assertEqual(len({event["seq"] for event in again}), 3)
+
+    def test_sigterm_between_optimization_append_and_pointer_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            checkpoint_path = root / "optimize.json"
+            inputs = {"base_revision": "abc", "suite_sha256": "suite"}
+            process = self._spawn_failpoint_child(root, _OPTIMIZATION_CRASH_CHILD, [str(checkpoint_path)])
+            self._kill_and_reap(process, signal.SIGTERM)
+            events = self._events(checkpoint_path)
+            self.assertEqual([event["seq"] for event in events], [1, 2])
+            pointer = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            self.assertNotEqual(pointer, events[-1])
+            with self.assertRaises(CheckpointInterrupted) as raised:
+                OptimizationCheckpoint.resume(checkpoint_path, inputs)
+            self.assertIn("interrupted_unknown", str(raised.exception))
+            recorded = self._events(checkpoint_path)
+            self.assertEqual([event["seq"] for event in recorded], [1, 2, 3])
+            self.assertEqual(recorded[-1]["kind"], "run_interrupted")
+            self.assertEqual(recorded[-1]["data"]["outcome"], "interrupted_unknown")
+            self.assertEqual(json.loads(checkpoint_path.read_text(encoding="utf-8")), recorded[-1])
+            # A repeated resume refuses again and appends no duplicate event.
+            with self.assertRaises(CheckpointInterrupted):
+                OptimizationCheckpoint.resume(checkpoint_path, inputs)
+            self.assertEqual([event["seq"] for event in self._events(checkpoint_path)], [1, 2, 3])
+
+    def test_sigkill_during_ledger_write_leaves_no_duplicate_trial_rows(self) -> None:
+        from dev.harness_lab import ledger
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ledger_root = root / "ledger"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "tool-receipt.txt").write_text("ok", encoding="utf-8")
+            process = self._spawn_failpoint_child(root, _LEDGER_CRASH_CHILD,
+                                                  [str(ledger_root), str(workspace)])
+            self._kill_and_reap(process, signal.SIGKILL)
+            # The run directory was written but the trial was never committed
+            # to the append-only ledger index.
+            run_dirs = sorted((ledger_root / "runs").iterdir())
+            self.assertEqual(len(run_dirs), 1)
+            manifest = json.loads((run_dirs[0] / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["task_id"], "task-one")
+            index_path = ledger_root / "index.jsonl"
+            self.assertFalse(index_path.exists())
+            # The ledger is still loadable and the partial work is never
+            # reported as a completed trial.
+            rows = ledger.load_runs(ledger_root)
+            for row in rows:
+                self.assertNotEqual(row["terminal"], "passed")
+            for row in rows:
+                if row["run_id"] == manifest["run_id"]:
+                    self.assertEqual(row["terminal"], "interrupted_unknown")
+            self.assertEqual(index_trials(rows, "candidate-one"), {})
+            # A resumed attempt commits exactly one row for the interrupted pair.
+            ledger.record(ledger_root, {"daemon": {"revision": "abc"}, "wall_time_ms": 120},
+                          task_id="task-one", group_id=GROUP_ID, candidate="candidate-one",
+                          workspace=workspace, expected_file="tool-receipt.txt", expected_text="ok",
+                          suite_sha256=SUITE_DIGEST, case_sha256="case-digest")
+            index_rows = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines()
+                          if line.strip()]
+            self.assertEqual(len(index_rows), 1)
+            self.assertEqual((index_rows[0]["task_id"], index_rows[0]["repeat"]), ("task-one", 0))
+            indexed = index_trials(ledger.load_runs(ledger_root), "candidate-one")
+            self.assertEqual(list(indexed), [("task-one", 0)])
+
+    def test_resumed_run_does_not_append_a_second_row_for_a_recorded_pair(self) -> None:
+        from dev.harness_lab import ledger
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ledger_root = root / "ledger"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "tool-receipt.txt").write_text("ok", encoding="utf-8")
+            cases = [{"schema_version": 1, "task_id": "task-one", "group_id": GROUP_ID, "repeats": 2},
+                     {"schema_version": 1, "task_id": "task-two", "group_id": GROUP_ID}]
+            receipt = {"daemon": {"revision": "abc"}, "wall_time_ms": 120}
+            ledger.record(ledger_root, receipt, task_id="task-one", group_id=GROUP_ID,
+                          candidate="candidate-one", workspace=workspace,
+                          expected_file="tool-receipt.txt", expected_text="ok",
+                          suite_sha256=SUITE_DIGEST, case_sha256=ledger.canonical_digest(cases[0]))
+            recorded = ledger.validate_candidate_resume_rows(ledger_root, "candidate-one", cases,
+                                                              SUITE_DIGEST, GROUP_ID)
+            self.assertEqual(sorted(recorded), [("task-one", 0)])
+            # The resume only owes the pairs that were never recorded.
+            pending = sorted(expected_trial_keys(cases) - set(recorded))
+            self.assertEqual(pending, [("task-one", 1), ("task-two", 0)])
+            for task_id, repeat in pending:
+                case = next(item for item in cases if item["task_id"] == task_id)
+                ledger.record(ledger_root, receipt, task_id=task_id, group_id=GROUP_ID,
+                              candidate="candidate-one", workspace=workspace,
+                              expected_file="tool-receipt.txt", expected_text="ok",
+                              suite_sha256=SUITE_DIGEST, case_sha256=ledger.canonical_digest(case),
+                              repeat=repeat)
+            index_rows = [json.loads(line) for line in
+                          (ledger_root / "index.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(index_rows), 3)
+            self.assertEqual(len({(row["task_id"], row["repeat"]) for row in index_rows}), 3)
+            # A second completed row for an already recorded pair is refused
+            # instead of being scored twice.
+            ledger.record(ledger_root, receipt, task_id="task-one", group_id=GROUP_ID,
+                          candidate="candidate-one", workspace=workspace,
+                          expected_file="tool-receipt.txt", expected_text="ok",
+                          suite_sha256=SUITE_DIGEST, case_sha256=ledger.canonical_digest(cases[0]))
+            with self.assertRaises(ValueError):
+                index_trials(ledger.load_runs(ledger_root), "candidate-one")
+
+
+class ScoreContractTests(unittest.TestCase):
+    """The score contract decides acceptance from the recorded trials."""
+
+    def _scored(self, candidate_rows: dict, cases: list[dict] | None = None) -> dict:
+        return score_candidate_trials(cases if cases is not None else SCORING_CASES,
+                                      _baseline_rows(), candidate_rows)
+
+    def test_protected_controls_are_derived_without_touching_the_suite_schema(self) -> None:
+        controls = protected_control_keys(SCORING_CASES)
+        self.assertEqual(controls, {("control-cancel", 0), ("control-timeout", 0)})
+        self.assertNotIn(("task-pass", 0), controls)
+        # The derivation is a pure read of the frozen suite cases.
+        self.assertEqual(protected_control_keys(SCORING_CASES), controls)
+
+    def test_correctness_fix_is_accepted_with_a_correctness_objective(self) -> None:
+        candidate = _baseline_rows("candidate")
+        candidate[("task-defect", 0)] = _trial_row("candidate", "task-defect", 0, "passed", 100)
+        scored = self._scored(candidate)
+        outcome = scored["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_ACCEPTED)
+        self.assertEqual(outcome.objective, scoring.OBJECTIVE_CORRECTNESS_FIX)
+        self.assertEqual(outcome.protected_violations, ())
+        self.assertIsNotNone(outcome.score)
+        self.assertEqual(scored["evidence_pairs"], len(SCORING_CASES))
+
+    def test_reliability_only_improvement_is_accepted_with_a_reliability_objective(self) -> None:
+        candidate = _baseline_rows("candidate")
+        candidate[("task-flaky", 0)] = _trial_row("candidate", "task-flaky", 0, "timeout", 100)
+        outcome = self._scored(candidate)["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_ACCEPTED)
+        self.assertEqual(outcome.objective, scoring.OBJECTIVE_RELIABILITY)
+        self.assertNotIn("correctness_criterion_improved", outcome.reasons)
+
+    def test_protected_control_regression_is_rejected_even_with_other_improvements(self) -> None:
+        candidate = _baseline_rows("candidate")
+        candidate[("task-defect", 0)] = _trial_row("candidate", "task-defect", 0, "passed", 100)
+        candidate[("task-flaky", 0)] = _trial_row("candidate", "task-flaky", 0, "timeout", 100)
+        candidate[("control-cancel", 0)] = _trial_row("candidate", "control-cancel", 0, "passed", 100)
+        outcome = self._scored(candidate)["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_REJECTED)
+        self.assertTrue(outcome.protected_violations)
+        self.assertEqual(outcome.objective, scoring.OBJECTIVE_NONE)
+        primary, reasons = decision_reasons(outcome)
+        self.assertEqual(primary, "protected_control_regressed")
+        self.assertIn("protected_control_regressed", reasons)
+
+    def test_unmeasured_required_criterion_yields_insufficient_evidence_without_a_score(self) -> None:
+        # A suite without a negative control leaves the protected criterion
+        # unmeasured, which can never be scored as zero.
+        cases = [case for case in SCORING_CASES if case["task_id"] not in {"control-cancel",
+                                                                          "control-timeout"}]
+        candidate = _baseline_rows("candidate")
+        candidate[("task-defect", 0)] = _trial_row("candidate", "task-defect", 0, "passed", 100)
+        scored = self._scored(candidate, cases)
+        outcome = scored["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_INSUFFICIENT_EVIDENCE)
+        self.assertIsNone(outcome.score)
+        self.assertEqual(outcome.objective, scoring.OBJECTIVE_NONE)
+        control = next(observation for observation in scored["candidate_observations"]
+                       if observation.criterion_id == "control.no_regression")
+        self.assertIsNone(control.value)
+        self.assertFalse(control.measured)
+        primary, reasons = decision_reasons(outcome)
+        self.assertEqual(primary, "insufficient_evidence")
+        self.assertIn("insufficient_evidence", reasons)
+
+    def test_partially_evaluated_candidate_is_insufficient_evidence(self) -> None:
+        candidate = _baseline_rows("candidate")
+        del candidate[("task-flaky", 0)]
+        candidate[("task-defect", 0)] = _trial_row("candidate", "task-defect", 0, "passed", 100)
+        scored = self._scored(candidate)
+        outcome = scored["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_INSUFFICIENT_EVIDENCE)
+        self.assertIsNone(outcome.score)
+        self.assertEqual(scored["evidence_pairs"], len(SCORING_CASES) - 1)
+
+    def test_fully_matched_candidate_is_not_accepted(self) -> None:
+        outcome = self._scored(_baseline_rows("candidate"))["outcome"]
+        self.assertEqual(outcome.decision, scoring.DECISION_REJECTED)
+        self.assertEqual(outcome.objective, scoring.OBJECTIVE_NONE)
+        primary, reasons = decision_reasons(outcome)
+        self.assertEqual(primary, "no_criterion_improved")
+        self.assertIn("no_criterion_improved", reasons)
+
+    def test_unmeasured_trial_never_maps_to_zero(self) -> None:
+        durations = {("task-pass", 0): 400, ("task-defect", 0): 100, ("task-flaky", 0): 200,
+                     ("control-cancel", 0): 300, ("control-timeout", 0): 500}
+        baseline = {}
+        candidate = {}
+        for key, duration in durations.items():
+            baseline[key] = _trial_row("baseline", key[0], key[1], "passed", duration)
+            candidate[key] = _trial_row("candidate", key[0], key[1], "passed", duration)
+        baseline[("task-defect", 0)]["terminal"] = "assertion_failed"
+        candidate[("task-defect", 0)]["terminal"] = "passed"
+        baseline[("task-flaky", 0)]["terminal"] = "execution_failed"
+        candidate[("task-flaky", 0)]["terminal"] = "timeout"
+        candidate[("task-pass", 0)]["metrics"]["wall_time_ms"] = None
+        scored = score_candidate_trials(SCORING_CASES, baseline, candidate)
+        duration = next(observation for observation in scored["candidate_observations"]
+                        if observation.criterion_id == "efficiency.duration_ms")
+        # The unmeasured trial is excluded from the median, never counted as 0:
+        # the measured durations are [100, 200, 300, 500] with a median of 250,
+        # while a zero-injected median would be 200.
+        self.assertEqual(duration.value, 250.0)
+        self.assertTrue(duration.measured)
+        # A suite whose durations were never measured is unmeasured, not zero.
+        for key, row in candidate.items():
+            row["metrics"]["wall_time_ms"] = None
+        scored = score_candidate_trials(SCORING_CASES, baseline, candidate)
+        duration = next(observation for observation in scored["candidate_observations"]
+                        if observation.criterion_id == "efficiency.duration_ms")
+        self.assertIsNone(duration.value)
+        self.assertFalse(duration.measured)
+        self.assertEqual(scored["outcome"].decision, scoring.DECISION_INSUFFICIENT_EVIDENCE)
+        self.assertIsNone(scored["outcome"].score)
+
+
+class ResumeGateTests(unittest.TestCase):
+    """The resume gates refuse a stale or repeated candidate."""
+
+    def test_resume_with_a_stale_binary_fingerprint_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "candidate.json"
+            checkpoint = Checkpoint(path, "base", "suite")
+            checkpoint.transition("DIAGNOSED", {})
+            checkpoint.transition("PROPOSING", {})
+            checkpoint.transition("PATCHED", {"patch_sha256": "patch"})
+            checkpoint.transition("BUILDING", {"patch_sha256": "patch"})
+            checkpoint.transition("QUALIFYING", {"binary_sha256": "first-fingerprint"})
+            checkpoint.transition("EVALUATING", {"binary_sha256": "first-fingerprint"})
+            checkpoint.transition("BUILDING", {"patch_sha256": "patch"})
+            checkpoint.transition("QUALIFYING", {"binary_sha256": "second-fingerprint"})
+            # The latest recorded fingerprint is the only one a resume may use.
+            with self.assertRaises(RuntimeError):
+                authorize_binary_fingerprint(checkpoint, "first-fingerprint")
+            authorize_binary_fingerprint(checkpoint, "second-fingerprint")
+
+    def test_non_resume_call_at_patched_cannot_enter_building_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "candidate.json"
+            checkpoint = Checkpoint(path, "base", "suite")
+            checkpoint.transition("DIAGNOSED", {})
+            checkpoint.transition("PROPOSING", {})
+            checkpoint.transition("PATCHED", {"patch_sha256": "patch"})
+            authorize_build_transition(checkpoint, "patch", resume=False)
+            checkpoint.transition("BUILDING", {"patch_sha256": "patch"})
+            # The same patch is proposed again without a new build receipt.
+            checkpoint.transition("PROPOSING", {"attempt_kind": "compile_correction"})
+            checkpoint.transition("PATCHED", {"patch_sha256": "patch"})
+            with self.assertRaises(ValueError):
+                authorize_build_transition(checkpoint, "patch", resume=False)
+            # The explicit resume of the same immutable candidate is allowed.
+            authorize_build_transition(checkpoint, "patch", resume=True)
+
+    def test_repeats_expansion_drives_the_completeness_check(self) -> None:
+        cases = [{"schema_version": 1, "task_id": "a", "group_id": GROUP_ID, "repeats": 2},
+                 {"schema_version": 1, "task_id": "b", "group_id": GROUP_ID}]
+        self.assertEqual(expected_trial_keys(cases), {("a", 0), ("a", 1), ("b", 0)})
+        trials = [{"task_id": "a", "repeat": 0}, {"task_id": "a", "repeat": 1},
+                  {"task_id": "b", "repeat": 0}]
+        # The raw case count is smaller than the repeat-expanded trial count,
+        # so a completeness check against the raw count always fails.
+        self.assertEqual(len(cases), 2)
+        self.assertNotEqual(len(trials), len(cases))
+        self.assertTrue(evaluation_is_complete(trials, cases))
+        self.assertFalse(evaluation_is_complete(trials[:2], cases))
+        self.assertFalse(evaluation_is_complete(trials + [{"task_id": "c", "repeat": 0}], cases))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompileCorrectionMechanicsTests(unittest.TestCase):
+    """C003 work package C: the bounded compile-correction mechanic.
+
+    These tests qualify the MECHANIC against a labelled fault injection. They
+    are not a real fix and they are not a live-provider claim: the plan
+    requires the fault-injected branch to be labelled separately from a real
+    compile correction.
+    """
+
+    def _worktree(self, root: Path) -> Path:
+        worktree = root / "candidate"
+        worktree.mkdir()
+        subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+        subprocess.run(["git", "-C", str(worktree), "config", "user.email", "harness@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Harness Test"], check=True)
+        (worktree / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        (worktree / "CHANGELOG.harness.md").write_text(
+            "## Root cause\n\n## Contracts\n\n## Validation\n\n## Accepted risks\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(worktree), "add", "main.rs"], check=True)
+        subprocess.run(["git", "-C", str(worktree), "commit", "-qm", "base"], check=True)
+        # The correction is modelled as uncommitted candidate edits, which is
+        # what `changed_paths` reports. The changelog is part of the candidate
+        # change, so it must appear among the changed paths.
+        (worktree / "main.rs").write_text("fn main() { println!(\"fixed\"); }\n", encoding="utf-8")
+        return worktree
+
+    def test_a_compile_failure_is_corrected_once_and_the_build_is_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            worktree = self._worktree(root)
+            attempts = {"build": 0, "propose": 0}
+
+            def build():
+                attempts["build"] += 1
+                if attempts["build"] == 1:
+                    raise RuntimeError("error[E0425]: cannot find value `missing` in this scope")
+                return "build-ok"
+
+            def propose(prompt):
+                attempts["propose"] += 1
+                self.assertIn("compile-correction retry", prompt)
+                return {"event_count": 1}
+
+            gates: list = []
+            digest, retries = _build_with_compile_correction(
+                build=build, propose=propose, gates=gates, started=time.monotonic(),
+                max_wallclock=60.0, timeout=30.0, proposer="opencode",
+                max_candidate_retries=1, checkpoint=None, correction_prompt="",
+                allowed_prefixes=("main.rs",), changelog="CHANGELOG.harness.md",
+                worktree=worktree, patch_digest="digest-0")
+            # The build was re-run after the correction, and the correction
+            # happened exactly once.
+            self.assertEqual(attempts["build"], 2)
+            self.assertEqual(attempts["propose"], 1)
+            self.assertEqual(retries, 1)
+            self.assertEqual(gates, ["build-ok"])
+            self.assertTrue(digest)
+
+    def test_the_compile_correction_retry_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            worktree = self._worktree(root)
+            attempts = {"build": 0, "propose": 0}
+
+            def build():
+                attempts["build"] += 1
+                raise RuntimeError("error[E0425]: cannot find value `missing` in this scope")
+
+            def propose(prompt):
+                attempts["propose"] += 1
+                return {"event_count": 1}
+
+            with self.assertRaises(RuntimeError):
+                _build_with_compile_correction(
+                    build=build, propose=propose, gates=[], started=time.monotonic(),
+                    max_wallclock=60.0, timeout=30.0, proposer="opencode",
+                    max_candidate_retries=2, checkpoint=None, correction_prompt="",
+                    allowed_prefixes=("main.rs",), changelog="CHANGELOG.harness.md",
+                    worktree=worktree, patch_digest="digest-0")
+            # One initial attempt plus exactly the two allowed retries.
+            self.assertEqual(attempts["build"], 3)
+            self.assertEqual(attempts["propose"], 2)
+
+    def test_a_non_opencode_proposer_never_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            worktree = self._worktree(root)
+            attempts = {"build": 0, "propose": 0}
+
+            def build():
+                attempts["build"] += 1
+                raise RuntimeError("compile failure")
+
+            def propose(prompt):
+                attempts["propose"] += 1
+                return {}
+
+            with self.assertRaises(RuntimeError):
+                _build_with_compile_correction(
+                    build=build, propose=propose, gates=[], started=time.monotonic(),
+                    max_wallclock=60.0, timeout=30.0, proposer="manual",
+                    max_candidate_retries=3, checkpoint=None, correction_prompt="",
+                    allowed_prefixes=("main.rs",), changelog="CHANGELOG.harness.md",
+                    worktree=worktree, patch_digest="digest-0")
+            self.assertEqual(attempts["build"], 1)
+            self.assertEqual(attempts["propose"], 0)
+
+    def test_a_correction_that_drops_the_changelog_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            worktree = self._worktree(root)
+            attempts = {"build": 0}
+
+            def build():
+                attempts["build"] += 1
+                if attempts["build"] == 1:
+                    raise RuntimeError("compile failure")
+                return "build-ok"
+
+            def propose(prompt):
+                (worktree / "CHANGELOG.harness.md").unlink()
+                return {}
+
+            with self.assertRaises(ValueError):
+                _build_with_compile_correction(
+                    build=build, propose=propose, gates=[], started=time.monotonic(),
+                    max_wallclock=60.0, timeout=30.0, proposer="opencode",
+                    max_candidate_retries=1, checkpoint=None, correction_prompt="",
+                    allowed_prefixes=("main.rs",), changelog="CHANGELOG.harness.md",
+                    worktree=worktree, patch_digest="digest-0")

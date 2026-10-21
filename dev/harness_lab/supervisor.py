@@ -12,12 +12,39 @@ import signal
 import subprocess
 import tempfile
 import time
-from typing import Any
+from typing import Any, Optional
 import uuid
 
 
 MAX_FRAME_BYTES = 1024 * 1024
 LOG_TAIL_BYTES = 64 * 1024
+
+#: Stable, secret-safe failure categories the native ACP adapter may report on
+#: the `-32010` error payload. Mirrors `TurnFailureCategory` in
+#: `crates/codegg-protocol/src/core.rs`. A value outside this set is NOT
+#: coerced into a known category: an unrecognized category is recorded as
+#: absent rather than silently relabelled as `native_failure_unspecified`.
+FAILURE_CATEGORIES = (
+    "provider_transport",
+    "provider_auth",
+    "provider_rate_limit",
+    "provider_timeout",
+    "provider_api",
+    "cancelled",
+    "daemon_restarted",
+    "agent_internal",
+    "native_failure_unspecified",
+)
+
+#: Why provider usage is present or absent on a terminal event. Mirrors
+#: `UsageAvailability` in `crates/codegg-protocol/src/core.rs`.
+USAGE_AVAILABILITY = (
+    "reported",
+    "not_observed",
+    "not_provided",
+    "lost_at_projection",
+    "unspecified",
+)
 
 
 class HarnessError(RuntimeError):
@@ -29,7 +56,71 @@ class HarnessTimeout(HarnessError):
 
 
 class HarnessTurnFailure(HarnessError):
-    pass
+    """A native turn reached a failure terminal.
+
+    Carries the redacted failure evidence projected by the native adapter on
+    the `-32010` JSON-RPC error `data` payload. The evidence is deliberately
+    narrow: an allowlisted category and provider usage with an explicit
+    provenance. It never carries the provider's error text.
+    """
+
+    def __init__(self, message: str, *, category: Optional[str] = None,
+                 usage: Optional[dict[str, Any]] = None,
+                 usage_reason: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.category = category
+        self.usage = usage
+        self.usage_reason = usage_reason
+
+    @property
+    def usage_unavailable_reason(self) -> Optional[str]:
+        """Named reason the provider usage is absent, or ``None`` when measured.
+
+        A missing measurement is never reported as zero usage: when the native
+        side could not observe usage, this names why.
+        """
+        if self.usage is not None:
+            return None
+        return self.usage_reason or "unspecified"
+
+
+def _optional_token_count(value: Any) -> Optional[int]:
+    """Return a provider token count, keeping "absent" distinct from zero."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def decode_turn_failure(data: Any) -> HarnessTurnFailure:
+    """Decode the native `-32010` error `data` payload into redacted evidence.
+
+    Unknown or malformed fields degrade to "unknown" rather than being
+    coerced into a known category or a zero token count.
+    """
+    payload = data if isinstance(data, dict) else {}
+    raw_category = payload.get("codeggFailureCategory")
+    category = raw_category if raw_category in FAILURE_CATEGORIES else None
+
+    raw_usage = payload.get("codeggUsage")
+    usage: Optional[dict[str, Any]] = None
+    if isinstance(raw_usage, dict):
+        usage = {
+            "turn_id": payload.get("turnId") if isinstance(payload.get("turnId"), str) else None,
+            "input_tokens": _optional_token_count(raw_usage.get("inputTokens")),
+            "output_tokens": _optional_token_count(raw_usage.get("outputTokens")),
+            "cached_tokens": _optional_token_count(raw_usage.get("cachedTokens")),
+            "reasoning_tokens": _optional_token_count(raw_usage.get("reasoningTokens")),
+        }
+
+    raw_reason = payload.get("codeggUsageReason")
+    usage_reason = raw_reason if raw_reason in USAGE_AVAILABILITY else None
+    if usage is not None and usage_reason is None:
+        usage_reason = "reported"
+    if usage is None and usage_reason is None:
+        usage_reason = "unspecified"
+    return HarnessTurnFailure(
+        "ACP reported a terminal native turn failure",
+        category=category, usage=usage, usage_reason=usage_reason)
 
 
 def sha256_file(path: Path) -> str:
@@ -168,7 +259,7 @@ class AcpClient:
             if "error" in value:
                 error = value.get("error", {})
                 if isinstance(error, dict) and error.get("code") == -32010:
-                    raise HarnessTurnFailure("ACP reported a terminal native turn failure")
+                    raise decode_turn_failure(error.get("data"))
                 raise HarnessError(f"ACP {method} failed: {value['error']}")
             self.frame_summaries.append({"response_id": value.get("id"), "method": method, "result_keys": sorted(value.get("result", {}).keys()) if isinstance(value.get("result"), dict) else []})
             return value.get("result", {})
@@ -500,7 +591,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    expected_file: str = "tool-receipt.txt",
                    expected_exists: bool | None = None, cancel_task: bool = False,
                    expected_terminal: str = "passed", timeout_task: bool = False,
-                   context_text: str | None = None, expected_tool_failures: int = 0) -> dict[str, Any]:
+                   context_text: str | None = None, expected_tool_failures: int = 0,
+                   fail_after_tools: bool = False, fault_kind: str = "transport") -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -538,7 +630,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             return value
         tool_sequence = bind_workspace(tool_sequence)
         provider = FixtureProvider(tool_sequence, stall_after_tools=cancel_task or timeout_task,
-                                   require_context_text=context_text).start()
+                                   require_context_text=context_text,
+                                   fail_after_tools=fail_after_tools,
+                                   fault_kind=fault_kind).start()
         spec = SubjectSpec.create("tool-trial", binary, workspace, root, Path.cwd())
         env = spec.environment()
         config = {
@@ -717,6 +811,13 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                         for item in client.notifications),
                     "failure_type": type(error).__name__,
                 }
+                if isinstance(error, HarnessTurnFailure):
+                    # The native adapter projects a redacted category and the
+                    # usage observed before the failure. A missing measurement
+                    # is recorded with its named reason, never as zero usage.
+                    failed_receipt["failure_category"] = error.category
+                    failed_receipt["codegg_usage"] = error.usage
+                    failed_receipt["usage_unavailable_reason"] = error.usage_unavailable_reason
                 terminal = ("timeout" if isinstance(error, (HarnessTimeout, subprocess.TimeoutExpired))
                             else "execution_failed" if isinstance(error, HarnessTurnFailure)
                             else "infrastructure_error")

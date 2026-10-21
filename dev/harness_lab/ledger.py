@@ -12,13 +12,74 @@ import sqlite3
 from typing import Any
 
 
-SCHEMA_VERSION = 1
-TERMINALS = {"passed", "assertion_failed", "execution_failed", "cancelled", "denied", "timeout", "budget_exhausted", "infrastructure_error", "indeterminate"}
+SCHEMA_VERSION = 2
+#: Schema versions this reader accepts. A stored v1 pilot ledger stays readable
+#: and reportable; every new row is written with `SCHEMA_VERSION`.
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+TERMINALS = {"passed", "assertion_failed", "execution_failed", "cancelled", "denied", "timeout", "budget_exhausted", "infrastructure_error", "indeterminate", "interrupted_unknown"}
+#: Terminal recorded for an attempt whose outcome is unknown because the
+#: controller crashed mid-flight. It is never a pass and never a failure.
+INTERRUPTED_UNKNOWN = "interrupted_unknown"
+#: Named reasons the provider usage is absent. Mirrors `UsageAvailability` in
+#: `crates/codegg-protocol/src/core.rs`. `None` means usage WAS measured.
+USAGE_UNAVAILABLE_REASONS = ("reported", "not_observed", "not_provided", "lost_at_projection", "unspecified")
+#: Reason reported for a stored v1 row written before the named vocabulary.
+LEGACY_USAGE_UNAVAILABLE = "not_reported"
+#: Provider token counts. A missing count is never read as zero.
+USAGE_TOKEN_FIELDS = ("input_tokens", "output_tokens", "cached_tokens", "reasoning_tokens")
+#: Every measured count a run manifest carries. A missing measurement is never
+#: read as zero, and an attempt with an unknown outcome carries none of them.
+_MEASUREMENT_FIELDS = ("tool_started", "tool_finished", "provider_calls", "wall_time_ms",
+                        *USAGE_TOKEN_FIELDS, "cost_usd", "repeated_tool_calls", "recovery_followups")
 INDEX_NAME = "index.sqlite3"
 
 
 def canonical_digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _supported_version(value: object) -> bool:
+    """True when `value` is a supported ledger schema version.
+
+    `bool` is rejected explicitly: `True == 1` in Python, so a boolean would
+    otherwise pass an equality check against a version number.
+    """
+    return isinstance(value, int) and not isinstance(value, bool) and value in SUPPORTED_SCHEMA_VERSIONS
+
+
+def _measured_usage(usage: dict[str, Any]) -> bool:
+    """True when at least one provider token count was actually observed."""
+    return any(usage.get(field) is not None for field in USAGE_TOKEN_FIELDS)
+
+
+def _derive_usage_unavailable(receipt: dict[str, Any], usage: dict[str, Any]) -> str | None:
+    """Named reason the provider usage is absent, or `None` when it was measured.
+
+    The reason is derived from the receipt, never hand-authored, and a missing
+    measurement is never reported as zero usage.
+    """
+    if _measured_usage(usage):
+        return None
+    reason = receipt.get("usage_unavailable_reason")
+    return reason if reason in USAGE_UNAVAILABLE_REASONS else "unspecified"
+
+
+def _stored_usage_unavailable(manifest: dict[str, Any]) -> str | None:
+    """Read the named usage reason back, defaulting a stored v1 row."""
+    if "usage_unavailable" in manifest:
+        return manifest["usage_unavailable"]
+    metrics = manifest.get("metrics") or {}
+    return None if _measured_usage(metrics) else LEGACY_USAGE_UNAVAILABLE
+
+
+def _sum_measured(rows: list[dict[str, Any]], field: str) -> int | None:
+    """Sum only measured values.
+
+    A missing count is never summed as zero: the aggregate is `None` when no
+    row measured the field.
+    """
+    values = [row[field] for row in rows if row.get(field) is not None]
+    return sum(values) if values else None
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -34,6 +95,71 @@ def _atomic_json(path: Path, value: Any) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _read_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
+    """Decode a JSONL log, tolerating exactly one torn final line.
+
+    A crash during an append leaves the final line without its terminating
+    newline. That single torn tail is tolerated so the ledger stays readable
+    and appendable; corruption anywhere else stays a hard error.
+    """
+    text = path.read_text(encoding="utf-8")
+    if not text:
+        return []
+    lines = text.split("\n")
+    terminated = lines[-1] == ""
+    if terminated:
+        lines.pop()
+    records: list[dict[str, Any]] = []
+    for position, line in enumerate(lines):
+        torn_tail = position == len(lines) - 1 and not terminated
+        if not line.strip():
+            if torn_tail:
+                break
+            raise ValueError(f"{label} has a blank line at position {position + 1}")
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            if torn_tail:
+                break
+            raise ValueError(f"{label} has a corrupt line at position {position + 1}") from error
+        if not isinstance(record, dict):
+            raise ValueError(f"{label} has a malformed record at position {position + 1}")
+        records.append(record)
+    return records
+
+
+def _repair_index_tail(root: Path) -> None:
+    """Make the shared index appendable again after a crash during an append.
+
+    A torn final line never became a committed row, so it is dropped and the
+    next append lands on a line boundary. A complete record that only lost its
+    newline is preserved and terminated instead.
+    """
+    index = root / "index.jsonl"
+    if not index.exists():
+        return
+    text = index.read_text(encoding="utf-8")
+    if not text or text.endswith("\n"):
+        return
+    head, _, tail = text.rpartition("\n")
+    keep = f"{head}\n" if head else ""
+    try:
+        record = json.loads(tail)
+        committed = isinstance(record, dict) and isinstance(record.get("run_id"), str)
+    except json.JSONDecodeError:
+        committed = False
+    if committed:
+        with index.open("a", encoding="utf-8") as output:
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        return
+    with index.open("r+", encoding="utf-8") as output:
+        output.truncate(len(keep.encode("utf-8")))
+        output.flush()
+        os.fsync(output.fileno())
 
 
 def _write_index_row(root: Path, row: dict[str, Any]) -> None:
@@ -112,6 +238,13 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
     for value in (input_tokens, output_tokens, cached_tokens, reasoning_tokens):
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
             raise ValueError("provider usage fields must be non-negative integer counts")
+    # A missing measurement is recorded with its named reason, never as zero.
+    usage_unavailable = _derive_usage_unavailable(receipt_snapshot, usage)
+    # The failure category is the redacted native category as projected. An
+    # absent category means "not projected" and is never relabelled.
+    failure_category = receipt_snapshot.get("failure_category")
+    if failure_category is not None and not isinstance(failure_category, str):
+        raise ValueError("failure category must be a string or null")
     tool_starts = [item for item in (trace or []) if item.get("kind") == "tool_started"]
     call_keys = [(item.get("tool"), item.get("arguments_sha256")) for item in tool_starts
                  if item.get("tool") and item.get("arguments_sha256")]
@@ -158,6 +291,8 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
         "turn_id": turn_id,
         "terminal": terminal,
         "failure_class": failure_class,
+        "failure_category": failure_category,
+        "usage_unavailable": usage_unavailable,
         "verifier": {"kind": "workspace_file", "path": expected_file, "expected_sha256": expected_sha256, "expected_exists": expected_exists,
                      "expected_text_sha256": hashlib.sha256(expected_text.encode()).hexdigest() if expected_text is not None else None,
                      **verification},
@@ -199,6 +334,7 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
         output.flush()
         os.fsync(output.fileno())
     index_row: dict[str, Any]
+    _repair_index_tail(root)
     with (root / "index.jsonl").open("a", encoding="utf-8") as output:
         manifest_digest = hashlib.sha256((run_dir / "manifest.json").read_bytes()).hexdigest()
         index_row = {"schema_version": SCHEMA_VERSION, "run_id": run_id, "task_id": task_id,
@@ -209,41 +345,106 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
         os.fsync(output.fileno())
     if (root / INDEX_NAME).exists():
         _write_index_row(root, index_row)
-    _verify_sqlite_index(root, [json.loads(line) for line in (root / "index.jsonl").read_text(encoding="utf-8").splitlines()])
+    _verify_sqlite_index(root, _read_jsonl(root / "index.jsonl", "ledger index"))
     return manifest
+
+
+def _load_indexed_run(root: Path, row: dict[str, Any]) -> dict[str, Any]:
+    """Load and re-verify one committed run against its immutable index row."""
+    run_id = row["run_id"]
+    manifest_path = root / "runs" / run_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not _supported_version(manifest.get("schema_version")):
+        raise ValueError("run manifest has unsupported schema version")
+    if manifest.get("run_id") != run_id or manifest.get("terminal") not in TERMINALS:
+        raise ValueError("run manifest identity or terminal status is invalid")
+    if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != row.get("manifest_sha256"):
+        raise ValueError("run manifest checksum does not match the immutable ledger index")
+    decoded_events = _read_jsonl(manifest_path.parent / "events.jsonl", "run event log")
+    if not decoded_events:
+        raise ValueError("run event log is empty")
+    if any(not _supported_version(event.get("schema_version"))
+           or event.get("run_id") != run_id or event.get("seq") != index
+           for index, event in enumerate(decoded_events, start=1)):
+        raise ValueError("run event identity or sequence is invalid")
+    terminal_event = decoded_events[-1]
+    if terminal_event.get("kind") != "terminal" or terminal_event.get("terminal") != manifest["terminal"]:
+        raise ValueError("terminal event disagrees with its run manifest")
+    if manifest.get("trace_count") != len(decoded_events) - 1:
+        raise ValueError("run trace count does not match event log")
+    manifest["usage_unavailable"] = _stored_usage_unavailable(manifest)
+    return manifest
+
+
+def _reconcile_orphan(root: Path, run_id: str) -> dict[str, Any]:
+    """Reconcile an attempt directory the index never committed.
+
+    The crash between the manifest write and the index append leaves an
+    attempt whose outcome is unknown. It is recorded as an explicit
+    `interrupted_unknown` terminal: never a pass, never a failure, and never
+    carrying a usage measurement it cannot prove.
+    """
+    manifest_path = root / "runs" / run_id / "manifest.json"
+    manifest: dict[str, Any] | None = None
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest is None:
+        metrics = {field: None for field in _MEASUREMENT_FIELDS}
+        metrics["unavailable"] = ["provider_cost", "cpu", "rss", "model-visible context projection",
+                                   "native turn id", *USAGE_TOKEN_FIELDS]
+        return {"schema_version": SCHEMA_VERSION, "run_id": run_id, "terminal": INTERRUPTED_UNKNOWN,
+                "recorded_terminal": None, "reconciled": True, "task_id": None, "group_id": None,
+                "repeat": 0, "candidate": None, "suite_sha256": None, "case_sha256": None,
+                "created_unix_ms": None, "subject": {}, "policy": None, "session_id": None,
+                "turn_id": None, "failure_class": None, "failure_category": None,
+                "usage_unavailable": "unspecified", "metrics": metrics, "trace_count": None}
+    reconciled = dict(manifest)
+    reconciled["terminal"] = INTERRUPTED_UNKNOWN
+    reconciled["recorded_terminal"] = manifest.get("terminal")
+    reconciled["reconciled"] = True
+    metrics = dict(manifest.get("metrics") or {})
+    # The attempt's outcome is unknown, so it contributes no measurement: the
+    # reconciled record never reports a usage or count it cannot attribute to a
+    # finished trial. The raw manifest on disk stays the evidence.
+    for field in _MEASUREMENT_FIELDS:
+        metrics[field] = None
+    metrics["unavailable"] = sorted(set(metrics.get("unavailable") or []) | set(_MEASUREMENT_FIELDS))
+    reconciled["metrics"] = metrics
+    reconciled["usage_unavailable"] = "unspecified"
+    return reconciled
+
+
+def _reconcile_orphans(root: Path, committed: set[str]) -> list[dict[str, Any]]:
+    """Reconcile every attempt directory that has no committed index row."""
+    runs_dir = root / "runs"
+    if not runs_dir.is_dir():
+        return []
+    reconciled = []
+    for entry in sorted(runs_dir.iterdir()):
+        if not entry.is_dir() or entry.name in committed:
+            continue
+        reconciled.append(_reconcile_orphan(root, entry.name))
+    return reconciled
 
 
 def load_runs(root: Path) -> list[dict[str, Any]]:
     index = root / "index.jsonl"
-    if not index.exists():
-        return []
+    runs: list[dict[str, Any]] = []
     seen: set[str] = set()
-    runs = []
-    for line in index.read_text(encoding="utf-8").splitlines():
-        row = json.loads(line)
-        if row.get("schema_version") != SCHEMA_VERSION or row["run_id"] in seen:
-            raise ValueError("ledger index has unsupported schema or duplicate run id")
-        seen.add(row["run_id"])
-        manifest = json.loads((root / "runs" / row["run_id"] / "manifest.json").read_text(encoding="utf-8"))
-        if manifest.get("run_id") != row["run_id"] or manifest.get("terminal") not in TERMINALS:
-            raise ValueError("run manifest identity or terminal status is invalid")
-        manifest_path = root / "runs" / row["run_id"] / "manifest.json"
-        if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != row.get("manifest_sha256"):
-            raise ValueError("run manifest checksum does not match the immutable ledger index")
-        events = (manifest_path.parent / "events.jsonl").read_text(encoding="utf-8").splitlines()
-        if not events:
-            raise ValueError("run event log is empty")
-        decoded_events = [json.loads(line) for line in events]
-        if any(event.get("run_id") != row["run_id"] or event.get("seq") != index
-               for index, event in enumerate(decoded_events, start=1)):
-            raise ValueError("run event identity or sequence is invalid")
-        terminal_event = decoded_events[-1]
-        if terminal_event.get("kind") != "terminal" or terminal_event.get("terminal") != manifest["terminal"]:
-            raise ValueError("terminal event disagrees with its run manifest")
-        if manifest.get("trace_count") != len(decoded_events) - 1:
-            raise ValueError("run trace count does not match event log")
-        runs.append(manifest)
-    _verify_sqlite_index(root, [json.loads(line) for line in index.read_text(encoding="utf-8").splitlines()])
+    if index.exists():
+        rows = _read_jsonl(index, "ledger index")
+        for row in rows:
+            if not _supported_version(row.get("schema_version")):
+                raise ValueError("ledger index has unsupported schema version")
+            run_id = row.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise ValueError("ledger index has a malformed run id")
+            if run_id in seen:
+                raise ValueError("ledger index has duplicate run id")
+            seen.add(run_id)
+            runs.append(_load_indexed_run(root, row))
+        _verify_sqlite_index(root, rows)
+    runs.extend(_reconcile_orphans(root, seen))
     return runs
 
 
@@ -254,6 +455,10 @@ def validate_candidate_resume_rows(root: Path, candidate: str, cases: list[dict[
     existing: dict[tuple[str, int], dict[str, Any]] = {}
     for row in load_runs(root):
         if row["candidate"] != candidate:
+            continue
+        if row.get("terminal") == INTERRUPTED_UNKNOWN:
+            # An interrupted attempt is not a completed row: the case is retried
+            # under a new attempt id, never overwritten with a success.
             continue
         key = (row["task_id"], row.get("repeat", 0))
         case = by_task.get(key[0])
@@ -271,7 +476,7 @@ def replay(root: Path, run_id: str) -> dict[str, Any]:
     manifest = next((row for row in load_runs(root) if row["run_id"] == run_id), None)
     if manifest is None:
         raise ValueError("run id is not present in the ledger")
-    verifier = manifest["verifier"]
+    verifier = manifest.get("verifier") or {}
     expected_text_digest = verifier.get("expected_text_sha256")
     artifact_rel = verifier.get("artifact_path")
     artifact = root / "runs" / run_id / artifact_rel if artifact_rel else None
@@ -297,43 +502,137 @@ def report(root: Path) -> dict[str, Any]:
     measured_usage = [row["metrics"] for row in runs
                       if row["metrics"].get("input_tokens") is not None
                       and row["metrics"].get("output_tokens") is not None]
+    unavailable_reasons: dict[str, int] = {}
+    for run in runs:
+        reason = run.get("usage_unavailable")
+        if reason is not None:
+            unavailable_reasons[reason] = unavailable_reasons.get(reason, 0) + 1
+    measured_metrics = [row["metrics"] for row in runs]
     return {"schema_version": SCHEMA_VERSION, "runs": len(runs), "terminals": counts,
-            "tool_started": sum(row["metrics"]["tool_started"] or 0 for row in runs),
+            "tool_started": _sum_measured(measured_metrics, "tool_started"),
             "token_usage": ({"measured_runs": len(measured_usage),
-                             "input_tokens": sum(row["input_tokens"] for row in measured_usage),
-                             "output_tokens": sum(row["output_tokens"] for row in measured_usage),
-                             "cached_tokens": sum(row["cached_tokens"] or 0 for row in measured_usage),
-                             "reasoning_tokens": sum(row["reasoning_tokens"] or 0 for row in measured_usage)}
+                             "input_tokens": _sum_measured(measured_usage, "input_tokens"),
+                             "output_tokens": _sum_measured(measured_usage, "output_tokens"),
+                             "cached_tokens": _sum_measured(measured_usage, "cached_tokens"),
+                             "reasoning_tokens": _sum_measured(measured_usage, "reasoning_tokens")}
                             if measured_usage else None),
             "cost_usd": None,
-            "repeated_tool_calls": sum(row["metrics"].get("repeated_tool_calls", 0) for row in runs),
-            "recovery_followups": sum(row["metrics"].get("recovery_followups", 0) for row in runs),
+            "usage_unavailable": unavailable_reasons,
+            "repeated_tool_calls": _sum_measured(measured_metrics, "repeated_tool_calls"),
+            "recovery_followups": _sum_measured(measured_metrics, "recovery_followups"),
             "missing_metrics": sorted({item for row in runs for item in row["metrics"]["unavailable"]})}
 
 
+#: Identity fields every trial of ONE candidate must agree on. The subject
+#: identity is pinned per candidate: a candidate that changed binary, source
+#: revision, agent, model, policy or tool surface mid-suite is not one
+#: comparable arm.
+_ARM_IDENTITY_FIELDS = (
+    ("suite digest", lambda row: row.get("suite_sha256")),
+    ("subject binary fingerprint", lambda row: (row.get("subject") or {}).get("binary_sha256")),
+    ("revision", lambda row: (row.get("subject") or {}).get("revision")),
+    ("agent", lambda row: (row.get("receipt") or {}).get("agent")),
+    ("model", lambda row: (row.get("receipt") or {}).get("model")),
+    ("policy", lambda row: row.get("policy")),
+    ("tool surface digest", lambda row: (row.get("receipt") or {}).get("tool_surface_sha256")),
+)
+
+#: Identity fields a PAIRED trial must share across the two candidates. The
+#: subject binary fingerprint is deliberately absent: the two candidates are
+#: different builds by construction, so their fingerprints are reported rather
+#: than compared. A differing model or tool surface is a stratified
+#: comparison, which the plan allows.
+_PAIR_IDENTITY_FIELDS = (
+    ("revision", lambda row: (row.get("subject") or {}).get("revision")),
+    ("agent", lambda row: (row.get("receipt") or {}).get("agent")),
+    ("policy", lambda row: row.get("policy")),
+)
+
+
+def _identity_key(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _require_arm_identity(candidate: str, rows: dict[tuple[str, int], dict[str, Any]]) -> None:
+    """Refuse a candidate whose own trials disagree on their subject identity."""
+    for label, extract in _ARM_IDENTITY_FIELDS:
+        values = {_identity_key(extract(row)) for row in rows.values() if extract(row) is not None}
+        if len(values) > 1:
+            raise ValueError(f"candidate {candidate!r} trials disagree on {label}")
+
+
+def _arm_identity(rows: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
+    identity: dict[str, Any] = {}
+    for label, extract in _ARM_IDENTITY_FIELDS:
+        values = [extract(row) for row in rows.values() if extract(row) is not None]
+        identity[label] = values[0] if values else None
+    return identity
+
+
 def compare(root: Path, left_candidate: str, right_candidate: str) -> dict[str, Any]:
+    if left_candidate == right_candidate:
+        raise ValueError("comparison requires two distinct candidates; refusing to compare a candidate against itself")
     runs = load_runs(root)
     left: dict[tuple[str, int], dict[str, Any]] = {}
     right: dict[tuple[str, int], dict[str, Any]] = {}
+    left_unknown: list[dict[str, Any]] = []
+    right_unknown: list[dict[str, Any]] = []
     for row in runs:
-        target = left if row["candidate"] == left_candidate else right if row["candidate"] == right_candidate else None
+        candidate = row.get("candidate")
+        if row.get("terminal") == INTERRUPTED_UNKNOWN:
+            # An unknown outcome is not a finished trial: it stays visible and
+            # keeps the pairing incomplete, it is never scored.
+            if candidate == left_candidate:
+                left_unknown.append(row)
+            elif candidate == right_candidate:
+                right_unknown.append(row)
+            continue
+        target = left if candidate == left_candidate else right if candidate == right_candidate else None
         if target is not None:
             key = (row["task_id"], row.get("repeat", 0))
             if key in target:
                 raise ValueError("candidate contains duplicate paired task/repeat records")
             target[key] = row
+    _require_arm_identity(left_candidate, left)
+    _require_arm_identity(right_candidate, right)
+    left_suites = {row.get("suite_sha256") for row in left.values()}
+    right_suites = {row.get("suite_sha256") for row in right.values()}
+    if not left_suites or not right_suites:
+        raise ValueError("comparison has an empty expected denominator: no completed trials to pair")
+    if left_suites != right_suites:
+        raise ValueError("paired candidate trials do not share the same frozen suite")
+    suite = next(iter(left_suites))
+    expected = {(row["task_id"], row.get("repeat", 0)) for row in runs if row.get("suite_sha256") == suite}
+    if not expected:
+        raise ValueError("comparison has an empty expected denominator for the frozen suite")
     paired = sorted(set(left) & set(right))
+    if len(paired) != len(expected):
+        missing = sorted(expected - set(paired))
+        raise ValueError(f"paired candidate trials are incomplete: {len(paired)} of {len(expected)} "
+                         f"expected (task, repeat) pairs are paired; missing "
+                         f"{[f'{task}/{repeat}' for task, repeat in missing]}")
     for key in paired:
         left_row, right_row = left[key], right[key]
         if (left_row.get("group_id"), left_row.get("case_sha256"), left_row.get("suite_sha256")) != (
                 right_row.get("group_id"), right_row.get("case_sha256"), right_row.get("suite_sha256")):
             raise ValueError("paired candidate trials do not share the same frozen task definition")
+        for label, extract in _PAIR_IDENTITY_FIELDS:
+            left_value = extract(left_row)
+            right_value = extract(right_row)
+            if left_value is None or right_value is None:
+                continue
+            if _identity_key(left_value) != _identity_key(right_value):
+                raise ValueError(f"paired candidate trials disagree on {label}")
     terminal_pairs = [{"task_id": task_id, "repeat": repeat,
                        "left_terminal": left[(task_id, repeat)]["terminal"],
                        "right_terminal": right[(task_id, repeat)]["terminal"]}
                       for task_id, repeat in paired]
     regressions = [row for row in terminal_pairs
                    if row["left_terminal"] == "passed" and row["right_terminal"] != "passed"]
+    measured_usage = {side: [arm[key]["metrics"] for key in paired
+                             if arm[key]["metrics"].get("input_tokens") is not None
+                             and arm[key]["metrics"].get("output_tokens") is not None]
+                      for side, arm in (("left", left), ("right", right))}
     return {"left": left_candidate, "right": right_candidate,
             "paired_trials": [{"task_id": task_id, "repeat": repeat} for task_id, repeat in paired],
             "paired_task_ids": sorted({task_id for task_id, _ in paired}),
@@ -341,4 +640,16 @@ def compare(root: Path, left_candidate: str, right_candidate: str) -> dict[str, 
             "left_passed": sum(left[key]["terminal"] == "passed" for key in paired),
             "right_passed": sum(right[key]["terminal"] == "passed" for key in paired),
             "denominator": len(paired), "unpaired_left": sorted(set(left) - set(right)),
-            "unpaired_right": sorted(set(right) - set(left)), "tokens": None, "cost_usd": None}
+            "unpaired_right": sorted(set(right) - set(left)), "tokens": None, "cost_usd": None,
+            "measured_token_usage": {side: ({"measured_runs": len(rows),
+                                             "input_tokens": _sum_measured(rows, "input_tokens"),
+                                             "output_tokens": _sum_measured(rows, "output_tokens"),
+                                             "cached_tokens": _sum_measured(rows, "cached_tokens"),
+                                             "reasoning_tokens": _sum_measured(rows, "reasoning_tokens")}
+                                            if rows else None)
+                                    for side, rows in measured_usage.items()},
+            "interrupted_trials": {"left": [{"run_id": row["run_id"], "task_id": row.get("task_id"),
+                                             "repeat": row.get("repeat", 0)} for row in left_unknown],
+                                   "right": [{"run_id": row["run_id"], "task_id": row.get("task_id"),
+                                              "repeat": row.get("repeat", 0)} for row in right_unknown]},
+            "subject_identity": {"left": _arm_identity(left), "right": _arm_identity(right)}}

@@ -3859,6 +3859,109 @@ impl CoreRequest {
     }
 }
 
+/// Stable, secret-safe classification of a failed turn.
+///
+/// Never carries provider text, URLs, credentials, or response bodies.
+/// A consumer may branch on the category without ever seeing the failure
+/// message, which is the only reason the category exists: the message on
+/// [`CoreEvent::TurnFailed`] embeds upstream provider text and can carry
+/// secrets, so it must never be projected to an untrusted surface.
+///
+/// Every variant has exactly one native producer. A category with no
+/// producer would be a claim, not a classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnFailureCategory {
+    /// The provider could not be reached or the response stream broke.
+    ProviderTransport,
+    /// The provider rejected the credentials.
+    ProviderAuth,
+    /// The provider refused the request on quota/rate grounds.
+    ProviderRateLimit,
+    /// The provider request timed out.
+    ProviderTimeout,
+    /// The provider answered with an API-level failure.
+    ProviderApi,
+    /// The turn was cancelled before it completed.
+    Cancelled,
+    /// The daemon restarted while the turn was active.
+    DaemonRestarted,
+    /// The agent loop itself failed (invalid identity, invalid request).
+    AgentInternal,
+    /// The native layer could not classify the failure any more precisely.
+    NativeFailureUnspecified,
+}
+
+impl TurnFailureCategory {
+    /// The stable wire spelling of this category.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderTransport => "provider_transport",
+            Self::ProviderAuth => "provider_auth",
+            Self::ProviderRateLimit => "provider_rate_limit",
+            Self::ProviderTimeout => "provider_timeout",
+            Self::ProviderApi => "provider_api",
+            Self::Cancelled => "cancelled",
+            Self::DaemonRestarted => "daemon_restarted",
+            Self::AgentInternal => "agent_internal",
+            Self::NativeFailureUnspecified => "native_failure_unspecified",
+        }
+    }
+}
+
+/// Why provider usage is present or absent on a terminal event.
+///
+/// The distinction matters because "zero tokens" and "no token information"
+/// are different facts: a provider that reports `0` tokens is
+/// [`UsageAvailability::NotProvided`], while a turn that died before any
+/// provider response is [`UsageAvailability::NotObserved`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageAvailability {
+    /// The provider reported usage for this turn.
+    Reported,
+    /// The turn ended before any provider response reported usage.
+    NotObserved,
+    /// A provider response arrived but the route does not report usage.
+    NotProvided,
+    /// Usage was known natively but is not observable at this point.
+    LostAtProjection,
+    /// Availability could not be established.
+    Unspecified,
+}
+
+impl UsageAvailability {
+    /// The stable wire spelling of this availability reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reported => "reported",
+            Self::NotObserved => "not_observed",
+            Self::NotProvided => "not_provided",
+            Self::LostAtProjection => "lost_at_projection",
+            Self::Unspecified => "unspecified",
+        }
+    }
+}
+
+/// Provider-reported usage for a terminal turn, with explicit provenance.
+///
+/// The token counts are optional so "the provider reported zero" and "the
+/// provider reported nothing" stay distinguishable: the counts are absent
+/// when the route does not report them, and [`UsageAvailability::availability`]
+/// says which of the two happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<usize>,
+    pub availability: UsageAvailability,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -4028,6 +4131,23 @@ pub enum CoreEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         message: String,
+        /// Stable, secret-safe classification of the failure.
+        ///
+        /// Never carries provider text, URLs, credentials, or response
+        /// bodies. Optional because a persisted `core_event_log` row written
+        /// before this field existed must still deserialize, and because a
+        /// producer that genuinely cannot classify the failure leaves it
+        /// absent rather than guessing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<TurnFailureCategory>,
+        /// Provider usage observed before the failure, with explicit
+        /// provenance.
+        ///
+        /// Optional for the same wire-compat reason as `category`; `None`
+        /// means "no usage observation was attached here", which is not the
+        /// same as "the provider reported zero tokens".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
     },
     /// Controller lease changed (acquire/transfer/takeover/release).
     /// Structural locators only: session/turn/principal ids, revision,
@@ -4597,6 +4717,124 @@ mod tests {
     #[test]
     fn protocol_version_is_set() {
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn turn_failed_without_category_or_usage_still_deserializes() {
+        // A `core_event_log` row written before the failure class and the
+        // usage provenance existed must still decode: both fields are
+        // optional and default to absent, never to a fabricated value.
+        let legacy = r#"{"type":"turn_failed","session_id":"s1","message":"boom"}"#;
+        let event: CoreEvent = serde_json::from_str(legacy).expect("legacy row decodes");
+        match event {
+            CoreEvent::TurnFailed {
+                session_id,
+                turn_id,
+                message,
+                category,
+                usage,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(turn_id, None);
+                assert_eq!(message, "boom");
+                assert_eq!(category, None);
+                assert_eq!(usage, None);
+            }
+            other => panic!("expected TurnFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_failed_round_trips_the_category_and_the_usage_provenance() {
+        let event = CoreEvent::TurnFailed {
+            session_id: "s1".into(),
+            turn_id: Some("t1".into()),
+            message: "boom".into(),
+            category: Some(TurnFailureCategory::ProviderTransport),
+            usage: Some(TurnUsage {
+                input_tokens: Some(120),
+                output_tokens: Some(35),
+                cached_tokens: None,
+                reasoning_tokens: None,
+                availability: UsageAvailability::Reported,
+            }),
+        };
+        let encoded = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(encoded["category"], "provider_transport");
+        assert_eq!(encoded["usage"]["availability"], "reported");
+        assert_eq!(encoded["usage"]["input_tokens"], 120);
+        // Absent counts stay absent on the wire.
+        assert!(encoded["usage"].get("cached_tokens").is_none());
+        let decoded: CoreEvent = serde_json::from_value(encoded).expect("round trips");
+        match decoded {
+            CoreEvent::TurnFailed {
+                session_id,
+                turn_id,
+                message,
+                category,
+                usage,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(turn_id.as_deref(), Some("t1"));
+                assert_eq!(message, "boom");
+                assert_eq!(category, Some(TurnFailureCategory::ProviderTransport));
+                assert_eq!(
+                    usage,
+                    Some(TurnUsage {
+                        input_tokens: Some(120),
+                        output_tokens: Some(35),
+                        cached_tokens: None,
+                        reasoning_tokens: None,
+                        availability: UsageAvailability::Reported,
+                    })
+                );
+            }
+            other => panic!("expected TurnFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_availability_and_failure_category_use_the_documented_wire_spellings() {
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::Reported).unwrap(),
+            "reported"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::NotObserved).unwrap(),
+            "not_observed"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::NotProvided).unwrap(),
+            "not_provided"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::LostAtProjection).unwrap(),
+            "lost_at_projection"
+        );
+        assert_eq!(
+            serde_json::to_value(UsageAvailability::Unspecified).unwrap(),
+            "unspecified"
+        );
+        for (category, spelling) in [
+            (TurnFailureCategory::ProviderTransport, "provider_transport"),
+            (TurnFailureCategory::ProviderAuth, "provider_auth"),
+            (
+                TurnFailureCategory::ProviderRateLimit,
+                "provider_rate_limit",
+            ),
+            (TurnFailureCategory::ProviderTimeout, "provider_timeout"),
+            (TurnFailureCategory::ProviderApi, "provider_api"),
+            (TurnFailureCategory::Cancelled, "cancelled"),
+            (TurnFailureCategory::DaemonRestarted, "daemon_restarted"),
+            (TurnFailureCategory::AgentInternal, "agent_internal"),
+            (
+                TurnFailureCategory::NativeFailureUnspecified,
+                "native_failure_unspecified",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(category).unwrap(), spelling);
+            assert_eq!(category.as_str(), spelling);
+        }
     }
 
     #[test]

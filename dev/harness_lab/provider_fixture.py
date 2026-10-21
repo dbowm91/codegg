@@ -8,14 +8,29 @@ import threading
 from typing import Any
 
 
+#: Fault kinds the fixture can inject on the request that follows the tool calls.
+#:
+#: `transport` truncates the response body so the provider observes a transport
+#: failure rather than a completed response. `http_error` answers with a 503 so
+#: the provider observes an API-level failure. Both are provider-free.
+FAULT_TRANSPORT = "transport"
+FAULT_HTTP_ERROR = "http_error"
+FAULT_KINDS = (FAULT_TRANSPORT, FAULT_HTTP_ERROR)
+
+
 class FixtureProvider:
     def __init__(self, tool_name: str | list[dict[str, Any]], arguments: dict[str, Any] | None = None,
-                 stall_after_tools: bool = False, require_context_text: str | None = None) -> None:
+                 stall_after_tools: bool = False, require_context_text: str | None = None,
+                 fail_after_tools: bool = False, fault_kind: str = FAULT_TRANSPORT) -> None:
         self.calls_to_make = ([{"name": tool_name, "arguments": arguments or {}}]
                               if isinstance(tool_name, str) else tool_name)
         self.calls = 0
         self.stall_after_tools = stall_after_tools
         self.require_context_text = require_context_text
+        self.fail_after_tools = fail_after_tools
+        if fault_kind not in FAULT_KINDS:
+            raise ValueError(f"unsupported fixture fault kind: {fault_kind}")
+        self.fault_kind = fault_kind
         self.stalled = threading.Event()
         self.release_stall = threading.Event()
         self.request_summaries: list[dict[str, Any]] = []
@@ -91,26 +106,63 @@ class FixtureProvider:
                         fixture_call["arguments"] = json.loads(json.dumps(fixture_call["arguments"]).replace(
                             "{artifact_handle}", handle.group(1)))
                     chunks = [
-                        {
-                            "id": f"fixture-{call}", "object": "chat.completion.chunk",
-                            "choices": [{
-                                "index": 0,
-                                "delta": {
-                                    "role": "assistant",
-                                    "tool_calls": [{
-                                        "index": 0, "id": f"call-harness-{call}", "type": "function",
-                                        "function": {"name": fixture_call["name"],
-                                                     "arguments": json.dumps(fixture_call["arguments"])},
-                                    }],
-                                },
-                                "finish_reason": None,
-                            }],
-                        },
+                        {"id": f"fixture-{call}", "object": "chat.completion.chunk",
+                         "choices": [{"index": 0,
+                                      "delta": {
+                                          "role": "assistant",
+                                          "tool_calls": [{
+                                              "index": 0, "id": f"call-harness-{call}", "type": "function",
+                                              "function": {"name": fixture_call["name"],
+                                                           "arguments": json.dumps(fixture_call["arguments"])},
+                                          }],
+                                      },
+                                      "finish_reason": None,
+                                      }],
+                         },
                         {"id": f"fixture-{call}", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
                     ]
+                    if owner.fail_after_tools:
+                        # The fault lands AFTER a metered attempt: this tool-call
+                        # response also reports usage, so the failed turn's
+                        # aggregate is non-empty and the failure path can
+                        # distinguish "spent something" from "never reached
+                        # the provider".
+                        chunks.append({"id": f"fixture-{call}", "object": "chat.completion.chunk", "choices": [],
+                                       "usage": {"prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16,
+                                                 "prompt_tokens_details": {"cached_tokens": 2},
+                                                 "completion_tokens_details": {"reasoning_tokens": 1}}})
                 else:
                     if owner.require_context_text is not None and (not context_read_used or not recovered):
                         self.send_error(422, "expected context_read to recover the projected fixture tail")
+                        return
+                    if owner.fail_after_tools:
+                        # The request that follows the tool calls is the
+                        # injected fault. Nothing is returned to the model:
+                        # the turn must end on a failure terminal.
+                        if owner.fault_kind == FAULT_HTTP_ERROR:
+                            body = json.dumps({"error": {"message": "fixture injected provider fault",
+                                                         "type": "server_error"}}).encode()
+                            self.send_response(503)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+                        # Declare more bytes than are written and close the
+                        # connection, so the provider observes a truncated
+                        # response instead of a completed one.
+                        partial = b'data: {"id":"fixture-fault","object":"chat.completion.chunk","choices":[]}\n\n'
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_header("Content-Length", str(len(partial) + 64))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(partial)
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+                        self.close_connection = True
                         return
                     if owner.stall_after_tools:
                         self.send_response(200)

@@ -8,8 +8,22 @@ import sys
 import time
 
 from .supervisor import HarnessError, run_smoke, run_tool_trial
+from . import budget
 from . import ledger
 from . import improve
+
+
+def _add_budget_arguments(parser: argparse.ArgumentParser) -> None:
+    """Attach the budget admission gate to a command that can reach a provider.
+
+    The gate is fail-closed: a live trial must present a budget policy whose
+    enforceable cap the controller verified, and the trial is refused before
+    anything is spawned when it cannot.
+    """
+    parser.add_argument("--budget", type=Path,
+                        help="JSON budget policy document for the trial's enforceable caps")
+    parser.add_argument("--live-provider", action="store_true",
+                        help="declare that this trial reaches a live provider; requires --budget and a verified cap")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -28,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     tool.add_argument("--profile", choices=("workspace-write", "full-host"), required=True)
     tool.add_argument("--timeout", type=float, default=45.0)
     tool.add_argument("--deny-bash", action="store_true", help="prove explicit bash deny remains effective")
+    _add_budget_arguments(tool)
     evaluate = commands.add_parser("evaluate", help="run and independently verify the deterministic native tool fixture")
     evaluate.add_argument("--binary", type=Path, default=os.environ.get("CODEGG_HARNESS_BINARY"))
     evaluate.add_argument("--ledger", type=Path, required=True)
@@ -42,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--deny-bash", action="store_true")
     evaluate.add_argument("--resume-candidate", action="store_true",
                           help="resume missing task/repeat pairs for an interrupted candidate")
+    _add_budget_arguments(evaluate)
     report = commands.add_parser("report", help="summarize a frozen ledger without provider calls")
     report.add_argument("--ledger", type=Path, required=True)
     replay = commands.add_parser("replay", help="re-run a deterministic verifier from captured artifacts")
@@ -76,6 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     optimize.add_argument("--max-wallclock", type=float, default=3600.0)
     optimize.add_argument("--timeout", type=float, default=900.0)
     optimize.add_argument("--resume", action="store_true")
+    _add_budget_arguments(optimize)
     qualify = commands.add_parser("qualify", help="build, test, and paired-ACP-evaluate a scoped candidate")
     qualify.add_argument("--worktree", type=Path, required=True)
     qualify.add_argument("--suite", type=Path, required=True)
@@ -92,6 +109,12 @@ def _parser() -> argparse.ArgumentParser:
     qualify.add_argument("--resume", action="store_true")
     qualify.add_argument("--max-candidate-retries", type=int, default=0,
                          help="bounded OpenCode compile-correction retries; zero disables retries")
+    _add_budget_arguments(qualify)
+    budget_check = commands.add_parser(
+        "budget-check",
+        help="report the budget admission decision for a trial policy; provider-free")
+    budget_check.add_argument("--budget", type=Path, required=True,
+                              help="JSON budget policy document for the trial's enforceable caps")
     candidate_tree = commands.add_parser("candidate-worktree", help="create a new isolated local candidate branch/worktree")
     candidate_tree.add_argument("--repository", type=Path, default=Path.cwd())
     candidate_tree.add_argument("--branch", required=True)
@@ -103,6 +126,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        # The budget admission gate runs before anything else so a live trial
+        # that cannot prove an enforceable cap never reaches a provider, a
+        # daemon, or a subprocess.
+        _require_budget_admission(args)
         if args.command == "doctor":
             binary = _binary(args.binary)
             print(json.dumps({"ok": True, "binary": str(binary), "sha256": _sha256(binary)}, sort_keys=True))
@@ -125,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise HarnessError("manual mode requires --dry-run; OpenCode mode requires --worktree, --prompt, and at least one --allow-prefix")
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("status") != "BLOCKED" else 2
+        if args.command == "budget-check":
+            admission = _budget_admission(args.budget)
+            print(json.dumps(admission.as_dict(), sort_keys=True))
+            return 0 if admission.status == budget.STATUS_ADMITTED else 2
         if args.command == "optimize":
             result = improve.run_optimizer(
                 args.repository, args.suite, args.ledger,
@@ -343,6 +374,43 @@ def _binary(value: Path | None) -> Path:
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise HarnessError(f"candidate binary is not executable: {binary}")
     return binary
+
+
+def _budget_policy(path: Path | None) -> budget.BudgetPolicy:
+    """Load and strictly validate a budget policy document."""
+    if path is None:
+        raise HarnessError(
+            "a live trial requires --budget pointing at a budget policy document "
+            "with at least one enforceable hard cap")
+    try:
+        raw = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"budget policy is unreadable: {error}") from error
+    if not isinstance(raw, dict):
+        raise HarnessError("budget policy must be a JSON object")
+    try:
+        return budget.budget_policy_from_mapping(raw)
+    except ValueError as error:
+        raise HarnessError(f"budget policy is invalid: {error}") from error
+
+
+def _budget_admission(path: Path | None) -> budget.BudgetAdmission:
+    return budget.admit_budget(_budget_policy(path))
+
+
+def _require_budget_admission(args: argparse.Namespace) -> None:
+    """Fail closed before a live trial starts.
+
+    Runs before any provider request, daemon spawn, or subprocess launch, so a
+    trial that cannot prove an enforceable cap never reaches the provider.
+    """
+    if not getattr(args, "live_provider", False):
+        return
+    admission = _budget_admission(getattr(args, "budget", None))
+    if admission.status != budget.STATUS_ADMITTED:
+        raise HarnessError(
+            "budget admission refused before the trial started: "
+            + json.dumps(admission.as_dict(), sort_keys=True))
 
 
 def _sha256(path: Path) -> str:

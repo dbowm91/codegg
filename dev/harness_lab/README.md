@@ -150,6 +150,69 @@ Without it, the supervisor creates an OS temporary experiment directory and
 removes it after cleanup. The output is a bounded JSON receipt on stdout;
 ACP stderr tails are capped at 64 KiB per child.
 
+## Budget admission before a live trial
+
+A trial that reaches a live provider must present a budget policy whose hard
+cap the controller verified. The gate is fail-closed and runs before any
+provider request, daemon spawn, or subprocess launch:
+
+```bash
+python3 -m dev.harness_lab budget-check --budget /path/to/budget.json
+python3 -m dev.harness_lab tool-trial --binary target/debug/codegg \
+  --profile workspace-write --live-provider --budget /path/to/budget.json
+```
+
+`budget-check` is provider-free: it performs no I/O, makes no request, and
+spawns nothing. It prints the admission decision and exits `0` when admitted
+and `2` when refused.
+
+A budget policy is a JSON object with at least one enforceable hard cap:
+
+| Key | Meaning |
+|---|---|
+| `token_limit` | Maximum provider tokens for the trial. |
+| `cost_limit_usd` | Maximum spend. Requires `cost_enforcement`. |
+| `cost_enforcement` | `controller_enforced` or `provider_enforced`. Never inferred. |
+| `max_provider_requests` | Maximum provider requests. `1` is valid. |
+| `max_wallclock_seconds` | Maximum wall-clock seconds. |
+| `provider_quota` | A provider-authoritative ceiling: `source`, `enforceable`, `retry_safe`, `scope`. |
+
+Refusal reports `status: "budget_unverifiable"` and a `missing_source` naming
+what could not be verified: `token_limit`, `cost_limit_usd`,
+`max_provider_requests`, `max_wallclock_seconds`, `provider_quota`, or
+`provider_quota_retry_safety`.
+
+Two rules are strict on purpose:
+
+- **A cost cap with no stated enforcement is refused.** A guessed or locally
+  estimated price is never treated as an enforceable spend limit, and a
+  requested-but-unenforceable cap refuses the trial rather than being silently
+  ignored.
+- **A provider quota must be retry-safe.** A ceiling that resets on a provider
+  retry does not bound the trial, so it is refused with
+  `provider_quota_retry_safety`.
+
+## Failed-turn evidence
+
+A native turn failure reaches the client as the ACP JSON-RPC error `-32010`.
+Its `data` payload carries the redacted failure class and the usage
+provenance:
+
+| Field | Meaning |
+|---|---|
+| `codeggFailureCategory` | One allowlisted category, or `native_failure_unspecified`. |
+| `codeggUsage` | Token counts observed before the failure, or `null`. |
+| `codeggUsageReason` | `reported`, `not_observed`, `not_provided`, `lost_at_projection`, or `unspecified`. |
+
+`codeggUsage` is `null` whenever no count was available, and the reason says
+which of the distinguishable facts it was. A missing measurement is never
+recorded as zero usage: the ledger stores a named `usage_unavailable` reason
+instead.
+
+The payload never carries the provider's error text. The category is derived
+from the typed native error and the usage aggregate covers every provider
+response in the failed run.
+
 ## Mutable path inventory
 
 Each lane receives unique values for:

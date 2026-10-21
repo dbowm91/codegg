@@ -6644,6 +6644,89 @@ enum M001FailKind {
     SecretUrl,
 }
 
+/// A provider whose FIRST response reports usage and whose SECOND response
+/// fails mid-stream.
+///
+/// The failure is what makes the run's usage observable at all: the error
+/// path drops the run's `Vec<ChatEvent>`, so the tokens metered by the
+/// first response can only be recovered from the run-scoped accumulator.
+///
+/// The second response emits one visible delta before it fails. That is
+/// what keeps the test at exactly two provider calls: the retry policy
+/// refuses to replay an attempt that already produced output, so the
+/// failure is terminal instead of burning the retry chain.
+#[derive(Clone)]
+struct MeteredThenStreamFailureProvider {
+    calls: Arc<Mutex<usize>>,
+    /// The usage the first response reports. `None` means "the route does
+    /// not report usage", which is a different fact from "it reported zero".
+    usage: Option<TokenUsage>,
+}
+
+impl MeteredThenStreamFailureProvider {
+    fn new(usage: Option<TokenUsage>) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(0)),
+            usage,
+        }
+    }
+
+    async fn call_count(&self) -> usize {
+        *self.calls.lock().await
+    }
+}
+
+#[async_trait]
+impl Provider for MeteredThenStreamFailureProvider {
+    fn id(&self) -> &str {
+        "metered-then-stream-failure"
+    }
+
+    fn name(&self) -> &str {
+        "Metered Then Stream Failure Provider"
+    }
+
+    fn clone_box(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+
+    async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        let call_index = {
+            let mut calls = self.calls.lock().await;
+            *calls += 1;
+            *calls
+        };
+
+        if call_index == 1 {
+            let usage = self.usage.clone().unwrap_or_default();
+            let events: Vec<Result<ChatEvent, ProviderError>> = vec![
+                Ok(ChatEvent::ToolCall(ToolCall {
+                    id: "metered_call".to_string().into(),
+                    name: "echo_args".to_string().into(),
+                    arguments: serde_json::json!({"value": "metered"}),
+                })),
+                Ok(ChatEvent::Finish {
+                    stop_reason: "tool_calls".to_string().into(),
+                    usage,
+                }),
+            ];
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        } else {
+            let events: Vec<Result<ChatEvent, ProviderError>> = vec![
+                Ok(ChatEvent::TextDelta("partial".to_string().into())),
+                Err(ProviderError::Stream(
+                    "provider stream failed after the metered attempt".to_string(),
+                )),
+            ];
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+    }
+
+    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![])
+    }
+}
+
 #[derive(Clone)]
 struct M001StatusProvider {
     calls: Arc<Mutex<usize>>,
@@ -6850,6 +6933,84 @@ async fn m001_midstream_tool_start_is_explicit_and_not_executed() {
             .any(|e| matches!(e, AppEvent::ToolResult { .. })),
         "no ToolResult may be produced for the abandoned attempt"
     );
+
+    // The failure happened before any provider response reported usage, so
+    // the terminal usage is "not observed" — NOT "zero tokens".
+    let usage = codegg::agent::turn_runtime::turn_usage_from_run(&agent_loop.run_usage());
+    assert_eq!(
+        usage.availability,
+        codegg::protocol::core::UsageAvailability::NotObserved
+    );
+    assert_eq!(usage.input_tokens, None);
+    assert_eq!(usage.output_tokens, None);
+}
+
+#[tokio::test]
+async fn failed_turn_after_a_metered_attempt_reports_the_aggregate_usage() {
+    let provider_inner = MeteredThenStreamFailureProvider::new(Some(TokenUsage {
+        input_tokens: 120,
+        output_tokens: 35,
+        total_tokens: 155,
+        reasoning_tokens: 5,
+        cached_tokens: Some(20),
+    }));
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+
+    let result = agent_loop
+        .run(make_chat_request("meter the first attempt"))
+        .await;
+    assert!(
+        result.is_err(),
+        "the second provider call must fail the turn"
+    );
+    assert_eq!(
+        provider_inner.call_count().await,
+        2,
+        "the visible-output gate must stop the retry chain"
+    );
+
+    // The failure path drops the run's events, so the usage metered by the
+    // first response is only recoverable from the run-scoped accumulator.
+    let usage = codegg::agent::turn_runtime::turn_usage_from_run(&agent_loop.run_usage());
+    assert_eq!(
+        usage.availability,
+        codegg::protocol::core::UsageAvailability::Reported
+    );
+    assert_eq!(usage.input_tokens, Some(120));
+    assert_eq!(usage.output_tokens, Some(35));
+    assert_eq!(usage.cached_tokens, Some(20));
+    assert_eq!(usage.reasoning_tokens, Some(5));
+}
+
+#[tokio::test]
+async fn failed_turn_without_provider_usage_support_reports_not_provided() {
+    // The route answers, but reports no tokens. That is a different fact
+    // from "the turn died before the provider answered".
+    let provider_inner = MeteredThenStreamFailureProvider::new(None);
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+
+    let result = agent_loop.run(make_chat_request("no usage support")).await;
+    assert!(
+        result.is_err(),
+        "the second provider call must fail the turn"
+    );
+    assert_eq!(provider_inner.call_count().await, 2);
+
+    let usage = codegg::agent::turn_runtime::turn_usage_from_run(&agent_loop.run_usage());
+    assert_eq!(
+        usage.availability,
+        codegg::protocol::core::UsageAvailability::NotProvided
+    );
+    assert_eq!(usage.input_tokens, None);
+    assert_eq!(usage.output_tokens, None);
+    assert_eq!(usage.cached_tokens, None);
+    assert_eq!(usage.reasoning_tokens, None);
 }
 
 #[tokio::test]
@@ -7647,10 +7808,20 @@ async fn temp_root_write_following_the_offer_needs_no_human() {
     assert!(outcome.is_ok(), "Loop should complete: {:?}", outcome.err());
 
     // No human was ever asked: the offered attempt was answered by the model.
+    // The counter is scoped to THIS session: the global bus is process-wide,
+    // so a sibling test that deliberately reaches a human would otherwise
+    // leak its `PermissionPending` into this assertion.
     let mut pending = 0usize;
     loop {
         match rx.try_recv() {
-            Ok(AppEvent::PermissionPending { .. }) => pending += 1,
+            Ok(AppEvent::PermissionPending {
+                session_id: pending_session,
+                ..
+            }) => {
+                if pending_session == session_id {
+                    pending += 1;
+                }
+            }
             Ok(_) => continue,
             Err(_) => break,
         }

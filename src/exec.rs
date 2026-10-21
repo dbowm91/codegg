@@ -334,6 +334,9 @@ impl ExecMode {
             AppError::Json(_) => ("JSON_ERROR".to_string(), "JSON error".to_string()),
             AppError::Http(_) => ("HTTP_ERROR".to_string(), "HTTP error".to_string()),
             AppError::Other(_) => ("EXECUTION_ERROR".to_string(), "Execution error".to_string()),
+            // A cancelled turn was previously reported as `Other`, so it
+            // keeps the same classification it always had.
+            AppError::Cancelled => ("EXECUTION_ERROR".to_string(), "Execution error".to_string()),
             AppError::Worktree(_) => ("WORKTREE_ERROR".to_string(), "Worktree error".to_string()),
             AppError::Upgrade(_) => ("UPGRADE_ERROR".to_string(), "Upgrade error".to_string()),
             AppError::Clipboard(_) => {

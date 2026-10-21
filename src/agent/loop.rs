@@ -69,12 +69,56 @@ pub struct AgentLoopState {
     pub unaccounted_tool_calls: usize,
     pub unaccounted_input_tokens: i64,
     pub unaccounted_output_tokens: i64,
+    /// Number of provider responses observed in the current run that
+    /// delivered a `Finish` event (and therefore a usage report).
+    ///
+    /// This is the run-scoped usage accumulator's "did we ever hear from
+    /// the provider" counter. It is deliberately independent of the
+    /// goal-accounting deltas above: those are consumed and reset by
+    /// `account_goal_for_turn` on the success path, so they cannot answer
+    /// "how much did this failed turn actually spend".
+    pub run_provider_responses: usize,
+    /// Aggregate provider-reported input tokens over every provider response
+    /// in the current run.
+    pub run_input_tokens: usize,
+    /// Aggregate provider-reported output tokens over every provider response
+    /// in the current run.
+    pub run_output_tokens: usize,
+    /// Aggregate provider-reported cached tokens over every provider response
+    /// in the current run.
+    ///
+    /// `None` means no response in the run reported cached tokens at all;
+    /// `Some(0)` means a response reported them as zero. The two must stay
+    /// distinguishable, so this is not a plain counter.
+    pub run_cached_tokens: Option<usize>,
+    /// Aggregate provider-reported reasoning tokens over every provider
+    /// response in the current run.
+    ///
+    /// `None` means no response in the run reported reasoning tokens at all.
+    pub run_reasoning_tokens: Option<usize>,
 }
 
 pub struct ExecutionLimits {
     pub max_turns: usize,
     pub max_tokens: usize,
     pub timeout: Duration,
+}
+
+/// Provider usage accumulated over every provider response in one run.
+///
+/// Taken from [`AgentLoopState`]'s run-scoped counters. Independent of goal
+/// accounting: goal accounting consumes and resets its deltas on the
+/// success path, so it cannot answer "how much did this failed turn spend".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunUsageSnapshot {
+    /// Provider responses that delivered a usage report.
+    pub provider_responses: usize,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    /// `None` when no response in the run reported cached tokens.
+    pub cached_tokens: Option<usize>,
+    /// `None` when no response in the run reported reasoning tokens.
+    pub reasoning_tokens: Option<usize>,
 }
 
 impl Default for ExecutionLimits {
@@ -426,6 +470,11 @@ impl AgentLoop {
                 unaccounted_tool_calls: 0,
                 unaccounted_input_tokens: 0,
                 unaccounted_output_tokens: 0,
+                run_provider_responses: 0,
+                run_input_tokens: 0,
+                run_output_tokens: 0,
+                run_cached_tokens: None,
+                run_reasoning_tokens: None,
             },
             limits: ExecutionLimits::default(),
             steering: Arc::new(AtomicBool::new(false)),
@@ -610,6 +659,23 @@ impl AgentLoop {
 
     pub fn state(&self) -> &AgentLoopState {
         &self.state
+    }
+
+    /// The provider usage accumulated over the current run.
+    ///
+    /// This is the AGGREGATE over every provider response the run saw, not
+    /// the usage of the last response: a turn that made two metered
+    /// provider calls and then failed spent both. The success path still
+    /// reports the LAST response's usage (unchanged v1 semantics); the
+    /// failure path reports this aggregate, and the difference is deliberate.
+    pub fn run_usage(&self) -> RunUsageSnapshot {
+        RunUsageSnapshot {
+            provider_responses: self.state.run_provider_responses,
+            input_tokens: self.state.run_input_tokens,
+            output_tokens: self.state.run_output_tokens,
+            cached_tokens: self.state.run_cached_tokens,
+            reasoning_tokens: self.state.run_reasoning_tokens,
+        }
     }
 
     pub fn set_limits(&mut self, limits: ExecutionLimits) {
@@ -892,6 +958,15 @@ impl AgentLoop {
     }
     #[instrument(skip(self, request), fields(session_id = %self.session_id, turn_count = self.state.turn_count))]
     pub async fn run(&mut self, request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+        // The run-scoped usage accumulator covers exactly one run. Resetting
+        // it here (rather than at the end) keeps a previous run's spend from
+        // being reported as this run's, even when this run fails before the
+        // provider is ever reached.
+        self.state.run_provider_responses = 0;
+        self.state.run_input_tokens = 0;
+        self.state.run_output_tokens = 0;
+        self.state.run_cached_tokens = None;
+        self.state.run_reasoning_tokens = None;
         match self.run_inner(request).await {
             Ok(events) => Ok(events),
             Err(error) => {

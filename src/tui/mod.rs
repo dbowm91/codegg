@@ -2071,6 +2071,8 @@ mod async_cmd_tests {
             session_id: "s1".into(),
             turn_id: Some("t1".into()),
             message: "provider stream framing or decoding failed".into(),
+            category: None,
+            usage: None,
         });
 
         assert!(changed, "a turn failure must trigger a redraw");

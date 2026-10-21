@@ -451,12 +451,16 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
         CoreEvent::TurnFailed {
             turn_id: Some(turn_id),
             message,
+            category,
+            usage,
             ..
         } => {
             events.push(ProjectionEvent::TurnFailed {
                 turn_id: turn_id.clone(),
                 message: truncate_str(message, MAX_PROJECTION_STRING_BYTES).into_owned(),
                 failed_at: env.timestamp_ms,
+                category: *category,
+                usage: *usage,
             });
         }
         CoreEvent::TurnFailed { turn_id: None, .. } => {}

@@ -301,6 +301,8 @@ fn a_failed_turn_keeps_saying_why_until_the_agent_resumes() {
         session_id: "s1".into(),
         turn_id: Some("t1".into()),
         message: "Agent error: provider error: 529 overloaded".into(),
+        category: None,
+        usage: None,
     });
 
     // The reason must be readable from the main buffer alone. A toast is the

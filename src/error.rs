@@ -138,6 +138,9 @@ impl IntoResponse for AxumAppError {
                 .unwrap_or(StatusCode::BAD_GATEWAY),
             AppError::Io(_)
             | AppError::Other(_)
+            // A cancelled turn was previously reported as `Other`, so it
+            // keeps the same status it always had.
+            | AppError::Cancelled
             | AppError::Worktree(_)
             | AppError::Upgrade(_)
             | AppError::Clipboard(_)

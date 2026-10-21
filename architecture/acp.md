@@ -18,8 +18,8 @@ state and execution live in the daemon.
 
 | Artifact | Path |
 |----------|------|
-| Adapter | `src/acp.rs` (single file, ~736 lines) |
-| Entry point | `pub async fn run()` at line 78 |
+| Adapter | `src/acp.rs` (single file, 1601 lines) |
+| Entry point | `pub async fn run()` at line 92 |
 | CLI | `codegg acp` subcommand |
 
 ## How It Works
@@ -65,23 +65,23 @@ Unsupported methods return JSON-RPC error code -32601.
 
 The adapter supports one active prompt per connection. Before submitting a
 turn it drains the event queue and records the highest observed native event
-sequence as `submission_event_floor` (line 260-266). After the daemon
+sequence as `submission_event_floor` (`drain_event_floor()`, line 421). After the daemon
 acknowledges the submission, only events strictly after that floor and for
 the exact requested session are eligible to bind the prompt.
 
 The first eligible `TurnStarted` event establishes the native turn identity
-via `ActivePrompt::bind_turn()` (line 59-71). Projection updates and
+via `ActivePrompt::bind_turn()` (line 71). Projection updates and
 terminal events must carry that same turn identity. A pre-floor,
 neighboring-session, stale-turn, or replayed event is ignored.
 
 `session/cancel`, `$/cancel_request`, and `session/close` share one
-idempotent pending-cancellation path (`cancel_if_ready()`, line 281). If
+idempotent pending-cancellation path (`cancel_if_ready()`, line 429). If
 cancellation arrives before `TurnStarted`, the intent is deferred until the
 matching turn is identified.
 
 ### Event Mapping
 
-`handle_event()` (line 467) maps native projection events to ACP
+`handle_event()` (line 754) maps native projection events to ACP
 notifications:
 
 | Native Event | ACP Notification |
@@ -104,6 +104,35 @@ null if the provider omitted it. `codeggUsage` does not include a price or
 estimated cost. These additive fields are CodeGG extensions; ACP clients may
 ignore them.
 
+### Failed-turn evidence
+
+A native turn failure is the JSON-RPC error `-32010` whose `data` payload
+carries the redacted failure class and the usage provenance:
+
+| Field | Meaning |
+|---|---|
+| `kind` | Always `turn_failed`. |
+| `sessionId`, `turnId` | The session and turn correlation, unchanged. |
+| `codeggFailureCategory` | One allowlisted `TurnFailureCategory` value. `native_failure_unspecified` when the native side projected no category. |
+| `codeggUsage` | The token counts observed before the failure, or `null` when no count was available. |
+| `codeggUsageReason` | Why the counts are present or absent: `reported`, `not_observed`, `not_provided`, `lost_at_projection`, or `unspecified`. |
+
+The three provenance states are distinct facts and must stay distinct: a turn
+that ended before any provider response is `not_observed`; a provider response
+that carried no token counts is `not_provided`; a turn that reported token
+counts is `reported`. `codeggUsage` is `null` whenever no count is available,
+so a missing measurement is never read as zero usage.
+
+The failure payload **never** carries `CoreEvent::TurnFailed.message`. That
+message embeds upstream provider text and can carry credentials; it stays in
+the local transcript. The category is derived from the typed native error, and
+the usage aggregate covers every provider response in the failed run — a turn
+that made two metered calls and then failed spent both.
+
+`codeggFailureCategory` and `codeggUsageReason` are CodeGG extensions on an
+existing error code. The ACP protocol version, method names, error codes, and
+the successful result shape are unchanged.
+
 ### Terminal Detection
 
 `event_is_terminal()` checks for `TurnCompleted` or `TurnFailed` on both
@@ -116,7 +145,7 @@ and returned as JSON-RPC error `-32011` with bounded session/turn correlation.
 
 ### Snapshot Replay
 
-`replay_snapshot()` (line 425) replays a `session/load` snapshot. It
+`replay_snapshot()` (line 712) replays a `session/load` snapshot. It
 iterates `recent_turns` and `active_turn`, sorted by `started_at`, and
 emits `session/update` notifications for `Public`-visibility `User` and
 `Assistant` messages. `Tool`, `System`, and `Reasoning` messages are
@@ -124,7 +153,7 @@ skipped.
 
 ### Cleanup on Exit
 
-The `run()` function (line 79) ensures on exit that:
+The `run()` function (line 92) ensures on exit that:
 - Any active prompt is cancelled.
 - All projection subscriptions are unsubscribed.
 
@@ -206,13 +235,37 @@ Test coverage (inline, `src/acp.rs:599-736`):
 
 ## Source verification
 
-Verified 2026-10-06 against `src/acp.rs`. Corrected six off-by-one
-`file.rs:line` refs: `RpcRequest` `:27` → `:26`, `ActivePrompt` `:38` →
-`:37`, `SessionBinding` `:74` → `:73`, `ACP_PROTOCOL_VERSION` `:23` →
-`:22`, `MAX_FRAME_BYTES` `:24` → `:23`, and the inline test range
-`:598-736` → `:599-736`. Verified accurate: the 12 method refs
-(`run` `:78`, `cancel_if_ready` `:281`, `ensure_client` `:301`,
-`absolute_cwd` `:317`, `prompt_text` `:343`, `native_agents` `:368`,
-`subscribe` `:384`, `replay_snapshot` `:425`, `handle_event` `:467`,
-`event_is_terminal` `:502`), the 736-line file length,
-`ACP_PROTOCOL_VERSION` = 1, and `MAX_FRAME_BYTES` = 1 MiB.
+Re-verified 2026-10-21 against `src/acp.rs` after the failed-turn evidence
+change. `src/acp.rs` is now **1601 lines**.
+
+| Symbol | Line |
+|---|---|
+| `ACP_PROTOCOL_VERSION` | 25 |
+| `MAX_FRAME_BYTES` | 26 |
+| `ACP_TURN_FAILED_CODE` | 33 |
+| `RpcRequest` | 36 |
+| `ActivePrompt` | 47 |
+| `SessionBinding` | 86 |
+| `run()` | 92 |
+| `cancel_if_ready()` | 429 |
+| `ensure_client()` | 449 |
+| `absolute_cwd()` | 604 |
+| `prompt_text()` | 630 |
+| `native_agents()` | 655 |
+| `subscribe()` | 671 |
+| `replay_snapshot()` | 712 |
+| `handle_event()` | 754 |
+| `event_is_terminal()` | 791 |
+| `terminal_stop_reason()` | 858 |
+| `terminal_usage()` | 873 |
+| `terminal_failure_data()` | 941 |
+| `map_acp_stop_reason()` | 1003 |
+| `write_error_with_data()` | 1041 |
+| `error_frame()` | 1055 |
+| test module | 1084-1577 |
+
+`ACP_PROTOCOL_VERSION` is 1 and `MAX_FRAME_BYTES` is 1 MiB.
+
+`terminal_failure_data()` is the single place that builds the `-32010` `data`
+payload, so the category, the usage, and the usage reason are produced
+together and cannot drift apart.

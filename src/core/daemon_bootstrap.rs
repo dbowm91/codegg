@@ -258,6 +258,15 @@ impl CoreDaemon {
                             session_id: session_id.clone(),
                             turn_id: Some(turn_id.clone()),
                             message: "Daemon restarted while turn was active".to_string(),
+                            // The daemon restart is the failure: it is not a
+                            // provider failure and it is not a usage fact.
+                            // No provider usage is observable here — the
+                            // process that metered it is gone — so the
+                            // usage stays absent rather than zero.
+                            category: Some(
+                                crate::protocol::core::TurnFailureCategory::DaemonRestarted,
+                            ),
+                            usage: None,
                         },
                     )
                     .await;

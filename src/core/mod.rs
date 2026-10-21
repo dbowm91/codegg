@@ -402,11 +402,18 @@ pub(crate) fn set_turn_id_on_event(
         CoreEvent::TurnFailed {
             session_id,
             message,
+            category,
+            usage,
             ..
         } => CoreEvent::TurnFailed {
             session_id,
             turn_id: Some(turn_id),
             message,
+            // The failure class and the usage provenance must survive the
+            // rebuild: dropping them here would turn every classified
+            // failure back into an unclassified one.
+            category,
+            usage,
         },
         CoreEvent::ToolStarted {
             session_id,
@@ -1081,6 +1088,8 @@ mod tests {
             session_id: "s1".into(),
             turn_id: None,
             message: "boom".into(),
+            category: None,
+            usage: None,
         };
         let out = set_turn_id_on_event(ev, new_turn.clone());
         match out {

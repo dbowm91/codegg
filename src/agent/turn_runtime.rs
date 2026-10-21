@@ -198,6 +198,87 @@ pub struct TurnRunOutput {
     pub steer_tx: tokio::sync::mpsc::Sender<String>,
 }
 
+/// Classify a failed turn into a stable, secret-safe category.
+///
+/// This is the single producer of [`TurnFailureCategory`] for the agent-loop
+/// failure path. It never reads the failure's message: the message embeds
+/// upstream provider text and can carry credentials, so the category is
+/// derived from the typed error only.
+///
+/// The mapping is deliberately coarse. A consumer needs to distinguish
+/// "the provider was unreachable" from "the provider rejected us" from
+/// "we stopped on our own terms"; anything finer would either leak provider
+/// detail or guess. A class the taxonomy does not name falls back to
+/// [`TurnFailureCategory::ProviderApi`], which is the honest reading of an
+/// unrecognised provider-side failure.
+pub fn classify_turn_failure(error: &AppError) -> codegg_protocol::core::TurnFailureCategory {
+    use codegg_protocol::core::TurnFailureCategory;
+    match error {
+        AppError::Provider(provider_error) => match provider_error.error_class() {
+            "auth" => TurnFailureCategory::ProviderAuth,
+            "rate_limit" => TurnFailureCategory::ProviderRateLimit,
+            "timeout" => TurnFailureCategory::ProviderTimeout,
+            "connect" | "tls" | "io" | "transport" | "stream_interrupted" | "circuit_open" => {
+                TurnFailureCategory::ProviderTransport
+            }
+            // "api", "server", "invalid_request", "model_not_found",
+            // "not_found", and anything else the provider taxonomy adds
+            // later: an unrecognised provider class is still a provider-side
+            // API failure, not an unknown native failure.
+            _ => TurnFailureCategory::ProviderApi,
+        },
+        AppError::Cancelled => TurnFailureCategory::Cancelled,
+        AppError::Agent(_) => TurnFailureCategory::AgentInternal,
+        _ => TurnFailureCategory::NativeFailureUnspecified,
+    }
+}
+
+/// Derive the terminal usage payload from the run-scoped usage accumulator.
+///
+/// The three provenance states are distinct facts and must stay distinct:
+///
+/// - no provider response reported usage → [`UsageAvailability::NotObserved`]
+/// - a provider response arrived but reported no tokens →
+///   [`UsageAvailability::NotProvided`]
+/// - a provider response reported tokens → [`UsageAvailability::Reported`]
+///
+/// The aggregate is over EVERY provider response in the run, not the last
+/// one: a turn that made two metered calls and then failed spent both.
+pub fn turn_usage_from_run(
+    snapshot: &crate::agent::r#loop::RunUsageSnapshot,
+) -> codegg_protocol::core::TurnUsage {
+    use codegg_protocol::core::{TurnUsage, UsageAvailability};
+    if snapshot.provider_responses == 0 {
+        return TurnUsage {
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            availability: UsageAvailability::NotObserved,
+        };
+    }
+    if snapshot.input_tokens == 0
+        && snapshot.output_tokens == 0
+        && snapshot.cached_tokens.unwrap_or(0) == 0
+        && snapshot.reasoning_tokens.unwrap_or(0) == 0
+    {
+        return TurnUsage {
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            availability: UsageAvailability::NotProvided,
+        };
+    }
+    TurnUsage {
+        input_tokens: Some(snapshot.input_tokens),
+        output_tokens: Some(snapshot.output_tokens),
+        cached_tokens: snapshot.cached_tokens,
+        reasoning_tokens: snapshot.reasoning_tokens,
+        availability: UsageAvailability::Reported,
+    }
+}
+
 /// The turn runtime trait abstracts the full agent turn lifecycle.
 ///
 /// Implementations build the tool registry, permission checker, agent loop,
@@ -996,6 +1077,13 @@ impl TurnRuntime for DefaultTurnRuntime {
             match result {
                 Err(e) => {
                     tracing::error!("Agent loop error: {}", e);
+                    // The category and the usage are attached HERE, not in
+                    // the daemon: this is the only place that still knows
+                    // what the failure was and what the run had already
+                    // spent. The message keeps the provider text for the
+                    // local transcript; the category never carries it.
+                    let failure_category = classify_turn_failure(&e);
+                    let failure_usage = turn_usage_from_run(&agent_loop.run_usage());
                     event_log_for_spawn
                         .publish(
                             Some(session_id_for_spawn.clone()),
@@ -1004,6 +1092,8 @@ impl TurnRuntime for DefaultTurnRuntime {
                                 session_id: session_id_for_spawn.clone(),
                                 turn_id: Some(turn_id_for_spawn.clone()),
                                 message: format!("Agent error: {}", e),
+                                category: Some(failure_category),
+                                usage: Some(failure_usage),
                             },
                         )
                         .await;
@@ -1355,6 +1445,112 @@ pub(crate) async fn assemble_lsp_context_for_turn(
 // ---------------------------------------------------------------------------
 // Tests — Pass 5: tier-resolution wiring
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod failure_classification_tests {
+    use super::*;
+    use crate::error::ProviderError;
+    use codegg_protocol::core::{TurnFailureCategory, UsageAvailability};
+
+    fn snapshot(
+        provider_responses: usize,
+        input_tokens: usize,
+        output_tokens: usize,
+        cached_tokens: Option<usize>,
+        reasoning_tokens: Option<usize>,
+    ) -> crate::agent::r#loop::RunUsageSnapshot {
+        crate::agent::r#loop::RunUsageSnapshot {
+            provider_responses,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
+        }
+    }
+
+    #[test]
+    fn provider_error_classes_map_to_their_own_categories() {
+        let cases: Vec<(ProviderError, TurnFailureCategory)> = vec![
+            (
+                ProviderError::Auth("bad key".into()),
+                TurnFailureCategory::ProviderAuth,
+            ),
+            (
+                ProviderError::RateLimit,
+                TurnFailureCategory::ProviderRateLimit,
+            ),
+            (
+                ProviderError::Timeout("slow".into()),
+                TurnFailureCategory::ProviderTimeout,
+            ),
+            (
+                ProviderError::Stream("interrupted".into()),
+                TurnFailureCategory::ProviderTransport,
+            ),
+            (
+                ProviderError::CircuitOpen("route".into()),
+                TurnFailureCategory::ProviderTransport,
+            ),
+            (
+                ProviderError::NotFound("route".into()),
+                TurnFailureCategory::ProviderApi,
+            ),
+            (
+                ProviderError::ModelNotFound("model".into()),
+                TurnFailureCategory::ProviderApi,
+            ),
+            (
+                ProviderError::api("500", "boom"),
+                TurnFailureCategory::ProviderApi,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(classify_turn_failure(&AppError::Provider(error)), expected);
+        }
+    }
+
+    #[test]
+    fn non_provider_failures_map_to_their_own_categories() {
+        assert_eq!(
+            classify_turn_failure(&AppError::Cancelled),
+            TurnFailureCategory::Cancelled
+        );
+        assert_eq!(
+            classify_turn_failure(&AppError::Agent(crate::error::AgentError::Invalid(
+                "bad id".into()
+            ))),
+            TurnFailureCategory::AgentInternal
+        );
+        assert_eq!(
+            classify_turn_failure(&AppError::Other(anyhow::anyhow!("boom"))),
+            TurnFailureCategory::NativeFailureUnspecified
+        );
+        assert_eq!(
+            classify_turn_failure(&AppError::Config(crate::error::ConfigError::Invalid(
+                "bad config".into()
+            ))),
+            TurnFailureCategory::NativeFailureUnspecified
+        );
+    }
+
+    #[test]
+    fn usage_provenance_distinguishes_observed_from_not_provided_from_reported() {
+        let not_observed = turn_usage_from_run(&snapshot(0, 0, 0, None, None));
+        assert_eq!(not_observed.availability, UsageAvailability::NotObserved);
+        assert_eq!(not_observed.input_tokens, None);
+
+        let not_provided = turn_usage_from_run(&snapshot(1, 0, 0, None, Some(0)));
+        assert_eq!(not_provided.availability, UsageAvailability::NotProvided);
+        assert_eq!(not_provided.input_tokens, None);
+
+        let reported = turn_usage_from_run(&snapshot(2, 120, 35, Some(20), Some(5)));
+        assert_eq!(reported.availability, UsageAvailability::Reported);
+        assert_eq!(reported.input_tokens, Some(120));
+        assert_eq!(reported.output_tokens, Some(35));
+        assert_eq!(reported.cached_tokens, Some(20));
+        assert_eq!(reported.reasoning_tokens, Some(5));
+    }
+}
 
 #[cfg(test)]
 mod tier_resolution_tests {

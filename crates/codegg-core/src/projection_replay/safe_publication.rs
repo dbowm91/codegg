@@ -282,6 +282,8 @@ mod tests {
                 session_id: "s".into(),
                 turn_id: None,
                 message: "err".into(),
+                category: None,
+                usage: None,
             },
             CoreEvent::SubagentStarted {
                 session_id: "s".into(),
