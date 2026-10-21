@@ -163,8 +163,29 @@ a hosted CI run building the same workspace concurrently. The failure is
 recorded here as a **host-load artifact**, not a regression; the authoritative
 whole-suite signal is the hosted `verify` job, whose runner is not shared.
 
-Hosted CI on the pull-request head: recorded in this section after the run
-completes.
+Hosted CI on the pull-request head:
+
+| Run | Job | Result |
+|---|---|---|
+| `39576418943` | `verify` — the job `AGENTS.md` names as the required one | **pass** (29m59s) on the head `1b8ffdd9` |
+| `39576418617` | `process-launcher` | pass (28m25s) |
+| `39576418652` | `e2e` | **fail** — the pre-existing Desktop E2E failure, recorded below |
+
+The `e2e` job fails with
+`element ("[data-testid=\"permission-list\"]") still not existing after
+120000ms` in `m004-session.e2e.ts`. **The identical failure is present on
+`main`**: run `39502828002` (2026-10-20) fails the same way, on the same
+spec, with the same message, and it has failed on `main` and on every branch
+since at least 2026-10-20 18:35. It is **not** a regression from this
+milestone, and the required job is green.
+
+The merged-head runs, on the merge commit `48a5ca7d`:
+
+| Run | Job | Result |
+|---|---|---|
+| `39580798327` | `CI` (`verify`) | **pass** |
+| `39580798314` | `process-launcher` | pass |
+| `39580798120` | `e2e` | **fail** — the same pre-existing Desktop E2E failure, on the merged head too |
 
 ### 4.4 The first hosted CI run failed, and what it found
 
