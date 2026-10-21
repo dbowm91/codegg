@@ -155,6 +155,29 @@ pub struct ToolExecutionContext {
     /// This immutable value is threaded through the broker and every retry;
     /// tools must not reconstruct authority from model input or live mode.
     pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+    /// M005 C003: the checkout writer fence for this execution.
+    ///
+    /// The fence is the daemon's authority over the run's checkout: it
+    /// contains the effect inside the run's own scope and, when the
+    /// checkout is shared by more than one run, holds the checkout's writer
+    /// permit across the effect.
+    ///
+    /// `None` means no scope was resolved for this execution — a legacy or
+    /// test path. Such a path performs no containment and mints no permit,
+    /// which is exactly the pre-M005 behavior.
+    pub writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
+    /// M005 C005: the process admission policy for this execution.
+    ///
+    /// The fence answers "may this execution write?"; this answers "may
+    /// this execution start a process?". A process's write set is not
+    /// enumerable at the call site, so under the restricted shared
+    /// profile the answer is a refusal rather than a permit, and the
+    /// refusal happens before any process exists.
+    ///
+    /// `None` means the execution is not under the restricted shared
+    /// profile — an ordinary session, a CLI run, a test harness — and
+    /// processes behave exactly as they did before C005.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 impl ToolExecutionContext {
@@ -202,6 +225,8 @@ impl ToolExecutionContext {
             execution_authorization: None,
             execution_audit: None,
             audit_emitter: None,
+            writer_fence: None,
+            process_admission: None,
         }
     }
 

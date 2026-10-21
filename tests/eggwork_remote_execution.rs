@@ -475,6 +475,7 @@ fn bound_context(job: JobRecord, root: PathBuf) -> JobExecutionContext {
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(codegg::scheduler::NoopProgressSink),
         resources,
+        process_admission: None,
     }
 }
 
@@ -1279,6 +1280,7 @@ async fn declared_artifacts_import_into_runstore() {
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(codegg::scheduler::NoopProgressSink),
         resources,
+        process_admission: None,
     };
     let completion = exec.execute(ctx).await;
     assert_eq!(completion.status, ExecutorStatus::Completed);

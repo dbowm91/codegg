@@ -80,6 +80,24 @@ pub struct CoreRuntimeDeps {
     pub workspace_services: Option<Arc<WorkspaceServiceRegistry>>,
     /// M003: durable daemon-owned managed worktree service.
     pub worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
+    /// M005 corrective C002: durable, generation-fenced checkout writer permit
+    /// service.
+    ///
+    /// The daemon owns exactly one. It is the *authority* for who may write
+    /// to a managed checkout, and it is deliberately **not** wired to any
+    /// writer: C002 builds the permit, and C003/C004 are what route writers
+    /// through it. No shared mutation is enabled by its presence.
+    pub writer_permit_service: Option<Arc<crate::core::writer_permit::WriterPermitService>>,
+    /// M006: the durable, recoverable session-launch service.
+    ///
+    /// It places a new or forked session in an isolated managed
+    /// checkout. Like the permit service it is durable: the launch
+    /// request is recorded before any work happens, so a retry
+    /// converges instead of allocating a second checkout.
+    ///
+    /// The daemon owns exactly one. A daemon without a pool has no
+    /// durable launch record, so it gets none.
+    pub session_launch_service: Option<Arc<crate::core::session_launch::SessionLaunchService>>,
     /// Phase 3: workspace service lifecycle policy. Tunables for
     /// `max_active_workspaces` and `idle_evict_after`. The daemon
     /// constructs a default policy if the caller does not supply one.
@@ -170,6 +188,8 @@ impl Clone for CoreRuntimeDeps {
             lsp_service: self.lsp_service.clone(),
             workspace_services: self.workspace_services.clone(),
             worktree_service: self.worktree_service.clone(),
+            writer_permit_service: self.writer_permit_service.clone(),
+            session_launch_service: self.session_launch_service.clone(),
             workspace_service_policy: self.workspace_service_policy.clone(),
             job_store: Arc::clone(&self.job_store),
             schedule_store: Arc::clone(&self.schedule_store),
@@ -310,6 +330,8 @@ impl CoreRuntimeDeps {
                 std::path::PathBuf::from(".codegg/worktrees"),
                 Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
             )),
+            writer_permit_service: None,
+            session_launch_service: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -361,6 +383,12 @@ impl CoreRuntimeDeps {
                 std::path::PathBuf::from(".codegg/worktrees"),
                 Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
             )),
+            // No pool means no durable permit store. The permit is a durable
+            // authority; an in-memory one would be a second, weaker answer to
+            // "who may write", which is exactly what this milestone is trying
+            // not to create.
+            writer_permit_service: None,
+            session_launch_service: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -408,6 +436,25 @@ impl CoreRuntimeDeps {
             codegg_core::agent_convergence::SqliteConvergenceStore::new(pool.clone()),
         );
         run_control.set_group_service_sync(run_group_service.clone());
+        let worktree_service = codegg_core::worktree_service::WorktreeService::sqlite(
+            pool.clone(),
+            codegg_core::storage::DaemonPaths::default()
+                .data_root()
+                .join(codegg_core::worktree_service::DEFAULT_WORKTREE_DIRECTORY),
+            Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+        )
+        .with_owner_resolver(Arc::new(DurableWorktreeOwnerResolver {
+            runs: agent_run_store.clone(),
+        }));
+        // M005 corrective C002: the permit service is the daemon's authority
+        // for who may write to a managed checkout. It shares the daemon's pool
+        // and the daemon's worktree service, so the scope it resolves is read
+        // from the same authoritative records the rest of the daemon uses.
+        let writer_permit_service = crate::core::writer_permit::WriterPermitService::new(
+            codegg_core::writer_permit::WriterPermitStore::new(pool.clone()),
+            crate::core::writer_permit::WorktreePermitAuthority::new(worktree_service.clone())
+                .with_groups(run_group_service.clone()),
+        );
         Self {
             pool: Some(pool.clone()),
             memory_store,
@@ -419,18 +466,9 @@ impl CoreRuntimeDeps {
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
-            worktree_service: Some(
-                codegg_core::worktree_service::WorktreeService::sqlite(
-                    pool.clone(),
-                    codegg_core::storage::DaemonPaths::default()
-                        .data_root()
-                        .join(codegg_core::worktree_service::DEFAULT_WORKTREE_DIRECTORY),
-                    Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
-                )
-                .with_owner_resolver(Arc::new(DurableWorktreeOwnerResolver {
-                    runs: agent_run_store.clone(),
-                })),
-            ),
+            worktree_service: Some(worktree_service),
+            writer_permit_service: Some(writer_permit_service),
+            session_launch_service: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -447,6 +485,30 @@ impl CoreRuntimeDeps {
             remote_target_policy: None,
             node_telemetry: None,
         }
+    }
+
+    /// Builder-style setter for the checkout writer permit service.
+    ///
+    /// M005 corrective C002. The daemon owns exactly one of these; the
+    /// pool-backed constructor installs one by default.
+    pub fn with_writer_permit_service(
+        mut self,
+        service: Arc<crate::core::writer_permit::WriterPermitService>,
+    ) -> Self {
+        self.writer_permit_service = Some(service);
+        self
+    }
+
+    /// Builder-style setter for the session launch service.
+    ///
+    /// M006. The daemon owns exactly one of these; the constructor
+    /// installs one when a pool is available.
+    pub fn with_session_launch_service(
+        mut self,
+        service: Arc<crate::core::session_launch::SessionLaunchService>,
+    ) -> Self {
+        self.session_launch_service = Some(service);
+        self
     }
 
     /// Builder-style setter for the turn runtime.

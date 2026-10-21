@@ -494,6 +494,8 @@ async fn managed_worktree_creation_fails_closed_without_git_containment_backend(
         node_id: None,
         repository_root: repo_dir.path().to_path_buf(),
         base_commit: None,
+        base_ref: None,
+        target_branch: None,
         base_path: None,
         owner_run_id: codegg_core::identity::AgentRunId::new(),
     };
@@ -535,10 +537,20 @@ async fn non_git_mutation_and_sharing_follow_the_truthful_policy() {
         resolve_workspace_action(None, true, false),
         WorkspaceAction::ShareReadOnly
     );
+    //
+    // The diagnostic's *reason* changed when the corrective landed: the
+    // checkout-scoped writer reservation now exists (C002–C004) and native
+    // writers are routed through it, so the truthful reason for the refusal
+    // is that no production path places a WorkOrder on a group's shared
+    // checkout, and that the shared profile is opt-in and platform-gated.
+    // The assertion therefore follows the current truth — the stable
+    // `shared_mutation_unavailable:` prefix plus the opt-in placement it
+    // points at — rather than the pre-corrective wording.
     assert!(matches!(
         resolve_workspace_action(Some(WorkspacePolicy::Serialized), true, true),
         WorkspaceAction::NeedsAttention { diagnostic, .. }
-            if diagnostic.contains("checkout-scoped writer reservation")
+            if diagnostic.contains("shared_mutation_unavailable")
+                && diagnostic.contains("shared placement")
     ));
     // Dirty/conflicted worktrees are never silently cleaned: only clean
     // trees are cleanup-safe (managed-worktree service owns retention).

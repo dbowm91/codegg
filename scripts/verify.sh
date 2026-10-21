@@ -76,6 +76,9 @@ run_quick() {
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
+    echo "==> python3 scripts/check_network_intent_owner_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_network_intent_owner_wiring.py)
+
     echo "==> python3 scripts/check_tui_project_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_project_authority.py)
 
@@ -118,6 +121,24 @@ run_quick() {
 
     echo "==> python3 scripts/check_http_route_disposition.py"
     (cd "$REPO_ROOT" && python3 scripts/check_http_route_disposition.py)
+
+    echo "==> python3 scripts/check_writer_disposition.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_writer_disposition.py --self-test)
+
+    echo "==> python3 scripts/check_writer_disposition.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_writer_disposition.py)
+
+    echo "==> python3 scripts/check_process_denial.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_process_denial.py --self-test)
+
+    echo "==> python3 scripts/check_process_denial.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_process_denial.py)
+
+    echo "==> python3 scripts/check_shared_checkout.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py --self-test)
+
+    echo "==> python3 scripts/check_shared_checkout.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_shared_checkout.py)
 
     echo "==> python3 scripts/check_audit_coverage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_audit_coverage.py)

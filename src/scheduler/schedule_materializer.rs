@@ -211,6 +211,12 @@ fn submission_error_code(error: &JobSubmissionError) -> String {
         JobSubmissionError::LabelsTooLarge => "labels_too_large".to_owned(),
         JobSubmissionError::InvalidPayload(_) => "invalid_payload".to_owned(),
         JobSubmissionError::Goal(_) => "goal_lookup_failed".to_owned(),
+        // M005 corrective C005: a process-class job was refused because the
+        // target checkout is reserved by a live agent-run group. The
+        // refusal's own message can name a path, so only the slug is
+        // carried — and like every other refusal it is not recorded, so the
+        // occurrence stays retryable once the group finishes.
+        JobSubmissionError::ProcessDenied(_) => "process_denied".to_owned(),
     }
 }
 

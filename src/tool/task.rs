@@ -1364,6 +1364,11 @@ impl Tool for TaskTool {
                     "type": "string",
                     "description": "Required by status_group, wait_group, and cancel_group; durable AgentRunGroupId."
                 },
+                "placement": {
+                    "type": "string",
+                    "enum": ["auto", "isolated_new", "serialized_shared"],
+                    "description": "M005 C006: where the delegated run is placed. 'auto' (default) and 'isolated_new' give the run its own managed checkout. 'serialized_shared' places the run on the managed checkout of the group named by group_id: native file and Git writes then serialize through CodeGG's writer permit so exactly one writer holds the checkout at a time, and every process-capable tool is refused for the child. It is honoured for spawn_many, where the group is created with the children as members, and is refused outright on a platform with no native containment evidence."
+                },
                 "join_policy": {
                     "type": "string",
                     "enum": ["all", "any_successful", "first_completed", "detached"],
@@ -1546,6 +1551,18 @@ impl TaskTool {
                 ),
             };
             if matches!(action, "spawn_many" | "create_group") {
+                // M005 corrective C006: the group's identity is settled
+                // **before** any child is spawned, because a child placed on
+                // the shared checkout names that group in its own durable
+                // payload, and the payload is written before the job is
+                // submitted. The group record itself is created once the
+                // children have their durable run handles.
+                let group_id = input["group_id"]
+                    .as_str()
+                    .map(AgentRunGroupId::parse)
+                    .transpose()
+                    .map_err(|e| ToolError::Execution(format!("invalid group_id: {e}")))?
+                    .unwrap_or_else(AgentRunGroupId::new);
                 let (accepted, rejected) = if action == "spawn_many" {
                     let requests = input["requests"].as_array().ok_or_else(|| {
                         ToolError::Execution("spawn_many requires a requests array".into())
@@ -1563,6 +1580,21 @@ impl TaskTool {
                             ToolError::Execution("each spawn_many request must be an object".into())
                         })?;
                         object.insert("action".into(), serde_json::Value::String("spawn".into()));
+                        // M005 corrective C006: a child's placement is the
+                        // request's own placement, falling back to the
+                        // group's placement. A shared child is bound to the
+                        // group that this call is about to create, so the
+                        // group identity travels with the child.
+                        let placement = object
+                            .get("placement")
+                            .cloned()
+                            .unwrap_or_else(|| input["placement"].clone());
+                        if placement.as_str() == Some("serialized_shared") {
+                            object.insert(
+                                "group_id".into(),
+                                serde_json::Value::String(group_id.to_string()),
+                            );
+                        }
                         let member_identity = format!("{call_identity}/member/{index}");
                         match Box::pin(self.execute_impl(child, ctx, member_identity, None)).await {
                             Ok(output) => {
@@ -1608,12 +1640,6 @@ impl TaskTool {
                     )));
                 }
                 let policy = parse_join_policy(input["join_policy"].as_str().unwrap_or("all"))?;
-                let group_id = input["group_id"]
-                    .as_str()
-                    .map(AgentRunGroupId::parse)
-                    .transpose()
-                    .map_err(|e| ToolError::Execution(format!("invalid group_id: {e}")))?
-                    .unwrap_or_else(AgentRunGroupId::new);
                 let key = input["idempotency_key"]
                     .as_str()
                     .map(ToOwned::to_owned)
@@ -1830,7 +1856,22 @@ impl TaskTool {
                 .map(ToOwned::to_owned)
                 .or_else(|| self.parent_model.clone());
 
-            let denied_tools = self.denied_tools.clone();
+            // M005 corrective C006: the placement decides how this child is
+            // bound to a checkout.
+            //
+            // A shared placement is refused outright on a platform with no
+            // native containment evidence, and it **narrows the child's
+            // effective tool profile**: every process-capable tool is denied
+            // for the child before it runs, which is the profile-level half
+            // of the C005 process deny contract. The other half — the
+            // admission authority — still refuses the launch at execution.
+            let placement =
+                parse_run_placement(input["placement"].as_str(), input["group_id"].as_str())?;
+            let denied_tools = if placement.is_shared() {
+                crate::tool::process_capability::shared_profile_denied_tools(&self.denied_tools)
+            } else {
+                self.denied_tools.clone()
+            };
 
             let allowed_paths: Vec<String> = input["allowed_paths"]
                 .as_array()
@@ -2031,6 +2072,7 @@ impl TaskTool {
                                     run_id,
                                     delegation_key,
                                     base_commit: explicit_base_commit.clone(),
+                                    placement: placement.clone(),
                                 }
                             } else {
                                 codegg_core::jobs::JobPayload::Subagent {
@@ -2180,6 +2222,11 @@ impl TaskTool {
                     // Inherit parent by default; worker narrows for
                     // read-only/shared paths and enforces the ceiling.
                     sandbox_profile: None,
+                    // M005 corrective C005: a nested subagent inherits the
+                    // parent's process admission policy, so it can never be
+                    // handed a wider profile than its parent.
+                    process_admission: ctx.and_then(|c| c.process_admission.clone()),
+                    writer_fence: None,
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))
@@ -2240,6 +2287,44 @@ fn parse_join_policy(value: &str) -> Result<RunJoinPolicy, ToolError> {
         other => Err(ToolError::Execution(format!(
             "unknown join_policy '{other}'"
         ))),
+    }
+}
+
+/// Parse the M005 C006 placement request.
+///
+/// The shared profile is opt-in and platform-gated. A platform with no
+/// native containment evidence refuses it here, before any child runs, and
+/// says why: the refusal names the missing evidence rather than degrading
+/// to a profile that was never qualified.
+fn parse_run_placement(
+    placement: Option<&str>,
+    group_id: Option<&str>,
+) -> Result<codegg_core::run_placement::RunPlacement, ToolError> {
+    match placement {
+        None | Some("auto") => Ok(codegg_core::run_placement::RunPlacement::Auto),
+        Some("isolated_new") => Ok(codegg_core::run_placement::RunPlacement::IsolatedNew),
+        Some("serialized_shared") => {
+            let availability = codegg_core::run_placement::shared_checkout_availability();
+            if !availability.is_available() {
+                return Err(ToolError::Execution(format!(
+                    "the shared checkout profile is unavailable: {}",
+                    availability
+                        .reason()
+                        .unwrap_or("this platform has no native containment evidence")
+                )));
+            }
+            let raw = group_id.ok_or_else(|| {
+                ToolError::Execution(
+                    "placement=serialized_shared requires the group_id of the group to share"
+                        .into(),
+                )
+            })?;
+            let group_id = AgentRunGroupId::parse(raw).map_err(|error| {
+                ToolError::Execution(format!("invalid group_id for a shared placement: {error}"))
+            })?;
+            Ok(codegg_core::run_placement::RunPlacement::SerializedShared { group_id })
+        }
+        Some(other) => Err(ToolError::Execution(format!("unknown placement '{other}'"))),
     }
 }
 

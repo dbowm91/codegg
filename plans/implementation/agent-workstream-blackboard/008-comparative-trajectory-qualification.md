@@ -1,6 +1,29 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: blocked — M006 and M007 closure required for the broad cross-capability comparison; shared-checkout experiment arms additionally require M005
+Status: eligible for its isolated arms (S0–S3) — M006 and M007 both closed on 2026-10-19, which discharged the broad cross-capability gate. The shared-checkout arm (S4) is now eligible **on the platforms where the shared checkout is qualified — Linux and macOS**: M005's writer-containment corrective closed C001–C006 on 2026-10-21 with C006 conditional, and the shared checkout is a real, opt-in, platform-gated path there. S4 stays **unrun on Windows**, where the shared profile is disabled because no filesystem-enforcement backend is registered for Windows at all.
+
+Gate status 2026-10-19: the gate this milestone waited on was M006 (isolated
+session/worktree launch UX) and M007 (per-workspace build admission). Both
+closed on 2026-10-19, so the configurations that need only isolated
+checkouts — S0, S1, S2, S3 — may proceed. S4 (two children in an explicitly
+serialized shared worktree) additionally requires M005 closure, and M005's
+shared mutation is still unavailable behind its corrective sub-line
+(C001–C002 closed, C003 ready, C004–C006 blocked). If a configuration lacks
+supported OS shared-write containment, mark it unrun rather than substituting
+an unsafe emulation.
+
+Gate status 2026-10-21: the S4 gate was M005, and M005's corrective has now
+closed it — C001–C006 are closed with C006 conditional, the shared checkout is
+a real opt-in production path, and the platform table qualifies **Linux and
+macOS** (`crates/codegg-core/src/run_placement.rs`). S4 therefore runs on those
+two platforms and is marked **unrun on Windows**, where the profile is disabled
+for a capability reason rather than an evidence reason. Two claims carry into
+S4 unchanged and are not re-established by this gate: the three C005 process
+surfaces that are **not** refused pre-effect (the local MCP stdio client, the
+`egglsp` server launch and the hook shell adapter) keep their recorded
+compensating controls, and a shared checkout still admits no unqualified
+process — so S4's Rust build arm is unavailable by contract, exactly as C006
+recorded.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008

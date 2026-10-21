@@ -40,7 +40,12 @@ use crate::error::StorageError;
 /// directory layout changes in a way that requires a deliberate
 /// migration path. Existing project-local session databases can be
 /// discovered and imported into the daemon catalog using this marker.
-pub const STORAGE_LAYOUT_VERSION: u32 = 85;
+///
+/// The writer-containment branch's two migrations were renumbered from
+/// v84/v85 to v86/v87 during the third reconciliation with `main`, which
+/// had already published v84 and v85. The constant tracks the highest
+/// wired migration, which is now v87.
+pub const STORAGE_LAYOUT_VERSION: u32 = 87;
 
 pub struct Database {
     pool: SqlitePool,

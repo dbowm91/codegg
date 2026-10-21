@@ -162,6 +162,18 @@ impl DocumentService {
         Self::default()
     }
 
+    /// M005 C004: the workspace that owns an attached document.
+    ///
+    /// The checkout mediation needs the document's workspace root before it
+    /// can ask whether that checkout is reserved. This reads the attachment
+    /// key only — never the buffer — so it cannot disclose or mutate
+    /// document content.
+    pub async fn workspace_id_for(&self, id: &str) -> Option<String> {
+        let document = self.by_id.get(id).map(|doc| doc.clone())?;
+        let document = document.lock().await;
+        Some(document.key.workspace_id.clone())
+    }
+
     pub async fn open(
         &self,
         project_id: String,

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 fn accepted_context() -> ToolExecutionContext {
     let now = chrono::Utc::now().timestamp_millis();
     ToolExecutionContext {
+        writer_fence: None,
         backend: ToolBackendKind::Native,
         session_id: Some("session-m015".into()),
         cwd: PathBuf::from("."),
@@ -43,6 +44,7 @@ fn accepted_context() -> ToolExecutionContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 

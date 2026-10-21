@@ -1,9 +1,49 @@
 //! Construction and hashing of immutable Tool Program submission context.
 
+use codegg_core::approval::{NetworkIntent, SandboxProfile};
 use sha2::{Digest, Sha256};
 
 pub fn stable_digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+/// M005/C002: the accepted execution ceiling that bounds a Tool Program and
+/// every job it delegates.
+///
+/// The filesystem profile and the network intent are **independent** axes:
+/// neither one is implied by the other, and an offline request is not
+/// satisfied by a narrower filesystem profile.
+///
+/// The accepted authorization snapshot is the only place a principal's
+/// offline preference is expressed, so it is the primary source. The batch
+/// snapshot's profile string is the fallback for a caller that carries no
+/// authorization object; the network intent has no such fallback, because a
+/// missing intent must never be read as an offline one — nor as permission to
+/// widen one.
+///
+/// An authorization object that is present but invalid is an integrity
+/// failure, not a missing one, so it is refused instead of being downgraded
+/// to the fallback.
+fn accepted_execution_ceiling(
+    context: &crate::tool::backend::ToolExecutionContext,
+) -> Result<(Option<SandboxProfile>, NetworkIntent), String> {
+    match context.execution_authorization.as_ref() {
+        Some(authorization) => {
+            let snapshot =
+                crate::tool::authorization::accepted_execution_snapshot(Some(authorization))
+                    .map_err(|reason| {
+                        format!("accepted execution authorization is not usable: {reason}")
+                    })?;
+            Ok((Some(snapshot.sandbox_profile()), snapshot.network_intent()))
+        }
+        None => {
+            let profile = context
+                .sandbox_profile
+                .as_deref()
+                .and_then(SandboxProfile::parse);
+            Ok((profile, NetworkIntent::LegacyUnrestricted))
+        }
+    }
 }
 
 pub fn to_core_context(
@@ -60,6 +100,10 @@ pub fn to_core_context(
         .unwrap_or_else(|| format!("tool-program:{program_id}"));
     let session_id = context.session_id.clone();
     let agent_id = context.agent_id.clone();
+    // M005/C002: capture the accepted execution ceiling into the immutable
+    // context so the executor can bind it to every delegated child job.
+    // The program cannot widen it later; the ceiling travels with the job.
+    let (sandbox_profile, network_intent) = accepted_execution_ceiling(context)?;
 
     Ok(codegg_core::jobs::ToolProgramExecutionContext {
         schema_version: 1,
@@ -89,6 +133,8 @@ pub fn to_core_context(
             .clone()
             .unwrap_or_else(|| "native_only".into()),
         correlation_id: stable_digest(&invocation_key),
+        sandbox_profile,
+        network_intent,
     })
 }
 

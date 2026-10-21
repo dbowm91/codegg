@@ -7,6 +7,7 @@ use crate::protocol::core::{
     CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope, PROTOCOL_VERSION,
 };
 
+pub mod checkout_mediation;
 pub mod client_registry;
 pub mod daemon;
 pub mod daemon_assets;
@@ -42,6 +43,7 @@ pub mod instance;
 pub mod lsp_diagnostics_store;
 pub mod node_telemetry;
 pub mod notification;
+pub mod process_admission;
 pub mod project_activation;
 pub mod project_init;
 pub mod provider_connections;
@@ -49,10 +51,13 @@ pub mod provider_qualification;
 pub mod remote_targets;
 pub mod runtime_deps;
 pub mod scratch_sweep;
+pub mod session_launch;
 pub mod session_runtime;
 pub mod session_selection;
 pub mod transport;
 pub mod work_order_coordinator;
+pub mod writer_fence;
+pub mod writer_permit;
 
 const CORE_EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -697,6 +702,11 @@ pub(crate) fn map_app_event_to_core_event(
             Some(CoreEvent::AgentRunGroupUpserted { session_id, group })
         }
         crate::bus::events::AppEvent::WorkstreamClaimUpdated { .. } => None,
+        // M007: the coarse job status is an in-process, same-group
+        // subscription. It is not a client protocol event: the group
+        // projection learns the job's authoritative kind and terminal
+        // state from the durable job record, not from this hint.
+        crate::bus::events::AppEvent::JobStatusObserved { .. } => None,
         crate::bus::events::AppEvent::AgentRunEvidenceObserved { .. } => None,
         crate::bus::events::AppEvent::ConvergenceUpdated {
             session_id,

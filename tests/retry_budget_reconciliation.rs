@@ -55,6 +55,7 @@ fn make_grant(effect: &str) -> ToolAuthorityGrant {
 
 fn ctx_for(effect: &str, submission_key: Option<String>) -> BrokerInvocationContext {
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Agent,
         cwd: PathBuf::from("."),
         session_id: Some("retry-test".to_string()),
@@ -77,6 +78,7 @@ fn ctx_for(effect: &str, submission_key: Option<String>) -> BrokerInvocationCont
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 

@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use codegg_core::jobs::{
-    DaemonGeneration, JobId, JobKind, JobPayload, JobRecord, JobState, JobStore, NewJob,
-    ResourceRequest, GOAL_PROVENANCE_LABEL_KEY,
+    DaemonGeneration, JobId, JobKind, JobPayload, JobRecord, JobState, JobStore, KeyedQuotaRequest,
+    NewJob, ResourceClass, ResourceRequest, GOAL_PROVENANCE_LABEL_KEY,
 };
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
@@ -79,12 +79,41 @@ pub enum JobSubmissionError {
     InvalidPayload(String),
     #[error("active goal lookup failed: {0}")]
     Goal(String),
+    /// M005 corrective C005: a process-class job was refused because the
+    /// target checkout is reserved by a live agent-run group.
+    ///
+    /// The refusal happens at submission, before the job is durably
+    /// created, so a refused submission leaves no job row and no attempt.
+    #[error("process-class job refused: {0}")]
+    ProcessDenied(String),
 }
 
 #[derive(Clone)]
 struct IdempotentSubmission {
     fingerprint: String,
     job_id: JobId,
+}
+
+/// Whether a job kind starts an OS process.
+///
+/// The classification is by **job kind**, which is the only thing the
+/// submission boundary knows. A job that starts no process — an agent
+/// turn, a subagent, a research job — is never refused on the process
+/// ground, because the refusal is about the capability and not about the
+/// checkout.
+fn is_process_class_job(kind: codegg_core::jobs::JobKind) -> bool {
+    use codegg_core::jobs::JobKind;
+    matches!(
+        kind,
+        JobKind::Build
+            | JobKind::Test
+            | JobKind::Lint
+            | JobKind::Format
+            | JobKind::Shell
+            | JobKind::ManagedProcess
+            | JobKind::Python
+            | JobKind::ToolProgram
+    )
 }
 
 /// Single production facade for durable job creation and scheduler enqueue.
@@ -99,6 +128,13 @@ pub struct JobSubmissionService {
     goal_store: Option<Arc<codegg_core::goal::GoalStore>>,
     idempotency: Mutex<HashMap<SubmissionKey, IdempotentSubmission>>,
     created_sink: parking_lot::RwLock<Option<tokio::sync::mpsc::Sender<JobRecord>>>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// `None` means the daemon has no durable reservation authority, so no
+    /// checkout is ever reserved and no submission is refused on this
+    /// ground.
+    process_admission:
+        parking_lot::RwLock<Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>>,
 }
 
 impl JobSubmissionService {
@@ -116,6 +152,7 @@ impl JobSubmissionService {
             goal_store: None,
             idempotency: Mutex::new(HashMap::new()),
             created_sink: parking_lot::RwLock::new(None),
+            process_admission: parking_lot::RwLock::new(None),
         })
     }
 
@@ -137,6 +174,7 @@ impl JobSubmissionService {
             goal_store: Some(goal_store),
             idempotency: Mutex::new(HashMap::new()),
             created_sink: parking_lot::RwLock::new(None),
+            process_admission: parking_lot::RwLock::new(None),
         })
     }
 
@@ -152,6 +190,20 @@ impl JobSubmissionService {
     /// notification-only: a closed observer cannot fail durable submission.
     pub fn set_created_sink(&self, sink: tokio::sync::mpsc::Sender<JobRecord>) {
         *self.created_sink.write() = Some(sink);
+    }
+
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority.
+    ///
+    /// A process-class job submitted for a checkout reserved by a live
+    /// agent-run group is refused here, before the job is durably created.
+    /// A job that starts no process — an agent turn, a subagent, a read —
+    /// is not refused on this ground.
+    pub fn set_process_admission(
+        &self,
+        service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) {
+        *self.process_admission.write() = Some(service);
     }
 
     pub async fn workspace_id_for_root(
@@ -231,7 +283,34 @@ impl JobSubmissionService {
             .acquire(&spec.workspace_id)
             .await
             .map_err(|e| JobSubmissionError::Workspace(e.to_string()))?;
+        let canonical_root = lease.path_policy().canonical_root.clone();
         drop(lease);
+
+        // M005 corrective C005: a process-class job for a checkout reserved
+        // by a live agent-run group is refused here, before the job is
+        // durably created. A job that starts no process is not refused on
+        // this ground: the refusal is about the *capability*, not about the
+        // checkout.
+        // c005-denial: scheduler-submission
+        if is_process_class_job(spec.kind) {
+            let service = self.process_admission.read().clone();
+            if let Some(service) = service {
+                let admission = service
+                    .admit_scope(
+                        &canonical_root,
+                        codegg_core::process_admission::ProcessKind::ScheduledJob,
+                    )
+                    .await
+                    .map_err(|error| {
+                        JobSubmissionError::ProcessDenied(format!(
+                            "the process admission authority could not be consulted: {error}"
+                        ))
+                    })?;
+                if let Some(denial) = admission.denial() {
+                    return Err(JobSubmissionError::ProcessDenied(denial.to_string()));
+                }
+            }
+        }
 
         apply_resource_policy(&mut spec);
         let mut labels = self.goal_provenance_labels(&spec).await?;
@@ -532,6 +611,30 @@ fn apply_resource_policy(spec: &mut NewJob) {
             *key = format!("exclusive:{key}");
         }
     }
+    // M007: bind the resource class scope to the canonical workspace.
+    //
+    // The kind-derived policy names the class but cannot scope it —
+    // the workspace is only known here. Binding it here is what makes
+    // two unrelated workspaces independent: before M007 the build class
+    // shared the *global* `exclusive:workspace-mutation` key, so a build
+    // in one workspace excluded a build in every other workspace.
+    //
+    // The binding is applied unconditionally, not only for a defaulted
+    // request: a caller that supplied its own resource request must not
+    // be able to opt out of the bound it is measured against. The legacy
+    // global key is dropped for the same reason — leaving it in place
+    // would keep the global coupling this milestone removes.
+    if let Some(class) = ResourceClass::for_job_kind(spec.kind) {
+        spec.resource_request
+            .exclusivity_keys
+            .retain(|key| key != "exclusive:workspace-mutation");
+        spec.resource_request
+            .keyed_quotas
+            .retain(|quota| quota.namespace() != Some(class.namespace()));
+        spec.resource_request
+            .keyed_quotas
+            .push(KeyedQuotaRequest::for_workspace(class, &spec.workspace_id));
+    }
 }
 
 fn fingerprint(spec: &NewJob) -> String {
@@ -685,10 +788,18 @@ mod tests {
             assert!(profile.io_weight > 0, "{kind:?} must reserve IO");
             assert!(profile.process_slots > 0, "{kind:?} must reserve a process");
         }
-        assert!(ResourceRequest::for_kind(JobKind::Build)
+        // M007: the build class no longer carries the *global*
+        // `exclusive:workspace-mutation` key. That key serialized every
+        // build in every workspace; it is replaced by the counted,
+        // workspace-scoped build quota below.
+        assert!(!ResourceRequest::for_kind(JobKind::Build)
             .exclusivity_keys
             .iter()
             .any(|key| key == "exclusive:workspace-mutation"));
+        let build = ResourceRequest::for_kind(JobKind::Build);
+        assert_eq!(build.keyed_quotas.len(), 1);
+        assert_eq!(build.keyed_quotas[0].namespace(), Some("build"));
+        assert_eq!(build.keyed_quotas[0].scope(), "");
         assert!(ResourceRequest::for_kind(JobKind::GitMutation)
             .exclusivity_keys
             .iter()
@@ -977,5 +1088,83 @@ mod tests {
             .await
             .expect("list jobs");
         assert_eq!(jobs.len(), 1);
+    }
+
+    /// M007: the submission boundary binds the build class to the
+    /// canonical workspace and drops the legacy global key.
+    #[test]
+    fn the_build_class_scope_is_bound_at_the_submission_boundary() {
+        let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-bound");
+        let mut job = spec(workspace.clone());
+        job.kind = JobKind::Build;
+        job.payload = JobPayload::ManagedArgv {
+            argv: vec!["cargo".into(), "build".into()],
+            cwd: None,
+            // Legacy-shaped payload: no captured profile ceiling and the
+            // unrestricted network intent, which is what these payloads
+            // decode as when the fields are absent.
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        };
+        apply_resource_policy(&mut job);
+        assert_eq!(job.resource_request.keyed_quotas.len(), 1);
+        assert_eq!(
+            job.resource_request.keyed_quotas[0].key,
+            format!("build:{workspace}")
+        );
+        assert!(job
+            .resource_request
+            .exclusivity_keys
+            .iter()
+            .all(|key| key != "exclusive:workspace-mutation"));
+    }
+
+    /// M007: a caller that supplies its own resource request cannot opt
+    /// out of the build bound it is measured against.
+    #[test]
+    fn a_caller_supplied_request_cannot_escape_the_build_bound() {
+        let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-escape");
+        let mut job = spec(workspace.clone());
+        job.kind = JobKind::Build;
+        job.payload = JobPayload::ManagedArgv {
+            argv: vec!["cargo".into(), "build".into()],
+            cwd: None,
+            // Legacy-shaped payload: no captured profile ceiling and the
+            // unrestricted network intent, which is what these payloads
+            // decode as when the fields are absent.
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+        };
+        // A request that names the legacy global key, or a quota of its
+        // own, must not survive the boundary.
+        job.resource_request = ResourceRequest {
+            exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+            keyed_quotas: vec![codegg_core::jobs::KeyedQuotaRequest::new(
+                "build:elsewhere",
+                8,
+            )],
+            ..ResourceRequest::default()
+        };
+        apply_resource_policy(&mut job);
+        assert_eq!(job.resource_request.keyed_quotas.len(), 1);
+        assert_eq!(
+            job.resource_request.keyed_quotas[0].key,
+            format!("build:{workspace}")
+        );
+        assert!(job
+            .resource_request
+            .exclusivity_keys
+            .iter()
+            .all(|key| key != "exclusive:workspace-mutation"));
+    }
+
+    /// M007: an unsupported kind keeps its existing admission and
+    /// carries no quota.
+    #[test]
+    fn an_unsupported_kind_carries_no_quota() {
+        let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-plain");
+        let mut job = spec(workspace);
+        apply_resource_policy(&mut job);
+        assert!(job.resource_request.keyed_quotas.is_empty());
     }
 }

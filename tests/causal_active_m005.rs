@@ -917,6 +917,10 @@ mod live_request_preparation_active {
             Arc::new(InMemoryArtifactStore::new()),
             std::env::current_dir().expect("test workspace root"),
             session_id.to_string(),
+            None,
+            // The harness holds no daemon scope, so there is no reservation
+            // to violate and processes stay unrestricted.
+            None,
         )
     }
 

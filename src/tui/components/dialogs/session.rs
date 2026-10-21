@@ -163,6 +163,48 @@ enum RowIdentity {
     Job(String),
 }
 
+/// What the TUI knows about the checkout a session runs in.
+///
+/// M006: a session's *directory* is where it runs, but a directory is
+/// not an answer. The answer is "a CodeGG-managed checkout on branch
+/// `feature/x`", or "the project's own root". This is the small fact
+/// the session dialog needs to answer that, and the fact a launch
+/// action needs to name a checkout it may reuse.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CheckoutInfo {
+    /// The managed checkout's id. `None` for a session that runs in the
+    /// project's own root.
+    pub worktree_id: Option<String>,
+    /// The checkout's branch.
+    pub branch: Option<String>,
+    /// The checkout's durable state (`ready`, `orphaned`, …).
+    pub state: Option<String>,
+    /// The checkout's health (`healthy`, `git_error`, …).
+    pub health: Option<String>,
+}
+
+impl CheckoutInfo {
+    /// Whether the checkout needs an operator's attention.
+    ///
+    /// A checkout that is not `ready` is one an operator has to look at: a
+    /// failed `git worktree add` leaves an *orphaned* record with a
+    /// `git_error` health, and the directory it names may or may not
+    /// exist. That is the cleanup state the plan asks the surface to
+    /// show.
+    ///
+    /// A **dirty** checkout is a normal working state — the agent has
+    /// uncommitted changes — and is not marked. A *conflicted*,
+    /// *missing* or *failed* one is.
+    pub fn needs_attention(&self) -> bool {
+        let state = self.state.as_deref().unwrap_or_default();
+        let health = self.health.as_deref().unwrap_or_default();
+        let state_ok = state.is_empty() || state == "ready" || state == "in_use";
+        let health_ok =
+            health.is_empty() || health == "clean" || health == "dirty" || health == "unknown";
+        !state_ok || !health_ok
+    }
+}
+
 pub struct SessionDialog {
     pub theme: Arc<Theme>,
     pub project_context: Option<String>,
@@ -191,6 +233,12 @@ pub struct SessionDialog {
     subagents: Vec<SubagentListRow>,
     /// Live jobs shown under the subagents.
     jobs: Vec<JobListRow>,
+    /// M006: the managed checkouts, keyed by the checkout's path.
+    ///
+    /// A session's `directory` is the join key: the launch binds the
+    /// session's directory to the checkout's path, so the checkout a
+    /// session runs in is the one whose path matches.
+    checkouts: HashMap<String, CheckoutInfo>,
     visible_height: usize,
     sorted_cache: RefCell<SortedCache>,
 }
@@ -217,6 +265,7 @@ impl Clone for SessionDialog {
             selected_ids: self.selected_ids.clone(),
             subagents: self.subagents.clone(),
             jobs: self.jobs.clone(),
+            checkouts: self.checkouts.clone(),
             visible_height: self.visible_height,
             sorted_cache: RefCell::new(self.sorted_cache.borrow().clone()),
         }
@@ -245,6 +294,7 @@ impl SessionDialog {
             selected_ids: HashMap::new(),
             subagents: Vec::new(),
             jobs: Vec::new(),
+            checkouts: HashMap::new(),
             visible_height: 10,
             sorted_cache: RefCell::new(None),
         }
@@ -309,6 +359,22 @@ impl SessionDialog {
         if self.sort_by == SortBy::Activity {
             self.sorted_cache = RefCell::new(None);
         }
+    }
+
+    /// M006: set the managed checkouts the sessions may run in.
+    ///
+    /// Keyed by the checkout's path, because that is what a session
+    /// records: a session's `directory` is the checkout's path when the
+    /// session runs in a managed checkout, and the project's own root
+    /// otherwise. A session with no entry runs in the root.
+    pub fn set_checkouts(&mut self, checkouts: HashMap<String, CheckoutInfo>) {
+        self.checkouts = checkouts;
+    }
+
+    /// M006: the checkout the selected session runs in.
+    pub fn selected_checkout(&self) -> Option<&CheckoutInfo> {
+        let session = self.selected_session()?;
+        self.checkouts.get(session.directory.as_str())
     }
 
     pub fn search_label(&self) -> &'static str {
@@ -874,6 +940,43 @@ impl Component for SessionDialog {
                 }
                 None
             }
+            // M006: the launch actions.
+            //
+            // `n` places a *new* session in a *new* managed checkout.
+            // `w` places a new session in the selected session's
+            // *existing* checkout — starting a session in a linked
+            // worktree must not create another one. `F` forks the
+            // selected session into a new checkout; the lowercase `f`
+            // above stays the plain fork into the *same* workspace, so
+            // neither meaning silently takes the other's key.
+            crossterm::event::KeyCode::Char('n') if !self.bulk_mode && self.filter.is_empty() => {
+                Some(TuiMsg::LaunchSession {
+                    parent_session_id: None,
+                    worktree_id: None,
+                })
+            }
+            crossterm::event::KeyCode::Char('w') if !self.bulk_mode && self.filter.is_empty() => {
+                match self
+                    .selected_checkout()
+                    .and_then(|checkout| checkout.worktree_id.clone())
+                {
+                    Some(worktree_id) => Some(TuiMsg::LaunchSession {
+                        parent_session_id: None,
+                        worktree_id: Some(worktree_id),
+                    }),
+                    // The selected session runs in the project's own root:
+                    // there is no checkout to reuse, and reusing "nothing"
+                    // would silently allocate a checkout instead.
+                    None => Some(TuiMsg::LaunchNeedsCheckout),
+                }
+            }
+            crossterm::event::KeyCode::Char('F') if !self.bulk_mode && self.filter.is_empty() => {
+                let parent_session_id = self.selected_session().map(|session| session.id.clone());
+                Some(TuiMsg::LaunchSession {
+                    parent_session_id,
+                    worktree_id: None,
+                })
+            }
             crossterm::event::KeyCode::Char('s') => {
                 self.cycle_sort();
                 None
@@ -1064,16 +1167,47 @@ impl Component for SessionDialog {
                             .unwrap_or_else(|| "unknown".to_string());
                         let msg_count = self.message_counts.get(&s.id).unwrap_or(&0);
 
+                        // M006: fork ancestry. The parent's title is
+                        // what the user recognises; the parent's id is
+                        // what they cannot.
+                        let parent_title = s
+                            .parent_id
+                            .as_ref()
+                            .and_then(|parent_id| {
+                                self.sessions
+                                    .iter()
+                                    .find(|candidate| &candidate.id == parent_id)
+                            })
+                            .map(|parent| parent.title.clone());
+
                         let title_suffix = if is_forked {
                             if is_archived {
-                                " [archived]"
+                                " [archived]".to_string()
+                            } else if let Some(parent_title) = parent_title.as_deref() {
+                                format!(" (fork of {parent_title})")
                             } else {
-                                " (fork)"
+                                " (fork)".to_string()
                             }
                         } else if is_archived {
-                            " [archived]"
+                            " [archived]".to_string()
                         } else {
-                            ""
+                            String::new()
+                        };
+
+                        // M006: where the session actually runs. A
+                        // managed checkout shows its branch; the
+                        // project's own root shows `root`; a checkout
+                        // that needs an operator is marked.
+                        let checkout_note = match self.checkouts.get(s.directory.as_str()) {
+                            Some(checkout) => {
+                                let branch = checkout.branch.as_deref().unwrap_or("checkout");
+                                if checkout.needs_attention() {
+                                    format!(" {branch} ⚠")
+                                } else {
+                                    format!(" {branch}")
+                                }
+                            }
+                            None => " root".to_string(),
                         };
 
                         let display_title = if title_suffix.is_empty() {
@@ -1108,7 +1242,10 @@ impl Component for SessionDialog {
                             lead.to_string()
                         };
                         lines.push(Line::from(Span::styled(
-                            format!("{}{}  {}msgs  {}", prefix, display_title, msg_count, ts),
+                            format!(
+                                "{}{}  {}msgs  {}{}",
+                                prefix, display_title, msg_count, ts, checkout_note
+                            ),
                             base,
                         )));
                         continue;
@@ -1201,6 +1338,13 @@ impl Component for SessionDialog {
             }
             lines.push(Line::from(Span::styled(
                 "d delete  a archive  f fork  s sort  h toggle archived  m search messages",
+                Style::default().fg(theme.muted),
+            )));
+            // M006: the launch actions are advertised here because a key
+            // nobody can find is a feature nobody has. `f` and `F` are
+            // different acts, so the hint says which is which.
+            lines.push(Line::from(Span::styled(
+                "n new session in a checkout  w new session in this checkout  F fork into a checkout",
                 Style::default().fg(theme.muted),
             )));
         }
@@ -1752,6 +1896,224 @@ mod pending_section_tests {
         assert_eq!(
             d.selected_session().map(|s| s.id.clone()),
             Some("s0".into())
+        );
+    }
+}
+
+/// M006: the checkout surface.
+///
+/// A session's row has to say *where the session runs* — a CodeGG-managed
+/// checkout on a branch, or the project's own root — and *when that
+/// checkout needs an operator*. A row that only shows a title and a
+/// timestamp makes a checkout invisible, and an invisible checkout is
+/// where a session's "which directory is this?" question goes to die.
+#[cfg(test)]
+mod checkout_surface_tests {
+    use super::*;
+    use crate::tui::app::TuiMsg;
+    use crate::tui::components::component::Component;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn session(id: &str, directory: &str) -> Session {
+        Session {
+            id: id.to_string(),
+            title: id.to_string(),
+            directory: directory.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn checkout(path: &str, branch: &str, state: &str, health: &str) -> CheckoutInfo {
+        CheckoutInfo {
+            worktree_id: Some(format!("wt-{path}")),
+            branch: Some(branch.to_string()),
+            state: Some(state.to_string()),
+            health: Some(health.to_string()),
+        }
+    }
+
+    fn rendered(d: &mut SessionDialog) -> String {
+        let theme = Arc::new(Theme::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| d.render(frame, frame.area(), &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn shift_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn a_session_in_a_managed_checkout_shows_its_branch() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/wt/feature-x")]);
+        d.set_checkouts(HashMap::from([(
+            "/wt/feature-x".to_string(),
+            checkout("/wt/feature-x", "feature-x", "ready", "clean"),
+        )]));
+
+        let text = rendered(&mut d);
+        assert!(
+            text.contains("feature-x"),
+            "the row must name the checkout's branch: {text}"
+        );
+        assert!(
+            !text.contains("root"),
+            "a session in a managed checkout is not in the root: {text}"
+        );
+    }
+
+    #[test]
+    fn a_session_in_the_project_root_is_marked_as_the_root() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/repo")]);
+
+        let text = rendered(&mut d);
+        assert!(
+            text.contains("root"),
+            "a session with no managed checkout runs in the root: {text}"
+        );
+    }
+
+    #[test]
+    fn a_dirty_checkout_is_not_marked() {
+        // A dirty checkout is a normal working state — the agent has
+        // uncommitted changes — and marking it would make the marker
+        // meaningless.
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/wt/dirty")]);
+        d.set_checkouts(HashMap::from([(
+            "/wt/dirty".to_string(),
+            checkout("/wt/dirty", "dirty", "ready", "dirty"),
+        )]));
+
+        let text = rendered(&mut d);
+        assert!(
+            !text.contains('⚠'),
+            "a dirty checkout is not an operator problem: {text}"
+        );
+    }
+
+    #[test]
+    fn a_checkout_that_needs_attention_is_marked() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/wt/broken")]);
+        d.set_checkouts(HashMap::from([(
+            "/wt/broken".to_string(),
+            checkout("/wt/broken", "broken", "orphaned", "git_error"),
+        )]));
+
+        let text = rendered(&mut d);
+        assert!(
+            text.contains('⚠'),
+            "a checkout that needs an operator must be marked: {text}"
+        );
+    }
+
+    #[test]
+    fn a_fork_names_the_session_it_came_from() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        let mut parent = session("p1", "/repo");
+        parent.title = "Parent".to_string();
+        let mut child = session("c1", "/wt/fork");
+        child.title = "Child".to_string();
+        child.parent_id = Some("p1".to_string());
+        d.load_sessions(vec![parent, child]);
+
+        let text = rendered(&mut d);
+        assert!(
+            text.contains("fork of Parent"),
+            "the row must name the fork's ancestry: {text}"
+        );
+    }
+
+    #[test]
+    fn the_create_action_asks_for_a_new_checkout() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/repo")]);
+
+        let msg = d.handle_key(key('n'));
+        assert_eq!(
+            msg,
+            Some(TuiMsg::LaunchSession {
+                parent_session_id: None,
+                worktree_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn the_reuse_action_names_the_selected_checkout() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/wt/feature-x")]);
+        d.set_checkouts(HashMap::from([(
+            "/wt/feature-x".to_string(),
+            checkout("/wt/feature-x", "feature-x", "ready", "clean"),
+        )]));
+
+        let msg = d.handle_key(key('w'));
+        assert_eq!(
+            msg,
+            Some(TuiMsg::LaunchSession {
+                parent_session_id: None,
+                worktree_id: Some("wt-/wt/feature-x".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn the_reuse_action_refuses_when_the_session_has_no_checkout() {
+        // Reusing "nothing" would quietly allocate a checkout instead,
+        // which is the opposite of what the key asked for.
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/repo")]);
+
+        let msg = d.handle_key(key('w'));
+        assert_eq!(msg, Some(TuiMsg::LaunchNeedsCheckout));
+    }
+
+    #[test]
+    fn the_fork_action_names_the_parent_session() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/repo")]);
+
+        let msg = d.handle_key(shift_key('F'));
+        assert_eq!(
+            msg,
+            Some(TuiMsg::LaunchSession {
+                parent_session_id: Some("s1".to_string()),
+                worktree_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn the_plain_fork_key_still_forks_into_the_same_workspace() {
+        // The lowercase `f` is the pre-existing plain fork. M006's fork
+        // into a checkout is `F`; neither may take the other's key.
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![session("s1", "/repo")]);
+
+        let msg = d.handle_key(key('f'));
+        assert_eq!(
+            msg,
+            Some(TuiMsg::ForkSession {
+                session_id: "s1".to_string(),
+            })
         );
     }
 }

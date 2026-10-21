@@ -233,9 +233,128 @@ behaviour switch**: the only consumer is `JobScheduler::is_mandatory()`
 `enabled = false` is the only setting that rejects submission, and it does so
 explicitly rather than by falling back.
 
+## The checkout writer permit is NOT a scheduler permit
+
+M005 corrective C002 added a second, unrelated authority: the **checkout
+writer permit** (`crates/codegg-core/src/writer_permit.rs`,
+`src/core/writer_permit.rs`, `architecture/writer_permit.md`). It answers "who
+may write to this managed checkout right now" — the scheduler answers "may this
+job run right now".
+
+They are not interchangeable, and the scheduler's admission machinery **cannot**
+carry the writer permit:
+
+- The writer-bearing job kinds (`Shell`, `ManagedProcess`, `Test`, `Lint`,
+  `Python`, `ToolProgram`) have **empty** exclusivity-key sets, and only
+  `exclusive:`-prefixed keys conflict at all. A key-based permit would be a
+  no-op for exactly the writers it must protect.
+- The writer permit is **per checkout**, not per resource class. Two
+  checkouts write in parallel; a global worktree-mutation key would serialize
+  unrelated work.
+- The writer permit has its own **quarantine** semantics. An admission failure
+  is retryable; a quarantined checkout is parked until an operator releases it.
+
+So the writer permit has its own durable store, its own compare-and-swap, and
+its own bounded per-checkout waiter. Do not add it to `src/scheduler/`, and do
+not route it through `JobSubmissionService`. `scripts/check_scheduler_bypass.py`
+is the guard for the first; the second is a design rule, not a static check.
+
+## The process admission gate is NOT a scheduler permit either
+
+M005 corrective C005 added a third authority: the **process admission gate**
+(`crates/codegg-core/src/process_admission.rs`, `src/tool/process_admission.rs`,
+`architecture/writer_permit.md` §"The process deny contract"). It answers "may
+this execution start a process in its checkout" — and, under the restricted
+shared-checkout profile, the answer is *no*.
+
+It is a **refusal**, not a permit: there is no effect to settle, because the
+refusal happens before a process exists. Two rules follow, and both are
+load-bearing:
+
+- **Do not turn it into a permit.** A process permit would need a lifetime
+  the process does not have: a `setsid` descendant escapes CodeGG's managed
+  process group, so a "held until the process exits" permit would be held
+  forever, or released while a writer is still alive.
+- **Do not route it through the scheduler's resource machinery.** The gate
+  reads durable state (the managed worktree record, the run-group record) and
+  an in-memory registry. It takes no lock, holds no permit, and never waits.
+
+## The shared-checkout placement is a placement, not a scheduler decision
+
+M005 corrective C006 added the **opt-in shared checkout**: a delegated run
+may be placed on the managed checkout a live agent-run group already holds,
+instead of getting an isolated one of its own.
+
+- **The placement is durable and defaulted.** `JobPayload::SubagentRun` carries
+  one additive `#[serde(default)]` field, `RunPlacement`. The default is
+  `Auto` — the isolated worktree the run had before C006 — so an older
+  payload and an older client are unaffected. Sharing is asked for; it is
+  never inferred.
+- **The scheduler resolves the group's checkout; the caller does not.**
+  `SharedCheckoutCoordinator` (`crates/codegg-core/src/shared_checkout.rs`)
+  resolves the checkout whose lease is held by a member of the group, under a
+  per-group lock, and refuses an unknown group, a finished group and a
+  non-member as three typed errors. The executor then attaches the run to
+  the checkout it resolved — that attachment is what makes the writer fence
+  authoritative, because the fence reads the run's own durable record.
+- **The profile is platform-gated.** `shared_checkout_availability()` is off
+  on any platform without native containment evidence, and the refusal names
+  the platform. Do not add a platform to
+  `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` without the evidence behind it. Linux
+  and macOS are qualified; Windows is disabled for a different kind of reason
+  — it lacks a *backend*, because no filesystem-enforcement backend is
+  registered for Windows at all, so no run could produce the evidence.
+- **Do not make the scheduler decide to share.** The scheduler carries the
+  placement; it does not derive one. `scripts/check_shared_checkout.py` is the
+  guard for the contract's landmarks, the opt-in default and the C005
+  preflight.
+
+The scheduler's part of the contract is narrow and lives in two places: the
+**submission boundary** (`src/scheduler/submission.rs`) refuses a
+*process-class* job for a reserved checkout — per job kind, so a job that
+starts no process is not refused on the process ground — and the **final
+executors** (`src/scheduler/executors.rs`) re-check before the process
+exists, because a job can be admitted while the checkout was free and
+dispatched after it became reserved.
+
+A Tool Program inherits the narrow profile of the execution that scheduled
+it (`src/scheduler/tool_program_executor.rs`): a nested call cannot reach a
+process the parent could not.
+
+## The build quota is admission, not a writer permit
+
+M007 added a third thing, and it is easy to confuse with the other two: the
+**per-workspace build quota** (`crates/codegg-core/src/jobs/quota.rs`,
+`architecture/build_admission.md`).
+
+It answers "how many build-class jobs may run in *this* workspace at once".
+It is **admission**, and it is not the checkout writer permit:
+
+- The quota is a **counted, scoped** bound (`build:<workspace_id>`), where an
+  exclusivity key is a binary mutex over a name. The scope is the canonical
+  `WorkspaceId`, so unrelated workspaces never share a bucket.
+- The limit is **configuration-owned** (`scheduler.quota
+  .max_concurrent_builds_per_workspace`, default 1). A job may ask for
+  slots; it may never widen the bound it is measured against. An unknown
+  quota namespace is **refused**, not ignored.
+- The scope is bound at the **submission boundary**
+  (`JobSubmissionService::apply_resource_policy`), and the binding is
+  applied unconditionally — a caller that supplies its own resource request
+  cannot opt out of the bound.
+- The build class **replaced** the legacy global `exclusive:workspace-mutation`
+  key, which was never checkout-scoped and serialized every build in every
+  workspace.
+
+A waiting job holds **no** permit: the quota is checked before any dimension
+is reserved, and the slots are released when the permit guard drops, after
+the executor's process lifetime ends. A job that waits on the quota never
+holds a parent execution permit, so it cannot deadlock.
+
 ## See Also
 
 - `architecture/scheduler.md`, `architecture/jobs.md`
+- `architecture/writer_permit.md` — the checkout writer permit (C002)
+- `architecture/build_admission.md` — the per-workspace build quota (M007)
 - `.opencode/skills/jobs/SKILL.md` — durable store, attempts, recovery
 - `.opencode/skills/permission/SKILL.md` — tool-permission boundaries
 - `docs/execution-ownership.md` + `docs/execution-ownership.toml` — the

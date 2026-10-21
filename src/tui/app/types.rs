@@ -343,6 +343,18 @@ pub enum TuiMsg {
     ForkSession {
         session_id: String,
     },
+    /// M006: launch a session into an isolated checkout.
+    ///
+    /// `parent_session_id` is set when the launch is a *fork* of that
+    /// session. `worktree_id` names the managed checkout to place the
+    /// session in; `None` means a new checkout is allocated.
+    LaunchSession {
+        parent_session_id: Option<String>,
+        worktree_id: Option<String>,
+    },
+    /// M006: the selected session runs in the project's own root, so
+    /// there is no managed checkout to reuse.
+    LaunchNeedsCheckout,
     SubmitImportPreview,
     ConfirmImport,
     SelectTemplate {
