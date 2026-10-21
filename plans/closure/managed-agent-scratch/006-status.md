@@ -68,8 +68,11 @@ reached.
 no sweep, no session-scratch lease, and no disposition for an unreclaimable
 tree. The growth of a session tree that is never soft-deleted remains
 unbounded, and that is unchanged by this milestone. The successor policy
-cannot be specified until the census has produced real numbers, and it is
-deliberately not registered here.
+cannot be specified until the census has produced real numbers, and this
+milestone does not specify it. The successor has since been registered as
+**M007** on `main` (PR #148), on the operator's direction; M007 names this
+census's output as a work-package input and runs it before its policy is
+implemented.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -282,11 +285,16 @@ key, no durable state, and no migration, and claims no Windows containment.
 
 The successor — a retention policy, a session scratch sweep, a session-scratch
 lease against a live turn's `TMPDIR`, and a disposition for an unreclaimable
-tree — remains **unregistered**, exactly as the plan said it would be. Its
-policy cannot be specified until this census has produced real numbers from a
-real deployment. M003's Windows Required-sandbox half remains outstanding and
-keeps M003 conditionally closed; that block is unrelated to this change and
-stays owned by `plans/subsystems/windows-native-sandbox-roadmap.md`.
+tree — is now registered as **M007** (`main`, PR #148). It was deliberately
+unregistered when this milestone was written, and it was registered on the
+operator's direction rather than on this milestone's evidence. M007 names
+this census's output as a work-package input and runs the census before its
+policy is implemented, so the measurement enters as a named input rather than
+as an unstated assumption. What this milestone still does not do is specify
+M007's policy: that is M007's own work, and this milestone claims none of it.
+M003's Windows Required-sandbox half remains outstanding and keeps M003
+conditionally closed; that block is unrelated to this change and stays owned
+by `plans/subsystems/windows-native-sandbox-roadmap.md`.
 
 ## 12. Registry updates
 
@@ -295,9 +303,15 @@ stays owned by `plans/subsystems/windows-native-sandbox-roadmap.md`.
 - `plans/subsystems/managed-agent-scratch-roadmap.md`: the M006 milestone
   section and the §12 status row move to `closed`.
 - The M001/M002/M003/M004/M005 rows are unchanged.
-- No downstream plan is unblocked by this milestone: the retention/sweep
-  successor is deliberately unregistered, and no registered plan lists M006 as
-  a dependency.
+- No downstream plan is unblocked by **this** milestone: the retention/sweep
+  successor was deliberately unregistered when this milestone was written, and
+  no registered plan listed M006 as a dependency. Since then the successor
+  has been registered as **M007** on `main` (PR #148), which lists M006's
+  census as a named input — so M007's registration is downstream of this
+  milestone, not a consequence of it.
+- `main`'s registration of M007 is merged into this branch, and the M006 and
+  M007 rows are reconciled so that both facts stand: **M006 closed**, **M007
+  ready**.
 
 ## 13. Whole-suite and hosted CI evidence
 
@@ -480,8 +494,8 @@ tree holds **301 session trees totalling 40 KiB** — almost all of them
 holding nothing but their own owner record. They are session trees that were
 allocated and never reclaimed. Before this milestone that condition was
 invisible; there is no surface that reported it. The census reports it, and
-the numbers are what the unregistered retention successor needs in order to
-have a policy at all.
+the numbers are what the retention successor — now registered as **M007** —
+needs in order to have a policy at all.
 
 Two properties of the observation are worth recording because they are the
 milestone's own guarantees, observed rather than asserted:
