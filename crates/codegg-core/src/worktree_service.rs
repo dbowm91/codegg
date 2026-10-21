@@ -154,6 +154,19 @@ pub struct CreateWorktreeRequest {
     /// Optional explicit base. When omitted, the current HEAD of the
     /// supplied worktree is used, which is the nested-run continuation rule.
     pub base_commit: Option<String>,
+    /// M006: an optional base **ref** — a branch or tag name — resolved to
+    /// a commit when the checkout is reserved.
+    ///
+    /// A ref, not a revision expression: `..`, `~`, `^`, `:` and `@{` are
+    /// refused. The resolved commit is what the record stores, so the
+    /// base is an immutable object id, never a moving name.
+    pub base_ref: Option<String>,
+    /// M006: an optional target branch for the new checkout.
+    ///
+    /// When omitted the worktree service mints `codegg/worktree/<id>`.
+    /// The name is validated as a Git branch name before it is used, and
+    /// it is rejected when the repository already has that branch.
+    pub target_branch: Option<String>,
     /// Optional checkout whose effective HEAD should seed the new worktree.
     pub base_path: Option<PathBuf>,
     pub owner_run_id: AgentRunId,
@@ -818,10 +831,39 @@ impl WorktreeService {
         ObjectId::new(&base_commit).map_err(|e| {
             WorktreeServiceError::InvalidInput(format!("invalid base commit from Git: {e}"))
         })?;
+        // M006: a base *ref* is resolved to an immutable commit here, so
+        // the record never stores a moving name.
+        let base_commit = match request.base_ref.as_deref() {
+            Some(base_ref) => {
+                let resolved = egggit::refs::resolve_base_ref(&base_path, base_ref)
+                    .await
+                    .map_err(|e| {
+                        WorktreeServiceError::InvalidInput(format!(
+                            "cannot resolve base ref {base_ref}: {e}"
+                        ))
+                    })?;
+                ObjectId::new(&resolved).map_err(|e| {
+                    WorktreeServiceError::InvalidInput(format!("invalid base commit from Git: {e}"))
+                })?;
+                resolved
+            }
+            None => base_commit,
+        };
         let worktree_id = WorktreeId::new();
         let id_short = worktree_id.as_str().replace('-', "");
         let id_short = &id_short[..id_short.len().min(12)];
-        let branch = format!("codegg/worktree/{id_short}");
+        // M006: an explicit target branch wins over the minted name.
+        let branch = match request.target_branch.as_deref() {
+            Some(target) => {
+                if target.trim().is_empty() || target.len() > 255 {
+                    return Err(WorktreeServiceError::InvalidInput(
+                        "target branch must be 1..=255 bytes".into(),
+                    ));
+                }
+                target.to_string()
+            }
+            None => format!("codegg/worktree/{id_short}"),
+        };
         BranchName::new(&branch).map_err(|e| WorktreeServiceError::InvalidInput(e.to_string()))?;
         let repo_root = self.managed_root.join(request.repository_id.as_str());
         let path = repo_root.join(format!("wt-{id_short}"));
@@ -1448,6 +1490,8 @@ mod tests {
                 node_id: None,
                 repository_root: repo.path().to_path_buf(),
                 base_commit: None,
+                base_ref: None,
+                target_branch: None,
                 base_path: None,
                 owner_run_id: _run,
             })
@@ -1521,6 +1565,8 @@ mod tests {
                 node_id: None,
                 repository_root: repo.path().to_path_buf(),
                 base_commit: None,
+                base_ref: None,
+                target_branch: None,
                 base_path: None,
                 owner_run_id: run,
             })
@@ -1588,6 +1634,8 @@ mod tests {
             node_id: None,
             repository_root: repo.path().to_path_buf(),
             base_commit: None,
+            base_ref: None,
+            target_branch: None,
             base_path: None,
             owner_run_id,
         };
@@ -1626,6 +1674,8 @@ mod tests {
                 node_id: None,
                 repository_root: repo.path().to_path_buf(),
                 base_commit: None,
+                base_ref: None,
+                target_branch: None,
                 base_path: None,
                 owner_run_id: parent_run,
             })
@@ -1664,6 +1714,8 @@ mod tests {
                 node_id: None,
                 repository_root: repo.path().to_path_buf(),
                 base_commit: None,
+                base_ref: None,
+                target_branch: None,
                 base_path: None,
                 owner_run_id: run,
             })

@@ -8,6 +8,13 @@ use crate::error::{AppError, ToolError};
 
 pub struct Formatter {
     rules: HashMap<String, FormatterRule>,
+    /// M005 corrective C005: the process admission policy for the
+    /// formatting execution.
+    ///
+    /// The formatter runs a **command** — `rustfmt`, `prettier`, a project
+    /// script — so it is a process surface. `None` means the formatter was
+    /// built without a resolved scope, which is the pre-C005 behavior.
+    process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 impl Formatter {
@@ -16,7 +23,19 @@ impl Formatter {
             Some(FormatterConfig::Rules(rules)) => rules.clone(),
             _ => HashMap::new(),
         };
-        Self { rules }
+        Self {
+            rules,
+            process_admission: None,
+        }
+    }
+
+    /// M005 corrective C005: install the process admission policy.
+    pub fn with_process_admission(
+        mut self,
+        policy: crate::tool::process_admission::SharedProcessAdmission,
+    ) -> Self {
+        self.process_admission = Some(policy);
+        self
     }
 
     pub fn format_file(&self, path: &Path) -> Result<(), AppError> {
@@ -69,6 +88,9 @@ impl Formatter {
             }
         }
         request.environment_policy = environment_policy;
+        // c005-denial: formatter-command
+        request.process_admission = self.process_admission.clone();
+        request.process_kind = codegg_core::process_admission::ProcessKind::Command;
         request.timeout = Some(Duration::from_secs(120));
         request.output_policy = crate::managed_process::OutputPolicy::new(256 * 1024);
         let output = crate::managed_process::ManagedProcessService::run_blocking(request).map_err(

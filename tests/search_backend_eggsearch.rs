@@ -295,6 +295,10 @@ mod real_build_tool_definitions_tests {
             Arc::new(codegg::context::InMemoryArtifactStore::new()),
             std::env::current_dir().expect("test workspace root"),
             "search-backend-test".to_string(),
+            None,
+            // The test harness holds no daemon scope, so there is no
+            // reservation to violate.
+            None,
         )
     }
 

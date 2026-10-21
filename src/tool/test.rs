@@ -205,6 +205,9 @@ impl Tool for TestTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        // M005 C005: refuse a process launch under the restricted shared
+        // profile, before the tool runs and before any process exists.
+        crate::tool::process_admission::admit_tool_process("test", ctx.as_ref()).await?;
         use crate::live_execution_audit as live;
         let start = Instant::now();
         let mode = input

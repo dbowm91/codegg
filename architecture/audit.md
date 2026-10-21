@@ -59,7 +59,7 @@ best-effort emission, redaction, backpressure, and operator reads).
 
 ## Action and visibility taxonomy
 
-Known actions (`AuditAction::ALL`, 28): `authentication`,
+Known actions (`AuditAction::ALL`, 30): `authentication`,
 `authorization_decision`, `membership_change`, `node_enrollment`,
 `session_create`, `session_attach`, `prompt_submit`,
 `provider_select`, `model_select`, `agent_delegate`,
@@ -68,7 +68,8 @@ Known actions (`AuditAction::ALL`, 28): `authentication`,
 `job_cancel`, `job_complete`, `remote_execute`,
 `chat_triggered_action`, `config_change`, `asset_refresh`,
 `audit_export`, `audit_query`, `work_order_lifecycle`,
-`human_shell_run`, `scratch_reclaim`.
+`human_shell_run`, `checkout_writer_refusal`, `process_denial`,
+`scratch_reclaim`.
 
 Writers use strict parsing (unknown actions fail closed at build
 time). Readers use lenient parsing: unknown stored actions degrade to
@@ -612,3 +613,48 @@ the `AuditAction::ALL` count of 26 and its exact name list, the
 1–100 query clamp (default 50) and the 200-event export bound, and
 `session_turn_controller` being applied at v65 through
 `SESSION_CONTROL_SCHEMA_STATEMENTS` rather than a standalone `CREATE TABLE`.
+
+**2026-10-20 (M005 corrective C004).** The `AuditAction::ALL` count in the
+taxonomy above was **stale at 26**; the canonical list in
+`crates/codegg-core/src/audit.rs` is **28**. The two actions it was missing
+are `human_shell_run` (M006) and `checkout_writer_refusal` (C004). The
+historical paragraph above records the count as it stood at its own
+verification and is left unchanged.
+
+`checkout_writer_refusal` is the durable **deny** event for the restricted
+writer profile: the C004 checkout reservation gate refuses a non-broker
+writer before its first effect, and that refusal — which never reaches the
+writer permit store, because it never happens — is recorded here. It is
+attributed to the transport-bound principal, carries the M003 decision
+provenance, and names the refused sink, the live group and the outcome. It
+carries no path, no file body and no other run's content.
+
+It is a **daemon-gate** live action: the refused operation never ran, so it
+has no daemon operation mapping. The gate owns the live evidence through
+`DAEMON_LIVE_AUDIT_HOOKS` in `crates/codegg-core/src/audit_instrumentation.rs`,
+and the declarative owner pin in `src/core/checkout_mediation.rs` fails the
+coverage guard if the gate or its emit symbol moves.
+
+**2026-10-20 (M005 corrective C005).** The `AuditAction::ALL` count in the
+taxonomy above moved from **28** to **29**: the new action is
+`process_denial`, the durable **deny** event for the restricted
+shared-checkout profile's process half.
+
+`process_denial` is emitted by the **broker**, at the moment it refuses a
+process launch. The C005 process admission gate refuses a process surface
+before a process exists, so there is no operation mapping and no downstream
+event to chain to — the refusal is the whole story. The event is attributed
+to the transport-bound principal carried by the trusted execution-audit
+context, carries the M003 decision provenance, and names the refused
+*capability* (`process.kind`), the reason (`process.reason`), the group and
+the worktree. It carries no path, no command line, no argv and no file
+body: a process refusal is a concurrency answer, and the command that was
+refused is the caller's own business.
+
+It is a **daemon-gate** live action, like `checkout_writer_refusal`: the
+owner is declared in `DAEMON_LIVE_AUDIT_HOOKS` in
+`crates/codegg-core/src/audit_instrumentation.rs`, the emit symbol is
+`emit_process_denial` in `src/tool/process_admission.rs`, and the
+`scripts/check_audit_coverage.py` guard fails if either moves. The sibling
+`scripts/check_process_denial.py` fails if the gate that produces the
+refusal loses its own markers.

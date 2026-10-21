@@ -109,6 +109,7 @@ fn make_broker() -> ToolBroker {
 
 fn program_ctx(program_id: &str) -> BrokerInvocationContext {
     BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: program_id.to_string(),
         },
@@ -159,6 +160,7 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 
@@ -241,6 +243,7 @@ async fn programmatic_unauthorized_caller_rejected() {
     let mut registry = ToolRegistry::with_defaults();
     registry.register(ValidReadOnlyTool);
     let ctx = BrokerInvocationContext {
+        writer_fence: None,
         caller: ToolCaller::Program {
             program_id: "prog-1".to_string(),
         },
@@ -265,6 +268,7 @@ async fn programmatic_unauthorized_caller_rejected() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let err = broker
         .execute(&registry, "valid_read", json!({}), ctx)

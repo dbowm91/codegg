@@ -70,8 +70,25 @@ impl Tool for PluginToolAdapter {
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        // M005 C005: a process-backed plugin is a process surface, and the
+        // restricted shared-checkout profile refuses it before the plugin
+        // runs. The classification is the plugin's *runtime kind*, not its
+        // advertised metadata: a plugin that describes itself as read-only
+        // cannot opt a process back in.
+        // c005-denial: process-backed-plugin
+        if self
+            .service
+            .is_process_backed(&self.descriptor.plugin_id)
+            .await
+        {
+            crate::tool::process_admission::admit_process_for_context(
+                ctx.as_ref(),
+                codegg_core::process_admission::ProcessKind::PluginProcess,
+            )
+            .await?;
+        }
         let response = self
             .service
             .invoke_tool(&self.descriptor.canonical_name, input)

@@ -481,6 +481,10 @@ pub enum InteractiveError {
     PlatformUnsupported { platform: &'static str },
     #[error("interactive process spawn failed: {0}")]
     SpawnFailed(String),
+    /// M005 corrective C005: the restricted shared-checkout profile refused
+    /// the PTY launch before the child existed.
+    #[error("interactive process launch refused: {0}")]
+    ProcessDenied(String),
     #[error("unknown interactive handle")]
     UnknownHandle,
     #[error("interactive process is no longer running")]
@@ -517,6 +521,7 @@ pub fn permit_dimensions_for_interactive() -> PermitDimensions {
         io_weight: request.io_weight,
         network_slots: request.network_slots,
         exclusivity_keys: Vec::new(),
+        keyed_quotas: Vec::new(),
         remote_node: None,
     }
 }
@@ -571,6 +576,12 @@ struct ServiceInner {
 /// constructor that infers a working directory from process-global state.
 pub struct InteractiveProcessService {
     inner: Arc<ServiceInner>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// `None` means the daemon has no durable reservation authority, so no
+    /// checkout is ever reserved and the PTY keeps its pre-C005 behavior.
+    process_admission:
+        parking_lot::RwLock<Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>>,
 }
 
 impl InteractiveProcessService {
@@ -582,7 +593,17 @@ impl InteractiveProcessService {
                 shutdown: CancellationToken::new(),
                 shutting_down: AtomicBool::new(false),
             }),
+            process_admission: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority.
+    pub fn set_process_admission(
+        &self,
+        service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) {
+        *self.process_admission.write() = Some(service);
     }
 
     /// Number of tracked handles (live plus retained-exited).
@@ -653,6 +674,45 @@ impl InteractiveProcessService {
             return Err(InteractiveError::PlatformUnsupported {
                 platform: platform_name(),
             });
+        }
+
+        // c005-denial: interactive-pty
+        // M005 corrective C005: the restricted shared-checkout profile
+        // refuses a PTY launch before the child exists.
+        //
+        // The check sits between the scheduler admission and the child
+        // creation, so a refused spawn leaves no live session, no handle
+        // and no permit. The scope is the execution's daemon-resolved
+        // workspace root — never the spec's own working directory.
+        //
+        // It is Unix-only because the interactive PTY is refused outright on
+        // every other platform by the block above: there is no child to deny,
+        // and the refusal there is the platform's, not the profile's.
+        #[cfg(unix)]
+        {
+            let admission_service = self.process_admission.read().clone();
+            if let Some(service) = admission_service.as_ref() {
+                let admission = service
+                    .admit_scope(
+                        &ctx.workspace_root,
+                        codegg_core::process_admission::ProcessKind::Pty,
+                    )
+                    .await;
+                match admission {
+                    Ok(admission) => {
+                        if let Some(denial) = admission.denial() {
+                            drop(permit);
+                            return Err(InteractiveError::ProcessDenied(denial.to_string()));
+                        }
+                    }
+                    Err(failure) => {
+                        drop(permit);
+                        return Err(InteractiveError::ProcessDenied(format!(
+                            "the process admission authority could not be consulted: {failure}"
+                        )));
+                    }
+                }
+            }
         }
 
         #[cfg(unix)]
@@ -1831,6 +1891,45 @@ mod tests {
         assert_eq!(service.session_count(), 1);
         service.shutdown().await;
         let _ = service.remove(&first).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn terminate_kills_session_descendant_before_releasing_process_slot() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let ctx = test_context(dir.path()).await;
+        let admission = test_admission(1);
+        let service = InteractiveProcessService::new(admission.clone());
+        let script = "(sleep 1; printf escaped > descendant-marker) & wait";
+        let handle = service
+            .spawn(
+                &ctx,
+                SpawnSpec::new(vec![
+                    OsString::from("sh"),
+                    OsString::from("-c"),
+                    OsString::from(script),
+                ]),
+            )
+            .await
+            .expect("spawn shell with a background descendant");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(admission.used_process_slots(), 1);
+        service
+            .terminate(&handle)
+            .await
+            .expect("terminate process group");
+        assert_eq!(admission.used_process_slots(), 0);
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            !dir.path().join("descendant-marker").exists(),
+            "background writer ran after process-group termination"
+        );
+        service
+            .remove(&handle)
+            .await
+            .expect("remove terminated session");
     }
 
     #[cfg(unix)]

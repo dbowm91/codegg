@@ -138,6 +138,22 @@ pub struct BrokerInvocationContext {
     pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
     /// Accepted authorization context, preserved unchanged across retries.
     pub execution_authorization: Option<super::authorization::ExecutionAuthorizationContext>,
+    /// M005 C003: the checkout writer fence for this invocation.
+    ///
+    /// The broker carries the fence but never acquires from it: the fence is
+    /// consulted at the *final native effect*, so a tool that never reaches
+    /// an effect — a read, a denied call, a job submission — holds no permit
+    /// and writes nothing. That is what keeps a nested dispatch from
+    /// acquiring the same checkout twice.
+    pub writer_fence: Option<super::writer_fence::SharedWriterFence>,
+    /// M005 C005: the process admission policy for this invocation.
+    ///
+    /// The broker consults it at the **final dispatch**, after the
+    /// permission and authority decisions and before the tool runs. That
+    /// order matters: a refusal here is a profile fact, not a
+    /// re-judgement of the caller's authority, so the caller's own
+    /// authorization decision still stands and is still recorded.
+    pub process_admission: Option<super::process_admission::SharedProcessAdmission>,
 }
 
 impl BrokerInvocationContext {
@@ -189,6 +205,8 @@ pub enum BrokerAuthority {
 impl From<ToolExecutionContext> for BrokerInvocationContext {
     fn from(ctx: ToolExecutionContext) -> Self {
         Self {
+            writer_fence: ctx.writer_fence.clone(),
+            process_admission: ctx.process_admission.clone(),
             caller: ToolCaller::Agent,
             cwd: ctx.cwd,
             session_id: ctx.session_id,
@@ -758,7 +776,7 @@ impl ToolBroker {
         registry: &ToolRegistry,
         tool_name: &str,
         input: serde_json::Value,
-        ctx: BrokerInvocationContext,
+        mut ctx: BrokerInvocationContext,
         retry: Option<crate::provider::RetryContext>,
     ) -> Result<BrokerResult, BrokerError> {
         let invocation_id = uuid::Uuid::new_v4().to_string();
@@ -794,6 +812,67 @@ impl ToolBroker {
         validate_json_schema(&contract.input_schema, &input).map_err(|reason| {
             BrokerError::Execution(format!("input schema validation failed: {reason}"))
         })?;
+
+        // M005 C005: the restricted shared-checkout profile refuses every
+        // unqualified process surface at the **final dispatch**.
+        //
+        // The order is deliberate. The permission and authority decisions
+        // have already been made (`validate_pre_execution`), so a refusal
+        // here is not a re-judgement of the caller's authority — the
+        // caller's own authorization decision stands and is still
+        // recorded. What the refusal adds is a *profile* fact: this
+        // checkout is shared by a live agent-run group, and a shared
+        // checkout admits no unqualified process.
+        //
+        // The policy is resolved from the invocation context first and
+        // from the registry second, so a caller that carried the policy
+        // and a caller that inherited it from the registry's scope are
+        // both covered. The resolved policy is written back onto the
+        // context so the per-attempt execution context carries the same
+        // authority the tool's own pre-spawn check will consult.
+        // c005-denial: broker-final-dispatch
+        let resolved_process_admission = ctx
+            .process_admission
+            .clone()
+            .or_else(|| registry.process_admission().cloned());
+        if let Some(policy) = resolved_process_admission.as_ref() {
+            let capability = crate::tool::process_capability::process_capability(tool_name);
+            if capability.spawns_itself() || capability.uses_persistent_process() {
+                if let Some(kind) = capability.process_kind() {
+                    let request = crate::tool::process_admission::ProcessAdmissionRequest {
+                        kind,
+                        scope: policy.scope().clone(),
+                    };
+                    let outcome = policy.admit(&request).await.map_err(|error| {
+                        BrokerError::ProcessDenied {
+                            tool: tool_name.to_string(),
+                            reason: error.to_string(),
+                        }
+                    })?;
+                    if let crate::tool::process_admission::ProcessAdmissionOutcome::Denied(denial) =
+                        outcome
+                    {
+                        // M005 C005: the refusal is durable, not silent. The
+                        // event is attributed to the transport-bound
+                        // principal and names the capability, the reason and
+                        // the group — never a path, a command or an argv.
+                        if let (Some(emitter), Some(audit)) =
+                            (ctx.audit_emitter.as_ref(), ctx.execution_audit.as_ref())
+                        {
+                            crate::tool::process_admission::emit_process_denial(
+                                emitter, audit, &denial,
+                            )
+                            .await;
+                        }
+                        return Err(BrokerError::ProcessDenied {
+                            tool: tool_name.to_string(),
+                            reason: denial.to_string(),
+                        });
+                    }
+                }
+            }
+            ctx.process_admission = resolved_process_admission.clone();
+        }
 
         // Tool Program receives a host-derived immutable snapshot of the
         // exact catalog entries it requested. Derive this from the broker's
@@ -946,6 +1025,10 @@ impl ToolBroker {
                         // workspace root to act in. Retryable only by
                         // resolving a root, never by re-running.
                         ToolError::MissingWorkspaceRoot { .. } => "missing_workspace_root",
+                        // M005 C005: a refused call, not a failed one. The
+                        // checkout is shared, so no argument change makes
+                        // the launch admissible; retrying is pointless.
+                        ToolError::ProcessDenied { .. } => "process_denied",
                     };
                     // Legacy single-attempt path: map directly, no chain
                     // accounting, identical to the pre-M002 behavior.
@@ -1403,6 +1486,8 @@ fn execution_context_for_attempt(
         execution_authorization: ctx.execution_authorization.clone(),
         execution_audit: None,
         audit_emitter: None,
+        writer_fence: ctx.writer_fence.clone(),
+        process_admission: ctx.process_admission.clone(),
     };
     if let Some(audit) = ctx.execution_audit.clone() {
         exec_ctx.apply_execution_audit(&audit);
@@ -1440,6 +1525,17 @@ pub enum BrokerError {
         tool: String,
         reason: String,
     },
+    /// M005 C005: a process-capable tool was refused by the restricted
+    /// shared-checkout profile, before the tool ran and before any
+    /// process existed.
+    ///
+    /// This is deliberately not [`Self::CallerDenied`]: the caller was
+    /// permitted, and the permission boundary admitted the call. The
+    /// refusal is a fact about the *checkout*, not about the caller.
+    ProcessDenied {
+        tool: String,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for BrokerError {
@@ -1464,6 +1560,9 @@ impl std::fmt::Display for BrokerError {
             Self::Execution(msg) => write!(f, "broker execution error: {}", msg),
             Self::AuthorityError { tool, reason } => {
                 write!(f, "authority error for tool {}: {}", tool, reason)
+            }
+            Self::ProcessDenied { tool, reason } => {
+                write!(f, "process refused for tool {}: {}", tool, reason)
             }
         }
     }
@@ -1544,6 +1643,8 @@ mod tests {
             }
         };
         BrokerInvocationContext {
+            writer_fence: None,
+            process_admission: None,
             caller: ToolCaller::Agent,
             cwd: PathBuf::from("."),
             session_id: None,

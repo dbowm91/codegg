@@ -898,6 +898,8 @@ impl super::daemon::CoreDaemon {
             node_id: None,
             repository_root: git_root,
             base_commit: None,
+            base_ref: None,
+            target_branch: None,
             base_path: None,
             owner_run_id: owner,
         };

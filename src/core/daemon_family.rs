@@ -120,6 +120,7 @@ impl DaemonRequestFamily {
             CoreRequest::SessionDelete { .. } => Self::Sessions,
             CoreRequest::SessionExport { .. } => Self::Sessions,
             CoreRequest::SessionFork { .. } => Self::Sessions,
+            CoreRequest::SessionLaunch { .. } => Self::Sessions,
             CoreRequest::SessionImportData { .. } => Self::Sessions,
             CoreRequest::SessionLifecycleGet { .. } => Self::Sessions,
             CoreRequest::SessionList { .. } => Self::Sessions,

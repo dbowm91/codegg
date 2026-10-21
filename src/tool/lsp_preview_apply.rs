@@ -20,6 +20,10 @@ use crate::tool::backend::{StructuredToolResult, ToolExecutionContext, ToolProve
 use crate::tool::contract::{
     IdempotencyClass, ToolCallerPolicy, ToolContract, ToolEffectClass, ToolRetryPolicy,
 };
+use crate::tool::writer_fence::{
+    acquire_writer_permit, settle_writer_fence, writer_fence_key, NativeEffectClass,
+    WriterFenceOutcome,
+};
 use crate::tool::{LspPreviewRegistryHandle, Tool, ToolCategory, ToolTrust};
 
 const MAX_PREVIEW_ID_BYTES: usize = 256;
@@ -223,7 +227,26 @@ impl LspPreviewApplyTool {
             self.turn_id.clone(),
         )?;
         let preview_id = request.preview_id.clone();
-        let result = crate::lsp::mutation::apply_preview(
+
+        // M005 C003: the checked application is a native file transaction, so
+        // it takes the checkout's writer permit before the first write and
+        // holds it through the apply and its rollback. The targets are the
+        // files the preview touches, resolved by the host-owned candidate —
+        // never by the model, which supplies only a preview id.
+        let targets: Vec<PathBuf> = request
+            .patches
+            .iter()
+            .map(|patch| PathBuf::from(&patch.path))
+            .collect();
+        let permit = acquire_writer_permit(
+            context,
+            NativeEffectClass::FileWrite,
+            targets.clone(),
+            writer_fence_key(self.name(), &targets, context),
+        )
+        .await?;
+
+        let applied = crate::lsp::mutation::apply_preview(
             request,
             self.workspace_root.clone(),
             self.workspace_locks.clone(),
@@ -231,8 +254,22 @@ impl LspPreviewApplyTool {
             self.document_service.clone(),
             Some(self.lsp_service.clone()),
         )
-        .await
-        .map_err(map_mutation_error)?;
+        .await;
+
+        // A failed apply may have applied part of the patch set, so it parks
+        // the checkout rather than freeing it; a refusal before the first
+        // write proves the files are untouched.
+        let (result, outcome) = match applied {
+            Ok(result) => (Ok(result), WriterFenceOutcome::Settled),
+            Err(error) => (
+                Err(map_mutation_error(error)),
+                WriterFenceOutcome::Unproven(
+                    "the checked LSP application did not settle".to_owned(),
+                ),
+            ),
+        };
+        settle_writer_fence(permit, outcome, result.is_err()).await?;
+        let result = result?;
 
         // The registry is deliberately marked only after the checked mutation
         // service reports success. Failed validation or writes remain retryable

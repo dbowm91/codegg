@@ -116,6 +116,21 @@ pub struct SubAgentRequest {
     /// M005: explicitly requested child profile (`None` = inherit parent).
     /// A request for `FullHost` under a constrained parent fails closed.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005 corrective C005: the parent's process admission policy.
+    ///
+    /// A nested subagent **inherits the narrow profile**: it can never be
+    /// handed a wider authority than the execution that delegated to it.
+    /// The child builds its own scope over its own workspace root, but the
+    /// authority it consults is the same one.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
+    /// M005 corrective C006: the writer fence for this child's checkout.
+    ///
+    /// The daemon resolves it from the child's own durable run record, so a
+    /// child placed on a shared checkout takes that checkout's writer permit
+    /// while a child on an isolated checkout keeps the containment-only
+    /// profile it always had. When it is absent the child falls back to
+    /// containment over its workspace root.
+    pub writer_fence: Option<crate::tool::writer_fence::SharedWriterFence>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1322,6 +1337,10 @@ async fn execute_agent_task(
         lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
         search_runtime: Some(search_runtime.clone()),
         sandbox_profile: Some(effective_child),
+        // M005 corrective C005: a nested subagent inherits the parent's
+        // process admission policy. The child can never be handed a wider
+        // profile than the execution that delegated to it.
+        process_admission: request.process_admission.clone(),
         ..Default::default()
     });
     // Subagents must NEVER have access to in-flight planning tools
@@ -1531,6 +1550,21 @@ async fn execute_agent_task(
         .workspace_root
         .clone()
         .ok_or_else(|| "subagent execution requires an explicit workspace root".to_string())?;
+    // M005 C003: a delegated run executes inside the managed checkout the
+    // scheduler leased for it, so that checkout is the scope its native
+    // writers are contained to.
+    //
+    // M005 corrective C006: when the daemon resolved a writer fence for this
+    // run, that fence is authoritative — it is the one that knows whether the
+    // checkout is shared and takes the writer permit when it is. The
+    // containment-only fence below is the fallback for a run that holds no
+    // managed checkout.
+    let writer_fence: Option<crate::tool::writer_fence::SharedWriterFence> =
+        request.writer_fence.clone().or_else(|| {
+            Some(std::sync::Arc::new(
+                crate::tool::writer_fence::WorkspaceWriterFence::new(workspace_root.clone()),
+            ))
+        });
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
         provider,
@@ -1542,6 +1576,9 @@ async fn execute_agent_task(
         std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
         workspace_root.clone(),
         subagent_session_id,
+        writer_fence,
+        // M005 corrective C005: the inherited process admission policy.
+        request.process_admission.clone(),
     );
     if let Some(run_id) = request.run_id.as_ref() {
         let runs = subagent_pool
@@ -1929,6 +1966,8 @@ mod admission_tests {
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            process_admission: None,
+            writer_fence: None,
         }
     }
 
