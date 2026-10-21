@@ -521,9 +521,9 @@ with only that test run), so the milestone's new test adds **no** leak.
 
 ### The local whole-suite sweep
 
-`cargo nextest run --workspace --locked --profile ci --no-fail-fast` on this
-branch: **15616 run, 15613 passed, 2 failed, 1 timed out, 7 skipped**
-(678 s).
+`cargo nextest run --workspace --locked --profile ci --no-fail-fast` on the
+**final head** `0eb3ea36` (macOS, arm64): **15638 run, 15635 passed, 2
+failed, 1 timed out, 7 skipped** (698 s).
 
 The three non-green results are **`main`'s own** and are not caused by this
 branch:
@@ -539,14 +539,21 @@ The comparison is direct: the **same** sweep was run against `origin/main`
 
 | Tree | Sweep result | Non-green results |
 |---|---|---|
-| this branch | 15616 run, 15613 passed, **2 failed, 1 timed out**, 7 skipped | `daemon_refresh::session_projection_snapshot_includes_in_process_live_child_instances`, `daemon_refresh::session_projection_rebuilds_owner_scoped_live_jobs`, `asset_refresh::same_scope_requests_coalesce_to_one_publication` |
+| this branch (before the merges) | 15616 run, 15613 passed, **2 failed, 1 timed out**, 7 skipped | `daemon_refresh::session_projection_snapshot_includes_in_process_live_child_instances`, `daemon_refresh::session_projection_rebuilds_owner_scoped_live_jobs`, `asset_refresh::same_scope_requests_coalesce_to_one_publication` |
 | `origin/main` (`cb0e79c0`) | 15584 run, 15579 passed, **4 failed, 1 timed out**, 7 skipped | the **same three**, plus `permission::tests::temp_root_redirect_offer_only_covers_an_unauthorized_temp_root` and `agent_loop_harness::first_use_apply_patch_create_then_grep_runs_through_agent_broker` |
 
 This branch's non-green set is a **strict subset** of `main`'s, and every
 member of it is present on `main` too. The milestone adds no failure.
 
-Both sweeps were taken before `main` was merged into the branch, so both
-pre-date PR #146's 22 TUI tests; the hosted run covers the merged tree.
+The sweep on the final head reproduces **exactly the same three** non-green
+results, on the tree that carries `main`'s `2a0bae08` — so the merges
+changed nothing about them.
+
+**Why the local and hosted totals differ.** The local sweep reports **15638**
+and the hosted run reports **15665**: the hosted runner is Linux and this
+host is macOS, and the platform-gated tests differ by **27**. The hosted run
+also checks out the pull request's *merge* commit. Both numbers are real;
+neither is the other.
 
 The hosted `CI` run is the authoritative whole-suite result: **15665 run,
 15665 passed, 7 skipped**, with none of these three present. (The earlier
