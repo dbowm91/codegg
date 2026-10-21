@@ -359,6 +359,17 @@ branch:
 | `core::daemon_refresh::tests::session_projection_rebuilds_owner_scoped_live_jobs` | fail | the same `InvalidRootPath("/tmp")` panic, reproduced identically on `origin/main`. |
 | `agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication` | timeout (300 s) | A load-sensitive race in that test's own `BlockingBuilder`, which parks a thread and is released by an `unpark` from the test. It **constructs no `CoreDaemon`**, so the census refresh task this milestone adds to the daemon construction is provably not in its path. It passes in isolation in 0.01 s. The hosted CI run of the same suite is fully green, which is the stronger evidence. |
 
+The comparison is direct: the **same** sweep was run against `origin/main`
+(`cb0e79c0`) in a separate worktree with its own target directory.
+
+| Tree | Sweep result | Non-green results |
+|---|---|---|
+| this branch | 15616 run, 15613 passed, **2 failed, 1 timed out**, 7 skipped | `daemon_refresh::session_projection_snapshot_includes_in_process_live_child_instances`, `daemon_refresh::session_projection_rebuilds_owner_scoped_live_jobs`, `asset_refresh::same_scope_requests_coalesce_to_one_publication` |
+| `origin/main` (`cb0e79c0`) | 15584 run, 15579 passed, **4 failed, 1 timed out**, 7 skipped | the **same three**, plus `permission::tests::temp_root_redirect_offer_only_covers_an_unauthorized_temp_root` and `agent_loop_harness::first_use_apply_patch_create_then_grep_runs_through_agent_broker` |
+
+This branch's non-green set is a **strict subset** of `main`'s, and every
+member of it is present on `main` too. The milestone adds no failure.
+
 The hosted `CI` run is the authoritative whole-suite result: **15643 run,
 15643 passed, 7 skipped**, with none of these three present.
 
