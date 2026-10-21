@@ -623,11 +623,20 @@ async fn delegated_tool_program_child_carries_the_offline_ceiling_to_the_owner()
 
     // The launcher the executor builds for a constrained payload.
     let marker = workspace.path().join("delegated-child-marker");
-    let probe = r#"
-import socket, sys
-host, port, udp_port, marker = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+    // The probe's parameters are interpolated into the program text, the way
+    // the sibling M005 probe does it. `python3 -c CODE args...` puts `-c` at
+    // `sys.argv[0]`, so positional arguments would start at index 1 and an
+    // off-by-one there would silently probe the wrong endpoint.
+    let probe = format!(
+        r#"
+import socket
+import sys
+host = "127.0.0.1"
+tcp_port = {tcp_port}
+udp_port = {udp_port}
+marker = "{marker}"
 try:
-    conn = socket.create_connection((host, port), timeout=3)
+    conn = socket.create_connection((host, tcp_port), timeout=3)
     conn.close()
 except OSError:
     pass
@@ -640,25 +649,18 @@ try:
 except OSError:
     pass
 open(marker, "w").write("offline")
-"#;
+"#,
+        tcp_port = tcp4_addr.port(),
+        udp_port = udp4_addr.port(),
+        marker = marker.to_string_lossy(),
+    );
     let sandbox_config = codegg::security::sandbox::sandbox_config_for_profile(
         payload_profile.expect("the delegated child must carry a profile"),
         workspace.path(),
     )
     .expect("the constrained profile must have a launch configuration");
     let spec = sandbox_config
-        .launch_spec(
-            "python3",
-            &[
-                "-c".into(),
-                probe.to_string(),
-                "127.0.0.1".into(),
-                tcp4_addr.port().to_string(),
-                udp4_addr.port().to_string(),
-                marker.to_string_lossy().into_owned(),
-            ],
-            Some(workspace.path()),
-        )
+        .launch_spec("python3", &["-c".into(), probe], Some(workspace.path()))
         .expect("delegated child launch spec");
     let mut request = ManagedProcessRequest::new(
         [spec.target.as_os_str().to_owned()]
