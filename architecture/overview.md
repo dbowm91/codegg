@@ -288,6 +288,14 @@ listed `Source` with the method the table has always used, and each was
 confirmed to have been correct before the change; the remaining rows were
 confirmed unchanged.
 
+The three rows M007 could affect were **remeasured again on 2026-10-21**
+after it added the scratch retention sweep and the operator disposition:
+`CoreRequest` variants (260 → 261), `CoreResponse` variants (170 → 171), and
+authorized operations (254 → 255). The remaining rows were confirmed
+unchanged: no new architecture document, no new integration test file, no new
+`codegg-core` top-level module, no database table, and **no storage layout
+version bump** — M007 adds no migration, no table, and no lease column.
+
 The whole table was then **remeasured again on the merged tree** when the
 Eggwork worker branch was reconciled with `main`, because the two sides had
 measured some rows by different methods and the table is the single source
@@ -323,11 +331,11 @@ the statement count is 92 because `migration_version` and the
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 260 (236 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 170 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 261 (237 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 171 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 254 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 255 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 167 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |

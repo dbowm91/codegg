@@ -38,8 +38,6 @@ pub enum ScratchReclaimRefusalDto {
     SymbolicLink,
     /// An entry that is neither a regular file nor a directory.
     NonRegularEntry,
-    /// A regular file with more than one link.
-    MultiplyLinkedFile,
 }
 
 // ── Usage census ───────────────────────────────────────────────────────
@@ -62,7 +60,10 @@ pub struct ScratchTreeUsageDto {
     pub symlink_count: u64,
     /// Entries that are neither a regular file nor a directory.
     pub non_regular_count: u64,
-    /// Regular files with more than one link. Always zero on Windows.
+    /// Regular files with more than one link. An observation only: a hard
+    /// link is a file name, not a recursive edge, so it does not stop the
+    /// reclaim path. Always zero on Windows, which exposes no stable
+    /// link-count accessor at this crate's MSRV.
     pub multiply_linked_count: u64,
     /// The oldest modification time observed, in milliseconds since the epoch.
     pub oldest_modified_ms: Option<i64>,
@@ -108,4 +109,58 @@ pub struct ScratchUsageRequestDto {
     /// served on an agent hot path.
     #[serde(default)]
     pub refresh: bool,
+}
+
+// ── Operator disposition ───────────────────────────────────────────────
+
+/// Ask the daemon to dispose of one scratch tree.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScratchReclaimRequestDto {
+    /// The opaque digest of the tree. Never a path, never a session id: the
+    /// digest is one-way, so a session id cannot be recovered from it.
+    pub tree: String,
+    /// Whether to actually remove the tree. A dry run is the default, so an
+    /// operator sees the verdict before anything is removed.
+    #[serde(default)]
+    pub apply: bool,
+}
+
+/// The verdict of one reclaim attempt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScratchReclaimVerdictDto {
+    /// The tree exists and the reclaim validator accepts it.
+    Reclaimable,
+    /// The tree exists, but the reclaim validator refuses it.
+    Refused,
+    /// The tree is still in use: an accepted turn, a non-terminal run, or a
+    /// non-terminal job owns it. The operator action refuses it too.
+    Leased,
+    /// The tree was removed.
+    Removed,
+    /// There was no such tree.
+    Absent,
+}
+
+/// The result of one reclaim attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScratchReclaimResultDto {
+    /// The opaque digest that names the tree.
+    pub digest: String,
+    /// The number of entries the tree held.
+    pub entry_count: u64,
+    /// The total size of the tree's regular files.
+    pub byte_count: u64,
+    /// The verdict.
+    pub verdict: ScratchReclaimVerdictDto,
+    /// Which rule refused the tree, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<ScratchReclaimRefusalDto>,
+    /// Whether the tree is parked under a reclaim tombstone, which means the
+    /// automatic path already refused it at least once.
+    pub quarantined: bool,
+    /// Whether this was a dry run. A dry run removes nothing.
+    pub dry_run: bool,
+    /// Whether the tree was removed.
+    pub removed: bool,
 }

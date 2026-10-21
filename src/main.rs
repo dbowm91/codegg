@@ -696,6 +696,25 @@ enum DaemonCommand {
         #[arg(long)]
         refresh: bool,
     },
+    /// Dispose of one daemon-owned scratch tree (M007)
+    ///
+    /// Names the tree by its opaque digest, as reported by
+    /// `codegg daemon scratch-usage`. A dry run is the default: the command
+    /// reports what it would remove and removes nothing.
+    ScratchReclaim {
+        /// The opaque digest of the tree
+        #[arg(long)]
+        tree: String,
+        /// Actually remove the tree. Without this, nothing is removed.
+        #[arg(long)]
+        apply: bool,
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Emit the raw result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Attach to a running daemon via local Unix socket.
     /// Canonical spelling; top-level `attach-daemon` remains as a hidden
     /// compatibility alias. Distinct from the feature-gated remote HTTP
@@ -759,6 +778,89 @@ async fn fetch_scratch_usage_report(
         CoreResponse::ScratchUsage { report } => Ok(report),
         CoreResponse::Error { code, message } => Err(format!("{code}: {message}")),
         other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Fetch the daemon's verdict on one scratch tree.
+///
+/// The tree is named by its opaque digest, never by a path.
+async fn fetch_scratch_reclaim_result(
+    client: &codegg::core::transport::SocketCoreClient,
+    tree: &str,
+    apply: bool,
+) -> Result<codegg::protocol::scratch::ScratchReclaimResultDto, String> {
+    let request = codegg::core::new_request(
+        "scratch-reclaim-1".into(),
+        CoreRequest::ScratchReclaim {
+            request: codegg::protocol::scratch::ScratchReclaimRequestDto {
+                tree: tree.to_string(),
+                apply,
+            },
+        },
+    );
+    let response = client
+        .request_bounded(request, SCRATCH_REPORT_TIMEOUT)
+        .await
+        .map_err(|error| {
+            format!(
+                "the running daemon does not support scratch reclaim ({error}); restart it to \
+                 upgrade"
+            )
+        })?;
+    match response {
+        CoreResponse::ScratchReclaim { result } => Ok(result),
+        CoreResponse::Error { code, message } => Err(format!("{code}: {message}")),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Print the daemon's verdict on one scratch tree.
+fn print_scratch_reclaim_result(result: &codegg::protocol::scratch::ScratchReclaimResultDto) {
+    println!(
+        "Scratch reclaim {}",
+        &result.digest[..12.min(result.digest.len())]
+    );
+    println!("  Verdict: {}", scratch_verdict_name(result.verdict));
+    println!("  Entries: {}", result.entry_count);
+    println!("  Size: {}", format_bytes(result.byte_count));
+    if result.quarantined {
+        println!("  Quarantined: the automatic path already refused this tree");
+    }
+    if let Some(refusal) = result.refusal {
+        println!(
+            "  Automatic-path refusal: {}",
+            scratch_refusal_name(refusal)
+        );
+    }
+    if result.dry_run {
+        println!("  Dry run: nothing was removed. Re-run with --apply to remove it.");
+    } else if result.removed {
+        println!("  Removed.");
+    }
+}
+
+/// The stable name of a reclaim verdict.
+fn scratch_verdict_name(
+    verdict: codegg::protocol::scratch::ScratchReclaimVerdictDto,
+) -> &'static str {
+    use codegg::protocol::scratch::ScratchReclaimVerdictDto;
+    match verdict {
+        ScratchReclaimVerdictDto::Reclaimable => "reclaimable",
+        ScratchReclaimVerdictDto::Refused => "refused",
+        ScratchReclaimVerdictDto::Leased => "leased (the tree is still in use)",
+        ScratchReclaimVerdictDto::Removed => "removed",
+        ScratchReclaimVerdictDto::Absent => "absent",
+    }
+}
+
+/// The stable name of a refusal reason.
+fn scratch_refusal_name(
+    refusal: codegg::protocol::scratch::ScratchReclaimRefusalDto,
+) -> &'static str {
+    use codegg::protocol::scratch::ScratchReclaimRefusalDto;
+    match refusal {
+        ScratchReclaimRefusalDto::SymbolicLink => "symbolic_link",
+        ScratchReclaimRefusalDto::NonRegularEntry => "non_regular_entry",
     }
 }
 
@@ -1886,6 +1988,36 @@ async fn main() -> Result<(), AppError> {
                                 eprintln!("Stale PID file found: {}", pid.trim());
                             }
                         }
+                    }
+                }
+                DaemonCommand::ScratchReclaim {
+                    tree,
+                    apply,
+                    endpoint,
+                    json,
+                } => {
+                    use codegg::core::instance::DaemonPaths;
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                    let client =
+                        codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                            .await
+                            .map_err(|error| {
+                                AppError::Other(anyhow::anyhow!(
+                                    "daemon is not running or unreachable: {error}"
+                                ))
+                            })?;
+                    let result = fetch_scratch_reclaim_result(&client, tree, *apply)
+                        .await
+                        .map_err(|message| AppError::Other(anyhow::anyhow!(message)))?;
+                    if *json {
+                        let encoded = serde_json::to_string_pretty(&result).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(
+                                "failed to encode the scratch reclaim result: {error}"
+                            ))
+                        })?;
+                        println!("{encoded}");
+                    } else {
+                        print_scratch_reclaim_result(&result);
                     }
                 }
                 DaemonCommand::ScratchUsage {

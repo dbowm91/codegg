@@ -341,12 +341,14 @@ nothing about a Windows host, where the Required backend is still absent.
 Closure: `plans/closure/managed-agent-scratch-native-qualification-corrective/001-status.md`.
 On Unix and Windows, shared-resource reclamation first atomically renames the
 managed directory to an opaque tombstone, validates its owner marker, and walks
-entries without following links. Unix quarantines symlinks, non-regular
-entries, and multiply-linked regular files. Windows checks the stable reparse
-attribute and quarantines reparse points; hardlinks are file names rather than
-recursive edges, so deleting a link under the tombstone only removes that link
-and leaves the outside file intact. Windows recursive removal uses the Rust
-standard library's handle-based implementation. A later retry recovers an
+entries without following links. Both platforms quarantine symlinks and
+non-regular entries; Windows additionally checks the stable reparse attribute
+and quarantines reparse points. A hardlink is a file name rather than a
+recursive edge, so deleting a link under the tombstone only removes that link
+and leaves the outside file intact — Unix used to refuse such a tree, which
+was residue of a fix applied to one platform only, and M007 removed it.
+Windows recursive removal uses the Rust standard library's handle-based
+implementation. A later retry recovers an
 orphaned tombstone after daemon interruption, and concurrent reclamation is
 serialized. Other platforms remain fail-closed. Session and run lifecycle
 reclaimers use this same owner-validated tombstone path.
@@ -362,6 +364,46 @@ entry rule, so a report cannot claim a tree is reclaimable when the validator
 would refuse it. The walk is bounded — it stops at a tree, entry, and depth
 budget and reports that it did — and it runs on a background timer, never on
 an agent hot path. It is served on the local daemon socket only.
+**Scratch retention sweep (M007).** The daemon reclaims a session's scratch
+tree once that session has been idle past the configured retention window
+(`scratch.retention_days`, 14 days by default). The decision reads durable
+timestamps only — the session's last activity — and never walks a tree, so the
+sweep performs no size traversal and never runs on the agent hot path. The
+lease is derived from durable state that already exists: an accepted turn
+admission receipt, a non-terminal agent run, or a non-terminal job. Each
+candidate is decided inside one `BEGIN IMMEDIATE` transaction, so a turn
+cannot be admitted between the decision and the reclaim. A **soft-deleted**
+session's tree does not wait out the retention window: the session is gone,
+and the sweep is the retry for the tree the event-driven reclaimer had to
+refuse because work was still running at delete time. A tree whose digest
+matches no durable session at all is an **orphan** and is reclaimed once it
+has been untouched for the orphan grace period (`scratch.orphan_grace_hours`,
+24 hours by default); the grace absorbs the window in which a tree exists
+before its durable session row is visible to the sweeper. The sweep reuses the
+owner-validated tombstone path, so it removes nothing it did not verify, and
+it adds no second lock for a tree the reclaim path already serializes. A pass
+is bounded three ways — the number of candidates it examines, the number of
+trees it reclaims, and a wall-clock budget — and a pass that hits a bound
+records which bound stopped it, so a truncated pass is never presented as a
+complete sweep. The policy is configurable (`scratch.enabled`,
+`scratch.retention_days`, `scratch.sweep_interval_minutes`,
+`scratch.orphan_grace_hours`), and every value is clamped upward at its floor
+rather than rejected. The daemon reads the policy once, at construction, so a
+policy change needs a daemon restart.
+**Operator disposition (M007).** A tree the automatic path refuses — one
+holding a planted symlink or a non-regular entry — stays parked under its
+tombstone, visible to `codegg daemon scratch-usage`.
+`codegg daemon scratch-reclaim --tree <digest>` is the operator's explicit
+way to dispose of it: a dry run by default, `--apply` to remove it. The
+operator path relaxes the **entry-content** refusals only — a link is removed
+by name, and `remove_dir_all` does not follow symbolic links, so the link's
+target is untouched. The ownership check, the containment check, and the
+owner-record check are unchanged, so the operator path can only ever remove a
+tree the daemon itself created and still owns. The lease is honoured exactly
+as the sweep honours it. Every attempt is audited as `scratch_reclaim`, with
+bounded metadata: the digest, the entry and byte counts, the verdict, the
+refusal reason, and the outcome. It is served on the local daemon socket only.
+
 Existing denied regular files with hardlink aliases cause the required launch
 to fail because path-based backends cannot distinguish the aliases. As before,
 paths are canonicalized so Seatbelt matches resolved paths such as

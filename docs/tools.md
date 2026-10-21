@@ -316,8 +316,12 @@ all durable runs and jobs are terminal; cleanup is deferred while work remains
 active and stops if the session is restored. The daemon resumes cleanup for
 deleted sessions after restart. Durable transcripts, run results, and Git
 worktrees live outside this disposable tree. The tree is measurable with
-`codegg daemon scratch-usage`; it is **not** yet swept by age or by size, so
-the growth of a never-deleted session's tree is still unbounded.
+`codegg daemon scratch-usage`, and the daemon sweeps it by age: a session's
+tree is reclaimed once the session has been idle past the retention window
+(`scratch.retention_days`, 14 days by default) — but not while an accepted
+turn, a non-terminal run, or a non-terminal job still owns that session. The
+sweep decides from durable timestamps and never walks a tree to decide, so it
+performs no size traversal.
 
 ## Testing and the scheduler
 

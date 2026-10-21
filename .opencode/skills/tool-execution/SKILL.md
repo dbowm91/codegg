@@ -42,7 +42,15 @@ and `write` only accept absolute paths beneath that session root. Cleanup is
 lease-aware: a terminal delegated run reclaims its own private root, a revoked
 shared resource is reclaimed after the last attempt lease releases, and a
 soft-deleted session's whole tree is reclaimed once its durable runs and jobs
-are terminal. The daemon resumes that cleanup after a restart. Scratch contents
+are terminal. The daemon resumes that cleanup after a restart. A bounded
+retention sweep reclaims a session's tree once the session has been idle past
+the configured retention window, and an orphan tree past its grace period —
+both only while the lease is clear, where the lease is an accepted turn
+admission receipt, a non-terminal run, or a non-terminal job. The sweep never
+runs on the agent hot path and never blocks a tool call. A tree the automatic
+path refuses is disposed of only by the explicit, audited
+`codegg daemon scratch-reclaim` action, which relaxes the entry-content
+refusals only and never the ownership or containment checks. Scratch contents
 remain disposable cache data that host cache maintenance may purge.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
