@@ -294,6 +294,13 @@ impl CoreDaemon {
             (None, None)
         };
 
+        // M006: the daemon-held scratch census. The walk is a bounded
+        // filesystem measurement, so it runs on a background timer and never
+        // on a request path or an agent hot path.
+        let scratch_census = Arc::new(super::daemon_scratch::ScratchCensus::new());
+        let scratch_census_handle =
+            super::daemon_scratch::spawn_census_refresh(Arc::clone(&scratch_census));
+
         let event_log = Arc::new(event_log);
         let notification_router = Arc::new(super::notification::NotificationRouter::new(
             super::notification::NotificationPolicy::from_config(&config),
@@ -797,6 +804,8 @@ impl CoreDaemon {
             human_shell_runs: Arc::new(crate::shell::daemon::HumanShellRunService::new(
                 scheduler.admission().clone(),
             )),
+            scratch_census,
+            _scratch_census_handle: Some(scratch_census_handle),
         }
     }
 

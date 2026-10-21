@@ -517,6 +517,18 @@ standard library's handle-based implementation. A later retry recovers an
 orphaned tombstone after daemon interruption, and concurrent reclamation is
 serialized. Other platforms remain fail-closed. Session and run lifecycle
 reclaimers use this same owner-validated tombstone path.
+**Scratch census (M006).** The daemon can measure its own disposable scratch
+tree on operator request: `codegg daemon scratch-usage` reports per-tree
+counts, sizes, ages, and the opaque digest that names each tree. The census
+is read-only by construction — it creates nothing, renames nothing, unlinks
+nothing, opens no file for reading, and never follows a link; only
+`symlink_metadata` and directory listing are used. Its report carries no
+absolute path, no file name, no file content, and no session identity: the
+digest is one-way by design. The census reuses the reclaim validator's own
+entry rule, so a report cannot claim a tree is reclaimable when the validator
+would refuse it. The walk is bounded — it stops at a tree, entry, and depth
+budget and reports that it did — and it runs on a background timer, never on
+an agent hot path. It is served on the local daemon socket only.
 Existing denied regular files with hardlink aliases cause the required launch
 to fail because path-based backends cannot distinguish the aliases. As before,
 paths are canonicalized so Seatbelt matches resolved paths such as

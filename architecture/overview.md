@@ -280,6 +280,14 @@ files (78 → 80), TUI state modules (31/32 → 32/33), storage layout
 version (79 → 82), CI guard scripts (53 → 57), and integration test files
 (267 → 268). The remaining rows were confirmed unchanged.
 
+The rows this milestone could affect were **remeasured again on 2026-10-21**
+after M006 added the scratch usage census: `CoreRequest` variants (259 → 260),
+`CoreResponse` variants (169 → 170), authorized operations (253 → 254), and
+integration test files (278 → 279). Each was re-measured against its own
+listed `Source` with the method the table has always used, and each was
+confirmed to have been correct before the change; the remaining rows were
+confirmed unchanged.
+
 The whole table was then **remeasured again on the merged tree** when the
 Eggwork worker branch was reconciled with `main`, because the two sides had
 measured some rows by different methods and the table is the single source
@@ -347,6 +355,27 @@ on the merged tree and none differed. The built-in slash-command row is
 unchanged for a second reason: `src/tui/command.rs` is byte-identical to the
 pre-merge tree.
 
+`main` then advanced again, to `84aa47528` (the M006 scratch usage census),
+and the branch was reconciled with it by a second merge on 2026-10-21. That
+advance is **not** count-neutral: it added a `CoreRequest` variant, a
+`CoreResponse` variant, an authorized operation, and an integration test file.
+Four rows therefore moved, and each was re-measured against its own listed
+`Source` on the merged tree — `CoreRequest` variants 260 → **261** (237 struct
++ 24 unit), `CoreResponse` variants 169 → **170**, authorized operations 244 →
+**245**, and integration test files 284 → **285**. The remaining rows were
+re-measured and did not move.
+
+The enum-variant measure was **calibrated, not assumed**: the counting method
+used here (struct variants and unit variants counted separately, attributes
+and comments stripped first — `#[derive(Clone, Debug)]` otherwise reads as
+variants) reproduces this table's published values exactly on the pre-merge
+tree — `CoreRequest` 260 = 236 struct + 24 unit, `CoreResponse` 169,
+`CoreEvent` 92, `ProjectionEvent` 47, `AppEvent` 60 — and only then was
+applied to the merged tree. The authorized-operations row keeps the
+`representative_requests()` measure pinned on 2026-10-21; `main`'s own
+published **254** used the superseded `operation_descriptor` measure and is
+not this row's measure.
+
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 87 | `architecture/*.md` |
@@ -356,11 +385,11 @@ pre-merge tree.
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 48 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 260 (236 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 169 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 261 (237 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 170 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 92 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 244 | `representative_requests()` (`crates/codegg-core/src/authorization/policy.rs`) — one representative request per operation, the list `operation_capability_matrix()` derives from; `operation_descriptor` is the per-request mapper, so its call-site count is not this row's measure |
+| Authorized operations | 245 | `representative_requests()` (`crates/codegg-core/src/authorization/policy.rs`) — one representative request per operation, the list `operation_capability_matrix()` derives from; `operation_descriptor` is the per-request mapper, so its call-site count is not this row's measure |
 | Identity newtypes | 19 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 168 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
@@ -371,7 +400,7 @@ pre-merge tree.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 284 | `tests/*.rs` |
+| Integration test files | 285 | `tests/*.rs` |
 | CI guard scripts | 62 | `scripts/check_*` |
 
 
@@ -638,7 +667,7 @@ codegg/
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
-├── tests/                      # Integration tests (284 files)
+├── tests/                      # Integration tests (285 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # Built-in agent TOML definitions
 │   ├── prompts/                # Agent prompt templates

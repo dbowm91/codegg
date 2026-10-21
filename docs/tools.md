@@ -315,7 +315,9 @@ When a session is soft-deleted, its complete scratch tree is reclaimed after
 all durable runs and jobs are terminal; cleanup is deferred while work remains
 active and stops if the session is restored. The daemon resumes cleanup for
 deleted sessions after restart. Durable transcripts, run results, and Git
-worktrees live outside this disposable tree.
+worktrees live outside this disposable tree. The tree is measurable with
+`codegg daemon scratch-usage`; it is **not** yet swept by age or by size, so
+the growth of a never-deleted session's tree is still unbounded.
 
 ## Testing and the scheduler
 

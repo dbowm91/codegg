@@ -935,6 +935,10 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "interactive_process_resume",
     "interactive_process_terminate",
     "interactive_process_remove",
+    // M006: the scratch census is a bounded read of the daemon's own
+    // disposable cache. It mutates nothing, so it does not earn a dedicated
+    // audit action; denial *is* audited upstream by `authorize_request`.
+    "scratch_usage",
 ];
 
 /// Map one daemon operation name to its structural audit action.

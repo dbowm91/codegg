@@ -1424,6 +1424,14 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::SessionCreate),
         ),
+        // M006: the scratch census reads the daemon's own disposable cache.
+        // No project linkage exists — a tree is addressed by an opaque digest
+        // that cannot be inverted to a session — so team principals fail
+        // closed and only the local owner is authorized. It is a bounded read
+        // of disposable state and mutates nothing, so it claims no capability.
+        R::ScratchUsage { .. } => {
+            OperationDescriptor::new("scratch_usage", ScopeKind::Opaque, None)
+        }
     }
 }
 
@@ -2448,6 +2456,9 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::WorkOrderBindRepository {
             work_order_id: String::new(),
             eggplan_plan_id: String::new(),
+        },
+        R::ScratchUsage {
+            request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
         },
     ]
 }
