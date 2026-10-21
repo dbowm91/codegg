@@ -305,20 +305,24 @@ stays owned by `plans/subsystems/windows-native-sandbox-roadmap.md`.
 
 The pull request is [#145](https://github.com/dbowm91/codegg/pull/145).
 
-The branch's code was validated on the head **`d5b519f4`**, and every job on
-it is green except the one that is already red on `main`:
+The branch's tip was validated on head **`3e8e9ec2`** — the head that
+carries `main`'s `17b0b106` — and every job on it is green except the one
+that is already red on `main`:
 
 | Run | Head | Job | Result |
 |---|---|---|---|
+| **`39547389536`** | `3e8e9ec2` | `CI` | **success** — all 40 guard steps, workspace Clippy, and the workspace tests: **15665 run, 15665 passed, 7 skipped** (352 s) |
+| **`39547389563`** | `3e8e9ec2` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
+| `39547389535` | `3e8e9ec2` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
 | **`39543436859`** | `d5b519f4` | `CI` | **success** — all 40 guard steps, workspace Clippy, and the workspace tests: **15665 run, 15665 passed, 7 skipped** (525 s) |
 | **`39543436858`** | `d5b519f4` | `Windows process launcher` | **success** — every Windows step green, including the managed scratch lifecycle step: **26 passed, 0 failed** |
 | `39543436868` | `d5b519f4` | `Desktop E2E` | **failure** — pre-existing on `main`; see below |
 
-`main` was merged into the branch as **`6d2d40b4`** after these runs.
-`main` had advanced to `17b0b106`, and the merge resolves exactly one
-conflict, in `plans/registry.md` — a plans file. It touches **no Rust code**,
-so the code these runs validated is the code the branch carries. The commits
-after `d5b519f4` change only the plans and this closure record.
+`main` was merged into the branch as **`6d2d40b4`**, before that head. The
+merge resolves exactly one conflict, in `plans/registry.md` — a plans file —
+and touches **no Rust code**. The commit that records these runs changes
+only this closure record, so the code these runs validated is the code the
+branch carries.
 
 The same two jobs were green on the earlier heads as well, with identical
 Rust code: **`67d88db9`** (`CI` run `39529050947`, 15643/15643/7; Windows run
