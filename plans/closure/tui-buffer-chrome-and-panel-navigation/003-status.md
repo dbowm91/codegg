@@ -76,25 +76,41 @@ drawn and leave the view claiming a run is live.
 
 ## 3. What was verified
 
-- `cargo nextest run --workspace --locked --profile ci --no-fail-fast` —
-  **15,606 tests run: 15,601 passed, 4 failed, 1 timed out, 7 skipped.** Every
-  test this milestone touched passes. The five non-passing ones are the
-  environment's, not this change's: the two `core::daemon_refresh` projection
-  tests fail with `InvalidRootPath("/tmp")` on the untouched base commit too,
-  `agent::asset_refresh::tests::same_scope_requests_coalesce_to_one_publication`
-  is the 300 s coalescing wait that the machine's load turns into a timeout,
-  and the two `tui::commands::interactive_terminal` PTY-attach tests are
-  load-flaky — three consecutive runs of that module alone gave 37/37, 36/37
-  and 37/37 with a *different* test failing each time, and both fail before any
-  key is routed.
+On the reconciled head (`45ffe2acb`, merged with `origin/main` at `2c1953347`):
+
+- **Hosted CI run `39669710537` — the `verify` job passed** (21m4s): `cargo fmt
+  --check --all`, `cargo clippy --workspace --all-targets --locked -- -D
+  warnings`, and the workspace test suite. The Linux jobs
+  (`btrfs-snapshot`, `native-probe-contract`, `protected-mount`,
+  `restricted-userns-fails-closed`) passed too.
+- `scripts/verify.sh quick` — **"Quick verification passed."**, all twelve TUI
+  guards included.
+- `cargo fmt --all -- --check` — clean.
 - `cargo nextest run -E 'binary(tui_main_buffer) + binary(tui_composer_keymap_consistency)'
   — green, including the rewritten `tests/tui_main_buffer.rs` and
   `tests/tui_composer_keymap_consistency.rs`.
-- `cargo fmt --all -- --check` — green.
-- The twelve TUI guards (`check_tui_editor_*`, `check_tui_composer_key_authority`,
-  `check_tui_transport_authority`, `check_daemon_listing_authority`) — green.
-- `cargo clippy --workspace --all-targets --locked -- -D warnings` — green.
-- `scripts/verify.sh quick` — green.
+- `cargo nextest run --workspace --locked --profile ci --no-fail-fast` —
+  **15,769 tests run, 15,763 passed, 5 failed, 1 timed out, 8 skipped**, every
+  test this milestone touched green. The six non-passing are not this
+  milestone's, and each is in a file this branch does not touch: the two
+  `core::daemon_refresh` projection tests fail with `InvalidRootPath("/tmp")`
+  on the untouched base commit too, the 300 s
+  `agent::asset_refresh` coalescing wait becomes a timeout under load, the
+  `managed_process` OfflineRequired refusal is macOS-only, and the two
+  `scratch_cache_root_contract` tests are main's new ones resolving the
+  scratch root under the tempdir's `HOME`.
+- The twelve TUI guards (`check_tui_editor_*`,
+  `check_tui_composer_key_authority`, `check_tui_transport_authority`,
+  `check_daemon_listing_authority`) — green.
+
+On this macOS host the merged tree reports eight dead-code errors under
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, all in
+main's `#[cfg(target_os = "linux")]` code (`src/lsp/m004.rs`,
+`src/managed_process.rs`, `src/security/sandbox.rs`,
+`src/interactive_process.rs`): it compiles on macOS but nothing calls it.
+Linux CI compiles the same files with their call sites present and is green.
+Those files are byte-identical between this head and `origin/main`, so the
+warnings are main's, inherited through the reconcile.
 
 ## 4. Recorded deviations
 
