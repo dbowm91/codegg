@@ -65,6 +65,17 @@ pub struct CoreDaemon {
     /// Finite human shell runs execute on this daemon and share scheduler
     /// process admission. State/output are ephemeral and owner-scoped.
     pub human_shell_runs: Arc<crate::shell::daemon::HumanShellRunService>,
+    /// M006: the daemon-held scratch usage snapshot.
+    ///
+    /// The census is a bounded filesystem walk, so it is never run on a
+    /// request path by default and never on an agent hot path. The daemon
+    /// refreshes the snapshot on a timer and answers from it; a caller may
+    /// ask for exactly one fresh walk instead.
+    pub scratch_census: Arc<super::daemon_scratch::ScratchCensus>,
+    /// The M006 census refresh task. Held so the daemon keeps it alive for
+    /// its whole lifetime; it is a pure background measurement and owns no
+    /// authority.
+    pub _scratch_census_handle: Option<tokio::task::JoinHandle<()>>,
     /// Provider Connections Milestone 3: daemon-owned session selection
     /// service. Reads and writes the connection/model selection on the
     /// session row through the typed core crate; never mutates provider
@@ -4057,6 +4068,11 @@ impl CoreDaemon {
             // `Goals` above and is not reachable here.
             super::daemon_family::DaemonRequestFamily::Lsp => {
                 Box::pin(self.handle_lsp_request(payload, trusted_client_id)).await
+            }
+            // M006: the scratch census is measurement only. It reads the
+            // daemon's own disposable cache and mutates nothing.
+            super::daemon_family::DaemonRequestFamily::Scratch => {
+                Box::pin(self.handle_scratch_request(payload)).await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

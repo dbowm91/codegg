@@ -39,7 +39,9 @@ which is a credential-denied root under macOS Seatbelt. Cache contents are
 disposable and may be removed by host cache maintenance. Its directory
 name is a SHA-256 digest of the host session identity; allocation is lazy,
 idempotent across reconnect/restart, refuses symlinked path components, and
-uses mode 0700 on Unix. Windows inherits the per-user cache-root ACL and is
+uses mode 0700 on Unix. The tree is observable with `codegg daemon
+scratch-usage`, a read-only measurement that changes nothing and does not
+change this contract. Windows inherits the per-user cache-root ACL and is
 not claimed as a native scratch-isolation guarantee. The broker-projected session identity is
 the authority; command arguments and ambient temp variables cannot select a
 scratch directory. `ManagedProcessService` applies `CODEGG_SCRATCH_DIR`,

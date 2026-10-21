@@ -1953,6 +1953,13 @@ pub enum CoreResponse {
         triggers: Vec<crate::work_order::TaskTriggerMetadataDto>,
         truncated: bool,
     },
+    /// The daemon's scratch usage report (M006).
+    ///
+    /// Carries counts, sizes, ages, and opaque digests only: never an
+    /// absolute path, never file content, never a session identity.
+    ScratchUsage {
+        report: crate::scratch::ScratchUsageReportDto,
+    },
 }
 
 /// Bounded projection metadata returned by the durable session promotion
@@ -3666,6 +3673,12 @@ pub enum CoreRequest {
     WorkOrderTriggerRevoke {
         trigger_id: String,
     },
+    /// Measure the daemon-owned scratch tree (M006).
+    ///
+    /// The request names nothing: the daemon reports the trees it owns.
+    ScratchUsage {
+        request: crate::scratch::ScratchUsageRequestDto,
+    },
 }
 
 /// A TUI-chosen extended-thinking setting for one turn.
@@ -3810,6 +3823,22 @@ impl CoreRequest {
                 // `cggt_...` plaintext, so issuance stays on the
                 // secret-safe local surface (no remote secret delivery).
                 | Self::TeamTokenCreate { .. }
+        )
+    }
+
+    /// Whether this request is served only on the local authenticated socket.
+    ///
+    /// The remote HTTP/WS surface is reachable by a remote client that has
+    /// authenticated to the server but is not the machine's local owner. The
+    /// daemon-owned scratch tree is local-owner state, so its operations
+    /// never leave the local socket. The remote transport denies with
+    /// `local_operation_remote_denied`.
+    pub fn is_local_only(&self) -> bool {
+        matches!(
+            self,
+            // M006: the scratch census measures the local owner's disposable
+            // cache.
+            Self::ScratchUsage { .. }
         )
     }
 }
