@@ -146,3 +146,11 @@ Two independent CodeGG versions can run headlessly and concurrently via ACP on t
 | M003 | closed | `implementation/harness-lab/003-trajectory-evaluation-and-ledger.md` | `closure/harness-lab/003-status.md` | — |
 | M004 | conditionally closed | `implementation/harness-lab/004-opencode-proposer-and-candidate-gates.md` | `closure/harness-lab/004-status.md` | accepted correctness-fix trace and live proposal/correction evidence; full interrupted qualification receipt |
 | M005 | conditionally closed | `implementation/harness-lab/005-optimization-controller-and-agent-pilot.md` | `closure/harness-lab/005-status.md` | Muse Spark terminal usage missing on Task 1; complete Task 2 pair after enforceable usage accounting |
+
+## 13. Post-pilot corrective successor (2026-10-21)
+
+The original M001–M003 closure records remain strictly closed; M004 and M005 remain **conditionally closed** on their original missing evidence. The developer-only reliability, scored improvement, real OpenCode acceptance and sustained pilot gaps are now registered as **C001–C004** in `plans/subsystems/harness-lab-post-pilot-corrective-addendum.md` with independently executable plans in `plans/implementation/harness-lab-post-pilot-corrective/`.
+
+C001 (failed-turn evidence / enforceable budget admission) and C002 (objective scoring / end-to-end interruption recovery) are ready. C003 (real proposer and accepted defect) is hard-blocked on C001+C002; C004 (Task 2 and sustained tool-rich pilot) is blocked on C003 for full autonomy qualification and on C001 for any live provider call. The prior pilot receipt is immutable and was not reinterpreted as full success. No VM/container requirement, no permission prompts for explicitly authorized test subjects, and no automatic Git merge/push are introduced.
+
+This is a successor line, not a retroactive change to the M004/M005 closure evidence. Only independently qualified corrective closure artifacts may advance those conditions.
