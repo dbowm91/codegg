@@ -181,6 +181,7 @@ impl AgentLoop {
             // the worker narrows to the child profile.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            process_admission: None,
         };
         tokio::spawn(async move {
             // scheduler-audit: standalone-compat

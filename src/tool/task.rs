@@ -2180,6 +2180,10 @@ impl TaskTool {
                     // Inherit parent by default; worker narrows for
                     // read-only/shared paths and enforces the ceiling.
                     sandbox_profile: None,
+                    // M005 corrective C005: a nested subagent inherits the
+                    // parent's process admission policy, so it can never be
+                    // handed a wider profile than its parent.
+                    process_admission: ctx.and_then(|c| c.process_admission.clone()),
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

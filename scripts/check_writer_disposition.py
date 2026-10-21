@@ -72,6 +72,9 @@ DISPOSITIONS = {
 # How a root's writes are mediated. `none` is a claim: the root's
 # disposition must say why no checkout mediation applies.
 MEDIATIONS = {
+    # M005 C005: the process admission gate. A denied-process surface is
+    # refused by the process gate, not by a checkout-writer mediation.
+    "process-gate",
     "writer-fence",   # the C003 native writer fence
     "checkout-gate",  # the C004 checkout reservation gate
     "none",           # no checkout mediation claimed

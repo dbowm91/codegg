@@ -267,14 +267,24 @@ pub struct DaemonHookPin {
 ///
 /// One row per daemon gate that owns a live audit action outside the
 /// daemon operation mapping.
-pub const DAEMON_HOOK_OWNER_PINS: &[DaemonHookPin] = &[DaemonHookPin {
-    action: "checkout_writer_refusal",
-    owner_file: "src/core/checkout_mediation.rs",
-    emit_symbol: "emit_checkout_writer_refusal",
-}];
+pub const DAEMON_HOOK_OWNER_PINS: &[DaemonHookPin] = &[
+    DaemonHookPin {
+        action: "checkout_writer_refusal",
+        owner_file: "src/core/checkout_mediation.rs",
+        emit_symbol: "emit_checkout_writer_refusal",
+    },
+    // M005 C005: the process admission gate refuses a process launch
+    // before the process exists, so the refusal has no daemon operation
+    // mapping either. The gate owns the live evidence.
+    DaemonHookPin {
+        action: "process_denial",
+        owner_file: "src/tool/process_admission.rs",
+        emit_symbol: "emit_process_denial",
+    },
+];
 
 /// Actions that must have at least one owner pin in this table.
-pub const PINNED_ACTIONS: &[&str] = &["checkout_writer_refusal"];
+pub const PINNED_ACTIONS: &[&str] = &["checkout_writer_refusal", "process_denial"];
 
 #[cfg(test)]
 mod tests {

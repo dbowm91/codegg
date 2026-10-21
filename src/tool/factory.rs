@@ -65,6 +65,12 @@ pub struct SessionToolContext {
     pub memory_store: Option<Arc<codegg_core::memory::MemoryStore>>,
     pub project_identity: Option<String>,
     pub extension_catalog: Option<Arc<crate::plugin::marketplace::MarketplaceService>>,
+    /// M005 corrective C005: the process admission policy for this session's
+    /// checkout scope.
+    ///
+    /// `None` leaves the session on the ordinary profile, where processes
+    /// are unrestricted.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
@@ -118,6 +124,7 @@ pub fn build_session_tool_registry(
         memory_store,
         project_identity,
         extension_catalog,
+        process_admission,
     } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
     let preview_apply_locks = workspace_locks.clone();
@@ -201,6 +208,10 @@ pub fn build_session_tool_registry(
         memory_store,
         project_identity,
         extension_catalog,
+        // M005 corrective C005: carry the process admission policy into the
+        // registry so the broker's final dispatch and every tool's
+        // pre-spawn check see the same authority.
+        process_admission: process_admission.clone(),
     });
 
     // M005: register the model-facing checked LSP apply adapter only when

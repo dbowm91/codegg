@@ -393,6 +393,100 @@ claimed by exactly one manifest root**. Removing a mediation call, or a sink's
 manifest row, fails the guard — proved on the real tree by injected
 violations, not only in the self-test.
 
+## The process deny contract (C005)
+
+C003 mediates the model's **native** writers and C004 mediates CodeGG's
+**non-broker** writers. Neither can mediate a **process**, and the reason is
+not a gap in the implementation but a property of the thing being mediated: a
+native file write names the file it is about to touch, so it can be held
+inside a checkout and serialized against another writer. A process does not.
+`make test`, a Python script, a formatter, a test runner and an interactive
+PTY all name a *program*, and the program's write set is decided at runtime,
+by whatever the program decides to do.
+
+The only honest containment for such a program is a process group or a job
+object — and CodeGG's managed process group is explicitly escaped by a
+descendant that calls `setsid`. So the restricted shared-checkout profile
+does not try to contain a process. **It refuses to start one.**
+
+### The authority
+
+`crates/codegg-core/src/process_admission.rs` owns the durable state
+machine, exactly as `checkout_reservation.rs` does for the writer half. It
+answers one question from durable state: *is this checkout reserved by a live
+agent-run group?* The derivation is the C004 one — the canonical checkout
+identity, the managed worktree record, the lease owner run, the durable
+run-group record — so the writer gate and the process gate can never
+disagree about whether a checkout is shared.
+
+The scope is the **daemon-resolved** checkout root of the execution, never a
+model-supplied working directory. A model that points a process at `/tmp` does
+not thereby leave the reserved checkout: the program's write set is
+unconstrained either way, so the decision is made about the *execution*, not
+about the *command*.
+
+An authority that cannot answer **fails closed**: absence of an answer is
+not an admission.
+
+### The refusal
+
+`src/tool/process_admission.rs` owns the tool-layer contract, and the tool
+layer never imports `crate::core`. The refusal is a typed
+`ToolError::ProcessDenied { kind, reason, recovery }` — deliberately **not** a
+`ToolError::Permission`. A permission failure is a judgement about *this
+caller*; a process denial is a fact about *this checkout*. The caller's own
+authorization decision stands and is still recorded; the refusal adds a
+profile fact on top of it. The recovery path is stable: use an isolated
+checkout instead.
+
+`src/tool/process_capability.rs` decides what is a process surface, by
+**effective runtime effect** rather than by advertised metadata. A plugin
+that describes itself as read-only and is process-backed is still a process
+surface, and the plugin adapter classifies it by its runtime kind.
+
+### Where the refusal happens
+
+* the **tool boundary** (the `Tool` trait's default `execute_structured`) and
+  each process-capable tool that overrides it;
+* the **broker's final dispatch**, after the permission and authority
+  decisions and before dispatch — so a tool that forgets to consult the gate
+  is still refused;
+* the **managed-process primitive**, above `prepare_launch_argv`, where the
+  real executable is still in scope;
+* the **scheduler's submission boundary** (per job kind) and its **final
+  executors**, so a job admitted while the checkout was free and dispatched
+  after it became reserved is still refused;
+* the **Tool Program**, which inherits the narrow profile of the execution
+  that scheduled it, and the **nested subagent**, which inherits it too;
+* the **PTY service**, the **human shell**, the **shell runtime** and the
+  **process-backed plugin adapter**.
+
+### The live persistent-process registry
+
+A process that was started *before* the checkout became shared keeps the
+authority it had. Rather than pretend it is gone, the authority keeps a
+registry of live persistent processes and their checkout roots, and a
+reservation's **preflight** is refused while one is live in the affected
+checkout. The refusal never kills the process: the process's lifetime
+belongs to its own owner.
+
+### The durable deny event
+
+`AuditAction::ProcessDenial` is the durable record of a refusal. It is
+attributed to the transport-bound principal, carries the M003 decision
+provenance, and names the refused capability, the reason, the group and the
+worktree. It carries no path, no command line and no file body. See
+`architecture/audit.md`.
+
+### The guard
+
+`scripts/check_process_denial.py` is the static backstop. Every
+denied-process root in `docs/writer-disposition.toml` must declare how it is
+denied — a site and its markers, or an explicit `denial_status = "open"`
+with a recorded reason — and the code's capability table must agree with the
+manifest. A surface that lost its refusal fails the guard, and the guard's
+self-test proves it by injecting violations into a copy of the tree.
+
 ## What This Does Not Claim
 
 - **Not a filesystem exclusion.** The permit coordinates CodeGG's own writers.
@@ -414,7 +508,20 @@ violations, not only in the self-test.
   rather than waiting for a product path to exist. C004's evidence is in
   `tests/checkout_reservation_c004.rs` (through a real `CoreDaemon`) and
   `tests/checkout_reservation_c004_http.rs` (through a real HTTP route), over
-  a temporary Git checkout.
+  a temporary Git checkout. C005's evidence is in
+  `tests/process_denial_c005.rs`, over the same reserved-checkout fixture.
+- **Not a containment of a process CodeGG already started.** C005 refuses a
+  launch; it does not stop a program that was started before the checkout
+  became shared. The live persistent-process registry and the reservation
+  preflight answer that case by refusing the *reservation* while such a
+  program is live.
+- **Not a claim about every persistent service.** Three surfaces are
+  recorded as explicit open items in `docs/writer-disposition.toml` rather
+  than implied: the local MCP stdio client launch, the egglsp language-server
+  launch and the shell-command hook adapter. Each is a daemon-scoped service
+  with no checkout scope CodeGG can resolve at its launch site. The closure
+  record `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md`
+  §6 states what is and is not claimed for each.
 
 ## Verification
 

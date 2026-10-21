@@ -131,13 +131,21 @@ pub enum AuditAction {
     /// for the non-broker writer surface — the side that never reaches the
     /// writer permit store because it is refused before any effect.
     CheckoutWriterRefusal,
+    /// M005 C005: a process launch was refused by the restricted
+    /// shared-checkout profile, before the process existed.
+    ///
+    /// Distinct from `authorization_decision`: the caller's authority was
+    /// never in question. The refusal is a fact about the *checkout* — it
+    /// is shared by a live agent-run group, and a shared checkout admits
+    /// no unqualified process.
+    ProcessDenial,
     #[serde(other)]
     Unknown,
 }
 
 impl AuditAction {
     /// Every known action in canonical order.
-    pub const ALL: [&'static str; 28] = [
+    pub const ALL: [&'static str; 29] = [
         "authentication",
         "authorization_decision",
         "membership_change",
@@ -166,6 +174,7 @@ impl AuditAction {
         "work_order_lifecycle",
         "human_shell_run",
         "checkout_writer_refusal",
+        "process_denial",
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -198,6 +207,7 @@ impl AuditAction {
             Self::WorkOrderLifecycle => "work_order_lifecycle",
             Self::HumanShellRun => "human_shell_run",
             Self::CheckoutWriterRefusal => "checkout_writer_refusal",
+            Self::ProcessDenial => "process_denial",
             Self::Unknown => "unknown",
         }
     }
@@ -233,6 +243,7 @@ impl AuditAction {
             "work_order_lifecycle" => Self::WorkOrderLifecycle,
             "human_shell_run" => Self::HumanShellRun,
             "checkout_writer_refusal" => Self::CheckoutWriterRefusal,
+            "process_denial" => Self::ProcessDenial,
             _ => {
                 return Err(AuditError::UnknownAction(value.to_owned()));
             }

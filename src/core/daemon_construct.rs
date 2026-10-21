@@ -363,12 +363,26 @@ impl CoreDaemon {
         // checkout). A local-only daemon has neither a durable worktree
         // nor a durable group, so it can never share a checkout and has
         // nothing to refuse.
-        let checkout_mediator = super::checkout_mediation::CheckoutMediator::new(Some(
+        //
+        // M005 corrective C005 shares this one reservation authority with
+        // the process admission service: both must answer from the same
+        // durable state, or a checkout could be "unreserved" to the writer
+        // gate and "reserved" to the process gate.
+        let checkout_reservations =
             codegg_core::checkout_reservation::CheckoutReservationService::new(
                 worktree_service.clone(),
                 Some(deps.run_group_service.clone()),
-            ),
-        ));
+            );
+        let checkout_mediator =
+            super::checkout_mediation::CheckoutMediator::new(Some(checkout_reservations.clone()));
+        // M005 corrective C005: the process admission authority. It reads
+        // the same reservation state and additionally tracks the live
+        // persistent processes, so a reservation can be refused while a
+        // process started under an older authority is still running.
+        let process_admission = codegg_core::process_admission::ProcessAdmissionService::new(
+            Some(checkout_reservations.clone()),
+            codegg_core::process_admission::PersistentProcessRegistry::new(),
+        );
         // Keep `deps.workspace_services` in sync so callers reading the
         // field observe the active registry.
         let mut deps = deps;
@@ -539,6 +553,12 @@ impl CoreDaemon {
                 deps.daemon_generation.clone(),
             ),
         };
+        // M005 corrective C005: install the process admission authority on
+        // the submission boundary and on the scheduler, so a process-class
+        // job is refused at submission *and* re-checked at the final
+        // executor.
+        submission.set_process_admission(process_admission.clone());
+        scheduler.set_process_admission(process_admission.clone());
         deps.submission = Some(submission.clone());
         install_job_lifecycle_projection(
             &scheduler,
@@ -766,6 +786,7 @@ impl CoreDaemon {
             workspace_services,
             worktree_service,
             checkout_mediator,
+            process_admission: process_admission.clone(),
             _worktree_reconcile_handle: worktree_reconcile_handle,
             _writer_permit_reconcile_handle: writer_permit_reconcile_handle,
             eggpool_provisioner,
@@ -785,13 +806,23 @@ impl CoreDaemon {
             // interactive spawns draw from the same process-slot
             // accounting as durable work (M001 permit contract).
             interactive_processes: Arc::new(
+                // M005 corrective C005: a PTY is a persistent process, so
+                // its launch is refused under the restricted shared
+                // profile.
                 crate::interactive_process_attach::InteractiveProcessProtocol::new(
                     scheduler.admission().clone(),
-                ),
+                )
+                .with_process_admission(process_admission.clone()),
             ),
-            human_shell_runs: Arc::new(crate::shell::daemon::HumanShellRunService::new(
-                scheduler.admission().clone(),
-            )),
+            human_shell_runs: Arc::new({
+                // M005 corrective C005: a human-originated shell command is
+                // a process launch and is refused under the restricted
+                // shared profile.
+                let mut human_shell =
+                    crate::shell::daemon::HumanShellRunService::new(scheduler.admission().clone());
+                human_shell.set_process_admission(process_admission.clone());
+                human_shell
+            }),
         }
     }
 

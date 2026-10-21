@@ -156,12 +156,30 @@ impl CheckoutReservationService {
         &self,
         worktree_id: &WorktreeId,
     ) -> Result<CheckoutReservation, CheckoutReservationError> {
+        let record =
+            self.worktree_record(worktree_id)
+                .await?
+                .ok_or(CheckoutReservationError::Lookup(
+                    "worktree record is unavailable".to_owned(),
+                ))?;
+        self.reservation_for_record(&record).await
+    }
+
+    /// The durable record of a known managed checkout.
+    ///
+    /// A checkout that is not a managed worktree has no record, and the
+    /// caller gets `None` rather than an error: an unmanaged directory is
+    /// simply not a managed checkout.
+    pub async fn worktree_record(
+        &self,
+        worktree_id: &WorktreeId,
+    ) -> Result<Option<WorktreeRecord>, CheckoutReservationError> {
         let record = self
             .worktrees
             .get(worktree_id)
             .await
             .map_err(|error| CheckoutReservationError::Lookup(error.to_string()))?;
-        self.reservation_for_record(&record).await
+        Ok(Some(record))
     }
 
     /// The managed checkout that contains `path`, if any.

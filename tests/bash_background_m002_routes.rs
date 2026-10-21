@@ -104,6 +104,7 @@ fn ctx_for(session: &str, invocation: &str) -> ToolExecutionContext {
         program_contract_snapshot: None,
         sandbox_profile: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 

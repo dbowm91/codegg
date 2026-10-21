@@ -43,6 +43,12 @@ pub struct AgentLoopBuildInput {
     /// provider connection revision.
     pub credential_observer:
         Option<crate::agent::provider_qualification::SharedProviderCredentialObserver>,
+    /// M005 corrective C005: the process admission policy for this turn's
+    /// checkout scope.
+    ///
+    /// Built by the daemon over the daemon-resolved workspace root.
+    /// `None` leaves the turn on the ordinary profile.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// Permission rules declared by the agent this loop will treat as current.
@@ -93,6 +99,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.execution.workspace_root.clone(),
         input.session_id,
         writer_fence,
+        input.process_admission.clone(),
     );
     agent_loop.set_turn_id(input.turn_id);
     agent_loop.set_provider_registry(input.provider_registry);

@@ -340,21 +340,23 @@ def check_executor_hook_table_is_authoritative() -> bool:
 
 
 def check_daemon_hook_table_is_authoritative() -> bool:
-    """M005 C004: the daemon-gate live hook table is exact and pinned.
+    """M005 C004/C005: the daemon-gate live hook table is exact and pinned.
 
     The checkout mediation gate refuses a non-broker writer before its
-    effect. The refused operation never happened, so its action has no
-    daemon operation mapping; the gate owns the live evidence instead. The
-    table must therefore name exactly the mediated refusal, the row must be
-    live_mapped, and the owner pin must resolve to a file that still holds
-    the emit symbol.
+    effect, and the process admission gate refuses a process launch before
+    the process exists. Neither refused operation happened, so neither action
+    has a daemon operation mapping; the gates own the live evidence instead.
+    The table must therefore name exactly those two refusals, each row must
+    be live_mapped, and each owner pin must resolve to a file that still
+    holds the emit symbol.
     """
     source = _read(INSTR_MODULE)
     ok = True
     daemon = _daemon_hook_actions(source)
-    if daemon != ["checkout_writer_refusal"]:
+    expected_daemon = ["checkout_writer_refusal", "process_denial"]
+    if daemon != expected_daemon:
         print(
-            "  FAIL: daemon hook table must be [checkout_writer_refusal], got "
+            f"  FAIL: daemon hook table must be {expected_daemon}, got "
             f"{daemon}"
         )
         return False
@@ -365,12 +367,13 @@ def check_daemon_hook_table_is_authoritative() -> bool:
             ok = False
     pairs = _instrumented_pairs()
     mapped_actions = {action for _, action in pairs}
-    if "checkout_writer_refusal" in mapped_actions:
-        print(
-            "  FAIL: checkout_writer_refusal must not have a daemon operation "
-            "mapping; the refused operation never ran"
-        )
-        ok = False
+    for action in daemon:
+        if action in mapped_actions:
+            print(
+                f"  FAIL: {action} must not have a daemon operation mapping; "
+                "the refused operation never ran"
+            )
+            ok = False
     future = set(_future_distributed_actions(source))
     for action in daemon:
         if action in future:

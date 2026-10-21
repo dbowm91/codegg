@@ -102,6 +102,7 @@ fn program_ctx(
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 
@@ -154,6 +155,7 @@ fn agent_ctx(workspace: &Path) -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 

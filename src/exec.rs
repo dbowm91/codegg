@@ -192,6 +192,9 @@ impl ExecMode {
             exec_workspace_root,
             invocation_session_id.clone(),
             writer_fence,
+            // The standalone exec path owns no daemon scope, so there is no
+            // reservation to violate and processes stay unrestricted.
+            None,
         );
         loop_instance.setup_question_channel_for_exec();
         if let Some(policy) = &self.policy {

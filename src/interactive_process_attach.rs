@@ -427,7 +427,11 @@ impl From<InteractiveError> for InteractiveAttachError {
             | InteractiveError::WorkspacePolicy(_) => {
                 InteractiveAttachError::InvalidRequest("invalid create parameters")
             }
-            InteractiveError::AdmissionBlocked(_)
+            // M005 C005: a process refusal is a refusal, not a transport
+            // fault. It is reported as an upstream failure with a
+            // secret-free summary, exactly like a refused spawn.
+            InteractiveError::ProcessDenied(_)
+            | InteractiveError::AdmissionBlocked(_)
             | InteractiveError::AdmissionImpossible(_)
             | InteractiveError::PlatformUnsupported { .. }
             | InteractiveError::SpawnFailed(_)
@@ -445,6 +449,9 @@ impl From<InteractiveError> for InteractiveAttachError {
 /// environment content never cross into responses or logs.
 fn strip_interactive_details(error: &InteractiveError) -> String {
     match error {
+        InteractiveError::ProcessDenied(_) => {
+            "the restricted shared-checkout profile refused the launch".to_string()
+        }
         InteractiveError::AdmissionBlocked(_) => {
             "scheduler admission refused the spawn".to_string()
         }
@@ -540,6 +547,20 @@ impl InteractiveProcessProtocol {
             service: Arc::new(InteractiveProcessService::new(admission)),
             attachments: Arc::new(InteractiveAttachmentRegistry::new()),
         }
+    }
+
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority on the PTY engine.
+    ///
+    /// A PTY is a persistent process: it outlives the request that opened
+    /// it. Under the restricted shared-checkout profile the launch is
+    /// refused before the child exists.
+    pub fn with_process_admission(
+        self,
+        service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) -> Self {
+        self.service.set_process_admission(service);
+        self
     }
 
     /// Underlying M001 engine (shutdown coordination, diagnostics).

@@ -74,12 +74,41 @@ pub enum JobSubmissionError {
     InvalidPayload(String),
     #[error("active goal lookup failed: {0}")]
     Goal(String),
+    /// M005 corrective C005: a process-class job was refused because the
+    /// target checkout is reserved by a live agent-run group.
+    ///
+    /// The refusal happens at submission, before the job is durably
+    /// created, so a refused submission leaves no job row and no attempt.
+    #[error("process-class job refused: {0}")]
+    ProcessDenied(String),
 }
 
 #[derive(Clone)]
 struct IdempotentSubmission {
     fingerprint: String,
     job_id: JobId,
+}
+
+/// Whether a job kind starts an OS process.
+///
+/// The classification is by **job kind**, which is the only thing the
+/// submission boundary knows. A job that starts no process — an agent
+/// turn, a subagent, a research job — is never refused on the process
+/// ground, because the refusal is about the capability and not about the
+/// checkout.
+fn is_process_class_job(kind: codegg_core::jobs::JobKind) -> bool {
+    use codegg_core::jobs::JobKind;
+    matches!(
+        kind,
+        JobKind::Build
+            | JobKind::Test
+            | JobKind::Lint
+            | JobKind::Format
+            | JobKind::Shell
+            | JobKind::ManagedProcess
+            | JobKind::Python
+            | JobKind::ToolProgram
+    )
 }
 
 /// Single production facade for durable job creation and scheduler enqueue.
@@ -94,6 +123,13 @@ pub struct JobSubmissionService {
     goal_store: Option<Arc<codegg_core::goal::GoalStore>>,
     idempotency: Mutex<HashMap<SubmissionKey, IdempotentSubmission>>,
     created_sink: parking_lot::RwLock<Option<tokio::sync::mpsc::Sender<JobRecord>>>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// `None` means the daemon has no durable reservation authority, so no
+    /// checkout is ever reserved and no submission is refused on this
+    /// ground.
+    process_admission:
+        parking_lot::RwLock<Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>>,
 }
 
 impl JobSubmissionService {
@@ -111,6 +147,7 @@ impl JobSubmissionService {
             goal_store: None,
             idempotency: Mutex::new(HashMap::new()),
             created_sink: parking_lot::RwLock::new(None),
+            process_admission: parking_lot::RwLock::new(None),
         })
     }
 
@@ -132,6 +169,7 @@ impl JobSubmissionService {
             goal_store: Some(goal_store),
             idempotency: Mutex::new(HashMap::new()),
             created_sink: parking_lot::RwLock::new(None),
+            process_admission: parking_lot::RwLock::new(None),
         })
     }
 
@@ -147,6 +185,20 @@ impl JobSubmissionService {
     /// notification-only: a closed observer cannot fail durable submission.
     pub fn set_created_sink(&self, sink: tokio::sync::mpsc::Sender<JobRecord>) {
         *self.created_sink.write() = Some(sink);
+    }
+
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority.
+    ///
+    /// A process-class job submitted for a checkout reserved by a live
+    /// agent-run group is refused here, before the job is durably created.
+    /// A job that starts no process — an agent turn, a subagent, a read —
+    /// is not refused on this ground.
+    pub fn set_process_admission(
+        &self,
+        service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) {
+        *self.process_admission.write() = Some(service);
     }
 
     pub async fn workspace_id_for_root(
@@ -201,7 +253,34 @@ impl JobSubmissionService {
             .acquire(&spec.workspace_id)
             .await
             .map_err(|e| JobSubmissionError::Workspace(e.to_string()))?;
+        let canonical_root = lease.path_policy().canonical_root.clone();
         drop(lease);
+
+        // M005 corrective C005: a process-class job for a checkout reserved
+        // by a live agent-run group is refused here, before the job is
+        // durably created. A job that starts no process is not refused on
+        // this ground: the refusal is about the *capability*, not about the
+        // checkout.
+        // c005-denial: scheduler-submission
+        if is_process_class_job(spec.kind) {
+            let service = self.process_admission.read().clone();
+            if let Some(service) = service {
+                let admission = service
+                    .admit_scope(
+                        &canonical_root,
+                        codegg_core::process_admission::ProcessKind::ScheduledJob,
+                    )
+                    .await
+                    .map_err(|error| {
+                        JobSubmissionError::ProcessDenied(format!(
+                            "the process admission authority could not be consulted: {error}"
+                        ))
+                    })?;
+                if let Some(denial) = admission.denial() {
+                    return Err(JobSubmissionError::ProcessDenied(denial.to_string()));
+                }
+            }
+        }
 
         apply_resource_policy(&mut spec);
         let labels = self.goal_provenance_labels(&spec).await?;

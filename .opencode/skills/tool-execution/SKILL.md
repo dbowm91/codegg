@@ -10,6 +10,18 @@ tags: [tools, scheduler, execution]
 Production model tool calls enter through `ToolBroker`. Do not add a second
 direct execution path for a tool that the broker already owns.
 
+A process-capable tool is refused **before** it runs, at two boundaries that
+must both hold: the tool's own `execute_structured` and the broker's final
+dispatch. The broker is the single production tool-call boundary, so a tool
+that forgets to consult the gate is still refused — but a new process-capable
+tool must consult it too, because the broker's classification is by
+**effective runtime effect** (`src/tool/process_capability.rs`), not by
+whatever the tool advertises. A plugin that describes itself as read-only and
+is process-backed is still a process surface, and the plugin adapter
+classifies it by its runtime kind. When you add a tool that starts a process,
+add it to the capability table and to `docs/writer-disposition.toml`; the
+`scripts/check_process_denial.py` guard fails when either is missing.
+
 Heavy work such as tests, managed processes, subagent dispatch, and tool
 programs is submitted through `JobSubmissionService` to `JobScheduler`.
 Preserve the typed job request, permission decision, cancellation, and durable

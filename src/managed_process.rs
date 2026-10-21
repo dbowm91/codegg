@@ -400,6 +400,18 @@ pub struct ManagedProcessRequest {
     /// process is launched from an agent tool call. This remains local
     /// plumbing and is not projected into child environment variables.
     pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+    /// M005 C005: the process admission policy for the launching execution.
+    ///
+    /// The policy is resolved by the daemon from durable records and names
+    /// the **execution's** checkout scope, never the request's working
+    /// directory. `None` means the launch is not under the restricted
+    /// shared-checkout profile.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
+    /// M005 C005: the capability this launch would create.
+    ///
+    /// Recorded in the refusal so a denial names what was refused. Defaults
+    /// to a plain command.
+    pub process_kind: codegg_core::process_admission::ProcessKind,
 }
 
 impl ManagedProcessRequest {
@@ -419,6 +431,8 @@ impl ManagedProcessRequest {
             sandbox: SandboxRequest::Disabled,
             provenance,
             execution_authorization: None,
+            process_admission: None,
+            process_kind: codegg_core::process_admission::ProcessKind::Command,
         }
     }
 
@@ -536,6 +550,13 @@ pub enum ManagedProcessError {
     OutputReaderTask(String),
     #[error("managed process sandbox failed: {0}")]
     SandboxFailed(String),
+    /// M005 C005: the restricted shared-checkout profile refused this
+    /// launch before the process existed.
+    ///
+    /// The message carries the capability that was refused and the
+    /// recovery path. It never carries the command, the argv or a path.
+    #[error("process launch refused: {0}")]
+    ProcessDenied(String),
 }
 
 /// Stateless entry point for scheduler-owned process execution.
@@ -635,6 +656,8 @@ async fn run_inner(
         sandbox,
         provenance,
         execution_authorization,
+        process_admission,
+        process_kind,
     } = request;
 
     if executable.is_empty() {
@@ -680,6 +703,26 @@ async fn run_inner(
     }
     if cancellation.is_cancelled() {
         return Err(ManagedProcessError::CancelledBeforeSpawn);
+    }
+
+    // M005 C005: the restricted shared-checkout profile refuses a process
+    // launch before the process exists.
+    //
+    // The check sits here, *above* `prepare_launch_argv`, on purpose: below
+    // that point the executable may have been rewritten to the sandbox
+    // helper, and a gate there would be reading the wrong command. Above it
+    // the real executable, the cwd, the sandbox profile and the provenance
+    // are all still in scope.
+    //
+    // The decision is made about the **execution's** scope, which the
+    // policy carries, and never about `cwd`: a model that points a process
+    // at `/tmp` does not thereby leave the reserved checkout, because the
+    // program's write set is unconstrained either way.
+    // c005-denial: managed-process-gate
+    if let Some(policy) = process_admission.as_ref() {
+        crate::tool::process_admission::admit_process(Some(policy), process_kind)
+            .await
+            .map_err(|error| ManagedProcessError::ProcessDenied(error.to_string()))?;
     }
 
     // Session identity is stamped by the model tool execution context. The

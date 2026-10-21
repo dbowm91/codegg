@@ -1,6 +1,6 @@
 # M005 Writer-Containment Corrective Addendum — Restricted Shared Checkout
 
-Status: active planning; C001–C004 closed; C005 ready; C006 blocked. SerializedShared remains unavailable.
+Status: active planning; C001–C005 closed; C006 ready. SerializedShared remains unavailable.
 
 Planning baseline: branch plan/agent-workstream-m005-writer-audit inspected 2026-10-19, main ancestor 61cbe9222c442c443cc7dfb3bd3a5b7d99ecd649. Revalidate exact branch head and mainline status before any implementation.
 
@@ -43,12 +43,12 @@ Independent M006 isolated session/worktree launch, M007 per-workspace build admi
                                    +-- C004 non-broker sink mediation Q3 [CLOSED]
                                            |
                                            +-- C005 process denial /
-                                           |        lifecycle gating Q3/Q4 [READY]
+                                           |        lifecycle gating Q3/Q4 [CLOSED]
                                            |
                                            +-- C006 restricted end-to-end
-                                                    Q1–Q5 / opt-in [BLOCKED: C004+C005]
+                                                    Q1–Q5 / opt-in [READY]
 
-C001 may document and test negative current behavior without accepted ADR-0044. C002 implementation proceeded under accepted ADR-0044 and closed on 2026-10-19; no product enablement proceeded on it, and acceptance alone still enables nothing: C003–C006 must land and qualify before any shared mutation exists. C002 built the permit's authority; C003 routed the model's native file and typed Git writers through it and C004 routed the non-broker writers through the checkout reservation gate. The permit still fences the *model* path only; the non-broker path refuses pre-effect instead of taking a permit, deliberately, so it cannot invert the document/repository/permit lock order. C006 must not claim M005 strict closure if it cannot demonstrate a production path and native evidence.
+C001 may document and test negative current behavior without accepted ADR-0044. C002 implementation proceeded under accepted ADR-0044 and closed on 2026-10-19; no product enablement proceeded on it, and acceptance alone still enables nothing: C003–C006 must land and qualify before any shared mutation exists. C002 built the permit's authority; C003 routed the model's native file and typed Git writers through it, C004 routed the non-broker writers through the checkout reservation gate, and C005 made the process surface refuse pre-effect through the authoritative process admission gate. The permit still fences the *model* path only; the non-broker and process paths refuse pre-effect instead of taking a permit, deliberately, so they cannot invert the document/repository/permit lock order. C006 must not claim M005 strict closure if it cannot demonstrate a production path and native evidence.
 
 ## Milestone contracts
 
@@ -58,8 +58,8 @@ C001 may document and test negative current behavior without accepted ADR-0044. 
 | C002 | infrastructure / invariant | closed | One durable CAS/generation-fenced permit with quarantine, contention and restart tests (Q1) | C001 closed + ADR-0044 accepted — **both met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/002-status.md` |
 | C003 | invariant / capability | closed | Final-effect file and typed Git write interposition without double acquisition/deadlock (Q2) | C002 closed — **met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/003-status.md` |
 | C004 | invariant / capability | closed | Every other CodeGG project-root writer either holds permit or refuses; includes human CodeGG file APIs and workspace-local state (Q3) | C003 closed — **met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md` |
-| C005 | invariant / capability | ready | Prevent unqualified direct/persistent process launch pre-effect; per-OS negative/proven lifecycle matrix (Q3–Q4) | C004 closed — **met** (`plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`) |
-| C006 | capability / closure | blocked | Real two-AgentRun restricted checkout, full Q1–Q5, restart, Git provenance, honest supported-OS opt-in or negative disposition | C004+C005 closed |
+| C005 | invariant / capability | closed | Prevent unqualified direct/persistent process launch pre-effect; per-OS negative/proven lifecycle matrix (Q3–Q4) | C004 closed — **met**; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md` |
+| C006 | capability / closure | ready | Real two-AgentRun restricted checkout, full Q1–Q5, restart, Git provenance, honest supported-OS opt-in or negative disposition | C004+C005 closed — **met** (`plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md`, `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md`); C006 must still wire the production shared-reservation path and call C005's reservation preflight |
 
 Implementation handoffs: plans/implementation/agent-workstream-m005-writer-containment-corrective/001-*.md through 006-*.md. Closure records: plans/closure/agent-workstream-m005-writer-containment-corrective/001-status.md through 006-status.md. C001 closure includes maintainer decision status but cannot presume it; C002 is ready only after acceptance is independently recorded. **Acceptance was independently recorded on 2026-10-19** (ADR-0044 "Acceptance record" section, option B), which satisfies C002's second gate condition.
 
@@ -67,7 +67,7 @@ Implementation handoffs: plans/implementation/agent-workstream-m005-writer-conta
 
 Do not duplicate AgentRun or WorktreeService state; use additive SQLite migrations only if needed for reservation/permit state, with schema and index bounds, restart/reconcile, version/CAS/idempotency and authorization. Any native protocol/CLI/TUI extension must be backward-compatible and show supported/denied operations; no rollout before C006. All final-effect sinks must consult daemon-resolved worktree scope and revalidate lease generation. A paused/expired permit does not imply a dead external process. Cancellation/restart ambiguity quarantines checkout; release requires positive evidence or explicit operator recovery, never dirty-file deletion.
 
-Existing permission/tool/sandbox/approval policies still apply and can only narrow. Shared mode refuses unqualified mutations, including via aliases, plugins, LSP/MCP launch, tool programs, human shell and HTTP APIs. C004 accounted for CodeGG writes under .codegg/runs and the legacy project DB by an explicit, evidenced disposition rather than a false "outside checkout" claim (`docs/writer-disposition.toml`, stable store policy; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md` §5). Do not use Git path claims as write enforcement.
+Existing permission/tool/sandbox/approval policies still apply and can only narrow. Shared mode refuses unqualified mutations, including via aliases, plugins, LSP/MCP launch, tool programs, human shell and HTTP APIs. C005 added the process half of that refusal: the authoritative process admission gate refuses every unqualified process surface of a live-group-reserved checkout before a process exists (`crates/codegg-core/src/process_admission.rs`, `src/tool/process_admission.rs`, `src/tool/process_capability.rs`), with a durable `process_denial` audit action, a live persistent-process registry with a reservation preflight, and the `scripts/check_process_denial.py` guard. Three surfaces are recorded as explicit open items rather than implied guarantees: the local MCP stdio client launch, the egglsp language-server launch and the shell-command hook adapter (closure `plans/closure/agent-workstream-m005-writer-containment-corrective/005-status.md` §6). C004 accounted for CodeGG writes under .codegg/runs and the legacy project DB by an explicit, evidenced disposition rather than a false "outside checkout" claim (`docs/writer-disposition.toml`, stable store policy; closure `plans/closure/agent-workstream-m005-writer-containment-corrective/004-status.md` §5). Do not use Git path claims as write enforcement.
 
 ## Verification and closure
 

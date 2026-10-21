@@ -47,6 +47,8 @@ pub mod memory;
 pub mod patch_util;
 pub mod plan;
 pub mod plugin;
+pub mod process_admission;
+pub mod process_capability;
 pub mod program_cache;
 pub mod program_manifest;
 pub mod question;
@@ -192,8 +194,19 @@ pub trait Tool: Send + Sync {
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        // M005 C005: the restricted shared-checkout profile refuses every
+        // unqualified process surface at the tool boundary, before the
+        // tool runs and before any process exists.
+        //
+        // The default implementation is the widest net: every tool that
+        // does not override this method is classified by the capability
+        // table, so a tool that starts a process cannot slip through by
+        // forgetting to consult the gate. A tool that overrides this
+        // method must perform the same check.
+        // c005-denial: tool-boundary
+        crate::tool::process_admission::admit_tool_process(self.name(), ctx.as_ref()).await?;
         let output = self.execute(input).await?;
         Ok(StructuredToolResult::legacy(self.name(), output))
     }
@@ -338,6 +351,13 @@ pub struct ToolRegistry {
     decision_engine: Arc<dyn codegg_core::decision::DecisionEngine>,
     decision_backend: crate::tool_advisor::DecisionBackendResolution,
     advisor_mode: crate::tool_advisor::AdvisorMode,
+    /// M005 C005: the process admission policy for this registry's
+    /// execution scope.
+    ///
+    /// `None` means the execution is not under the restricted shared
+    /// profile — an ordinary session, a CLI run, a test harness. Such an
+    /// execution starts processes exactly as it did before C005.
+    process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 impl Default for ToolRegistry {
@@ -489,6 +509,12 @@ pub struct ToolRegistryOptions {
     pub project_identity: Option<String>,
     /// Host-owned resolved extension catalog used by read-only discovery.
     pub extension_catalog: Option<Arc<crate::plugin::marketplace::MarketplaceService>>,
+    /// M005 C005: the process admission policy for this execution scope.
+    ///
+    /// Set by the daemon when the execution's checkout is (or may become)
+    /// reserved by a live agent-run group. `None` leaves the execution on
+    /// the ordinary profile, where processes are unrestricted.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// Build the session's `research` tool.
@@ -542,6 +568,7 @@ impl ToolRegistry {
                 promotion_qualified: false,
             },
             advisor_mode: crate::tool_advisor::AdvisorMode::Off,
+            process_admission: None,
         }
     }
 
@@ -1237,6 +1264,10 @@ impl ToolRegistry {
         };
         registry.search_runtime = search_runtime;
         registry.sandbox_profile = sandbox_profile;
+        // M005 C005: carry the process admission policy into the registry so
+        // the broker's final dispatch and every tool's pre-spawn check see
+        // the same authority.
+        registry.process_admission = options.process_admission.clone();
 
         // --- Context read tool (artifact expansion) ---
         if options.context_read_enabled {
@@ -1459,6 +1490,7 @@ impl ToolRegistry {
             memory_store: None,
             project_identity: None,
             extension_catalog: None,
+            process_admission: None,
         })
     }
 
@@ -1514,6 +1546,7 @@ impl ToolRegistry {
             memory_store: None,
             project_identity: None,
             extension_catalog: None,
+            process_admission: None,
         })
     }
 
@@ -1564,6 +1597,16 @@ impl ToolRegistry {
     /// `None`.
     pub fn sandbox_profile(&self) -> codegg_core::approval::SandboxProfile {
         self.sandbox_profile
+    }
+
+    /// M005 C005: the process admission policy for this registry's scope.
+    ///
+    /// `None` means the execution is not under the restricted shared
+    /// profile.
+    pub fn process_admission(
+        &self,
+    ) -> Option<&crate::tool::process_admission::SharedProcessAdmission> {
+        self.process_admission.as_ref()
     }
 
     /// Whether a tool with the given name is currently registered.

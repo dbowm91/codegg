@@ -477,6 +477,23 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         visibility: AuditVisibility::Project,
         live_mapped: true,
     },
+    AuditCoverageEntry {
+        action: "process_denial",
+        owner: "tool:process_admission",
+        actor: "transport-bound principal",
+        scope: "via_session",
+        decision: "command_execute",
+        metadata: &[
+            "process.kind",
+            "process.reason",
+            "group.id",
+            "worktree.id",
+            "decision.outcome",
+        ],
+        causation: "checkout reservation -> refused process launch; the refusal precedes the spawn, so no process, session or output artifact follows it",
+        visibility: AuditVisibility::Project,
+        live_mapped: true,
+    },
 ];
 
 /// One executor-owned live audit hook (identity/audit M004).
@@ -555,11 +572,18 @@ pub struct DaemonAuditHook {
 /// a non-broker writer is refused because the checkout is reserved by a live
 /// agent-run group. The event is live: the gate is on the write path, so the
 /// refusal is recorded durably rather than only logged.
-pub const DAEMON_LIVE_AUDIT_HOOKS: &[DaemonAuditHook] = &[DaemonAuditHook {
-    action: "checkout_writer_refusal",
-    owner: "daemon:checkout_mediation",
-    emit: "emit_checkout_writer_refusal",
-}];
+pub const DAEMON_LIVE_AUDIT_HOOKS: &[DaemonAuditHook] = &[
+    DaemonAuditHook {
+        action: "checkout_writer_refusal",
+        owner: "daemon:checkout_mediation",
+        emit: "emit_checkout_writer_refusal",
+    },
+    DaemonAuditHook {
+        action: "process_denial",
+        owner: "tool:process_admission",
+        emit: "emit_process_denial",
+    },
+];
 
 /// `true` when `action` must have executable daemon-gate hook evidence.
 pub fn is_daemon_live_action(action: &str) -> bool {
@@ -1513,6 +1537,31 @@ pub fn checkout_writer_refusal_event(
         .with_metadata("writer.op", truncate_label(op, 64))
         .with_metadata("group.id", truncate_label(group_id, 128))
         .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// Process denial structural event (M005 C005).
+///
+/// The refusal names the **capability** that was refused, the reason, and
+/// the group that holds the checkout. It never names a path, a command
+/// line, an argv, or a file body: a process refusal is a concurrency
+/// answer, and the command that was refused is the caller's own business.
+pub fn process_denial_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    process_kind: &str,
+    reason: &str,
+    group_id: &str,
+    worktree_id: &str,
+) -> AuditEventBuilder {
+    let builder = AuditEventBuilder::new(AuditAction::ProcessDenial, principal, provenance)
+        .with_visibility(AuditVisibility::Project)
+        .with_metadata("process.kind", truncate_label(process_kind, 64))
+        .with_metadata("process.reason", truncate_label(reason, 64))
+        .with_metadata("group.id", truncate_label(group_id, 128))
+        .with_metadata("worktree.id", truncate_label(worktree_id, 128))
+        .with_metadata("decision.outcome", "refused");
     apply_chain(builder, chain, provenance.project())
 }
 

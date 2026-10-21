@@ -452,6 +452,9 @@ impl Tool for BashTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        // M005 C005: refuse a process launch under the restricted shared
+        // profile, before the tool runs and before any process exists.
+        crate::tool::process_admission::admit_tool_process("bash", ctx.as_ref()).await?;
         let output = self.execute_inner(input, ctx.as_ref()).await?;
         Ok(StructuredToolResult::legacy("bash", output))
     }

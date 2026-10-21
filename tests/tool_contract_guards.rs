@@ -160,6 +160,7 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     }
 }
 
@@ -267,6 +268,7 @@ async fn programmatic_unauthorized_caller_rejected() {
         execution_audit: None,
         audit_emitter: None,
         execution_authorization: None,
+        process_admission: None,
     };
     let err = broker
         .execute(&registry, "valid_read", json!({}), ctx)

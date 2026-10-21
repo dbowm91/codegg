@@ -36,6 +36,7 @@ use codegg_core::jobs::{
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
 use futures_util::FutureExt;
+use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::{mpsc, watch, Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -270,6 +271,13 @@ pub struct JobScheduler {
     job_kind_counts: Arc<AsyncMutex<BTreeMap<String, usize>>>,
     /// Total running count.
     running_total: Arc<AtomicU64>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// Set by the daemon. `None` means the daemon has no durable
+    /// reservation authority, so no checkout is ever reserved and the
+    /// scheduler never refuses a job on this ground.
+    process_admission:
+        ParkingRwLock<Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>>,
     /// Total admit blocks recorded.
     admission_blocks: Arc<AtomicU64>,
     /// Admit-block counters by reason label.
@@ -348,6 +356,7 @@ impl JobScheduler {
             ready_counts,
             job_kind_counts,
             running_total: Arc::new(AtomicU64::new(0)),
+            process_admission: ParkingRwLock::new(None),
             admission_blocks: Arc::new(AtomicU64::new(0)),
             admission_block_reasons: Arc::new(AsyncMutex::new(BTreeMap::new())),
             admission_impossible: Arc::new(AtomicU64::new(0)),
@@ -392,6 +401,19 @@ impl JobScheduler {
 
     /// Synchronous install for daemon construction (which runs before the
     /// scheduler loop is spawned). A failed `try_lock` is a wiring error.
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority.
+    ///
+    /// The scheduler hands the authority to every executor's execution
+    /// context, so the final executor can refuse a process-class job whose
+    /// checkout became reserved after the job was admitted.
+    pub fn set_process_admission(
+        &self,
+        service: std::sync::Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) {
+        *self.process_admission.write() = Some(service);
+    }
+
     pub fn set_job_notification_service_sync(
         &self,
         service: std::sync::Arc<super::job_notifications::JobNotificationService>,
@@ -1287,6 +1309,8 @@ impl JobScheduler {
                 attempt_id: attempt.attempt_id.clone(),
             }),
             resources: permit,
+            // M005 corrective C005: the final executor's authority.
+            process_admission: self.process_admission.read().clone(),
         };
 
         // Capture at the scheduler-owned workspace boundary, before any

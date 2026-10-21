@@ -95,6 +95,7 @@ impl JobDispatcher for SubAgentJobDispatcher {
             // M005: durable-job fallback inherits the default ceiling.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            process_admission: None,
         };
 
         self.pool

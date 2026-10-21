@@ -20,6 +20,7 @@ pub mod migration;
 pub mod model_profile;
 pub mod model_routing;
 pub mod presence;
+pub mod process_admission;
 pub mod project_catalog;
 pub mod project_discovery;
 pub mod project_discovery_service;

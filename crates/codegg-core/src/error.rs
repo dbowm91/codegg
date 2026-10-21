@@ -168,6 +168,28 @@ pub enum ToolError {
     #[error("no workspace root was resolved for this call ({context}); refusing to substitute the process working directory")]
     MissingWorkspaceRoot { context: String },
 
+    /// A process launch was refused by the restricted shared-checkout
+    /// profile.
+    ///
+    /// Deliberately distinct from [`ToolError::Permission`]: a permission
+    /// failure is a judgement about *this caller*, while this is a fact
+    /// about *this checkout*. The checkout is shared by a live agent-run
+    /// group, and a shared checkout admits no unqualified process — the
+    /// program's write set is not enumerable, so it cannot be contained to
+    /// the checkout and cannot be serialized against another writer.
+    ///
+    /// The refusal carries the recovery path, because a caller that cannot
+    /// tell what to do next will simply retry the same call.
+    #[error("refusing to start a {kind} process: {reason}; {recovery}")]
+    ProcessDenied {
+        /// The kind of process that was refused.
+        kind: crate::process_admission::ProcessKind,
+        /// Why the launch was refused.
+        reason: crate::process_admission::ProcessDenialReason,
+        /// The recovery path a caller is offered.
+        recovery: String,
+    },
+
     #[error("I/O error: {0}")]
     Io(String),
 

@@ -185,6 +185,13 @@ pub struct TurnRunInput {
     /// fallback in place, where several usable records for the turn's provider
     /// are refused as ambiguous rather than picked by file order.
     pub credential_locator: Option<crate::provider::TurnCredentialLocator>,
+    /// M005 corrective C005: the process admission policy for this turn.
+    ///
+    /// The policy is built by the daemon over the turn's daemon-resolved
+    /// workspace root. `None` means the turn is not under the restricted
+    /// shared profile, and processes behave exactly as they did before
+    /// C005.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// Minimal output from a turn execution.
@@ -264,6 +271,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             shared_job_notification_service,
             shared_ci_watch_service,
             credential_locator,
+            process_admission,
         } = input;
 
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
@@ -503,6 +511,11 @@ impl TurnRuntime for DefaultTurnRuntime {
                 memory_store: memory_store.clone(),
                 project_identity: memory_project_identity,
                 extension_catalog,
+                // M005 corrective C005: the turn's process admission policy.
+                // The registry carries it so the broker's final dispatch and
+                // every process-capable tool's own pre-spawn check consult
+                // the same authority.
+                process_admission: process_admission.clone(),
             },
         );
 
@@ -895,6 +908,8 @@ impl TurnRuntime for DefaultTurnRuntime {
             approval_mode,
             sandbox_profile,
             credential_observer,
+            // M005 corrective C005: the turn's process admission policy.
+            process_admission: process_admission.clone(),
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());

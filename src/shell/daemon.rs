@@ -60,6 +60,17 @@ struct RegistryInner {
 pub struct HumanShellRunService {
     inner: tokio::sync::Mutex<RegistryInner>,
     admission: Arc<crate::scheduler::admission::AdmissionController>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// A human-originated shell command is a process launch, and it is
+    /// refused under the restricted shared profile exactly like a model
+    /// tool's. The distinction the C001 contract draws is between a
+    /// CodeGG human *originating* a process and an unrelated external OS
+    /// process — the human's own command is still CodeGG-initiated, so it
+    /// is still inside the boundary.
+    ///
+    /// `None` means the daemon has no durable reservation authority.
+    process_admission: Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>,
 }
 
 impl HumanShellRunService {
@@ -67,7 +78,17 @@ impl HumanShellRunService {
         Self {
             inner: tokio::sync::Mutex::new(RegistryInner::default()),
             admission,
+            process_admission: None,
         }
+    }
+
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority.
+    pub fn set_process_admission(
+        &mut self,
+        service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) {
+        self.process_admission = Some(service);
     }
 
     pub async fn create(
@@ -202,14 +223,65 @@ impl HumanShellRunService {
             env_policy: crate::shell::types::ShellEnvPolicy::Clean,
         };
         let (event_tx, mut event_rx) = mpsc::channel(128);
+        // M005 corrective C005: a human-originated shell command is a
+        // process launch. The restricted shared-checkout profile refuses it
+        // before the process exists, exactly as it refuses a model tool's
+        // shell. The scope is the daemon-resolved workspace root the run
+        // was bound to — never the command's own text.
+        // c005-denial: human-shell-gate
+        if let Some(service) = self.process_admission.as_ref() {
+            let admission = service
+                .admit_scope(&cwd, codegg_core::process_admission::ProcessKind::Command)
+                .await;
+            let admission = match admission {
+                Ok(admission) => admission,
+                Err(failure) => {
+                    return error(
+                        "human_shell_process_check_failed",
+                        &format!(
+                            "the process admission authority could not be consulted: {failure}"
+                        ),
+                    )
+                }
+            };
+            if let Some(denial) = admission.denial() {
+                return error("human_shell_process_denied", &denial.to_string());
+            }
+        }
         let mut runtime = super::runtime::ShellRuntime::with_host_shell(shell);
         if let Some(spec) = sandbox {
             runtime = runtime.with_sandbox(spec);
+        }
+        // M005 corrective C005: the shell runtime carries the same policy
+        // the human-shell gate consulted, so the refusal also happens at
+        // the launch owner.
+        if let Some(service) = self.process_admission.as_ref() {
+            if let Some(policy) = crate::tool::process_admission::build_process_admission(
+                Some(service.clone()),
+                &cwd,
+                None,
+            ) {
+                runtime = runtime.with_process_admission(policy);
+            }
         }
         let handle = match runtime.spawn(shell_request, event_tx).await {
             Ok(handle) => handle,
             Err(message) => return error("human_shell_start_failed", &message),
         };
+        // M005 corrective C005: the live shell is a persistent process, and
+        // a persistent process that was started under an older authority
+        // must block a later shared reservation of the same checkout. The
+        // registry is what the reservation preflight reads.
+        let process_id = format!("human_shell:{run_id}");
+        if let Some(service) = self.process_admission.as_ref() {
+            service
+                .processes()
+                .register(codegg_core::process_admission::PersistentProcessEntry {
+                    process_id: process_id.clone(),
+                    kind: codegg_core::process_admission::ProcessKind::Command,
+                    checkout_root: cwd.clone(),
+                });
+        }
         let meta = HumanShellRunMetadataDto {
             run_id: run_id.clone(),
             project_id: scope.project_id.clone(),
@@ -239,6 +311,12 @@ impl HumanShellRunService {
             run_id.clone(),
         );
         inner.runs.insert(run_id.clone(), record.clone());
+        // M005 corrective C005: the registry entry is released when the
+        // run ends, so a drained process stops blocking a reservation.
+        let release_registry = self
+            .process_admission
+            .as_ref()
+            .map(|service| (service.clone(), process_id.clone()));
         tokio::spawn(async move {
             let _permit = permit;
             while let Some(event) = event_rx.recv().await {
@@ -274,6 +352,10 @@ impl HumanShellRunService {
             if run.meta.status == HumanShellRunStatusDto::Running {
                 run.meta.status = HumanShellRunStatusDto::Lost;
                 run.handle = None;
+            }
+            drop(run);
+            if let Some((service, process_id)) = release_registry {
+                service.processes().release(&process_id);
             }
         });
         CoreResponse::HumanShellRunCreated {

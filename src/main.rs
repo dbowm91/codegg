@@ -3103,6 +3103,9 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         cli_workspace_root,
         uuid::Uuid::new_v4().to_string(),
         writer_fence,
+        // The CLI holds no daemon scope, so there is no reservation to
+        // violate and processes stay unrestricted.
+        None,
     );
     agent_loop.set_agent(&safe_agent.name)?;
 

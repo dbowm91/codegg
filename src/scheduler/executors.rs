@@ -79,6 +79,35 @@ impl TestJobExecutor {
     }
 }
 
+/// M005 corrective C005: refuse a process-class job at the final executor.
+///
+/// The submission boundary already refuses a process-class job for a
+/// reserved checkout, but a job can be admitted while the checkout is free
+/// and dispatched after it became reserved. The final executor is the
+/// last point before a process exists, so it re-checks.
+///
+/// The check is on the **execution's** workspace root — the one the
+/// scheduler captured from the workspace lease — and not on the job
+/// payload's working directory.
+async fn admit_process_class(
+    ctx: &JobExecutionContext,
+    kind: codegg_core::process_admission::ProcessKind,
+) -> Result<(), String> {
+    let Some(service) = ctx.process_admission.as_ref() else {
+        return Ok(());
+    };
+    let admission = service
+        .admit_scope(&ctx.workspace_root, kind)
+        .await
+        .map_err(|error| {
+            format!("the process admission authority could not be consulted: {error}")
+        })?;
+    match admission.denial() {
+        Some(denial) => Err(denial.to_string()),
+        None => Ok(()),
+    }
+}
+
 #[async_trait]
 impl JobExecutor for TestJobExecutor {
     fn kind(&self) -> ExecutorKind {
@@ -110,6 +139,14 @@ impl JobExecutor for TestJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
+        // M005 corrective C005: the final executor refuses a process-class
+        // job for a checkout reserved by a live agent-run group.
+        // c005-denial: test-job-executor
+        if let Err(error) =
+            admit_process_class(&ctx, codegg_core::process_admission::ProcessKind::Command).await
+        {
+            return failure_completion(started, ExecutorStatus::Failed, error);
+        }
         let (argv, parent_run_id) = match &ctx.job.payload {
             JobPayload::Test {
                 argv,
@@ -281,6 +318,14 @@ impl JobExecutor for ManagedArgvExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
+        // M005 corrective C005: the final executor refuses a process-class
+        // job for a checkout reserved by a live agent-run group.
+        // c005-denial: managed-argv-executor
+        if let Err(error) =
+            admit_process_class(&ctx, codegg_core::process_admission::ProcessKind::Command).await
+        {
+            return failure_completion(started, ExecutorStatus::Failed, error);
+        }
         let argv = match &ctx.job.payload {
             JobPayload::ManagedArgv { argv, .. } => argv.clone(),
             JobPayload::Shell { command, argv, .. } => match argv.clone() {
@@ -1061,6 +1106,7 @@ impl JobExecutor for SubagentJobExecutor {
             // via the registry wiring in the worker.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            process_admission: None,
         };
         let effective_workspace_root = request.workspace_root.clone();
 
@@ -1545,6 +1591,14 @@ impl JobExecutor for PythonJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
+        // M005 corrective C005: the final executor refuses a process-class
+        // job for a checkout reserved by a live agent-run group.
+        // c005-denial: python-job-executor
+        if let Err(error) =
+            admit_process_class(&ctx, codegg_core::process_admission::ProcessKind::Command).await
+        {
+            return failure_completion(started, ExecutorStatus::Failed, error);
+        }
 
         let (source, mode_str, cwd, timeout_secs, workspace_root) = match &ctx.job.payload {
             JobPayload::Python {

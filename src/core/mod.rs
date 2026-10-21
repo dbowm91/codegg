@@ -41,6 +41,7 @@ pub mod global_agent_authority;
 pub mod instance;
 pub mod lsp_diagnostics_store;
 pub mod notification;
+pub mod process_admission;
 pub mod project_activation;
 pub mod project_init;
 pub mod provider_connections;

@@ -259,6 +259,38 @@ its own bounded per-checkout waiter. Do not add it to `src/scheduler/`, and do
 not route it through `JobSubmissionService`. `scripts/check_scheduler_bypass.py`
 is the guard for the first; the second is a design rule, not a static check.
 
+## The process admission gate is NOT a scheduler permit either
+
+M005 corrective C005 added a third authority: the **process admission gate**
+(`crates/codegg-core/src/process_admission.rs`, `src/tool/process_admission.rs`,
+`architecture/writer_permit.md` §"The process deny contract"). It answers "may
+this execution start a process in its checkout" — and, under the restricted
+shared-checkout profile, the answer is *no*.
+
+It is a **refusal**, not a permit: there is no effect to settle, because the
+refusal happens before a process exists. Two rules follow, and both are
+load-bearing:
+
+- **Do not turn it into a permit.** A process permit would need a lifetime
+  the process does not have: a `setsid` descendant escapes CodeGG's managed
+  process group, so a "held until the process exits" permit would be held
+  forever, or released while a writer is still alive.
+- **Do not route it through the scheduler's resource machinery.** The gate
+  reads durable state (the managed worktree record, the run-group record) and
+  an in-memory registry. It takes no lock, holds no permit, and never waits.
+
+The scheduler's part of the contract is narrow and lives in two places: the
+**submission boundary** (`src/scheduler/submission.rs`) refuses a
+*process-class* job for a reserved checkout — per job kind, so a job that
+starts no process is not refused on the process ground — and the **final
+executors** (`src/scheduler/executors.rs`) re-check before the process
+exists, because a job can be admitted while the checkout was free and
+dispatched after it became reserved.
+
+A Tool Program inherits the narrow profile of the execution that scheduled
+it (`src/scheduler/tool_program_executor.rs`): a nested call cannot reach a
+process the parent could not.
+
 ## The build quota is admission, not a writer permit
 
 M007 added a third thing, and it is easy to confuse with the other two: the

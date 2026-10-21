@@ -191,6 +191,7 @@ async fn run_research_child(
         // in the worker.
         parent_sandbox_profile: None,
         sandbox_profile: None,
+        process_admission: None,
     };
     let result =
         tokio::time::timeout(MAX_CHILD_TIMEOUT, pool.spawner().send_and_wait(request)).await;

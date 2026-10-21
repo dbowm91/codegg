@@ -116,6 +116,13 @@ pub struct SubAgentRequest {
     /// M005: explicitly requested child profile (`None` = inherit parent).
     /// A request for `FullHost` under a constrained parent fails closed.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005 corrective C005: the parent's process admission policy.
+    ///
+    /// A nested subagent **inherits the narrow profile**: it can never be
+    /// handed a wider authority than the execution that delegated to it.
+    /// The child builds its own scope over its own workspace root, but the
+    /// authority it consults is the same one.
+    pub process_admission: Option<crate::tool::process_admission::SharedProcessAdmission>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1322,6 +1329,10 @@ async fn execute_agent_task(
         lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
         search_runtime: Some(search_runtime.clone()),
         sandbox_profile: Some(effective_child),
+        // M005 corrective C005: a nested subagent inherits the parent's
+        // process admission policy. The child can never be handed a wider
+        // profile than the execution that delegated to it.
+        process_admission: request.process_admission.clone(),
         ..Default::default()
     });
     // Subagents must NEVER have access to in-flight planning tools
@@ -1550,6 +1561,8 @@ async fn execute_agent_task(
         workspace_root.clone(),
         subagent_session_id,
         writer_fence,
+        // M005 corrective C005: the inherited process admission policy.
+        request.process_admission.clone(),
     );
     if let Some(run_id) = request.run_id.as_ref() {
         let runs = subagent_pool
@@ -1937,6 +1950,7 @@ mod admission_tests {
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            process_admission: None,
         }
     }
 

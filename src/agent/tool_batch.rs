@@ -435,6 +435,10 @@ impl AgentLoop {
             // execution context, so a native writer can ask the daemon
             // whether it may touch the checkout.
             writer_fence: self.services.writer_fence.clone(),
+            // M005 C005: the loop's process admission policy, so every
+            // process-capable tool's own pre-spawn check sees the same
+            // authority the broker consults.
+            process_admission: self.services.process_admission.clone(),
             backend,
             session_id: Some(self.session_id.clone()),
             // The workspace root is captured during construction and is the
@@ -1987,6 +1991,7 @@ impl AgentLoop {
                                 };
                                 let broker_ctx = crate::tool::broker::BrokerInvocationContext {
             writer_fence: exec_ctx.writer_fence.clone(),
+                                    process_admission: exec_ctx.process_admission.clone(),
                                     caller: crate::tool::contract::ToolCaller::Agent,
                                     cwd: exec_ctx.cwd.clone(),
                                     session_id: exec_ctx.session_id.clone(),
@@ -2082,6 +2087,18 @@ impl AgentLoop {
                                             reason,
                                         } => ToolError::Permission(format!(
                                             "authority error for tool {}: {}",
+                                            tool, reason
+                                        )),
+                                        // M005 C005: a process surface was
+                                        // refused by the restricted shared
+                                        // profile. It is a typed refusal,
+                                        // not a permission failure, so it
+                                        // keeps its own error kind.
+                                        crate::tool::broker::BrokerError::ProcessDenied {
+                                            tool,
+                                            reason,
+                                        } => ToolError::Execution(format!(
+                                            "process refused for tool {}: {}",
                                             tool, reason
                                         )),
                                     })?;

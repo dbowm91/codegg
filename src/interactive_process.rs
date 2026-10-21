@@ -473,6 +473,10 @@ pub enum InteractiveError {
     PlatformUnsupported { platform: &'static str },
     #[error("interactive process spawn failed: {0}")]
     SpawnFailed(String),
+    /// M005 corrective C005: the restricted shared-checkout profile refused
+    /// the PTY launch before the child existed.
+    #[error("interactive process launch refused: {0}")]
+    ProcessDenied(String),
     #[error("unknown interactive handle")]
     UnknownHandle,
     #[error("interactive process is no longer running")]
@@ -557,6 +561,12 @@ struct ServiceInner {
 /// constructor that infers a working directory from process-global state.
 pub struct InteractiveProcessService {
     inner: Arc<ServiceInner>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// `None` means the daemon has no durable reservation authority, so no
+    /// checkout is ever reserved and the PTY keeps its pre-C005 behavior.
+    process_admission:
+        parking_lot::RwLock<Option<Arc<codegg_core::process_admission::ProcessAdmissionService>>>,
 }
 
 impl InteractiveProcessService {
@@ -568,7 +578,17 @@ impl InteractiveProcessService {
                 shutdown: CancellationToken::new(),
                 shutting_down: AtomicBool::new(false),
             }),
+            process_admission: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// M005 corrective C005: install the daemon's process admission
+    /// authority.
+    pub fn set_process_admission(
+        &self,
+        service: Arc<codegg_core::process_admission::ProcessAdmissionService>,
+    ) {
+        *self.process_admission.write() = Some(service);
     }
 
     /// Number of tracked handles (live plus retained-exited).
@@ -638,6 +658,38 @@ impl InteractiveProcessService {
             return Err(InteractiveError::PlatformUnsupported {
                 platform: platform_name(),
             });
+        }
+
+        // c005-denial: interactive-pty
+        // M005 corrective C005: the restricted shared-checkout profile
+        // refuses a PTY launch before the child exists.
+        //
+        // The check sits between the scheduler admission and the child
+        // creation, so a refused spawn leaves no live session, no handle
+        // and no permit. The scope is the execution's daemon-resolved
+        // workspace root — never the spec's own working directory.
+        let admission_service = self.process_admission.read().clone();
+        if let Some(service) = admission_service.as_ref() {
+            let admission = service
+                .admit_scope(
+                    &ctx.workspace_root,
+                    codegg_core::process_admission::ProcessKind::Pty,
+                )
+                .await;
+            match admission {
+                Ok(admission) => {
+                    if let Some(denial) = admission.denial() {
+                        drop(permit);
+                        return Err(InteractiveError::ProcessDenied(denial.to_string()));
+                    }
+                }
+                Err(failure) => {
+                    drop(permit);
+                    return Err(InteractiveError::ProcessDenied(format!(
+                        "the process admission authority could not be consulted: {failure}"
+                    )));
+                }
+            }
         }
 
         #[cfg(unix)]

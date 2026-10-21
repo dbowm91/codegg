@@ -170,6 +170,18 @@ pub struct CoreDaemon {
     /// holds no permit, so it cannot invert the document/repository/permit
     /// lock order.
     pub checkout_mediator: Arc<super::checkout_mediation::CheckoutMediator>,
+    /// M005 corrective C005: the daemon's process admission authority.
+    ///
+    /// The service answers whether an execution may start a process in its
+    /// checkout. It shares the reservation authority with
+    /// [`Self::checkout_mediator`], so both answer from the same durable
+    /// state: a checkout reserved by a live agent-run group admits no
+    /// unqualified process.
+    ///
+    /// The service also owns the live persistent process registry, which is
+    /// what lets a *reservation* be refused while a process that was
+    /// started under an older authority is still running.
+    pub process_admission: Arc<codegg_core::process_admission::ProcessAdmissionService>,
 }
 
 // M003: construction lives in `super::daemon_construct` (`with_deps`,
