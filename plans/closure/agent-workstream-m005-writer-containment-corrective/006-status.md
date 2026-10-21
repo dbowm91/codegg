@@ -462,10 +462,11 @@ executor marker — and proves each is reported. The guard is wired into
 
 ### 8.2 What was NOT run, and why
 
-* **A full-workspace nextest sweep on this host** could not complete:
-  another session's `cargo nextest run --workspace --locked --profile ci`
-  holds the cargo lock and the load is ~10. The hosted runs above are the
-  full-workspace evidence, and the scoped suites are the local evidence.
+* **The full-workspace nextest sweep on this host** now *does* complete —
+  run under `umask 022` it reports 15,909 tests with 15,900 passing; see §8.1
+  for the nine that are host contention and for the umask caveat. It was
+  previously recorded as "could not complete" because another session's
+  `cargo nextest run --workspace` held the cargo lock at load ~10.
 * **No macOS or Windows run was possible on this host.** The macOS lane
   (§5.1) exists to produce that evidence on a hosted runner; Windows has no
   backend to run (§5.1).
