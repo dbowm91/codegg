@@ -40,7 +40,6 @@ use std::path::PathBuf;
 
 use crate::tui::app::state::file_tree::{PeekStep, PeekUp, TreePanelMode};
 use crate::tui::app::App;
-use crate::tui::file_tree::TreeNodeKind;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 use super::editor::open_editor;
@@ -436,6 +435,11 @@ pub fn apply_listing(
     // showing the previous listing. Cloned only when a box is actually open —
     // the round-trip that produced this state is far more expensive than the
     // copy.
+    //
+    // The box's **filter** and its panel mode are the box's own input, not
+    // the shared navigation state: a listing landing while the user is typing
+    // a filter must not wipe the text they typed or drop them out of insert
+    // mode. They are carried across the mirror.
     if app
         .focus_manager
         .has_dialog(crate::tui::components::component::DialogType::Files)
@@ -444,7 +448,13 @@ pub fn apply_listing(
         app.focus_manager
             .with_dialog_mut::<crate::tui::components::dialogs::files::FilesDialog, ()>(
                 crate::tui::components::component::DialogType::Files,
-                |dialog| dialog.state = snapshot,
+                |dialog| {
+                    let filter = dialog.state.filter.clone();
+                    let panel_mode = dialog.state.panel_mode;
+                    dialog.state = snapshot;
+                    dialog.state.filter = filter;
+                    dialog.state.panel_mode = panel_mode;
+                },
             );
     }
 }
@@ -489,9 +499,12 @@ pub fn page_selection(app: &mut App, direction: isize) {
 /// Under the peek motion this no longer re-roots the pane: a directory
 /// whose children are still inside the listing window is expanded *in
 /// place* and the cursor moves into it, and only a directory at the
-/// window's edge slides the scope to its parent. The parent and the
-/// siblings stay visible — that is the difference between peeking into a
-/// directory and re-rooting the pane on it.
+/// window's edge slides the scope. The parent and the siblings stay
+/// visible — that is the difference between peeking into a directory and
+/// re-rooting the pane on it.
+///
+/// A **file** has nothing to peek into, so the motion opens it: `l` on a
+/// file is the same path `Enter` takes, and the key is never dead.
 pub fn descend_to(app: &mut App, path: &str) {
     match app.file_tree_state.peek_into(path) {
         PeekStep::Enter { directory } => {
@@ -505,12 +518,24 @@ pub fn descend_to(app: &mut App, path: &str) {
             if !app.file_tree_state.set_root_prefix(&scope) {
                 return;
             }
-            // The scope moved, so the directory is a top-level row of the
-            // new scope; it is expanded there and the cursor enters it once
-            // the relist lands.
+            // The scope moved, so the directory is a row of the *new* scope,
+            // but not a top-level one: the scope is its grandparent, so the
+            // chain between them is collapsed and the directory would not be
+            // on screen at all. That chain is expanded here, the directory
+            // itself is expanded with it, and the cursor enters it once the
+            // relist lands.
+            app.file_tree_state.expand_ancestors_of(&scope, &directory);
             app.file_tree_state.expand_and_select(&directory);
             app.file_tree_state.set_pending_cursor(&directory);
             rebuild(app);
+        }
+        PeekStep::Open { path } => {
+            // The open path is `open_editor` verbatim, so the tree inherits
+            // its lexical validation, its already-open short-circuit, its
+            // daemon-authorized attachment, and its request/generation
+            // discipline without duplicating any of them.
+            app.file_tree_state.set_pending_editor_handoff(&path);
+            open_editor(app, &path);
         }
         PeekStep::None => {}
     }
@@ -554,25 +579,14 @@ pub fn ascend_one_level(app: &mut App) {
 /// of them.
 ///
 /// A **directory** is entered, not toggled: the standalone toggle verb is
-/// retired, and `Enter` is the same motion as `l` (see [`descend_to`]).
+/// retired, and `Enter` is the same motion as `l` (see [`descend_to`]). Both
+/// directions are one motion now, so this is [`descend_to`] with the row's
+/// own kind resolved.
 pub fn activate_selected(app: &mut App) {
     let Some(row) = app.file_tree_state.selected_row() else {
         return;
     };
-    if row.kind == TreeNodeKind::Directory {
-        descend_to(app, &row.path);
-        return;
-    }
-    // A directory is expandable, a file is openable. Anything else is not a
-    // navigable entry and must not reach the open path.
-    //
-    // The keyboard moves to the editor only once the document is attached:
-    // the open is asynchronous, and handing the user an empty editor
-    // because the key was pressed a moment too early is worse than waiting
-    // for the daemon's answer. `complete_editor_open_handoff` performs the
-    // handoff on the completion path.
-    app.file_tree_state.set_pending_editor_handoff(&row.path);
-    open_editor(app, &row.path);
+    descend_to(app, &row.path);
 }
 
 /// Move focus into or out of the tree.
@@ -621,7 +635,8 @@ pub fn set_focus(app: &mut App, focused: bool) {
 /// | `r` | re-list the scope |
 /// | `Ctrl+d` / `Ctrl+u` | page down / up |
 /// | `i` | the panel's filter (insert mode) |
-/// | `Esc` | leave the tree; in insert mode, leave insert mode and keep the filter |
+/// | `Esc` | in insert mode, leave insert mode and keep the filter |
+/// | `Shift+Q` | leave the tree and return the keyboard to the editor |
 ///
 /// The panel's mode is **panel-local**: the composer badge reports the
 /// app-level mode, so a filter being typed is never reported as the
@@ -658,9 +673,14 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
         return handle_panel_insert_key(app, key);
     }
     match key.code {
-        // Leaving the tree returns focus to the editor buffer without
-        // changing the route, so the composer stays reachable.
-        KeyCode::Esc => {
+        // `Esc` is a **mode** step, never an exit: in insert mode it leaves
+        // insert mode and keeps the filter, and in Normal mode it does
+        // nothing at all. The tree keeps the keyboard and the selection; the
+        // way out is `Shift+Q`, the same gesture that leaves a side panel.
+        KeyCode::Esc => true,
+        // `Shift+Q` leaves the tree and returns focus to the editor buffer
+        // without changing the route, so the composer stays reachable.
+        KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::SHIFT) => {
             set_focus(app, false);
             true
         }
@@ -797,6 +817,7 @@ mod tests {
     use super::*;
     use crate::tui::app::state::file_tree::FileTreeStatus;
     use crate::tui::app::state::project_tabs::{ProjectTabId, ProjectTabState};
+    use crate::tui::file_tree::TreeNodeKind;
     use codegg_protocol::document::{
         WorkspaceDirectoryListResultDto, WorkspaceDirectoryListStatusDto,
         WorkspaceDirectoryNodeDto, WorkspaceDirectoryNodeKindDto,
@@ -1069,29 +1090,12 @@ mod tests {
         }
     }
 
-    /// The daemon's answer for the `src/tui` scope: `app` and its child.
-    fn worked_example_tui_scope() -> WorkspaceDirectoryListResultDto {
-        WorkspaceDirectoryListResultDto {
-            prefix: "src/tui".to_string(),
-            nodes: vec![WorkspaceDirectoryNodeDto {
-                name: "app".to_string(),
-                path: "src/tui/app".to_string(),
-                depth: 1,
-                kind: WorkspaceDirectoryNodeKindDto::Directory,
-                children: Some(vec![WorkspaceDirectoryNodeDto {
-                    name: "mod.rs".to_string(),
-                    path: "src/tui/app/mod.rs".to_string(),
-                    depth: 2,
-                    kind: WorkspaceDirectoryNodeKindDto::File,
-                    children: None,
-                }]),
-            }],
-            examined: 2,
-            ..FakeListingClient::ready_listing("workspace-test", &[])
-        }
-    }
-
     /// The daemon's answer for the `src` scope: `tui` and its children.
+    ///
+    /// This is the scope the slide lands in, so it has to carry the target's
+    /// own children — the window is three levels deep and `src/tui/app` is
+    /// the third, so `src/tui/app/mod.rs` is the fourth and is exactly what
+    /// the slide exists to bring back into view.
     fn worked_example_src_scope() -> WorkspaceDirectoryListResultDto {
         WorkspaceDirectoryListResultDto {
             prefix: "src".to_string(),
@@ -1113,11 +1117,17 @@ mod tests {
                         path: "src/tui/app".to_string(),
                         depth: 2,
                         kind: WorkspaceDirectoryNodeKindDto::Directory,
-                        children: None,
+                        children: Some(vec![WorkspaceDirectoryNodeDto {
+                            name: "mod.rs".to_string(),
+                            path: "src/tui/app/mod.rs".to_string(),
+                            depth: 3,
+                            kind: WorkspaceDirectoryNodeKindDto::File,
+                            children: None,
+                        }]),
                     },
                 ]),
             }],
-            examined: 3,
+            examined: 4,
             ..FakeListingClient::ready_listing("workspace-test", &[])
         }
     }
@@ -1282,15 +1292,15 @@ mod tests {
 
     /// The worked example from the peek design, end to end.
     ///
-    /// `l` expands and enters; at the window's edge the scope slides;
-    /// `h` leaves and collapses; on a top-level row the scope slides back
-    /// up. The scope is the only thing that moves, and it only ever moves
-    /// when the listing window runs out.
+    /// `l` expands and enters; at the window's edge the scope slides to the
+    /// target's **grandparent**, so the target's children fit back inside the
+    /// window; `h` leaves and collapses; on a top-level row the scope slides
+    /// back up. The scope is the only thing that moves, and it only ever
+    /// moves when the listing window runs out.
     #[tokio::test]
     async fn the_peek_motion_walks_the_worked_example() {
         let root = tempfile::tempdir().expect("tempdir");
         let (mut app, client) = app_with_listing_client(root.path(), worked_example_root());
-        client.with_scoped("src/tui", worked_example_tui_scope());
         client.with_scoped("src", worked_example_src_scope());
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         app.tui_cmd_tx = Some(tx);
@@ -1338,17 +1348,25 @@ mod tests {
         );
 
         // `l` on `src/tui/app`: its children are outside the window, so the
-        // scope slides to its parent and the directory is expanded there.
+        // scope slides to its **grandparent** — the shallowest scope in which
+        // those children fit back inside — and the chain down to the
+        // directory is expanded, so the directory is on screen at all.
         descend_to(&mut app, "src/tui/app");
         assert_eq!(
             app.file_tree_state.root_prefix(),
-            "src/tui",
-            "the scope slides to the directory's parent"
+            "src",
+            "the scope slides to the directory's grandparent"
         );
         drain_completion(&mut app, &mut rx).await;
         assert_eq!(
             shown(&app),
-            vec!["src/tui/app".to_string(), "src/tui/app/mod.rs".to_string()]
+            vec![
+                "src/tui".to_string(),
+                "src/tui/editor.rs".to_string(),
+                "src/tui/app".to_string(),
+                "src/tui/app/mod.rs".to_string()
+            ],
+            "the target's children are visible in the new scope"
         );
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
@@ -1358,19 +1376,7 @@ mod tests {
 
         // `h` from inside `app`: up to its parent row, and it collapses.
         ascend_one_level(&mut app);
-        assert_eq!(app.file_tree_state.root_prefix(), "src/tui");
-        assert_eq!(shown(&app), vec!["src/tui/app".to_string()]);
-        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui/app"));
-        assert!(
-            !app.file_tree_state.expanded.contains("src/tui/app"),
-            "the directory being left is collapsed"
-        );
-
-        // `h` on a top-level row: the scope slides up, with the old scope
-        // root expanded in the new scope.
-        ascend_one_level(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "src");
-        drain_completion(&mut app, &mut rx).await;
         assert_eq!(
             shown(&app),
             vec![
@@ -1379,9 +1385,20 @@ mod tests {
                 "src/tui/app".to_string()
             ]
         );
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui/app"));
+        assert!(
+            !app.file_tree_state.expanded.contains("src/tui/app"),
+            "the directory being left is collapsed"
+        );
+
+        // `h` again: out of `tui` as well, still inside the `src` scope.
+        ascend_one_level(&mut app);
+        assert_eq!(app.file_tree_state.root_prefix(), "src");
+        assert_eq!(shown(&app), vec!["src/tui".to_string()]);
         assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui"));
 
-        // `h` again: back to the workspace root.
+        // `h` on a top-level row: the scope slides up, with the old scope
+        // root expanded in the new scope.
         ascend_one_level(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "");
         drain_completion(&mut app, &mut rx).await;
@@ -1401,7 +1418,6 @@ mod tests {
                 "".to_string(),
                 "".to_string(),
                 "".to_string(),
-                "src/tui".to_string(),
                 "src".to_string(),
                 "".to_string()
             ],

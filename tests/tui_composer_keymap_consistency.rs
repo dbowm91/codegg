@@ -53,47 +53,52 @@ fn keys_in(row: &str) -> Vec<char> {
 // The hint row
 // ---------------------------------------------------------------------------
 
-/// The row names every live verb, on a multi-line buffer.
+/// The row names **no** verb: the `space help` chord carries them.
 ///
-/// The line motions are the conditional ones, so a multi-line buffer is the
-/// case where all of them are available.
+/// The row used to list fourteen bare letters without saying what any of them
+/// did, which taught the vocabulary and left the user unable to act on it.
+/// It is now the buffer's *situational* surface — a latched failure, an armed
+/// exit — and the only thing it points at is the chord that opens the help
+/// where every verb is described.
 #[test]
-fn the_hint_names_every_live_verb_on_a_multi_line_buffer() {
+fn the_hint_names_no_verb_and_points_at_the_help() {
     let mut app = test_app();
     compose(&mut app, "one\ntwo", 0);
 
     let row = hint(&mut app);
-    for key in [
-        'w', 'b', 'e', 'j', 'k', 'v', 'x', 'd', 'p', 'u', 'U', 'a', 'o',
-    ] {
-        assert!(
-            row.contains(key),
-            "the hint row does not name {key:?}: {row:?}"
-        );
-    }
+    assert!(
+        keys_in(&row).is_empty(),
+        "the hint row names bare keys: {row:?}"
+    );
+    assert!(
+        row.contains("space help"),
+        "the row must point at the help that describes the verbs: {row:?}"
+    );
 }
 
-/// On a single-line buffer the row does not claim `j` and `k`.
+/// On a single-line buffer the row claims nothing either.
 ///
-/// There they are the transcript's, and a row that claimed them would teach a
-/// gesture that scrolls the transcript instead of moving the caret.
+/// There `j` and `k` are the transcript's, and a row that claimed them would
+/// teach a gesture that scrolls the transcript instead of moving the caret.
+/// The row names no key at all now, so the conditional verbs cannot leak into
+/// it whatever the buffer holds.
 #[test]
-fn the_hint_does_not_claim_the_line_motions_on_a_single_line_buffer() {
+fn the_hint_claims_no_key_on_a_single_line_buffer() {
     let mut app = test_app();
     compose(&mut app, "one", 0);
 
     let row = hint(&mut app);
     assert!(
-        !row.contains('j') && !row.contains('k'),
-        "the hint row claims the line motions on a single-line buffer: {row:?}"
+        keys_in(&row).is_empty(),
+        "the hint row names bare keys: {row:?}"
     );
-    // The unconditional verbs are still there.
-    for key in ['w', 'b', 'e', 'v', 'x', 'd', 'p', 'u', 'U', 'a', 'o'] {
-        assert!(
-            row.contains(key),
-            "the hint row does not name {key:?}: {row:?}"
-        );
-    }
+    // The row is the same in both: it names no key, so the conditional verbs
+    // cannot appear on one buffer and not the other.
+    assert_eq!(row, hint(&mut app));
+    assert!(
+        row.contains("space help"),
+        "the row must point at the help that describes the verbs: {row:?}"
+    );
 }
 
 /// The row's **presence** does not depend on the mode.
@@ -121,8 +126,9 @@ fn the_hints_presence_is_the_same_in_normal_and_insert_mode() {
 
 /// The row names no verb that is not a live composer claim.
 ///
-/// The row is derived from the claim table, so this holds by construction —
-/// the test is what makes that a fact rather than an intention.
+/// The row names no *key* at all, so this holds by construction — the test is
+/// what makes that a fact rather than an intention. The claim table still
+/// decides what the **help** lists, and the help's own tests below pin that.
 #[test]
 fn the_hint_names_no_verb_that_is_not_a_live_claim() {
     let mut app = test_app();
@@ -135,9 +141,8 @@ fn the_hint_names_no_verb_that_is_not_a_live_claim() {
         .map(|claim| claim.key)
         .collect();
 
-    // The row's prose is "… · space help"; the words carry letters of their
-    // own, so the check is over the row's *key* positions: every
-    // single-letter part must be a live claim.
+    // The row's prose is "space help"; the words carry letters of their own,
+    // so the check is over the row's *key* positions.
     for key in keys_in(&row) {
         assert!(
             live.contains(&key),
@@ -145,8 +150,8 @@ fn the_hint_names_no_verb_that_is_not_a_live_claim() {
         );
     }
     assert!(
-        !keys_in(&row).is_empty(),
-        "the hint row names no keys at all: {row:?}"
+        keys_in(&row).is_empty(),
+        "the hint row names keys at all: {row:?}"
     );
 }
 
@@ -167,6 +172,17 @@ fn the_hint_is_truncated_to_the_width_without_cutting_a_key() {
         );
         // Every part the row kept is a whole part.
         for part in bounded.split(" · ") {
+            if part.is_empty() {
+                // Nothing fit the budget. The row is empty rather than cut,
+                // which is the honest answer at a width that cannot hold a
+                // whole key — but it is only allowed when the unbounded row
+                // would not have fit either.
+                assert!(
+                    unicode_width::UnicodeWidthStr::width(full.as_str()) > budget,
+                    "the row must not be emptied while a whole part would fit: {bounded:?}"
+                );
+                continue;
+            }
             assert!(
                 part.chars().count() == 1
                     || matches!(
@@ -195,7 +211,7 @@ fn the_hint_is_truncated_to_the_width_without_cutting_a_key() {
 /// them was the same fact said twice, and the second copy was the one that
 /// could disagree with the first.
 #[test]
-fn the_hint_names_the_composers_verbs_and_not_the_transcripts() {
+fn the_hint_names_no_surface_s_verbs() {
     let mut app = test_app();
     compose(&mut app, "one\ntwo", 0);
 
@@ -208,6 +224,10 @@ fn the_hint_names_the_composers_verbs_and_not_the_transcripts() {
     assert!(
         !row.contains("scroll"),
         "the hint row advertises a transcript gesture: {row:?}"
+    );
+    assert!(
+        !row.contains("chars") && !row.contains("lines") && !row.contains("delete"),
+        "the hint row advertises the terminal panel's verbs: {row:?}"
     );
 }
 

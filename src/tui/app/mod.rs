@@ -280,9 +280,6 @@ pub enum ClickTarget {
         track_y: u16,
         track_height: u16,
     },
-    /// The working strip above the composer: the throbber row and the
-    /// clickable subagent rows below it.
-    Working,
     /// A side-panel column.
     ///
     /// Recorded per placement during render so a click can both *focus* the
@@ -1023,7 +1020,6 @@ impl App {
                 diagnostics: Default::default(),
                 plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities::all_supported(),
                 subagents: Default::default(),
-                working_area: None,
             },
             session_state: SessionState {
                 session: None,
@@ -1085,6 +1081,7 @@ impl App {
                 task_model_choice: None,
                 chat_seed: None,
                 stop_armed_at: None,
+                exit_armed_at: None,
                 subagent_addressee: None,
                 subagent_steer_request: crate::tui::app::state::AsyncUiRequestState::default(),
             },
@@ -1612,7 +1609,6 @@ impl App {
                 diagnostics: Default::default(),
                 plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities::all_supported(),
                 subagents: Default::default(),
-                working_area: None,
             },
             session_state: SessionState {
                 session: None,
@@ -1674,6 +1670,7 @@ impl App {
                 task_model_choice: None,
                 chat_seed: None,
                 stop_armed_at: None,
+                exit_armed_at: None,
                 subagent_addressee: None,
                 subagent_steer_request: crate::tui::app::state::AsyncUiRequestState::default(),
             },
@@ -2003,10 +2000,10 @@ impl App {
     /// So this path releases only what the submit itself owns: the composer
     /// guard, and the text the optimistic clear took away. The running turn's
     /// state is untouched, and the refusal is reported as a toast rather than
-    /// latched through [`App::report_turn_error`] — `render_working_strip`
-    /// gives `last_error` absolute precedence, so latching would replace the
-    /// live turn's spinner and elapsed time with a stale `✗` line, which is
-    /// the same state corruption wearing a different hat.
+    /// latched through [`App::report_turn_error`] — the row above the
+    /// composer gives `last_error` absolute precedence, so latching would
+    /// replace the live turn's status with a stale `✗` line, which is the
+    /// same state corruption wearing a different hat.
     ///
     /// Contention is not a turn failure: the turn continues, so there is no
     /// dead turn for a latched reason to explain.
@@ -4014,10 +4011,10 @@ impl App {
 
         // The host takes keys when its overlay is up, or when a panel holds focus.
         // The mode gate is load-bearing for the ordinary case: the host
-        // claims `Esc`/`q` as focus-exit keys, so consulting a panel in
-        // Insert mode would make the letter `q` unfocusable and `Esc`
-        // unable to leave Insert. For a panel that renders its own text
-        // field the composer really is the right Insert target, which is
+        // claims `Shift+Q` as the focus-exit key, so consulting a panel in
+        // Insert mode would make `Shift+Q` untypable into a PTY. For a panel
+        // that renders its own text field the composer really is the right
+        // Insert target, which is
         // what lets one bottom composer deliver to either target because
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
@@ -4322,7 +4319,18 @@ impl App {
                     title: "Example Diff".to_string().into_boxed_str(),
                 });
             }
-            Some(InputAction::Quit) => self.process_msg(TuiMsg::Quit),
+            // `q` quits from Normal mode, and it is destructive: the exit is
+            // gated behind a second press of the same key inside the arm
+            // window, exactly like `Ctrl+C`. The first press arms and says so
+            // on the row above the input.
+            Some(InputAction::Quit) => {
+                if crate::tui::commands::exit_control::request_exit(
+                    self,
+                    crate::tui::app::state::prompt::ExitArm::Quit,
+                ) {
+                    self.process_msg(TuiMsg::Quit);
+                }
+            }
             Some(InputAction::ForceQuit) => self.force_quit(),
             Some(InputAction::ExternalEditor) => self.process_msg(TuiMsg::ExternalEditor),
             Some(InputAction::Char(c)) => {
@@ -8889,9 +8897,6 @@ impl App {
                     "j/k: Scroll | Enter: Read more".to_string()
                 }
             }
-            ClickTarget::Working => {
-                "Click a subagent: Open its buffer | Esc: Back to main buffer".to_string()
-            }
             ClickTarget::Prompt => {
                 "Enter: Send | Shift+Enter: New line | Tab: Complete".to_string()
             }
@@ -9126,14 +9131,6 @@ impl App {
                 return ClickTarget::Completion;
             }
         }
-        // The working strip is carved out of the prompt chunk, so it is
-        // tested first: without this a click on a subagent row resolves to
-        // the composer and the row is unclickable.
-        if let Some(ref area) = self.ui_state.working_area {
-            if Self::in_rect(x, y, *area) {
-                return ClickTarget::Working;
-            }
-        }
         if let Some(ref area) = self.prompt_area {
             if Self::in_rect(x, y, *area) {
                 return ClickTarget::Prompt;
@@ -9289,31 +9286,6 @@ impl App {
                     crate::tui::components::sidebar::SidebarActivation::None => {}
                 }
             }
-            ClickTarget::Working => {
-                // Throbber row (or a gap between rows) has nothing to open.
-                if let Some(index) = self.ui_state.subagents.hit_at(x, y) {
-                    let Some(row) = self.ui_state.subagents.rows.get(index).cloned() else {
-                        return;
-                    };
-                    let was_open = self.ui_state.subagents.has_tab(row.identity_key());
-                    if self.ui_state.subagents.open(row.clone()) {
-                        let label = row.label().to_string();
-                        // Reopening an existing tab is a focus change, not a
-                        // new tab, so it gets different guidance than a first
-                        // open. Telling someone who just clicked a tab they
-                        // already had open that it "opened" would be a lie
-                        // about what happened.
-                        let hint = if was_open {
-                            "Shift+N / Shift+P to cycle"
-                        } else {
-                            "Shift+N / Shift+P to cycle, Shift+X to close"
-                        };
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Subagent buffer: {label} · {hint}"));
-                    }
-                }
-            }
             ClickTarget::Scrollbar {
                 track_y,
                 track_height,
@@ -9373,10 +9345,7 @@ impl App {
 
     fn on_scroll_up(&mut self, target: &ClickTarget) {
         match target {
-            ClickTarget::Viewport
-            | ClickTarget::Prompt
-            | ClickTarget::Working
-            | ClickTarget::None => {
+            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
                 self.messages_state.messages.scroll_up();
             }
             ClickTarget::Sidebar => {
@@ -9409,10 +9378,7 @@ impl App {
 
     fn on_scroll_down(&mut self, target: &ClickTarget) {
         match target {
-            ClickTarget::Viewport
-            | ClickTarget::Prompt
-            | ClickTarget::Working
-            | ClickTarget::None => {
+            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
                 self.messages_state.messages.scroll_down();
             }
             ClickTarget::Sidebar => {
@@ -9782,19 +9748,39 @@ impl App {
         }
     }
 
-    /// `Ctrl+C`: unwind the same layers as `Esc`, then exit.
+    /// `Ctrl+C`: clear the input, then arm the exit.
     ///
-    /// The explicit-exit path. Kept separate from [`Self::cancel`] so the
+    /// The explicit-exit path, kept separate from [`Self::cancel`] so the
     /// back-out key and the terminate key can never drift into the same
     /// behavior again.
+    ///
+    /// Leaving the program is destructive and `Ctrl+C` is one keystroke away
+    /// from a stray press, so the exit is gated behind a **second** press of
+    /// the same key inside [`EXIT_ARM_WINDOW`]:
+    ///
+    /// * The first press clears the field the user was typing into — the
+    ///   meaning the key has always had on an input — and arms the exit. The
+    ///   row above the input names the key to press again.
+    /// * The second press, inside the window, leaves.
+    /// * A dialog or the completion popup still owns the key: `Ctrl+C` backs
+    ///   out of what is on screen, exactly as it did before.
     fn force_quit(&mut self) {
-        self.cancel();
-        // A dialog or popup still open means the first press only dismissed
-        // it; a second press is needed to actually leave.
         if self.ui_state.dialog.is_open() || self.prompt_state.show_completions {
+            self.cancel();
             return;
         }
-        self.shutdown_app();
+        if crate::tui::commands::exit_control::request_exit(
+            self,
+            crate::tui::app::state::prompt::ExitArm::Force,
+        ) {
+            self.shutdown_app();
+            return;
+        }
+        // The first press: the text the user was typing goes, the turn does
+        // not. Clearing the field is the safe reading of "I did not mean to
+        // quit" — and the arm is what makes the second press meaningful.
+        self.prompt_state.prompt.clear();
+        self.prompt_state.show_completions = false;
     }
 
     /// Terminate the TUI: stop the render loop and mark the app not running.
@@ -13240,50 +13226,105 @@ impl App {
         // move`) at a user who was typing into a shell. One answer, both
         // surfaces, and they cannot disagree again.
         let input_mode = self.composer_input_mode();
-        // The composer's own verbs take the row when the composer holds the
-        // keyboard and no turn has the floor.
-        //
-        // A turn's keys are the *louder* claim on the row — stopping a run is
-        // actionable now, and the working strip's own status row names the
-        // same key. The composer's verbs are the idle surface's claim, and
-        // the composer's row is where they are finally visible outside the
-        // help box.
-        //
-        // The presence is gated on the **keyboard**, never on the mode: the
-        // row is present in Normal and in Insert alike, so `Esc` does not
-        // reflow the transcript. The mode changes the row's *text*.
-        if agent_keys.is_none() && self.composer_holds_keyboard() {
-            return Some(self.composer_hint_row(input_mode, budget));
+        // The composer's own claim on the row, and the panel's: exactly one of
+        // them owns the keyboard, so exactly one of them claims the row.
+        let composer_row = if agent_keys.is_none() && self.composer_holds_keyboard() {
+            Some(self.composer_hint_row(input_mode, budget))
+        } else {
+            None
+        };
+        let panel = if composer_row.is_none() {
+            self.panel_host
+                .composer_hints(self.chat_panel_project.as_deref(), input_mode)
+        } else {
+            None
+        };
+        let keys = match (
+            agent_keys.as_deref(),
+            panel.as_deref(),
+            composer_row.as_deref(),
+        ) {
+            (Some(agent), Some(panel), _) => Some(format!("{agent} · {panel}")),
+            (Some(agent), None, _) => Some(agent.to_string()),
+            (None, Some(panel), _) => Some(panel.to_string()),
+            (None, None, Some(composer)) => Some(composer.to_string()),
+            (None, None, None) => None,
+        };
+        // **Situational** information comes first: a fact the user needs now
+        // outranks a key they could press. The row above the input is the main
+        // buffer's one place for both, which is why the working strip's own
+        // status row could go: a latched turn failure and an armed exit both
+        // have a home here.
+        let situational = self.situational_hints();
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(situational) = situational.as_deref() {
+            parts.push(situational);
         }
-        let panel = self
-            .panel_host
-            .composer_hints(self.chat_panel_project.as_deref(), input_mode);
-        match (agent_keys, panel) {
-            (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
-            (Some(agent_keys), None) => Some(agent_keys),
-            (None, Some(panel)) => Some(panel),
-            (None, None) => None,
+        if let Some(keys) = keys.as_deref() {
+            parts.push(keys);
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(fit_parts(&parts, " · ", budget))
         }
     }
 
-    /// The composer's own hint row: the verbs available **right now**.
+    /// What the user must know right now, whoever owns the keyboard.
     ///
-    /// The row names the composer's **keys**, not their descriptions. The
-    /// descriptions live in the help, one keypress away, and a row that
-    /// spelled out fourteen verbs would not fit a terminal: measured at eighty
-    /// columns, the grouped form runs to ninety-four characters and loses the
-    /// line motions to the truncation. The keys fit, they are what a user
-    /// actually presses, and the row's job — "which letters are mine right
-    /// now" — is answered by the keys alone.
+    /// Two things, and both of them used to live on the working strip's status
+    /// row:
     ///
-    /// The keys are **derived** from the claim table, so the row cannot name a
-    /// verb another surface holds. A conditional verb is listed only while its
-    /// condition holds: on a single-line composer buffer `j` and `k` are the
-    /// transcript's, and the row must not claim them.
+    /// * A **latched turn failure**. It is latched because the toast that
+    ///   said the same thing expired, and the row is its durable reminder.
+    /// * The **armed exit** confirmation, which names the key to press again.
     ///
-    /// The row is **bounded**: a part is never split, because a row that ends
-    /// mid-key names a key that does not exist. Parts are dropped whole, from
-    /// the end, in the claim table's order.
+    /// They come first on the row because they are the two facts a user
+    /// cannot get back by looking anywhere else.
+    fn situational_hints(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        // The armed exit comes **first**: it is the one part with a deadline,
+        // and the row is bounded from the end, so a part that can expire has
+        // to be the one that survives.
+        if let Some(armed) = crate::tui::commands::exit_control::exit_arm_hint(self) {
+            parts.push(armed);
+        }
+        if let Some(error) = self.session_state.last_error.as_deref() {
+            // The same glyph the status row used, so the shape of the message
+            // is the one the user already knows.
+            parts.push(format!("✗ {error}"));
+        }
+        // Prompts waiting for the next turn. This used to be a suffix on the
+        // working strip's status row; the strip is gone, and this row is the
+        // buffer's one situational surface. Text only — the row is carved, and
+        // this must never add a row or reflow the transcript.
+        let queued = self.session_state.user_prompt_queue.len();
+        if queued > 0 {
+            parts.push(format!("{queued} queued"));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
+
+    /// The composer's own hint row: what is available **right now**.
+    ///
+    /// The row used to name the composer's **keys** — `a b d e i j k o p u w x`
+    /// and the rest — without saying what any of them did. A list of fourteen
+    /// letters is not a map: the user learns the vocabulary and still cannot
+    /// act on it, and the row that was supposed to help the buffer became the
+    /// noisiest thing in it.
+    ///
+    /// The descriptions live in the help, one keypress away (`space help`), so
+    /// the row points at that instead of repeating it. What is left is the row's
+    /// real job: a **situational** line — a latched failure, an armed exit —
+    /// which is why the row is kept open rather than filled with verbs.
+    ///
+    /// The presence is gated on the **keyboard**, never on the mode: the row
+    /// is present in Normal and in Insert alike, so `Esc` does not reflow the
+    /// transcript. The mode changes the row's *text*.
     fn composer_hint_row(&self, input_mode: InputMode, budget: usize) -> String {
         let separator = " · ";
         if input_mode == InputMode::Insert {
@@ -13295,21 +13336,9 @@ impl App {
             // below is the same fact said twice.
             return fit_parts(&["type", "Esc normal"], separator, budget);
         }
-        let lines = self.prompt_state.prompt.line_count();
-        // No `COMP`/`NOR` prefix: the badge above the input box carries the
-        // mode, and the row below it is for the **keys** — "which letters are
-        // mine right now". A row that restated the mode would be answering a
-        // question the badge has already answered.
-        let mut parts: Vec<&str> = Vec::new();
-        for entry in crate::tui::composer_claims::composer_verb_entries() {
-            if entry.condition.holds(lines) {
-                parts.push(entry.key_text);
-            }
-        }
         // The `space` chord opens the composer's help, where every verb is
         // described. The row points at it rather than repeating it.
-        parts.push("space help");
-        fit_parts(&parts, separator, budget)
+        fit_parts(&["space help"], separator, budget)
     }
 
     /// The stop/resume keys for the main buffer, or `None` when idle.
@@ -15199,35 +15228,6 @@ impl App {
                 .toasts
                 .info(&format!("Closed {}", tab.label()));
         }
-    }
-
-    /// Delegated work the main agent is blocked on right now.
-    ///
-    /// Counts live subagents and live jobs using the *same* predicates the
-    /// tasks overlay renders from (`SubagentRow::is_running` and
-    /// `tasks::is_live_state`), so the working strip can never disagree with
-    /// the list the user checks to confirm it.
-    ///
-    /// This is derived rather than announced by a `SubagentStarted` /
-    /// `JobStarted` event on purpose: the indicator has to be right on the one
-    /// occasion it matters — the main agent has fanned out and is now silent —
-    /// and an event that is dropped, coalesced, or simply not wired to the
-    /// phase leaves the strip reading `idle` for the entire wait. Deriving it
-    /// from the same projection the overlay reads cannot drift.
-    pub fn awaiting_task_counts(&self) -> (usize, usize) {
-        let subagents = self.ui_state.subagents.running_count();
-        let jobs = self
-            .projection_client
-            .active_snapshot()
-            .map(|(_, snapshot)| {
-                snapshot
-                    .jobs
-                    .iter()
-                    .filter(|job| crate::tui::app::state::tasks::is_live_state(&job.state))
-                    .count()
-            })
-            .unwrap_or(0);
-        (subagents, jobs)
     }
 
     /// Rows the unified tasks overlay needs, including its per-group headers.

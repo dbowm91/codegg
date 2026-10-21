@@ -815,7 +815,7 @@ async fn v_selects_characters_and_space_y_arms_only_a_prefix() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn esc_drops_a_selection_before_it_leaves_the_panel() {
+async fn leaving_a_panel_keeps_the_terminal_selection() {
     let mut app = test_app();
     app.ui_state.sidebar_visible = true;
     attach_terminal(&mut app, "t-esc", &["one", "two", "three", "four"]);
@@ -824,14 +824,22 @@ async fn esc_drops_a_selection_before_it_leaves_the_panel() {
     app.on_key(plain('x'));
     assert!(app.interactive_terminals.selection("t-esc").is_some());
 
+    // `Esc` is the mode switch, so it never takes the keyboard away from the
+    // panel — and it cannot drop the selection either.
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.panel_host.is_focused(),
+        "Esc must not release the panel — Shift+Q is the panel exit"
+    );
+    assert!(
+        app.interactive_terminals.selection("t-esc").is_some(),
+        "the mode switch must not discard the selection"
+    );
 
-    // The host claims Esc as the panel exit, so the selection must survive it:
-    // the state lives on the controller, so stepping back out and returning
-    // finds the text the reader was about to copy still selected.
+    app.on_key(key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
     assert!(
         !app.panel_host.is_focused(),
-        "Esc is the host's exit from a focused panel"
+        "Shift+Q is the host's exit from a focused panel"
     );
     assert!(
         app.interactive_terminals.selection("t-esc").is_some(),
@@ -1064,9 +1072,9 @@ async fn a_normal_mode_composer_is_not_rewritten_by_a_panel_visit() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn leaving_a_panel_with_escape_also_restores_the_composer_mode() {
-    // `Esc` blurs through the host rather than through `blur_panel`, so it
-    // owes the composer the same restoration. Without this the user is
+async fn leaving_a_panel_with_the_exit_key_also_restores_the_composer_mode() {
+    // The exit key blurs through the host rather than through `blur_panel`,
+    // so it owes the composer the same restoration. Without this the user is
     // dropped into Normal whatever they were doing before.
     let mut app = test_app();
     open_help_box_while_composing(&mut app);
@@ -1082,12 +1090,12 @@ async fn leaving_a_panel_with_escape_also_restores_the_composer_mode() {
         "precondition: the panel is a Normal-mode surface"
     );
 
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!app.panel_host.is_focused(), "Esc leaves the panel");
+    app.on_key(key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+    assert!(!app.panel_host.is_focused(), "Shift+Q leaves the panel");
     assert_eq!(
         app.ui_state.input_mode,
         InputMode::Insert,
-        "Esc must hand back the composer's own mode too"
+        "leaving the panel must hand back the composer's own mode too"
     );
 }
 

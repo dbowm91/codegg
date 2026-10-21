@@ -273,8 +273,8 @@ model to the wrong connection.
   widget renders into an in-memory backend sized to the column and is copied
   out. Do not add per-panel branches to the render path. A focused panel owns
   *navigation* — arrows, `j`/`k`, paging, its own verbs — and is consulted
-  **only in Normal mode**, because the host claims `Esc`/`q` as exits and
-  would otherwise make `q` untypable while composing.
+  **only in Normal mode**, because the host claims `Shift+Q` as the panel exit
+  and consulting it in Insert would make `Shift+Q` untypable while composing.
   `PanelKey::PassThrough` exists only for panels that hold
   no draft (the chat panel passes `i`/`a` to the composer); a panel with a
   live buffer must still consume everything. A verb that carries text to
@@ -300,12 +300,11 @@ model to the wrong connection.
     was in.
   - **The row is a carved row, and the input box does not move with it.**
     `session_layout` gives the prompt chunk a fixed, bottom-anchored height, and
-    the working strip, hint line and todo strip come off its **top** in that
-    order. So the composer stays on its row whatever the carved region does —
-    the opposite of what the arithmetic looks like it should do. Pin it, because
-    a hint row that reflowed the input every time a panel took or lost focus
-    would be the same defect the working strip's reserved row 0 exists to
-    prevent. Nothing to do with that strip, which is reserved unconditionally.
+    the hint line and the todo strip come off its **top** in that order. So the
+    composer stays on its row whatever the carved region does — the opposite of
+    what the arithmetic looks like it should do. Pin it, because a hint row that
+    reflowed the input every time a panel took or lost focus would be the same
+    defect the buffer's layout has to prevent.
     **The row is not vacated when a panel lets go**: the composer takes it over,
     because the composer's own verbs are what the row is for (M007). The row's
     *content* changes with the keyboard; its *presence* does not, so the working
@@ -362,9 +361,10 @@ model to the wrong connection.
   because a wrapped line occupies several rows, so both hand the clamp to the
   render pass and two clamps reach a different last row with no error to show.
   A `keymap_hint` is a claim about the **hosted** verb set: `Esc` never reaches
-  a hosted widget (the host claims `Esc`/`q` as its own exit and blurs first)
-  and `Enter`'s `CloseDialog` runs against an empty modal stack, because
-  docking popped the box off it. Do not name either, and do not replay a
+  a hosted widget as an *exit* — the host's exit is `Shift+Q`, and `Esc` is the
+  mode switch (Insert ↔ Normal), so a panel that owns a text field or a live
+  PTY keeps it — and `Enter`'s `CloseDialog` runs against an empty modal stack,
+  because docking popped the box off it. Do not name either, and do not replay a
   `set_custom_footer` string into the hint — those describe the modal box.
   Project binding is resolved by `commands/panels.rs`, not by the panel.
   Key precedence in `App::on_key`:
@@ -382,13 +382,18 @@ model to the wrong connection.
   and the Ctrl+T pane use. Only a *file* emits an open intent; a directory has
   no document. `/files` is `DocumentScope::Workspace`, so the editor's
   `[project]` badge is the honest reading.
-- **`Enter` expands, `l` peeks, `h` goes up a level.** `Enter` reveals a
-  directory's contents in place and leaves the cursor alone. `l` **peeks**:
-  the selected directory opens in place and the cursor moves into it, so the
+- **`Enter` and `l` are one motion: open the selected row.** `Enter` on a
+  directory enters it — the same motion `l` makes — and `Enter` on a file
+  emits `TuiMsg::FilesOpenSelected`, routed to `open_editor` — the same seam
+  `/open` and the Ctrl+T pane use. `l` **peeks** into a directory: the
+  selected directory opens in place and the cursor moves into it, so the
   parent and the siblings stay on screen — it does **not** make the directory
-  the listing's root. Only a directory at the listing window's edge (the
-  daemon's listing reaches three levels) slides the scope to the directory's
-  **parent**, with the directory still selected and expanded. `h` is the
+  the listing's root. `l` on a **file** opens it, because a file has nothing
+  to enter: the key is never dead. Only a directory at the listing window's
+  edge (the daemon's listing reaches three levels) slides the scope, and it
+  slides to the directory's **grandparent** — the shallowest scope in which
+  the directory's children still fit inside the window, so the user keeps the
+  widest context — with the directory still selected and expanded. `h` is the
   mirror: from inside a directory it moves the cursor to the parent row and
   collapses that directory; from a top-level row it slides the scope up one
   level; at the workspace root it collapses the selected directory in place,
@@ -990,26 +995,25 @@ model to the wrong connection.
   unreachable, because the viewport click arm is the only thing that expands
   a message. All other surfaces keep immediate press behaviour through the
   shared `dispatch_click`.
-- **The working strip owns turn liveness, and it names the way out.**
-  `render_working_strip` draws one status row plus one row per advertised
-  subagent between the transcript and the composer, reserved from the prompt
-  allocation and carved back off like the hint line and the todo strip.
-  **Row 0 is reserved unconditionally** — it reads `idle` when nothing runs —
-  because this height is subtracted from the transcript (`session_layout` splits
-  `prompt_height` against `Min(10)`). Gating it on turn state reflowed the
-  transcript on every submit and every completion; reserving it permanently
-  lets the content change freely with the viewport height fixed. Subagent rows
-  stay content-driven, since N subagents need N rows. Row 0 resolves in strict
-  precedence — latched `last_error`, then `stopped_turn`, then the live phase,
-  then `idle` — and pairs it with the key that changes it (`x to stop`, `press x
-  again to stop agent` while a confirmation is armed, `press x or /start` once
-  stopped): a long pause with no way out is what reads as a dropped connection.
-  Error and stopped both draw a **static** glyph; nothing is running, so an
-  animated one would lie about it.
-  `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
-  because the strip is carved out of the prompt chunk — the reverse order
-  resolves every subagent click to click-to-focus. Hit rects live in
-  `SubagentState::hits` and are rebuilt every frame.
+- **There is no working strip, and the row above the composer is situational.**
+  The strip used to draw one status row plus one row per advertised subagent
+  between the transcript and the composer. It cost a row of vertical space to
+  say `idle` most of the time, and it made the buffer's task state visible
+  whether the user wanted it or not. It is **deleted**: `working_strip_rows`,
+  `render_working_strip`, `ClickTarget::Working`, `UiState::working_area` and
+  `SubagentState::hits` are all gone, and **nothing is reserved** between the
+  transcript and the composer — so the transcript cannot reflow when the turn
+  state changes, because there is no row that appears or vanishes.
+  The task state lives in the **`Ctrl+T` tasks overlay**, which already
+  unifies todos, in-flight subagents and live jobs and is on demand.
+  The row above the composer is the buffer's one *situational* surface: the
+  `space help` chord, a latched `last_error` (`✗ {error}`), and an armed exit
+  confirmation. It names **no verb keys** — a list of bare letters is not a
+  map, and the help one keypress away is where the verbs are described.
+  Two things the strip used to own moved with it: the stop-agent arm's expiry
+  (`expire_pending_stop_armed`) and the projection sync for
+  `ui_state.subagents` are now called from the **render pump**, not from a
+  renderer.
 - **One spinner, one cadence, one phase enum.** Frames come from
   `tui::components::spinner::spinner_frame(elapsed)` — a pure function over one
   frame table at 100ms, so there is no counter to drift and renders stay
@@ -1379,7 +1383,7 @@ model to the wrong connection.
   mode paints a solid block instead. Both read
   `PromptWidget::caret_cell`, the single computation of where the caret is on
   screen, so the two cannot disagree. The app runs **one** animation cadence
-  (the 100 ms working strip), so a blinking caret must come from the terminal —
+  (the 100 ms activity cadence), so a blinking caret must come from the terminal —
   ratatui hides the terminal cursor whenever a frame did not position it, so
   "position nothing" is how the composer shows no cursor at all. The rule the
   badge and the caret share: **when the composer holds the keyboard, `[INS]`

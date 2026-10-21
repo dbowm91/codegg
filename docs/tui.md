@@ -141,6 +141,14 @@ Read it as "the gesture pointing at a panel enters it, the opposite gesture
 comes back, and the other two walk the panel list". With a **box** open, the
 same gesture instead means "move this box into the panel on that side".
 
+**`Esc` does not leave a panel.** It is the mode switch: it leaves Insert mode
+(keeping whatever you typed) and, in Normal mode, it does nothing. A panel
+holds the keyboard and its selection until you point somewhere else with the
+gestures above. `Shift+Q` is the panel's own exit — it hands the keyboard back
+to the composer and leaves the panel where it is, which is what `Esc` used to
+do. It is how the `/files` box closes. The line above the input says so while
+a panel holds the keyboard (`⇧Q leave · …`).
+
 **The main buffer is a stop of its own, not something you step over.** With two
 columns up — Terminal left, Chat right — one `Shift+H` from Chat lands in the
 buffer and the second reaches Terminal. The buffer sits *between* the columns, so
@@ -287,8 +295,21 @@ A few commonly used entries:
 To leave CodeGG: `q` in Normal mode, `/exit`, or `Ctrl+C`. **`Esc` never
 quits.** It backs out one layer at a time — close a dialog, dismiss the
 completion popup, return from Insert to Normal mode, or discard a half-written
-prompt — and then stops. `Ctrl+C` unwinds the same layers before it exits, so a
-dialog needs a second press.
+prompt — and then stops.
+
+`Esc` never hands a **panel's** selection back to the conversation either. It
+is the mode switch: it leaves Insert mode (keeping whatever you typed), and in
+Normal mode it does nothing. A panel keeps the keyboard and the selection
+until you move the panel selection with `Shift+H/J/K/L`; `Shift+Q` is how you
+leave it, and it is how the `/files` box closes.
+
+**Leaving takes two deliberate presses.** `q` and `Ctrl+C` each need a second
+press of the same key within three seconds. The first `Ctrl+C` clears the text
+you were typing and arms the exit; the line above the input then says which
+key to press again (`press ctrl+c again to exit`, `press q again to quit`). If
+you do not press it again the message goes away on its own and nothing
+happens. A dialog is still dismissed by the first `Ctrl+C`, so a dialog takes
+two presses to leave.
 
 Registry metadata — domain, scope, and source exist for palette and help
 presentation only. It does not bypass dispatch, observer mode, daemon
@@ -725,12 +746,14 @@ question and answering it in two places meant the two could disagree.
 
 ### When the agent is waiting on other work
 
-The status row above the input reports `idle` only when nothing at all is
-running. If the main agent has handed work to subagents or background jobs and
-is now blocked on the results, it reads `awaiting N tasks` and names the
-breakdown — so a long fan-out looks like a wait rather than a hang. Live jobs
-count here too, which is why a job running under a finished turn is still
-visible there.
+Press `Ctrl+T`. The overlay lists the todos, the subagents that are still
+running, and the live jobs the session is waiting on, in that order — so a long
+fan-out looks like a wait rather than a hang. Live jobs count here too, which
+is why a job running under a finished turn is still visible.
+
+That is the only place this state appears. The main buffer has no status row
+of its own: the line above the input carries the composer's `space help`
+chord, a latched failure, and an armed exit confirmation — nothing else.
 
 ### Subagent tabs
 
@@ -1964,20 +1987,29 @@ the same navigation, so the keys below mean the same thing in both.
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
-| `Enter` on a directory | expand or collapse it in place — the cursor stays |
-| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it |
+| `Enter` | **the same as `l`**: a directory is entered, a file is opened in the editor |
+| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a file it opens the file |
 | `h` / `←` | go back one level (at the workspace root: collapse in place, otherwise jump to the parent) |
-| `Enter` on a file | open it in the editor |
 | `i` | type a filter into the pane — the rows narrow as you type |
 | `r` | re-list the current directory |
-| `Esc` | leave the pane / close the box |
+| `Esc` | leave the filter mode, keeping the filter |
+| `Shift+Q` | close the box / leave the pane |
 
 `l` **peeks** rather than re-rooting. The directory opens in place and the
 cursor moves into it, so the parent and its siblings stay on screen and you
-can see where you are. Only when the listing has run out of room — three
-levels deep is as far as the daemon's listing reaches — does the scope slide
-to the directory's parent, the directory stays selected and open, and
-everything above the parent is dropped. `h` is the mirror: from inside a
+can see where you are. `Enter` is the same motion — it used to expand a
+directory in place and leave the cursor alone, which at the edge of the
+listing showed an "empty" directory instead of a move.
+
+Only when the listing has run out of room — three levels deep is as far as the
+daemon's listing reaches — does the scope slide, and it slides to the
+directory's **grandparent**: the shallowest scope in which the directory's
+children fit back inside the listing, so you keep the widest context and the
+directory's parent stays visible beside its siblings. The path down to the
+directory opens with it, so the directory you asked for is on screen with its
+own children under it. The workspace root never
+changes; the scope is a view of the workspace, not a working directory, so the
+panel can go as deep as the tree goes. `h` is the mirror: from inside a
 directory it moves the cursor to the parent row and collapses it; from a
 top-level row it slides the scope up one level. The pair reads as a horizontal
 motion: `l` goes right (deeper), `h` goes left (shallower).
@@ -2007,7 +2039,7 @@ keys of a panel you have docked but not yet entered.**
 When `/files` is running in the side panel, that line reads
 
 ```
-▌ Files · Shift+→/Shift+L in · j/k move · ^d/^u page · l/→ peek into dir · …
+▌ Files · Shift+→/Shift+L in · j/k move · ^d/^u page · l/→ open · …
 ```
 
 and once the panel has the keyboard the front of it flips to `Shift+← back`. The
@@ -2017,7 +2049,7 @@ the file browser's own keys, not a generic panel description: the box, its
 panel, and this line are written from one source, so they cannot drift apart.
 
 That source is the box itself. Every box that can dock says its own keys now, not
-just the information panels: `/files` says `l/→ peek into dir`, `/mcps` says
+just the information panels: `/files` says `l/→ open`, `/mcps` says
 `j/k move · enter actions`, `/review` says `j/k move · enter diff`, and `/diff`
 says `j/k scroll · ^d/^u page · s side-by-side`. A box whose meaning changes with
 what it is showing says the right thing in each case — `/theme` says

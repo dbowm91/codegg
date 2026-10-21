@@ -160,6 +160,14 @@ impl App {
             TuiMsg::ChatComposerSeed(seed) => {
                 self.arm_chat_composer(seed);
             }
+            TuiMsg::CancelChatComposer => {
+                // `Esc` inside a panel is the **mode switch**, not a panel
+                // exit: it backs out of the armed compose context and leaves
+                // the keyboard where it was. With no context armed there is
+                // nothing to cancel, so the key is a no-op rather than a
+                // silent focus move.
+                self.cancel_chat_composer();
+            }
             TuiMsg::AgentPanelAction { selection, name } => {
                 crate::tui::commands::agent_editor::apply_agent_selection(self, selection, &name);
             }

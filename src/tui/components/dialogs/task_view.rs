@@ -42,14 +42,17 @@ enum Chrome {
 /// `handle_key` below is the implementation and this is the advertisement.
 /// `Esc`, `q`, `↑`/`↓` and `J`/`K` are deliberately absent even though
 /// `handle_key` answers all of them: `SidePanelHost::handle_key` claims
-/// `Esc`/`q` as its universal exits and `insert_panel_direction_bindings` binds
+/// `Shift+Q` as the panel exit and `insert_panel_direction_bindings` binds
 /// bare uppercase `H`/`J`/`K`/`L` (with SHIFT and with NONE, because
 /// terminals disagree about how they encode a shifted letter) as panel
 /// directions, so all of them are answered before this widget is consulted. The
 /// `J`/`K` case is the sharp one — that pair is the reorder gesture, and it
 /// cannot fire from a column at all, so the old footer's `J/K reorder` was
-/// false the moment the box docked. `Home`/`End`/`PageUp`/`PageDown` are *not*
-/// panel directions, which is why this hint can still promise them.
+/// false the moment the box docked. `Esc` is absent because it is the mode
+/// switch: it means "close" in the modal box and "leave the widget's mode" in
+/// a column, and a hosted hint cannot promise one of the two. `Home`/`End`/
+/// `PageUp`/`PageDown` are *not* panel directions, which is why this hint can
+/// still promise them.
 const HINT: &str = "j/k move · ^d/^u page · Home/End end · g/G end · enter open · d detail · r refresh · x cancel · u resume · t trigger · T rotate · X revoke · e trigger refresh";
 
 /// One rendered Task-view row (bounded, secret-free).

@@ -136,15 +136,29 @@ pub enum PeekStep {
         directory: String,
     },
     /// The directory's children are outside the listing window: slide the
-    /// scope to `scope` (the directory's parent), expand the directory
-    /// there, and move the cursor into it.
+    /// scope to `scope` (the directory's **grandparent**), expand the
+    /// directory there, and move the cursor into it.
+    ///
+    /// The grandparent is the *shallowest* scope in which the directory's
+    /// children fit back inside the window, so the slide keeps as much
+    /// context as it can: the directory's parent stays visible beside the
+    /// directory's siblings, and the directory itself lands one level below
+    /// the scope root rather than directly on it. Sliding to the directory's
+    /// parent instead would also fit, but it would discard that context for
+    /// no navigational gain.
     Slide {
-        /// The new scope: the directory's parent.
+        /// The new scope: the directory's grandparent.
         scope: String,
         /// The directory to expand in the new scope.
         directory: String,
     },
-    /// Nothing to peek at: a file, or no selection.
+    /// The selection is a file: there is nothing to peek into, so the motion
+    /// opens it instead.
+    Open {
+        /// The file to open.
+        path: String,
+    },
+    /// Nothing to peek at: no selection, or a path the listing does not hold.
     None,
 }
 
@@ -436,36 +450,14 @@ impl FileTreeState {
         }
     }
 
-    /// Expand or collapse the selected directory.
-    ///
-    /// Returns the path that changed, so a caller can report it. A file
-    /// selection is a no-op: expanding a file is not a meaningful action.
-    ///
-    /// The *verb* this used to be bound to is retired: `l` expands and
-    /// enters, `h` leaves and collapses, so the standalone toggle has no
-    /// key left. What is left is the state-level helper the peek motion
-    /// uses — expand a directory, or collapse one.
-    pub fn toggle_selected(&mut self) -> Option<String> {
-        let row = self.selected_row()?;
-        if row.kind != TreeNodeKind::Directory {
-            return None;
-        }
-        if self.expanded.contains(&row.path) {
-            self.expanded.remove(&row.path);
-        } else {
-            self.expanded.insert(row.path.clone());
-        }
-        Some(row.path)
-    }
-
     /// Decide what `l`/right/Enter does with the current selection.
     ///
     /// A directory whose children are still inside the listing window is
     /// expanded in place and the cursor moves into it. A directory at the
     /// window's edge (relative depth 2) cannot show its children, so the
-    /// scope slides to its parent and the directory is expanded there.
+    /// scope slides and the directory is expanded there.
     ///
-    /// A file is not a directory: there is nothing to peek into.
+    /// A file has nothing to peek into, so the motion opens it instead.
     pub fn peek_into_selected(&self) -> PeekStep {
         let Some(row) = self.selected_row() else {
             return PeekStep::None;
@@ -483,11 +475,16 @@ impl FileTreeState {
             return PeekStep::None;
         };
         if row.kind != TreeNodeKind::Directory {
-            return PeekStep::None;
+            return PeekStep::Open {
+                path: row.path.clone(),
+            };
         }
         if self.relative_depth(&row) >= 2 {
+            // The directory's children are a level past the window, so the
+            // scope slides to its grandparent: the shallowest scope in which
+            // those children fit back inside the window.
             return PeekStep::Slide {
-                scope: parent_path(&row.path),
+                scope: parent_path(&parent_path(&row.path)),
                 directory: row.path,
             };
         }
@@ -580,6 +577,40 @@ impl FileTreeState {
     pub fn expand_and_select(&mut self, root: &str) {
         self.expanded.insert(root.to_string());
         self.selected = Some(root.to_string());
+    }
+
+    /// Expand the directories between `scope` and `directory`.
+    ///
+    /// A scope slide replaces the listing, and in the new scope the target
+    /// sits at the bottom of a chain that starts at the scope root: the
+    /// scope's own rows are the target's *ancestors*. Expanding only the
+    /// target leaves that chain collapsed, and the row the user pressed `l`
+    /// on is not on screen at all — the pane has changed scope and shown
+    /// nothing new.
+    ///
+    /// The scope root itself is never expanded: it is the top of the listing,
+    /// not a row inside it.
+    pub fn expand_ancestors_of(&mut self, scope: &str, directory: &str) {
+        let scope = scope.trim_matches('/');
+        let mut path = directory.to_string();
+        loop {
+            let parent = parent_path(&path);
+            if parent.is_empty() {
+                break;
+            }
+            if scope.is_empty() {
+                // The workspace root scope: every ancestor above the target
+                // belongs to it.
+                self.expanded.insert(parent.clone());
+            } else if parent == scope {
+                break;
+            } else if parent.starts_with(&format!("{scope}/")) {
+                self.expanded.insert(parent.clone());
+            } else {
+                break;
+            }
+            path = parent;
+        }
     }
 
     /// Ask for the cursor to enter `directory` once the relist lands.
@@ -813,7 +844,13 @@ impl FileTreeState {
             return false;
         }
         self.nodes = listing.nodes;
-        self.truncated = listing.truncated_reason;
+        // The depth window is a navigational bound, not a loss: the panel
+        // slides its scope when a directory's children fall outside it, so a
+        // notice about it would report a limit the user does not have. Every
+        // other bound hides entries the panel cannot show, and stays.
+        self.truncated = listing
+            .truncated_reason
+            .filter(|reason| !crate::directory_listing::is_depth_stop_reason(reason));
         self.status = FileTreeStatus::Ready;
         // Drop expansions for directories that no longer exist so a rebuild
         // cannot leave the tree holding a path it will never match again.
@@ -1117,35 +1154,6 @@ mod tests {
     }
 
     #[test]
-    fn toggle_expands_and_collapses_a_directory_but_ignores_a_file() {
-        let root = temp();
-        write(root.path(), "dir/inner.txt");
-        write(root.path(), "file.txt");
-
-        let mut state = state_with(root.path());
-        assert_eq!(state.selected.as_deref(), Some("dir"));
-        assert!(!state.rows().iter().any(|r| r.path == "dir/inner.txt"));
-
-        assert_eq!(state.toggle_selected().as_deref(), Some("dir"));
-        assert!(state.expanded.contains("dir"));
-        let expanded = state.rows();
-        // The directory row reports itself expanded; the child file becomes
-        // visible but is not itself "expanded" — those are different things.
-        assert!(expanded.iter().any(|r| r.path == "dir" && r.expanded));
-        assert!(expanded.iter().any(|r| r.path == "dir/inner.txt"));
-        assert!(!expanded
-            .iter()
-            .any(|r| r.path == "dir/inner.txt" && r.expanded));
-
-        assert_eq!(state.toggle_selected().as_deref(), Some("dir"));
-        assert!(!state.expanded.contains("dir"));
-        assert!(!state.rows().iter().any(|r| r.path == "dir/inner.txt"));
-
-        state.selected = Some("file.txt".to_string());
-        assert_eq!(state.toggle_selected(), None, "a file is not expandable");
-    }
-
-    #[test]
     fn descending_makes_the_directory_the_pane_root_and_drops_the_old_rows() {
         let root = temp();
         write(root.path(), "dir/a.txt");
@@ -1419,7 +1427,7 @@ mod tests {
 
         let mut state = state_with(root.path());
         state.selected = Some("docs".to_string());
-        state.toggle_selected();
+        state.expanded.insert("docs".to_string());
         let paths = |state: &FileTreeState| {
             state
                 .rows()
@@ -1557,7 +1565,7 @@ mod tests {
         write(second.path(), "c.txt");
 
         let mut state = state_with(first.path());
-        state.toggle_selected();
+        state.expanded.insert("a".to_string());
         assert!(state.expanded.contains("a"));
         assert!(state.set_root_prefix("a"));
         assert_eq!(state.root_prefix(), "a");
@@ -1677,7 +1685,7 @@ mod tests {
         let root = temp();
         write(root.path(), "gone/inner.txt");
         let mut state = state_with(root.path());
-        state.toggle_selected();
+        state.expanded.insert("gone".to_string());
         assert!(state.expanded.contains("gone"));
 
         std::fs::remove_dir_all(root.path().join("gone")).expect("rm");
@@ -1871,8 +1879,9 @@ mod tests {
 
         let mut state = state_with(root.path());
         state.selected = Some("dir".to_string());
+        state.expanded.insert("dir".to_string());
         assert!(
-            state.toggle_selected().is_some(),
+            state.rows().iter().any(|row| row.path == "dir/nested"),
             "expanding a directory adds its children as rows"
         );
         let before_rows = state.rows();
@@ -1923,8 +1932,12 @@ mod tests {
     }
 
     /// `l` on a directory at the window's edge: its children cannot be
-    /// fetched, so the scope slides to its parent and the directory is
-    /// expanded there.
+    /// fetched, so the scope slides and the directory is expanded there.
+    ///
+    /// The scope slides to the directory's **grandparent**: the shallowest
+    /// scope in which the directory's children still fit inside the window,
+    /// so the user keeps the widest context — the directory's parent stays
+    /// visible beside the directory's siblings.
     #[test]
     fn peeking_into_a_directory_at_the_window_edge_slides_the_scope() {
         let root = temp();
@@ -1936,20 +1949,63 @@ mod tests {
         assert_eq!(
             state.peek_into_selected(),
             PeekStep::Slide {
-                scope: "src/tui".to_string(),
+                scope: "src".to_string(),
                 directory: "src/tui/app".to_string(),
             }
         );
     }
 
-    /// `l` on a file is not a motion: there is nothing to peek into.
+    /// A scope slide has to open the chain between the new scope and the
+    /// directory, or the row the user pressed `l` on is not on screen at all:
+    /// in the new scope the directory's *ancestors* are the rows, and they
+    /// arrive collapsed.
     #[test]
-    fn peeking_into_a_file_is_a_no_op() {
+    fn a_slide_opens_the_chain_down_to_the_directory() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        assert!(state.set_root_prefix("src"));
+
+        state.expand_ancestors_of("src", "src/tui/app");
+        assert!(
+            state.expanded.contains("src/tui"),
+            "the chain down to the directory is open: {:?}",
+            state.expanded
+        );
+        assert!(
+            !state.expanded.contains("src"),
+            "the scope root is the top of the listing, not a row inside it"
+        );
+    }
+
+    /// The workspace-root scope has no root row, so every ancestor above the
+    /// target belongs to it.
+    #[test]
+    fn a_slide_to_the_workspace_root_opens_every_ancestor() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+
+        state.expand_ancestors_of("", "src/tui/app");
+        assert!(
+            state.expanded.contains("src") && state.expanded.contains("src/tui"),
+            "the whole chain is open: {:?}",
+            state.expanded
+        );
+    }
+
+    /// `l` on a file opens it: a file has nothing to peek into, and the key
+    /// is never dead.
+    #[test]
+    fn peeking_into_a_file_opens_it() {
         let root = temp();
         let mut state = state_with_listing(root.path(), worked_example_listing());
         state.selected = Some("Cargo.toml".to_string());
 
-        assert_eq!(state.peek_into_selected(), PeekStep::None);
+        assert_eq!(
+            state.peek_into_selected(),
+            PeekStep::Open {
+                path: "Cargo.toml".to_string(),
+            }
+        );
     }
 
     /// `h` from inside a directory: the cursor moves to the parent row and
