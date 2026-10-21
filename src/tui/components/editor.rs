@@ -845,11 +845,13 @@ impl EditorWidget<'_> {
         let thumb = visible.min(total).clamp(1, track);
         let max_first = total.saturating_sub(visible);
         let first = viewport.first_line.min(max_first);
-        let offset = if max_first == 0 {
-            0
-        } else {
-            first * (track - thumb) / max_first
-        };
+        // `checked_div` rather than a `max_first == 0` branch: the divisor is
+        // zero exactly when the whole document fits on screen, and then the
+        // thumb belongs at the top of the track.
+        let offset = first
+            .saturating_mul(track - thumb)
+            .checked_div(max_first)
+            .unwrap_or(0);
         let thumb_style = Style::default().fg(theme.primary);
         let track_style = Style::default().fg(theme.border);
         let lines: Vec<Line> = (0..track)
