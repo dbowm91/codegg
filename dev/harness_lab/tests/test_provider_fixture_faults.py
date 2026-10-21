@@ -107,6 +107,46 @@ class FixtureFaultTests(unittest.TestCase):
         finally:
             provider.close()
 
+    def test_a_tool_less_request_after_the_first_is_the_step_budget_finishing_the_turn(self) -> None:
+        """The final request of a bounded turn advertises no tools.
+
+        The product stops advertising tools when the agent reaches its step
+        budget: the request asks the model for a summary instead of another
+        tool call. The fixture answers that request with the turn completion
+        instead of refusing the schema, because a tool-less request in the
+        middle of a turn is the budget doing its job.
+        """
+        provider = FixtureProvider(
+            [{"name": "read", "arguments": {"path": "missing.txt"}}] * 3).start()
+        try:
+            first = _chat_request(provider.base_url, _payload("read"))
+            first.read()
+            first.close()
+            self.assertEqual(first.status, 200)
+
+            tool_less = _chat_request(provider.base_url, {"messages": [{"role": "user", "content": "go"}],
+                                                       "tools": []})
+            body = tool_less.read().decode("utf-8")
+            tool_less.close()
+            self.assertEqual(tool_less.status, 200)
+            self.assertIn("[DONE]", body)
+            self.assertTrue(provider.request_summaries[-1]["toolless_final"])
+        finally:
+            provider.close()
+
+    def test_a_tool_less_first_request_is_still_a_schema_mismatch(self) -> None:
+        """The tolerance is narrow: only a *later* tool-less request is legal."""
+        provider = FixtureProvider(
+            [{"name": "read", "arguments": {"path": "missing.txt"}}] * 3).start()
+        try:
+            first = _chat_request(provider.base_url, {"messages": [{"role": "user", "content": "go"}],
+                                                       "tools": []})
+            first.read()
+            first.close()
+            self.assertEqual(first.status, 422)
+        finally:
+            provider.close()
+
 
 if __name__ == "__main__":
     unittest.main()

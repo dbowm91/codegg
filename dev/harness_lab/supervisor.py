@@ -274,11 +274,7 @@ class AcpClient:
                 raise HarnessError(f"ACP emitted invalid JSON-RPC: {error}") from error
             if value.get("id") != request_id:
                 if "method" in value and "id" not in value:
-                    value["_received_elapsed_ms"] = int((time.monotonic() - self._started_monotonic) * 1000)
-                    self.notifications.append(value)
-                    params = value.get("params", {})
-                    update = params.get("update", {}) if isinstance(params, dict) else {}
-                    self.frame_summaries.append({"method": value.get("method"), "sessionUpdate": update.get("sessionUpdate") if isinstance(update, dict) else None})
+                    self._absorb_frame(value)
                 continue
             if "error" in value:
                 error = value.get("error", {})
@@ -287,6 +283,67 @@ class AcpClient:
                 raise HarnessError(f"ACP {method} failed: {value['error']}")
             self.frame_summaries.append({"response_id": value.get("id"), "method": method, "result_keys": sorted(value.get("result", {}).keys()) if isinstance(value.get("result"), dict) else []})
             return value.get("result", {})
+
+    def _absorb_frame(self, value: dict[str, Any]) -> None:
+        """Absorb one non-response JSON-RPC frame as a notification."""
+        value["_received_elapsed_ms"] = int((time.monotonic() - self._started_monotonic) * 1000)
+        self.notifications.append(value)
+        params = value.get("params", {})
+        update = params.get("update", {}) if isinstance(params, dict) else {}
+        self.frame_summaries.append({"method": value.get("method"),
+                                     "sessionUpdate": update.get("sessionUpdate") if isinstance(update, dict) else None})
+
+    def drain(self, timeout: float = 1.0) -> int:
+        """Read every notification that is already in flight, then stop.
+
+        A tool call is reported by two notifications: the ``tool_call`` start
+        and the ``tool_call_update`` finish. The ACP server can deliver the
+        last of them *after* the ``session/prompt`` response, so counting the
+        notification stream the moment the response arrives can miss the tail
+        of the turn. A trial that counted fewer tool calls than the agent
+        actually made read as a stalled turn, and the same trial could read
+        differently on the next run — the count depended on how the two
+        streams interleaved.
+
+        The drain reads until the stream is quiet for a short idle window, so
+        the counts describe the turn rather than the scheduling.
+        """
+        assert self.process.stdout
+        deadline = time.monotonic() + timeout
+        absorbed = 0
+        while time.monotonic() < deadline:
+            line = self._read_line(deadline)
+            if line is None:
+                break
+            try:
+                value = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if "method" in value and "id" not in value:
+                self._absorb_frame(value)
+                absorbed += 1
+        return absorbed
+
+    def _read_line(self, deadline: float) -> bytes | None:
+        """Read one newline-terminated frame, or None when the stream is idle."""
+        assert self.process.stdout
+        while True:
+            newline = self._stdout_buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self._stdout_buffer[:newline])
+                del self._stdout_buffer[:newline + 1]
+                return line
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            if not self._selector.select(min(remaining, 0.05)):
+                # The stream went quiet: the turn is over as far as the
+                # notification stream is concerned.
+                return None
+            chunk = os.read(self.process.stdout.fileno(), 65536)  # type: ignore[union-attr]
+            if not chunk:
+                return None
+            self._stdout_buffer.extend(chunk)
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         assert self.process.stdin
@@ -312,6 +369,14 @@ class AcpClient:
                     self.process.wait(timeout=2)
         self._selector.close()
         self._stderr_thread.join(timeout=1)
+        # The child's pipes are file objects of this process: leaving them open
+        # leaks a descriptor per trial and reports a ResourceWarning.
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
 
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
@@ -627,7 +692,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    expected_exists: bool | None = None, cancel_task: bool = False,
                    expected_terminal: str = "passed", timeout_task: bool = False,
                    context_text: str | None = None, expected_tool_failures: int = 0,
-                   fail_after_tools: bool = False, fault_kind: str = "transport") -> dict[str, Any]:
+                   fail_after_tools: bool = False, fault_kind: str = "transport",
+                   agent_steps: int | None = None) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
@@ -679,6 +745,14 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             "permission": {"bash": "deny" if deny_bash else "ask", "bash_ask_patterns": ["*"]},
             "agent": {"build": {"permission": {"write": "ask"}}},
         }
+        if agent_steps is not None:
+            # The hard turn budget, made reachable inside one scripted trial.
+            # ADR-0040 Option B bounds a repeated cycle with the run/turn
+            # limits, not with a recovery stall, so a trial that must observe
+            # that bound has to set it explicitly.
+            if isinstance(agent_steps, bool) or not isinstance(agent_steps, int) or agent_steps < 1:
+                raise HarnessError("agent step budget must be a positive integer")
+            config["agent"]["build"]["steps"] = int(agent_steps)
         config_path = Path(env["CODEGG_TUI_CONFIG"])
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -725,6 +799,11 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                     result = prompt_result
             else:
                 result = client.request("session/prompt", prompt_params, timeout=timeout)
+            # The tool notifications that close the turn can arrive after the
+            # prompt response. Counting them before the stream is quiet made
+            # the same trial report a different number of tool calls from run
+            # to run, and the terminal it recorded followed from that count.
+            client.drain(timeout=min(2.0, max(0.2, timeout / 10)))
             updates = [item for item in client.notifications if item.get("method") == "session/update"]
             tool_updates = [item.get("params", {}).get("update", {}) for item in updates]
             starts = [item for item in tool_updates if item.get("sessionUpdate") == "tool_call"]
@@ -821,6 +900,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                     case_sha256=case_sha256, trace=trace,
                     terminal_override=("cancelled" if expected_terminal == "cancelled" else
                                        "execution_failed" if bounded_stall else None),
+                    expected_terminal=expected_terminal,
                 )
             return result
         except (HarnessError, OSError, subprocess.TimeoutExpired) as error:
@@ -861,7 +941,8 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                        expected_text=expected_text, expected_exists=expected_exists if expected_exists is not None else not deny_bash,
                        timeout_seconds=timeout, repeat=repeat, suite_sha256=suite_sha256,
                        case_sha256=case_sha256, terminal_override=terminal,
-                       failure_class=type(error).__name__)
+                       failure_class=type(error).__name__,
+                       expected_terminal=expected_terminal)
                 failures_match = (failed_receipt["tool_failures"] >= expected_tool_failures
                                   if expected_terminal == "execution_failed"
                                   else failed_receipt["tool_failures"] == expected_tool_failures)
@@ -1184,7 +1265,8 @@ def run_exec_trial(binary: Path, profile: str, timeout: float, *,
                     candidate=candidate, workspace=workspace, expected_file=expected_file,
                     expected_text=expected_text, expected_exists=expected_exists_resolved,
                     timeout_seconds=timeout, repeat=repeat, suite_sha256=suite_sha256,
-                    case_sha256=case_sha256, trace=trace, terminal_override=override)
+                    case_sha256=case_sha256, trace=trace, terminal_override=override,
+                    expected_terminal=expected_terminal)
             except (ValueError, OSError) as error:
                 receipt["ledger_error"] = f"{type(error).__name__}: {error}"
                 receipt["ok"] = False

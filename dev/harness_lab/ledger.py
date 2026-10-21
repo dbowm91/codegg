@@ -164,20 +164,26 @@ def _repair_index_tail(root: Path) -> None:
 
 def _write_index_row(root: Path, row: dict[str, Any]) -> None:
     database = root / INDEX_NAME
-    with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA journal_mode=DELETE")
-        connection.execute("""CREATE TABLE IF NOT EXISTS runs (
-            run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, group_id TEXT NOT NULL,
-            repeat INTEGER NOT NULL, candidate TEXT NOT NULL, manifest_sha256 TEXT NOT NULL)""")
-        connection.execute("""CREATE TRIGGER IF NOT EXISTS runs_no_update
-            BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'ledger index is append-only'); END""")
-        connection.execute("""CREATE TRIGGER IF NOT EXISTS runs_no_delete
-            BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT, 'ledger index is append-only'); END""")
-        connection.execute("CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id, repeat)")
-        connection.execute("""INSERT INTO runs(run_id, task_id, group_id, repeat, candidate, manifest_sha256)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-                           (row["run_id"], row["task_id"], row["group_id"], row["repeat"],
-                            row["candidate"], row["manifest_sha256"]))
+    # ``sqlite3.Connection`` as a context manager commits but does not close;
+    # an explicit close keeps the ledger from leaking a handle per recorded run.
+    connection = sqlite3.connect(database)
+    try:
+        with connection:
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.execute("""CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, group_id TEXT NOT NULL,
+                repeat INTEGER NOT NULL, candidate TEXT NOT NULL, manifest_sha256 TEXT NOT NULL)""")
+            connection.execute("""CREATE TRIGGER IF NOT EXISTS runs_no_update
+                BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'ledger index is append-only'); END""")
+            connection.execute("""CREATE TRIGGER IF NOT EXISTS runs_no_delete
+                BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT, 'ledger index is append-only'); END""")
+            connection.execute("CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id, repeat)")
+            connection.execute("""INSERT INTO runs(run_id, task_id, group_id, repeat, candidate, manifest_sha256)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                               (row["run_id"], row["task_id"], row["group_id"], row["repeat"],
+                                row["candidate"], row["manifest_sha256"]))
+    finally:
+        connection.close()
 
 
 def _verify_sqlite_index(root: Path, rows: list[dict[str, Any]]) -> None:
@@ -188,11 +194,14 @@ def _verify_sqlite_index(root: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             _write_index_row(root, row)
         return
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        with connection:
             actual = connection.execute("SELECT run_id, task_id, group_id, repeat, candidate, manifest_sha256 FROM runs ORDER BY rowid").fetchall()
     except sqlite3.Error as error:
         raise ValueError("SQLite ledger index is unreadable or has an unsupported schema") from error
+    finally:
+        connection.close()
     if actual != expected:
         raise ValueError("SQLite index disagrees with the append-only ledger manifest index")
 
@@ -217,9 +226,12 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
            timeout_seconds: float = 120.0, repeat: int = 0,
            suite_sha256: str | None = None, case_sha256: str | None = None,
            trace: list[dict[str, Any]] | None = None,
-           terminal_override: str | None = None, failure_class: str | None = None) -> dict[str, Any]:
+           terminal_override: str | None = None, failure_class: str | None = None,
+           expected_terminal: str = "passed") -> dict[str, Any]:
     if timeout_seconds <= 0:
         raise ValueError("timeout must be positive")
+    if expected_terminal not in TERMINALS:
+        raise ValueError("expected terminal must be a supported terminal classification")
     root = root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     receipt_snapshot = json.loads(json.dumps(receipt))
@@ -290,6 +302,11 @@ def record(root: Path, receipt: dict[str, Any], *, task_id: str, group_id: str, 
         "session_id": receipt_snapshot.get("session_id"),
         "turn_id": turn_id,
         "terminal": terminal,
+        # The terminal this trial was *supposed* to reach. A paired comparison
+        # reads it to decide which arm satisfied the case, so a protected
+        # negative control is judged against its declared failure rather than
+        # against the literal string "passed".
+        "expected_terminal": expected_terminal,
         "failure_class": failure_class,
         "failure_category": failure_category,
         "usage_unavailable": usage_unavailable,
@@ -569,7 +586,58 @@ def _arm_identity(rows: dict[tuple[str, int], dict[str, Any]]) -> dict[str, Any]
     return identity
 
 
-def compare(root: Path, left_candidate: str, right_candidate: str) -> dict[str, Any]:
+def _expected_terminals(expected_terminals: dict[tuple[str, int], str] | None,
+                        left: dict[tuple[str, int], dict[str, Any]],
+                        right: dict[tuple[str, int], dict[str, Any]],
+                        paired: list[tuple[str, int]]) -> dict[tuple[str, int], str]:
+    """Resolve the declared expected terminal for every paired trial.
+
+    The explicit mapping wins: a caller that owns the frozen suite knows the
+    expectation for every case and can therefore compare against the *declared*
+    contract even if a recorded row forgot to carry it. Otherwise the rows'
+    own recorded ``expected_terminal`` is used. A trial with no known
+    expectation is refused rather than assumed: a comparison that guesses what
+    a trial was supposed to prove cannot be evidence of anything.
+    """
+    resolved: dict[tuple[str, int], str] = {}
+    for task_id, repeat in paired:
+        expected: str | None = None
+        if expected_terminals is not None:
+            expected = expected_terminals.get((task_id, repeat))
+        if expected is None:
+            for arm in (left, right):
+                stored = arm.get((task_id, repeat), {}).get("expected_terminal")
+                if isinstance(stored, str):
+                    expected = stored
+                    break
+        if not isinstance(expected, str) or expected not in TERMINALS:
+            raise ValueError(
+                f"paired trial {task_id!r}/{repeat} has no declared expected terminal; "
+                "refusing to compare a trial whose expectation is unknown")
+        resolved[(task_id, repeat)] = expected
+    return resolved
+
+
+def compare(root: Path, left_candidate: str, right_candidate: str,
+            expected_terminals: dict[tuple[str, int], str] | None = None) -> dict[str, Any]:
+    """Compare two candidate arms trial by trial.
+
+    A regression is a trial the **left** arm got right and the **right** arm got
+    wrong, where "right" means *the recorded terminal matched that trial's
+    declared expectation*. The expectation is the case's ``expected_terminal``
+    (``passed`` unless the case says otherwise), not the literal string
+    ``passed``.
+
+    Comparing raw terminals instead would score a protected negative control
+    backwards. A control expects a non-``passed`` terminal, so a baseline that
+    happened to record ``passed`` for it did not *satisfy* the control; a
+    candidate that recorded the expected failure *did*. Under the raw-terminal
+    rule that candidate was reported as a regression for being more correct
+    than the baseline. Under the expectation-relative rule the baseline counts
+    as an unmet control and the candidate counts as a satisfied one, and a
+    candidate that breaks a control the baseline satisfied is still a
+    regression.
+    """
     if left_candidate == right_candidate:
         raise ValueError("comparison requires two distinct candidates; refusing to compare a candidate against itself")
     runs = load_runs(root)
@@ -627,8 +695,23 @@ def compare(root: Path, left_candidate: str, right_candidate: str) -> dict[str, 
                        "left_terminal": left[(task_id, repeat)]["terminal"],
                        "right_terminal": right[(task_id, repeat)]["terminal"]}
                       for task_id, repeat in paired]
+    expectations = _expected_terminals(expected_terminals, left, right, paired)
+    for row in terminal_pairs:
+        expected = expectations[(row["task_id"], row["repeat"])]
+        row["expected_terminal"] = expected
+        row["left_matched"] = row["left_terminal"] == expected
+        row["right_matched"] = row["right_terminal"] == expected
     regressions = [row for row in terminal_pairs
-                   if row["left_terminal"] == "passed" and row["right_terminal"] != "passed"]
+                   if row["left_matched"] and not row["right_matched"]]
+    improvements = [row for row in terminal_pairs
+                    if row["right_matched"] and not row["left_matched"]]
+    unmet = [{"task_id": task_id, "repeat": repeat,
+              "left_terminal": left[(task_id, repeat)]["terminal"],
+              "right_terminal": right[(task_id, repeat)]["terminal"],
+              "expected_terminal": expectations[(task_id, repeat)]}
+             for task_id, repeat in paired
+             if left[(task_id, repeat)]["terminal"] != expectations[(task_id, repeat)]
+             or right[(task_id, repeat)]["terminal"] != expectations[(task_id, repeat)]]
     measured_usage = {side: [arm[key]["metrics"] for key in paired
                              if arm[key]["metrics"].get("input_tokens") is not None
                              and arm[key]["metrics"].get("output_tokens") is not None]
@@ -637,6 +720,7 @@ def compare(root: Path, left_candidate: str, right_candidate: str) -> dict[str, 
             "paired_trials": [{"task_id": task_id, "repeat": repeat} for task_id, repeat in paired],
             "paired_task_ids": sorted({task_id for task_id, _ in paired}),
             "terminal_pairs": terminal_pairs, "regressions": regressions,
+            "improvements": improvements, "unmet_expectations": unmet,
             "left_passed": sum(left[key]["terminal"] == "passed" for key in paired),
             "right_passed": sum(right[key]["terminal"] == "passed" for key in paired),
             "denominator": len(paired), "unpaired_left": sorted(set(left) - set(right)),

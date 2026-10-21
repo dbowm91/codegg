@@ -67,7 +67,15 @@ class FixtureProvider:
                 names = [item.get("function", {}).get("name") for item in tools]
                 call_index = owner.calls
                 expected = owner.calls_to_make[min(call_index, len(owner.calls_to_make) - 1)]["name"]
-                if call_index < len(owner.calls_to_make) and expected not in names:
+                # The product stops advertising tools when the agent reaches its
+                # step budget: the final request asks the model for a summary
+                # instead of another tool call. That request legitimately
+                # advertises nothing, and it is the hard turn budget — not the
+                # recovery ladder — that bounds a repeated cycle. A *first*
+                # request that advertises nothing is still a schema mismatch and
+                # is refused.
+                toolless_final = not names and call_index > 0
+                if call_index < len(owner.calls_to_make) and expected not in names and not toolless_final:
                     # The refusal records what the caller actually advertised.
                     # A schema mismatch is otherwise invisible: the caller only
                     # sees a 422 and cannot tell which tool was missing.
@@ -81,6 +89,7 @@ class FixtureProvider:
                                                     "tool_message_total_bytes": [],
                                                     "tool_message_has_required_text": False,
                                                     "context_read_used": False, "context_recovered": False,
+                                                    "toolless_final": toolless_final,
                                                     "refused_expected_tool": expected})
                     self.send_error(422, f"expected native {expected} tool schema; advertised: {names}")
                     return
@@ -107,8 +116,9 @@ class FixtureProvider:
                                                     "tool_message_has_required_text": (owner.require_context_text is not None
                                                         and any(owner.require_context_text in content for content in tool_messages)),
                                                     "context_read_used": context_read_used,
-                                                    "context_recovered": recovered})
-                if call <= len(owner.calls_to_make):
+                                                    "context_recovered": recovered,
+                                                    "toolless_final": toolless_final})
+                if call <= len(owner.calls_to_make) and not toolless_final:
                     fixture_call = json.loads(json.dumps(owner.calls_to_make[call - 1]))
                     if "{artifact_handle}" in json.dumps(fixture_call):
                         tool_content = next((str(message.get("content", "")) for message in reversed(request.get("messages", []))

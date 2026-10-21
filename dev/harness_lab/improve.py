@@ -1120,11 +1120,24 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
     remaining = max_wallclock - (time.monotonic() - started)
     if remaining <= 0:
         raise TimeoutError("candidate qualification wallclock budget exhausted before ACP trials")
-    command = [sys.executable, "-m", "dev.harness_lab", "evaluate", "--binary", str(binary),
-               "--suite", str(suite), "--ledger", str(ledger_root), "--candidate", candidate,
-               "--max-wallclock", str(remaining), "--timeout", str(min(timeout, remaining))]
+    argv = ["dev.harness_lab", "evaluate", "--binary", str(binary),
+            "--suite", str(suite), "--ledger", str(ledger_root), "--candidate", candidate,
+            "--max-wallclock", str(remaining), "--timeout", str(min(timeout, remaining))]
     if candidate_prior:
-        command.append("--resume-candidate")
+        argv.append("--resume-candidate")
+    # The evaluation runs the *controller's* harness, not whatever copy of it
+    # happens to sit in the candidate tree. The measuring instrument has to be
+    # the one this controller owns: a candidate worktree that carried an older
+    # or edited copy of the harness would otherwise measure itself. The working
+    # directory still points at the candidate worktree, because the trial's
+    # subject revision is read from there.
+    controller_root = Path(__file__).resolve().parents[2]
+    launcher = ("import runpy, sys\n"
+                "sys.path.insert(0, {root!r})\n"
+                "sys.argv = {argv!r}\n"
+                "runpy.run_module('dev.harness_lab', run_name='__main__')\n")
+    command = [sys.executable, "-c",
+               launcher.format(root=str(controller_root), argv=argv)]
     evaluated = subprocess.run(command, cwd=worktree, env=env, capture_output=True, text=True,
                                timeout=remaining)
     try:
@@ -1148,7 +1161,10 @@ def qualify_candidate(worktree: Path, suite: Path, ledger_root: Path, *, baselin
         raise RuntimeError("candidate evaluation changed the frozen ledger index prefix")
     if candidate_patch_sha256(worktree, changed_paths(worktree)) != patch_digest:
         raise RuntimeError("candidate worktree changed while qualification was running")
-    comparison = ledger.compare(ledger_root, baseline_candidate, candidate)
+    comparison = ledger.compare(ledger_root, baseline_candidate, candidate,
+                                expected_terminals={
+                                    (case["task_id"], repeat): case.get("expected_terminal", "passed")
+                                    for case in cases for repeat in range(case.get("repeats", 1))})
     # ``compare`` reports the repeat-expanded pair count as its denominator.
     if comparison["denominator"] != len(expected_keys) or comparison["unpaired_right"]:
         raise RuntimeError("candidate failed paired non-regression comparison")

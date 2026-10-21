@@ -357,6 +357,111 @@ class LedgerCompareTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incomplete"):
                 compare(partial, "base", "candidate")
 
+    def _record_terminal(self, ledger: Path, workspace: Path, *, candidate: str, task_id: str,
+                         terminal: str, expected_terminal: str) -> dict:
+        return record(ledger, {"daemon": {"binary_sha256": "aaa", "revision": "r1"}},
+                      task_id=task_id, group_id="g", candidate=candidate, workspace=workspace,
+                      expected_file="receipt.txt", expected_text="ok", repeat=0,
+                      suite_sha256="suite", case_sha256="case",
+                      terminal_override=terminal, expected_terminal=expected_terminal)
+
+    def test_a_negative_control_the_candidate_satisfies_is_not_a_regression(self) -> None:
+        """A control that expects a failure is judged against that failure.
+
+        The baseline recorded ``passed`` for a control whose declared terminal
+        is ``execution_failed``, so the baseline did not satisfy the control.
+        The candidate recorded the declared failure and therefore did. Under the
+        raw-terminal rule that candidate was reported as a regression for being
+        more correct than the baseline.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "receipt.txt").write_text("ok", encoding="utf-8")
+            ledger = root / "ledger"
+            self._record_terminal(ledger, workspace, candidate="base", task_id="control",
+                                  terminal="passed", expected_terminal="execution_failed")
+            self._record_terminal(ledger, workspace, candidate="candidate", task_id="control",
+                                  terminal="execution_failed", expected_terminal="execution_failed")
+            comparison = compare(ledger, "base", "candidate")
+            self.assertEqual(comparison["regressions"], [])
+            self.assertEqual(len(comparison["improvements"]), 1)
+            self.assertEqual(comparison["improvements"][0]["right_terminal"], "execution_failed")
+            self.assertEqual(len(comparison["unmet_expectations"]), 1)
+
+    def test_a_negative_control_the_candidate_breaks_is_a_regression(self) -> None:
+        """The expectation-relative rule is stricter for controls, not looser.
+
+        A baseline that satisfied the control and a candidate that stopped
+        satisfying it is a regression, even though the candidate's raw terminal
+        is the literal string ``passed``.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "receipt.txt").write_text("ok", encoding="utf-8")
+            ledger = root / "ledger"
+            self._record_terminal(ledger, workspace, candidate="base", task_id="control",
+                                  terminal="execution_failed", expected_terminal="execution_failed")
+            self._record_terminal(ledger, workspace, candidate="candidate", task_id="control",
+                                  terminal="passed", expected_terminal="execution_failed")
+            comparison = compare(ledger, "base", "candidate")
+            self.assertEqual(len(comparison["regressions"]), 1)
+            self.assertEqual(comparison["regressions"][0]["task_id"], "control")
+            self.assertEqual(comparison["improvements"], [])
+
+    def test_an_objective_case_that_stops_passing_is_a_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "receipt.txt").write_text("ok", encoding="utf-8")
+            ledger = root / "ledger"
+            self._record_terminal(ledger, workspace, candidate="base", task_id="objective",
+                                  terminal="passed", expected_terminal="passed")
+            self._record_terminal(ledger, workspace, candidate="candidate", task_id="objective",
+                                  terminal="execution_failed", expected_terminal="passed")
+            comparison = compare(ledger, "base", "candidate")
+            self.assertEqual(len(comparison["regressions"]), 1)
+            self.assertEqual(len(comparison["improvements"]), 0)
+
+    def test_compare_refuses_a_trial_with_no_declared_expectation(self) -> None:
+        """An unknown expectation is refused, never guessed.
+
+        A legacy row written before the manifest carried a declared expectation
+        cannot be compared: the harness would have to guess what the trial was
+        supposed to prove.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ledger = root / "ledger"
+            ledger.mkdir(parents=True)
+            _write_v1_ledger(ledger, run_id="v1-base", candidate="base",
+                             task_id="one", terminal="passed")
+            _write_v1_ledger(ledger, run_id="v1-candidate", candidate="candidate",
+                             task_id="one", terminal="passed")
+            with self.assertRaisesRegex(ValueError, "expected terminal"):
+                compare(ledger, "base", "candidate")
+
+    def test_an_explicit_expectation_overrides_the_recorded_one(self) -> None:
+        """The frozen suite owns the expectation when it supplies one."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "receipt.txt").write_text("ok", encoding="utf-8")
+            ledger = root / "ledger"
+            self._record_terminal(ledger, workspace, candidate="base", task_id="control",
+                                  terminal="passed", expected_terminal="passed")
+            self._record_terminal(ledger, workspace, candidate="candidate", task_id="control",
+                                  terminal="execution_failed", expected_terminal="passed")
+            comparison = compare(ledger, "base", "candidate",
+                                 expected_terminals={("control", 0): "execution_failed"})
+            self.assertEqual(comparison["regressions"], [])
+            self.assertEqual(len(comparison["improvements"]), 1)
+
 
 class LedgerRecoveryTests(unittest.TestCase):
     def test_orphan_run_directory_is_reconciled_as_interrupted_unknown(self) -> None:

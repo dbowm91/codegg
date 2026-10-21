@@ -499,7 +499,8 @@ def main(argv: list[str] | None = None) -> int:
                                                        case.get("expected_exists"), case.get("cancel", False),
                                                        case.get("expected_terminal", "passed"), case.get("timeout_task", False),
                                                        case.get("context_text"),
-                                                       case.get("expected_tool_failures", 1 if case.get("deny_bash", args.deny_bash) else 0))
+                                                       case.get("expected_tool_failures", 1 if case.get("deny_bash", args.deny_bash) else 0),
+                                                       agent_steps=case.get("agent_steps"))
                         except HarnessError as error:
                             trial = {"ok": False, "task_id": case["task_id"], "repeat": repeat,
                                      "failure_type": type(error).__name__}
