@@ -186,14 +186,14 @@ impl Tool for TestTool {
             .map(TestExecutionMode::from_str)
             .unwrap_or(TestExecutionMode::Foreground);
         if mode == TestExecutionMode::Background {
-            // Legacy string path has no turn context; use the tool's bound
-            // session if present. Fail without spawning otherwise.
-            let handle = self.submit_background(input, None).await?;
-            return Ok(serde_json::to_string_pretty(&handle).unwrap_or_default());
+            return Err(ToolError::Permission(
+                "background test requires accepted execution authorization from the tool broker"
+                    .into(),
+            ));
         }
         let request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         let max_report_bytes = request.max_report_bytes;
-        let (summary, _) = self.run_scheduled_test(request).await?;
+        let (summary, _) = self.run_scheduled_test(request, None).await?;
         Ok(match max_report_bytes {
             Some(max_report_bytes) => truncate_report_text(&summary, max_report_bytes),
             None => summary,
@@ -212,8 +212,30 @@ impl Tool for TestTool {
             .and_then(|v| v.as_str())
             .map(TestExecutionMode::from_str)
             .unwrap_or(TestExecutionMode::Foreground);
+        let snapshot = crate::tool::authorization::accepted_execution_snapshot(
+            ctx.as_ref()
+                .and_then(|context| context.execution_authorization.as_ref()),
+        )
+        .map_err(|reason| match reason {
+            crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. } => {
+                ToolError::BackendUnavailable(reason.to_string())
+            }
+            crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization
+            | crate::tool::authorization::SpecializedRouteUnavailable::InvalidAuthorization => {
+                ToolError::Permission(reason.to_string())
+            }
+        })?;
+        let profile = snapshot.sandbox_profile();
+        let network_intent = snapshot.network_intent();
+        if profile == codegg_core::approval::SandboxProfile::ReadOnly {
+            return Err(ToolError::BackendUnavailable(
+                "test execution requires the accepted WorkspaceWrite profile; select it before running tests".into(),
+            ));
+        }
         if mode == TestExecutionMode::Background {
-            let value = self.submit_background(input.clone(), ctx.clone()).await?;
+            let value = self
+                .submit_background(input.clone(), ctx.clone(), profile, network_intent)
+                .await?;
             let digest = live::command_digest_str(
                 &serde_json::to_vec(&input)
                     .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -243,6 +265,25 @@ impl Tool for TestTool {
             });
         }
         let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
+        let snapshot = crate::tool::authorization::accepted_execution_snapshot(
+            ctx.as_ref()
+                .and_then(|context| context.execution_authorization.as_ref()),
+        )
+        .map_err(|reason| match reason {
+            crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. } => {
+                ToolError::BackendUnavailable(reason.to_string())
+            }
+            crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization
+            | crate::tool::authorization::SpecializedRouteUnavailable::InvalidAuthorization => {
+                ToolError::Permission(reason.to_string())
+            }
+        })?;
+        let profile = snapshot.sandbox_profile();
+        if profile == codegg_core::approval::SandboxProfile::ReadOnly {
+            return Err(ToolError::BackendUnavailable(
+                "test execution requires the accepted WorkspaceWrite profile; select it before running tests".into(),
+            ));
+        }
         request.session_id = request
             .session_id
             .or_else(|| ctx.as_ref().and_then(|context| context.session_id.clone()))
@@ -255,7 +296,7 @@ impl Tool for TestTool {
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                 .unwrap_or_default(),
         );
-        let (output, status) = match self.run_scheduled_test(request).await {
+        let (output, status) = match self.run_scheduled_test(request, Some(profile)).await {
             Ok(pair) => pair,
             Err(ToolError::Timeout(message)) => {
                 // M002: dispatched then reaped by the deadline — emit
@@ -311,6 +352,8 @@ impl TestTool {
         &self,
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
+        accepted_profile: codegg_core::approval::SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
     ) -> Result<serde_json::Value, ToolError> {
         let Some(submission) = self.submission.clone() else {
             return Err(ToolError::Execution(
@@ -375,6 +418,8 @@ impl TestTool {
                         cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
                         scope: Some(resolved.scope_label),
                         parent_run_id: None,
+                        sandbox_profile: Some(accepted_profile),
+                        network_intent,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,
@@ -437,6 +482,7 @@ impl TestTool {
     async fn run_scheduled_test(
         &self,
         request: TestRunRequest,
+        sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     ) -> Result<(String, crate::scheduler::ExecutorStatus), ToolError> {
         let Some(submission) = self.submission.clone() else {
             return Err(ToolError::Execution(
@@ -468,6 +514,8 @@ impl TestTool {
                         cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
                         scope: Some(resolved.scope_label),
                         parent_run_id: None,
+                        sandbox_profile,
+                        network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,
@@ -725,6 +773,117 @@ fn parse_positive_seconds(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn constrained_context() -> ToolExecutionContext {
+        let mut context = ToolExecutionContext::with_backend(ToolBackendKind::Native);
+        let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Interactive,
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            Some("principal".into()),
+            Some("session".into()),
+            None,
+            Some("policy-r1".into()),
+            None,
+        );
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot,
+                receipt: crate::permission::PermissionDecisionReceipt {
+                    decision_id: "decision-1".into(),
+                    outcome: crate::permission::PermissionLevel::Allow,
+                    source: "test".into(),
+                    issued_at: 1,
+                    policy_revision: Some("policy-r1".into()),
+                },
+                command_preflight: None,
+                scratch_scope: None,
+            });
+        context
+    }
+
+    #[tokio::test]
+    async fn constrained_test_route_reaches_scheduler_admission() {
+        let tool = TestTool::default();
+        let error = tool
+            .execute_structured(json!({"scope": "auto"}), Some(constrained_context()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Execution(_)));
+    }
+
+    #[tokio::test]
+    async fn readonly_test_route_refuses_before_scheduler_submission() {
+        let tool = TestTool::default();
+        let mut context = constrained_context();
+        context
+            .execution_authorization
+            .as_mut()
+            .expect("accepted authority")
+            .snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Interactive,
+            codegg_core::approval::SandboxProfile::ReadOnly,
+            Some("principal".into()),
+            Some("session".into()),
+            None,
+            Some("policy-r1".into()),
+            None,
+        );
+        let error = tool
+            .execute_structured(json!({"scope": "auto"}), Some(context))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::BackendUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn readonly_background_test_refuses_before_scheduler_submission() {
+        let tool = TestTool::default();
+        let mut context = constrained_context();
+        context
+            .execution_authorization
+            .as_mut()
+            .expect("accepted authority")
+            .snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Interactive,
+            codegg_core::approval::SandboxProfile::ReadOnly,
+            Some("principal".into()),
+            Some("session".into()),
+            None,
+            Some("policy-r1".into()),
+            None,
+        );
+        let error = tool
+            .execute_structured(
+                json!({"scope": "auto", "execution_mode": "background"}),
+                Some(context),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::BackendUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn background_test_requires_accepted_execution_authorization() {
+        let tool = TestTool::default();
+        let error = tool
+            .execute_structured(
+                json!({"scope": "auto", "execution_mode": "background"}),
+                Some(ToolExecutionContext::with_backend(ToolBackendKind::Native)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Permission(_)));
+    }
+
+    #[tokio::test]
+    async fn legacy_background_test_refuses_without_authorization_context() {
+        let tool = TestTool::default();
+        let error = tool
+            .execute(json!({"scope": "auto", "execution_mode": "background"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Permission(_)));
+    }
 
     #[tokio::test]
     async fn test_tool_rejects_missing_scope() {

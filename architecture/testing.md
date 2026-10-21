@@ -292,6 +292,31 @@ cargo nextest run --workspace --profile ci
 scripts/capture-nextest-timing.sh --top 20
 ```
 
+### The sweep's private cache root
+
+The scratch allocator resolves its per-user cache root from
+`dirs::cache_dir()` and refuses a root another local user could write to (see
+`architecture/security.md`). A broad sweep therefore inherits the operator's
+cache root, and its result would be a property of that machine's home
+directory rather than of the product. Both canonical runners give the sweep a
+private cache root of its own:
+
+- `scripts/verify.sh full` creates one with `mktemp -d` and exports
+  `XDG_CACHE_HOME` for the duration of the run.
+- `.github/workflows/ci.yml` sets `XDG_CACHE_HOME` to a directory under the
+  runner's temporary directory.
+
+A manual broad run that has to be independent of the operator's home directory
+does the same:
+
+```bash
+XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci
+```
+
+The root stays **outside** the workspace on purpose: several qualifications
+grant the repository itself as the workspace root, so a scratch root inside it
+would no longer be a distinct root from the granted workspace.
+
 ## CI Structure
 
 Routine CI is one bounded `verify` job in `.github/workflows/ci.yml`
@@ -330,6 +355,38 @@ fast path).
 
 CI uses default features, bounded resources. Optional feature, plugin,
 example, LSP, and cross-platform checks remain local.
+
+### Live Eggwork fixture trust
+
+The live qualification (`tests/eggwork_remote_execution_live.rs`) starts a
+real Eggwork node as a bounded subprocess. The pinned node resolves its
+sandbox helper as a sibling of its own executable and **refuses a helper it
+cannot trust**: the helper must be executable, owned by the invoking user,
+and neither it nor any directory above it may be group- or world-writable.
+An untrusted helper makes the node drop
+`isolation.landlock.workspace-rw.v1`, and every required-isolation run is
+then refused by the executor.
+
+Cargo installs build artifacts with the *process umask* and does not narrow
+them, and `tempfile` creates its directories the same way. On a host with a
+permissive umask (`0002` is common on shared workstations) the helper and its
+directory therefore land group-writable, the node refuses them, and the
+live isolation qualifications fail on a tree, a fixture, and a code base
+that are all identical to a green run. The outcome followed the operator's
+umask instead of the product.
+
+The qualification therefore **stages** the node and the helper in a private
+directory before starting the node: the staging directory is set to `0700`,
+the helper is placed there as an independent copy with mode `0755`, and the
+node is started from that directory. The trust chain then depends on the
+fixture alone — the staged directory, and the system temp root above it
+(sticky and root-owned, which the trust check exempts) — and not on the
+build tree's own modes or on the umask. The build artifacts are left
+untouched; the prebuild script only has to produce them, not trust them.
+
+`a_staged_sandbox_helper_is_trusted_whatever_the_umask` pins the contract:
+the mirror of the node's trust check rejects a group-writable helper in a
+group-writable directory, and accepts the staged pair.
 
 ### CI economy policy
 

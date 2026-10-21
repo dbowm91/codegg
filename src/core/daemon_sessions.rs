@@ -1247,8 +1247,9 @@ async fn reclaim_deleted_session_scratch_when_idle(
         tx.rollback().await.map_err(|error| error.to_string())?;
         return Ok(false);
     }
-    crate::scratch::reclaim_deleted_session_scratch_dir(session_id)
-        .map_err(|error| error.to_string())?;
+    // The deleted marker was checked above, inside the same writer lock; this
+    // is the filesystem half of the decision.
+    crate::scratch::reclaim_session_scratch_dir(session_id).map_err(|error| error.to_string())?;
     tx.commit().await.map_err(|error| error.to_string())?;
     Ok(true)
 }
@@ -1313,6 +1314,8 @@ mod scratch_cleanup_tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::for_kind(JobKind::Test),
             timeout: None,

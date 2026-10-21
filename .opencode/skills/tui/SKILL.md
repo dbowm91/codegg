@@ -1089,6 +1089,49 @@ model to the wrong connection.
 - **The subagent buffer is a view, not a modal.** Clicking a row replaces the
   transcript in the viewport rect; `Esc` returns. Its `Esc` arm sits below the
   modal short-circuit and above every other handler.
+- **The viewport rect has exactly one owner.** `render()` picks one of
+  {route's own view, change review, open subagent tab} and renders exactly one
+  of them into the rect. The change review outranks the tab (it is a modal
+  decision surface); the tab outranks the transcript. Render the viewport and
+  *then* render over it and the surface underneath stays legible — that is the
+  ghosting defect, and the change review had it too. A surface that owns a rect
+  also **fills** it: paint the background before the text, and fill the whole
+  width, because a row carved out of the viewport is still a row and a
+  paragraph one column short of the rect leaves the terminal's own background
+  showing through the edge.
+- **The tab strip is the identity surface, and its row is one width budget.**
+  `plan_strip` (`src/tui/app/state/subagent_tabs.rs`) divides the row once, so
+  what is drawn is what was measured: the key hints (`⇧P/⇧N switch · ⇧X close`)
+  are reserved first and in full, the tab labels keep their text (oldest tabs
+  are dropped with an ellipsis rather than a label truncated), and the active
+  tab's persona takes what is left and is dropped rather than squeezed below
+  `MIN_STRIP_PERSONA_COLS`. Count every glyph you paint in that arithmetic — a
+  marker that is painted but not measured paints past the width the budget
+  promised. The persona is the projection's value (`SubagentRow::profile`);
+  never resolve one against the name pool in the TUI.
+- **The sidebar's subagent row is a scan surface.** Name, agent type, status —
+  no prose. A one-line column spent on the persona pushes the three facts a
+  reader scans for to the left, and the persona has a home that can afford it:
+  the tab strip, which shows the **active** tab's persona in italics.
+- **A subagent's name comes from the pool, and a free pool name always wins.**
+  The registry draws in two passes — every free pool name first, in a random
+  order, and only then the numeric ladder. A row reading `Sally-2` therefore
+  means every pool name was held when that subagent spawned: the suffix is the
+  fallback, not the mechanism. The TUI still draws no name and resolves none
+  against the pool; it renders the name the projection carried.
+- **A focusable row has an action.** The side panel's keyboard focus list is
+  built from the rows whose activation is not a no-op, and the
+  `SidebarFocusTarget` variants are exactly that set — a variant the list
+  cannot produce is a variant that lies. The panel's todo **rows** are not
+  focusable (Enter on one did nothing); the `Todos` **header** is, and still
+  folds the section. The mouse map (`line_targets`) is a different map and
+  keeps its todo entries, so hover, tooltips, and click resolution on a todo
+  row are unchanged. A hovered todo must resolve to a target the focus list
+  *can* produce — the header — and never to nothing: resolving it to nothing
+  clears the focus, and the next `j` then falls through `move_focus`'s
+  no-current branch and jumps to index 0, yanking the panel to the top. The
+  `Ctrl+T` overlay is the deliberate opposite: there a todo row *is*
+  actionable, so it stays selectable there.
 - **Reasoning deltas must reach `add_reasoning`.** `add_assistant_text` is a
   parser for literal `<think>` tags — a raw delta has none, so it falls
   through to `MsgPart::Text` and thinking renders as ordinary prose with no

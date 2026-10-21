@@ -1,0 +1,3292 @@
+#![cfg(target_os = "linux")]
+
+use std::ffi::OsString;
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
+
+use codegg::git_service::{GitExecutionService as TypedGitExecutionService, GitPayload};
+use codegg::managed_process::{
+    ManagedProcessRequest, ManagedProcessResult, ManagedProcessService, ProcessProvenance,
+    SandboxExecutionOutcome, SandboxRequest,
+};
+use codegg::security::sandbox::{SandboxConfig, SandboxMode};
+
+const OPT_IN: &str = "CODEGG_RUN_M004_BWRAP_NATIVE";
+const RESTRICTED_USERNS_OPT_IN: &str = "CODEGG_RUN_M004_RESTRICTED_USERNS";
+const M005_OPT_IN: &str = "CODEGG_RUN_M005_OFFLINE_NATIVE";
+
+#[cfg(feature = "linux-git-test-support")]
+#[tokio::test]
+async fn test_only_contained_git_adapter_refuses_mutations_before_path_access() {
+    let operation = codegg_git::GitOperation::Add { paths: vec![] };
+    let error = TypedGitExecutionService::new()
+        .execute_contained_live_read_test_only(
+            &operation,
+            Path::new("/does/not/exist"),
+            Path::new("/also/not/an/executable"),
+            "mutation-denial-control",
+            false,
+        )
+        .await
+        .expect_err("test-only live-read adapter must refuse mutation operations");
+    assert!(matches!(
+        error,
+        codegg::git_service::GitServiceError::Policy(
+            egggit::GitExecutionPolicyOutcome::InvalidRequest { .. }
+        )
+    ));
+}
+
+#[cfg(feature = "linux-git-test-support")]
+#[tokio::test]
+async fn test_only_private_git_staging_adapter_refuses_untyped_mutation_before_path_access() {
+    let operation = codegg_git::GitOperation::Reset {
+        mode: codegg_git::operation::ResetMode::Mixed,
+        paths: None,
+        rev: None,
+    };
+    let error = TypedGitExecutionService::new()
+        .execute_private_git_add_staging_test_only(
+            &operation,
+            Path::new("/does/not/exist"),
+            Path::new("/also/not/exist"),
+            Path::new("/not/private/gitdir"),
+            Path::new("/not/git"),
+            "reject-non-add",
+        )
+        .await
+        .expect_err("C004 test-only staging must accept only typed Add");
+    assert!(matches!(
+        error,
+        codegg::git_service::GitServiceError::Policy(
+            egggit::GitExecutionPolicyOutcome::InvalidRequest { .. }
+        )
+    ));
+}
+
+#[test]
+fn process_view_compiles_pid_ipc_and_proc_in_safe_mount_order() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true)
+        .launch_spec(
+            "/bin/sh",
+            &["-c".into(), "true".into()],
+            Some(workspace.path()),
+        )
+        .expect("M004 launch spec");
+    let (args, _) =
+        codegg::security::sandbox::linux_mount_view::compile(&spec, workspace.path(), |_| Ok(256))
+            .expect("compile M004 mount view");
+
+    assert!(args.iter().any(|arg| arg == "--unshare-pid"));
+    assert!(args.iter().any(|arg| arg == "--unshare-ipc"));
+    let proc_dir = args
+        .windows(2)
+        .position(|pair| pair[0] == "--dir" && pair[1] == "/proc")
+        .expect("proc mountpoint directory");
+    let proc_mount = args
+        .windows(2)
+        .position(|pair| pair[0] == "--proc" && pair[1] == "/proc")
+        .expect("private proc mount");
+    assert!(
+        proc_dir < proc_mount,
+        "proc mount must follow mountpoint creation"
+    );
+}
+
+#[test]
+fn offline_network_compiles_private_network_namespace_with_m004() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_offline_network(true)
+        .launch_spec(
+            "/bin/sh",
+            &["-c".into(), "true".into()],
+            Some(workspace.path()),
+        )
+        .expect("offline M005 launch spec");
+    let (args, _) =
+        codegg::security::sandbox::linux_mount_view::compile(&spec, workspace.path(), |_| Ok(256))
+            .expect("compile offline M005 mount view");
+
+    assert!(spec.linux_process_isolation);
+    assert!(args.iter().any(|arg| arg == "--unshare-pid"));
+    assert!(args.iter().any(|arg| arg == "--unshare-ipc"));
+    assert!(args.iter().any(|arg| arg == "--unshare-net"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_process_owner_applies_authenticated_offline_network_intent() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the native M005 owner probe");
+        return;
+    }
+    codegg::security::sandbox::landlock::probe_process_scopes()
+        .expect("M005 requires qualified M004 process/IPC scope");
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let address = listener.local_addr().expect("listener address");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let script = format!(
+        "import socket\ns=socket.socket()\ns.settimeout(1)\ntry:\n s.connect(({:?}, {}))\n print('unexpected-connected')\nexcept OSError:\n print('offline-denied')\n",
+        address.ip().to_string(),
+        address.port()
+    );
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true)
+        .launch_spec(
+            "python3",
+            &["-c".into(), script.clone()],
+            Some(workspace.path()),
+        )
+        .expect("construct M004 request; network intent comes from authority");
+    assert!(!spec.linux_offline_network);
+
+    let mut request = ManagedProcessRequest::new(
+        vec!["python3".into(), "-c".into(), script.into()],
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("m005-owner", "authenticated-offline"),
+    );
+    request.required_sandbox_profile = Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+    request.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Interactive,
+                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                Some("m005-principal".into()),
+                Some("m005-session".into()),
+                None,
+                Some("m005-policy-r1".into()),
+                None,
+            )
+            .with_network_intent(codegg_core::approval::NetworkIntent::OfflineRequired)
+            .expect("root policy can narrow to offline"),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "m005-test",
+                Some("m005-policy-r1".into()),
+            ),
+            command_preflight: None,
+            scratch_scope: None,
+        });
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("OfflineRequired is applied through the canonical process owner");
+    assert!(result.exit_status.success());
+    assert!(result.stdout.to_string_lossy().contains("offline-denied"));
+    assert!(matches!(
+        result.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+}
+
+/// M004/M005 negative owner proof: on a host where user namespaces are
+/// restricted, a *required* process tier must refuse **before** the target
+/// execs. This is the managed-process owner half of the restricted-userns
+/// qualification; the PTY and LSP owners carry their own proofs.
+///
+/// The hosted job that runs this probe used to filter on this test name
+/// before the test existed, so the step matched zero tests and stayed
+/// vacuously green. The name is kept stable for that job.
+#[tokio::test]
+async fn required_process_tier_fails_closed_when_user_namespaces_are_restricted() {
+    if std::env::var(RESTRICTED_USERNS_OPT_IN).as_deref() != Ok("1") {
+        eprintln!(
+            "skipped: set {RESTRICTED_USERNS_OPT_IN}=1 for the restricted-userns owner probe"
+        );
+        return;
+    }
+    // The probe is only meaningful on a host that actually refuses user
+    // namespaces. A permissive host would let the target run and prove
+    // nothing about the refusal path.
+    let ceiling = std::fs::read_to_string("/proc/sys/user/max_user_namespaces")
+        .expect("read the host user-namespace ceiling");
+    assert_eq!(
+        ceiling.trim(),
+        "0",
+        "the restricted-userns probe requires user.max_user_namespaces=0"
+    );
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let marker = workspace.path().join("must-not-exist");
+    let script = format!("touch {}", marker.display());
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true)
+        .launch_spec(
+            "/bin/sh",
+            &["-c".into(), script.clone()],
+            Some(workspace.path()),
+        )
+        .expect("construct the required process tier");
+    let mut request = ManagedProcessRequest::new(
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("restricted-userns-probe", "m004-process-owner"),
+    );
+    request.required_sandbox_profile = Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let error = ManagedProcessService::run(request)
+        .await
+        .expect_err("a restricted host must refuse the required process tier before target exec");
+    assert!(
+        !marker.exists(),
+        "target ran despite denied user namespaces: {error}"
+    );
+    eprintln!("restricted host refused the required process tier: {error}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_network_blocks_host_network_and_inherited_socket_access() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the native M005 child probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("M005 candidate requires qualified M004 process/IPC setup: {reason}");
+    }
+
+    let tcp4 = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host IPv4 listener");
+    let tcp4_addr = tcp4.local_addr().expect("IPv4 listener address");
+    let tcp6 = std::net::TcpListener::bind(("::1", 0)).expect("host IPv6 listener");
+    let tcp6_addr = tcp6.local_addr().expect("IPv6 listener address");
+    let udp4 = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("host IPv4 UDP listener");
+    udp4.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set IPv4 UDP timeout");
+    let udp4_addr = udp4.local_addr().expect("IPv4 UDP address");
+    let udp6 = std::net::UdpSocket::bind(("::1", 0)).expect("host IPv6 UDP listener");
+    udp6.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set IPv6 UDP timeout");
+    let udp6_addr = udp6.local_addr().expect("IPv6 UDP address");
+
+    // Establish that each host-local fixture is reachable before asking the
+    // contained child to prove the opposite. Without these controls a broken
+    // listener or an IPv6-disabled runner could look like successful network
+    // isolation.
+    for address in [tcp4_addr, tcp6_addr] {
+        let stream = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))
+            .unwrap_or_else(|error| panic!("host positive-control TCP {address} failed: {error}"));
+        drop(stream);
+        let listener = if address.is_ipv4() { &tcp4 } else { &tcp6 };
+        let (accepted, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("accept host positive-control TCP {address}: {error}"));
+        drop(accepted);
+    }
+    for (socket, address) in [(&udp4, udp4_addr), (&udp6, udp6_addr)] {
+        socket
+            .send_to(b"host-positive-control", address)
+            .unwrap_or_else(|error| panic!("host positive-control UDP {address} failed: {error}"));
+        let mut buffer = [0_u8; 64];
+        let (received, peer) = socket
+            .recv_from(&mut buffer)
+            .unwrap_or_else(|error| panic!("receive host positive-control UDP {address}: {error}"));
+        assert_eq!(&buffer[..received], b"host-positive-control");
+        assert_eq!(peer.ip(), address.ip());
+    }
+
+    // The negative DNS/external probes below are meaningful only when this
+    // runner has working resolver and outbound TCP access. GitHub is a stable
+    // external endpoint already required by hosted checkout and CI setup.
+    let external_address = ("github.com", 443)
+        .to_socket_addrs()
+        .expect("host positive-control DNS lookup for github.com")
+        .next()
+        .expect("host DNS returned no GitHub addresses");
+    let external = std::net::TcpStream::connect_timeout(&external_address, Duration::from_secs(5))
+        .expect("host positive-control outbound TCP to github.com:443");
+    drop(external);
+
+    // Pin the resolver configured for this host. The child must be unable to
+    // reach it; this closes the resolver-endpoint gap for rebinding answers,
+    // though it does not exercise a DNS server that actually changes answers.
+    let host_resolver = std::fs::read_to_string("/etc/resolv.conf")
+        .expect("read host resolver configuration")
+        .lines()
+        .filter_map(|line| line.split_whitespace().collect::<Vec<_>>().get(1).copied())
+        .find_map(|address| address.parse::<IpAddr>().ok())
+        .expect("host resolver configuration must include a nameserver");
+    let dns_query = [
+        0x4d, 0x52, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e', b'x',
+        b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+    ];
+    let host_dns_probe = match host_resolver {
+        IpAddr::V4(_) => UdpSocket::bind("0.0.0.0:0"),
+        IpAddr::V6(_) => UdpSocket::bind("[::]:0"),
+    }
+    .expect("bind host DNS positive-control socket");
+    host_dns_probe
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set host DNS positive-control timeout");
+    host_dns_probe
+        .send_to(&dns_query, SocketAddr::new(host_resolver, 53))
+        .expect("send host DNS positive-control query");
+    let mut dns_response = [0_u8; 512];
+    let (dns_response_len, dns_peer) = host_dns_probe
+        .recv_from(&mut dns_response)
+        .expect("configured host resolver positive-control response");
+    assert_eq!(dns_peer.ip(), host_resolver);
+    assert!(dns_response_len >= 12, "host DNS response is truncated");
+    assert_eq!(
+        &dns_response[..2],
+        &dns_query[..2],
+        "DNS response ID mismatch"
+    );
+
+    // A local resolver deliberately returns a different A record for the
+    // same question twice. This is the host positive control for a DNS
+    // rebinding-shaped answer sequence; the contained child below must not
+    // be able to reach this host loopback resolver at all.
+    let rebinding_dns = UdpSocket::bind(("127.0.0.1", 0)).expect("rebinding DNS fixture");
+    rebinding_dns
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set rebinding DNS fixture timeout");
+    let rebinding_dns_addr = rebinding_dns
+        .local_addr()
+        .expect("rebinding DNS fixture address");
+    let mut rebinding_answers = Vec::new();
+    for address in ["127.0.0.1", "198.51.100.1"] {
+        let control = UdpSocket::bind(("127.0.0.1", 0)).expect("bind rebinding control socket");
+        control
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set rebinding control timeout");
+        control
+            .send_to(&dns_query, rebinding_dns_addr)
+            .expect("send rebinding positive-control query");
+        let mut query = [0_u8; 512];
+        let (query_len, peer) = rebinding_dns
+            .recv_from(&mut query)
+            .expect("rebinding DNS fixture receives host query");
+        assert_eq!(&query[..query_len], dns_query);
+        let mut response = query[..query_len].to_vec();
+        response[2] = 0x81;
+        response[3] = 0x80;
+        response[6] = 0;
+        response[7] = 1;
+        response.extend_from_slice(&[
+            0xc0, 0x0c, // compressed owner name: the queried name
+            0, 1, // A
+            0, 1, // IN
+            0, 0, 0, 1, // one-second TTL
+            0, 4, // IPv4 RDATA length
+        ]);
+        let IpAddr::V4(answer) = address.parse::<IpAddr>().expect("fixture A address") else {
+            unreachable!("fixture answers are IPv4")
+        };
+        response.extend_from_slice(&answer.octets());
+        rebinding_dns
+            .send_to(&response, peer)
+            .expect("send changing DNS answer");
+        let mut answer = [0_u8; 512];
+        let (answer_len, source) = control
+            .recv_from(&mut answer)
+            .expect("host positive-control receives rebinding answer");
+        assert_eq!(source, rebinding_dns_addr);
+        assert!(answer_len >= 4);
+        rebinding_answers.push(answer[answer_len - 4..answer_len].to_vec());
+    }
+    assert_ne!(
+        rebinding_answers[0], rebinding_answers[1],
+        "the host fixture must actually change the answer for an identical query"
+    );
+
+    // Keep a host-connected TCP socket open across the launch. M004's
+    // close-range handoff must remove this bridge before the helper execs.
+    let inherited_stream = std::net::TcpStream::connect(tcp4_addr).expect("inherited host socket");
+    let mut inherited_peer = tcp4.accept().expect("accept inherited host socket").0;
+    inherited_peer
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set inherited peer timeout");
+    let inherited_fd = unsafe { libc::fcntl(inherited_stream.as_raw_fd(), libc::F_DUPFD, 256) };
+    assert!(inherited_fd >= 256, "duplicate inherited socket descriptor");
+    let inherited_fd = unsafe { OwnedFd::from_raw_fd(inherited_fd) };
+    assert_eq!(
+        unsafe { libc::fcntl(inherited_fd.as_raw_fd(), libc::F_SETFD, 0) },
+        0,
+        "make inherited network descriptor inheritable"
+    );
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let marker = workspace.path().join("target-ran");
+    let probe = format!(
+        r#"import os, socket
+probes = [
+    (socket.AF_INET, ({:?}, {})),
+    (socket.AF_INET6, ({:?}, {})),
+]
+for family, address in probes:
+    s = socket.socket(family, socket.SOCK_STREAM)
+    s.settimeout(1)
+    if s.connect_ex(address) == 0:
+        raise SystemExit(41)
+for family, address in [(socket.AF_INET, ({:?}, {})), (socket.AF_INET6, ({:?}, {}))]:
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        s.sendto(b'network-leak', address)
+    except OSError:
+        pass
+try:
+    socket.getaddrinfo('example.com', 443, type=socket.SOCK_STREAM)
+    raise SystemExit(42)
+except OSError:
+    pass
+dns = socket.socket(socket.AF_INET6 if {:?} else socket.AF_INET, socket.SOCK_DGRAM)
+dns.settimeout(0.5)
+query = b'\x4d\x52\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00' + b'\x07example\x03com\x00\x00\x01\x00\x01'
+try:
+    dns.sendto(query, ({:?}, 53))
+    dns.recvfrom(512)
+except OSError:
+    pass
+else:
+    raise SystemExit(45)
+rebinding = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+rebinding.settimeout(0.5)
+try:
+    rebinding.sendto(query, ('127.0.0.1', {}))
+    rebinding.recvfrom(512)
+except OSError:
+    pass
+else:
+    raise SystemExit(46)
+external = socket.socket()
+external.settimeout(1)
+if external.connect_ex(('198.51.100.1', 443)) == 0:
+    raise SystemExit(43)
+fd = {}
+try:
+    os.fstat(fd)
+except OSError:
+    open({:?}, 'w').write('offline')
+else:
+    os.write(fd, b'inherited-socket-leak')
+    raise SystemExit(44)
+"#,
+        tcp4_addr.ip().to_string(),
+        tcp4_addr.port(),
+        tcp6_addr.ip().to_string(),
+        tcp6_addr.port(),
+        udp4_addr.ip().to_string(),
+        udp4_addr.port(),
+        udp6_addr.ip().to_string(),
+        udp6_addr.port(),
+        u8::from(host_resolver.is_ipv6()),
+        host_resolver.to_string(),
+        rebinding_dns_addr.port(),
+        inherited_fd.as_raw_fd(),
+        marker.to_string_lossy(),
+    );
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_offline_network(true)
+        .launch_spec("python3", &["-c".into(), probe], Some(workspace.path()))
+        .expect("offline M005 launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("linux-m005", "offline-loopback-probe"),
+    );
+    request.timeout = Some(Duration::from_secs(15));
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("required offline network namespace should launch");
+    assert!(
+        result.exit_status.success(),
+        "child reached host loopback or failed: {}",
+        result.stderr.to_string_lossy()
+    );
+    assert_eq!(
+        std::fs::read_to_string(marker).expect("offline target marker"),
+        "offline"
+    );
+    let mut datagram = [0_u8; 128];
+    assert!(
+        udp4.recv_from(&mut datagram).is_err(),
+        "offline child reached host IPv4 UDP listener"
+    );
+    assert!(
+        udp6.recv_from(&mut datagram).is_err(),
+        "offline child reached host IPv6 UDP listener"
+    );
+    let mut inherited_data = [0_u8; 128];
+    assert!(
+        inherited_peer.read(&mut inherited_data).is_err(),
+        "offline child communicated through an inherited host socket"
+    );
+    drop((tcp4, tcp6, inherited_stream));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_reads_live_objects_and_contains_configured_command() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the native contained-Git proof");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path();
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+
+    let setup = |args: &[&str]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git fixture")
+    };
+    let init = setup(&["init", "--quiet"]);
+    assert!(init.status.success(), "git init failed: {:?}", init);
+    std::fs::write(repository.join("tracked.txt"), "live object payload\n")
+        .expect("write tracked fixture");
+    assert!(setup(&["add", "tracked.txt"]).status.success());
+    let identity = setup(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "fixture",
+    ]);
+    assert!(
+        identity.status.success(),
+        "git commit fixture failed: {}",
+        String::from_utf8_lossy(&identity.stderr)
+    );
+
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("runner HOME is available");
+    let host_only = tempfile::Builder::new()
+        .prefix("codegg-live-git-host-only-")
+        .tempdir_in(home)
+        .expect("host-only sentinel directory");
+    let secret = host_only.path().join("credential-sentinel");
+    let secret_leak = repository.join("credential-leak");
+    let proc_leak = repository.join("host-proc-leak");
+    std::fs::write(&secret, "host-secret-marker").expect("write host-only secret sentinel");
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host TCP fixture");
+    listener
+        .set_nonblocking(true)
+        .expect("make host TCP fixture nonblocking");
+    let address = listener.local_addr().expect("host TCP fixture address");
+    let positive = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))
+        .expect("host positive control reaches TCP fixture");
+    let (accepted, _) = listener.accept().expect("accept host positive control");
+    drop((positive, accepted));
+
+    let workspace_marker = repository.join("contained-command-ran");
+    let network_marker = repository.join("network-escape");
+    let child_netns = repository.join("child-netns-inode");
+    let host_pid = std::process::id();
+    let python = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("python3"))
+        .find(|candidate| candidate.is_file())
+        .expect("Python is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Python executable");
+    let python_probe = format!(
+        "import socket; socket.create_connection(({:?}, {}), timeout=1); open({:?}, 'w').write('connected')",
+        address.ip().to_string(),
+        address.port(),
+        network_marker.to_string_lossy()
+    );
+    let script = repository.join("configured-command.sh");
+    let script_text = format!(
+        "#!/bin/sh\nprintf ran > {}\n/usr/bin/stat -Lc '%i' /proc/self/ns/net > {}\nif test -r {}; then cat {} > {}; fi\nif test -r /proc/{}/cmdline; then cat /proc/{}/cmdline > {}; fi\n{} -c {} 2>/dev/null || true\n",
+        shell_quote(&workspace_marker.to_string_lossy()),
+        shell_quote(&child_netns.to_string_lossy()),
+        shell_quote(&secret.to_string_lossy()),
+        shell_quote(&secret.to_string_lossy()),
+        shell_quote(&secret_leak.to_string_lossy()),
+        host_pid,
+        host_pid,
+        shell_quote(&proc_leak.to_string_lossy()),
+        shell_quote(&python.to_string_lossy()),
+        shell_quote(&python_probe)
+    );
+    std::fs::write(&script, script_text).expect("write configured Git command");
+    let mut permissions = std::fs::metadata(&script)
+        .expect("stat configured Git command")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).expect("make Git command executable");
+    let alias = format!("!{}", script.display());
+    let configure = setup(&["config", "alias.authority-probe", &alias]);
+    assert!(
+        configure.status.success(),
+        "configure repository-local Git command: {}",
+        String::from_utf8_lossy(&configure.stderr)
+    );
+    let configure_diff = setup(&["config", "diff.external", &script.to_string_lossy()]);
+    assert!(
+        configure_diff.status.success(),
+        "configure repository-local external diff: {}",
+        String::from_utf8_lossy(&configure_diff.stderr)
+    );
+    std::fs::write(
+        repository.join("tracked.txt"),
+        "dirty live worktree payload\n",
+    )
+    .expect("make the tracked fixture dirty");
+
+    async fn contained_git(
+        git: &Path,
+        workspace: &Path,
+        args: &[&str],
+        label: &str,
+    ) -> ManagedProcessResult {
+        let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_offline_network(true)
+            .launch_spec(git, &args, Some(workspace))
+            .expect("construct test-only M004/M005 launch spec");
+        let argv = std::iter::once(spec.target.as_os_str().to_owned())
+            .chain(spec.args.iter().map(OsString::from))
+            .collect();
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace.to_path_buf(),
+            ProcessProvenance::new("linux-trusted-git-c001", label),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+            .with_var("GIT_CONFIG_NOSYSTEM", "1")
+            .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+            .with_var("HOME", "/tmp/codegg-empty-home");
+        request.sandbox = SandboxRequest::Required(spec);
+        ManagedProcessService::run(request)
+            .await
+            .expect("required contained Git must fail closed or run under obtained limits")
+    }
+
+    let log = contained_git(&git, repository, &["log", "-1", "--format=%s"], "live-log").await;
+    assert!(
+        log.exit_status.success(),
+        "contained git log failed: {}",
+        log.stderr.to_string_lossy()
+    );
+    assert!(log.stdout.to_string_lossy().contains("fixture"));
+    assert!(matches!(
+        log.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
+
+    let diff = contained_git(
+        &git,
+        repository,
+        &["diff", "--", "tracked.txt"],
+        "external-diff",
+    )
+    .await;
+    assert!(
+        diff.exit_status.success(),
+        "contained git diff failed: {}",
+        diff.stderr.to_string_lossy()
+    );
+    assert!(
+        workspace_marker.exists(),
+        "repository-configured external diff did not execute"
+    );
+    assert!(matches!(
+        diff.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
+
+    let configured = contained_git(&git, repository, &["authority-probe"], "config-command").await;
+    assert!(
+        configured.exit_status.success(),
+        "contained configured Git command failed: {}",
+        configured.stderr.to_string_lossy()
+    );
+    assert!(
+        workspace_marker.exists(),
+        "Git's configured command did not execute"
+    );
+    let child_netns_inode = std::fs::read_to_string(&child_netns)
+        .expect("configured command records its network namespace")
+        .trim()
+        .parse::<u64>()
+        .expect("child network namespace inode is numeric");
+    assert_ne!(
+        child_netns_inode,
+        std::fs::metadata("/proc/self/ns/net")
+            .expect("host network namespace metadata")
+            .ino(),
+        "configured Git command shared the host network namespace"
+    );
+    assert!(
+        !secret_leak.exists(),
+        "configured command read a host-only credential sentinel"
+    );
+    assert!(
+        !proc_leak.exists(),
+        "configured command read a host /proc process"
+    );
+    assert!(
+        !network_marker.exists(),
+        "configured command escaped the offline network namespace"
+    );
+    assert!(
+        listener.accept().is_err(),
+        "configured Git command reached a host loopback service"
+    );
+    assert!(matches!(
+        configured.sandbox,
+        SandboxExecutionOutcome::Enforced { .. }
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_reads_match_typed_snapshot_payloads() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the contained Git read parity pilot");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path();
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+
+    let setup = |args: &[&str]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git fixture")
+    };
+    assert!(setup(&["init", "--quiet"]).status.success());
+    std::fs::write(repository.join("tracked.txt"), "base payload\n")
+        .expect("write tracked fixture");
+    assert!(setup(&["add", "tracked.txt"]).status.success());
+    let commit = setup(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "typed parity fixture",
+    ]);
+    assert!(
+        commit.status.success(),
+        "Git fixture commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let resolve_repo_path = |args: &[&str]| {
+        let output = setup(args);
+        assert!(
+            output.status.success(),
+            "resolve Git trust-root facts with {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        if path.is_absolute() {
+            path.canonicalize().expect("canonical Git trust-root path")
+        } else {
+            repository
+                .join(path)
+                .canonicalize()
+                .expect("canonical relative Git trust-root path")
+        }
+    };
+    let selected_root = resolve_repo_path(&["rev-parse", "--show-toplevel"]);
+    let selected_gitdir = resolve_repo_path(&["rev-parse", "--absolute-git-dir"]);
+    let selected_common_dir = resolve_repo_path(&["rev-parse", "--git-common-dir"]);
+    let selected_odb = resolve_repo_path(&["rev-parse", "--git-path", "objects"]);
+    assert_eq!(
+        selected_root,
+        repository.canonicalize().expect("repository root")
+    );
+    assert_eq!(selected_common_dir, selected_gitdir);
+    assert_eq!(selected_odb, selected_gitdir.join("objects"));
+    assert!(
+        std::fs::symlink_metadata(selected_odb.join("info/alternates")).is_err(),
+        "ordinary fixture unexpectedly has an alternate object store"
+    );
+    let gitdir_identity = std::fs::metadata(&selected_gitdir).expect("stat selected gitdir");
+    let odb_identity = std::fs::metadata(&selected_odb).expect("stat selected object directory");
+    let gitdir_identity = (gitdir_identity.dev(), gitdir_identity.ino());
+    let odb_identity = (odb_identity.dev(), odb_identity.ino());
+    std::fs::write(repository.join("tracked.txt"), "changed payload\n")
+        .expect("dirty tracked fixture");
+    std::fs::write(repository.join("untracked.txt"), "untracked payload\n")
+        .expect("untracked fixture");
+
+    async fn contained_read(
+        typed: &TypedGitExecutionService,
+        git: &Path,
+        repository: &Path,
+        operation: &codegg_git::GitOperation,
+        label: &str,
+    ) -> Result<ManagedProcessResult, codegg::managed_process::ManagedProcessError> {
+        typed
+            .execute_contained_live_read_test_only(operation, repository, git, label, false)
+            .await
+            .map_err(|error| {
+                codegg::managed_process::ManagedProcessError::SandboxFailed(error.to_string())
+            })
+    }
+
+    let typed = TypedGitExecutionService::new();
+    let operations = [
+        ("status", codegg_git::GitOperation::Status { short: true }),
+        (
+            "diff",
+            codegg_git::GitOperation::Diff {
+                staged: false,
+                stat: false,
+                name_only: false,
+                base_ref: None,
+                paths: vec![],
+            },
+        ),
+        (
+            "log",
+            codegg_git::GitOperation::Log {
+                oneline: true,
+                max_count: Some(1),
+                paths: vec![],
+            },
+        ),
+        (
+            "show",
+            codegg_git::GitOperation::Show {
+                rev: codegg_git::ref_name::RevisionExpr::new("HEAD")
+                    .expect("valid fixture revision"),
+            },
+        ),
+        (
+            "changed-files",
+            codegg_git::GitOperation::ChangedFiles { base_ref: None },
+        ),
+        (
+            "branches",
+            codegg_git::GitOperation::BranchList {
+                remotes: false,
+                all: false,
+            },
+        ),
+        ("worktrees", codegg_git::GitOperation::WorktreeList),
+    ];
+
+    for (label, operation) in &operations {
+        let snapshot = typed
+            .execute(operation, repository)
+            .await
+            .unwrap_or_else(|error| panic!("typed snapshot {label} failed: {error}"));
+        assert!(snapshot.success, "typed snapshot {label} returned nonzero");
+        let live = contained_read(&typed, &git, repository, operation, label)
+            .await
+            .unwrap_or_else(|error| panic!("required contained Git read {label} failed: {error}"));
+        assert!(
+            live.exit_status.success(),
+            "contained live {label} failed: {}",
+            live.stderr.to_string_lossy()
+        );
+        assert!(
+            matches!(live.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+            "contained live {label} did not report actual enforcement"
+        );
+        assert_eq!(
+            live.stdout.to_string_lossy(),
+            snapshot.stdout,
+            "native live {label} output differs from the typed snapshot route"
+        );
+        let gitdir_after =
+            std::fs::metadata(&selected_gitdir).expect("stat selected gitdir after read");
+        let odb_after = std::fs::metadata(&selected_odb).expect("stat selected ODB after read");
+        assert_eq!(
+            (gitdir_after.dev(), gitdir_after.ino()),
+            gitdir_identity,
+            "contained {label} read observed a replaced Git directory"
+        );
+        assert_eq!(
+            (odb_after.dev(), odb_after.ino()),
+            odb_identity,
+            "contained {label} read observed a replaced object directory"
+        );
+        match (*label, snapshot.payload.as_ref().expect("typed payload")) {
+            ("status", GitPayload::Status(status)) => {
+                assert!(status.is_dirty);
+                assert!(live.stdout.to_string_lossy().contains("tracked.txt"));
+                assert!(live.stdout.to_string_lossy().contains("untracked.txt"));
+            }
+            ("diff", GitPayload::DiffResult(diff)) => {
+                assert_eq!(diff.files.len(), 1);
+                assert_eq!(diff.files[0].path, "tracked.txt");
+                assert!(live.stdout.to_string_lossy().contains("changed payload"));
+            }
+            ("diff", GitPayload::DiffSummary(summary)) => {
+                assert_eq!(summary.files_changed, 1);
+                assert_eq!(summary.files[0].path, "tracked.txt");
+            }
+            ("log", GitPayload::Log(commits)) => {
+                assert_eq!(commits.len(), 1);
+                assert_eq!(commits[0].message, "typed parity fixture");
+                assert!(live
+                    .stdout
+                    .to_string_lossy()
+                    .contains("typed parity fixture"));
+            }
+            ("show", GitPayload::Show(show)) => {
+                assert!(!show.hash.is_empty());
+                assert!(live.stdout.to_string_lossy().contains(&show.hash));
+                assert!(show.message.contains("typed parity fixture"));
+            }
+            ("changed-files", GitPayload::ChangedFiles(files)) => {
+                assert!(files.iter().any(|file| file.path == "tracked.txt"));
+                assert!(live.stdout.to_string_lossy().contains("tracked.txt"));
+            }
+            ("branches", GitPayload::Branches(branches)) => {
+                assert!(branches.iter().any(|branch| branch.current));
+            }
+            ("worktrees", GitPayload::Worktrees(worktrees)) => {
+                assert!(worktrees.iter().any(|worktree| {
+                    worktree.is_current && Path::new(&worktree.path) == repository
+                }));
+            }
+            (label, payload) => panic!("unexpected typed {label} payload: {payload:?}"),
+        }
+    }
+
+    // Race live reads against Git's own pack replacement and atomic ref
+    // movement. A read may observe either committed HEAD, but never a mixed
+    // result. This does not claim immutable-generation semantics for
+    // arbitrary writers.
+    let first_commit = String::from_utf8(setup(&["rev-parse", "HEAD"]).stdout)
+        .expect("first commit id is UTF-8")
+        .trim()
+        .to_owned();
+    std::fs::write(repository.join("race.txt"), "second committed generation\n")
+        .expect("write second commit fixture");
+    assert!(setup(&["add", "race.txt"]).status.success());
+    let second_commit = setup(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "concurrent ref fixture",
+        "--",
+        "race.txt",
+    ]);
+    assert!(
+        second_commit.status.success(),
+        "second Git fixture commit failed: {}",
+        String::from_utf8_lossy(&second_commit.stderr)
+    );
+    let second_commit = String::from_utf8(setup(&["rev-parse", "HEAD"]).stdout)
+        .expect("second commit id is UTF-8")
+        .trim()
+        .to_owned();
+    let branch = String::from_utf8(setup(&["symbolic-ref", "--short", "HEAD"]).stdout)
+        .expect("branch name is UTF-8")
+        .trim()
+        .to_owned();
+    let branch_ref = format!("refs/heads/{branch}");
+    let expected_logs = [first_commit.as_str(), second_commit.as_str()].map(|commit| {
+        String::from_utf8(setup(&["show", "-s", "--oneline", commit]).stdout)
+            .expect("commit log output is UTF-8")
+    });
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let repack_barrier = std::sync::Arc::clone(&barrier);
+    let repack_git = git.clone();
+    let repack_repository = repository.to_path_buf();
+    let repacker = tokio::task::spawn_blocking(move || {
+        repack_barrier.wait();
+        for iteration in 0..32 {
+            let output = Command::new(&repack_git)
+                .args(["repack", "-adf"])
+                .current_dir(&repack_repository)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("run concurrent external Git repack");
+            assert!(
+                output.status.success(),
+                "external repack {iteration} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    });
+    let ref_barrier = std::sync::Arc::clone(&barrier);
+    let ref_git = git.clone();
+    let ref_repository = repository.to_path_buf();
+    let ref_worker = tokio::task::spawn_blocking(move || {
+        ref_barrier.wait();
+        let mut old_commit = second_commit;
+        let mut new_commit = first_commit;
+        for iteration in 0..32 {
+            let output = Command::new(&ref_git)
+                .args(["update-ref", &branch_ref, &new_commit, &old_commit])
+                .current_dir(&ref_repository)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("run concurrent external Git ref update");
+            assert!(
+                output.status.success(),
+                "external ref update {iteration} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            std::mem::swap(&mut old_commit, &mut new_commit);
+        }
+    });
+    barrier.wait();
+    let log_operation = codegg_git::GitOperation::Log {
+        oneline: true,
+        max_count: Some(1),
+        paths: vec![],
+    };
+    let mut successful_race_reads = 0usize;
+    let mut fail_closed_race_reads = 0usize;
+    let mut race_failure = None;
+    for iteration in 0..16 {
+        let attempt = contained_read(
+            &typed,
+            &git,
+            repository,
+            &log_operation,
+            &format!("concurrent-repack-{iteration}"),
+        )
+        .await;
+        match attempt {
+            Ok(live) => {
+                if !live.exit_status.success() {
+                    race_failure = Some(format!(
+                        "contained live log failed during external repack/ref update {iteration}: {}",
+                        live.stderr.to_string_lossy()
+                    ));
+                    break;
+                }
+                if !matches!(live.sandbox, SandboxExecutionOutcome::Enforced { .. }) {
+                    race_failure =
+                        Some("concurrent read lacked obtained sandbox enforcement".into());
+                    break;
+                }
+                let actual = live.stdout.to_string_lossy();
+                if !expected_logs.iter().any(|expected| expected == &*actual) {
+                    race_failure = Some(format!(
+                        "live Git read observed neither committed ref generation: {actual:?}"
+                    ));
+                    break;
+                }
+                successful_race_reads += 1;
+            }
+            Err(codegg::managed_process::ManagedProcessError::SandboxFailed(message))
+                if (message.contains("cannot inspect Git metadata identity")
+                    && message.contains("No such file or directory"))
+                    || message
+                        .contains("hardlinked protected Git metadata cannot be mounted safely") =>
+            {
+                // Git's pack replacement can expose either a just-removed
+                // entry or a transient hardlink to the safety scan. The
+                // launcher refuses before spawning rather than weakening the
+                // protected-tree validation; count either typed refusal as
+                // fail-closed behavior.
+                fail_closed_race_reads += 1;
+            }
+            Err(error) => {
+                race_failure = Some(format!(
+                    "contained read {iteration} failed outside the sandbox fail-closed path: {error}"
+                ));
+                break;
+            }
+        }
+    }
+    let repack_result = repacker.await;
+    let ref_result = ref_worker.await;
+    repack_result.expect("join external repack worker");
+    ref_result.expect("join external ref-update worker");
+    eprintln!(
+        "C002 repack/ref race: {successful_race_reads} enforced reads, {fail_closed_race_reads} fail-closed launch refusals"
+    );
+    assert!(
+        successful_race_reads > 0,
+        "race probe obtained no contained reads ({} fail-closed refusals)",
+        fail_closed_race_reads
+    );
+    if let Some(failure) = race_failure {
+        panic!("contained Git read race failed: {failure}");
+    }
+    let gitdir_after_race = std::fs::metadata(&selected_gitdir).expect("stat Git directory");
+    let odb_after_race = std::fs::metadata(&selected_odb).expect("stat ODB after repack race");
+    assert_eq!(
+        (gitdir_after_race.dev(), gitdir_after_race.ino()),
+        gitdir_identity,
+        "external repack replaced the selected gitdir"
+    );
+    assert_eq!(
+        (odb_after_race.dev(), odb_after_race.ino()),
+        odb_identity,
+        "external repack replaced the selected ODB directory"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_add_stages_index_and_objects_in_private_gitdir() {
+    // A second invocation of this test binary models the daemon process that
+    // crashes after making an index lock durable. The parent test starts that
+    // process below, waits for it to exit, and then exercises recovery from
+    // only the persisted intent and files.
+    if let (Ok(source_gitdir), Ok(publish_index)) = (
+        std::env::var("CODEGG_C004_RECOVERY_WORKER_GITDIR"),
+        std::env::var("CODEGG_C004_RECOVERY_WORKER_INDEX"),
+    ) {
+        let lock_path = PathBuf::from(source_gitdir).join("index.lock");
+        let bytes = std::fs::read(publish_index).expect("worker reads broker-authored index");
+        let mut lock = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock_path)
+            .expect("worker creates Git-compatible index lock");
+        lock.write_all(&bytes)
+            .expect("worker writes broker-authored index");
+        lock.sync_all()
+            .expect("worker syncs interrupted index lock");
+        return;
+    }
+
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the contained Git staging pilot");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path().join("repository");
+    std::fs::create_dir(&repository).expect("create repository root");
+    let operation_scratch = tempfile::tempdir().expect("operation-owned Git scratch");
+    let private_gitdir = operation_scratch.path().join("private.gitdir");
+
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+    let setup = |cwd: &Path, args: &[String]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git staging fixture")
+    };
+
+    let init = setup(&repository, &["init".into(), "--quiet".into()]);
+    assert!(init.status.success(), "git init failed: {init:?}");
+    std::fs::write(repository.join("tracked.txt"), "committed base\n")
+        .expect("write committed fixture");
+    std::fs::write(
+        repository.join(".gitattributes"),
+        "tracked.txt filter=probe\n",
+    )
+    .expect("write repository-controlled filter attribute");
+    assert!(setup(
+        &repository,
+        &[
+            "add".into(),
+            "--".into(),
+            ".gitattributes".into(),
+            "tracked.txt".into(),
+        ]
+    )
+    .status
+    .success());
+    let commit = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "user.name=Fixture".into(),
+            "-c".into(),
+            "user.email=fixture@example.invalid".into(),
+            "commit".into(),
+            "--quiet".into(),
+            "-m".into(),
+            "private staging fixture".into(),
+        ],
+    );
+    assert!(
+        commit.status.success(),
+        "fixture commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let filter_marker = repository.join("source-filter-ran");
+    let filter_script = operation_scratch.path().join("source-filter.sh");
+    std::fs::write(
+        &filter_script,
+        format!(
+            "#!/bin/sh\nprintf ran > {}\ncat\n",
+            shell_quote(&filter_marker.to_string_lossy())
+        ),
+    )
+    .expect("write source-configured filter probe");
+    let mut filter_permissions = std::fs::metadata(&filter_script)
+        .expect("stat source-configured filter probe")
+        .permissions();
+    filter_permissions.set_mode(0o755);
+    std::fs::set_permissions(&filter_script, filter_permissions)
+        .expect("make source-configured filter executable");
+    let configure_filter = setup(
+        &repository,
+        &[
+            "config".into(),
+            "filter.probe.clean".into(),
+            filter_script.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        configure_filter.status.success(),
+        "configure source repository filter: {}",
+        String::from_utf8_lossy(&configure_filter.stderr)
+    );
+    let source_gitdir = repository.join(".git");
+    let source_odb = source_gitdir.join("objects");
+    let source_gitdir_metadata =
+        std::fs::metadata(&source_gitdir).expect("stat protected source gitdir");
+    let source_odb_metadata = std::fs::metadata(&source_odb).expect("stat protected source ODB");
+    let source_gitdir_identity = (source_gitdir_metadata.dev(), source_gitdir_metadata.ino());
+    let source_odb_identity = (source_odb_metadata.dev(), source_odb_metadata.ino());
+    let original_index =
+        std::fs::read(source_gitdir.join("index")).expect("capture source index before staging");
+    let head = setup(&repository, &["rev-parse".into(), "HEAD".into()]);
+    assert!(
+        head.status.success(),
+        "resolve source HEAD failed: {head:?}"
+    );
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+
+    // The alternate is broker-authored in operation scratch and points only
+    // at this ordinary repository's captured object directory. The source
+    // repository's own config, index and alternate files are not consulted.
+    let private_init = setup(
+        operation_scratch.path(),
+        &[
+            "init".into(),
+            "--bare".into(),
+            private_gitdir.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        private_init.status.success(),
+        "private gitdir init failed: {}",
+        String::from_utf8_lossy(&private_init.stderr)
+    );
+    let alternates = private_gitdir.join("objects/info/alternates");
+    std::fs::write(
+        &alternates,
+        format!("{}\n", source_gitdir.join("objects").display()),
+    )
+    .expect("write operation-owned alternate view");
+    for args in [
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "update-ref".into(),
+            "refs/heads/main".into(),
+            head.clone(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "symbolic-ref".into(),
+            "HEAD".into(),
+            "refs/heads/main".into(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "read-tree".into(),
+            "HEAD".into(),
+        ],
+    ] {
+        let prepared = setup(&repository, &args);
+        assert!(
+            prepared.status.success(),
+            "private index baseline setup failed for {args:?}: {}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+    }
+
+    // Git recursively follows alternates. Prove that behavior with a positive
+    // control, then make the repository ODB point at an object directory
+    // outside both allowed roots and ensure the obtained sandbox denies it.
+    let external_repository = tempfile::tempdir().expect("external alternate repository");
+    let external_odb = external_repository.path().join("external.git/objects");
+    let external_init = setup(
+        external_repository.path(),
+        &[
+            "init".into(),
+            "--bare".into(),
+            "--quiet".into(),
+            "external.git".into(),
+        ],
+    );
+    assert!(
+        external_init.status.success(),
+        "initialize external alternate ODB: {}",
+        String::from_utf8_lossy(&external_init.stderr)
+    );
+    let alternate_secret = b"recursive alternate must stay outside the contained view\n";
+    let mut hash_object = Command::new(&git)
+        .args([
+            format!(
+                "--git-dir={}",
+                external_repository.path().join("external.git").display()
+            ),
+            "hash-object".into(),
+            "-w".into(),
+            "--stdin".into(),
+        ])
+        .current_dir(external_repository.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start external alternate blob creation");
+    hash_object
+        .stdin
+        .take()
+        .expect("external alternate hash-object stdin")
+        .write_all(alternate_secret)
+        .expect("write external alternate blob input");
+    let hashed = hash_object
+        .wait_with_output()
+        .expect("wait for external alternate blob creation");
+    assert!(
+        hashed.status.success(),
+        "create external alternate blob: {}",
+        String::from_utf8_lossy(&hashed.stderr)
+    );
+    let alternate_blob = String::from_utf8_lossy(&hashed.stdout).trim().to_owned();
+    let source_alternates = source_odb.join("info/alternates");
+    std::fs::create_dir_all(
+        source_alternates
+            .parent()
+            .expect("source ODB info directory"),
+    )
+    .expect("create source ODB info directory");
+    std::fs::write(&source_alternates, format!("{}\n", external_odb.display()))
+        .expect("install recursive external alternate for negative probe");
+    let recursive_positive = setup(
+        &repository,
+        &[
+            format!("--git-dir={}", private_gitdir.display()),
+            "cat-file".into(),
+            "blob".into(),
+            alternate_blob.clone(),
+        ],
+    );
+    assert!(
+        recursive_positive.status.success(),
+        "positive control did not follow recursive Git alternates: {}",
+        String::from_utf8_lossy(&recursive_positive.stderr)
+    );
+    assert_eq!(recursive_positive.stdout, alternate_secret);
+
+    let escape_args = vec![
+        format!("--git-dir={}", private_gitdir.display()),
+        "cat-file".into(),
+        "blob".into(),
+        alternate_blob,
+    ];
+    let escape_spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_allowed_paths(vec![
+            repository.to_string_lossy().into_owned(),
+            operation_scratch.path().to_string_lossy().into_owned(),
+        ])
+        .with_linux_offline_network(true)
+        .launch_spec(&git, &escape_args, Some(&repository))
+        .expect("construct contained recursive-alternate denial launch");
+    let escape_argv = std::iter::once(escape_spec.target.as_os_str().to_owned())
+        .chain(escape_spec.args.iter().map(OsString::from))
+        .collect();
+    let mut escape_request = ManagedProcessRequest::new(
+        escape_argv,
+        repository.clone(),
+        ProcessProvenance::new("linux-trusted-git-c004", "recursive-alternate-denial"),
+    );
+    escape_request.timeout = Some(Duration::from_secs(15));
+    escape_request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+        .with_var("GIT_CONFIG_NOSYSTEM", "1")
+        .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+        .with_var("HOME", "/tmp/codegg-empty-home");
+    escape_request.sandbox = SandboxRequest::Required(escape_spec);
+    let escape = ManagedProcessService::run(escape_request)
+        .await
+        .expect("required recursive-alternate denial launch must fail closed");
+    assert!(
+        matches!(escape.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+        "recursive-alternate probe did not obtain sandbox enforcement"
+    );
+    assert!(
+        !escape.exit_status.success(),
+        "contained Git read an object available only through an unapproved recursive alternate"
+    );
+    assert!(
+        !escape
+            .stdout
+            .to_string_lossy()
+            .contains(std::str::from_utf8(alternate_secret).expect("synthetic secret is UTF-8")),
+        "recursive alternate object bytes escaped the denied boundary"
+    );
+    std::fs::remove_file(&source_alternates)
+        .expect("remove external alternate before normal private staging probe");
+
+    std::fs::write(
+        repository.join("tracked.txt"),
+        "new content must stay in private object storage\n",
+    )
+    .expect("write changed worktree content");
+    let changed_blob = setup(
+        &repository,
+        &[
+            "hash-object".into(),
+            "--no-filters".into(),
+            "tracked.txt".into(),
+        ],
+    );
+    assert!(changed_blob.status.success(), "hash changed blob failed");
+    let changed_blob = String::from_utf8_lossy(&changed_blob.stdout)
+        .trim()
+        .to_owned();
+    assert!(
+        !filter_marker.exists(),
+        "test oracle unexpectedly invoked the source filter before sandbox launch"
+    );
+
+    let operation_root =
+        codegg_git::path::RepoRoot::new(&repository).expect("construct typed repository root");
+    let operation = codegg_git::GitOperation::Add {
+        paths: vec![
+            codegg_git::path::RepoPath::new(&operation_root, "tracked.txt")
+                .expect("construct typed staging path"),
+        ],
+    };
+    let result = TypedGitExecutionService::new()
+        .with_timeout(Duration::from_secs(15))
+        .execute_private_git_add_staging_test_only(
+            &operation,
+            &repository,
+            operation_scratch.path(),
+            &private_gitdir,
+            &git,
+            "private-add-staging",
+        )
+        .await
+        .expect("required contained staging must run or fail closed");
+    assert!(
+        result.exit_status.success(),
+        "contained git add failed: {}",
+        result.stderr.to_string_lossy()
+    );
+    assert!(
+        matches!(result.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+        "staging did not report obtained enforcement"
+    );
+    assert!(
+        !filter_marker.exists(),
+        "staging loaded the original repository's filter command"
+    );
+
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("source index remains readable"),
+        original_index,
+        "contained git add changed the protected source index"
+    );
+    let source_gitdir_after =
+        std::fs::metadata(&source_gitdir).expect("stat source gitdir after staging");
+    let source_odb_after = std::fs::metadata(&source_odb).expect("stat source ODB after staging");
+    assert_eq!(
+        (source_gitdir_after.dev(), source_gitdir_after.ino()),
+        source_gitdir_identity,
+        "contained staging replaced the protected source gitdir"
+    );
+    assert_eq!(
+        (source_odb_after.dev(), source_odb_after.ino()),
+        source_odb_identity,
+        "contained staging replaced the protected source ODB"
+    );
+    assert!(
+        !source_gitdir.join("index.lock").exists(),
+        "contained git add created a source index lock"
+    );
+    let staged = setup(
+        &repository,
+        &[
+            format!("--git-dir={}", private_gitdir.display()),
+            "ls-files".into(),
+            "--stage".into(),
+            "--".into(),
+            "tracked.txt".into(),
+        ],
+    );
+    assert!(staged.status.success(), "read private staged index failed");
+    assert!(
+        String::from_utf8_lossy(&staged.stdout).contains(&changed_blob),
+        "private index does not reference the changed blob: {}",
+        String::from_utf8_lossy(&staged.stdout)
+    );
+    let private_object = private_gitdir
+        .join("objects")
+        .join(&changed_blob[..2])
+        .join(&changed_blob[2..]);
+    assert!(
+        private_object.is_file(),
+        "changed blob was not written to the operation-owned object store"
+    );
+    let source_object = source_gitdir
+        .join("objects")
+        .join(&changed_blob[..2])
+        .join(&changed_blob[2..]);
+    assert!(
+        !source_object.exists(),
+        "contained git add wrote the new object into the protected source ODB"
+    );
+    assert!(
+        !private_gitdir.join("index.lock").exists(),
+        "staging left a private index lock behind"
+    );
+
+    // Test the broker's optimistic precondition: a concurrent Git index
+    // update after staging must be observed while holding the Git-compatible
+    // lock, and must prevent overwriting that update.
+    let external_index_update = setup(
+        &repository,
+        &[
+            format!("--git-dir={}", source_gitdir.display()),
+            "update-index".into(),
+            "--assume-unchanged".into(),
+            "--".into(),
+            "tracked.txt".into(),
+        ],
+    );
+    assert!(
+        external_index_update.status.success(),
+        "simulate concurrent source index update: {}",
+        String::from_utf8_lossy(&external_index_update.stderr)
+    );
+    let concurrently_updated_index =
+        std::fs::read(source_gitdir.join("index")).expect("read concurrent source index update");
+    assert_ne!(concurrently_updated_index, original_index);
+    let source_index_lock = source_gitdir.join("index.lock");
+    let conflict_lock = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&source_index_lock)
+        .expect("acquire Git-compatible index lock for conflict check");
+    if std::fs::read(source_gitdir.join("index")).expect("recheck source index under lock")
+        != original_index
+    {
+        drop(conflict_lock);
+        std::fs::remove_file(&source_index_lock).expect("release conflict index lock");
+    } else {
+        panic!("broker model failed to reject a concurrently updated index");
+    }
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("concurrent index remains intact"),
+        concurrently_updated_index,
+        "conflict handling overwrote the concurrent index update"
+    );
+
+    // Restore this disposable fixture's baseline after the conflict probe.
+    // The publish prototype below uses the captured bytes as its expected
+    // index generation and exercises only this one index resource.
+    std::fs::write(source_gitdir.join("index"), &original_index)
+        .expect("restore disposable source index baseline");
+    let private_index =
+        std::fs::read(private_gitdir.join("index")).expect("read operation-private staged index");
+    let private_blob = Command::new(&git)
+        .args([
+            format!("--git-dir={}", private_gitdir.display()),
+            "cat-file".into(),
+            "blob".into(),
+            changed_blob.clone(),
+        ])
+        .current_dir(&repository)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .expect("read validated staged blob for broker import");
+    assert!(
+        private_blob.status.success(),
+        "read private staged blob failed: {}",
+        String::from_utf8_lossy(&private_blob.stderr)
+    );
+    assert_eq!(
+        private_blob.stdout, b"new content must stay in private object storage\n",
+        "private staged blob does not match the authorized worktree content"
+    );
+
+    let mut import = Command::new(&git)
+        .args([
+            format!("--git-dir={}", source_gitdir.display()),
+            "hash-object".into(),
+            "-w".into(),
+            "--stdin".into(),
+            "--no-filters".into(),
+        ])
+        .current_dir(&repository)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start trusted broker object import");
+    import
+        .stdin
+        .take()
+        .expect("broker object import stdin")
+        .write_all(&private_blob.stdout)
+        .expect("stream validated blob to source ODB");
+    let imported = import
+        .wait_with_output()
+        .expect("wait for trusted broker object import");
+    assert!(
+        imported.status.success(),
+        "broker object import failed: {}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&imported.stdout).trim(),
+        changed_blob,
+        "source ODB import returned a different object identity"
+    );
+
+    // Persist a minimal operation-owned recovery intent before touching the
+    // source index. This remains a test-only broker model: it exercises the
+    // restart ordering and identity checks without granting the child access
+    // to source metadata.
+    let recovery_dir = operation_scratch.path().join("index-promotion-recovery");
+    std::fs::create_dir(&recovery_dir).expect("create operation recovery directory");
+    let source_gitdir_before_recovery =
+        std::fs::metadata(&source_gitdir).expect("capture recovery gitdir identity");
+    let expected_gitdir_identity = (
+        source_gitdir_before_recovery.dev(),
+        source_gitdir_before_recovery.ino(),
+    );
+    let recovery_expected_index = recovery_dir.join("expected-index");
+    let recovery_publish_index = recovery_dir.join("publish-index");
+    std::fs::write(&recovery_expected_index, &original_index)
+        .expect("persist expected source index generation");
+    std::fs::write(&recovery_publish_index, &private_index)
+        .expect("persist validated private index output");
+    for recovery_file in [&recovery_expected_index, &recovery_publish_index] {
+        std::fs::File::open(recovery_file)
+            .and_then(|file| file.sync_all())
+            .expect("sync operation recovery input");
+    }
+    let recovery_intent = recovery_dir.join("intent");
+    std::fs::write(
+        &recovery_intent,
+        format!(
+            "index-v1\n{}\n{}\n",
+            expected_gitdir_identity.0, expected_gitdir_identity.1
+        ),
+    )
+    .expect("persist index promotion intent");
+    std::fs::File::open(&recovery_intent)
+        .and_then(|file| file.sync_all())
+        .expect("sync index promotion intent");
+    std::fs::File::open(&recovery_dir)
+        .and_then(|directory| directory.sync_all())
+        .expect("sync operation recovery directory");
+
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("revalidate source index"),
+        original_index,
+        "source index changed between broker validation and lock acquisition"
+    );
+
+    // Terminate a separate process after the lock file is durable but before
+    // its atomic rename. Recovery must reacquire all authority from the
+    // durable intent, validate the selected gitdir identity and expected
+    // index, then finish only the exact broker-authored replacement.
+    drop(private_index);
+    let worker = std::env::current_exe().expect("resolve test binary for recovery worker");
+    let interrupted = Command::new(worker)
+        .args([
+            "--exact",
+            "test_only_contained_git_add_stages_index_and_objects_in_private_gitdir",
+            "--nocapture",
+        ])
+        .env("CODEGG_C004_RECOVERY_WORKER_GITDIR", &source_gitdir)
+        .env("CODEGG_C004_RECOVERY_WORKER_INDEX", &recovery_publish_index)
+        .output()
+        .expect("start isolated interrupted-publisher process");
+    assert!(
+        interrupted.status.success(),
+        "interrupted-publisher process failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&interrupted.stdout),
+        String::from_utf8_lossy(&interrupted.stderr)
+    );
+    let intent = std::fs::read_to_string(&recovery_intent).expect("read recovery intent");
+    let mut intent_lines = intent.lines();
+    assert_eq!(intent_lines.next(), Some("index-v1"));
+    let intent_dev = intent_lines
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("parse recovery gitdir device identity");
+    let intent_ino = intent_lines
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("parse recovery gitdir inode identity");
+    assert!(
+        intent_lines.next().is_none(),
+        "unexpected recovery intent data"
+    );
+
+    // Recovery must bind to the original gitdir inode, not merely trust the
+    // configured path. Replace that path after the publisher exits and prove
+    // the identity check rejects the replacement before it can touch it.
+    let displaced_gitdir =
+        source_gitdir.with_file_name(format!(".git-c004-displaced-{}", std::process::id()));
+    assert!(
+        !displaced_gitdir.exists(),
+        "gitdir identity probe path already exists"
+    );
+    std::fs::rename(&source_gitdir, &displaced_gitdir)
+        .expect("displace source gitdir for identity substitution probe");
+    std::fs::create_dir(&source_gitdir).expect("install replacement source gitdir path");
+    let replacement_gitdir =
+        std::fs::metadata(&source_gitdir).expect("inspect replacement gitdir identity");
+    assert_ne!(
+        (replacement_gitdir.dev(), replacement_gitdir.ino()),
+        (intent_dev, intent_ino),
+        "replacement gitdir unexpectedly has the authorized identity"
+    );
+    assert!(
+        !source_gitdir.join("index").exists() && !source_gitdir.join("index.lock").exists(),
+        "identity-mismatched recovery path was modified"
+    );
+    let displaced_lock = displaced_gitdir.join("index.lock");
+    assert!(
+        displaced_lock.is_file(),
+        "displaced authorized gitdir lost the interrupted publisher lock"
+    );
+    std::fs::remove_dir(&source_gitdir).expect("remove empty replacement gitdir");
+    std::fs::rename(&displaced_gitdir, &source_gitdir)
+        .expect("restore original source gitdir after identity probe");
+
+    let recovery_gitdir =
+        std::fs::metadata(&source_gitdir).expect("revalidate recovery gitdir identity");
+    assert_eq!(
+        (recovery_gitdir.dev(), recovery_gitdir.ino()),
+        (intent_dev, intent_ino),
+        "recovery target gitdir identity changed"
+    );
+    let expected_recovery_index =
+        std::fs::read(&recovery_expected_index).expect("read expected recovery index");
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("revalidate expected source index"),
+        expected_recovery_index,
+        "recovery must reject an externally changed source index"
+    );
+
+    // A path replacement between publisher exit and recovery must not redirect
+    // the broker to an attacker-selected file. Verify the no-follow open
+    // rejects a symlink at Git's conventional lock path, then restore the
+    // exact durable lock created by the interrupted publisher.
+    let displaced_lock = recovery_dir.join("displaced-index-lock");
+    std::fs::rename(&source_index_lock, &displaced_lock)
+        .expect("move interrupted lock for symlink replacement probe");
+    std::os::unix::fs::symlink(&recovery_publish_index, &source_index_lock)
+        .expect("replace Git index lock with a symlink probe");
+    let symlink_open = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&source_index_lock);
+    assert!(
+        symlink_open.is_err(),
+        "recovery followed a symlink at the Git index lock path"
+    );
+    std::fs::remove_file(&source_index_lock).expect("remove symlink lock probe");
+    std::fs::rename(&displaced_lock, &source_index_lock)
+        .expect("restore interrupted Git index lock");
+
+    let recovered_index =
+        std::fs::read(&recovery_publish_index).expect("read validated recovery index");
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&source_index_lock)
+        .expect("open interrupted Git index lock without following links");
+    let lock_metadata = lock_file
+        .metadata()
+        .expect("inspect interrupted Git index lock");
+    assert!(
+        lock_metadata.is_file(),
+        "recovery lock is not a regular file"
+    );
+    let lock_path_metadata = std::fs::symlink_metadata(&source_index_lock)
+        .expect("inspect interrupted Git index lock path");
+    assert!(
+        lock_path_metadata.file_type().is_file(),
+        "recovery lock path was replaced by a symlink or special file"
+    );
+    assert_eq!(
+        (lock_metadata.dev(), lock_metadata.ino()),
+        (lock_path_metadata.dev(), lock_path_metadata.ino()),
+        "recovery lock changed while it was being validated"
+    );
+    let mut lock_bytes = Vec::new();
+    let mut lock_file = lock_file;
+    lock_file
+        .read_to_end(&mut lock_bytes)
+        .expect("read interrupted Git index lock");
+    assert_eq!(
+        lock_bytes, recovered_index,
+        "recovery lock does not match the broker-authored index"
+    );
+
+    // Model a non-Git writer replacing index after the publisher died but
+    // before recovery publishes. Recovery must preserve that winner and leave
+    // its staged lock untouched instead of replaying a stale transaction.
+    let competing_index_path = recovery_dir.join("competing-index");
+    std::fs::write(&competing_index_path, &concurrently_updated_index)
+        .expect("write out-of-band competing index generation");
+    std::fs::File::open(&competing_index_path)
+        .and_then(|file| file.sync_all())
+        .expect("sync competing index generation");
+    std::fs::rename(&competing_index_path, source_gitdir.join("index"))
+        .expect("atomically install out-of-band competing index generation");
+    let competing_source_index =
+        std::fs::read(source_gitdir.join("index")).expect("read competing source index");
+    assert_eq!(competing_source_index, concurrently_updated_index);
+    assert_ne!(
+        competing_source_index, expected_recovery_index,
+        "recovery must observe the external index generation change"
+    );
+    assert_eq!(
+        std::fs::read(&source_index_lock).expect("read staged lock after conflict"),
+        recovered_index,
+        "a recovery conflict must not alter the broker-authored lock"
+    );
+
+    // Restore the disposable fixture's admitted generation so the succeeding
+    // branch can prove the exact prepared output is publishable.
+    let restore_index_path = recovery_dir.join("restore-index");
+    std::fs::write(&restore_index_path, &expected_recovery_index)
+        .expect("write expected index generation for recovery branch");
+    std::fs::File::open(&restore_index_path)
+        .and_then(|file| file.sync_all())
+        .expect("sync expected index generation");
+    std::fs::rename(&restore_index_path, source_gitdir.join("index"))
+        .expect("restore expected source index generation");
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("recheck restored source index"),
+        expected_recovery_index,
+        "successful recovery requires the original expected index generation"
+    );
+
+    // Exercise a path substitution at the final validation-to-publication
+    // boundary. The directory descriptor anchors reads to the authorized
+    // gitdir inode while a separate thread replaces its configured path.
+    // Recovery must observe the changed path identity and leave the
+    // replacement untouched before the successful control below.
+    let gitdir_anchor = std::fs::File::open(&source_gitdir).expect("open authorized gitdir");
+    let anchored_gitdir = PathBuf::from(format!("/proc/self/fd/{}", gitdir_anchor.as_raw_fd()));
+    let anchored_index = anchored_gitdir.join("index");
+    let anchored_lock = anchored_gitdir.join("index.lock");
+    assert_eq!(
+        std::fs::read(&anchored_index).expect("read index through gitdir descriptor"),
+        expected_recovery_index,
+        "descriptor must refer to the authorized Git directory"
+    );
+    assert_eq!(
+        std::fs::read(&anchored_lock).expect("read lock through gitdir descriptor"),
+        recovered_index,
+        "descriptor must refer to the broker-authored recovery lock"
+    );
+
+    let concurrent_displaced =
+        source_gitdir.with_file_name(format!(".git-c004-race-displaced-{}", std::process::id()));
+    assert!(
+        !concurrent_displaced.exists(),
+        "concurrent gitdir race path already exists"
+    );
+    let (replace_tx, replace_rx) = std::sync::mpsc::channel();
+    let (replaced_tx, replaced_rx) = std::sync::mpsc::channel();
+    let race_source_gitdir = source_gitdir.clone();
+    let race_displaced_gitdir = concurrent_displaced.clone();
+    let replacer = std::thread::spawn(move || {
+        replace_rx
+            .recv()
+            .expect("receive coordinated gitdir replacement signal");
+        std::fs::rename(&race_source_gitdir, &race_displaced_gitdir)
+            .expect("displace authorized gitdir during recovery");
+        std::fs::create_dir(&race_source_gitdir).expect("install concurrent replacement gitdir");
+        replaced_tx
+            .send(())
+            .expect("signal completed gitdir replacement");
+    });
+
+    // This is the model's pre-publication path identity check. The swap occurs
+    // after it, then the required immediate recheck must deny publication.
+    let pre_race_gitdir = std::fs::metadata(&source_gitdir).expect("pre-race gitdir identity");
+    assert_eq!(
+        (pre_race_gitdir.dev(), pre_race_gitdir.ino()),
+        expected_gitdir_identity,
+        "authorized gitdir changed before the coordinated race"
+    );
+    replace_tx
+        .send(())
+        .expect("start concurrent gitdir path replacement");
+    replaced_rx
+        .recv()
+        .expect("wait for concurrent gitdir path replacement");
+    let raced_gitdir = std::fs::metadata(&source_gitdir).expect("inspect raced gitdir path");
+    assert_ne!(
+        (raced_gitdir.dev(), raced_gitdir.ino()),
+        (intent_dev, intent_ino),
+        "concurrent replacement retained the authorized gitdir identity"
+    );
+    assert!(
+        !source_gitdir.join("index").exists() && !source_gitdir.join("index.lock").exists(),
+        "concurrent path replacement received an index publication"
+    );
+    assert_eq!(
+        std::fs::read(&anchored_index).expect("read authorized index after path swap"),
+        expected_recovery_index,
+        "path swap changed the original authorized index"
+    );
+    assert_eq!(
+        std::fs::read(&anchored_lock).expect("read authorized lock after path swap"),
+        recovered_index,
+        "path swap changed the original broker-authored lock"
+    );
+    replacer.join().expect("join concurrent gitdir replacer");
+    std::fs::remove_dir(&source_gitdir).expect("remove empty concurrent replacement gitdir");
+    std::fs::rename(&concurrent_displaced, &source_gitdir)
+        .expect("restore authorized gitdir after race probe");
+    let restored_after_race = std::fs::metadata(&source_gitdir).expect("recheck restored gitdir");
+    assert_eq!(
+        (restored_after_race.dev(), restored_after_race.ino()),
+        (intent_dev, intent_ino),
+        "race cleanup did not restore the authorized gitdir identity"
+    );
+
+    std::fs::rename(&source_index_lock, source_gitdir.join("index"))
+        .expect("recover atomic publication of validated staged index");
+    std::fs::File::open(&source_gitdir)
+        .and_then(|directory| directory.sync_all())
+        .expect("sync source gitdir after index recovery");
+
+    assert_eq!(
+        std::fs::read(source_gitdir.join("index")).expect("read published source index"),
+        recovered_index,
+        "recovery did not publish the exact validated private index"
+    );
+    let source_has_blob = Command::new(&git)
+        .args([
+            format!("--git-dir={}", source_gitdir.display()),
+            "cat-file".into(),
+            "-e".into(),
+            changed_blob.clone(),
+        ])
+        .current_dir(&repository)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status()
+        .expect("verify imported source object");
+    assert!(
+        source_has_blob.success(),
+        "imported source object is absent"
+    );
+    assert!(
+        !source_index_lock.exists(),
+        "broker promotion left the source index lock behind"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_only_contained_git_staging_cancellation_kills_filter_and_preserves_source() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 for the contained Git cancellation probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("contained Git cancellation probe requires qualified M004 setup: {reason}");
+    }
+
+    let workspace = tempfile::tempdir().expect("Git workspace");
+    let repository = workspace.path().join("repository");
+    std::fs::create_dir(&repository).expect("create repository root");
+    let operation_scratch = tempfile::tempdir().expect("operation-owned Git scratch");
+    let operation_scratch_path = operation_scratch.path().to_path_buf();
+    let private_gitdir = operation_scratch.path().join("private.gitdir");
+    let empty_hooks = operation_scratch.path().join("empty-hooks");
+    std::fs::create_dir(&empty_hooks).expect("create empty hook directory");
+
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+    let setup = |cwd: &Path, args: &[String]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare Git cancellation fixture")
+    };
+
+    let init = setup(&repository, &["init".into(), "--quiet".into()]);
+    assert!(init.status.success(), "git init failed: {init:?}");
+    std::fs::write(repository.join(".gitattributes"), "slow.txt filter=slow\n")
+        .expect("write repository filter attribute");
+    std::fs::write(repository.join("slow.txt"), "baseline content\n")
+        .expect("write baseline filtered file");
+    let baseline_add = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "filter.slow.clean=cat".into(),
+            "add".into(),
+            "--".into(),
+            ".gitattributes".into(),
+            "slow.txt".into(),
+        ],
+    );
+    assert!(
+        baseline_add.status.success(),
+        "stage baseline Git fixture: {}",
+        String::from_utf8_lossy(&baseline_add.stderr)
+    );
+    let commit = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "user.name=Fixture".into(),
+            "-c".into(),
+            "user.email=fixture@example.invalid".into(),
+            "commit".into(),
+            "--quiet".into(),
+            "-m".into(),
+            "contained cancellation fixture".into(),
+        ],
+    );
+    assert!(
+        commit.status.success(),
+        "commit Git cancellation fixture: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let source_gitdir = repository.join(".git");
+    let source_odb = source_gitdir.join("objects");
+    let source_index = source_gitdir.join("index");
+    let original_index = std::fs::read(&source_index).expect("capture source index");
+    let source_gitdir_metadata = std::fs::metadata(&source_gitdir).expect("stat source gitdir");
+    let source_odb_metadata = std::fs::metadata(&source_odb).expect("stat source ODB");
+    let source_gitdir_identity = (source_gitdir_metadata.dev(), source_gitdir_metadata.ino());
+    let source_odb_identity = (source_odb_metadata.dev(), source_odb_metadata.ino());
+    let head = setup(&repository, &["rev-parse".into(), "HEAD".into()]);
+    assert!(
+        head.status.success(),
+        "resolve source HEAD failed: {head:?}"
+    );
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+
+    let private_init = setup(
+        operation_scratch.path(),
+        &[
+            "init".into(),
+            "--bare".into(),
+            "--quiet".into(),
+            private_gitdir.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        private_init.status.success(),
+        "initialize private gitdir: {}",
+        String::from_utf8_lossy(&private_init.stderr)
+    );
+    std::fs::write(
+        private_gitdir.join("objects/info/alternates"),
+        format!("{}\n", source_odb.display()),
+    )
+    .expect("point private ODB at source objects");
+    for args in [
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "update-ref".into(),
+            "refs/heads/main".into(),
+            head.clone(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "symbolic-ref".into(),
+            "HEAD".into(),
+            "refs/heads/main".into(),
+        ],
+        vec![
+            format!("--git-dir={}", private_gitdir.display()),
+            "read-tree".into(),
+            "HEAD".into(),
+        ],
+    ] {
+        let prepared = setup(&repository, &args);
+        assert!(
+            prepared.status.success(),
+            "prepare private Git index with {args:?}: {}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+    }
+
+    let filter_started = repository.join("filter-started");
+    let filter_survived = repository.join("filter-survived-cancellation");
+    let filter_script = operation_scratch.path().join("slow-clean-filter.sh");
+    std::fs::write(
+        &filter_script,
+        format!(
+            "#!/bin/sh\nprintf started > {}\n/usr/bin/sleep 1\nprintf survived > {}\ncat\n",
+            shell_quote(&filter_started.to_string_lossy()),
+            shell_quote(&filter_survived.to_string_lossy())
+        ),
+    )
+    .expect("write contained slow clean filter");
+    let mut filter_permissions = std::fs::metadata(&filter_script)
+        .expect("stat slow clean filter")
+        .permissions();
+    filter_permissions.set_mode(0o755);
+    std::fs::set_permissions(&filter_script, filter_permissions)
+        .expect("make slow clean filter executable");
+    for (key, value) in [
+        (
+            "filter.slow.clean",
+            filter_script.to_string_lossy().into_owned(),
+        ),
+        ("filter.slow.required", "true".into()),
+        ("core.hooksPath", empty_hooks.to_string_lossy().into_owned()),
+        ("core.fsmonitor", "false".into()),
+    ] {
+        let configured = setup(
+            &repository,
+            &[
+                format!("--git-dir={}", private_gitdir.display()),
+                "config".into(),
+                key.into(),
+                value,
+            ],
+        );
+        assert!(
+            configured.status.success(),
+            "configure private Git setting {key}: {}",
+            String::from_utf8_lossy(&configured.stderr)
+        );
+    }
+    std::fs::write(
+        repository.join("slow.txt"),
+        "cancelled content must remain private\n",
+    )
+    .expect("write updated filtered file");
+    let prospective_blob = setup(
+        &repository,
+        &[
+            "hash-object".into(),
+            "--no-filters".into(),
+            "slow.txt".into(),
+        ],
+    );
+    assert!(
+        prospective_blob.status.success(),
+        "calculate prospective filtered blob: {}",
+        String::from_utf8_lossy(&prospective_blob.stderr)
+    );
+    let prospective_blob = String::from_utf8_lossy(&prospective_blob.stdout)
+        .trim()
+        .to_owned();
+
+    let args = vec![
+        format!("--git-dir={}", private_gitdir.display()),
+        format!("--work-tree={}", repository.display()),
+        "add".into(),
+        "--".into(),
+        "slow.txt".into(),
+    ];
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_allowed_paths(vec![
+            repository.to_string_lossy().into_owned(),
+            operation_scratch.path().to_string_lossy().into_owned(),
+        ])
+        .with_linux_offline_network(true)
+        .launch_spec(&git, &args, Some(&repository))
+        .expect("construct contained Git cancellation launch");
+    assert!(
+        spec.protected_readonly_paths.contains(&source_gitdir),
+        "cancellation launch did not protect the source gitdir"
+    );
+    assert!(
+        spec.path_identities
+            .iter()
+            .any(|identity| identity.path == source_gitdir),
+        "cancellation launch did not capture the source gitdir identity"
+    );
+    let argv = std::iter::once(spec.target.as_os_str().to_owned())
+        .chain(spec.args.iter().map(OsString::from))
+        .collect();
+    let mut request = ManagedProcessRequest::new(
+        argv,
+        repository.clone(),
+        ProcessProvenance::new("linux-trusted-git-c004", "private-add-cancellation"),
+    );
+    request.timeout = Some(Duration::from_secs(10));
+    request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+        .with_var("GIT_CONFIG_NOSYSTEM", "1")
+        .with_var("GIT_CONFIG_GLOBAL", "/dev/null")
+        .with_var("HOME", "/tmp/codegg-empty-home");
+    let cancellation = CancellationToken::new();
+    request.cancellation = cancellation.clone();
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let task = tokio::spawn(ManagedProcessService::run(request));
+    for _ in 0..500 {
+        if filter_started.exists() {
+            break;
+        }
+        if task.is_finished() {
+            let early = task
+                .await
+                .expect("join early contained Git cancellation task");
+            panic!("contained Git completed before the clean filter started: {early:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        filter_started.exists(),
+        "contained clean filter did not start"
+    );
+    cancellation.cancel();
+    let result = task
+        .await
+        .expect("join contained Git cancellation task")
+        .expect("required contained Git cancellation must return its receipt");
+    assert_eq!(
+        result.termination,
+        codegg::managed_process::TerminationReason::Cancelled
+    );
+    assert!(
+        matches!(result.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+        "cancelled Git staging did not retain obtained sandbox enforcement"
+    );
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(
+        !filter_survived.exists(),
+        "contained Git cancellation left its filter process running"
+    );
+    assert_eq!(
+        std::fs::read(&source_index).expect("source index after cancellation"),
+        original_index,
+        "cancelled staging changed the protected source index"
+    );
+    assert!(
+        !source_gitdir.join("index.lock").exists(),
+        "cancelled staging left a source index lock"
+    );
+    assert!(
+        !source_odb
+            .join(&prospective_blob[..2])
+            .join(&prospective_blob[2..])
+            .exists(),
+        "cancelled staging imported its prospective blob into the source ODB"
+    );
+    let source_gitdir_after = std::fs::metadata(&source_gitdir).expect("stat gitdir after cancel");
+    let source_odb_after = std::fs::metadata(&source_odb).expect("stat ODB after cancel");
+    assert_eq!(
+        (source_gitdir_after.dev(), source_gitdir_after.ino()),
+        source_gitdir_identity,
+        "cancelled staging replaced the source gitdir"
+    );
+    assert_eq!(
+        (source_odb_after.dev(), source_odb_after.ino()),
+        source_odb_identity,
+        "cancelled staging replaced the source ODB"
+    );
+
+    drop(operation_scratch);
+    assert!(
+        !operation_scratch_path.exists(),
+        "cancelled staging retained its operation-owned private Git scratch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_network_runs_cargo_metadata_and_check_without_network() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 for the native M005 toolchain probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("M005 offline toolchain probe requires qualified M004 setup: {reason}");
+    }
+
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("test runner HOME is available");
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".rustup"));
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cargo"));
+    let rustup = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("rustup"))
+        .find(|candidate| candidate.is_file())
+        .expect("Rustup is installed by the Linux test toolchain")
+        .canonicalize()
+        .expect("resolve rustup executable");
+    let host_triple_output = Command::new(&rustup)
+        .args(["run", "stable", "rustc", "-vV"])
+        .env("RUSTUP_HOME", &rustup_home)
+        .env("CARGO_HOME", &cargo_home)
+        .output()
+        .expect("query the installed Rust host triple");
+    assert!(
+        host_triple_output.status.success(),
+        "installed rustc query failed: {}",
+        String::from_utf8_lossy(&host_triple_output.stderr)
+    );
+    let host_triple = String::from_utf8_lossy(&host_triple_output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("rustc -vV host triple")
+        .to_string();
+    let linker_env = format!(
+        "CARGO_TARGET_{}_LINKER",
+        host_triple.replace('-', "_").to_ascii_uppercase()
+    );
+    let linker = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("cc"))
+        .find(|candidate| candidate.is_file())
+        .expect("C linker is installed on the Linux test runner")
+        .canonicalize()
+        .expect("resolve C linker executable");
+
+    let rustup_home = shell_quote(&rustup_home.to_string_lossy());
+    let cargo_bin = shell_quote(&cargo_home.join("bin").to_string_lossy());
+    let cargo_home = shell_quote(&cargo_home.to_string_lossy());
+    let linker_dir = shell_quote(
+        &linker
+            .parent()
+            .expect("C linker has a parent directory")
+            .to_string_lossy(),
+    );
+    let linker = shell_quote(&linker.to_string_lossy());
+    let linker_env = shell_quote(&linker_env);
+    let manifest = shell_quote(&workspace.join("Cargo.toml").to_string_lossy());
+    let rustup = shell_quote(&rustup.to_string_lossy());
+    let script = format!(
+        "export RUSTUP_HOME={rustup_home} CARGO_HOME={cargo_home} CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 CC={linker} HOST_CC={linker} {linker_env}={linker}; export PATH={linker_dir}:{cargo_bin}:$PATH; {rustup} run stable cargo metadata --offline --locked --no-deps --format-version 1 --manifest-path {manifest} >/dev/null && {rustup} run stable cargo check --offline --locked --workspace --manifest-path {manifest}"
+    );
+
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_offline_network(true)
+        .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
+        .expect("offline M005 toolchain launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace,
+        ProcessProvenance::new("linux-m005", "offline-cargo-workspace"),
+    );
+    request.timeout = Some(Duration::from_secs(15 * 60));
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("required offline toolchain namespace should launch");
+    assert!(
+        result.exit_status.success(),
+        "offline Cargo compatibility failed (status {:?}); stdout: {}; stderr: {}",
+        result.exit_status,
+        result.stdout.to_string_lossy(),
+        result.stderr.to_string_lossy()
+    );
+}
+
+fn stop(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket() {
+    if std::env::var(OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {OPT_IN}=1 to run the native M004 child probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let marker = workspace.path().join("target-ran");
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_process_isolation(true)
+            .launch_spec(
+                "/bin/sh",
+                &[
+                    "-c".into(),
+                    format!("touch {}", shell_quote(&marker.to_string_lossy())),
+                ],
+                Some(workspace.path()),
+            )
+            .expect("M004 launch spec");
+        let mut request = ManagedProcessRequest::new(
+            [spec.target.as_os_str().to_owned()]
+                .into_iter()
+                .chain(spec.args.iter().map(OsString::from))
+                .collect(),
+            workspace.path().to_path_buf(),
+            ProcessProvenance::new("linux-m004", "unsupported-host-probe"),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let error = ManagedProcessService::run(request)
+            .await
+            .expect_err("required M004 must refuse on a host without Landlock ABI 6");
+        assert!(error.to_string().contains("process-ipc-landlock-abi-6"));
+        assert!(!marker.exists(), "unsupported M004 request ran its target");
+        eprintln!("M004 positive probes unavailable on this host: {reason}");
+        return;
+    }
+
+    let ambient_file = tempfile::NamedTempFile::new().expect("ambient descriptor fixture");
+    let ambient_fd = unsafe { libc::fcntl(ambient_file.as_raw_fd(), libc::F_DUPFD, 256) };
+    assert!(
+        ambient_fd >= 256,
+        "duplicate ambient fd: {}",
+        std::io::Error::last_os_error()
+    );
+    let ambient_fd = unsafe { OwnedFd::from_raw_fd(ambient_fd) };
+    assert_eq!(
+        unsafe { libc::fcntl(ambient_fd.as_raw_fd(), libc::F_SETFD, 0) },
+        0,
+        "make ambient fixture inheritable"
+    );
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let socket_name = format!("codegg-m004-{}", std::process::id());
+    let pathname_socket_root = tempfile::tempdir().expect("pathname socket fixture");
+    let pathname_socket = pathname_socket_root.path().join("host.sock");
+    let signal_marker = workspace.path().join("host-signal-received");
+    let server_script = format!(
+        "import socket,time; s=socket.socket(socket.AF_UNIX); s.bind('\\0{socket_name}'); s.listen(); time.sleep(30)"
+    );
+    let mut socket_server = Command::new("python3")
+        .arg("-c")
+        .arg(&server_script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start host abstract-socket fixture");
+    let pathname_server_script = format!(
+        "import socket,time; s=socket.socket(socket.AF_UNIX); s.bind({:?}); s.listen(); time.sleep(30)",
+        pathname_socket
+    );
+    let mut pathname_socket_server = Command::new("python3")
+        .arg("-c")
+        .arg(&pathname_server_script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start host pathname-socket fixture");
+    for _ in 0..100 {
+        if pathname_socket.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(pathname_socket.exists(), "pathname fixture did not bind");
+
+    let signal_script = format!(
+        "import signal,time; signal.signal(signal.SIGUSR1, lambda *_: open({:?}, 'w').write('received')); time.sleep(30)",
+        signal_marker.to_string_lossy()
+    );
+    let mut signal_target = Command::new("python3")
+        .arg("-c")
+        .arg(&signal_script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start host signal fixture");
+
+    let rustup_path =
+        std::env::split_paths(&std::env::var_os("PATH").expect("test runner PATH is available"))
+            .map(|directory| directory.join("rustup"))
+            .find(|path| path.is_file())
+            .expect("Rustup is installed by the Linux test toolchain");
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").expect("test runner HOME is available"))
+                .join(".rustup")
+        });
+
+    let probe_script = format!(
+        "import os,socket,signal,sys\n\
+         s=socket.socket(socket.AF_UNIX)\n\
+         try: s.connect('\\0{socket_name}'); print('abstract-socket-allowed'); sys.exit(10)\n\
+         except PermissionError: print('abstract-socket-denied')\n\
+         except OSError as e: print('abstract-socket-error:'+str(e.errno)); sys.exit(11)\n\
+         p=socket.socket(socket.AF_UNIX)\n\
+         try: p.connect({pathname_socket:?}); print('pathname-socket-allowed'); sys.exit(15)\n\
+         except (FileNotFoundError, PermissionError): print('pathname-socket-denied')\n\
+         except OSError as e: print('pathname-socket-error:'+str(e.errno)); sys.exit(16)\n\
+         try: os.kill({signal_pid}, signal.SIGUSR1); print('signal-allowed'); sys.exit(12)\n\
+         except (PermissionError, ProcessLookupError): print('signal-denied')\n\
+         print('host-proc-hidden' if not os.path.exists('/proc/{host_pid}') else 'host-proc-visible')\n\
+         print('host-proc-environ-hidden' if not os.path.exists('/proc/{host_pid}/environ') else 'host-proc-environ-visible')\n\
+         print('host-proc-fd-hidden' if not os.path.exists('/proc/{host_pid}/fd') else 'host-proc-fd-visible')\n\
+         print('ambient-fd-closed' if not os.path.exists('/proc/self/fd/{ambient_fd}') else 'ambient-fd-open')\n\
+         import ctypes; libc=ctypes.CDLL(None, use_errno=True)\n\
+         ctypes.set_errno(0); ptrace_result=libc.ptrace(16, {host_pid}, 0, 0); ptrace_error=ctypes.get_errno()\n\
+         ctypes.set_errno(0); readv_result=libc.process_vm_readv({host_pid}, None, 0, None, 0, 0); readv_error=ctypes.get_errno()\n\
+         ctypes.set_errno(0); writev_result=libc.process_vm_writev({host_pid}, None, 0, None, 0, 0); writev_error=ctypes.get_errno()\n\
+         print('seccomp-denied-tracing' if ptrace_result == -1 and ptrace_error == 38 and readv_result == -1 and readv_error == 38 and writev_result == -1 and writev_error == 38 else 'seccomp-tracing-allowed')\n\
+         seccomp_mode=libc.prctl(21, 0, 0, 0, 0)\n\
+         result=libc.unshare(0x10000000); unshare_error=ctypes.get_errno()\n\
+         mount_result=libc.mount(None, None, None, 0, None); mount_error=ctypes.get_errno()\n\
+         print('seccomp-denied-namespace-change' if seccomp_mode == 2 and result == -1 and unshare_error == 38 else 'seccomp-namespace-change-allowed')\n\
+         print('seccomp-denied-mount-change' if mount_result == -1 and mount_error == 38 else 'seccomp-mount-change-allowed')\n\
+         if seccomp_mode != 2 or result != -1 or unshare_error != 38 or mount_result != -1 or mount_error != 38: sys.exit(14)\n\
+         import subprocess; subprocess.run(['git','--version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE); print('git-subprocess-ok')\n\
+         rustup_env=os.environ.copy(); rustup_env['RUSTUP_HOME']={rustup_home:?}\n\
+         subprocess.run([{rustup_path:?},'toolchain','list'], check=True, env=rustup_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n\
+         subprocess.run([{rustup_path:?},'run','stable','rustc','--version'], check=True, env=rustup_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n\
+         print('rustup-procfs-ok')\n",
+        signal_pid = signal_target.id(),
+        host_pid = std::process::id(),
+        ambient_fd = ambient_fd.as_raw_fd(),
+        rustup_path = rustup_path,
+        rustup_home = rustup_home
+    );
+
+    let sandbox = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true);
+    let spec = sandbox
+        .launch_spec(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                format!("python3 -c {}", shell_quote(&probe_script)),
+            ],
+            Some(workspace.path()),
+        )
+        .expect("M004 launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("linux-m004", "process-ipc-probe"),
+    );
+    request.timeout = Some(Duration::from_secs(15));
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let result = ManagedProcessService::run(request).await;
+    stop(&mut socket_server);
+    stop(&mut pathname_socket_server);
+    stop(&mut signal_target);
+    let result = result.expect("required M004 process tier should launch");
+    assert!(
+        result.exit_status.success(),
+        "stderr: {}",
+        result.stderr.to_string_lossy()
+    );
+    let stdout = result.stdout.to_string_lossy();
+    assert!(stdout.contains("abstract-socket-denied"), "{stdout}");
+    assert!(stdout.contains("pathname-socket-denied"), "{stdout}");
+    assert!(stdout.contains("signal-denied"), "{stdout}");
+    assert!(stdout.contains("host-proc-hidden"), "{stdout}");
+    assert!(stdout.contains("host-proc-environ-hidden"), "{stdout}");
+    assert!(stdout.contains("host-proc-fd-hidden"), "{stdout}");
+    assert!(stdout.contains("ambient-fd-closed"), "{stdout}");
+    assert!(stdout.contains("seccomp-denied-tracing"), "{stdout}");
+    assert!(
+        stdout.contains("seccomp-denied-namespace-change"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("seccomp-denied-mount-change"), "{stdout}");
+    assert!(stdout.contains("git-subprocess-ok"), "{stdout}");
+    assert!(stdout.contains("rustup-procfs-ok"), "{stdout}");
+    assert!(
+        !signal_marker.exists(),
+        "host fixture received a sandbox signal"
+    );
+    match result.sandbox {
+        SandboxExecutionOutcome::Enforced {
+            guarantees, limits, ..
+        } => {
+            assert!(guarantees
+                .iter()
+                .any(|item| item.contains("private procfs")));
+            assert!(guarantees
+                .iter()
+                .any(|item| item.contains("abstract Unix socket")));
+            assert!(limits
+                .iter()
+                .any(|item| item.contains("outbound networking")));
+            assert!(guarantees
+                .iter()
+                .any(|item| item.contains("seccomp filter")));
+        }
+        other => panic!("expected enforced M004 result, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_tier_cancellation_kills_namespace_descendants() {
+    if std::env::var(OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {OPT_IN}=1 to run the native M004 child probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        eprintln!("M004 positive probes unavailable on this host: {reason}");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let started = workspace.path().join("descendant-started");
+    let marker = workspace.path().join("descendant-survived-cancel");
+    let child_script = format!(
+        "import subprocess,time; subprocess.Popen(['/bin/sh','-c',\"touch {}; sleep 1; touch {}\"], start_new_session=True); time.sleep(30)",
+        shell_quote(&started.to_string_lossy()),
+        shell_quote(&marker.to_string_lossy()),
+    );
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true)
+        .launch_spec(
+            "python3",
+            &["-c".into(), child_script],
+            Some(workspace.path()),
+        )
+        .expect("M004 launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("linux-m004", "descendant-cancel-probe"),
+    );
+    let cancellation = CancellationToken::new();
+    request.cancellation = cancellation.clone();
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let task = tokio::spawn(ManagedProcessService::run(request));
+    for _ in 0..200 {
+        if started.exists() {
+            break;
+        }
+        if task.is_finished() {
+            let result = task.await.expect("join early M004 completion");
+            panic!("M004 launch ended before the descendant started: {result:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(started.exists(), "M004 descendant fixture did not start");
+    cancellation.cancel();
+    let result = task
+        .await
+        .expect("join cancellation task")
+        .expect("cancellation result");
+    assert_eq!(
+        result.termination,
+        codegg::managed_process::TerminationReason::Cancelled
+    );
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(
+        !marker.exists(),
+        "M004 cancellation left a namespace descendant running"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_process_tiers_receive_distinct_pid_and_ipc_namespaces() {
+    if std::env::var(OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {OPT_IN}=1 to run the native M004 child probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        eprintln!("M004 positive probes unavailable on this host: {reason}");
+        return;
+    }
+
+    let first_workspace = tempfile::tempdir().expect("first workspace");
+    let second_workspace = tempfile::tempdir().expect("second workspace");
+    let request = |workspace: &Path, operation: &str| {
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_process_isolation(true)
+            .launch_spec(
+                "python3",
+                &[
+                    "-c".into(),
+                    "import os; print(os.stat('/proc/self/ns/pid').st_ino); print(os.stat('/proc/self/ns/ipc').st_ino)".into(),
+                ],
+                Some(workspace),
+            )
+            .expect("M004 launch spec");
+        let mut request = ManagedProcessRequest::new(
+            [spec.target.as_os_str().to_owned()]
+                .into_iter()
+                .chain(spec.args.iter().map(OsString::from))
+                .collect(),
+            workspace.to_path_buf(),
+            ProcessProvenance::new("linux-m004", operation),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.sandbox = SandboxRequest::Required(spec);
+        request
+    };
+
+    let (first, second) = tokio::join!(
+        ManagedProcessService::run(request(first_workspace.path(), "concurrent-first")),
+        ManagedProcessService::run(request(second_workspace.path(), "concurrent-second")),
+    );
+    let first = first.expect("first concurrent M004 launch");
+    let second = second.expect("second concurrent M004 launch");
+    assert!(
+        first.exit_status.success(),
+        "first stderr: {}",
+        first.stderr.to_string_lossy()
+    );
+    assert!(
+        second.exit_status.success(),
+        "second stderr: {}",
+        second.stderr.to_string_lossy()
+    );
+    let namespace_ids = |stdout: &str| {
+        let ids = stdout
+            .lines()
+            .map(|line| line.trim().parse::<u64>().expect("namespace inode"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids.len(),
+            2,
+            "expected PID and IPC namespace inodes: {stdout}"
+        );
+        [ids[0], ids[1]]
+    };
+    let first_ids = namespace_ids(&first.stdout.to_string_lossy());
+    let second_ids = namespace_ids(&second.stdout.to_string_lossy());
+    assert_ne!(
+        first_ids[0], second_ids[0],
+        "concurrent jobs shared a PID namespace"
+    );
+    assert_ne!(
+        first_ids[1], second_ids[1],
+        "concurrent jobs shared an IPC namespace"
+    );
+    let host_pid = std::fs::metadata("/proc/self/ns/pid")
+        .expect("host PID namespace")
+        .ino();
+    let host_ipc = std::fs::metadata("/proc/self/ns/ipc")
+        .expect("host IPC namespace")
+        .ino();
+    assert_ne!(
+        first_ids[0], host_pid,
+        "first job retained the host PID namespace"
+    );
+    assert_ne!(
+        second_ids[0], host_pid,
+        "second job retained the host PID namespace"
+    );
+    assert_ne!(
+        first_ids[1], host_ipc,
+        "first job retained the host IPC namespace"
+    );
+    assert_ne!(
+        second_ids[1], host_ipc,
+        "second job retained the host IPC namespace"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_tier_runs_workspace_check_and_managed_process_tests() {
+    if std::env::var("CODEGG_RUN_M004_CARGO_NATIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: set CODEGG_RUN_M004_CARGO_NATIVE=1 for Cargo compatibility probes");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("Cargo compatibility probe requires the positive M004 host profile: {reason}");
+    }
+
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("test runner HOME is available");
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".rustup"));
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cargo"));
+    let rustup = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("rustup"))
+        .find(|candidate| candidate.is_file())
+        .expect("Rustup is installed by the Linux test toolchain")
+        .canonicalize()
+        .expect("resolve rustup executable");
+    let host_triple_output = Command::new(&rustup)
+        .args(["run", "stable", "rustc", "-vV"])
+        .env("RUSTUP_HOME", &rustup_home)
+        .env("CARGO_HOME", &cargo_home)
+        .output()
+        .expect("query the installed Rust host triple");
+    assert!(
+        host_triple_output.status.success(),
+        "installed rustc query failed: {}",
+        String::from_utf8_lossy(&host_triple_output.stderr)
+    );
+    let host_triple = String::from_utf8_lossy(&host_triple_output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("rustc -vV host triple")
+        .to_string();
+    let linker_env = format!(
+        "CARGO_TARGET_{}_LINKER",
+        host_triple.replace('-', "_").to_ascii_uppercase()
+    );
+    let linker = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("cc"))
+        .find(|candidate| candidate.is_file())
+        .expect("C linker is installed on the Linux test runner")
+        .canonicalize()
+        .expect("resolve C linker executable");
+    let cargo =
+        std::env::split_paths(&std::env::var_os("PATH").expect("test runner PATH is available"))
+            .map(|directory| directory.join("cargo"))
+            .find(|candidate| candidate.is_file())
+            .expect("Cargo is installed by the Rust test toolchain");
+    let cargo_target = cargo.canonicalize().expect("resolve Cargo launcher");
+    let uses_rustup_shim = cargo_target
+        .file_name()
+        .is_some_and(|name| name == "rustup" || name == "rustup.exe");
+    for (operation, args) in [
+        (
+            "cargo-workspace-check",
+            vec!["check", "--locked", "--workspace"],
+        ),
+        (
+            "cargo-managed-process-tests",
+            vec![
+                "test",
+                "--locked",
+                "-p",
+                "codegg",
+                "--lib",
+                "managed_process",
+                // Protected-mount tests require probing and starting the host
+                // Bubblewrap binary. The M004 child intentionally cannot see
+                // that host launch dependency; the hosted workflow runs those
+                // regressions separately on the host after this probe.
+                "--",
+                "--skip",
+                "protected_mount_",
+            ],
+        ),
+    ] {
+        // The protected launch intentionally gives the target HOME=/tmp and
+        // clears inherited environment. Re-establish only the runner's
+        // installed Rust toolchain and Cargo caches so rustup and Cargo do not
+        // look for an empty /tmp/.rustup.
+        let mut launch_script = format!(
+            "export RUSTUP_HOME={}; export CARGO_HOME={}; export CARGO_BUILD_JOBS=2; export CC={}; export HOST_CC={}; export {}={}; export PATH={}:$PATH; ",
+            shell_quote(&rustup_home.to_string_lossy()),
+            shell_quote(&cargo_home.to_string_lossy()),
+            shell_quote(&linker.to_string_lossy()),
+            shell_quote(&linker.to_string_lossy()),
+            linker_env,
+            shell_quote(&linker.to_string_lossy()),
+            shell_quote(
+                &linker
+                    .parent()
+                    .expect("C linker has a parent directory")
+                    .to_string_lossy()
+            ),
+        );
+        if uses_rustup_shim {
+            launch_script.push_str(&format!(
+                "exec {} run stable cargo",
+                shell_quote(&cargo_target.to_string_lossy())
+            ));
+        } else {
+            let cargo_dir = cargo_target
+                .parent()
+                .expect("Cargo executable has a parent directory");
+            launch_script.push_str(&format!(
+                "export PATH={}:$PATH; exec {}",
+                shell_quote(&cargo_dir.to_string_lossy()),
+                shell_quote(&cargo_target.to_string_lossy())
+            ));
+        }
+        for arg in args {
+            launch_script.push(' ');
+            launch_script.push_str(&shell_quote(arg));
+        }
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_process_isolation(true)
+            .launch_spec("/bin/sh", &["-c".into(), launch_script], Some(&workspace))
+            .expect("M004 Cargo launch spec");
+        let mut request = ManagedProcessRequest::new(
+            [spec.target.as_os_str().to_owned()]
+                .into_iter()
+                .chain(spec.args.iter().map(OsString::from))
+                .collect(),
+            workspace.clone(),
+            ProcessProvenance::new("linux-m004", operation),
+        );
+        request.timeout = Some(Duration::from_secs(15 * 60));
+        request.sandbox = SandboxRequest::Required(spec);
+        let result = ManagedProcessService::run(request)
+            .await
+            .unwrap_or_else(|error| panic!("M004 {operation} failed to launch: {error}"));
+        assert!(
+            result.exit_status.success(),
+            "M004 {operation} failed (status {:?}); stdout: {}; stderr: {}",
+            result.exit_status,
+            result.stdout.to_string_lossy(),
+            result.stderr.to_string_lossy()
+        );
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// C007: the production private-index publisher, end to end, on a qualified
+/// Linux host.
+///
+/// The publisher stages into a private gitdir through the contained staging
+/// step, publishes the index under Git's own `index.lock` with a
+/// compare-and-swap against the generation the staging observed, and imports
+/// the staged object into the repository's object database.
+///
+/// The repository's own `filter.*` configuration must not run: the private
+/// gitdir's configuration is authored by the daemon and contains no
+/// `filter.*` section, so a repository-controlled clean filter has no
+/// command to execute. The filter probe is the positive control for that.
+#[cfg(feature = "linux-git-test-support")]
+#[tokio::test]
+async fn production_private_index_publisher_stages_and_publishes_under_containment() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the contained C007 publisher probe");
+        return;
+    }
+
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
+    use std::str::FromStr;
+
+    let workspace = tempfile::tempdir().expect("C007 workspace");
+    let repository = workspace.path().join("repository");
+    std::fs::create_dir(&repository).expect("create repository root");
+    let scratch = tempfile::tempdir().expect("daemon-owned publication scratch");
+
+    let git = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("Git is installed on the native Linux runner")
+        .canonicalize()
+        .expect("resolve Git executable");
+    let setup = |cwd: &Path, args: &[String]| {
+        Command::new(&git)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("prepare C007 Git fixture")
+    };
+
+    assert!(setup(&repository, &["init".into(), "--quiet".into()])
+        .status
+        .success());
+    std::fs::write(repository.join("tracked.txt"), "committed base\n")
+        .expect("write committed fixture");
+    std::fs::write(
+        repository.join(".gitattributes"),
+        "tracked.txt filter=probe\n",
+    )
+    .expect("write repository-controlled filter attribute");
+    assert!(setup(
+        &repository,
+        &[
+            "add".into(),
+            "--".into(),
+            ".gitattributes".into(),
+            "tracked.txt".into(),
+        ]
+    )
+    .status
+    .success());
+    let commit = setup(
+        &repository,
+        &[
+            "-c".into(),
+            "user.name=Fixture".into(),
+            "-c".into(),
+            "user.email=fixture@example.invalid".into(),
+            "commit".into(),
+            "--quiet".into(),
+            "-m".into(),
+            "C007 publisher fixture".into(),
+        ],
+    );
+    assert!(
+        commit.status.success(),
+        "fixture commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    // A repository-controlled clean filter that would mark the repository if
+    // it ever ran. It must not run: the publisher stages against a private
+    // gitdir whose configuration the daemon authored.
+    let filter_marker = repository.join("source-filter-ran");
+    let filter_script = scratch.path().join("source-filter.sh");
+    std::fs::write(
+        &filter_script,
+        format!(
+            "#!/bin/sh\nprintf ran > {}\ncat\n",
+            shell_quote(&filter_marker.to_string_lossy())
+        ),
+    )
+    .expect("write source-configured filter probe");
+    let mut filter_permissions = std::fs::metadata(&filter_script)
+        .expect("stat source-configured filter probe")
+        .permissions();
+    filter_permissions.set_mode(0o755);
+    std::fs::set_permissions(&filter_script, filter_permissions)
+        .expect("make source-configured filter executable");
+    let configure_filter = setup(
+        &repository,
+        &[
+            "config".into(),
+            "filter.probe.clean".into(),
+            filter_script.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(
+        configure_filter.status.success(),
+        "configure source repository filter: {}",
+        String::from_utf8_lossy(&configure_filter.stderr)
+    );
+
+    let source_gitdir = repository
+        .join(".git")
+        .canonicalize()
+        .expect("canonical source gitdir");
+    let source_odb = source_gitdir.join("objects");
+    let index_before = std::fs::read(source_gitdir.join("index")).expect("capture source index");
+    let objects_before = count_loose_objects(&source_odb);
+
+    // The journal lives in the daemon's session storage.
+    let url = format!(
+        "file:codegg_c007_publisher_{}?mode=memory&cache=shared",
+        uuid::Uuid::new_v4().simple()
+    );
+    let options = SqliteConnectOptions::from_str(&url)
+        .expect("valid sqlite options")
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(5))
+        .foreign_keys(true);
+    let pool: SqlitePool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("connect to in-memory sqlite");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("migrate the publication journal");
+
+    let store = std::sync::Arc::new(codegg_core::git_publication::GitIndexPublicationStore::new(
+        pool.clone(),
+    ));
+    let publisher = codegg::git_publication::GitIndexPublisher::new(
+        store,
+        scratch.path().to_path_buf(),
+        std::sync::Arc::new(codegg::git_publication::ContainedGitIndexStaging::new(
+            git.clone(),
+        )),
+        Duration::from_secs(60),
+    );
+
+    std::fs::write(repository.join("tracked.txt"), "staged by the publisher\n")
+        .expect("write the change to stage");
+    let request = codegg::git_publication::GitIndexPublicationRequest {
+        intent_id: "c007-hosted-publication".into(),
+        repository_root: repository.clone(),
+        workspace_root: repository.clone(),
+        paths: vec!["tracked.txt".into()],
+    };
+    let outcome = publisher
+        .publish_add(&request)
+        .await
+        .expect("the C007 publication completes");
+    let receipt = match outcome {
+        codegg::git_publication::GitIndexPublicationOutcome::Committed(receipt) => receipt,
+        other => panic!("expected a committed publication, got {other:?}"),
+    };
+
+    // The repository-controlled filter never ran.
+    assert!(
+        !filter_marker.exists(),
+        "the repository's clean filter must not run inside the publisher"
+    );
+    // The index was replaced and the change is staged.
+    let index_after = std::fs::read(source_gitdir.join("index")).expect("read published index");
+    assert_ne!(index_after, index_before);
+    let status = setup(&repository, &["status".into(), "--porcelain".into()]);
+    assert!(
+        status.status.success(),
+        "git status failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.contains("M  tracked.txt"),
+        "the change should be staged, got {status:?}"
+    );
+    // The staged blob reached the repository's object database.
+    assert_eq!(receipt.imported_objects.len(), 1);
+    assert_eq!(
+        count_loose_objects(&source_odb),
+        objects_before + 1,
+        "exactly the staged object was imported"
+    );
+    // The receipt states the network boundary the staging child actually
+    // obtained. On this qualified host the staging child ran inside a
+    // private network namespace, so the receipt says so — with the
+    // mechanism that obtained it, and not the bare word "offline".
+    //
+    // This is the obtained-facts contract's end-to-end proof: the boundary
+    // is read off the launch's own observed setup, so it cannot be a
+    // request echoed back as a fact.
+    assert_eq!(
+        receipt.network_boundary,
+        codegg::git_publication::ObtainedNetworkBoundary::Enforced {
+            backend: "bubblewrap-netns".into()
+        },
+        "the receipt must state the network boundary the staging child obtained"
+    );
+    assert_eq!(receipt.network_boundary.as_str(), "enforced");
+    // The journal recorded the commitment.
+    let stored = codegg_core::git_publication::GitIndexPublicationStore::new(pool)
+        .get("c007-hosted-publication")
+        .await
+        .expect("read the journal entry")
+        .expect("the journal entry exists");
+    assert_eq!(
+        stored.state,
+        codegg_core::git_publication::GitIndexPublicationState::Committed
+    );
+}
+
+/// Count the loose objects in an object database.
+#[cfg(feature = "linux-git-test-support")]
+fn count_loose_objects(objects: &Path) -> usize {
+    let mut count = 0;
+    let Ok(entries) = std::fs::read_dir(objects) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let fanout = entry.file_name().to_string_lossy().into_owned();
+        if fanout.len() != 2 || !fanout.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        for object in std::fs::read_dir(entry.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = object.file_name().to_string_lossy().into_owned();
+            if name.len() == 38 && name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                count += 1;
+            }
+        }
+    }
+    count
+}

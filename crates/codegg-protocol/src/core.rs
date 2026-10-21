@@ -854,12 +854,41 @@ impl SandboxProfileDto {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkIntentDto {
+    #[default]
+    LegacyUnrestricted,
+    OfflineRequired,
+}
+
+impl NetworkIntentDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyUnrestricted => "legacy_unrestricted",
+            Self::OfflineRequired => "offline_required",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "legacy_unrestricted" | "unrestricted" => Some(Self::LegacyUnrestricted),
+            "offline_required" | "offline" => Some(Self::OfflineRequired),
+            _ => None,
+        }
+    }
+}
+
 /// Daemon-owned principal preference projection. Secret-free.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimePreferenceDto {
     pub principal_id: String,
     pub approval_mode: ApprovalModeDto,
     pub sandbox_profile: SandboxProfileDto,
+    /// M005: principal opt-in for offline child networking. Missing on older
+    /// payloads means the legacy unrestricted behavior.
+    #[serde(default)]
+    pub network_intent: NetworkIntentDto,
     pub revision: u64,
     pub updated_at_ms: i64,
     /// M007: last-used provider connection identity from the durable
@@ -964,37 +993,81 @@ impl SandboxEnforcementDto {
                         ),
                     }
                 };
-                // No OS network-isolation backend exists.
+                // A policy snapshot cannot report an obtained network
+                // boundary: that fact belongs to a launch, not to a profile.
+                // The snapshot therefore states the profile's network posture
+                // and the daemon reports the obtained boundary per launch.
                 let _ = constrained;
                 (filesystem, NetworkEnforcementDto::Unrestricted)
             }
         };
-        let summary = match &filesystem {
-            FilesystemEnforcementDto::Enforced { backend, abi } => match abi {
-                Some(abi) => format!(
-                    "{} requested; filesystem enforced ({backend} abi {abi}); network unrestricted (no OS isolation)",
-                    requested.as_str()
-                ),
-                None => format!(
-                    "{} requested; filesystem enforced ({backend}); network unrestricted (no OS isolation)",
-                    requested.as_str()
-                ),
-            },
-            FilesystemEnforcementDto::Unavailable { reason } => format!(
-                "{} requested; filesystem unavailable ({reason}); network unrestricted (no OS isolation)",
-                requested.as_str()
-            ),
-            FilesystemEnforcementDto::FullHost => format!(
-                "{} requested; no CodeGG filesystem containment (explicit FullHost); network unrestricted (no OS isolation)",
-                requested.as_str()
-            ),
-        };
+        let summary = Self::summary_for(requested, &filesystem, &network);
         Self {
             requested,
             filesystem,
             network,
             summary,
         }
+    }
+
+    /// Replace the reported network fact and rebuild the summary from it.
+    ///
+    /// The summary is derived from the fields it describes, so it cannot
+    /// contradict them. A summary that still read "network unrestricted"
+    /// beside an `Unavailable` network field would read as a weaker
+    /// boundary than the snapshot actually asserts.
+    pub fn with_network(&self, network: NetworkEnforcementDto) -> Self {
+        Self {
+            requested: self.requested,
+            filesystem: self.filesystem.clone(),
+            summary: Self::summary_for(self.requested, &self.filesystem, &network),
+            network,
+        }
+    }
+
+    /// The summary clause describing the obtained filesystem fact.
+    fn filesystem_clause(filesystem: &FilesystemEnforcementDto) -> String {
+        match filesystem {
+            FilesystemEnforcementDto::Enforced { backend, abi } => match abi {
+                Some(abi) => format!("filesystem enforced ({backend} abi {abi})"),
+                None => format!("filesystem enforced ({backend})"),
+            },
+            FilesystemEnforcementDto::Unavailable { reason } => {
+                format!("filesystem unavailable ({reason})")
+            }
+            FilesystemEnforcementDto::FullHost => {
+                "no CodeGG filesystem containment (explicit FullHost)".to_string()
+            }
+        }
+    }
+
+    /// The summary clause describing the reported network fact.
+    fn network_clause(network: &NetworkEnforcementDto) -> String {
+        match network {
+            NetworkEnforcementDto::Enforced { backend } => {
+                format!("network enforced ({backend})")
+            }
+            NetworkEnforcementDto::Unrestricted => {
+                "network unrestricted (no OS isolation)".to_string()
+            }
+            NetworkEnforcementDto::Unavailable { reason } => {
+                format!("network not established at the policy snapshot ({reason})")
+            }
+        }
+    }
+
+    /// Build the summary from the facts it describes.
+    fn summary_for(
+        requested: SandboxProfileDto,
+        filesystem: &FilesystemEnforcementDto,
+        network: &NetworkEnforcementDto,
+    ) -> String {
+        format!(
+            "{} requested; {}; {}",
+            requested.as_str(),
+            Self::filesystem_clause(filesystem),
+            Self::network_clause(network)
+        )
     }
 }
 
@@ -1004,6 +1077,10 @@ impl SandboxEnforcementDto {
 pub struct ExecutionPolicySnapshotDto {
     pub approval_mode: ApprovalModeDto,
     pub sandbox_profile: SandboxProfileDto,
+    /// M005: immutable network requirement captured with this policy.
+    /// Older payloads remain legacy unrestricted.
+    #[serde(default)]
+    pub network_intent: NetworkIntentDto,
     #[serde(default)]
     pub principal_id: Option<String>,
     #[serde(default)]
@@ -1952,6 +2029,20 @@ pub enum CoreResponse {
     WorkOrderTriggerList {
         triggers: Vec<crate::work_order::TaskTriggerMetadataDto>,
         truncated: bool,
+    },
+    /// The daemon's scratch usage report (M006).
+    ///
+    /// Carries counts, sizes, ages, and opaque digests only: never an
+    /// absolute path, never file content, never a session identity.
+    ScratchUsage {
+        report: crate::scratch::ScratchUsageReportDto,
+    },
+    /// The result of one scratch reclaim (M007).
+    ///
+    /// Carries the digest, counts, and the verdict only: never an absolute
+    /// path, never file content, never a session identity.
+    ScratchReclaim {
+        result: crate::scratch::ScratchReclaimResultDto,
     },
 }
 
@@ -3511,6 +3602,13 @@ pub enum CoreRequest {
         #[serde(default)]
         expected_revision: Option<u64>,
     },
+    /// Persist the caller's explicit child network intent. CAS via
+    /// `expected_revision`; older clients never need to send this request.
+    NetworkIntentSet {
+        network_intent: String,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
     /// M007: atomically persist the caller's approval mode and/or sandbox
     /// profile in a single revision bump. Each dimension is optional
     /// (`None` leaves it unchanged; at least one must be `Some`).
@@ -3666,6 +3764,20 @@ pub enum CoreRequest {
     WorkOrderTriggerRevoke {
         trigger_id: String,
     },
+    /// Measure the daemon-owned scratch tree (M006).
+    ///
+    /// The request names nothing: the daemon reports the trees it owns.
+    ScratchUsage {
+        request: crate::scratch::ScratchUsageRequestDto,
+    },
+    /// Dispose of one scratch tree (M007).
+    ///
+    /// The request names a tree by its opaque digest, never by a path. A dry
+    /// run is the default: the operator sees the verdict before anything is
+    /// removed.
+    ScratchReclaim {
+        request: crate::scratch::ScratchReclaimRequestDto,
+    },
 }
 
 /// A TUI-chosen extended-thinking setting for one turn.
@@ -3810,6 +3922,23 @@ impl CoreRequest {
                 // `cggt_...` plaintext, so issuance stays on the
                 // secret-safe local surface (no remote secret delivery).
                 | Self::TeamTokenCreate { .. }
+        )
+    }
+
+    /// Whether this request is served only on the local authenticated socket.
+    ///
+    /// The remote HTTP/WS surface is reachable by a remote client that has
+    /// authenticated to the server but is not the machine's local owner. The
+    /// daemon-owned scratch tree is local-owner state, so its operations
+    /// never leave the local socket. The remote transport denies with
+    /// `local_operation_remote_denied`.
+    pub fn is_local_only(&self) -> bool {
+        matches!(
+            self,
+            // M006: the scratch census measures the local owner's disposable
+            // cache. M007: the operator disposition removes one of those
+            // trees, and it is just as local.
+            Self::ScratchUsage { .. } | Self::ScratchReclaim { .. }
         )
     }
 }
@@ -4552,6 +4681,44 @@ mod tests {
     #[test]
     fn protocol_version_is_set() {
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    /// The summary is derived from the facts it describes, so it can never
+    /// contradict the field it summarises.
+    ///
+    /// The defect this guards against is a snapshot whose summary said
+    /// "network unrestricted" while its network field said the boundary was
+    /// not established at the snapshot — a reader could not tell which was
+    /// the fact.
+    #[test]
+    fn the_enforcement_summary_never_contradicts_its_fields() {
+        let enforced = SandboxEnforcementDto::for_profile_on_host(
+            SandboxProfileDto::WorkspaceWrite,
+            true,
+            None,
+        );
+        assert!(enforced
+            .summary
+            .contains("network unrestricted (no OS isolation)"));
+
+        // Replacing the network fact rebuilds the summary from it.
+        let replaced = enforced.with_network(NetworkEnforcementDto::Unavailable {
+            reason: "verified per child launch".into(),
+        });
+        assert!(!replaced.summary.contains("network unrestricted"));
+        assert!(replaced
+            .summary
+            .contains("network not established at the policy snapshot"));
+        assert!(replaced.summary.contains("filesystem enforced (landlock)"));
+
+        // The same holds for a reported enforcement.
+        let replaced = enforced.with_network(NetworkEnforcementDto::Enforced {
+            backend: "bubblewrap-netns".into(),
+        });
+        assert!(replaced
+            .summary
+            .contains("network enforced (bubblewrap-netns)"));
+        assert!(!replaced.summary.contains("network unrestricted"));
     }
 
     #[test]

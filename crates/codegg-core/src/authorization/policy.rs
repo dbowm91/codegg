@@ -1269,6 +1269,9 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::SandboxProfileSet { .. } => {
             OperationDescriptor::new("sandbox_profile_set", ScopeKind::Global, None)
         }
+        R::NetworkIntentSet { .. } => {
+            OperationDescriptor::new("network_intent_set", ScopeKind::Global, None)
+        }
         R::RuntimePolicySet { .. } => {
             OperationDescriptor::new("runtime_policy_set", ScopeKind::Global, None)
         }
@@ -1420,6 +1423,23 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             "work_order_bind_repository",
             ScopeKind::DirectProject,
             Some(Capability::SessionCreate),
+        ),
+        // M006: the scratch census reads the daemon's own disposable cache.
+        // No project linkage exists — a tree is addressed by an opaque digest
+        // that cannot be inverted to a session — so team principals fail
+        // closed and only the local owner is authorized. It is a bounded read
+        // of disposable state and mutates nothing, so it claims no capability.
+        R::ScratchUsage { .. } => {
+            OperationDescriptor::new("scratch_usage", ScopeKind::Opaque, None)
+        }
+        // M007: the operator disposition removes one of those trees. It is
+        // still daemon-global state with no project linkage, so the scope
+        // stays `Opaque` and team principals still fail closed. Unlike the
+        // census it mutates the filesystem, so it claims `FileModify`.
+        R::ScratchReclaim { .. } => OperationDescriptor::new(
+            "scratch_reclaim",
+            ScopeKind::Opaque,
+            Some(Capability::FileModify),
         ),
     }
 }
@@ -2296,6 +2316,10 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             sandbox_profile: String::new(),
             expected_revision: None,
         },
+        R::NetworkIntentSet {
+            network_intent: String::new(),
+            expected_revision: None,
+        },
         R::RuntimePolicySet {
             approval_mode: None,
             sandbox_profile: None,
@@ -2441,6 +2465,15 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::WorkOrderBindRepository {
             work_order_id: String::new(),
             eggplan_plan_id: String::new(),
+        },
+        R::ScratchUsage {
+            request: codegg_protocol::scratch::ScratchUsageRequestDto { refresh: false },
+        },
+        R::ScratchReclaim {
+            request: codegg_protocol::scratch::ScratchReclaimRequestDto {
+                tree: String::new(),
+                apply: false,
+            },
         },
     ]
 }

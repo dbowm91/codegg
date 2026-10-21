@@ -176,6 +176,74 @@ impl EnvironmentPolicy {
         }
         entries
     }
+
+    fn sandbox_entries(
+        &self,
+        provenance: &ProcessProvenance,
+    ) -> Result<Vec<(String, String)>, ManagedProcessError> {
+        let mut entries = self.entries();
+        if !provenance.job_id.is_empty() {
+            entries.insert("CODEGG_JOB_ID".into(), provenance.job_id.clone().into());
+            entries.insert(
+                "CODEGG_SCHEDULER_JOB_ID".into(),
+                provenance.job_id.clone().into(),
+            );
+        }
+        if !provenance.attempt_id.is_empty() {
+            entries.insert(
+                "CODEGG_ATTEMPT_ID".into(),
+                provenance.attempt_id.clone().into(),
+            );
+            entries.insert(
+                "CODEGG_SCHEDULER_ATTEMPT_ID".into(),
+                provenance.attempt_id.clone().into(),
+            );
+        }
+        entries.insert("CODEGG_MANAGED_PROCESS".into(), "1".into());
+        if entries.len() > 64 {
+            return Err(ManagedProcessError::SandboxFailed(
+                "sandbox target environment exceeds 64 entries".into(),
+            ));
+        }
+        entries
+            .into_iter()
+            .map(|(name, value)| {
+                let name = name.into_string().map_err(|_| {
+                    ManagedProcessError::SandboxFailed(
+                        "sandbox target environment name is not UTF-8".into(),
+                    )
+                })?;
+                let value = value.into_string().map_err(|_| {
+                    ManagedProcessError::SandboxFailed(
+                        "sandbox target environment value is not UTF-8".into(),
+                    )
+                })?;
+                if name.is_empty()
+                    || name.contains('=')
+                    || name.len() > 32 * 1024
+                    || value.len() > 32 * 1024
+                {
+                    return Err(ManagedProcessError::SandboxFailed(
+                        "sandbox target environment contains an invalid entry".into(),
+                    ));
+                }
+                Ok((name, value))
+            })
+            .collect()
+    }
+
+    pub(crate) fn sandbox_interactive_entries(
+        &self,
+        provenance: &ProcessProvenance,
+    ) -> Result<Vec<(String, String)>, ManagedProcessError> {
+        let mut entries = self.sandbox_entries(provenance)?;
+        if let Some((_, value)) = entries.iter_mut().find(|(name, _)| name == "TERM") {
+            *value = "xterm-256color".into();
+        } else {
+            entries.push(("TERM".into(), "xterm-256color".into()));
+        }
+        Ok(entries)
+    }
 }
 
 /// Overflow behavior for a bounded output stream.
@@ -400,6 +468,13 @@ pub struct ManagedProcessRequest {
     /// process is launched from an agent tool call. This remains local
     /// plumbing and is not projected into child environment variables.
     pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+    /// Accepted profile ceiling when a scheduler payload cannot retain the
+    /// ephemeral permission receipt. The broker validates the receipt before
+    /// submission; the process owner still enforces constrained containment.
+    pub required_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// Scheduler-carried network intent when the permission receipt cannot
+    /// remain in the durable job payload.
+    pub required_network_intent: codegg_core::approval::NetworkIntent,
 }
 
 impl ManagedProcessRequest {
@@ -419,6 +494,8 @@ impl ManagedProcessRequest {
             sandbox: SandboxRequest::Disabled,
             provenance,
             execution_authorization: None,
+            required_sandbox_profile: None,
+            required_network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         }
     }
 
@@ -459,11 +536,14 @@ pub enum SandboxExecutionOutcome {
     Disabled,
     /// OS containment is in force. `backend` names the mechanism that
     /// applied it and `abi` is that backend's reported version (`None` for
-    /// mechanisms without one). `guarantees`/`limits` carry the obtained
-    /// facts so an audit record never reads stronger than reality.
+    /// mechanisms without one). `network` is the **obtained** network
+    /// boundary for this launch — the fact, never the request.
+    /// `guarantees`/`limits` carry the obtained facts so an audit record
+    /// never reads stronger than reality.
     Enforced {
         backend: crate::security::sandbox::BackendId,
         abi: Option<u32>,
+        network: codegg_core::approval::NetworkEnforcement,
         guarantees: Vec<String>,
         limits: Vec<String>,
     },
@@ -589,6 +669,171 @@ impl ManagedProcessService {
     }
 }
 
+/// A live Bubblewrap child whose target was released only after the helper's
+/// private setup status and acknowledgment exchange completed.
+#[cfg(target_os = "linux")]
+pub(crate) struct LiveSandboxChild {
+    pub child: Child,
+    pub status_task: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+/// Standard-stream wiring for an M004 interactive child. The PTY owner uses
+/// `terminal`; protocol owners such as LSP use `pipes` and never acquire a
+/// controlling terminal.
+#[cfg(target_os = "linux")]
+pub(crate) struct SandboxInteractiveIo {
+    stdin: std::process::Stdio,
+    stdout: std::process::Stdio,
+    stderr: std::process::Stdio,
+    attach_controlling_terminal: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl SandboxInteractiveIo {
+    pub(crate) fn terminal(
+        stdin: std::process::Stdio,
+        stdout: std::process::Stdio,
+        stderr: std::process::Stdio,
+    ) -> Self {
+        Self {
+            stdin,
+            stdout,
+            stderr,
+            attach_controlling_terminal: true,
+        }
+    }
+
+    pub(crate) fn pipes() -> Self {
+        Self {
+            stdin: std::process::Stdio::piped(),
+            stdout: std::process::Stdio::piped(),
+            stderr: std::process::Stdio::piped(),
+            attach_controlling_terminal: false,
+        }
+    }
+}
+
+/// Spawn a long-lived interactive child through the canonical helper owner.
+/// This is Linux/M004-only and always requires the full process-isolation
+/// composition; callers cannot request a degraded launch through this API.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub(crate) async fn spawn_sandboxed_interactive_child(
+    mut spec: SandboxLaunchSpec,
+    cwd: &Path,
+    environment_policy: &EnvironmentPolicy,
+    io: SandboxInteractiveIo,
+    cancellation: &CancellationToken,
+    shutdown: &CancellationToken,
+) -> Result<LiveSandboxChild, ManagedProcessError> {
+    use std::os::fd::AsRawFd;
+
+    let SandboxInteractiveIo {
+        stdin,
+        stdout,
+        stderr,
+        attach_controlling_terminal,
+    } = io;
+
+    if !spec.linux_protected_mount_view || !spec.linux_process_isolation {
+        return Err(ManagedProcessError::SandboxFailed(
+            "interactive M004 launch requires protected mounts and process isolation".into(),
+        ));
+    }
+    if cancellation.is_cancelled() {
+        return Err(ManagedProcessError::CancelledBeforeSpawn);
+    }
+    spec.env = environment_policy.sandbox_interactive_entries(&ProcessProvenance::default())?;
+    let executable = spec.target.as_os_str().to_os_string();
+    let argv = spec.args.iter().map(OsString::from).collect::<Vec<_>>();
+    let sandbox = SandboxRequest::Required(spec);
+    let (
+        launch_argv,
+        sandbox_file,
+        status_reader,
+        status_writer,
+        status_ack_reader,
+        status_ack_writer,
+    ) = prepare_launch_argv(
+        &executable,
+        &argv,
+        cwd,
+        &sandbox,
+        #[cfg(test)]
+        None,
+    )?;
+    let mut launch_argv = launch_argv.into_iter();
+    let launch_executable = launch_argv.next().ok_or(ManagedProcessError::EmptyArgv)?;
+    let mut command = Command::new(launch_executable);
+    command
+        .args(launch_argv)
+        .current_dir(cwd)
+        .stdin(stdin)
+        .stdout(stdout)
+        .stderr(stderr)
+        .kill_on_drop(true);
+    environment_policy.apply(&mut command);
+    ProcessProvenance::default().apply(&mut command);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if attach_controlling_terminal {
+                // The PTY slave is fd 0 in the helper. Keep it as this
+                // session's controlling terminal across helper and Bubblewrap
+                // execs. Duplex protocol children such as LSP use pipes.
+                if libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let status_writer = status_writer.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 status writer was not created".into())
+    })?;
+    let status_ack_reader = status_ack_reader.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 acknowledgment reader was not created".into())
+    })?;
+    configure_status_fds(
+        &mut command,
+        status_writer.as_raw_fd(),
+        Some(status_ack_reader.as_raw_fd()),
+        true,
+    );
+
+    let mut child = command.spawn().map_err(ManagedProcessError::Spawn)?;
+    drop(status_writer);
+    drop(status_ack_reader);
+    let reader = status_reader.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 status reader was not created".into())
+    })?;
+    let ack_writer = status_ack_writer.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 acknowledgment writer was not created".into())
+    })?;
+    let ready = tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(30), await_bubblewrap_ready(reader, ack_writer)) => {
+            result.map_err(|_| ManagedProcessError::SandboxFailed("M004 setup receipt timed out".into()))?
+        }
+        _ = cancellation.cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled during M004 setup")),
+        _ = shutdown.cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "service shutdown during M004 setup")),
+    };
+    let (reader, first_status_line) = match ready {
+        Ok(ready) => ready,
+        Err(error) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(ManagedProcessError::SandboxFailed(format!(
+                "M004 helper handshake failed: {error}"
+            )));
+        }
+    };
+    drop(sandbox_file);
+    let status_task = tokio::spawn(read_bubblewrap_terminal_status(reader, first_status_line));
+    Ok(LiveSandboxChild { child, status_task })
+}
+
 pub async fn run(
     request: ManagedProcessRequest,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
@@ -601,19 +846,49 @@ async fn run_inner(
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
-    if request
-        .execution_authorization
-        .as_ref()
-        .is_some_and(|authorization| {
-            authorization
-                .snapshot
-                .sandbox_profile()
-                .requires_filesystem_containment()
-                && matches!(&request.sandbox, SandboxRequest::Disabled)
-        })
+    let mut request = request;
+    let required_profile = request.required_sandbox_profile.or_else(|| {
+        request
+            .execution_authorization
+            .as_ref()
+            .map(|authorization| authorization.snapshot.sandbox_profile())
+    });
+    if required_profile.is_some_and(|profile| profile.requires_filesystem_containment())
+        && matches!(&request.sandbox, SandboxRequest::Disabled)
     {
         return Err(ManagedProcessError::SandboxFailed(
             "accepted execution policy requires filesystem containment, but the launch request disabled it".into(),
+        ));
+    }
+
+    let required_network_intent = request
+        .execution_authorization
+        .as_ref()
+        .map(|authorization| authorization.snapshot.network_intent())
+        .unwrap_or(request.required_network_intent);
+    if required_network_intent == codegg_core::approval::NetworkIntent::OfflineRequired {
+        if required_profile.is_some_and(|profile| !profile.requires_filesystem_containment()) {
+            return Err(ManagedProcessError::SandboxFailed(
+                "OfflineRequired currently requires a constrained filesystem profile".into(),
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        match &mut request.sandbox {
+            SandboxRequest::Required(spec) => {
+                spec.linux_offline_network = true;
+                spec.linux_process_isolation = true;
+                spec.linux_protected_mount_view = true;
+            }
+            SandboxRequest::Disabled => {
+                return Err(ManagedProcessError::SandboxFailed(
+                    "accepted OfflineRequired policy cannot run without a required sandbox launch"
+                        .into(),
+                ));
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(ManagedProcessError::SandboxFailed(
+            "OfflineRequired is unavailable on this platform".into(),
         ));
     }
 
@@ -635,6 +910,8 @@ async fn run_inner(
         sandbox,
         provenance,
         execution_authorization,
+        required_sandbox_profile: _required_sandbox_profile,
+        required_network_intent: _required_network_intent,
     } = request;
 
     if executable.is_empty() {
@@ -758,7 +1035,20 @@ async fn run_inner(
         sandbox_scratch = Some(scratch);
     }
 
-    let (launch_argv, _sandbox_file, status_reader, status_writer) = prepare_launch_argv(
+    if let SandboxRequest::Required(spec) = &mut sandbox {
+        if spec.linux_protected_mount_view {
+            spec.env = environment_policy.sandbox_entries(&provenance)?;
+        }
+    }
+
+    let (
+        launch_argv,
+        _sandbox_file,
+        status_reader,
+        status_writer,
+        status_ack_reader,
+        status_ack_writer,
+    ) = prepare_launch_argv(
         &executable,
         &argv,
         &cwd,
@@ -793,7 +1083,17 @@ async fn run_inner(
     configure_process_session(&mut command);
     #[cfg(unix)]
     if let Some(writer) = status_writer.as_ref() {
-        configure_status_writer(&mut command, writer.as_raw_fd());
+        #[cfg(not(target_os = "linux"))]
+        let close_unapproved_fds = false;
+        #[cfg(target_os = "linux")]
+        let close_unapproved_fds =
+            matches!(&sandbox, SandboxRequest::Required(spec) if spec.linux_process_isolation);
+        configure_status_fds(
+            &mut command,
+            writer.as_raw_fd(),
+            status_ack_reader.as_ref().map(AsRawFd::as_raw_fd),
+            close_unapproved_fds,
+        );
     }
 
     #[cfg(windows)]
@@ -801,6 +1101,7 @@ async fn run_inner(
 
     let mut child = command.spawn().map_err(ManagedProcessError::Spawn)?;
     drop(status_writer);
+    drop(status_ack_reader);
 
     #[cfg(windows)]
     if let Err(error) = process_job
@@ -845,7 +1146,18 @@ async fn run_inner(
         output_policy.overflow,
         output_tx,
     ));
-    let status_task = status_reader.map(|reader| tokio::spawn(read_status(reader)));
+    let status_task = match (status_reader, status_ack_writer, &sandbox) {
+        #[cfg(target_os = "linux")]
+        (Some(reader), Some(ack_writer), SandboxRequest::Required(spec))
+            if spec.linux_protected_mount_view =>
+        {
+            Some(tokio::spawn(read_bubblewrap_status_with_ack(
+                reader, ack_writer,
+            )))
+        }
+        (Some(reader), _, _) => Some(tokio::spawn(read_status(reader))),
+        (None, _, _) => None,
+    };
     let stdin_task = match &stdin {
         StdinPolicy::Null => None,
         StdinPolicy::Bytes(bytes) => child.stdin.take().map(|mut stdin| {
@@ -903,7 +1215,8 @@ async fn run_inner(
     } else {
         None
     };
-    let sandbox = interpret_sandbox_status(sandbox_status.as_deref(), &sandbox)?;
+    let sandbox =
+        interpret_sandbox_status_for_termination(sandbox_status.as_deref(), &sandbox, termination)?;
     drop(sandbox_scratch);
 
     Ok(ManagedProcessResult {
@@ -959,6 +1272,8 @@ async fn run_windows_test_restricted_inner(
         sandbox,
         provenance,
         execution_authorization: _execution_authorization,
+        required_sandbox_profile: _required_sandbox_profile,
+        required_network_intent: _required_network_intent,
     } = request;
     if executable.is_empty() {
         return Err(ManagedProcessError::EmptyArgv);
@@ -1460,6 +1775,8 @@ type PreparedLaunchArgv = (
     Option<tempfile::NamedTempFile>,
     Option<tokio::fs::File>,
     Option<SandboxStatusWriter>,
+    Option<SandboxStatusWriter>,
+    Option<SandboxStatusWriter>,
 );
 
 fn prepare_launch_argv(
@@ -1473,13 +1790,19 @@ fn prepare_launch_argv(
         .chain(argv.iter().cloned())
         .collect::<Vec<_>>();
     match sandbox {
-        SandboxRequest::Disabled => Ok((full_argv, None, None, None)),
+        SandboxRequest::Disabled => Ok((full_argv, None, None, None, None, None)),
         SandboxRequest::Required(spec) => {
             #[cfg(not(unix))]
             {
                 let _ = spec;
                 return Err(ManagedProcessError::SandboxFailed(
                     "sandbox helper is unavailable on this platform".to_string(),
+                ));
+            }
+            #[cfg(all(unix, not(target_os = "linux")))]
+            if spec.linux_protected_mount_view {
+                return Err(ManagedProcessError::SandboxFailed(
+                    "protected mount view is available only on Linux".into(),
                 ));
             }
             #[cfg(unix)]
@@ -1498,7 +1821,9 @@ fn prepare_launch_argv(
                                 "invalid Linux launch request: {reason}"
                             ))
                         })? {
-                        LinuxLaunchPlan::LegacyPrivateHelper => {}
+                        LinuxLaunchPlan::LegacyPrivateHelper
+                        | LinuxLaunchPlan::ProtectedMountView
+                        | LinuxLaunchPlan::ProtectedProcessIsolation => {}
                         LinuxLaunchPlan::EnhancedUnavailable { dimensions } => {
                             return Err(ManagedProcessError::SandboxFailed(format!(
                                 "Linux launch dimensions unavailable: {}",
@@ -1533,8 +1858,9 @@ fn prepare_launch_argv(
                 file.write_all(&bytes)
                     .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
                 #[cfg(unix)]
-                let (status_reader, status_writer) = create_status_pipe()
-                    .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+                let (status_reader, status_writer, status_ack_reader, status_ack_writer) =
+                    create_status_pipe(spec.linux_protected_mount_view)
+                        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
                 Ok((
                     vec![
                         helper.into_os_string(),
@@ -1546,6 +1872,8 @@ fn prepare_launch_argv(
                     Some(file),
                     Some(status_reader),
                     Some(status_writer),
+                    status_ack_reader,
+                    status_ack_writer,
                 ))
             }
         }
@@ -1556,40 +1884,85 @@ const STATUS_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn create_status_pipe() -> io::Result<(tokio::fs::File, OwnedFd)> {
-    // The parent reader and writer are both close-on-exec. The child-side
-    // pre-exec hook duplicates only the writer to the helper's fixed fd.
-    let mut fds = [0_i32; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    for fd in fds {
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-            unsafe {
-                libc::close(fds[0]);
-                libc::close(fds[1]);
-            }
+fn create_status_pipe(
+    with_ack: bool,
+) -> io::Result<(tokio::fs::File, OwnedFd, Option<OwnedFd>, Option<OwnedFd>)> {
+    fn make_pipe() -> io::Result<[OwnedFd; 2]> {
+        let mut fds = [0_i32; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error());
         }
+        for fd in fds {
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+                let error = io::Error::last_os_error();
+                unsafe {
+                    libc::close(fds[0]);
+                    libc::close(fds[1]);
+                }
+                return Err(error);
+            }
+        }
+        Ok(unsafe { [OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])] })
     }
-    let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-    let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+    let [reader, writer] = make_pipe()?;
+    let (ack_reader, ack_writer) = if with_ack {
+        let [reader, writer] = make_pipe()?;
+        (Some(reader), Some(writer))
+    } else {
+        (None, None)
+    };
     Ok((
         tokio::fs::File::from_std(std::fs::File::from(reader)),
         writer,
+        ack_reader,
+        ack_writer,
     ))
 }
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn configure_status_writer(command: &mut Command, source_fd: i32) {
+fn configure_status_fds(
+    command: &mut Command,
+    source_status_fd: i32,
+    source_ack_fd: Option<i32>,
+    close_unapproved_fds: bool,
+) {
     unsafe {
         command.pre_exec(move || {
-            if source_fd != crate::security::sandbox::SANDBOX_STATUS_FD {
-                if libc::dup2(source_fd, crate::security::sandbox::SANDBOX_STATUS_FD) < 0 {
+            // Duplicate to temporary descriptors first so source fds 3 or 4
+            // cannot be clobbered by the fixed descriptor assignment.
+            let status_copy = libc::fcntl(source_status_fd, libc::F_DUPFD_CLOEXEC, 10);
+            if status_copy < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let ack_copy = if let Some(source_ack_fd) = source_ack_fd {
+                let fd = libc::fcntl(source_ack_fd, libc::F_DUPFD_CLOEXEC, 10);
+                if fd < 0 {
+                    libc::close(status_copy);
                     return Err(io::Error::last_os_error());
                 }
-                libc::close(source_fd);
+                Some(fd)
+            } else {
+                None
+            };
+            if libc::dup2(status_copy, crate::security::sandbox::SANDBOX_STATUS_FD) < 0 {
+                libc::close(status_copy);
+                if let Some(fd) = ack_copy {
+                    libc::close(fd);
+                }
+                return Err(io::Error::last_os_error());
+            }
+            libc::close(status_copy);
+            if let Some(fd) = ack_copy {
+                if libc::dup2(fd, crate::security::sandbox::SANDBOX_ACK_FD) < 0 {
+                    libc::close(fd);
+                    return Err(io::Error::last_os_error());
+                }
+                libc::close(fd);
+                if libc::fcntl(crate::security::sandbox::SANDBOX_ACK_FD, libc::F_SETFD, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
             }
             if libc::fcntl(
                 crate::security::sandbox::SANDBOX_STATUS_FD,
@@ -1599,9 +1972,28 @@ fn configure_status_writer(command: &mut Command, source_fd: i32) {
             {
                 return Err(io::Error::last_os_error());
             }
+            #[cfg(target_os = "linux")]
+            if close_unapproved_fds {
+                close_unapproved_linux_fds()?;
+            }
             Ok(())
         });
     }
+}
+
+/// Keep only stdio plus the private sandbox status and acknowledgment
+/// descriptors in an M004 helper. `close_range` is available well before the
+/// Landlock ABI 6 floor required by this mode; failure aborts before exec.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn close_unapproved_linux_fds() -> io::Result<()> {
+    for (first, last) in [(4_u32, 197_u32), (199_u32, u32::MAX)] {
+        let result = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> {
@@ -1615,6 +2007,146 @@ async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> 
         ));
     }
     Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+async fn read_bubblewrap_status_with_ack(
+    mut reader: tokio::fs::File,
+    ack_writer: OwnedFd,
+) -> Result<Vec<u8>, io::Error> {
+    let mut bytes = Vec::new();
+    let mut first = [0_u8; 1];
+    if reader.read(&mut first).await? == 0 {
+        drop(ack_writer);
+        return Ok(bytes);
+    }
+    bytes.push(first[0]);
+
+    let mut ack_error = None;
+    if first[0] == b'{' {
+        while bytes.last() != Some(&b'\n') {
+            if bytes.len() >= MAX_SANDBOX_STATUS_BYTES {
+                drop(ack_writer);
+                return Ok(bytes);
+            }
+            let mut byte = [0_u8; 1];
+            if reader.read(&mut byte).await? == 0 {
+                drop(ack_writer);
+                return Ok(bytes);
+            }
+            bytes.push(byte[0]);
+        }
+        let ready = decode_bubblewrap_json_status(&bytes).is_ok_and(|_| {
+            bytes
+                .windows(b"\"child-pid\"".len())
+                .any(|window| window == b"\"child-pid\"")
+        });
+        if ready {
+            let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
+            if let Err(error) = writer.write_all(&[0xA5]).await {
+                ack_error = Some(error);
+            } else if let Err(error) = writer.flush().await {
+                ack_error = Some(error);
+            }
+        }
+    } else {
+        drop(ack_writer);
+    }
+
+    let remaining = (MAX_SANDBOX_STATUS_BYTES + 1).saturating_sub(bytes.len());
+    let mut tail = Vec::new();
+    reader.take(remaining as u64).read_to_end(&mut tail).await?;
+    bytes.extend_from_slice(&tail);
+    if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sandbox status stream exceeds 16 KiB",
+        ));
+    }
+    if let Some(error) = ack_error {
+        return Err(io::Error::new(
+            error.kind(),
+            format!(
+                "Bubblewrap setup ACK failed: {error}; status stream: {}",
+                String::from_utf8_lossy(&bytes)
+            ),
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+async fn await_bubblewrap_ready(
+    mut reader: tokio::fs::File,
+    ack_writer: OwnedFd,
+) -> Result<(tokio::fs::File, Vec<u8>), io::Error> {
+    let mut line = Vec::new();
+    loop {
+        if line.len() >= MAX_SANDBOX_STATUS_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Bubblewrap setup receipt exceeds the status bound",
+            ));
+        }
+        let mut byte = [0_u8; 1];
+        if reader.read(&mut byte).await? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Bubblewrap closed status before setup receipt",
+            ));
+        }
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    let observed = decode_bubblewrap_json_status(&line)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if observed.exit_code_reported {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Bubblewrap reported target exit before the setup acknowledgment",
+        ));
+    }
+    let status: serde_json::Value = serde_json::from_slice(&line)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if !status
+        .as_object()
+        .is_some_and(|object| object.contains_key("child-pid"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Bubblewrap setup receipt did not identify its child",
+        ));
+    }
+
+    let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
+    writer.write_all(&[0xA5]).await?;
+    writer.flush().await?;
+    Ok((reader, line))
+}
+
+#[cfg(target_os = "linux")]
+async fn read_bubblewrap_terminal_status(
+    reader: tokio::fs::File,
+    mut bytes: Vec<u8>,
+) -> Result<(), String> {
+    let remaining = (MAX_SANDBOX_STATUS_BYTES + 1).saturating_sub(bytes.len());
+    let mut tail = Vec::new();
+    reader
+        .take(remaining as u64)
+        .read_to_end(&mut tail)
+        .await
+        .map_err(|error| format!("read Bubblewrap terminal status: {error}"))?;
+    bytes.extend_from_slice(&tail);
+    if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err("Bubblewrap terminal status exceeds 16 KiB".into());
+    }
+    let observed = decode_bubblewrap_json_status(&bytes)?;
+    if !observed.exit_code_reported {
+        return Err("Bubblewrap closed without a terminal child status".into());
+    }
+    Ok(())
 }
 
 async fn read_bounded<R>(
@@ -1877,16 +2409,33 @@ async fn terminate_child(
     child.wait().await.map(|status| (status, cleanup))
 }
 
+#[cfg(test)]
 fn interpret_sandbox_status(
     status_bytes: Option<&[u8]>,
     sandbox: &SandboxRequest,
 ) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
+    interpret_sandbox_status_for_termination(status_bytes, sandbox, TerminationReason::Exited)
+}
+
+fn interpret_sandbox_status_for_termination(
+    status_bytes: Option<&[u8]>,
+    sandbox: &SandboxRequest,
+    termination: TerminationReason,
+) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = termination;
     if matches!(sandbox, SandboxRequest::Disabled) {
         return Ok(SandboxExecutionOutcome::Disabled);
     }
     let status = status_bytes.ok_or_else(|| {
         ManagedProcessError::SandboxFailed("sandbox status channel was not created".to_string())
     })?;
+    #[cfg(target_os = "linux")]
+    if let SandboxRequest::Required(spec) = sandbox {
+        if spec.linux_protected_mount_view {
+            return interpret_bubblewrap_status(status, spec, termination);
+        }
+    }
     let decoded = decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)?;
     #[cfg(target_os = "linux")]
     if let SandboxRequest::Required(spec) = sandbox {
@@ -1904,6 +2453,10 @@ fn interpret_sandbox_status(
         } => Ok(SandboxExecutionOutcome::Enforced {
             backend,
             abi,
+            // The legacy Landlock route has no network dimension: it scopes
+            // the filesystem and nothing else, so the obtained network
+            // boundary is truthfully unrestricted.
+            network: codegg_core::approval::NetworkEnforcement::Unrestricted,
             guarantees,
             limits,
         }),
@@ -1919,13 +2472,280 @@ fn interpret_sandbox_status(
         SandboxLaunchOutcome::ExecError { reason } => Err(ManagedProcessError::SandboxFailed(
             format!("sandbox target exec failed: {reason}"),
         )),
+        SandboxLaunchOutcome::BubblewrapReady => Err(ManagedProcessError::SandboxFailed(
+            "legacy sandbox helper reported an unexpected Bubblewrap setup receipt".into(),
+        )),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn interpret_bubblewrap_status(
+    status: &[u8],
+    spec: &SandboxLaunchSpec,
+    termination: TerminationReason,
+) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
+    let observed = if status
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        == Some(b'{')
+    {
+        let observed =
+            decode_bubblewrap_json_status(status).map_err(ManagedProcessError::SandboxFailed)?;
+        if !observed.exit_code_reported && termination == TerminationReason::Exited {
+            return Err(ManagedProcessError::SandboxFailed(
+                "Bubblewrap exited without confirming successful target execution".into(),
+            ));
+        }
+        observed
+    } else {
+        match decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)? {
+            SandboxLaunchOutcome::Unavailable { reason }
+            | SandboxLaunchOutcome::SetupError { reason } => {
+                return Err(ManagedProcessError::SandboxFailed(format!(
+                    "Bubblewrap setup failed: {reason}"
+                )));
+            }
+            outcome => {
+                return Err(ManagedProcessError::SandboxFailed(format!(
+                    "Bubblewrap helper returned an unexpected setup outcome: {outcome:?}"
+                )));
+            }
+        }
+    };
+
+    let network = obtained_network_enforcement(spec, observed.child_pid);
+    let mut guarantees = crate::security::sandbox::linux_mount_view::enforcement_scope(spec)
+        .map_err(ManagedProcessError::SandboxFailed)?;
+    guarantees.insert(
+        0,
+        "Bubblewrap block-fd barrier releases the target only after mount setup".into(),
+    );
+    if spec.linux_offline_network {
+        guarantees.push(
+            "private network namespace obtained: no host interfaces or routes (OfflineRequired)"
+                .into(),
+        );
+    }
+    let limits = if spec.linux_process_isolation {
+        guarantees.extend([
+            "PID namespace with a private procfs mounted after namespace creation".into(),
+            "IPC namespace isolates System V IPC objects".into(),
+            "Landlock ABI 6 scopes outgoing signals and abstract Unix socket connections to the sandbox domain".into(),
+            "architecture-checked seccomp filter denies namespace and mount changes, tracing, and selected kernel control interfaces".into(),
+        ]);
+        let mut limits = vec![
+            "resource limits are not claimed by this launch".into(),
+            "pathname Unix socket access is not qualified and must not be treated as denied".into(),
+        ];
+        if !spec.linux_offline_network {
+            limits.push(
+                "network isolation not requested; outbound networking retains its existing policy"
+                    .into(),
+            );
+        }
+        limits
+    } else {
+        vec![
+            "network isolation not requested".into(),
+            "PID/IPC isolation and seccomp are not claimed by this launch".into(),
+            "resource limits are not claimed by this launch".into(),
+        ]
+    };
+    Ok(SandboxExecutionOutcome::Enforced {
+        backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
+        abi: None,
+        network,
+        guarantees,
+        limits,
+    })
+}
+
+/// The network boundary a Bubblewrap launch **obtained**.
+///
+/// `child_pid` is the sandbox child Bubblewrap reported in its status
+/// stream. Bubblewrap emits that record only after its namespace and mount
+/// setup has completed and the child has been forked, so reaching this
+/// function with a live child pid means the setup *happened* — a requested
+/// namespace that could not be created aborts the launch before the child
+/// exists, and the status stream then carries no child pid at all.
+///
+/// The observed receipt and the requested dimension are therefore jointly the
+/// obtained fact: the receipt proves the setup completed, and `spec` says
+/// which namespaces that setup was asked to create. Neither alone is enough:
+/// the request alone would be a hope, and the receipt alone would not say
+/// which dimensions were created.
+///
+/// The claim is deliberately narrow. It is about the network namespace the
+/// child was placed in. It says nothing about transports that do not use the
+/// network, and M004's seccomp filter denies the child from creating or
+/// joining a namespace of its own, so the child cannot widen it.
+#[cfg(target_os = "linux")]
+fn obtained_network_enforcement(
+    spec: &SandboxLaunchSpec,
+    child_pid: u32,
+) -> codegg_core::approval::NetworkEnforcement {
+    debug_assert!(
+        child_pid != 0,
+        "the observed setup receipt carries a live child pid"
+    );
+    if spec.linux_offline_network {
+        codegg_core::approval::NetworkEnforcement::Enforced {
+            backend: "bubblewrap-netns".into(),
+        }
+    } else {
+        codegg_core::approval::NetworkEnforcement::Unrestricted
+    }
+}
+
+/// What Bubblewrap's status stream was observed to report.
+///
+/// Bubblewrap writes a `child-pid` record once its namespace and mount setup
+/// has completed and the sandbox child has been forked, and an `exit-code`
+/// record when that child has finished. The presence of the child record is
+/// therefore the **observation** that the setup completed: a requested
+/// namespace that could not be created aborts the launch before the child
+/// exists, and the status stream then carries no `child-pid`.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BubblewrapObservedStatus {
+    /// The sandbox child Bubblewrap forked and identified.
+    child_pid: u32,
+    /// The child's exit status was reported.
+    exit_code_reported: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn decode_bubblewrap_json_status(bytes: &[u8]) -> Result<BubblewrapObservedStatus, String> {
+    if bytes.is_empty() {
+        return Err("Bubblewrap produced no JSON status".into());
+    }
+    if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err("Bubblewrap status stream exceeds 16 KiB".into());
+    }
+
+    let mut child_pid_seen: Option<u32> = None;
+    let mut exit_code_seen = false;
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let value: serde_json::Value = serde_json::from_slice(line)
+            .map_err(|error| format!("Bubblewrap status JSON is malformed: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| "Bubblewrap status record is not a JSON object".to_string())?;
+        if let Some(pid) = object.get("child-pid") {
+            if child_pid_seen.is_some() || exit_code_seen || pid.as_u64().is_none_or(|pid| pid == 0)
+            {
+                return Err("Bubblewrap child PID status is invalid or duplicated".into());
+            }
+            child_pid_seen = pid.as_u64().and_then(|pid| u32::try_from(pid).ok());
+        }
+        if let Some(exit_code) = object.get("exit-code") {
+            if child_pid_seen.is_none() || exit_code_seen || exit_code.as_i64().is_none() {
+                return Err("Bubblewrap exit status is invalid or out of order".into());
+            }
+            exit_code_seen = true;
+        }
+    }
+    let Some(child_pid) = child_pid_seen else {
+        return Err("Bubblewrap did not report its sandbox child".into());
+    };
+    Ok(BubblewrapObservedStatus {
+        child_pid,
+        exit_code_reported: exit_code_seen,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    /// A launch spec carrying only the dimensions the network producer reads.
+    fn spec_with(offline_network: bool, process_isolation: bool) -> SandboxLaunchSpec {
+        SandboxLaunchSpec {
+            target: PathBuf::from("/bin/true"),
+            args: vec![],
+            env: vec![],
+            read_paths: vec![],
+            write_paths: vec![],
+            deny_paths: vec![],
+            linux_protected_mount_view: false,
+            linux_process_isolation: process_isolation,
+            linux_offline_network: offline_network,
+            protected_readonly_paths: vec![],
+            path_identities: vec![],
+        }
+    }
+
+    /// The obtained network boundary must follow the *observed* setup, not
+    /// the request alone.
+    ///
+    /// A request without the receipt is a hope; the receipt without the
+    /// request says nothing about which namespace was created. Both together
+    /// are the obtained fact.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_obtained_network_boundary_needs_both_the_receipt_and_the_request() {
+        use codegg_core::approval::NetworkEnforcement;
+
+        let spec = spec_with(true, true);
+        assert_eq!(
+            obtained_network_enforcement(&spec, 4242),
+            NetworkEnforcement::Enforced {
+                backend: "bubblewrap-netns".into()
+            }
+        );
+
+        // The same receipt, without the network namespace being requested,
+        // is truthfully unrestricted: the child is in the host's namespace.
+        let spec = spec_with(false, true);
+        assert_eq!(
+            obtained_network_enforcement(&spec, 4242),
+            NetworkEnforcement::Unrestricted
+        );
+    }
+
+    /// The anti-overclaim case: a launch that did not request a network
+    /// namespace must never report one, however the filesystem was obtained.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_that_did_not_request_the_namespace_never_reports_it() {
+        use codegg_core::approval::NetworkEnforcement;
+
+        let spec = spec_with(false, true);
+        let obtained = obtained_network_enforcement(&spec, 99);
+        assert_eq!(obtained, NetworkEnforcement::Unrestricted);
+        assert!(!obtained.is_enforced());
+        assert_eq!(obtained.as_str(), "unrestricted");
+        assert_eq!(obtained.backend(), None);
+    }
+
+    /// A status stream that reports no child is not a setup receipt, so it
+    /// cannot support an obtained claim.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_status_stream_without_a_child_is_not_a_setup_receipt() {
+        assert!(decode_bubblewrap_json_status(b"").is_err());
+        assert!(decode_bubblewrap_json_status(b"{\"exit-code\":0}\n").is_err());
+        assert!(decode_bubblewrap_json_status(b"{\"child-pid\":0}\n").is_err());
+    }
+
+    /// A status stream that reports a child is the observed setup.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_status_stream_with_a_child_is_the_observed_setup() {
+        let observed = decode_bubblewrap_json_status(b"{\"child-pid\":4242}\n").expect("receipt");
+        assert_eq!(observed.child_pid, 4242);
+        assert!(!observed.exit_code_reported);
+
+        let observed = decode_bubblewrap_json_status(b"{\"child-pid\":4242}\n{\"exit-code\":0}\n")
+            .expect("receipt");
+        assert_eq!(observed.child_pid, 4242);
+        assert!(observed.exit_code_reported);
+    }
 
     fn request(script: &str) -> ManagedProcessRequest {
         ManagedProcessRequest::new(
@@ -1968,6 +2788,120 @@ mod tests {
             .await
             .expect_err("constrained authorization cannot use a disabled sandbox");
         assert!(matches!(error, ManagedProcessError::SandboxFailed(_)));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn scheduler_carried_constrained_profile_refuses_disabled_sandbox_before_spawn() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.required_sandbox_profile =
+            Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+
+        let error = run(process)
+            .await
+            .expect_err("scheduler profile cannot use a disabled sandbox");
+        assert!(matches!(error, ManagedProcessError::SandboxFailed(_)));
+        assert!(!marker.exists());
+    }
+
+    /// Build an authorization context whose snapshot carries the requested
+    /// profile and network intent. The M005 owner reads the intent from this
+    /// snapshot, so the profile and the intent have to travel together.
+    fn authorization(
+        profile: codegg_core::approval::SandboxProfile,
+        network_intent: codegg_core::approval::NetworkIntent,
+    ) -> crate::tool::authorization::ExecutionAuthorizationContext {
+        let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Yolo,
+            profile,
+            None,
+            Some("session".into()),
+            Some("agent".into()),
+            Some("policy".into()),
+            None,
+        )
+        .with_network_intent(network_intent)
+        .expect("narrowing the network intent is always permitted");
+        crate::tool::authorization::ExecutionAuthorizationContext {
+            snapshot,
+            receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                "yolo",
+                Some("policy".into()),
+            ),
+            command_preflight: None,
+            scratch_scope: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn offline_required_refuses_unconstrained_profile_before_spawn() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.execution_authorization = Some(authorization(
+            codegg_core::approval::SandboxProfile::FullHost,
+            codegg_core::approval::NetworkIntent::OfflineRequired,
+        ));
+
+        let error = run(process)
+            .await
+            .expect_err("OfflineRequired cannot fall back to an unconstrained profile");
+        let message = error.to_string();
+        assert!(
+            message.contains("OfflineRequired currently requires a constrained filesystem profile"),
+            "unexpected refusal: {message}"
+        );
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn offline_required_scheduler_carried_intent_refuses_disabled_sandbox_before_spawn() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.required_network_intent = codegg_core::approval::NetworkIntent::OfflineRequired;
+
+        let error = run(process)
+            .await
+            .expect_err("OfflineRequired cannot run without a required sandbox launch");
+        let message = error.to_string();
+        assert!(
+            message.contains(
+                "accepted OfflineRequired policy cannot run without a required sandbox launch"
+            ),
+            "unexpected refusal: {message}"
+        );
+        assert!(!marker.exists());
+    }
+
+    /// The authorization snapshot is the ceiling for the network intent. A
+    /// request-carried `LegacyUnrestricted` must not be able to widen an
+    /// `OfflineRequired` authorization into an unconstrained launch.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_carried_network_intent_cannot_widen_an_offline_authorization() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.execution_authorization = Some(authorization(
+            codegg_core::approval::SandboxProfile::FullHost,
+            codegg_core::approval::NetworkIntent::OfflineRequired,
+        ));
+        process.required_network_intent = codegg_core::approval::NetworkIntent::LegacyUnrestricted;
+
+        let error = run(process)
+            .await
+            .expect_err("a request-carried intent must not widen the authorization ceiling");
+        let message = error.to_string();
+        assert!(
+            message.contains("OfflineRequired currently requires a constrained filesystem profile"),
+            "unexpected refusal: {message}"
+        );
         assert!(!marker.exists());
     }
 
@@ -2082,6 +3016,12 @@ mod tests {
         let marker = directory.path().join("target-ran");
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
             deny_paths: Vec::new(),
             target: PathBuf::from("/bin/sh"),
             args: vec!["-c".to_string(), format!("touch {}", marker.display())],
@@ -2100,6 +3040,271 @@ mod tests {
             "target must not run without helper status"
         );
     }
+    #[cfg(all(test, target_os = "linux"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn protected_mount_rejects_workspace_replacement_before_target_start() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace root");
+        let marker = workspace.join("target-ran");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), format!("touch {}", marker.display())],
+                Some(&workspace),
+            )
+            .expect("workspace launch lease");
+
+        use crate::security::sandbox::linux_launch::{
+            LinuxLaunchAdapter, LinuxLaunchPlan, LinuxLaunchRequest, ProductionLinuxLaunchAdapter,
+        };
+        match ProductionLinuxLaunchAdapter.plan(&LinuxLaunchRequest::legacy_filesystem(&spec)) {
+            Ok(
+                LinuxLaunchPlan::ProtectedMountView | LinuxLaunchPlan::ProtectedProcessIsolation,
+            ) => {}
+            Ok(LinuxLaunchPlan::EnhancedUnavailable { dimensions }) => {
+                eprintln!(
+                    "skipped: protected mount replacement probe unavailable on this host: {}",
+                    dimensions.join(", ")
+                );
+                return;
+            }
+            Ok(LinuxLaunchPlan::LegacyPrivateHelper) => {
+                panic!("protected-mount request unexpectedly selected legacy helper")
+            }
+            Err(error) => panic!("invalid protected-mount test request: {error}"),
+        }
+
+        let displaced = fixture.path().join("displaced-workspace");
+        std::fs::rename(&workspace, &displaced).expect("replace leased workspace path");
+        std::fs::create_dir(&workspace).expect("replacement workspace");
+
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace,
+            ProcessProvenance::new("c009-race", "workspace-replacement"),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(Path::parent)
+            .expect("target debug directory")
+            .join(crate::install::sandbox_helper_name());
+        let error = run_inner(request, None, Some(&helper))
+            .await
+            .expect_err("replacement must fail before target launch");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("replaced after authorization")),
+            "unexpected replacement result: {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "target ran against a replacement workspace"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn protected_mount_rejects_workspace_ancestor_replacement_before_target_start() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let parent = fixture.path().join("parent");
+        let outside_parent = fixture.path().join("outside-parent");
+        let workspace = parent.join("workspace");
+        let outside_workspace = outside_parent.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace root");
+        std::fs::create_dir_all(&outside_workspace).expect("outside workspace root");
+        let marker = outside_workspace.join("target-ran");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), format!("touch {}", marker.display())],
+                Some(&workspace),
+            )
+            .expect("workspace launch lease");
+
+        let displaced_parent = fixture.path().join("displaced-parent");
+        std::fs::rename(&parent, &displaced_parent).expect("replace leased ancestor");
+        std::os::unix::fs::symlink(&outside_parent, &parent).expect("redirect ancestor");
+
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace,
+            ProcessProvenance::new("c009-race", "ancestor-replacement"),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(Path::parent)
+            .expect("target debug directory")
+            .join(crate::install::sandbox_helper_name());
+        let error = run_inner(request, None, Some(&helper))
+            .await
+            .expect_err("ancestor replacement must fail before target launch");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(_)),
+            "unexpected ancestor replacement result: {error:?}"
+        );
+        assert!(!marker.exists(), "target ran through replacement ancestor");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn protected_mount_rejects_git_metadata_replacement_after_lease() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        for replacement in ["git-pointer", "gitdir", "common-dir"] {
+            let fixture = tempfile::tempdir().expect("fixture");
+            let repository = fixture.path().join("repository");
+            let workspace = fixture.path().join("linked-worktree");
+            std::fs::create_dir(&repository).expect("repository root");
+            let git = |cwd: &Path, args: &[&str]| {
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(cwd)
+                    .output()
+                    .expect("fixture Git command")
+            };
+            assert!(
+                git(&repository, &["init", "--quiet", "--initial-branch=main"])
+                    .status
+                    .success()
+            );
+            assert!(git(&repository, &["config", "user.name", "C009 Race"])
+                .status
+                .success());
+            assert!(git(
+                &repository,
+                &["config", "user.email", "c009-race@example.invalid"]
+            )
+            .status
+            .success());
+            std::fs::write(repository.join("tracked.txt"), "content\n")
+                .expect("write tracked fixture");
+            assert!(git(&repository, &["add", "tracked.txt"]).status.success());
+            assert!(git(&repository, &["commit", "--quiet", "-m", "seed"])
+                .status
+                .success());
+            let linked = std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&repository)
+                .args(["worktree", "add", "--quiet", "--detach"])
+                .arg(&workspace)
+                .arg("HEAD")
+                .status()
+                .expect("create linked worktree");
+            assert!(linked.success());
+
+            let marker = workspace.join("target-must-not-run");
+            let config = SandboxConfig::new()
+                .with_enabled(true)
+                .with_mode(SandboxMode::WorkspaceWrite)
+                .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+                .with_linux_protected_mount_view(true);
+            let spec = config
+                .launch_spec(
+                    "/bin/sh",
+                    &["-c".into(), format!("touch {}", marker.display())],
+                    Some(&workspace),
+                )
+                .expect("linked-worktree lease");
+
+            let pointer = std::fs::read_to_string(workspace.join(".git"))
+                .expect("read linked-worktree pointer");
+            let gitdir_text = pointer
+                .lines()
+                .find_map(|line| line.strip_prefix("gitdir: "))
+                .expect("gitdir pointer line");
+            let gitdir_path = PathBuf::from(gitdir_text);
+            let gitdir = if gitdir_path.is_absolute() {
+                gitdir_path
+            } else {
+                workspace.join(gitdir_path)
+            }
+            .canonicalize()
+            .expect("canonical gitdir");
+            let common_value =
+                std::fs::read_to_string(gitdir.join("commondir")).expect("read common-dir pointer");
+            let common_path = PathBuf::from(common_value.trim());
+            let common_dir = if common_path.is_absolute() {
+                common_path
+            } else {
+                gitdir.join(common_path)
+            }
+            .canonicalize()
+            .expect("canonical common dir");
+
+            match replacement {
+                "git-pointer" => {
+                    let replacement_gitdir = fixture.path().join("replacement-gitdir");
+                    std::fs::create_dir(&replacement_gitdir).expect("replacement gitdir");
+                    std::fs::write(
+                        workspace.join(".git"),
+                        format!("gitdir: {}\n", replacement_gitdir.display()),
+                    )
+                    .expect("replace linked-worktree pointer");
+                }
+                "gitdir" => {
+                    let displaced = fixture.path().join("displaced-gitdir");
+                    std::fs::rename(&gitdir, displaced).expect("displace gitdir");
+                    std::fs::create_dir(&gitdir).expect("replace gitdir");
+                }
+                "common-dir" => {
+                    let displaced = fixture.path().join("displaced-common-dir");
+                    std::fs::rename(&common_dir, displaced).expect("displace common dir");
+                    std::fs::create_dir(&common_dir).expect("replace common dir");
+                }
+                _ => unreachable!("listed replacement case"),
+            }
+
+            let mut argv = vec![spec.target.as_os_str().to_owned()];
+            argv.extend(spec.args.iter().map(OsString::from));
+            let mut request = ManagedProcessRequest::new(
+                argv,
+                workspace,
+                ProcessProvenance::new("c009-race", format!("{replacement}-replacement")),
+            );
+            request.sandbox = SandboxRequest::Required(spec);
+            let helper = std::env::current_exe()
+                .expect("test executable")
+                .parent()
+                .and_then(Path::parent)
+                .expect("target debug directory")
+                .join(crate::install::sandbox_helper_name());
+            let error = run_inner(request, None, Some(&helper))
+                .await
+                .expect_err("Git metadata replacement must fail before target launch");
+            assert!(
+                matches!(error, ManagedProcessError::SandboxFailed(_)),
+                "unexpected {replacement} replacement result: {error:?}"
+            );
+            assert!(
+                !marker.exists(),
+                "target ran after {replacement} replacement"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn hardlinked_denied_path_fails_before_target_launch() {
@@ -2111,6 +3316,12 @@ mod tests {
         let marker = directory.path().join("target-ran");
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
             target: PathBuf::from("/bin/sh"),
             args: vec!["-c".to_string(), format!("touch {}", marker.display())],
             read_paths: vec![directory.path().to_path_buf()],
@@ -2138,6 +3349,12 @@ mod tests {
         let outcome = interpret_sandbox_status(
             None,
             &SandboxRequest::Required(SandboxLaunchSpec {
+                env: Vec::new(),
+                linux_protected_mount_view: false,
+                linux_process_isolation: false,
+                linux_offline_network: false,
+                protected_readonly_paths: Vec::new(),
+                path_identities: Vec::new(),
                 deny_paths: Vec::new(),
                 target: PathBuf::from("/bin/sh"),
                 args: vec!["-c".to_string(), "true".to_string()],
@@ -2204,6 +3421,851 @@ mod tests {
         assert_eq!(
             result.stderr.to_string_lossy(),
             "CODEGG_SANDBOX_ENFORCED abi=9\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_view_linked_worktree_common_dir_is_read_only() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        fn shell_quote(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        fn detach_hardlinked_files(root: &Path) {
+            use std::os::unix::fs::MetadataExt;
+
+            let mut pending = vec![root.to_path_buf()];
+            while let Some(directory) = pending.pop() {
+                for entry in std::fs::read_dir(&directory).expect("read fixture metadata") {
+                    let entry = entry.expect("read fixture metadata entry");
+                    let path = entry.path();
+                    let metadata = std::fs::symlink_metadata(&path).expect("stat fixture entry");
+                    if metadata.is_dir() {
+                        pending.push(path);
+                    } else if metadata.is_file() && metadata.nlink() > 1 {
+                        let temporary = path.with_extension("c009-independent-copy");
+                        std::fs::copy(&path, &temporary).expect("copy hardlinked fixture file");
+                        std::fs::rename(&temporary, &path)
+                            .expect("replace hardlinked fixture file");
+                    }
+                }
+            }
+        }
+
+        fn tool_on_path(name: &str) -> PathBuf {
+            std::env::split_paths(&std::env::var_os("PATH").expect("host PATH"))
+                .map(|directory| directory.join(name))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| panic!("{name} is missing from the hosted toolchain PATH"))
+        }
+
+        let fixture = tempfile::tempdir().expect("linked-worktree fixture");
+        let repository = fixture.path().join("repository");
+        let submodule_source = fixture.path().join("submodule-source");
+        let workspace = fixture.path().join("worktree");
+        std::fs::create_dir(&repository).expect("repository root");
+        std::fs::create_dir(&submodule_source).expect("submodule source root");
+        let submodule_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&submodule_source)
+                .status()
+                .expect("run submodule source Git command")
+        };
+        assert!(submodule_git(&["init", "--quiet", "--initial-branch=main"]).success());
+        assert!(submodule_git(&["config", "user.name", "C009 Submodule"]).success());
+        assert!(submodule_git(&["config", "user.email", "submodule@example.invalid"]).success());
+        std::fs::write(submodule_source.join("submodule.txt"), "nested content\n")
+            .expect("write nested submodule fixture");
+        assert!(submodule_git(&["add", "submodule.txt"]).success());
+        assert!(submodule_git(&["commit", "--quiet", "-m", "submodule seed"]).success());
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&repository)
+                .args(args)
+                .status()
+                .expect("run Git fixture command")
+        };
+        assert!(git(&["init", "--quiet", "--initial-branch=main"]).success());
+        assert!(git(&["config", "user.name", "C009 Fixture"]).success());
+        assert!(git(&["config", "user.email", "c009@example.invalid"]).success());
+        assert!(git(&["config", "--local", "c009.fixture", "common config"]).success());
+        std::fs::write(repository.join("tracked.txt"), "seed\n").expect("seed file");
+        assert!(git(&["add", "tracked.txt"]).success());
+        let add_submodule = std::process::Command::new("git")
+            .args(["-c", "protocol.file.allow=always", "-C"])
+            .arg(&repository)
+            .args(["submodule", "add", "--quiet"])
+            .arg(&submodule_source)
+            .arg("nested-submodule")
+            .status()
+            .expect("add nested submodule");
+        assert!(add_submodule.success(), "nested submodule setup failed");
+        detach_hardlinked_files(&repository.join(".git"));
+        assert!(git(&["add", ".gitmodules", "nested-submodule"]).success());
+        assert!(git(&["commit", "--quiet", "-m", "seed"]).success());
+        let linked = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&repository)
+            .args(["worktree", "add", "--quiet", "--detach"])
+            .arg(&workspace)
+            .arg("HEAD")
+            .status()
+            .expect("create linked worktree");
+        assert!(linked.success(), "linked worktree setup failed: {linked}");
+        let initialize_submodule = std::process::Command::new("git")
+            .args(["-c", "protocol.file.allow=always", "-C"])
+            .arg(&workspace)
+            .args(["submodule", "update", "--init", "--recursive"])
+            .status()
+            .expect("initialize linked-worktree submodule");
+        assert!(
+            initialize_submodule.success(),
+            "linked-worktree submodule initialization failed"
+        );
+        detach_hardlinked_files(&repository.join(".git"));
+
+        let common_config = repository.join(".git/config");
+        let common_hook = repository.join(".git/hooks/pre-commit");
+        let submodule_git_dir = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(workspace.join("nested-submodule"))
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .expect("resolve nested submodule gitdir");
+        assert!(submodule_git_dir.status.success());
+        let submodule_config =
+            PathBuf::from(String::from_utf8_lossy(&submodule_git_dir.stdout).trim()).join("config");
+        let submodule_config_before =
+            std::fs::read(&submodule_config).expect("read nested submodule config");
+        std::fs::write(&common_hook, "protected hook\n").expect("write common hook");
+        let config_before = std::fs::read(&common_config).expect("read common config");
+        let hook_before = std::fs::read(&common_hook).expect("read common hook");
+        let marker = workspace.join("c009-target-ran");
+        let rustc = tool_on_path("rustc");
+        let rustup = tool_on_path("rustup")
+            .canonicalize()
+            .expect("resolve rustup path");
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("host HOME for rustup fixture");
+        let rustup_home = std::env::var_os("RUSTUP_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".rustup"));
+        let linker = tool_on_path("cc")
+            .canonicalize()
+            .expect("resolve C compiler path");
+        let host_triple_output = std::process::Command::new(&rustc)
+            .arg("-vV")
+            .output()
+            .expect("query Rust host triple");
+        assert!(host_triple_output.status.success());
+        let host_triple = String::from_utf8_lossy(&host_triple_output.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .expect("Rust host triple")
+            .to_string();
+        let linker_env = format!(
+            "CARGO_TARGET_{}_LINKER",
+            host_triple.replace('-', "_").to_ascii_uppercase()
+        );
+        let sysroot_output = std::process::Command::new(&rustc)
+            .args(["--print", "sysroot"])
+            .output()
+            .expect("query Rust sysroot");
+        assert!(sysroot_output.status.success());
+        let sysroot = PathBuf::from(String::from_utf8_lossy(&sysroot_output.stdout).trim())
+            .canonicalize()
+            .expect("canonical Rust sysroot");
+        let cargo = sysroot.join("bin/cargo");
+        let rustc = sysroot.join("bin/rustc");
+        assert!(cargo.is_file(), "Cargo binary missing from Rust sysroot");
+        std::fs::create_dir_all(workspace.join("cargo-fixture/src")).expect("create Cargo fixture");
+        std::fs::write(
+            workspace.join("cargo-fixture/Cargo.toml"),
+            "[package]\nname = \"c009-native-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("write Cargo manifest");
+        std::fs::write(
+            workspace.join("cargo-fixture/src/main.rs"),
+            "fn main() { println!(\"native-cargo-ok\"); }\n\
+             #[cfg(test)]\n\
+             mod tests {\n\
+                 #[test]\n\
+                 fn native_test_fixture_passes() { assert_eq!(2 + 2, 4); }\n\
+             }\n",
+        )
+        .expect("write Rust source");
+        let script = format!(
+            "set -eu\nworkspace={}\nprintf allowed > \"$workspace/allowed.txt\"\n\\
+             git -C \"$workspace\" --no-optional-locks status --porcelain >/dev/null\n\\
+             git -C \"$workspace/nested-submodule\" --no-optional-locks status --porcelain >/dev/null\n\\
+             test \"$(git -C \"$workspace\" config --local c009.fixture)\" = 'common config'\n\\
+             if printf changed > {}; then exit 81; fi\n\\
+             if printf changed > {}; then exit 82; fi\n\\
+             if printf changed >> {}; then exit 83; fi\n\\
+             test \"$(cat \"$workspace/nested-submodule/submodule.txt\")\" = 'nested content'\n\\
+             export PATH={}/bin:/usr/bin:/bin\n\\
+             export CARGO_HOME=\"$workspace/cargo-home\"\n\\
+             export HOME={}\n\\
+             export RUSTUP_HOME={}\n\\
+             export LD_LIBRARY_PATH={}/lib\n\\
+             export RUSTC={}\n\\
+             export {}={}\n\\
+             if {} run stable rustc --version >\"$workspace/rustup.out\" 2>&1; then :; \\
+             else grep -F 'no /proc/self/exe available' \"$workspace/rustup.out\" >/dev/null; fi\n\\
+             {} check --offline --manifest-path \"$workspace/cargo-fixture/Cargo.toml\"\n\\
+             {} test --offline --manifest-path \"$workspace/cargo-fixture/Cargo.toml\" --quiet\n\\
+             WORKSPACE=\"$workspace\" python3 -c 'import os,pathlib; pathlib.Path(os.environ[\"WORKSPACE\"],\"python-output.txt\").write_text(\"python-ok\\n\")'\n\\
+             printf target-ran > {}",
+            shell_quote(&workspace),
+            shell_quote(&common_config),
+            shell_quote(&common_hook),
+            shell_quote(&submodule_config),
+            shell_quote(&home),
+            shell_quote(&rustup_home),
+            shell_quote(&sysroot),
+            shell_quote(&sysroot),
+            shell_quote(&rustc),
+            linker_env,
+            shell_quote(&linker),
+            shell_quote(&rustup),
+            shell_quote(&cargo),
+            shell_quote(&cargo),
+            shell_quote(&marker),
+        );
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![
+                workspace.to_string_lossy().into_owned(),
+                sysroot.to_string_lossy().into_owned(),
+            ])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
+            .expect("linked-worktree protected mount lease");
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace.clone(),
+            ProcessProvenance::new("c009-native", "linked-worktree-common-dir"),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.sandbox = SandboxRequest::Required(spec);
+
+        let result = ManagedProcessService::run(request)
+            .await
+            .expect("linked-worktree mount launch");
+        assert!(
+            result.exit_status.success(),
+            "child stderr: {}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+        ));
+        assert!(
+            workspace.join(".git").is_file(),
+            "fixture must use a .git pointer"
+        );
+        assert_eq!(std::fs::read(&common_config).unwrap(), config_before);
+        assert_eq!(std::fs::read(&common_hook).unwrap(), hook_before);
+        assert_eq!(
+            std::fs::read(&submodule_config).unwrap(),
+            submodule_config_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
+            "allowed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("python-output.txt")).unwrap(),
+            "python-ok\n"
+        );
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "target-ran");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_rejects_deny_alias_into_writable_grant() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        fn shell_quote(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let workspace = fixture.path().join("workspace");
+        let outside = fixture.path().join("other-granted-root");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir(&outside).expect("other granted root");
+        let denied = workspace.join("denied-alias");
+        let displaced = workspace.join("denied-original");
+        std::fs::write(&denied, "original denied content\n").expect("denied fixture");
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, "synthetic secret\n").expect("outside secret");
+        let marker = workspace.join("target-ran");
+        let script = format!(
+            "set -eu\nif [ \"$(cat {} 2>/dev/null || true)\" = 'synthetic secret' ]; then exit 91; fi\nprintf target-ran > {}",
+            shell_quote(&denied),
+            shell_quote(&marker),
+        );
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![
+                workspace.to_string_lossy().into_owned(),
+                outside.to_string_lossy().into_owned(),
+            ])
+            .with_deny_paths(vec![denied.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
+            .expect("protected mount lease");
+
+        std::fs::rename(&denied, &displaced).expect("replace denied path");
+        std::os::unix::fs::symlink(&secret, &denied).expect("link denied path to other grant");
+
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace.clone(),
+            ProcessProvenance::new("c009-native", "deny-alias-into-writable-grant"),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.sandbox = SandboxRequest::Required(spec);
+        let error = ManagedProcessService::run(request)
+            .await
+            .expect_err("deny alias into a writable grant must refuse setup");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("cannot isolate a denied path inside a writable grant")),
+            "unexpected deny-alias disposition: {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "target ran with an unenforceable deny alias"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&secret).unwrap(),
+            "synthetic secret\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_mount_rejects_denied_descendant_of_writable_root() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let denied = workspace.join("denied-content");
+        std::fs::write(&denied, "denied content\n").expect("denied fixture");
+        let marker = workspace.join("target-must-not-run");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_deny_paths(vec![denied.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), format!("touch {}", marker.display())],
+                Some(&workspace),
+            )
+            .expect("protected mount lease");
+        let error =
+            crate::security::sandbox::linux_mount_view::compile(&spec, &workspace, |_| Ok(256))
+                .expect_err("denied descendants of writable roots must refuse setup");
+        assert!(
+            error.contains("cannot isolate a denied path inside a writable grant"),
+            "unexpected denial disposition: {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "target ran with an unenforceable deny rule"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_concurrent_launches_keep_workspaces_separate() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        fn shell_quote(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        let fixtures = [
+            tempfile::tempdir().expect("first concurrent fixture"),
+            tempfile::tempdir().expect("second concurrent fixture"),
+        ];
+        let mut requests = Vec::new();
+        for (index, fixture) in fixtures.iter().enumerate() {
+            let workspace = fixture.path().join("workspace");
+            std::fs::create_dir(&workspace).expect("concurrent workspace");
+            let marker = workspace.join("launch-marker");
+            let script = format!("printf {index} > {}", shell_quote(&marker));
+            let config = SandboxConfig::new()
+                .with_enabled(true)
+                .with_mode(SandboxMode::WorkspaceWrite)
+                .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+                .with_linux_protected_mount_view(true);
+            let spec = config
+                .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
+                .expect("concurrent protected mount lease");
+            let mut argv = vec![spec.target.as_os_str().to_owned()];
+            argv.extend(spec.args.iter().map(OsString::from));
+            let mut request = ManagedProcessRequest::new(
+                argv,
+                workspace,
+                ProcessProvenance::new("c009-native", format!("concurrent-{index}")),
+            );
+            request.timeout = Some(Duration::from_secs(15));
+            request.sandbox = SandboxRequest::Required(spec);
+            requests.push((request, marker));
+        }
+
+        let [(first_request, first_marker), (second_request, second_marker)] = requests.as_slice()
+        else {
+            panic!("expected two concurrent requests");
+        };
+        let (first, second) = tokio::join!(
+            ManagedProcessService::run(first_request.clone()),
+            ManagedProcessService::run(second_request.clone())
+        );
+        for (index, result) in [first, second].into_iter().enumerate() {
+            let result = result.unwrap_or_else(|error| panic!("launch {index} failed: {error}"));
+            assert!(
+                result.exit_status.success(),
+                "launch {index} stderr: {}",
+                result.stderr.to_string_lossy()
+            );
+            assert!(matches!(
+                result.sandbox,
+                SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+            ));
+        }
+        assert_eq!(std::fs::read_to_string(first_marker).unwrap(), "0");
+        assert_eq!(std::fs::read_to_string(second_marker).unwrap(), "1");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_records_bounded_cold_and_warm_launch_latency() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("latency fixture");
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("latency workspace");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+
+        for label in ["cold", "warm"] {
+            let spec = config
+                .launch_spec("/bin/sh", &["-c".into(), "true".into()], Some(&workspace))
+                .expect("latency launch lease");
+            let mut argv = vec![spec.target.as_os_str().to_owned()];
+            argv.extend(spec.args.iter().map(OsString::from));
+            let mut request = ManagedProcessRequest::new(
+                argv,
+                workspace.clone(),
+                ProcessProvenance::new("c009-native", format!("launch-latency-{label}")),
+            );
+            request.timeout = Some(Duration::from_secs(15));
+            request.sandbox = SandboxRequest::Required(spec);
+            let started = std::time::Instant::now();
+            let result = ManagedProcessService::run(request)
+                .await
+                .unwrap_or_else(|error| panic!("{label} launch failed: {error}"));
+            let elapsed = started.elapsed();
+            assert!(
+                result.exit_status.success(),
+                "{label} launch stderr: {}",
+                result.stderr.to_string_lossy()
+            );
+            assert!(matches!(
+                result.sandbox,
+                SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+            ));
+            eprintln!("C009 {label} protected-mount launch elapsed: {elapsed:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_view_real_managed_process_handoff() {
+        if std::env::var("CODEGG_RUN_C006_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C006_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        fn shell_quote(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        fn git_command() -> std::process::Command {
+            std::process::Command::new(std::ffi::OsString::from("git"))
+        }
+
+        let workspace = tempfile::tempdir().expect("writable workspace");
+        let outside = tempfile::tempdir().expect("outside directory");
+        let initialized = git_command()
+            .args(["init", "--quiet"])
+            .arg(workspace.path())
+            .status()
+            .expect("run git init fixture");
+        assert!(
+            initialized.success(),
+            "git init fixture failed: {initialized}"
+        );
+        let configured = git_command()
+            .args(["-C"])
+            .arg(workspace.path())
+            .args(["config", "--local", "c006.fixture", "protected config"])
+            .status()
+            .expect("write fixture Git config");
+        assert!(
+            configured.success(),
+            "Git config fixture failed: {configured}"
+        );
+        std::fs::write(
+            workspace.path().join(".git/hooks/pre-commit"),
+            "protected hook",
+        )
+        .expect("Git hook fixture");
+        let outside_secret = outside.path().join("outside.secret");
+        std::fs::write(&outside_secret, "outside secret").expect("outside secret fixture");
+        std::os::unix::fs::symlink(&outside_secret, workspace.path().join("outside-link"))
+            .expect("external symlink fixture");
+
+        let script = format!(
+            "set -eu\nworkspace={}\nprintf allowed > \"$workspace/allowed.txt\"\n\
+             git -C \"$workspace\" --no-optional-locks status --porcelain >/dev/null\n\
+             test \"$(git -C \"$workspace\" config --local c006.fixture)\" = 'protected config'\n\
+             if printf changed > \"$workspace/.git/config\" 2>/dev/null; then exit 71; fi\n\
+             if printf changed > \"$workspace/.git/hooks/pre-commit\" 2>/dev/null; then exit 72; fi\n\
+             if printf changed > {}; then exit 73; fi\n\
+             if cat \"$workspace/outside-link\" >/dev/null 2>&1; then exit 76; fi\n\
+             test ! -e /proc/self/root && test ! -e /sys/kernel\n\
+             test \"$(python3 -c 'print(\"python-ok\")')\" = python-ok\n\
+             printf target-ran > \"$workspace/marker\"",
+            shell_quote(workspace.path()),
+            shell_quote(&outside_secret),
+        );
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec("/bin/sh", &["-c".into(), script], Some(workspace.path()))
+            .expect("protected mount launch lease");
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c006-native", "managed-process-handoff"),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.sandbox = SandboxRequest::Required(spec.clone());
+
+        let test_exe = std::env::current_exe().expect("unit test executable");
+        let helper = test_exe
+            .parent()
+            .and_then(Path::parent)
+            .expect("Cargo target directory")
+            .join(crate::install::sandbox_helper_name());
+        assert!(
+            helper.is_file(),
+            "built sandbox helper missing: {}",
+            helper.display()
+        );
+
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(64);
+        let result = ManagedProcessService::run_streaming(request, output_tx).await;
+        let mut setup_stderr = Vec::new();
+        while let Ok(chunk) = output_rx.try_recv() {
+            if chunk.stream == OutputStream::Stderr {
+                setup_stderr.extend_from_slice(&chunk.bytes);
+            }
+        }
+        let result = result.unwrap_or_else(|error| {
+            panic!(
+                "real Bubblewrap protected mount launch failed: {error}; child stderr: {}",
+                String::from_utf8_lossy(&setup_stderr)
+            )
+        });
+        assert!(
+            result.exit_status.success(),
+            "child stderr: {}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+        ));
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("allowed.txt")).unwrap(),
+            "allowed"
+        );
+        let git_config = git_command()
+            .args(["-C"])
+            .arg(workspace.path())
+            .args(["config", "--local", "c006.fixture"])
+            .output()
+            .expect("read host Git fixture config");
+        assert!(git_config.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&git_config.stdout).trim(),
+            "protected config"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".git/hooks/pre-commit")).unwrap(),
+            "protected hook"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("marker")).unwrap(),
+            "target-ran"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_secret).unwrap(),
+            "outside secret"
+        );
+
+        let child_hardlink_alias = workspace.path().join("child-git-config-alias");
+        let mut hardlink_spec = spec.clone();
+        hardlink_spec.args = vec![
+            "-c".into(),
+            format!(
+                "if ln {} {}; then exit 78; fi",
+                shell_quote(&workspace.path().join(".git/config")),
+                shell_quote(&child_hardlink_alias),
+            ),
+        ];
+        let mut hardlink_argv = vec![hardlink_spec.target.as_os_str().to_owned()];
+        hardlink_argv.extend(hardlink_spec.args.iter().map(OsString::from));
+        let mut hardlink_request = ManagedProcessRequest::new(
+            hardlink_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c006-native", "child-hardlink-alias"),
+        );
+        hardlink_request.sandbox = SandboxRequest::Required(hardlink_spec);
+        let hardlink_result = ManagedProcessService::run(hardlink_request)
+            .await
+            .expect("child hardlink probe launch succeeds");
+        assert!(hardlink_result.exit_status.success());
+        assert!(
+            !child_hardlink_alias.exists(),
+            "child linked protected Git metadata into writable workspace"
+        );
+
+        let hardlink_marker = workspace.path().join("hardlink-must-not-run");
+        let hardlink_alias = workspace.path().join("git-config-alias");
+        std::fs::hard_link(workspace.path().join(".git/config"), &hardlink_alias)
+            .expect("hardlink protected Git metadata");
+        let mut hardlink_spec = spec.clone();
+        hardlink_spec.args = vec![
+            "-c".into(),
+            format!("touch {}", shell_quote(&hardlink_marker)),
+        ];
+        let mut hardlink_argv = vec![hardlink_spec.target.as_os_str().to_owned()];
+        hardlink_argv.extend(hardlink_spec.args.iter().map(OsString::from));
+        let mut hardlink_request = ManagedProcessRequest::new(
+            hardlink_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c006-native", "hardlink-refusal"),
+        );
+        hardlink_request.sandbox = SandboxRequest::Required(hardlink_spec);
+        assert!(ManagedProcessService::run(hardlink_request).await.is_err());
+        assert!(
+            !hardlink_marker.exists(),
+            "target ran with aliased Git metadata"
+        );
+        std::fs::remove_file(hardlink_alias).expect("remove hardlink fixture");
+
+        let nested_repo = workspace.path().join("nested-repo");
+        std::fs::create_dir(&nested_repo).expect("nested repository directory");
+        std::os::unix::fs::symlink(outside.path(), nested_repo.join(".git"))
+            .expect("symlinked Git metadata fixture");
+        let symlink_marker = workspace.path().join("symlink-must-not-run");
+        let mut symlink_spec = spec.clone();
+        symlink_spec.args = vec![
+            "-c".into(),
+            format!("touch {}", shell_quote(&symlink_marker)),
+        ];
+        let mut symlink_argv = vec![symlink_spec.target.as_os_str().to_owned()];
+        symlink_argv.extend(symlink_spec.args.iter().map(OsString::from));
+        let mut symlink_request = ManagedProcessRequest::new(
+            symlink_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c006-native", "symlink-refusal"),
+        );
+        symlink_request.sandbox = SandboxRequest::Required(symlink_spec);
+        assert!(ManagedProcessService::run(symlink_request).await.is_err());
+        assert!(
+            !symlink_marker.exists(),
+            "target ran with symlinked Git metadata"
+        );
+        std::fs::remove_file(nested_repo.join(".git")).expect("remove symlink fixture");
+        std::fs::remove_dir(nested_repo).expect("remove nested repository fixture");
+
+        for (name, pointer) in [
+            ("malformed", "not a Git pointer\n".to_string()),
+            ("oversized", format!("gitdir: {}\n", "x".repeat(5000))),
+        ] {
+            let nested = workspace.path().join(format!("nested-{name}"));
+            std::fs::create_dir(&nested).expect("create malformed Git metadata fixture");
+            std::fs::write(nested.join(".git"), pointer).expect("write malformed Git pointer");
+            let marker = workspace.path().join(format!("{name}-must-not-run"));
+            let mut invalid_spec = spec.clone();
+            invalid_spec.args = vec!["-c".into(), format!("touch {}", shell_quote(&marker))];
+            let mut invalid_argv = vec![invalid_spec.target.as_os_str().to_owned()];
+            invalid_argv.extend(invalid_spec.args.iter().map(OsString::from));
+            let mut invalid_request = ManagedProcessRequest::new(
+                invalid_argv,
+                workspace.path().to_owned(),
+                ProcessProvenance::new("c009-native", format!("{name}-git-pointer-refusal")),
+            );
+            invalid_request.sandbox = SandboxRequest::Required(invalid_spec);
+            assert!(
+                ManagedProcessService::run(invalid_request).await.is_err(),
+                "{name} linked-worktree pointer must refuse setup"
+            );
+            assert!(!marker.exists(), "target ran with {name} Git pointer");
+            std::fs::remove_file(nested.join(".git")).expect("remove malformed Git pointer");
+            std::fs::remove_dir(nested).expect("remove malformed Git metadata fixture");
+        }
+
+        let marker = workspace.path().join("must-not-run");
+        let mut invalid_spec = spec;
+        let identity = invalid_spec
+            .path_identities
+            .iter_mut()
+            .find(|identity| identity.path == workspace.path())
+            .expect("workspace identity snapshot");
+        identity.inode = identity.inode.saturating_add(1);
+        invalid_spec.args = vec!["-c".into(), format!("touch {}", shell_quote(&marker))];
+        let mut invalid_argv = vec![invalid_spec.target.as_os_str().to_owned()];
+        invalid_argv.extend(invalid_spec.args.iter().map(OsString::from));
+        let mut invalid_request = ManagedProcessRequest::new(
+            invalid_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c006-native", "identity-failure"),
+        );
+        invalid_request.sandbox = SandboxRequest::Required(invalid_spec);
+        let error = ManagedProcessService::run(invalid_request)
+            .await
+            .expect_err("changed grant identity must fail closed");
+        assert!(matches!(error, ManagedProcessError::SandboxFailed(_)));
+        assert!(!marker.exists(), "target ran after grant identity failure");
+
+        let timeout_marker = workspace.path().join("timeout-must-not-run");
+        let timeout_config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let timeout_script = format!("sleep 5; touch {}", shell_quote(&timeout_marker));
+        let timeout_spec = timeout_config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), timeout_script],
+                Some(workspace.path()),
+            )
+            .expect("timeout launch lease");
+        let mut timeout_argv = vec![timeout_spec.target.as_os_str().to_owned()];
+        timeout_argv.extend(timeout_spec.args.iter().map(OsString::from));
+        let mut timeout_request = ManagedProcessRequest::new(
+            timeout_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c006-native", "timeout-cleanup"),
+        );
+        timeout_request.sandbox = SandboxRequest::Required(timeout_spec);
+        timeout_request.timeout = Some(Duration::from_millis(200));
+        let timed_out = ManagedProcessService::run(timeout_request)
+            .await
+            .expect("timed out child is reaped");
+        assert_eq!(timed_out.termination, TerminationReason::TimedOut);
+        assert!(
+            !timeout_marker.exists(),
+            "target continued after managed timeout cleanup"
+        );
+
+        let cancel_marker = workspace.path().join("cancel-must-not-run");
+        let cancel_script = format!("sleep 5; touch {}", shell_quote(&cancel_marker));
+        let cancel_spec = timeout_config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), cancel_script],
+                Some(workspace.path()),
+            )
+            .expect("cancellation launch lease");
+        let mut cancel_argv = vec![cancel_spec.target.as_os_str().to_owned()];
+        cancel_argv.extend(cancel_spec.args.iter().map(OsString::from));
+        let cancellation = CancellationToken::new();
+        let mut cancel_request = ManagedProcessRequest::new(
+            cancel_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c009-native", "cancellation-cleanup"),
+        );
+        cancel_request.sandbox = SandboxRequest::Required(cancel_spec);
+        cancel_request.cancellation = cancellation.clone();
+        let task = tokio::spawn(ManagedProcessService::run(cancel_request));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancellation.cancel();
+        let cancelled = task
+            .await
+            .expect("cancelled native child task")
+            .expect("cancelled child is reaped");
+        assert_eq!(cancelled.termination, TerminationReason::Cancelled);
+        assert!(
+            !cancel_marker.exists(),
+            "target continued after managed cancellation cleanup"
         );
     }
 
@@ -2563,6 +4625,12 @@ mod tests {
             );
             request.timeout = Some(Duration::from_secs(15));
             request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+                env: Vec::new(),
+                linux_protected_mount_view: false,
+                linux_process_isolation: false,
+                linux_offline_network: false,
+                protected_readonly_paths: Vec::new(),
+                path_identities: Vec::new(),
                 target: executable.clone(),
                 args: args
                     .iter()

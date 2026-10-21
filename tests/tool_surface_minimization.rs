@@ -452,9 +452,11 @@ fn runtime_unavailable_tools_are_not_advertised_as_merely_deferred() {
         backend: Some(ToolImplementationBackend::Disabled),
         ..Default::default()
     });
+    let disabled_workspace = tempfile::tempdir().expect("workspace root");
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
         git_read_only: None,
         tool_backends: backends,
+        workspace_root: Some(disabled_workspace.path().to_path_buf()),
         ..Default::default()
     });
     assert!(registry.contains("lsp"));

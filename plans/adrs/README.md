@@ -22,10 +22,30 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
-The Linux execution-isolation and command-authority decisions use ADR-0027 and
-ADR-0028, respectively. These identities were assigned after the Windows
-records landed on main so no ADR number is reused.
+## Linux/command identity migrations (2026-10-14 onward)
 
+The C004 identity corrective archived the exact pre-migration Linux and command
+records under `plans/archive/linux-command-adr-id-aliases/`, with source blob IDs,
+content digests, and mappings in `migration.json`. Reconciliation with current
+main preserves all main ADR allocations through ADR-0043. The accepted command
+authority decision is retained under ADR-0045 and the accepted Linux isolation
+decision under ADR-0046. Their substance and acceptance status are unchanged;
+production Linux backend registration and rollout remain gated by native
+qualification. The proposed contained-Git live-object decision is retained as
+ADR-0044 and does not authorize replacing the immutable trusted-Git route.
+
+A second collision was reconciled on 2026-10-21: main had allocated ADR-0043 to
+the accepted session-owned subagent lifecycle projection decision and ADR-0042 to
+the accepted composer normal-mode key ownership decision, so the Linux isolation
+record moved from ADR-0043 to ADR-0046 and the command authority record from
+ADR-0042 to ADR-0045. Main wins both numbers; the decision content, status, and
+acceptance dates are unchanged.
+
+`plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`
+records the original migration contract and
+`plans/closure/linux-execution-isolation/012-status.md` records its historical
+evidence. The current canonical mapping is recorded in
+`plans/adrs/linux-command-adr-id-migration.md`.
 ## Status lifecycle
 
 ```text
@@ -141,8 +161,17 @@ were never active on main and must not be reused for Windows references.
 
 - ADR-0029 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
 - ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
+- ADR-0031 — **accepted** authenticated idle continuation and delegated turn admission (current-main decision).
+- ADR-0032 — **accepted** daemon-owned agent workstream coordination and explicit shared-checkout mutation; production shared writes remain gated on M005.
+- ADR-0033 — **accepted** directory-tied project identity and client working directory.
+- ADR-0034 — **proposed** editor syntax-tree dependency (current-main decision).
+- ADR-0035 through ADR-0041 — current-main accepted decisions; see their individual records.
+- ADR-0042 — **accepted** composer normal-mode key ownership (current-main decision).
+- ADR-0043 — **accepted** session-owned subagent lifecycle projection (current-main decision; Option A accepted 2026-10-19).
+- ADR-0044 — **proposed only** contained Git execution with live mutable ODB reads and brokered metadata promotion; test-only proof is permitted, but replacing the immutable trusted-Git route requires independent maintainer acceptance and native security/performance admission. See `ADR-0044-contained-git-live-objects-and-metadata-authority.md`.
+- ADR-0045 — **accepted** command syntax is advisory and execution authority is enforced.
+- ADR-0046 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
-
 ## ADR-0032 workstream coordination reservation (2026-10-15)
 
 ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md was

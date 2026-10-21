@@ -426,6 +426,17 @@ guidance.
 - `deterministic_tools` / `preflight` — eggsact-backed tools
 - `command_intent` — command classification and routing
 - `daemon` / `scheduler` — daemon and scheduler settings
+- `scratch` — the daemon-owned scratch retention policy (M007). `enabled`
+  (default `true`) turns the sweep on or off; `retention_days` (default `14`,
+  floor `1`) is the age past which an **idle** session's scratch tree is
+  reclaimable; `sweep_interval_minutes` (default `360`, floor `5`) is how
+  often the sweep runs; `orphan_grace_hours` (default `24`, floor `1`) is how
+  long a tree whose digest matches no durable session is left alone before it
+  is reclaimed. Every field is optional, so a config layer that sets one key
+  inherits the rest from the layer beneath it. The defaults are **specified**
+  from the disposal contract, not measured — see `architecture/security.md`.
+  The daemon reads this section once, at construction: a change needs a
+  daemon restart.
 - `discovery` — project discovery configuration
 - `model_profile` — per-model tuning profiles
 - `orchestration` — opt-in bounded convergence defaults and aggregate deadline

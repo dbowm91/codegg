@@ -74,6 +74,9 @@ cargo test -p codegg-core                                            # single cr
 cargo test --test tui_render                                         # single integration test
 cargo test -p egglsp --features lsp-test-support --test scenario_engine  # LSP (needs feature)
 cargo nextest run --workspace --locked --profile ci  # capped full suite (needs cargo-nextest)
+                          # give the sweep a private cache root so its result is a
+                          # property of the product, not of the host:
+                          #   XDG_CACHE_HOME="$(mktemp -d)" cargo nextest run --workspace --locked --profile ci
 ```
 
 - New `#[tokio::test]`s default to `current_thread`; use

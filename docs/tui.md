@@ -278,12 +278,13 @@ A few commonly used entries:
 | `/help` | Open in-app help |
 | `/status` | Session and runtime status |
 | `/agents` | List available agents |
-| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent transcript; job rows are read-only). The dialog labels live-work loading or unavailable state separately from an authoritative empty result. |
+| `/sessions` | Session browser — the session list plus **Subagents** and **Jobs** sections for live work (`j`/`k` move across all three, skipping the headings; `Enter` opens a session or a subagent's run view; job rows are read-only). The dialog labels live-work loading or unavailable state separately from an authoritative empty result. |
 | `/subagent-send` | Point the next prompt at one running subagent (`/subagent-send off` clears it); the message goes to the agent running the current turn, which decides whether to relay it |
 | `/queue` | Prompts waiting for this session's next turn (`j`/`k` move, `[`/`]` reorder, `a` add, `e` edit, `d` delete, `s` send now, `r` refresh) |
 | `/policy` | Current approval and sandbox policy detail |
 | `/approval` | Approval-mode fast-select (`/approval-mode` is an alias) |
 | `/sandbox` | Sandbox-profile fast-select (`/sandbox-profile` is an alias) |
+| `/network` | Set the child network policy |
 | `/themes` | Theme picker (`/theme` is an alias) |
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
@@ -696,7 +697,7 @@ Five surfaces show this, and all five read one projection:
 | Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
 | Sessions dialog | `/sessions` | The session list plus its live `Subagents` and `Jobs` sections |
 | Working strip | always on, above the input box | One row per in-flight subagent |
-| Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's transcript per tab, in the main buffer |
+| Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's run view per tab, in the main buffer |
 
 `Ctrl+T` works in **both** modes — the app boots in `[INS]`, and a chord that
 first needs an `Esc` is a chord most people never find.
@@ -712,7 +713,7 @@ letter is `[NOR]`-only, the chord is live in both modes.
 `Ctrl+T` opens a single overlay listing **todos, then subagents, then jobs**,
 each under its own heading. A group with nothing in it is left out entirely —
 there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
-`Enter` opens a child transcript or job detail; `i` inspects a durable child run or linked job by its stable ID. The dialog shows job attempt history, and `Esc` closes it. With nothing in any group the overlay says
+`Enter` opens a child run view or job detail; `i` inspects a durable child run or linked job by its stable ID. The dialog shows job attempt history, and `Esc` closes it. With nothing in any group the overlay says
 `Nothing pending` rather than opening to a blank strip, so a quiet session still
 confirms the key did something.
 
@@ -728,7 +729,7 @@ dialog refreshes from the daemon after the request and reports refusal or an
 uncertain outcome without claiming the job stopped. `/sessions` job rows and
 the sessions sidebar open the same detail surface. On a child with a linked
 run or job, `i` opens that linked detail while `Enter` keeps opening the child
-transcript. Read-only observers can inspect jobs but do not get the cancel
+run view. Read-only observers can inspect jobs but do not get the cancel
 key. `/sessions` opens on the
 active session and clears work rows when you select a different session whose
 projection is not loaded, showing that live work is unavailable.
@@ -759,17 +760,37 @@ chord, a latched failure, and an armed exit confirmation — nothing else.
 
 `Shift+N` and `Shift+P` move between open subagent tabs and wrap around;
 `Shift+X` closes the active one. `Esc` also returns to the conversation. The
-cycle runs `Chat` first, then the subagent tabs in the order you opened them.
+cycle runs `Main` first, then the subagent tabs in the order you opened them.
 
 With no subagent tabs open the keys do nothing rather than appearing to break —
 you stay on the conversation. Up to 16 subagent tabs can be open at once; at
 that point opening another is **refused** and says so, rather than closing a tab
 you were reading.
 
-A subagent tab shows that subagent's transcript. Closing it cancels nothing —
-the run keeps going whether or not you are watching it. When a run drops out of
-the projection the tab stays open and stops claiming to be live, so the buffer
-cannot show "running" for something the daemon has stopped vouching for.
+The strip is one row, and it is the identity surface for the run on screen. It
+reads `Main` for the conversation, carries a status marker per tab (`●` live,
+`○` finished, `✕` gone from the projection), and shows the **active** tab's
+persona in italics next to that tab. The persona is the subagent's own
+description of itself, carried by the projection — a tab that has left the
+projection keeps the persona it last carried. The row also states the three
+keys that operate it, on the right: `⇧P/⇧N switch · ⇧X close`.
+
+All of that shares one row and therefore one width budget. The keys and the
+tab labels are paid for first; the persona takes what is left and is truncated
+to fit, and is dropped rather than squeezed to a stub when nothing is left. A
+row too narrow for the persona still shows every tab label it can.
+
+A subagent tab shows that subagent's **run view** — its task, the agent's own
+description of itself, its canonical ids, and whether the run is still live. It
+is not a transcript: the projection carries no conversation for a delegated
+run, so there is nothing to replay. The tab **replaces** the main conversation
+in the buffer rather than floating over it, so the two are never legible at
+the same time, and the tab's own row is filled rather than transparent.
+
+Closing it cancels nothing — the run keeps going whether or not you are
+watching it. When a run drops out of the projection the tab stays open and
+stops claiming to be live, so the buffer cannot show "running" for something
+the daemon has stopped vouching for.
 
 ### Talking to a subagent
 
@@ -812,12 +833,20 @@ The Session panel lists `Todos`, then `Subagents`, then `Jobs`, so the three
 move through them, `Space` collapses a section, and `Enter` (or a click) acts on
 the selected row:
 
-- a **subagent** row opens that subagent's transcript as a tab in the main
+- a **subagent** row opens that subagent's run view as a tab in the main
   buffer, the same tab `Ctrl+T` would have opened;
 - a **job** row does nothing. Jobs have no transcript to show yet, so the key
   is consumed rather than sending you somewhere arbitrary;
 - the **Agent Runs tree** further down the panel keeps its own behaviour:
   `Enter` there opens the run-detail dialog.
+
+**The walk skips rows with no action.** A todo row in the panel has nothing
+behind `Enter`, so the walk steps over the todo *rows* and stops on the
+**`Todos` heading** instead — which still folds and unfolds the section. The
+heading is the part of the section you can act on, so it stays reachable.
+Hovering and clicking a todo row still works: the mouse path is a different
+map from the keyboard one. The `Ctrl+T` overlay is the deliberate opposite —
+there a todo row *is* actionable, so it stays selectable there.
 
 Unlike the overlay, the panel keeps rows for finished subagents and marks their
 status. It is a persistent index, not a status light: a subagent that finishes
@@ -1059,6 +1088,19 @@ the sandbox decides *how far the process can reach*. Neither implies the other.
 | `read-only` | Filesystem writes are denied by containment. Network has no OS isolation. |
 | `workspace-write` | Writes are confined to the workspace roots on supported hosts. Network has no OS isolation. |
 | `full-host` | CodeGG filesystem containment is disabled — the agent has your OS user's host authority outside the workspace, and network access is unrestricted. |
+
+### Child network policy
+
+`/network offline` opts the current daemon principal into `OfflineRequired` for
+child launches. `/network unrestricted confirm` restores host networking; the
+explicit confirmation avoids widening the stored policy by accident. Existing
+preferences remain unrestricted until changed. Offline-required execution
+currently requires a constrained profile and Linux M004/M005 support. The
+policy is carried through managed processes, Test/Python jobs, constrained
+PTYs, and contained LSP launches; unavailable host setup fails before the
+target starts. The Linux owner wiring is still undergoing exact-host
+qualification, so a stored preference does not itself prove that every host
+can enforce it. `/policy` shows the requested and effective intent.
 
 ### Fast-select keys
 

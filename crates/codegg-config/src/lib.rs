@@ -18,7 +18,10 @@ pub use schema::{
     EggworkIsolationPolicy, EggworkNetworkPolicy, EggworkNodeProfile, ModelProfileConfig,
     ModelRouteConfig, ModelRouterConfig, OrchestrationConfig, OrchestrationTier, SchedulerConfig,
     SchedulerFairnessConfig, SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig,
-    SymlinkPolicy, ToolAdvisorConfig, ToolAdvisorRemoteConfig, ToolAdvisorTrainingDataConfig,
+    ScratchConfig, ScratchRetentionSettings, SymlinkPolicy, ToolAdvisorConfig,
+    ToolAdvisorRemoteConfig, ToolAdvisorTrainingDataConfig, SCRATCH_ORPHAN_GRACE_HOURS_DEFAULT,
+    SCRATCH_ORPHAN_GRACE_HOURS_FLOOR, SCRATCH_RETENTION_DAYS_DEFAULT, SCRATCH_RETENTION_DAYS_FLOOR,
+    SCRATCH_SWEEP_INTERVAL_MINUTES_DEFAULT, SCRATCH_SWEEP_INTERVAL_MINUTES_FLOOR,
     VIRTUAL_MODEL_PREFIX,
 };
 pub use watcher::ConfigWatcher;

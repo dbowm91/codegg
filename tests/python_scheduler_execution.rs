@@ -50,7 +50,7 @@ impl TestHarness {
         );
         let submission = JobSubmissionService::new(
             store.clone(),
-            scheduler,
+            scheduler.clone(),
             services,
             DaemonGeneration::new_unchecked("gen-test"),
         );
@@ -93,6 +93,8 @@ impl TestHarness {
                 source_hash: Some(source_hash.clone()),
                 cwd: Some("/tmp".to_string()),
                 timeout_secs: Some(30),
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::for_kind(JobKind::Python),
             timeout: Some(std::time::Duration::from_secs(30)),
@@ -175,6 +177,8 @@ async fn disabled_scheduler_returns_typed_error() {
             )),
             cwd: Some("/tmp".to_string()),
             timeout_secs: Some(30),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::for_kind(JobKind::Python),
         timeout: Some(std::time::Duration::from_secs(30)),
@@ -198,6 +202,99 @@ async fn disabled_scheduler_returns_typed_error() {
         matches!(result, Err(JobSubmissionError::SchedulerDisabled)),
         "expected SchedulerDisabled, got: {result:?}"
     );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn structured_python_route_runs_with_accepted_workspace_profile() {
+    let root = tempfile::tempdir().expect("temp workspace");
+    let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+        .await
+        .expect("workspace registry");
+    let _workspace = workspace_registry
+        .get_or_register(root.path())
+        .await
+        .expect("register workspace");
+    let services = WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(ProductionWorkspaceServicesFactory),
+        WorkspaceServicePolicy::default(),
+    );
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let scheduler = JobScheduler::new(
+        store.clone(),
+        services.clone(),
+        ResolvedSchedulerConfig::default(),
+        DaemonGeneration::new_unchecked("gen-profiled-python"),
+    );
+    scheduler
+        .register_default_executors_sync(None)
+        .expect("register default executors");
+    let run_handle = scheduler.spawn_run();
+    let submission = JobSubmissionService::new(
+        store,
+        scheduler.clone(),
+        services,
+        DaemonGeneration::new_unchecked("gen-profiled-python"),
+    );
+    let tool =
+        codegg::python_script::tool::PythonScriptTool::with_scheduler(None, Some(submission));
+    let mut context = codegg::tool::backend::ToolExecutionContext::with_backend(
+        codegg::tool::backend::ToolBackendKind::Native,
+    );
+    let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+        codegg_core::approval::ApprovalMode::Interactive,
+        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+        Some("test-principal".into()),
+        Some("test-session".into()),
+        None,
+        Some("test-policy-r1".into()),
+        None,
+    );
+    context.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot,
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "test",
+                Some("test-policy-r1".into()),
+            ),
+            command_preflight: None,
+            scratch_scope: None,
+        });
+    let result = tool
+        .execute_structured(
+            serde_json::json!({
+                "code": "print('accepted-profile-python')",
+                "mode": "analyze",
+                "workdir": root.path().to_string_lossy(),
+            }),
+            Some(context),
+        )
+        .await;
+
+    scheduler
+        .shutdown(codegg::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
+        .await;
+    let _ = run_handle.await;
+
+    if codegg::security::sandbox::platform_sandbox_capability().is_available()
+        && codegg::security::sandbox::sandbox_helper_path().is_ok()
+    {
+        let result = result.expect("available sandbox should execute the typed Python tool");
+        assert!(result.success, "{}", result.output);
+        assert!(
+            result.output.contains("accepted-profile-python"),
+            "{}",
+            result.output
+        );
+    } else {
+        let result = result.expect("unavailable sandbox returns a structured refusal");
+        assert!(
+            !result.success,
+            "Python must not run outside its accepted workspace profile"
+        );
+        assert!(!result.output.contains("accepted-profile-python"));
+    }
 }
 
 // ── Source validation ───────────────────────────────────────────────────
@@ -224,6 +321,8 @@ async fn python_payload_validates_mode() {
             )),
             cwd: Some("/tmp".to_string()),
             timeout_secs: Some(30),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::for_kind(JobKind::Python),
         timeout: Some(std::time::Duration::from_secs(30)),
@@ -272,6 +371,8 @@ async fn source_hash_mismatch_rejected_at_validation() {
             source_hash: Some("wrong_hash".to_string()),
             cwd: Some("/tmp".to_string()),
             timeout_secs: Some(30),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -331,6 +432,8 @@ async fn legacy_script_path_payload_rejected_without_source() {
             source_hash: None,
             cwd: Some("/tmp".to_string()),
             timeout_secs: Some(30),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -488,6 +591,8 @@ async fn python_executor_cancelled_before_launch() {
             )),
             cwd: Some("/tmp".to_string()),
             timeout_secs: Some(30),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -572,6 +677,8 @@ async fn python_executor_rejects_cwd_outside_workspace() {
             )),
             cwd: Some("/nonexistent/workspace/malicious".to_string()),
             timeout_secs: Some(30),
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

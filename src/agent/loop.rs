@@ -412,6 +412,7 @@ impl AgentLoop {
                 config,
                 approval_mode: codegg_core::approval::ApprovalMode::Interactive,
                 sandbox_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             lifecycle: TurnLifecycle::new(),
             state: AgentLoopState {
@@ -837,6 +838,10 @@ impl AgentLoop {
         self.services.sandbox_profile
     }
 
+    pub fn set_network_intent(&mut self, intent: codegg_core::approval::NetworkIntent) {
+        self.services.network_intent = intent;
+    }
+
     /// M003: capture the immutable effective execution-policy snapshot for
     /// the turn/accepted-tool-batch boundary. Mode changes after capture
     /// apply on the next boundary and cannot retroactively bless pending
@@ -853,6 +858,8 @@ impl AgentLoop {
             Some(format!("config:{:016x}", self.permission_version())),
             None,
         )
+        .with_network_intent(self.services.network_intent)
+        .expect("turn network intent remains within its immutable ceiling")
     }
 
     pub fn set_max_tool_calls(&mut self, max: Option<usize>) {

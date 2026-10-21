@@ -2,7 +2,7 @@
 
 The `lsp` module provides Language Server Protocol support for IDE-like features. It implements a **client-side LSP integration** that spawns and manages external LSP server processes.
 
-**Location**: `src/lsp/` (Codegg-side thin re-exports) and `crates/egglsp/` (full implementation; see [native_crates.md](native_crates.md))
+**Location**: `crates/egglsp/` (service and protocol implementation), `src/lsp/` (CodeGG adapters, including the Linux M004 process owner), and [native_crates.md](native_crates.md)
 
 ## Key Responsibilities
 
@@ -31,6 +31,11 @@ that re-exports `egglsp::*` and bridges:
 
 - `crate::config::schema::LspConfig` → `egglsp::LspConfig` (via `From` impl in the wrapper)
 - `egglsp::LspError` → `crate::error::LspError` (delegates to the existing codegg-side error variant)
+
+Linux constrained turns use `src/lsp/m004.rs` to create an immutable service
+scope for the daemon-resolved profile and canonical workspace. That adapter
+uses the canonical managed-process helper for every LSP generation and leaves
+the FullHost service path unchanged.
 
 The crate uses a client-per-root pattern: `LspService` maintains a `HashMap<String, ClientEntry>` where the key is `"{project_root}:{server_id}"`.
 
@@ -70,6 +75,29 @@ The transport `CoreRequest::LspPreviewApply` is authorized as `via_session` +
 `file.modify`, then reuses the canonical session/workspace binding helper
 before acquiring the daemon workspace lock. No preview data is persisted and
 no LSP command or opaque workspace edit is enabled.
+
+### LSP process profile boundary
+
+The daemon-wide `LspService` owns long-lived child processes and is shared by
+FullHost turn registries. Its client/restart identity does not include a
+sandbox profile, so constrained turns never receive that service. Instead,
+Linux creates a distinct daemon-owned `M004LspServiceScope` for each
+constrained turn, bound to its canonical workspace and resolved profile. The
+scope's injected launcher routes initial starts and restart generations
+through the required M004 helper while preserving the supervised JSON-RPC
+stdin/stdout and stderr pipes. The helper status receipt stays owned by the
+LSP process runtime until child exit. The scope is shut down when the agent
+loop ends or is dropped; it cannot borrow or restart a FullHost process.
+
+`lsp`, `lsp_read`, preview apply, and LSP prompt-context collection share this
+per-turn service only after the registry confirms the launcher's immutable
+profile and canonical workspace match the daemon-resolved turn. If scope
+construction or required M004 setup fails, the constrained tools remain
+unavailable and no server target starts. FullHost turns preserve the existing
+shared service behavior. Profile selection remains daemon-owned; it must never
+be added as a client-controlled LSP request field. The native qualification
+must exercise a completed duplex LSP exchange and host-proc denial, plus
+refusal before target execution on a host with restricted user namespaces.
 
 ### Tier 1 vs Tier 2 compatibility
 

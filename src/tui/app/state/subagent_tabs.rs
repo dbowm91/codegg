@@ -55,7 +55,24 @@ use crate::tui::app::state::subagents::SubagentRow;
 pub const MAX_OPEN_SUBAGENT_TABS: usize = 16;
 
 /// Label for the always-present main-conversation entry in the tab bar.
-pub const MAIN_TAB_LABEL: &str = "Chat";
+///
+/// Named for what it *is* rather than for what it used to be called. `Chat`
+/// described a chat pane, but this entry is the main **conversation** — the
+/// root of the tab set, and the thing every other tab is a departure from.
+pub const MAIN_TAB_LABEL: &str = "Main";
+
+/// Glyph on the always-present main-conversation entry.
+///
+/// The three liveness glyphs — `●` live, `○` finished, `✕` detached — all
+/// encode **a run's state**, and the main conversation is not a run: it has
+/// no state to encode. The marker therefore comes from a different shape
+/// family (a square rather than a circle or a cross) so it cannot be misread
+/// as one more piece of liveness, and it is used nowhere else in the TUI, so
+/// it cannot collide with an unrelated meaning.
+///
+/// One column wide, and asserted to be so: a marker that costs two columns
+/// would silently break the row's width budget.
+pub const MAIN_TAB_GLYPH: &str = "▣";
 
 /// Columns between two entries in the tab bar.
 ///
@@ -65,6 +82,27 @@ pub const BAR_SEPARATOR: &str = " │ ";
 
 /// Placeholder standing in for tabs dropped to fit the bar's width.
 pub const BAR_ELLIPSIS: &str = "…";
+
+/// The keys that operate the tab bar, stated on the bar's own row.
+///
+/// The strip row exists **only** while tabs are open (`subagent_tab_strip_height`
+/// reserves it exactly then), so this text cannot outlive the surface it
+/// describes and cannot claim a row the layout never reserved. The composer
+/// hint line is the tempting alternative and the wrong one: that row is
+/// reserved only when it is present, so writing tab hints there would reserve
+/// a **new** row and reflow the transcript on every submit and completion.
+pub const BAR_HINTS: &str = "⇧P/⇧N switch · ⇧X close";
+
+/// Columns between the tab entries (and the persona) and the key hints.
+pub const BAR_GAP: usize = 1;
+
+/// Narrowest a persona may be trimmed to before it is dropped instead.
+///
+/// The same rule the sidebar applied to its descriptor, and for the same
+/// reason: a persona squeezed to a couple of characters reads as a rendering
+/// fault rather than as prose. Below this floor the persona is **absent**,
+/// which is honest — the row still says which run is on screen.
+pub const MIN_STRIP_PERSONA_COLS: usize = 12;
 
 /// Identity of one open subagent tab.
 ///
@@ -394,16 +432,28 @@ impl SubagentTabs {
             label: MAIN_TAB_LABEL.to_string(),
             main: true,
             active: self.active_tab_id.is_none(),
-            glyph: "",
+            glyph: MAIN_TAB_GLYPH,
             ellipsis: false,
+            persona: None,
         }];
         for tab in self.ordered() {
+            let active = self.active_tab_id.as_ref() == Some(&tab.tab_id);
             out.push(SubagentBarTab {
                 label: tab.label().to_string(),
                 main: false,
-                active: self.active_tab_id.as_ref() == Some(&tab.tab_id),
+                active,
                 glyph: tab.glyph(),
                 ellipsis: false,
+                // The persona is the projection's own value, carried on the row
+                // this tab already holds — never a lookup against a pool the
+                // TUI does not have. Only the **active** tab's persona is
+                // carried: one row cannot carry one persona per tab, and the
+                // strip's job is to describe the run on screen.
+                persona: if active {
+                    tab.row.descriptor().map(str::to_string)
+                } else {
+                    None
+                },
             });
         }
         out
@@ -423,6 +473,11 @@ pub struct SubagentBarTab {
     pub glyph: &'static str,
     /// Set on the placeholder standing in for dropped tabs.
     pub ellipsis: bool,
+    /// The active tab's persona, carried for the strip to show.
+    ///
+    /// `None` on every entry but the active one, and `None` for the main
+    /// conversation, which has no persona of its own.
+    pub persona: Option<String>,
 }
 
 impl SubagentBarTab {
@@ -437,6 +492,27 @@ impl SubagentBarTab {
     pub fn label_width(&self) -> usize {
         unicode_width::UnicodeWidthStr::width(self.label.as_str())
     }
+
+    /// Columns this entry's glyph occupies.
+    pub fn glyph_width(&self) -> usize {
+        unicode_width::UnicodeWidthStr::width(self.glyph)
+    }
+
+    /// Columns this entry occupies as painted, glyph included.
+    ///
+    /// The glyph is painted in front of the label with one space between them,
+    /// so it costs its own width plus that space. Counting it here is what
+    /// keeps the bar's arithmetic honest: a glyph that is not counted is a
+    /// glyph that paints past the width the budget promised, which is how the
+    /// key hints would end up underneath a tab marker.
+    pub fn entry_width(&self) -> usize {
+        let glyph = self.glyph_width();
+        if glyph == 0 {
+            self.label_width()
+        } else {
+            glyph + 1 + self.label_width()
+        }
+    }
 }
 
 /// Columns the bar occupies if these entries were drawn in order.
@@ -444,7 +520,7 @@ pub fn bar_width(entries: &[SubagentBarTab]) -> usize {
     if entries.is_empty() {
         return 0;
     }
-    let labels: usize = entries.iter().map(SubagentBarTab::label_width).sum();
+    let labels: usize = entries.iter().map(SubagentBarTab::entry_width).sum();
     labels + unicode_width::UnicodeWidthStr::width(BAR_SEPARATOR) * (entries.len() - 1)
 }
 
@@ -489,6 +565,7 @@ fn assemble(tabs: &[SubagentBarTab], chosen: &[usize]) -> Vec<SubagentBarTab> {
                     active: false,
                     glyph: "",
                     ellipsis: true,
+                    persona: None,
                 });
             }
         }
@@ -550,6 +627,12 @@ pub fn fit_bar_tabs(tabs: Vec<SubagentBarTab>, width: usize) -> Vec<SubagentBarT
     // skipped so the "something was dropped" signal survives; if only the
     // ellipsis is over budget it stays, because it is one column of a bar that
     // has nothing left to describe.
+    //
+    // A glyph whose label has been squeezed away goes with it: a marker
+    // standing next to no name says nothing, and it is the only thing left
+    // that can give a column back. Leaving it would let the strip paint past
+    // the width it promised — the same class of defect as an unaccounted-for
+    // glyph in the first place.
     let mut overflow = bar_width(&entries).saturating_sub(width);
     for entry in entries.iter_mut().rev() {
         if overflow == 0 {
@@ -558,14 +641,120 @@ pub fn fit_bar_tabs(tabs: Vec<SubagentBarTab>, width: usize) -> Vec<SubagentBarT
         if entry.ellipsis {
             continue;
         }
+        let before = entry.entry_width();
         let current = entry.label_width();
-        if current == 0 {
-            continue;
-        }
         entry.label = truncate_to_width(&entry.label, current.saturating_sub(overflow));
-        overflow = overflow.saturating_sub(current);
+        if entry.label.is_empty() {
+            entry.glyph = "";
+        }
+        let after = entry.entry_width();
+        overflow = overflow.saturating_sub(before.saturating_sub(after));
     }
     entries
+}
+
+/// The strip's width budget, computed once for its three consumers.
+///
+/// The one row carries three things that all want the same columns: the tab
+/// labels, the active tab's persona, and the key hints. The precedence is
+/// fixed and the computation lives here rather than in the renderer, so it can
+/// be tested without a terminal:
+///
+/// 1. the **hints** — reserved first and in full. They are short, fixed, and
+///    are the discoverability fix the strip exists to deliver.
+/// 2. the **labels** — every surviving tab keeps its label; [`fit_bar_tabs`]
+///    drops the oldest tabs and leaves an ellipsis rather than truncating a
+///    label to make room.
+/// 3. the **persona** — what remains after 1 and 2, truncated to fit. If what
+///    remains is too small to be legible the persona is **dropped**, never
+///    rendered as a two-character stub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StripPlan {
+    /// The entries that survive, already fitted to [`StripPlan::entries_width`].
+    pub entries: Vec<SubagentBarTab>,
+    /// The persona to show, already truncated; `None` when it does not fit.
+    pub persona: Option<String>,
+    /// Width the tab entries and the persona share.
+    pub entries_width: usize,
+    /// Columns between the entries region and the hints region.
+    pub gap: usize,
+    /// Width the hints are painted in.
+    ///
+    /// The full width of [`BAR_HINTS`] whenever the row has room for it. A row
+    /// narrower than the hints themselves is a row the terminal cannot show
+    /// them on, and the hints are clipped to what is left — the *budget* never
+    /// shortens them to make room for the labels or the persona.
+    pub hints_width: usize,
+}
+
+/// Split the strip's width between its labels, its persona, and its hints.
+///
+/// `total_width` is the width of the row itself. The hints are reserved
+/// first and in full, so the label fitting works on the width the tabs
+/// actually have; the persona then takes what the labels left behind, and is
+/// dropped when that remainder is below [`MIN_STRIP_PERSONA_COLS`].
+pub fn plan_strip(entries: Vec<SubagentBarTab>, total_width: usize) -> StripPlan {
+    let hints = unicode_width::UnicodeWidthStr::width(BAR_HINTS);
+    // The gap only exists when there is room for it: a row that cannot hold
+    // the hints *and* a gap must not spend its last column on whitespace.
+    let (gap, entries_width) = if total_width >= hints + BAR_GAP {
+        (BAR_GAP, total_width - hints - BAR_GAP)
+    } else {
+        (0, 0)
+    };
+    let entries = fit_bar_tabs(entries, entries_width);
+    // The persona sits after the active entry, so what it may use is what the
+    // labels left behind.
+    let persona_width = entries_width.saturating_sub(bar_width(&entries) + BAR_GAP);
+    let persona = if persona_width < MIN_STRIP_PERSONA_COLS {
+        None
+    } else {
+        entries
+            .iter()
+            .find(|entry| entry.active)
+            .and_then(|entry| entry.persona.as_deref())
+            .map(|persona| fit_persona(persona, persona_width))
+    };
+    StripPlan {
+        entries,
+        persona,
+        entries_width,
+        gap,
+        hints_width: hints.min(total_width.saturating_sub(entries_width + gap)),
+    }
+}
+
+/// Flatten and truncate a persona to `width` display columns.
+///
+/// The persona is prose, so it is cut with an ellipsis rather than mid-word: a
+/// persona that ends in half a word reads as a rendering fault. Control
+/// characters become spaces — a one-line row cannot show two.
+fn fit_persona(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let flattened: String = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let trimmed = flattened.trim();
+    if unicode_width::UnicodeWidthStr::width(trimmed) <= width {
+        return trimmed.to_string();
+    }
+    // One column is spent on the ellipsis itself.
+    let budget = width.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in trimmed.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -593,6 +782,15 @@ mod tests {
             active,
             glyph: "",
             ellipsis: false,
+            persona: None,
+        }
+    }
+
+    /// A bar entry that carries a persona, as the active tab's does.
+    fn bar_with_persona(label: &str, active: bool, persona: Option<&str>) -> SubagentBarTab {
+        SubagentBarTab {
+            persona: persona.map(str::to_string),
+            ..bar(label, false, active)
         }
     }
 
@@ -853,21 +1051,263 @@ mod tests {
     }
 
     #[test]
+    fn the_main_entry_reads_main_and_carries_a_glyph_of_its_own() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        let entries = tabs.bar_tabs();
+        assert_eq!(entries[0].label, "Main");
+        assert!(
+            !entries[0].glyph.is_empty(),
+            "the main entry must read as a tab, not as plain text"
+        );
+        // The three liveness glyphs encode a *run's* state. The main
+        // conversation is not a run, so it must not wear one of them.
+        for liveness in ["●", "○", "✕"] {
+            assert_ne!(
+                entries[0].glyph, liveness,
+                "the main entry must not be mistaken for a run"
+            );
+        }
+    }
+
+    #[test]
+    fn the_main_glyph_costs_exactly_one_column() {
+        // A marker that cost two columns would silently over-draw the row's
+        // width budget, and the arithmetic would be wrong by one on every
+        // frame.
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(MAIN_TAB_GLYPH),
+            1,
+            "the main glyph must be one column wide"
+        );
+    }
+
+    #[test]
+    fn only_the_active_entry_carries_the_persona() {
+        let mut tabs = SubagentTabs::new();
+        let mut first = row("1", "running");
+        first.profile = Some("Reconnaissance generalist.".into());
+        let mut second = row("2", "running");
+        second.profile = Some("Relentless verifier.".into());
+        tabs.open_or_focus(first);
+        tabs.open_or_focus(second);
+
+        let entries = tabs.bar_tabs();
+        assert_eq!(entries.len(), 3);
+        assert!(
+            entries[1].persona.is_none(),
+            "an inactive tab carries no persona"
+        );
+        assert_eq!(
+            entries[2].persona.as_deref(),
+            Some("Relentless verifier."),
+            "the active tab carries the projection's persona"
+        );
+        assert!(
+            entries[0].persona.is_none(),
+            "the main conversation has no persona of its own"
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_descriptor_yields_no_persona_rather_than_an_empty_one() {
+        // A snapshot recorded before descriptors existed must render what this
+        // surface rendered before — not an empty column.
+        let mut tabs = SubagentTabs::new();
+        let mut without = row("1", "running");
+        without.profile = None;
+        tabs.open_or_focus(without);
+        assert_eq!(tabs.bar_tabs()[1].persona, None);
+
+        let mut blank = row("2", "running");
+        blank.profile = Some("   ".into());
+        tabs.open_or_focus(blank);
+        assert_eq!(tabs.bar_tabs()[2].persona, None);
+    }
+
+    #[test]
+    fn the_budget_reserves_the_hints_before_anything_else() {
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
+        let plan = plan_strip(entries, 80);
+        assert_eq!(
+            plan.hints_width,
+            unicode_width::UnicodeWidthStr::width(BAR_HINTS),
+            "the hints are reserved in full"
+        );
+        assert_eq!(
+            plan.entries_width,
+            80 - plan.hints_width - BAR_GAP,
+            "the tab fitting works on the width the tabs actually have"
+        );
+        assert!(
+            plan.entries_width < 80,
+            "the hint reservation is applied before the call"
+        );
+    }
+
+    #[test]
+    fn the_labels_are_preferred_over_the_persona() {
+        // A strip too narrow for the labels, the hints and the persona keeps
+        // every label and drops the persona.
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some("Reconnaissance generalist.")),
+        ];
+        let plan = plan_strip(entries, 40);
+        assert_eq!(
+            plan.persona, None,
+            "the persona is what remains, and nothing remained"
+        );
+        assert!(
+            plan.entries.iter().any(|entry| entry.active),
+            "the label survives"
+        );
+    }
+
+    #[test]
+    fn the_persona_is_dropped_rather_than_squeezed_to_a_stub() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some("Reconnaissance generalist.")),
+        ];
+        // Exactly the width the labels leave, minus the gap: one column short
+        // of the legible floor.
+        let labels = bar_width(&plan_strip(entries.clone(), 200).entries);
+        let width = unicode_width::UnicodeWidthStr::width(BAR_HINTS)
+            + BAR_GAP
+            + labels
+            + BAR_GAP
+            + MIN_STRIP_PERSONA_COLS
+            - 1;
+        let plan = plan_strip(entries, width);
+        assert_eq!(
+            plan.persona, None,
+            "a persona below the legible floor is dropped, not stubbed"
+        );
+    }
+
+    #[test]
+    fn the_persona_is_truncated_to_the_width_that_is_left() {
+        let persona = "Reconnaissance generalist who has seen something like this before.";
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some(persona)),
+        ];
+        let plan = plan_strip(entries, 80);
+        let shown = plan.persona.expect("the persona fits");
+        assert!(
+            unicode_width::UnicodeWidthStr::width(shown.as_str()) <= plan.entries_width,
+            "the persona must fit the width the labels left"
+        );
+        assert!(shown.ends_with('…'), "prose is cut with an ellipsis");
+        assert!(persona.starts_with(shown.trim_end_matches('…')));
+    }
+
+    #[test]
+    fn a_persona_that_fits_is_shown_whole() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some("Reconnaissance generalist.")),
+        ];
+        let plan = plan_strip(entries, 120);
+        assert_eq!(
+            plan.persona.as_deref(),
+            Some("Reconnaissance generalist."),
+            "a persona that fits is not truncated"
+        );
+    }
+
+    #[test]
+    fn the_main_entry_is_active_shows_no_persona() {
+        let mut tabs = SubagentTabs::new();
+        let mut first = row("1", "running");
+        first.profile = Some("Reconnaissance generalist.".into());
+        tabs.open_or_focus(first);
+        tabs.close_active();
+
+        let plan = plan_strip(tabs.bar_tabs(), 120);
+        assert_eq!(plan.persona, None, "the main conversation has no persona");
+    }
+
+    #[test]
+    fn a_strip_too_narrow_for_the_hints_keeps_the_row_inside_its_own_width() {
+        // The degenerate case: the row cannot hold the hints and the labels
+        // and the persona at once. It must still not overflow.
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
+        for width in 0..=40usize {
+            let plan = plan_strip(entries.clone(), width);
+            let painted = bar_width(&plan.entries) + plan.gap + plan.hints_width;
+            assert!(painted <= width, "width {width} painted {painted} cols");
+        }
+    }
+
+    #[test]
+    fn the_hints_are_never_truncated_by_the_budget() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar("Sally", false, true),
+            bar("Bertha", false, false),
+        ];
+        let full = unicode_width::UnicodeWidthStr::width(BAR_HINTS);
+        for width in 0..=80usize {
+            let plan = plan_strip(entries.clone(), width);
+            if width >= full {
+                assert_eq!(
+                    plan.hints_width, full,
+                    "width {width} shrank the hints to make room"
+                );
+            } else {
+                // A row narrower than the hints is a row the terminal cannot
+                // show them on; the budget may not take a column from them to
+                // give to the labels, so the labels get nothing instead.
+                assert_eq!(plan.hints_width, width, "width {width}");
+                assert_eq!(plan.entries_width, 0, "width {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_glyph_is_counted_in_the_bars_width() {
+        // A glyph that is painted but not measured is a glyph that paints past
+        // the width the budget promised.
+        let mut entry = bar("Sally", false, true);
+        entry.glyph = "●";
+        assert_eq!(entry.entry_width(), 1 + 1 + 5);
+        assert_eq!(bar_width(&[entry.clone()]), 7);
+        assert_eq!(
+            bar_width(&[entry.clone(), bar("Main", true, false)]),
+            7 + 3 + 4
+        );
+    }
+
+    #[test]
+    fn a_glyph_whose_label_is_gone_does_not_overflow_the_row() {
+        let mut entry = bar("Sally", false, true);
+        entry.glyph = "●";
+        let fitted = fit_bar_tabs(vec![entry], 2);
+        assert!(
+            bar_width(&fitted) <= 2,
+            "the bar painted {} cols into 2",
+            bar_width(&fitted)
+        );
+    }
+
+    #[test]
     fn a_bar_that_fits_is_returned_untouched() {
-        let entries = vec![bar("Chat", true, false), bar("Sally", false, true)];
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
         assert_eq!(fit_bar_tabs(entries.clone(), 80), entries);
     }
 
     #[test]
     fn a_zero_width_bar_renders_nothing() {
-        let entries = vec![bar("Chat", true, true)];
+        let entries = vec![bar("Main", true, true)];
         assert!(fit_bar_tabs(entries, 0).is_empty());
     }
 
     #[test]
     fn trimming_keeps_the_active_tab_and_marks_what_it_dropped() {
         let entries = vec![
-            bar("Chat", true, false),
+            bar("Main", true, false),
             bar("Sally", false, false),
             bar("Bertha", false, false),
             bar("Cleo", false, false),
@@ -890,7 +1330,7 @@ mod tests {
     #[test]
     fn trimming_never_overflows_even_when_the_bar_is_tiny() {
         let entries = vec![
-            bar("Chat", true, false),
+            bar("Main", true, false),
             bar("Sally", false, false),
             bar("Bertha", false, true),
         ];
@@ -910,13 +1350,13 @@ mod tests {
         // live input. Counting characters would measure these labels at half
         // their real width and the bar would paint into the next column.
         let entries = vec![
-            bar("Chat", true, false),
+            bar("Main", true, false),
             bar("敏晴敏晴", false, false),
             bar("敏晴敏晴", false, true),
         ];
         assert_eq!(
             bar_width(&entries),
-            "Chat".len() + 3 + 8 + 3 + 8,
+            "Main".len() + 3 + 8 + 3 + 8,
             "a CJK label is two columns per character"
         );
         for width in 0..=30usize {
@@ -933,7 +1373,7 @@ mod tests {
     fn a_bar_narrower_than_its_active_tab_truncates_rather_than_dropping_it() {
         // Five cols cannot hold "Chat │ Sally"; the active tab is what the
         // user is reading, so it is shortened to fit rather than removed.
-        let entries = vec![bar("Chat", true, false), bar("Sally", false, true)];
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
         let fitted = fit_bar_tabs(entries, 5);
         assert!(bar_width(&fitted) <= 5);
         assert!(

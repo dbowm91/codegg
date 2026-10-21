@@ -1101,15 +1101,43 @@ pub enum JobPayload {
         /// other sensitive inputs are never carried in this payload.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_run_id: Option<crate::run_store::RunId>,
+        /// Accepted sandbox ceiling captured before scheduler admission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before scheduler admission.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     ManagedArgv {
         argv: Vec<String>,
         cwd: Option<String>,
+        /// Accepted filesystem profile ceiling captured before scheduler
+        /// admission. The executor uses it as a ceiling and refuses a
+        /// constrained job if its sandbox request is absent. Legacy and
+        /// operator jobs omit it and decode as `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before
+        /// scheduler admission. Legacy payloads decode as the unrestricted
+        /// intent, which is the historical behavior of this payload.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Shell {
         command: String,
         argv: Option<Vec<String>>,
         cwd: Option<String>,
+        /// Accepted filesystem profile ceiling captured before scheduler
+        /// admission. The executor uses it as a ceiling and refuses a
+        /// constrained job if its sandbox request is absent. Legacy and
+        /// operator jobs omit it and decode as `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before
+        /// scheduler admission. Legacy payloads decode as the unrestricted
+        /// intent, which is the historical behavior of this payload.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Python {
         script_path: String,
@@ -1131,6 +1159,14 @@ pub enum JobPayload {
         /// Effective timeout in seconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
+        /// Accepted filesystem profile captured at the model tool boundary.
+        /// The executor uses it as a ceiling and refuses a constrained job
+        /// if its sandbox request is absent. Legacy/operator jobs omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
+        /// Authenticated per-principal network intent captured before scheduler admission.
+        #[serde(default)]
+        network_intent: crate::approval::NetworkIntent,
     },
     Git {
         argv: Vec<String>,
@@ -2211,6 +2247,40 @@ mod tests {
         assert_eq!(json["kind"], "agent_turn");
         assert_eq!(json["prompt"], "hi");
         assert_eq!(json["agent"], "build");
+    }
+
+    #[test]
+    fn legacy_test_and_python_payloads_default_to_unrestricted_network() {
+        let legacy_test: JobPayload = serde_json::from_value(serde_json::json!({
+            "kind": "test",
+            "command": "cargo test",
+            "argv": ["cargo", "test"],
+            "cwd": null,
+            "scope": null
+        }))
+        .expect("legacy test payload remains readable");
+        assert!(matches!(
+            legacy_test,
+            JobPayload::Test {
+                network_intent: crate::approval::NetworkIntent::LegacyUnrestricted,
+                ..
+            }
+        ));
+
+        let legacy_python: JobPayload = serde_json::from_value(serde_json::json!({
+            "kind": "python",
+            "script_path": "script.py",
+            "args": [],
+            "mode": "verify"
+        }))
+        .expect("legacy Python payload remains readable");
+        assert!(matches!(
+            legacy_python,
+            JobPayload::Python {
+                network_intent: crate::approval::NetworkIntent::LegacyUnrestricted,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -17,7 +17,7 @@
 //! actor, credential-like Git URL, secret-looking command text, and
 //! terminal input content.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -287,6 +287,8 @@ fn trajectory_job(
             cwd: Some("/tmp".into()),
             scope: None,
             parent_run_id: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: ResourceRequest::for_kind(JobKind::Test),
         timeout: None,
@@ -560,7 +562,13 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         scrollback_bytes: None,
     };
     let created = protocol
-        .create("client-owner", &exec_ctx, &dto, Some(hook))
+        .create(
+            "client-owner",
+            &exec_ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &dto,
+            Some(hook),
+        )
         .await;
     match created {
         CoreResponse::InteractiveProcessCreated { .. } => {}
@@ -909,7 +917,7 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
     let secret = "ghp_m004secretvalue123456";
     let broker_ctx = BrokerInvocationContext {
         caller: ToolCaller::Agent,
-        cwd: PathBuf::from("."),
+        cwd: repo.path().to_path_buf(),
         session_id: Some("session-m004-secret".to_owned()),
         workspace_id: None,
         agent_id: None,
@@ -988,7 +996,13 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
         scrollback_bytes: None,
     };
     let created = protocol
-        .create("client-m004", &exec_ctx, &dto, Some(hook))
+        .create(
+            "client-m004",
+            &exec_ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &dto,
+            Some(hook),
+        )
         .await;
     let handle = match created {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,

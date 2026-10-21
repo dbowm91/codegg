@@ -110,12 +110,19 @@ impl JobExecutor for TestJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
-        let (argv, parent_run_id) = match &ctx.job.payload {
+        let (argv, parent_run_id, sandbox_profile, network_intent) = match &ctx.job.payload {
             JobPayload::Test {
                 argv,
                 parent_run_id,
+                sandbox_profile,
+                network_intent,
                 ..
-            } => (argv.clone(), parent_run_id.clone()),
+            } => (
+                argv.clone(),
+                parent_run_id.clone(),
+                *sandbox_profile,
+                *network_intent,
+            ),
             _ => {
                 return failure_completion(
                     started,
@@ -148,10 +155,12 @@ impl JobExecutor for TestJobExecutor {
             cancellation: Some(ctx.cancellation.clone()),
         };
 
-        let result = crate::test_runner::runner::resolve_and_run_test(
+        let result = crate::test_runner::runner::resolve_and_run_test_with_profile_and_network(
             request,
             self.sink.as_deref(),
             self.run_store.as_ref().or(ctx.run_store.as_ref()),
+            sandbox_profile,
+            network_intent,
         )
         .await;
 
@@ -338,9 +347,10 @@ impl JobExecutor for ManagedArgvExecutor {
                 "managed argv missing cwd".into(),
             );
         };
+        let launch_argv = argv.clone();
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             argv.into_iter().map(OsString::from).collect(),
-            cwd,
+            cwd.clone(),
             ctx.job.session_id.as_deref().map_or_else(
                 || {
                     crate::managed_process::ProcessProvenance::new(
@@ -357,6 +367,64 @@ impl JobExecutor for ManagedArgvExecutor {
                 },
             ),
         );
+        // M005: the durable route carries the accepted profile ceiling and the
+        // authenticated network intent. Without them the owner sees an
+        // unconstrained request and cannot tell that the principal asked for
+        // offline execution, so the intent would be silently dropped.
+        let (sandbox_profile, network_intent) = match &ctx.job.payload {
+            JobPayload::ManagedArgv {
+                sandbox_profile,
+                network_intent,
+                ..
+            }
+            | JobPayload::Shell {
+                sandbox_profile,
+                network_intent,
+                ..
+            } => (*sandbox_profile, *network_intent),
+            _ => (
+                None,
+                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            ),
+        };
+        request.required_sandbox_profile = sandbox_profile;
+        request.required_network_intent = network_intent;
+        if let Some(profile) =
+            sandbox_profile.filter(|profile| profile.requires_filesystem_containment())
+        {
+            let Some((target, args)) = launch_argv.split_first() else {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "managed argv has no executable to launch".into(),
+                );
+            };
+            // The durable route rebuilds the same containment the direct route
+            // would have used. A constrained job whose host cannot provide it
+            // fails closed here instead of running uncontained.
+            let Some(config) =
+                crate::security::sandbox::sandbox_config_for_profile(profile, &ctx.workspace_root)
+            else {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!(
+                        "filesystem containment is unavailable for accepted {profile:?} job profile"
+                    ),
+                );
+            };
+            let spec = match config.launch_spec(target, args, Some(&cwd)) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("sandbox launch spec failed: {error}"),
+                    );
+                }
+            };
+            request.sandbox = crate::managed_process::SandboxRequest::Required(spec);
+        }
         #[cfg(windows)]
         if let Some(raw_command) = raw_cmd_command {
             request = request.with_raw_command(raw_command);
@@ -1544,32 +1612,37 @@ impl JobExecutor for PythonJobExecutor {
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
 
-        let (source, mode_str, cwd, timeout_secs, workspace_root) = match &ctx.job.payload {
-            JobPayload::Python {
-                source,
-                mode,
-                cwd,
-                timeout_secs,
-                ..
-            } => (
-                source.clone(),
-                mode.clone(),
-                cwd.clone(),
-                *timeout_secs,
-                ctx.job
-                    .labels
-                    .get("workspace_root")
-                    .cloned()
-                    .map(PathBuf::from),
-            ),
-            _ => {
-                return failure_completion(
-                    started,
-                    ExecutorStatus::Failed,
-                    "unsupported payload kind".into(),
-                );
-            }
-        };
+        let (source, mode_str, cwd, timeout_secs, sandbox_profile, network_intent, workspace_root) =
+            match &ctx.job.payload {
+                JobPayload::Python {
+                    source,
+                    mode,
+                    cwd,
+                    timeout_secs,
+                    sandbox_profile,
+                    network_intent,
+                    ..
+                } => (
+                    source.clone(),
+                    mode.clone(),
+                    cwd.clone(),
+                    *timeout_secs,
+                    *sandbox_profile,
+                    *network_intent,
+                    ctx.job
+                        .labels
+                        .get("workspace_root")
+                        .cloned()
+                        .map(PathBuf::from),
+                ),
+                _ => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        "unsupported payload kind".into(),
+                    );
+                }
+            };
 
         // Resolve source: inline source required; legacy script_path payloads
         // without inline source are rejected (plan §6: arbitrary or missing
@@ -1707,11 +1780,14 @@ impl JobExecutor for PythonJobExecutor {
 
         // The canonical process service owns cancellation and descendant
         // cleanup; do not drop an in-flight execution future as a substitute.
-        let result = crate::python_script::executor::execute_python_script_with_cancellation(
-            &request,
-            ctx.cancellation.clone(),
-        )
-        .await;
+        let result =
+            crate::python_script::executor::execute_python_script_with_profile_and_network(
+                &request,
+                ctx.cancellation.clone(),
+                sandbox_profile,
+                network_intent,
+            )
+            .await;
 
         // Emit progress: persisting artifacts
         let _ = ctx
@@ -1753,7 +1829,7 @@ impl JobExecutor for PythonJobExecutor {
         };
 
         // Build summary
-        let mut summary = result.summary();
+        let mut summary = crate::python_script::projection::project_python_run(&result);
         if let Some(rid) = &run_id {
             summary.push_str(&format!("\nrun_id: {rid}"));
         }
@@ -1912,6 +1988,8 @@ mod tests {
                 cwd,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -1973,6 +2051,8 @@ mod tests {
             payload: JobPayload::ManagedArgv {
                 argv: vec!["cargo".into(), "build".into()],
                 cwd: Some("/tmp".into()),
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -2017,6 +2097,8 @@ mod tests {
             payload: JobPayload::ManagedArgv {
                 argv: vec![],
                 cwd: Some("/tmp".into()),
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

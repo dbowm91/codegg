@@ -294,6 +294,33 @@ impl CoreDaemon {
             (None, None)
         };
 
+        // M006: the daemon-held scratch census. The walk is a bounded
+        // filesystem measurement, so it runs on a background timer and never
+        // on a request path or an agent hot path.
+        let scratch_census = Arc::new(super::daemon_scratch::ScratchCensus::new());
+        let scratch_census_handle =
+            super::daemon_scratch::spawn_census_refresh(Arc::clone(&scratch_census));
+
+        // M007: the scratch retention sweep. It reclaims the daemon's own
+        // disposable trees, so it needs the durable session set, the run
+        // store, and the job store. A daemon without a pool has no durable
+        // state to sweep against, so it never starts one.
+        let scratch_sweep_policy = super::scratch_sweep::ScratchRetentionPolicy::from(
+            config
+                .scratch
+                .as_ref()
+                .unwrap_or(&codegg_config::ScratchConfig::default()),
+        );
+        let scratch_sweep_handle = match (deps.pool.clone(), deps.agent_run_store.clone()) {
+            (Some(pool), runs) => Some(super::scratch_sweep::spawn_scratch_sweep(
+                pool,
+                runs,
+                deps.job_store.clone(),
+                scratch_sweep_policy,
+            )),
+            (None, _) => None,
+        };
+
         let event_log = Arc::new(event_log);
         let notification_router = Arc::new(super::notification::NotificationRouter::new(
             super::notification::NotificationPolicy::from_config(&config),
@@ -797,6 +824,9 @@ impl CoreDaemon {
             human_shell_runs: Arc::new(crate::shell::daemon::HumanShellRunService::new(
                 scheduler.admission().clone(),
             )),
+            scratch_census,
+            _scratch_census_handle: Some(scratch_census_handle),
+            _scratch_sweep_handle: scratch_sweep_handle,
         }
     }
 

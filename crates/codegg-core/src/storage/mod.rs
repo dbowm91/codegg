@@ -20,8 +20,10 @@
 //! The legacy [`init`] entry point remains as a deprecated wrapper so
 //! callers that have not yet been migrated continue to work.
 
+pub mod immediate;
 pub mod paths;
 pub mod preferences;
+pub use immediate::{begin_immediate, ImmediateWrite};
 pub use paths::DaemonPaths;
 pub use preferences::{UserPreferences, KEY_MODEL_LAST_USED, KEY_THEME_ACTIVE};
 
@@ -38,7 +40,7 @@ use crate::error::StorageError;
 /// directory layout changes in a way that requires a deliberate
 /// migration path. Existing project-local session databases can be
 /// discovered and imported into the daemon catalog using this marker.
-pub const STORAGE_LAYOUT_VERSION: u32 = 83;
+pub const STORAGE_LAYOUT_VERSION: u32 = 85;
 
 pub struct Database {
     pool: SqlitePool,

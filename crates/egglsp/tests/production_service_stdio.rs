@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use egglsp::{
-    LspConfig, LspDiagnosticFreshness, LspDiagnosticSource, LspError, LspRule, LspService,
+    DirectLspProcessLauncher, LspConfig, LspDiagnosticFreshness, LspDiagnosticSource, LspError,
+    LspLaunchSpec, LspProcess, LspProcessLauncher, LspRule, LspService,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -32,6 +34,16 @@ struct ServiceHarness {
 
 impl ServiceHarness {
     fn start<F>(build_scenario: F) -> Result<Self, LspError>
+    where
+        F: FnOnce(&str, &str) -> serde_json::Value,
+    {
+        Self::start_with_launcher(build_scenario, None)
+    }
+
+    fn start_with_launcher<F>(
+        build_scenario: F,
+        launcher: Option<Arc<dyn LspProcessLauncher>>,
+    ) -> Result<Self, LspError>
     where
         F: FnOnce(&str, &str) -> serde_json::Value,
     {
@@ -63,7 +75,11 @@ edition = "2021"
 
         std::fs::write(&scenario_path, serde_json::to_string_pretty(&scenario)?)?;
 
-        let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+        let config = make_service_config(&scenario_path, &transcript_path);
+        let service = match launcher {
+            Some(launcher) => LspService::new_arc_with_launcher(config, launcher),
+            None => LspService::new_arc(config),
+        };
 
         Ok(Self {
             tempdir,
@@ -114,6 +130,16 @@ edition = "2021"
         }
 
         out
+    }
+}
+
+struct CountingLauncher(Arc<AtomicUsize>);
+
+#[async_trait::async_trait]
+impl LspProcessLauncher for CountingLauncher {
+    async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        DirectLspProcessLauncher.launch(spec, root).await
     }
 }
 
@@ -250,32 +276,36 @@ async fn wait_for_transcript_contains(harness: &ServiceHarness, needle: &str, ti
 
 #[tokio::test]
 async fn single_flight_init_uses_a_real_child() {
-    let harness = ServiceHarness::start(|root_uri, _source_uri| {
-        json!({
-            "name": "service_single_flight",
-            "steps": [
-                {"type": "Delay", "millis": 150},
-                {
-                    "type": "ExpectRequest",
-                    "method": "initialize",
-                    "id": {"type": "Number"},
-                    "params": init_params_root_only(root_uri),
-                    "then": [
-                        {"type": "RespondResult", "result": init_result_capabilities()}
-                    ]
-                },
-                {"type": "ExpectNotification", "method": "initialized", "then": []},
-                {
-                    "type": "ExpectRequest",
-                    "method": "shutdown",
-                    "then": [{"type": "RespondResult", "result": null}]
-                },
-                {"type": "ExpectNotification", "method": "exit", "then": []}
-            ],
-            "exit": {"type": "ExitCode", "code": 0},
-            "strict": true
-        })
-    })
+    let launch_count = Arc::new(AtomicUsize::new(0));
+    let harness = ServiceHarness::start_with_launcher(
+        |root_uri, _source_uri| {
+            json!({
+                "name": "service_single_flight",
+                "steps": [
+                    {"type": "Delay", "millis": 150},
+                    {
+                        "type": "ExpectRequest",
+                        "method": "initialize",
+                        "id": {"type": "Number"},
+                        "params": init_params_root_only(root_uri),
+                        "then": [
+                            {"type": "RespondResult", "result": init_result_capabilities()}
+                        ]
+                    },
+                    {"type": "ExpectNotification", "method": "initialized", "then": []},
+                    {
+                        "type": "ExpectRequest",
+                        "method": "shutdown",
+                        "then": [{"type": "RespondResult", "result": null}]
+                    },
+                    {"type": "ExpectNotification", "method": "exit", "then": []}
+                ],
+                "exit": {"type": "ExitCode", "code": 0},
+                "strict": true
+            })
+        },
+        Some(Arc::new(CountingLauncher(launch_count.clone()))),
+    )
     .expect("failed to start service harness");
 
     let service = harness.service.clone();
@@ -314,6 +344,7 @@ async fn single_flight_init_uses_a_real_child() {
     let keys = service.client_keys().await;
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0], key);
+    assert_eq!(launch_count.load(Ordering::SeqCst), 1);
 
     let capabilities = service
         .get_capabilities_for_key(&key)

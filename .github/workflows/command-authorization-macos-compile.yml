@@ -1,8 +1,10 @@
 name: Command authorization macOS target compile (one-shot)
 
 on:
+  workflow_dispatch:
   push:
     branches:
+      - planning/linux-sandbox-next-admission-and-adr-cleanup
       - planning/linux-execution-isolation
     paths:
       - '.github/workflows/command-authorization-macos-compile.yml'

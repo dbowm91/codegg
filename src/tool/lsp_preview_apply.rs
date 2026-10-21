@@ -495,6 +495,7 @@ mod tests {
             crate::tool::factory::SessionToolContext {
                 workspace_locks: Some(locks),
                 lsp_service: Some(lsp_service),
+                sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
                 turn_id: Some("turn-test".to_string()),
                 ..Default::default()
             },

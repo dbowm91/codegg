@@ -4359,6 +4359,20 @@ async fn handle_core_frame(
                 });
                 return responses;
             }
+            // M006: the daemon-owned scratch tree is local-owner state. A
+            // remote client is authenticated to the server, not to this
+            // machine's owner, so it never reaches these operations.
+            if envelope.payload.is_local_only() {
+                responses.push(CoreFrame::Response {
+                    request_id,
+                    response: Box::new(crate::protocol::core::CoreResponse::Error {
+                        code: "local_operation_remote_denied".to_string(),
+                        message: "This operation is available only through the local daemon socket"
+                            .to_string(),
+                    }),
+                });
+                return responses;
+            }
             let projection_request = matches!(
                 &envelope.payload,
                 crate::protocol::core::CoreRequest::ProjectionSubscribe { .. }

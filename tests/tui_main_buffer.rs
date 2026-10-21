@@ -33,7 +33,8 @@ use codegg::tui::components::messages::MsgPart;
 use codegg::tui::input::InputMode;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::TestBackend;
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, Cell};
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
 fn test_app() -> App {
@@ -1522,11 +1523,176 @@ fn the_tab_bar_names_every_open_tab_and_marks_the_active_one() {
     let buffer = render_to_buffer(&mut app, 100, 30);
     let bar = tab_bar_text(&app, &buffer);
     assert!(
-        bar.contains("Chat"),
+        bar.contains("Main"),
         "the conversation is always offered: {bar:?}"
     );
     assert!(bar.contains("Sally"), "{bar:?}");
     assert!(bar.contains("Bertha"), "{bar:?}");
+}
+
+/// The tab strip's own row, cell by cell.
+///
+/// The cells are read individually because "the persona is italic" is a claim
+/// about *how* the text is painted, and a whole-row text comparison cannot
+/// tell an italic persona from a plain one.
+fn tab_bar_cells(app: &App, buf: &Buffer) -> (String, Vec<Cell>) {
+    let viewport = app.viewport_area.expect("viewport drawn");
+    let cells: Vec<Cell> = (0..buf.area.width)
+        .map(|x| buf[(x, viewport.y - 1)].clone())
+        .collect();
+    let text = cells.iter().map(|cell| cell.symbol()).collect();
+    (text, cells)
+}
+
+/// The text of the cells the strip painted in italics.
+fn tab_bar_italic_text(app: &App, buf: &Buffer) -> String {
+    let (_, cells) = tab_bar_cells(app, buf);
+    cells
+        .iter()
+        .filter(|cell| cell.modifier.contains(Modifier::ITALIC))
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+/// The strip names the main conversation and states the keys that operate it.
+#[test]
+fn the_tab_bar_names_main_and_states_the_keys_that_operate_it() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    app.open_subagent_tab("1");
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let bar = tab_bar_text(&app, &buffer);
+    assert!(bar.contains("Main"), "the main entry is named: {bar:?}");
+    for key in ["⇧P", "⇧N", "⇧X"] {
+        assert!(bar.contains(key), "the strip does not state {key}: {bar:?}");
+    }
+}
+
+/// The main entry is a tab, not plain text: it carries a marker of its own.
+#[test]
+fn the_tab_bar_marks_the_main_entry_as_a_tab() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    app.open_subagent_tab("1");
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let bar = tab_bar_text(&app, &buffer);
+    // The main entry is painted as "<marker> Main". A liveness glyph here
+    // would read as "the main conversation is a run", which it is not — so the
+    // assertion is on the entry's own painted text and not on the whole row,
+    // which also carries the *other* tabs' liveness glyphs.
+    assert!(
+        bar.contains("▣ Main"),
+        "the main entry must read as a tab: {bar:?}"
+    );
+}
+
+/// The active tab's persona is on the strip, in italics.
+///
+/// The persona is the projection's own value — the row the tab already holds —
+/// so the strip never resolves a name against a pool it does not have.
+#[test]
+fn the_tab_bar_shows_the_active_tabs_persona_in_italics() {
+    let mut app = app_with_subagents(vec![described_subagent("1", "Sally", "running")]);
+    app.open_subagent_tab("1");
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let (bar, _) = tab_bar_cells(&app, &buffer);
+    assert!(
+        bar.contains("Reconnaissance generalist."),
+        "the persona is not on the strip: {bar:?}"
+    );
+    let italic = tab_bar_italic_text(&app, &buffer);
+    assert!(
+        italic.contains("Reconnaissance generalist."),
+        "the persona is not painted in italics: {italic:?}"
+    );
+}
+
+/// The persona belongs to the tab on screen. The main conversation has none,
+/// so the strip must not show one while it is the active entry.
+#[test]
+fn the_tab_bar_shows_no_persona_while_the_conversation_is_the_active_tab() {
+    let mut app = app_with_subagents(vec![
+        described_subagent("1", "Sally", "running"),
+        described_subagent("2", "Bertha", "running"),
+    ]);
+    app.open_subagent_tab("1");
+    app.open_subagent_tab("2");
+    // Cycle back to the conversation while a tab is still open, so the strip
+    // row exists and the main entry is the active one.
+    app.ui_state.subagents.tabs.cycle(1);
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let bar = tab_bar_text(&app, &buffer);
+    assert!(bar.contains("Main"), "the strip still exists: {bar:?}");
+    assert!(
+        !bar.contains("Reconnaissance"),
+        "the main conversation has no persona: {bar:?}"
+    );
+}
+
+/// The labels are paid for before the persona. A row too narrow for both keeps
+/// every tab label and drops the persona rather than squeezing it to a stub.
+#[test]
+fn the_tab_bar_keeps_its_labels_and_drops_the_persona_when_the_row_is_narrow() {
+    let mut app = app_with_subagents(vec![described_subagent("1", "Sally", "running")]);
+    app.open_subagent_tab("1");
+
+    // 40 columns leaves the labels their full width and nothing for the
+    // persona: the strip must not truncate a label to make room for it.
+    let buffer = render_to_buffer(&mut app, 40, 30);
+    let bar = tab_bar_text(&app, &buffer);
+    assert!(bar.contains("Sally"), "the label survives: {bar:?}");
+    assert!(
+        !bar.contains("Reconnaissance"),
+        "the persona must be dropped, not squeezed: {bar:?}"
+    );
+}
+
+/// The strip is one row. Its content must never spill onto the row below it,
+/// whatever the width.
+#[test]
+fn the_tab_bar_keeps_its_content_on_its_own_row() {
+    for width in [20u16, 30, 40, 60, 100] {
+        let mut app = app_with_subagents(vec![
+            described_subagent("1", "Sally", "running"),
+            described_subagent("2", "Bertha", "running"),
+        ]);
+        app.open_subagent_tab("1");
+        app.open_subagent_tab("2");
+        let buffer = render_to_buffer(&mut app, width, 30);
+        let viewport = app.viewport_area.expect("viewport drawn");
+
+        let strip: String = (0..width)
+            .map(|x| buffer[(x, viewport.y - 1)].symbol())
+            .collect();
+        let below: String = (0..width)
+            .map(|x| buffer[(x, viewport.y)].symbol())
+            .collect();
+        assert!(
+            !below.contains("⇧P"),
+            "width {width}: the hints spilled onto the next row: {below:?}"
+        );
+        assert!(
+            strip.chars().count() <= width as usize,
+            "width {width}: the strip row is longer than the row"
+        );
+    }
+}
+
+/// With no tabs open the strip row does not exist, so the hints cannot be
+/// showing on a row the layout never reserved.
+#[test]
+fn no_tabs_means_no_strip_row_and_no_hints() {
+    let app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert_eq!(app.subagent_tab_strip_height(), 0);
+
+    let mut app = app;
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    assert!(
+        !buffer_text(&buffer).contains("⇧P"),
+        "the hints must not appear without a strip row"
+    );
 }
 
 #[test]
@@ -1894,4 +2060,223 @@ fn the_off_form_clears_the_addressee() {
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.prompt_state.subagent_addressee.is_none());
     assert!(composer_text(&mut app).contains("[LLM]"));
+}
+
+// ---------------------------------------------------------------------------
+// 6. Tab surface ownership
+// ---------------------------------------------------------------------------
+//
+// The subagent view used to be drawn *over* the transcript rather than
+// *instead of* it: the transcript was painted first, and the subagent's own
+// text was then painted on top of it, so a reader looking at a subagent saw
+// the main conversation showing through the subagent's view and in the
+// viewport's last column. The tab strip row was painted foreground-only over
+// a row carved out of the viewport, which made it the one surface in the TUI
+// with no background at all.
+//
+// These tests pin the ownership: one surface, one rect, and no transparent
+// cell anywhere in the main buffer.
+
+/// Short tokens the transcript prints, spread across its one line.
+///
+/// The tokens are short and spread out because the baseline defect covered
+/// only the *first* line of the subagent's view: one long marker was hidden
+/// behind that line, and a short one is hidden by chance. Asserting on every
+/// token asks the right question — is *any part* of the transcript showing
+/// through — rather than whether one whole marker is intact.
+const TRANSCRIPT_TOKENS: [&str; 6] = [
+    "TRNS0001", "TRNS0002", "TRNS0003", "TRNS0004", "TRNS0005", "TRNS0006",
+];
+
+/// The transcript's single line: every token, space separated.
+fn transcript_marker() -> String {
+    TRANSCRIPT_TOKENS.join(" ")
+}
+
+/// Text that only the subagent tab's body prints.
+///
+/// The row carries a descriptor, so the working strip shows *that* rather than
+/// the task description — which makes the task description a reliable marker
+/// for "the tab body is on screen".
+const TAB_ONLY_TEXT: &str = "Map the auth flow";
+
+/// A space-free token, used to push the tab's own text to the rect's edge.
+///
+/// It has to be space-free: a word wrapper breaks at spaces, and a description
+/// made of ordinary words would leave the last column empty however long the
+/// text was.
+const EDGE_FILLER: &str = "EDGEFILLER";
+
+/// An app on the Session route whose transcript carries the marker.
+///
+/// The route matters: the Home route renders an empty-state placeholder and
+/// never draws the transcript, so a ghosting test against Home would pass for
+/// the wrong reason.
+fn app_with_transcript_marker() -> App {
+    let mut app = test_app();
+    app.ui_state
+        .routes
+        .navigate_to(codegg::tui::route::Route::Session("s1".into()));
+    app.messages_state
+        .messages
+        .add_assistant_text(transcript_marker());
+    app
+}
+
+/// The subagent whose tab body carries [`TAB_ONLY_TEXT`].
+fn tabbed_subagent() -> SubagentRow {
+    SubagentRow {
+        child_instance_id: Some("child-1".into()),
+        task_id: "1".into(),
+        run_id: Some("run-1".into()),
+        display_name: Some("Sally".into()),
+        profile: Some("Reconnaissance generalist.".into()),
+        usefulness: None,
+        agent: "explore".into(),
+        description: TAB_ONLY_TEXT.to_string(),
+        status: "running".into(),
+    }
+}
+
+/// Open the subagent's tab, with the projection seeded so the row survives a
+/// render that refreshes it from the snapshot.
+fn open_tabbed_subagent(app: &mut App) {
+    let rows = vec![tabbed_subagent()];
+    seed_projection_with_subagents(app, &rows);
+    app.ui_state.subagents.set_rows(rows);
+    assert!(app.open_subagent_tab("1"), "the tab opens");
+}
+
+/// Open a change review — a modal decision surface that outranks the tab.
+fn open_change_review(app: &mut App) {
+    let patches = vec![(
+        "src/lib.rs".to_string(),
+        "@@ -1,1 +1,1 @@\n-old();\n+new();\n".to_string(),
+    )];
+    app.change_review_state.open(
+        "preview-1".to_string(),
+        "edit".to_string(),
+        "Rename helper".to_string(),
+        "agent".to_string(),
+        false,
+        codegg::tui::unified_diff::parse_review(&patches),
+        vec!["src/lib.rs".to_string()],
+    );
+}
+
+/// The reported defect: the subagent's own view sat **on top of** the main
+/// conversation, so the reader saw the main agent's transcript showing
+/// through it.
+#[test]
+fn an_open_subagent_tab_replaces_the_transcript_instead_of_ghosting_over_it() {
+    let mut app = app_with_transcript_marker();
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
+    for token in TRANSCRIPT_TOKENS {
+        assert!(
+            text.contains(token),
+            "precondition: the transcript renders {token}"
+        );
+    }
+
+    open_tabbed_subagent(&mut app);
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
+    for token in TRANSCRIPT_TOKENS {
+        assert!(
+            !text.contains(token),
+            "the main conversation is showing through the subagent's own view: {token}\n{text}"
+        );
+    }
+    assert!(
+        text.contains("Subagent · Sally"),
+        "the subagent's own view must be what is on screen:\n{text}"
+    );
+}
+
+/// The negative case, so the ghosting test above cannot pass vacuously: with
+/// no tab open the transcript is the surface, and it renders normally.
+#[test]
+fn with_no_tab_open_the_transcript_still_renders() {
+    let mut app = app_with_transcript_marker();
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
+    for token in TRANSCRIPT_TOKENS {
+        assert!(
+            text.contains(token),
+            "the transcript is the viewport's owner when no tab is open: {token}\n{text}"
+        );
+    }
+    assert!(
+        !text.contains(TAB_ONLY_TEXT),
+        "and nothing from a tab that was never opened:\n{text}"
+    );
+}
+
+/// The viewport rect is filled to its edge.
+///
+/// The paragraph used to be one column narrower than the rect, and the rect
+/// had no background of its own, so the last column showed whatever was behind
+/// it — the transcript's scrollbar. A description with no spaces in it cannot
+/// be word-wrapped short of the edge: it lands on one line, and the buffer
+/// clips it at the rect's right border, so the subagent's own text reaches
+/// the final column.
+#[test]
+fn the_subagent_view_fills_the_viewport_to_its_last_column() {
+    let mut app = app_with_transcript_marker();
+    let rows = vec![SubagentRow {
+        description: EDGE_FILLER.repeat(40),
+        ..tabbed_subagent()
+    }];
+    seed_projection_with_subagents(&mut app, &rows);
+    app.ui_state.subagents.set_rows(rows);
+    assert!(app.open_subagent_tab("1"));
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let viewport = app.viewport_area.expect("viewport drawn");
+    let last = viewport.x + viewport.width - 1;
+    let column: String = (viewport.y..viewport.y + viewport.height)
+        .map(|y| buffer[(last, y)].symbol().to_string())
+        .collect();
+
+    assert!(
+        column.chars().any(|c| EDGE_FILLER.contains(c)),
+        "the subagent's own text never reaches the last column of the viewport: {column:?}"
+    );
+}
+
+/// The tab strip row is carved out of the viewport chunk, so nothing else ever
+/// paints it. It is the one row that must carry a background of its own.
+#[test]
+fn the_tab_strip_row_is_opaque() {
+    let mut app = app_with_transcript_marker();
+    open_tabbed_subagent(&mut app);
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let viewport = app.viewport_area.expect("viewport drawn");
+    // The bar is carved off the top of the viewport, so it is the row above it.
+    let row = viewport.y - 1;
+
+    for x in viewport.x..viewport.x + viewport.width {
+        assert_ne!(
+            buffer[(x, row)].bg,
+            Color::Reset,
+            "the tab strip row is transparent at column {x}"
+        );
+    }
+}
+
+/// The change review is modal: it is a decision the user has to answer, so a
+/// subagent tab must never cover it.
+#[test]
+fn an_open_change_review_is_not_covered_by_a_subagent_tab() {
+    let mut app = app_with_transcript_marker();
+    open_tabbed_subagent(&mut app);
+    open_change_review(&mut app);
+
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
+    assert!(
+        text.contains("Rename helper"),
+        "the review must be what is on screen:\n{text}"
+    );
+    assert!(
+        !text.contains(TAB_ONLY_TEXT),
+        "the tab overlaid the review:\n{text}"
+    );
 }

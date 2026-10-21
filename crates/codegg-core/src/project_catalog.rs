@@ -2040,16 +2040,26 @@ mod tests {
     /// probe has usable evidence. Uses the same direct-git approach as the
     /// `repository_lineage` tests.
     fn init_repo_with_remote(root: &std::path::Path, remote: &str) {
-        Command::new("git")
+        let init = Command::new("git")
             .args(["init", "--quiet"])
             .current_dir(root)
-            .status()
+            .output()
             .expect("git is installed");
-        Command::new("git")
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        let add_remote = Command::new("git")
             .args(["remote", "add", "origin", remote])
             .current_dir(root)
-            .status()
+            .output()
             .expect("git remote add");
+        assert!(
+            add_remote.status.success(),
+            "git remote add failed: {}",
+            String::from_utf8_lossy(&add_remote.stderr)
+        );
     }
 
     fn init_repo_without_remote(root: &std::path::Path) {

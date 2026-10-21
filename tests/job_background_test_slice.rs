@@ -67,6 +67,16 @@ async fn harness() -> (
 }
 
 fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecutionContext {
+    let policy_revision = "test-policy-r1";
+    let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+        codegg_core::approval::ApprovalMode::Interactive,
+        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+        Some("test-principal".into()),
+        Some(session.to_string()),
+        None,
+        Some(policy_revision.into()),
+        None,
+    );
     ToolExecutionContext {
         backend: codegg::tool::backend::ToolBackendKind::Native,
         session_id: Some(session.to_string()),
@@ -100,7 +110,15 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
         decision_revoked_at: None,
         program_contract_snapshot: None,
         sandbox_profile: None,
-        execution_authorization: None,
+        execution_authorization: Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot,
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "background-test-fixture",
+                Some(policy_revision.into()),
+            ),
+            command_preflight: None,
+            scratch_scope: None,
+        }),
     }
 }
 
@@ -172,8 +190,31 @@ async fn background_test_without_session_fails_without_spawning() {
         .with_submission(submission)
         .with_workspace_root(root.path().to_path_buf())
         .with_job_notifications(notifications);
+    let mut context = ctx_for("", None, "inv-bg-no-session");
+    context.session_id = None;
+    context.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Interactive,
+                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                Some("test-principal".into()),
+                None,
+                None,
+                Some("test-policy-r1".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "background-test-fixture",
+                Some("test-policy-r1".into()),
+            ),
+            command_preflight: None,
+            scratch_scope: None,
+        });
     let err = tool
-        .execute(serde_json::json!({"scope": "auto", "execution_mode": "background"}))
+        .execute_structured(
+            serde_json::json!({"scope": "auto", "execution_mode": "background"}),
+            Some(context),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -218,6 +259,8 @@ async fn same_invocation_reuses_handle_different_payload_conflicts() {
             cwd: None,
             scope: None,
             parent_run_id: None,
+            sandbox_profile: None,
+            network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
         },
         resource_request: codegg_core::jobs::ResourceRequest::for_kind(
             codegg_core::jobs::JobKind::Test,
@@ -279,6 +322,8 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
                     cwd: None,
                     scope: None,
                     parent_run_id: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
                 },
                 resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                     codegg_core::jobs::JobKind::Test,

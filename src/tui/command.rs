@@ -137,6 +137,7 @@ pub enum BuiltinSlashAction {
     Policy,
     Approval,
     Sandbox,
+    Network,
     Context,
     Cost,
     Usage,
@@ -537,6 +538,8 @@ impl CommandRegistry {
             Command::new("/sandbox", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Sandbox))
                 .with_aliases(&["/sandbox-profile"])
                 .with_description("Select sandbox profile: read-only, workspace-write, or full-host (/sandbox [profile])"),
+            Command::new("/network", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Network))
+                .with_description("Set child network policy: offline or unrestricted (/network [offline|unrestricted confirm])"),
             Command::new("/themes", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Themes))
                 .with_aliases(&["/theme"])
                 .with_description("Switch theme (/theme, /theme list, /theme use <name>, /theme reload, /theme diagnostics)"),
@@ -1212,14 +1215,21 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 164th is `/projects` (the project picker spelling that stays
-        // typeable mid-prompt, mirroring `/panels` for `⇧S`). 163rd is
-        // `/start` and 162nd is `/stop` (carry on after a stopped turn;
-        // interrupt a running one). 161st is `/files` (the workspace file
-        // manager); 160th is `/panels` (the side-panel manager, the spelling
-        // of `⇧S` that stays typeable mid-prompt); 159th and 158th are
-        // `/terminal` (bare interactive terminal box) and `/terminal-clear`.
+        // Registry order, 1-based in `built_in_commands()`: 9th is `/network`
+        // (the per-principal network intent policy); 13th is `/projects` (the
+        // project picker spelling that stays typeable mid-prompt, mirroring
+        // `/panels` for `⇧S`); 15th is `/stop` and 16th is `/start` (carry on
+        // after a stopped turn; interrupt a running one); 40th is `/files`
+        // (the workspace file manager); 125th and 126th are `/terminal` (bare
+        // interactive terminal box) and `/terminal-clear`; 151st is `/panels`
+        // (the side-panel manager, the spelling of `⇧S` that stays typeable
+        // mid-prompt).
         // Keep `architecture/command.md` counts in sync when adding more.
+        //
+        // These positions were re-derived on 2026-10-21 against the merged
+        // tree. The run of ordinals they replaced was never right: it matched
+        // no ordering in the registry, on this branch or on `main`, and no
+        // guard read it.
         //
         // This number moved 164 -> 165 for **M004's `/queue`**, which was
         // registered without updating this pin or `architecture/command.md`.
@@ -1233,7 +1243,11 @@ mod tests {
         // `architecture/command.md` via `command_docs_count_matches_registry`.
         // Updating only the doc, as the M004 note's wording invites, leaves the
         // build red here with no indication which of the two drifted.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 167);
+        // 167 -> 168 for **M005's `/network`** (the per-principal network
+        // intent policy). `main` added `/nodes` for Eggwork M002 and this
+        // branch added `/network`; both moved the same pin, so the merged
+        // total is one higher than either side alone.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 168);
     }
 
     #[test]
@@ -1388,8 +1402,8 @@ mod tests {
         // registry total: its regexes match `(\d+)\s+(hardcoded|built-in|total)`
         // and `[Cc]ount is (\d+)`, and a `BuiltinSlashAction` **variant** count
         // is neither. That blind spot is not hypothetical — the document
-        // carried 156, then 157, then 158, and the body separately claimed 149
-        // while this paragraph claimed 158, with the suite green throughout.
+        // historical prose carried 149 and later 156–158 counts without a
+        // source-backed variant assertion; the current total is 160.
         //
         // The source of truth is `all_builtin_variants`, which
         // `every_builtin_action_is_referenced_by_a_canonical_command` already
@@ -1447,6 +1461,7 @@ mod tests {
             B::Policy,
             B::Approval,
             B::Sandbox,
+            B::Network,
             B::Context,
             B::Cost,
             B::Usage,

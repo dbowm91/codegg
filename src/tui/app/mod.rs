@@ -5987,6 +5987,53 @@ impl App {
                     }
                 }
             }
+            B::Network => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let arg = query.strip_prefix("/network").map(str::trim).unwrap_or("");
+                if arg.is_empty() {
+                    crate::tui::commands::policy::start_snapshot_refresh(
+                        self,
+                        crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
+                    );
+                    return;
+                }
+                match arg {
+                    "offline" | "offline-required" => {
+                        crate::tui::commands::policy::request_network_intent_change(
+                            self,
+                            codegg_core::approval::NetworkIntent::OfflineRequired,
+                        );
+                    }
+                    "unrestricted confirm" => {
+                        crate::tui::commands::policy::request_network_intent_change(
+                            self,
+                            codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                        );
+                    }
+                    "unrestricted" => {
+                        let active = self.policy_ui.cached.as_ref().is_some_and(|view| {
+                            view.effective_network_intent
+                                == codegg_core::approval::NetworkIntent::OfflineRequired
+                        });
+                        if active {
+                            self.messages_state.toasts.warning(
+                                "Restoring network access requires `/network unrestricted confirm`.",
+                            );
+                        } else {
+                            crate::tui::commands::policy::request_network_intent_change(
+                                self,
+                                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                            );
+                        }
+                    }
+                    _ => self.messages_state.toasts.warning(
+                        "Unknown network policy (usage: /network [offline|unrestricted confirm])",
+                    ),
+                }
+            }
             B::Context => {
                 self.ui_state.command_mode = false;
                 self.open_dialog(Dialog::Context);

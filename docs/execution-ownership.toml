@@ -132,7 +132,7 @@ reason = "ManagedProcessService is invoked only by ManagedArgvExecutor"
 [[site]]
 path = "src/test_runner/runner.rs"
 owner = "definition_or_adapter"
-reason = "resolve_and_run_test is invoked only by TestJobExecutor; explicit finite lifecycle exemption because line-oriented parser logs and stall-timeout supervision are domain-owned"
+reason = "resolve_and_run_test is invoked only by TestJobExecutor; typed model-facing Test admission carries the accepted WorkspaceWrite profile through the scheduler and launches the test child through ManagedProcessService (command M004)"
 
 [[site]]
 path = "src/job_dispatcher.rs"
@@ -225,7 +225,7 @@ reason = "GitExecutionService and read fallback for git; reads are documented as
 [[site]]
 path = "src/python_script/executor.rs"
 owner = "definition_or_adapter"
-reason = "PythonScript executor is invoked only by PythonJobExecutor; definition only"
+reason = "PythonScript executor is invoked only by PythonJobExecutor; typed model-facing Python admission requires a valid accepted FullHost receipt and rejects constrained snapshots before job submission because mode/content policy does not consume the accepted snapshot (command M004)"
 
 [[site]]
 path = "src/python_script/"
@@ -250,7 +250,12 @@ reason = "External formatters use ManagedProcessService blocking adapter; schedu
 [[site]]
 path = "crates/egglsp/src/launch.rs"
 owner = "interactive"
-reason = "LSP server launch is a long-lived user-controlled service"
+reason = "FullHost LSP keeps the interactive service owner; constrained Linux turns inject the daemon-owned per-turn M004 launcher and retain helper receipt ownership through the egglsp process runtime"
+
+[[site]]
+path = "src/lsp/m004.rs"
+owner = "interactive"
+reason = "Daemon-owned per-turn constrained LSP service routes initial and restart launches through the required M004 managed-process helper; native fixture subprocess probe is test-only"
 
 [[site]]
 path = "crates/egggit/src/"
@@ -341,6 +346,11 @@ owner = "test_only"
 reason = "Windows junction policy fixture invokes cmd.exe only inside a Windows-only unit test"
 
 [[site]]
+path = "src/security/sandbox.rs"
+owner = "test_only"
+reason = "Bare-repository sandbox fixture invokes git init only inside a Linux-only unit test"
+
+[[site]]
 path = "src/git_service.rs"
 owner = "definition_or_adapter"
 reason = "GitExecutionService is the canonical read executor; test fixtures in this file are gated by #[cfg(test)]"
@@ -348,7 +358,7 @@ reason = "GitExecutionService is the canonical read executor; test fixtures in t
 [[site]]
 path = "src/interactive_process.rs"
 owner = "interactive"
-reason = "M001 scheduler-owned PTY engine for long-lived user-controlled interactive sessions; every spawn holds an AdmissionController permit acquired before openpty, derives cwd/env from ExecutionContext, and cleans the child process group on terminate/shutdown"
+reason = "M001 scheduler-owned PTY engine for long-lived user-controlled interactive sessions; every spawn holds an AdmissionController permit acquired before openpty and derives cwd/env from ExecutionContext. Constrained spawns retain the M004 helper receipt/ack with terminal I/O, cancellation, and descendant cleanup. Daemon-resolved constrained profiles route through the qualified M004 process/IPC owner; unsupported setup fails closed before target start"
 
 [[site]]
 path = "src/interactive_process_attach.rs"

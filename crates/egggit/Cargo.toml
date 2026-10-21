@@ -18,11 +18,10 @@ categories = ["development-tools", "filesystem"]
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "io-util"] }
 # Unix-only: kills the Git process group on timeout so helper processes
 # (pager, credential helper, filter driver) do not outlive the child.
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
+rustix = { version = "1.1.4", features = ["fs"] }
