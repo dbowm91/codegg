@@ -654,9 +654,16 @@ open(marker, "w").write("offline")
         udp_port = udp4_addr.port(),
         marker = marker.to_string_lossy(),
     );
-    let sandbox_config = codegg::security::sandbox::sandbox_config_for_profile(
+    // The configuration comes from the **production** durable-payload helper,
+    // not from a copy of its logic. The helper is where a durable route
+    // decides which tier its launch needs, and where the tier has to be
+    // requested so the protected mount view captures the path identities the
+    // helper re-verifies at launch. A test that rebuilt the configuration
+    // itself would keep passing while the durable routes stayed broken.
+    let sandbox_config = codegg::security::sandbox::sandbox_config_for_durable_payload(
         payload_profile.expect("the delegated child must carry a profile"),
         workspace.path(),
+        payload_intent,
     )
     .expect("the constrained profile must have a launch configuration");
     let spec = sandbox_config

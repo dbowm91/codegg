@@ -467,25 +467,23 @@ async fn run_managed_test_process(
     if let Some(profile) =
         sandbox_profile.filter(|profile| profile.requires_filesystem_containment())
     {
-        let mut config =
-            crate::security::sandbox::sandbox_config_for_profile(profile, &request.workdir)
-                .ok_or_else(|| {
-                    TestRunError::InvalidRequest(format!(
-                    "filesystem containment is unavailable for accepted {profile:?} test profile"
-                ))
-                })?;
-        // M005/C002: an offline intent requires the M004 process/filesystem
-        // tier, and that tier's protected mount view captures the path
-        // identities the helper re-verifies at launch.
-        //
-        // The owner turns the offline flag on when it accepts the intent, but
-        // it can only do that after the spec already exists — so the tier has
-        // to be requested here. Without it the spec carries no captured
-        // identity and the launch fails closed with "sandbox grant has no
-        // captured path identity".
-        if network_intent == codegg_core::approval::NetworkIntent::OfflineRequired {
-            config = config.with_linux_process_isolation(true);
-        }
+        // M005/C002: the config comes from the shared durable-payload helper,
+        // which requests the M004 process/filesystem tier for an offline
+        // intent *while the config is still being built*. The tier's
+        // protected mount view captures the path identities the helper
+        // re-verifies at launch, and the owner can only turn the offline flag
+        // on after the spec exists; asking afterwards produced a spec with no
+        // captured identity, and the launch failed closed.
+        let config = crate::security::sandbox::sandbox_config_for_durable_payload(
+            profile,
+            &request.workdir,
+            network_intent,
+        )
+        .ok_or_else(|| {
+            TestRunError::InvalidRequest(format!(
+                "filesystem containment is unavailable for accepted {profile:?} test profile"
+            ))
+        })?;
         process.sandbox = crate::managed_process::SandboxRequest::Required(
             config
                 .launch_spec(&resolved.argv[0], &resolved.argv[1..], Some(&resolved.cwd))

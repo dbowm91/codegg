@@ -402,9 +402,20 @@ impl JobExecutor for ManagedArgvExecutor {
             // The durable route rebuilds the same containment the direct route
             // would have used. A constrained job whose host cannot provide it
             // fails closed here instead of running uncontained.
-            let Some(mut config) =
-                crate::security::sandbox::sandbox_config_for_profile(profile, &ctx.workspace_root)
-            else {
+            //
+            // M005/C002: the config comes from the shared durable-payload
+            // helper, which requests the M004 process/filesystem tier for an
+            // offline intent *while the config is still being built*. That
+            // ordering is the whole point: the tier's protected mount view
+            // captures the path identities the helper re-verifies at launch,
+            // and the owner can only turn the offline flag on after the spec
+            // exists. Asking for the tier afterwards produced a spec with no
+            // captured identity, and the launch failed closed.
+            let Some(config) = crate::security::sandbox::sandbox_config_for_durable_payload(
+                profile,
+                &ctx.workspace_root,
+                network_intent,
+            ) else {
                 return failure_completion(
                     started,
                     ExecutorStatus::Failed,
@@ -413,18 +424,6 @@ impl JobExecutor for ManagedArgvExecutor {
                     ),
                 );
             };
-            // M005/C002: an offline intent requires the M004 process/filesystem
-            // tier, and that tier's protected mount view captures the path
-            // identities the helper re-verifies at launch.
-            //
-            // The owner turns the offline flag on when it accepts the intent,
-            // but it can only do that after the spec already exists — so the
-            // tier has to be requested here. Without it the spec carries no
-            // captured identity and the launch fails closed with "sandbox
-            // grant has no captured path identity".
-            if network_intent == codegg_core::approval::NetworkIntent::OfflineRequired {
-                config = config.with_linux_process_isolation(true);
-            }
             let spec = match config.launch_spec(target, args, Some(&cwd)) {
                 Ok(spec) => spec,
                 Err(error) => {

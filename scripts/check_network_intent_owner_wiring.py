@@ -60,6 +60,7 @@ TOOL_CONTEXT = Path("src/tool/tool_program_context.rs")
 EXECUTOR = Path("src/scheduler/tool_program_executor.rs")
 SCHEDULER_EXECUTORS = Path("src/scheduler/executors.rs")
 TEST_RUNNER = Path("src/test_runner/runner.rs")
+SANDBOX = Path("src/security/sandbox.rs")
 MANAGED_PROCESS = Path("src/managed_process.rs")
 M004_WORKFLOW = Path(".github/workflows/linux-m004-native.yml")
 
@@ -372,9 +373,35 @@ def check_offline_tier_is_requested_before_the_spec(root: Path) -> list[str]:
     path identity" the moment the owner turns the offline flag on.
 
     The tier therefore has to be requested while the config is still being
-    built, not after the spec exists.
+    built. That decision lives in one shared helper, and every durable route
+    has to go through it: a route that rebuilt the config itself could
+    reintroduce the ordering defect without any local change looking wrong.
     """
     problems: list[str] = []
+
+    helper = read(root, SANDBOX)
+    if helper is None:
+        problems.append(f"{SANDBOX}: unreadable")
+    else:
+        body = fn_body(helper, "pub fn sandbox_config_for_durable_payload")
+        if body is None:
+            problems.append(
+                f"{SANDBOX}: sandbox_config_for_durable_payload is missing, so there is no "
+                "single place that decides a durable route's launch tier"
+            )
+        else:
+            if "OfflineRequired" not in body:
+                problems.append(
+                    f"{SANDBOX}: sandbox_config_for_durable_payload does not consider the "
+                    "network intent, so an offline durable job would request no M004 tier"
+                )
+            if "with_linux_process_isolation(true)" not in body:
+                problems.append(
+                    f"{SANDBOX}: sandbox_config_for_durable_payload does not request the M004 "
+                    "process/filesystem tier for an offline intent, so the spec carries no "
+                    "captured path identity and the launch fails closed"
+                )
+
     for rel, label in (
         (SCHEDULER_EXECUTORS, "the managed executor"),
         (TEST_RUNNER, "the test runner"),
@@ -383,25 +410,23 @@ def check_offline_tier_is_requested_before_the_spec(root: Path) -> list[str]:
         if content is None:
             problems.append(f"{rel}: unreadable")
             continue
-        start = content.find("sandbox_config_for_profile")
-        if start < 0:
-            problems.append(f"{rel}: {label} does not build a sandbox config from the profile")
+        if "sandbox_config_for_durable_payload(" not in content:
+            problems.append(
+                f"{rel}: {label} does not build its launch configuration through "
+                "sandbox_config_for_durable_payload, so it does not share the durable tier "
+                "decision and can reintroduce the ordering defect"
+            )
             continue
+        start = content.find("sandbox_config_for_durable_payload(")
         end = content.find(".launch_spec(", start)
         if end < 0:
             problems.append(f"{rel}: {label} builds a sandbox config but never launches a spec")
             continue
         region = content[start:end]
-        if "OfflineRequired" not in region:
+        if "network_intent" not in region:
             problems.append(
-                f"{rel}: {label} builds the sandbox config without considering the offline "
-                "intent, so an offline job would request no M004 tier"
-            )
-        if "with_linux_process_isolation(true)" not in region:
-            problems.append(
-                f"{rel}: {label} does not request the M004 process/filesystem tier for an "
-                "offline intent before the launch spec is built, so the spec carries no "
-                "captured path identity and the launch fails closed"
+                f"{rel}: {label} builds its durable launch configuration without the "
+                "payload's network intent, so the tier cannot follow the accepted policy"
             )
     return problems
 
@@ -575,22 +600,31 @@ def self_test() -> int:
             "",
         )
 
-    @case("the managed executor stops requesting the M004 tier for an offline job")
-    def _drop_managed_tier(root: Path) -> None:
+    @case("the shared durable-payload helper stops requesting the M004 tier")
+    def _drop_helper_tier(root: Path) -> None:
+        mutate(
+            root,
+            SANDBOX,
+            "        return Some(config.with_linux_process_isolation(true));\n",
+            "        return Some(config);\n",
+        )
+
+    @case("the managed executor stops using the shared durable-payload helper")
+    def _drop_managed_helper_use(root: Path) -> None:
         mutate(
             root,
             SCHEDULER_EXECUTORS,
-            "                config = config.with_linux_process_isolation(true);\n",
-            "",
+            "crate::security::sandbox::sandbox_config_for_durable_payload(",
+            "crate::security::sandbox::sandbox_config_for_profile(",
         )
 
-    @case("the test runner stops requesting the M004 tier for an offline job")
-    def _drop_runner_tier(root: Path) -> None:
+    @case("the test runner stops using the shared durable-payload helper")
+    def _drop_runner_helper_use(root: Path) -> None:
         mutate(
             root,
             TEST_RUNNER,
-            "            config = config.with_linux_process_isolation(true);\n",
-            "",
+            "crate::security::sandbox::sandbox_config_for_durable_payload(",
+            "crate::security::sandbox::sandbox_config_for_profile(",
         )
 
     @case("the native workflow stops triggering on the Tool Program paths")

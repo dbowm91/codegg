@@ -170,9 +170,14 @@ running uncontained, which is the safe direction, but it was a functional
 dead end. The delegated Tool Program child inherits that route, so C002's fix
 alone would have turned "runs with host network" into "cannot run".
 
-**The fix.** Both durable routes the delegated child uses now request the
-M004 process/filesystem tier while the config is still being built, so the
-identities are captured before the spec exists:
+**The fix.** The decision belongs in one place, so that every durable route
+requests the same tier for the same accepted policy and a route cannot
+quietly reintroduce the ordering defect. `sandbox_config_for_durable_payload`
+in `src/security/sandbox.rs` builds the launch configuration for a durable
+payload and requests the M004 process/filesystem tier for an offline intent
+**while the config is still being built**, so the identities are captured
+before the spec exists. Both durable routes the delegated child uses go
+through it:
 
 - `src/scheduler/executors.rs` — the managed-argv and shell route;
 - `src/test_runner/runner.rs` — the `Test` route, which a delegated
@@ -181,9 +186,17 @@ identities are captured before the spec exists:
 The owner's forcing of the flags stays as it was: it is defence in depth. If
 a route ever forgets to request the tier, the launch still fails closed.
 
-The guard checks the ordering, not just the presence of the call, because
-the ordering is the whole defect: the tier request has to sit between the
-config build and `launch_spec`.
+**Why the proof has to use that helper.** The first version of the proof
+built its own configuration from the profile, which meant it reproduced the
+*broken* behaviour and failed even after the routes were fixed — it was
+testing a copy of the logic rather than the logic. It now calls
+`sandbox_config_for_durable_payload` directly, so the proof exercises the
+production decision: if the helper stops requesting the tier, the proof fails.
+
+The guard checks the same thing statically: that the helper exists, that it
+considers the intent and requests the tier, and that **both** durable routes
+build their configuration through it rather than through the profile-only
+helper.
 
 ### 3.7 The static guard (WP5)
 `scripts/check_network_intent_owner_wiring.py` checks nine links: the durable
@@ -320,6 +333,41 @@ Tool Program targets are included because they exercise the tool boundary and
 the executor that this milestone changed.
 
 The slice was **not** the workspace sweep: no other target was built or run.
+
+The slice was re-run on the tree that carries the §3.6 tier-ordering fix —
+**7522 tests run, 7522 passed, 4 skipped**, `Summary [ 203.060s]`, exit 0 —
+because that fix changes the durable job route the library target covers.
+
+### 4.7 Hosted evidence
+
+The hosted runs are the authoritative evidence for the parts a local sweep
+cannot cover. Every run below is on an exact head of this branch.
+
+| Run | Head | Workflow | Result |
+|---|---|---|---|
+| `39677678144` | `a74c7dbbe` | CI (branch-wide) | **success** — 15,854 tests run, 15,854 passed, 8 skipped, `Summary [ 472.488s]` |
+| `39677678125` | `a74c7dbbe` | Linux M004 process and IPC qualification | **failure** — the new delegated-child proof found the second defect in §3.6 |
+| `39677671427` | `a74c7dbbe` | Linux M004 process and IPC qualification | **failure** — same cause, the other trigger event |
+| `39681302386` | `9a40e983e` | Linux M004 process and IPC qualification | **failure** — the proof still rebuilt its own configuration and so reproduced the defect the fix had removed (§3.6) |
+| `39682689275` | `9a40e983e` | CI (branch-wide), `workflow_dispatch` | see §10.2 — the branch-wide sweep on the fixed head |
+
+The `pull_request` event dispatch for `9a40e983e` produced **no** runs at all
+— GitHub created none, for any workflow, after the push. The CI run was
+therefore dispatched explicitly on that exact ref with `workflow_dispatch`,
+which checks out the same head and runs the same job. The M004 run for the
+same head was created by the `push` event.
+
+The two M004 failures are **evidence, not regressions**: they are the hosted
+native run reporting the durable route's ordering defect, which is what the
+proof was added to find. The 17 sibling tests in that suite passed in both
+runs; only the new proof failed, and it failed with a typed refusal rather
+than a silent pass.
+
+The CI run on `a74c7dbbe` is the branch-wide hosted sweep for this line: the
+identical command over the identical workspace on a dedicated runner. The
+head has since moved to `9a40e983e`, which changes production code in the
+two durable routes, so a CI run on that head is required before the CI
+evidence qualifies the shipped tree exactly.
 
 ## 5. Invariant review
 

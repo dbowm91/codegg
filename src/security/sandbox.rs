@@ -133,6 +133,38 @@ pub fn sandbox_config_for_profile(
     sandbox_config_for_profile_with_roots(profile, &[workspace_root.to_path_buf()])
 }
 
+/// Build the launch configuration for a **durable job payload**.
+///
+/// This is the single place that decides which tier a durable route's launch
+/// configuration needs, so every durable route requests the same tier for the
+/// same accepted policy.
+///
+/// The M004 process/filesystem tier has to be requested **while the config is
+/// still being built**. The protected mount view is what captures the path
+/// identities the helper re-verifies at launch, and `launch_spec` captures
+/// them only when the protected mount view is already requested at
+/// spec-build time. The owner can only turn the offline flag on after the
+/// launch spec already exists, so a route that built the spec first and
+/// asked for the tier afterwards produced a spec with no captured identity,
+/// and the launch failed closed with "sandbox grant has no captured path
+/// identity".
+///
+/// `network_intent` is an independent axis: a narrower filesystem profile
+/// never implies an offline request, and an offline request is never
+/// satisfied by a narrower profile alone. The intent therefore selects the
+/// tier, and the profile continues to select the allowance set.
+pub fn sandbox_config_for_durable_payload(
+    profile: codegg_core::approval::SandboxProfile,
+    workspace_root: &Path,
+    network_intent: codegg_core::approval::NetworkIntent,
+) -> Option<SandboxConfig> {
+    let config = sandbox_config_for_profile(profile, workspace_root)?;
+    if network_intent == codegg_core::approval::NetworkIntent::OfflineRequired {
+        return Some(config.with_linux_process_isolation(true));
+    }
+    Some(config)
+}
+
 /// [`sandbox_config_for_profile`] with explicit approved roots (workspace
 /// root plus effective approved roots, e.g. child worktree roots).
 pub fn sandbox_config_for_profile_with_roots(
