@@ -319,6 +319,43 @@ The same two jobs were also green on the code head **`67d88db9`**
 `39529050572`, **26 passed, 0 failed**). The three commits after `67d88db9`
 change only the plans and closure record, so the code is the same in both.
 
+### One hosted-CI flake, on the final head, and its re-run
+
+The **first** attempt of `CI` run `39536529955` failed exactly one test:
+
+```
+agent::tool_batch::batch_admission_tests::
+  admission_deadline_edge_returns_one_terminal_outcome_and_cleans_queue
+panicked at src/agent/tool_batch.rs:2967:29:
+  permit released before deadline: Timeout("tool 'deadline-edge-tool' timed
+  out waiting in the tool batch queue after 101ms (admission limit 100ms;
+  effective parallelism 1); it did not start executing")
+```
+
+That test releases a held permit at **80 ms** and expects the acquisition to
+succeed against a **100 ms** admission deadline — a 20 ms margin on a loaded
+hosted runner, and the failure was a **1 ms** overshoot. It is a
+deadline-edge timing test, not a behavioural one.
+
+It is **not** a regression of this milestone, and that is established rather
+than assumed:
+
+- The branch touches **nothing** under `src/agent/`
+  (`git diff --name-only origin/main...HEAD -- src/agent/` is empty).
+- The only difference between the green head `844a5967` and the head that
+  failed is `plans/closure/managed-agent-scratch/006-status.md` — a
+  markdown file that cannot influence a Rust test.
+- The same code was green on the previous CI run (`39529050947`, 15643/15643)
+  and is green on the re-run.
+- Locally the test passed **10 out of 10** consecutive runs, in 0.20 s each.
+
+The **re-run of the same SHA** (`39536529955`, attempt 2) was **fully
+green**: **15643 run, 15643 passed, 7 skipped** (460 s).
+
+This is the same flake class the repository already records for
+`codegg-client::session_projection_driver::duplicate_events_are_idempotent`
+in `plans/closure/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-status.md`.
+
 The first Windows run, `39527099234` on the pre-fix head `8e4c2ad5`, failed
 exactly one test: `scratch::tests::the_census_refusal_rule_agrees_with_the_reclaim_validator`.
 The test was gated `#[cfg(any(unix, windows))]` but only created its symlink
