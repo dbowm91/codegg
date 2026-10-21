@@ -17,11 +17,11 @@ against — is for a frontend to look the descriptor up itself:
 That looks equivalent and is not. It reintroduces exactly the defect C001
 already recorded once: attribution derived locally rather than carried. A
 display name is not a stable key — the registry appends numeric variants
-(`Sally-2`), a name that is not in the pool at all must render *no*
-descriptor rather than a guessed one, and a released name can be re-drawn to a
-different subagent while a stale snapshot is still on screen. A frontend that
-resolves names itself will eventually attribute one subagent's personality to
-another, with nothing failing.
+(`Sally-2`) only once every pool name is held, a name that is not in the pool
+at all must render *no* descriptor rather than a guessed one, and a released
+name can be re-drawn to a different subagent while a stale snapshot is still on
+screen. A frontend that resolves names itself will eventually attribute one
+subagent's personality to another, with nothing failing.
 
 It also breaks the layering. `src/tui` has no curated pool and must not grow
 one; the pool is agent-runtime state, and the frontend is presentation over
@@ -190,10 +190,11 @@ def main() -> int:
             "frontend resolves nothing.\n"
             "\n"
             "A display name is not a stable key — the registry appends numeric\n"
-            "variants (`Sally-2`), a non-pool name must render *no* descriptor\n"
-            "rather than a guessed one, and a released name can be re-drawn\n"
-            "while a stale snapshot is still on screen. Resolving names in the\n"
-            "TUI is how one subagent's personality ends up on another's row.\n"
+            "variants (`Sally-2`) only once every pool name is held, a non-pool\n"
+            "name must render *no* descriptor rather than a guessed one, and a\n"
+            "released name can be re-drawn while a stale snapshot is still on\n"
+            "screen. Resolving names in the TUI is how one subagent's\n"
+            "personality ends up on another's row.\n"
         )
         for f in findings:
             rel = f.file.relative_to(REPO_ROOT)

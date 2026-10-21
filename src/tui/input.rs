@@ -239,7 +239,7 @@ pub enum InputAction {
     CloseProjectTab,
     /// Move to the next subagent tab in the main buffer (`Shift+N`).
     ///
-    /// Cycle order runs `Chat` → subagent tabs in the order they were opened,
+    /// Cycle order runs `Main` → subagent tabs in the order they were opened,
     /// and wraps. A no-op with no subagent tabs open: the main conversation
     /// stays selected rather than the key becoming visibly dead.
     NextSubagentTab,
